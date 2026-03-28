@@ -4,4 +4,10 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Production uses base values (or overrides here if needed)
+images:
+  - name: ghcr.io/insulahq/hosting-platform/backend
+    newTag: "latest"
+  - name: ghcr.io/insulahq/hosting-platform/admin-panel
+    newTag: "latest"
+  - name: ghcr.io/insulahq/hosting-platform/client-panel
+    newTag: "latest"
