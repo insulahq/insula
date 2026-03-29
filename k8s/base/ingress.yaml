@@ -12,12 +12,12 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - api.example.test
-        - admin.example.test
-        - client.example.test
+        - api.platform.local
+        - admin.platform.local
+        - client.platform.local
       secretName: platform-tls
   rules:
-    - host: api.example.test
+    - host: api.platform.local
       http:
         paths:
           - path: /
@@ -27,7 +27,7 @@ spec:
                 name: platform-api
                 port:
                   number: 3000
-    - host: admin.example.test
+    - host: admin.platform.local
       http:
         paths:
           - path: /
@@ -37,7 +37,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.example.test
+    - host: client.platform.local
       http:
         paths:
           - path: /
