@@ -6,11 +6,11 @@ resources:
 
 images:
   - name: ghcr.io/insulahq/hosting-platform/backend
-    newTag: "d04c2f2"
+    newTag: "3132064"
   - name: ghcr.io/insulahq/hosting-platform/admin-panel
-    newTag: "d04c2f2"
+    newTag: "3132064"
   - name: ghcr.io/insulahq/hosting-platform/client-panel
-    newTag: "d04c2f2"
+    newTag: "3132064"
 
 patches:
   - target:
