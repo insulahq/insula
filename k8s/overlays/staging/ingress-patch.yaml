@@ -17,6 +17,7 @@ spec:
     - hosts:
         - admin.192.0.2.56.sslip.io
         - client.192.0.2.56.sslip.io
+        - dex.192.0.2.56.sslip.io
       secretName: platform-staging-tls
   rules:
     - host: admin.192.0.2.56.sslip.io
@@ -39,3 +40,13 @@ spec:
                 name: client-panel
                 port:
                   number: 80
+    - host: dex.192.0.2.56.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dex
+                port:
+                  number: 5556
