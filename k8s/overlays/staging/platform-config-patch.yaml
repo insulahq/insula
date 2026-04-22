@@ -14,3 +14,5 @@ data:
   cors-origins: "https://admin.staging.example.test,https://client.staging.example.test"
   # Per-client sidecar image — pull from GHCR on real clusters.
   file-manager-image: "ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest"
+  # Longhorn dashboard URL for the Storage Configuration iframe.
+  longhorn-url: "https://longhorn.staging.example.test/"
