@@ -12,3 +12,5 @@ data:
   admin-url: "https://admin.staging.example.test"
   client-url: "https://client.staging.example.test"
   cors-origins: "https://admin.staging.example.test,https://client.staging.example.test"
+  # Per-client sidecar image — pull from GHCR on real clusters.
+  file-manager-image: "ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest"
