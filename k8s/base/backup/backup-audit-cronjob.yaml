@@ -60,6 +60,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-audit
+    platform.example.test/backup-health-watch: "true"
+    platform.example.test/backup-category: "audit"
+    platform.example.test/backup-severity: "warning"
+    platform.example.test/depends-on: "backup-credentials"
+  annotations:
+    platform.example.test/backup-display-name: "Backup coverage audit"
 spec:
   # Suspended by default. The audit checks whether Longhorn PVCs carry
   # the backup-group label — pointless when no backup target is active.
