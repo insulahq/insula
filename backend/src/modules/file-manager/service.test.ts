@@ -64,15 +64,28 @@ const mockHttpsRequest = vi.fn().mockImplementation((_opts: unknown, callback: (
   };
 });
 
+// Stub Agent so the keep-alive helper instantiates without throwing.
+class MockAgent {
+  destroy(): void { /* noop */ }
+}
+
 vi.mock('node:https', () => ({
   default: {
     request: (...args: unknown[]) => mockHttpsRequest(...args),
+    Agent: MockAgent,
   },
+  request: (...args: unknown[]) => mockHttpsRequest(...args),
+  Agent: MockAgent,
+}));
+
+vi.mock('node:http', () => ({
+  default: { Agent: MockAgent },
+  Agent: MockAgent,
 }));
 
 // ─── Import module under test ───────────────────────────────────────────────
 
-const { proxyToFileManager, fileManagerRequest } = await import('./service.js');
+const { proxyToFileManager, fileManagerRequest, __resetFileManagerReadyCacheForTests } = await import('./service.js');
 
 // ─── Mock K8sClients ────────────────────────────────────────────────────────
 
@@ -90,6 +103,10 @@ describe('file-manager service', () => {
     vi.clearAllMocks();
     mockGetStatus.mockResolvedValue({ ready: true, phase: 'running', message: 'OK' });
     mockEnsureRunning.mockResolvedValue(undefined);
+    // Clear Phase 1 in-memory ready cache so each test starts cold —
+    // otherwise a prior test's confirmed-ready observation would
+    // short-circuit ensureRunning + waitForReady.
+    __resetFileManagerReadyCacheForTests();
   });
 
   describe('proxyToFileManager', () => {
