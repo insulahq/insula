@@ -46,10 +46,17 @@ ssh_cp() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q
 
 api() {
   local method="$1" path="$2" body="${3:-}"
+  # --retry 2 + --retry-all-errors absorbs transient connection
+  # resets after a platform-api pod replacement (a problem the
+  # full integration-all sweep used to hit ~50% of the time on
+  # Scenario 2's first PATCH after the previous suite tore down
+  # its workloads). --max-time bounds the worst case.
   if [[ -z "$body" ]]; then
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" -H "Authorization: Bearer $TOKEN"
+    curl -sk --max-time 60 --retry 2 --retry-all-errors --retry-delay 2 \
+      -X "$method" "$ADMIN_HOST/api/v1$path" -H "Authorization: Bearer $TOKEN"
   else
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
+    curl -sk --max-time 60 --retry 2 --retry-all-errors --retry-delay 2 \
+      -X "$method" "$ADMIN_HOST/api/v1$path" \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
       -d "$body"
