@@ -1287,7 +1287,12 @@ async function locateTenantVolume(
     fsType = pv.spec?.csi?.volumeAttributes?.fsType ?? 'unknown';
   } catch { /* fsType stays unknown — runFsck will reject */ }
 
-  // Longhorn Volume CR → currentNodeID (where /dev/longhorn/<vol> exists)
+  // Longhorn Volume CR → currentNodeID (where /dev/longhorn/<vol> exists
+  // when attached). When detached, currentNodeID is empty string ""
+  // (NOT undefined), so the `??` operator does NOT fall through to
+  // ownerID — we have to check truthiness explicitly. ownerID is
+  // populated even when detached (set to the node Longhorn picks as
+  // the volume's "owner" — a viable attach target).
   let nodeName = '';
   try {
     const lhVol = await (ctx.k8s.custom as unknown as {
@@ -1298,7 +1303,11 @@ async function locateTenantVolume(
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
     });
-    nodeName = lhVol.status?.currentNodeID ?? lhVol.status?.ownerID ?? '';
+    const currentNode = lhVol.status?.currentNodeID;
+    const ownerNode = lhVol.status?.ownerID;
+    nodeName = (currentNode && currentNode.length > 0)
+      ? currentNode
+      : (ownerNode && ownerNode.length > 0 ? ownerNode : '');
   } catch { /* fall through — empty nodeName fails below */ }
 
   if (!nodeName) return null;
@@ -1402,6 +1411,16 @@ async function runFsckOp(
     quiesceSnap = await quiesce(ctx.k8s, namespace);
     await waitForQuiesced(ctx.k8s, namespace);
 
+    // Volume is detached after quiesce. fsck Pod uses hostPath
+    // /dev/longhorn/<vol> which only exists when Longhorn has the
+    // volume attached. Force-attach to the chosen node before
+    // running fsck. Frontend stays as blockdev (default) so the
+    // device file appears; nothing mounts the filesystem (xfs_repair/
+    // e2fsck require unmounted), so it's safe to operate.
+    await progress('quiescing', 25, `Attaching volume to ${located.nodeName} for fsck`);
+    await patchLonghornVolumeNode(ctx.k8s, located.volumeName, located.nodeName);
+    await waitForVolumeAttached(ctx.k8s, located.volumeName, located.nodeName);
+
     await progress('quiescing', 30, dryRun ? `Running ${located.fsType} dry-run check` : `Running ${located.fsType} repair`);
     const { runFsck } = await import('./fsck.js');
     const result = await runFsck(ctx.k8s, {
@@ -1413,6 +1432,12 @@ async function runFsckOp(
       nodeName: located.nodeName,
       onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
+
+    // Release the explicit attach. ensureVolumeReattached below will
+    // re-attach via file-manager if the client has nothing else to
+    // run; otherwise unquiesce restores tenant workloads which give
+    // the PVC a real consumer.
+    await patchLonghornVolumeNode(ctx.k8s, located.volumeName, '').catch(() => {});
 
     await progress('unquiescing', 85, 'Scaling workloads back up');
     if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
@@ -1457,16 +1482,81 @@ async function runFsckOp(
     await updateOp(ctx.db, opId, {
       state: 'failed', lastError: persisted, completedAt: new Date(),
     });
+    // Best-effort cleanup: drop the explicit attach hold, then
+    // restore workloads, then ensure file-manager scales up so the
+    // PVC has a Pod consumer (Longhorn re-attach).
+    await patchLonghornVolumeNodeByPvc(ctx.k8s, namespace, pvcName, '').catch(() => {});
     if (quiesceSnap) {
       await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
     }
-    // Same volume-reattach as the success path — failure midway
-    // through fsck still detached the volume during quiesce, so we
-    // need a Pod consumer to bring it back. Best-effort.
     await ensureVolumeReattached(ctx.k8s, namespace).catch(() => {});
     const cId = await currentClientId(ctx.db, opId);
     if (cId) await markClientState(ctx.db, cId, 'failed', null);
   }
+}
+
+/**
+ * Patch the Longhorn Volume CR's spec.nodeID to force attach (when
+ * nodeID is non-empty) or detach (when empty). Frontend stays as
+ * "blockdev" (default) so /dev/longhorn/<vol> appears on the target
+ * node when attached. fsck's hostPath relies on this device file
+ * existing — without an explicit attach, a detached volume has no
+ * device file on any node and fsck fails with exit 65.
+ */
+async function patchLonghornVolumeNode(k8s: K8sClients, volumeName: string, nodeID: string): Promise<void> {
+  await (k8s.custom as unknown as {
+    patchNamespacedCustomObject: (a: {
+      group: string; version: string; namespace: string; plural: string; name: string;
+      body: unknown; headers?: Record<string, string>;
+    }) => Promise<unknown>;
+  }).patchNamespacedCustomObject({
+    group: 'longhorn.io', version: 'v1beta2',
+    namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
+    body: { spec: { nodeID } },
+    headers: { 'Content-Type': 'application/merge-patch+json' },
+  });
+}
+
+/** Convenience: look up volumeName from the client's PVC, then patch. */
+async function patchLonghornVolumeNodeByPvc(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+  nodeID: string,
+): Promise<void> {
+  const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace })
+    .catch(() => null);
+  const volumeName = (pvc as { spec?: { volumeName?: string } } | null)?.spec?.volumeName;
+  if (!volumeName) return;
+  await patchLonghornVolumeNode(k8s, volumeName, nodeID);
+}
+
+/**
+ * Wait for Longhorn to report state=attached on the expected node.
+ * Times out after 60s — Longhorn typically attaches in 5-15s.
+ */
+async function waitForVolumeAttached(
+  k8s: K8sClients,
+  volumeName: string,
+  expectedNode: string,
+  timeoutMs = 60_000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const lhVol = await (k8s.custom as unknown as {
+      getNamespacedCustomObject: (a: {
+        group: string; version: string; namespace: string; plural: string; name: string;
+      }) => Promise<{ status?: { state?: string; currentNodeID?: string } }>;
+    }).getNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
+    }).catch(() => ({ status: undefined }));
+    if (lhVol.status?.state === 'attached' && lhVol.status?.currentNodeID === expectedNode) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(`Longhorn volume ${volumeName} did not attach to ${expectedNode} within ${timeoutMs}ms`);
 }
 
 /**
