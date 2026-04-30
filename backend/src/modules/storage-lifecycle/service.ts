@@ -1418,7 +1418,7 @@ async function runFsckOp(
     // device file appears; nothing mounts the filesystem (xfs_repair/
     // e2fsck require unmounted), so it's safe to operate.
     await progress('quiescing', 25, `Attaching volume to ${located.nodeName} for fsck`);
-    await patchLonghornVolumeNode(ctx.k8s, located.volumeName, located.nodeName);
+    await attachLonghornVolume(ctx.k8s, located.volumeName, located.nodeName);
     await waitForVolumeAttached(ctx.k8s, located.volumeName, located.nodeName);
 
     await progress('quiescing', 30, dryRun ? `Running ${located.fsType} dry-run check` : `Running ${located.fsType} repair`);
@@ -1437,7 +1437,7 @@ async function runFsckOp(
     // re-attach via file-manager if the client has nothing else to
     // run; otherwise unquiesce restores tenant workloads which give
     // the PVC a real consumer.
-    await patchLonghornVolumeNode(ctx.k8s, located.volumeName, '').catch(() => {});
+    await detachLonghornVolume(ctx.k8s, located.volumeName).catch(() => {});
 
     await progress('unquiescing', 85, 'Scaling workloads back up');
     if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
@@ -1485,7 +1485,7 @@ async function runFsckOp(
     // Best-effort cleanup: drop the explicit attach hold, then
     // restore workloads, then ensure file-manager scales up so the
     // PVC has a Pod consumer (Longhorn re-attach).
-    await patchLonghornVolumeNodeByPvc(ctx.k8s, namespace, pvcName, '').catch(() => {});
+    await detachLonghornVolumeByPvc(ctx.k8s, namespace, pvcName).catch(() => {});
     if (quiesceSnap) {
       await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
     }
@@ -1496,17 +1496,24 @@ async function runFsckOp(
 }
 
 /**
- * Patch the Longhorn Volume CR's spec.nodeID to force attach (when
- * nodeID is non-empty) or detach (when empty). Frontend stays as
- * "blockdev" (default) so /dev/longhorn/<vol> appears on the target
- * node when attached. fsck's hostPath relies on this device file
- * existing — without an explicit attach, a detached volume has no
- * device file on any node and fsck fails with exit 65.
+ * Force-attach (or detach) a Longhorn volume by patching the
+ * `volumeattachments.longhorn.io` CR (NOT the Volume's spec.nodeID,
+ * which Longhorn's mutation webhook silently clears on direct
+ * patches — Longhorn 1.6+ uses a separate VolumeAttachment CR with
+ * "attachment tickets" to coordinate attach/detach across competing
+ * consumers).
+ *
+ * To attach: add a ticket keyed by `FSCK_ATTACH_TICKET` with
+ *   { id, type: 'longhorn-api', nodeID, parameters: {disableFrontend:'false'} }
+ * To detach: set the same ticket key to null (merge-patch removes it).
+ *
+ * Frontend stays "blockdev" (disableFrontend=false) so /dev/longhorn/<vol>
+ * appears on the target node — fsck's hostPath relies on this device
+ * file existing.
  */
-async function patchLonghornVolumeNode(k8s: K8sClients, volumeName: string, nodeID: string): Promise<void> {
-  // @kubernetes/client-node v1.4 sends application/json-patch+json
-  // unless we use the middleware override. The shared MERGE_PATCH
-  // helper installs the right Content-Type for object-shaped bodies.
+const FSCK_ATTACH_TICKET = 'platform-fsck';
+
+async function attachLonghornVolume(k8s: K8sClients, volumeName: string, nodeID: string): Promise<void> {
   const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
   await (k8s.custom as unknown as {
     patchNamespacedCustomObject: (
@@ -1516,25 +1523,57 @@ async function patchLonghornVolumeNode(k8s: K8sClients, volumeName: string, node
   }).patchNamespacedCustomObject(
     {
       group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
-      body: { spec: { nodeID } },
+      namespace: 'longhorn-system', plural: 'volumeattachments', name: volumeName,
+      body: {
+        spec: {
+          attachmentTickets: {
+            [FSCK_ATTACH_TICKET]: {
+              id: FSCK_ATTACH_TICKET,
+              type: 'longhorn-api',
+              nodeID,
+              parameters: {
+                disableFrontend: 'false',
+                lastAttachedBy: '',
+              },
+            },
+          },
+        },
+      },
     },
     MERGE_PATCH,
   );
 }
 
-/** Convenience: look up volumeName from the client's PVC, then patch. */
-async function patchLonghornVolumeNodeByPvc(
+async function detachLonghornVolume(k8s: K8sClients, volumeName: string): Promise<void> {
+  // null in merge-patch removes the key — clearing our ticket lets
+  // Longhorn detach (assuming no other consumers hold tickets).
+  const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+  await (k8s.custom as unknown as {
+    patchNamespacedCustomObject: (
+      a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+      mw: typeof MERGE_PATCH,
+    ) => Promise<unknown>;
+  }).patchNamespacedCustomObject(
+    {
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'volumeattachments', name: volumeName,
+      body: { spec: { attachmentTickets: { [FSCK_ATTACH_TICKET]: null } } },
+    },
+    MERGE_PATCH,
+  );
+}
+
+/** Convenience: look up volumeName from the client's PVC, then detach. */
+async function detachLonghornVolumeByPvc(
   k8s: K8sClients,
   namespace: string,
   pvcName: string,
-  nodeID: string,
 ): Promise<void> {
   const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace })
     .catch(() => null);
   const volumeName = (pvc as { spec?: { volumeName?: string } } | null)?.spec?.volumeName;
   if (!volumeName) return;
-  await patchLonghornVolumeNode(k8s, volumeName, nodeID);
+  await detachLonghornVolume(k8s, volumeName);
 }
 
 /**
