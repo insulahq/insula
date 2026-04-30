@@ -2554,7 +2554,35 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
                     <span className="ml-1 text-gray-500 dark:text-gray-400">({formatBytes(p.allocatedBytes)})</span>
                   )}
                 </td>
-                <td className="px-2 py-1.5">{p.state ?? '—'}</td>
+                <td className="px-2 py-1.5">
+                  {(() => {
+                    // Longhorn reports state="detached" any time no Pod
+                    // consumes the PVC. For a healthy idle volume that's
+                    // the expected resting state — nothing's wrong, the
+                    // client just has zero replicas running. Surface
+                    // that distinct from a problematic detach by
+                    // checking robustness:
+                    //   - state=attached → "attached" (live)
+                    //   - state=detached + healthy/unknown + replicas
+                    //     all available → "idle" (normal, gray)
+                    //   - state=detached + degraded/faulted → "detached"
+                    //     (alarming, kept literal)
+                    //   - everything else (creating, deleting, etc.) →
+                    //     literal Longhorn state
+                    const state = p.state ?? null;
+                    if (state === 'attached') {
+                      return <span className="rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300">attached</span>;
+                    }
+                    if (state === 'detached') {
+                      const isProblem = p.robustness === 'degraded' || p.robustness === 'faulted';
+                      if (isProblem) {
+                        return <span className="rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-800 dark:bg-red-900/40 dark:text-red-300" title="Longhorn state: detached">detached</span>;
+                      }
+                      return <span className="rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-300" title="Longhorn state: detached. No Pod consumes the PVC right now — normal when file-manager and tenant workloads are idle.">idle</span>;
+                    }
+                    return <span className="text-gray-700 dark:text-gray-300">{state ?? '—'}</span>;
+                  })()}
+                </td>
                 <td className="px-2 py-1.5">
                   <span className={p.robustness === 'healthy'
                     ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
