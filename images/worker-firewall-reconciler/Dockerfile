@@ -9,25 +9,26 @@
 #
 # See k8s/base/worker-firewall-reconciler/ for the DaemonSet manifest.
 
-# Debian, not Alpine: alpine's nftables 1.0.9 segfaults on every mutating
-# op (`add element`, `add rule`, even `nft -f -`) when it tries to talk to
-# the host netfilter through CAP_NET_ADMIN — verified on staging k8s 1.30
-# nodes. Debian's nftables is built against glibc and works.
-FROM debian:bookworm-slim
+# debian:trixie-slim ships nftables 1.1.3, matching the version on the
+# host (Debian 13 / Linux 6.12). bookworm's 1.0.6 and alpine 3.20's 1.0.9
+# both segfault talking to a 6.12 kernel's netfilter through
+# CAP_NET_ADMIN — even `nft list ruleset` core-dumps. This is a userspace
+# library / kernel-netlink mismatch, not a binary issue. The container
+# nft has to be ≥1.1 to negotiate the kernel's set/rule features.
+FROM debian:trixie-slim
 
 # nftables — talk to the host netfilter via netlink (CAP_NET_ADMIN).
-# kubectl  — pulled from upstream apt repo; debian's stock package lags.
-# bash/jq/coreutils — already in debian:bookworm-slim.
+# kubectl  — official static binary; we don't need an apt repo for one tool.
+# bash/jq  — already in debian:trixie-slim.
+ARG KUBECTL_VERSION=v1.30.6
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nftables jq curl ca-certificates gnupg \
- && install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key \
-      | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
- && echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' \
-      > /etc/apt/sources.list.d/kubernetes.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends kubectl \
- && apt-get purge -y curl gnupg \
+ && apt-get install -y --no-install-recommends nftables jq curl ca-certificates \
+ && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+      -o /usr/local/bin/kubectl \
+ && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" \
+      | awk '{print $1"  /usr/local/bin/kubectl"}' | sha256sum -c - \
+ && chmod +x /usr/local/bin/kubectl \
+ && apt-get purge -y curl \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
