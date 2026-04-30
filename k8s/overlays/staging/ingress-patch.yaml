@@ -1,6 +1,6 @@
 # Patch ingress hostnames for staging environment.
-# Apex: staging.phoenix-host.net (A record → 89.167.3.56; wildcard
-# *.staging.phoenix-host.net CNAMEs to the apex).
+# Apex: ${DOMAIN} (A record → 89.167.3.56; wildcard
+# *.${DOMAIN} CNAMEs to the apex).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -15,12 +15,12 @@ metadata:
 spec:
   tls:
     - hosts:
-        - admin.staging.phoenix-host.net
-        - client.staging.phoenix-host.net
-        - dex.staging.phoenix-host.net
+        - admin.${DOMAIN}
+        - client.${DOMAIN}
+        - dex.${DOMAIN}
       secretName: platform-staging-tls
   rules:
-    - host: admin.staging.phoenix-host.net
+    - host: admin.${DOMAIN}
       http:
         paths:
           - path: /
@@ -30,7 +30,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.staging.phoenix-host.net
+    - host: client.${DOMAIN}
       http:
         paths:
           - path: /
@@ -40,7 +40,7 @@ spec:
                 name: client-panel
                 port:
                   number: 80
-    - host: dex.staging.phoenix-host.net
+    - host: dex.${DOMAIN}
       http:
         paths:
           - path: /

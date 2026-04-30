@@ -7,26 +7,26 @@ data:
   environment: "staging"
   log-level: "info"
   default-storage-class: "longhorn"
-  ingress-base-domain: "staging.phoenix-host.net"
+  ingress-base-domain: "${DOMAIN}"
   cluster-issuer-name: "letsencrypt-prod-http01"
-  admin-url: "https://admin.staging.phoenix-host.net"
-  client-url: "https://client.staging.phoenix-host.net"
-  cors-origins: "https://admin.staging.phoenix-host.net,https://client.staging.phoenix-host.net"
+  admin-url: "https://admin.${DOMAIN}"
+  client-url: "https://client.${DOMAIN}"
+  cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
   # Per-client sidecar image — pull from GHCR on real clusters.
   file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
   # Longhorn dashboard URL for the Storage Configuration iframe.
-  longhorn-url: "https://longhorn.staging.phoenix-host.net/"
+  longhorn-url: "https://longhorn.${DOMAIN}/"
   # platform_session cookie Domain attribute. Shares the cookie across
   # all admin-only subdomains (longhorn, mail-admin, future ones) so
   # admin-panel iframes carry the auth automatically. Without this the
   # cookie is host-only to admin.<apex> and cross-subdomain iframes
   # hit the nginx auth_request gate with no cookie → redirect loop.
-  session-cookie-domain: ".staging.phoenix-host.net"
+  session-cookie-domain: ".${DOMAIN}"
   # Passkey (WebAuthn) RP. rp-id is the registrable suffix shared by
   # admin + client panels. origins is a CSV of every panel origin —
   # the backend rejects assertions whose clientDataJSON.origin isn't
   # in this list. RP_NAME is the friendly name shown to users on the
   # OS biometric prompt.
-  passkey-rp-id: "staging.phoenix-host.net"
+  passkey-rp-id: "${DOMAIN}"
   passkey-rp-name: "Phoenix Hosting (staging)"
-  passkey-origins: "https://admin.staging.phoenix-host.net,https://client.staging.phoenix-host.net"
+  passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
