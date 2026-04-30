@@ -7,8 +7,15 @@ const config = loadConfig();
 const db = getDb(config.DATABASE_URL);
 const app = await buildApp({ config, db });
 
+// Declare the timer holder up front so the shutdown handler can
+// reference it safely. SIGTERM that arrives before app.listen()
+// completes (e.g. readiness probe failure during onReady) used to
+// hit a TDZ on `expiryCheckTimer` and exit the container with
+// ReferenceError, masking the real Fastify boot timeout in the logs.
+let expiryCheckTimer: NodeJS.Timeout | null = null;
+
 const shutdown = async () => {
-  clearInterval(expiryCheckTimer);
+  if (expiryCheckTimer) clearInterval(expiryCheckTimer);
   await app.close();
   await closeDb();
   process.exit(0);
@@ -22,7 +29,7 @@ console.log(`Server listening on port ${config.PORT}`);
 
 // Check for expired subscriptions every hour
 const EXPIRY_CHECK_INTERVAL = 60 * 60 * 1000;
-const expiryCheckTimer = setInterval(async () => {
+expiryCheckTimer = setInterval(async () => {
   try {
     const count = await suspendExpiredClients(db);
     if (count > 0) {
