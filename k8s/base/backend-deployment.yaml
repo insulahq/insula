@@ -111,6 +111,29 @@ spec:
                   name: platform-version
                   key: version
                   optional: true
+            # Build branch (main, staging, stable). Surfaced under the
+            # admin/client panel sidebar title via /auth/runtime-info so
+            # operators can tell at a glance which lane the running
+            # build came from. CI writes this to the platform-version
+            # ConfigMap alongside `version` (see build-deploy.yml).
+            - name: PLATFORM_BRANCH
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-version
+                  key: branch
+                  optional: true
+            # Pod + node identity from the K8s downward API. Surfaced
+            # via /auth/runtime-info so the UI can show the user which
+            # platform-api replica served them — useful for live debug
+            # of replica-specific weirdness without kubectl.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             # PLATFORM_ENV is defined further down — don't redeclare.
             # Per-client sidecar image (optional — default baked into code
             # for local-dev uses the bare name imported into DinD containerd).

@@ -190,6 +190,7 @@ jobs:
       - name: Write platform-version overlay patch
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
         run: |
           mkdir -p k8s/overlays/staging
           cat > k8s/overlays/staging/platform-version-patch.yaml <<PATCH
@@ -202,6 +203,7 @@ jobs:
             namespace: platform
           data:
             version: "${VERSION}"
+            branch: "${BRANCH}"
           PATCH
           # Ensure the patch is referenced from kustomization.yaml
           if ! grep -q "platform-version-patch.yaml" k8s/overlays/staging/kustomization.yaml; then
