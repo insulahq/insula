@@ -532,27 +532,37 @@ export async function fileManagerRequest(
   // skip ensureFileManagerRunning + waitForReady entirely. Cuts ~3
   // round-trips (1500-2500ms across NetBird mesh) per request.
   const hot = recentlySeenReady(namespace);
+  const t0 = Date.now();
 
   if (!hot) {
     // Cold path: ensure deployed + scaled up + wait for Ready.
     // Provisioner creates FM at replicas=0 to avoid RWO Multi-Attach
     // at provision time; ensureFileManagerRunning(initialReplicas=1)
     // brings it up on demand here.
+    const t1 = Date.now();
     await ensureFileManagerRunning(k8sClients, namespace, image, 1);
+    const t2 = Date.now();
     const status = await waitForReady(k8sClients, namespace);
+    const t3 = Date.now();
     if (!status.ready) {
       throw new Error(`File manager not ready: ${status.message}`);
     }
     cacheReady(namespace);
+    // eslint-disable-next-line no-console
+    console.log(`[fm-bench] cold ns=${namespace} ensure=${t2 - t1}ms waitReady=${t3 - t2}ms`);
   }
 
   // Phase 2: prefer direct ClusterIP path (no apiserver proxy).
+  const t4 = Date.now();
   const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
 
   const result = await proxyToFileManager(kubeconfigPath, namespace, sidecarPath, {
     ...options,
     ...(directUrl ? { directUrl } : {}),
   });
+  const t5 = Date.now();
+  // eslint-disable-next-line no-console
+  console.log(`[fm-bench] ns=${namespace} hot=${hot} resolve+proxy=${t5 - t4}ms direct=${!!directUrl} total=${t5 - t0}ms`);
 
   // 5xx might mean FM died between our cache hit and now (idle-cleanup,
   // OOM, eviction). Invalidate so the next call re-checks.
