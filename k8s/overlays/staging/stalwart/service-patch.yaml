@@ -14,7 +14,7 @@
 #
 # Forward-compatible with multi-node HA: when a second Hetzner VPS
 # joins, extend the list → externalIPs: [192.0.2.56, <node2-ip>].
-# Combined with multi-A DNS records for mail.staging.example.test,
+# Combined with multi-A DNS records for mail.${DOMAIN},
 # each node becomes an entry point; SMTP MX preference + short DNS
 # TTLs handle failover without a cluster-level VIP.
 #

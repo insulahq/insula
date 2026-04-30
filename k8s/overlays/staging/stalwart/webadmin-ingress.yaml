@@ -1,6 +1,6 @@
 # Dedicated subdomain for Stalwart's embedded web-admin SPA on staging.
 #
-# URL: https://mail-admin.staging.example.test/
+# URL: https://mail-admin.${DOMAIN}/
 # Backend: stalwart-mail-mgmt.mail.svc.cluster.local:8080
 #
 # Why a separate subdomain (see dev overlay comments for full detail):
@@ -35,7 +35,7 @@ metadata:
     # Where to send unauthenticated users. Cookie mode redirects to the
     # admin panel's login; component leaves this blank because the URL
     # varies per overlay.
-    nginx.ingress.kubernetes.io/auth-signin: "https://admin.staging.example.test/login?redirect=/settings/mail"
+    nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
     # WebSocket support for live metrics / log streaming.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
@@ -43,10 +43,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - mail-admin.staging.example.test
+        - mail-admin.${DOMAIN}
       secretName: stalwart-webadmin-staging-tls
   rules:
-    - host: mail-admin.staging.example.test
+    - host: mail-admin.${DOMAIN}
       http:
         paths:
           - path: /

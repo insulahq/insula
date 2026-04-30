@@ -5,7 +5,7 @@
 # it on every push to the `staging` branch.
 #
 # Differences from dev/stalwart:
-#   - Real domain (mail.staging.example.test) + letsencrypt-staging issuer
+#   - Real domain (mail.${DOMAIN}) + letsencrypt-staging issuer
 #   - Longhorn default storageClass (not local-path)
 #   - NetworkPolicy kept (staging has Calico enforcer)
 #   - Admin web UI gated by platform_session cookie via the main staging
@@ -31,7 +31,7 @@
 # │  CreateContainerConfigError within 30s of reconcile.                  │
 # │                                                                       │
 # │  ssh root@staging ./scripts/generate-stalwart-secret.sh \             │
-# │    --hostname=mail.staging.example.test \                         │
+# │    --hostname=mail.${DOMAIN} \                         │
 # │    --db-password="$(kubectl -n platform get secret \                  │
 # │      platform-db-credentials -o jsonpath='{.data.password}' \         │
 # │      | base64 -d)"                                                    │

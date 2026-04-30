@@ -10,6 +10,22 @@ spec:
   sourceRef:
     kind: GitRepository
     name: hosting-platform-staging
+  # Operator-domain templating. The staging overlay's checked-in YAML
+  # uses literal ${DOMAIN} (and friends) wherever a per-cluster value
+  # would otherwise be hardcoded. Flux's kustomize-controller runs
+  # envsubst against the rendered output using values from the named
+  # ConfigMap, BEFORE applying. Bootstrap creates / updates that
+  # ConfigMap with the operator's --domain via `kubectl apply`. Both
+  # paths converge: bootstrap renders + envsubst's once at install
+  # time, Flux re-renders + envsubst's on every reconcile from the
+  # same ConfigMap. No on-disk sed; no Flux/bootstrap tug-of-war.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-cluster-config
+        # Fail loudly if the ConfigMap is missing — better than silently
+        # leaving ${DOMAIN} literals in applied resources.
+        optional: false
   healthChecks:
     - apiVersion: apps/v1
       kind: Deployment

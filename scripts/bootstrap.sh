@@ -549,11 +549,15 @@ install_packages_apt() {
   apt-get update -qq
   # software-properties-common deliberately omitted — not in Debian 13
   # trixie repos and we don't use add-apt-repository anywhere.
+  # gettext-base provides envsubst — required by apply_platform_manifests
+  # to substitute ${DOMAIN} (and any future placeholders) into the
+  # rendered staging overlay before kubectl apply.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
     wireguard-tools \
+    gettext-base \
     age \
     >/dev/null 2>&1
 }
@@ -576,11 +580,14 @@ install_packages_dnf() {
   # which conflicts with the full 'curl' package; --allowerasing lets dnf
   # transparently swap if a transitive dep pulls full curl in. Omitting
   # 'curl' from the explicit list avoids the conflict on a fresh box.
+  # gettext for envsubst (Debian splits envsubst into gettext-base; RHEL
+  # ships it inside the main gettext package).
   dnf install -y -q --allowerasing \
     wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
+    gettext \
     age \
     >/dev/null 2>&1
 }
@@ -2755,90 +2762,34 @@ apply_platform_manifests() {
   mkdir -p "$overlay_dir"
 
   if [[ "$PLATFORM_ENV" == "staging" && -f "${overlay_dir}/kustomization.yaml" ]]; then
-    log "Staging: preserving existing kustomization.yaml (image policy markers)."
-    log "Writing ingress hostname patch only."
-    cat > "${overlay_dir}/ingress-hosts-patch.yaml" <<PATCH
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: platform-ingress
-  namespace: platform
-spec:
-  tls:
-    - hosts:
-        - ${api_host}
-        - ${admin_host}
-        - ${client_host}
-      # Match staging overlay's ingress-patch.yaml secretName so cert-
-      # manager doesn't churn between two Certificate objects every time
-      # bootstrap re-runs. (Last-patch-wins applies to spec.tls too —
-      # the staging overlay's ingress-patch.yaml uses platform-staging-
-      # tls and we want its Certificate to keep working.)
-      secretName: platform-staging-tls
-  rules:
-    - host: ${api_host}
-    - host: ${admin_host}
-    - host: ${client_host}
-PATCH
-    # Add patch reference if not already in kustomization.yaml.
-    # Insert at the END of the existing patches: list (NOT right after
-    # the `patches:` header). The staging overlay ships a hardcoded
-    # ingress-patch.yaml that resets hostnames to admin.staging.
-    # example.test for the production-staging cluster; if our
-    # operator-domain patch is listed BEFORE it, ingress-patch.yaml
-    # strategic-merges over it and the operator's --domain hostnames
-    # are silently lost. Last patch wins. Surfaced 2026-04-30 on the
-    # testing.example.test independent install.
-    if ! grep -q "ingress-hosts-patch.yaml" "${overlay_dir}/kustomization.yaml"; then
-      log "Adding ingress-hosts-patch.yaml at end of staging patches list."
-      python3 - "${overlay_dir}/kustomization.yaml" <<'PY'
-import sys, re
-path = sys.argv[1]
-with open(path) as f:
-    lines = f.readlines()
-patch_re = re.compile(r'^(\s*-\s+(path|target|patch):|\s{4,})')
-in_patches = False
-last_idx = None
-for i, line in enumerate(lines):
-    if line.startswith('patches:'):
-        in_patches = True
-        last_idx = i
-        continue
-    if in_patches:
-        if patch_re.match(line):
-            last_idx = i
-            continue
-        if line.strip() == '':
-            continue
-        break
-if last_idx is None:
-    sys.exit("could not find patches: section in " + path)
-lines.insert(last_idx + 1, "  - path: ingress-hosts-patch.yaml\n")
-with open(path, 'w') as f:
-    f.writelines(lines)
-PY
-    fi
-    # Rewrite hardcoded `staging.example.test` → operator's --domain
-    # across every overlay file. The staging overlay was authored against
-    # example.test deployment; operators using a different domain
-    # (testing.example.test, customer-foo.com, …) need every host /
-    # CORS origin / cookie domain / passkey RP-ID rewritten. Files
-    # touched: ingress-patch.yaml, longhorn-ui-patch.yaml,
-    # platform-config-patch.yaml, stalwart/webadmin-ingress.yaml, the
-    # dex config, and any future overlay file shipping the literal
-    # `staging.example.test` token.
-    log "Rewriting overlay hostnames: staging.example.test → ${PLATFORM_DOMAIN}..."
-    grep -rl "staging.example.test" "$overlay_dir" 2>/dev/null \
-      | xargs -r sed -i "s/staging\\.example-host\\.net/${PLATFORM_DOMAIN}/g"
+    log "Staging: preserving checked-in overlay (placeholder-templated)."
+    # ── Domain templating via Flux postBuild.substituteFrom ────────────
+    # The checked-in staging overlay holds literal ${DOMAIN} placeholders
+    # wherever a per-cluster value (Ingress hosts, CORS origins, cookie
+    # domains, passkey RP-ID, Dex issuer) would otherwise be hardcoded.
+    # We materialise the operator's --domain into a single source-of-
+    # truth ConfigMap (platform-cluster-config in the flux-system
+    # namespace, where Flux's kustomize-controller looks it up). Both
+    # paths converge on the same rendered output:
+    #   • bootstrap (this script): `kustomize | envsubst | kubectl apply`
+    #   • Flux: built-in postBuild.substituteFrom on every reconcile
+    # No on-disk sed; no Flux/bootstrap tug-of-war. See
+    # docs/04-deployment/CLUSTER_NETWORK.md (operator section) for the
+    # full design.
+    log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN})..."
+    kctl create configmap platform-cluster-config \
+      -n flux-system \
+      --from-literal=DOMAIN="${PLATFORM_DOMAIN}" \
+      --dry-run=client -o yaml | kctl apply -f -
 
     # Replace Dex PLACEHOLDER URLs and inject generated client secrets
+    # (these are dex-specific, not part of the shared DOMAIN templating).
     local dex_config="${overlay_dir}/dex/config.yaml"
     if [[ -f "$dex_config" ]]; then
-      log "Updating Dex config with domain ${PLATFORM_DOMAIN}..."
-      local dex_host="dex.${PLATFORM_DOMAIN}"
+      log "Updating Dex config..."
       sed -i "s|PLACEHOLDER.example.com|${PLATFORM_DOMAIN}|g" "$dex_config"
-      sed -i "s|issuer:.*|issuer: https://${dex_host}/dex|" "$dex_config"
-      # Replace hardcoded client secrets with the generated oauth2-proxy secret
+      # Note: ${DOMAIN}-bearing lines (issuer, redirectURIs) are left as
+      # placeholders and resolved by envsubst at apply time.
       local proxy_secret
       proxy_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d || echo "")
       if [[ -n "$proxy_secret" ]]; then
@@ -2847,7 +2798,16 @@ PY
       fi
     fi
 
-    kctl apply -k "$overlay_dir"
+    # envsubst is in apt's `gettext-base` package — already pulled in by
+    # base-image dependencies on Debian/Ubuntu/RHEL. Fail loud if missing.
+    if ! command -v envsubst >/dev/null 2>&1; then
+      error "envsubst not found on PATH; install gettext-base / gettext."
+    fi
+    log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}) and applying..."
+    DOMAIN="${PLATFORM_DOMAIN}" \
+      kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
+      | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
+      | kctl apply -f -
     log "Staging manifests applied."
     return 0
   fi
