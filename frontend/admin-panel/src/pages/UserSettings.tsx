@@ -61,7 +61,6 @@ function PasskeySection() {
 
   useEffect(() => {
     void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleRegister = async (e: FormEvent) => {
