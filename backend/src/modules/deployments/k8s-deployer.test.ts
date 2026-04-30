@@ -43,6 +43,10 @@ function makeK8sMock() {
       createNamespacedJob: calls.createJob,
       readNamespacedJob: calls.readJob,
     },
+    networking: {
+      createNamespacedNetworkPolicy: vi.fn().mockResolvedValue({}),
+      replaceNamespacedNetworkPolicy: vi.fn().mockResolvedValue({}),
+    },
   } as unknown as K8sClients;
   return { k8s, calls };
 }
