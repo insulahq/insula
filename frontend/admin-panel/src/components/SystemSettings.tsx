@@ -216,8 +216,11 @@ export default function SystemSettingsForm() {
       {/* Host Network Ports */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5" data-testid="host-network-ports-card">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Host Network Ports</h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
           Some applications (e.g. COTURN, BBB media servers) require dedicated UDP/TCP ports on the underlying host network. Enabling these toggles lets the catalog deploy gate schedule those workloads onto the matching node role and opens the requested ports on every node of that role.
+        </p>
+        <p className="text-xs text-amber-700 dark:text-amber-300 mb-4 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/40 px-2 py-1">
+          <strong>Note:</strong> turning a toggle <strong>off</strong> only blocks <em>new</em> deploys. Already-running workloads keep their open ports until they are deleted or redeployed manually. To force closure, delete the affected deployments after disabling.
         </p>
         <div className="space-y-4">
           <div className="flex items-start gap-3">
