@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createClient, getClientById, updateClient, deleteClient } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -598,6 +598,13 @@ describe('deleteClient', () => {
 });
 
 describe('getClientStoragePlacement', () => {
+  beforeEach(async () => {
+    // Phase 4 cache is module-level — reset between tests so a prior
+    // test's response doesn't short-circuit the next test.
+    const mod = await import('./service.js');
+    mod.__resetStoragePlacementCacheForTests();
+  });
+
   it('returns storage health fields populated from Longhorn Volume CR', async () => {
     const { getClientStoragePlacement } = await import('./service.js');
 
