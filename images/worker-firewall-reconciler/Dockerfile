@@ -9,14 +9,27 @@
 #
 # See k8s/base/worker-firewall-reconciler/ for the DaemonSet manifest.
 
-FROM alpine:3.20
+# Debian, not Alpine: alpine's nftables 1.0.9 segfaults on every mutating
+# op (`add element`, `add rule`, even `nft -f -`) when it tries to talk to
+# the host netfilter through CAP_NET_ADMIN — verified on staging k8s 1.30
+# nodes. Debian's nftables is built against glibc and works.
+FROM debian:bookworm-slim
 
 # nftables — talk to the host netfilter via netlink (CAP_NET_ADMIN).
-# kubectl  — read pods scheduled to this node via downward API NODE_NAME.
-# bash     — non-busybox associative arrays + RE matching used by reconcile.sh.
-# jq       — robust JSON parsing of `kubectl get pods -o json`.
-# coreutils — GNU sort -n / paste / etc., busybox versions are flag-incompatible.
-RUN apk add --no-cache nftables kubectl bash jq coreutils
+# kubectl  — pulled from upstream apt repo; debian's stock package lags.
+# bash/jq/coreutils — already in debian:bookworm-slim.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nftables jq curl ca-certificates gnupg \
+ && install -d -m 0755 /etc/apt/keyrings \
+ && curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key \
+      | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
+ && echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' \
+      > /etc/apt/sources.list.d/kubernetes.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends kubectl \
+ && apt-get purge -y curl gnupg \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY reconcile.sh /usr/local/bin/reconcile.sh
 RUN chmod +x /usr/local/bin/reconcile.sh
