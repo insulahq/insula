@@ -351,26 +351,7 @@ export default function Files() {
   // ─── Loading states ──────────────────────────────────────────────────────
 
   if (!fmStatus.data || fmStatus.data.phase === 'not_deployed' || fmStatus.data.phase === 'starting') {
-    return (
-      <div className="space-y-6">
-        <FilePageHeader />
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
-          <div className="px-6 py-16 text-center">
-            <Loader2 size={48} className="mx-auto animate-spin text-brand-500" />
-            <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Starting File Manager</h2>
-            <p className="mx-auto mt-2 max-w-md text-sm text-gray-500 dark:text-gray-400">
-              Deploying file manager to your namespace. This usually takes 10-30 seconds...
-            </p>
-            <div className="mx-auto mt-6 h-2 w-64 rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
-              <div className="h-2 rounded-full bg-brand-500 animate-pulse" style={{ width: '60%' }} />
-            </div>
-            <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
-              {fmStatus.data?.message ?? 'Waiting for pod to start...'}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return <FmStartingScreen status={fmStatus.data} />;
   }
 
   if (fmStatus.data.phase === 'failed') {
@@ -1159,6 +1140,93 @@ export default function Files() {
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
+
+/**
+ * Smooth-progressing FM startup screen. Replaces the previous static
+ * `width:60%` bar that looked stuck. Drives progress from BOTH:
+ *
+ *   1. Elapsed time since the first observed `starting` poll — gives
+ *      a smooth fill rate that's tied to wall clock, not magic.
+ *   2. Phase + message anchors — each known phase pins the bar to a
+ *      minimum percentage so the user sees the bar JUMP forward when
+ *      the underlying step actually advances:
+ *        not_deployed → 5%        (waiting for Deployment GET)
+ *        Pod is being created → 20%
+ *        ContainerCreating → 40%
+ *        Pulling image → 55%
+ *        starting (no specific signal) → 65%
+ *        Pod ready (status flips) → 100%
+ *
+ * Phase 4 (FM service.ts speedups) typically gets to ready in 5-15s
+ * for warm clusters (image cached) and 20-40s on cold pulls. The bar
+ * caps at 95% until phase=ready so it never shows 100% while we're
+ * still waiting.
+ */
+function FmStartingScreen({ status }: { readonly status: import('@k8s-hosting/api-contracts').FileManagerStatus | undefined }) {
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, []);
+
+  const elapsedMs = now - startedAt;
+  // 0% at t=0, ~85% at t=25s — smooth ease-out
+  const timeProgress = Math.min(85, 100 * (1 - Math.exp(-elapsedMs / 12000)));
+
+  // Phase/message floor — bar JUMPS forward when we observe a new step.
+  const message = (status?.message ?? '').toLowerCase();
+  let phaseFloor = 5;
+  if (status?.phase === 'starting') {
+    if (message.includes('pulling') || message.includes('imagepull')) phaseFloor = 55;
+    else if (message.includes('containercreating') || message.includes('container creating')) phaseFloor = 40;
+    else if (message.includes('pod is being created') || message.includes('pending')) phaseFloor = 20;
+    else phaseFloor = 65;
+  } else if (status?.phase === 'not_deployed') {
+    phaseFloor = 5;
+  }
+
+  // Take the higher of the two — bar can never go backwards (no reset
+  // when phase progresses BUT message lacks a known keyword).
+  const pct = Math.max(timeProgress, phaseFloor);
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+
+  // Pretty label for the current step.
+  const stepLabel = (() => {
+    if (status?.phase === 'not_deployed') return 'Creating Deployment…';
+    if (status?.phase === 'starting') {
+      if (status.message) return status.message;
+      return 'Waiting for pod to start…';
+    }
+    return 'Initializing…';
+  })();
+
+  return (
+    <div className="space-y-6">
+      <FilePageHeader />
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="px-6 py-16 text-center">
+          <Loader2 size={48} className="mx-auto animate-spin text-brand-500" />
+          <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Starting File Manager</h2>
+          <p className="mx-auto mt-2 max-w-md text-sm text-gray-500 dark:text-gray-400">
+            Deploying file manager to your namespace. Cold start usually takes 10-30 seconds; subsequent requests are instant.
+          </p>
+          <div className="mx-auto mt-6 h-2 w-64 rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden" data-testid="fm-startup-progress">
+            <div
+              className="h-2 rounded-full bg-brand-500 transition-[width] duration-500 ease-out"
+              style={{ width: `${pct.toFixed(1)}%` }}
+            />
+          </div>
+          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+            <span className="font-medium">{stepLabel}</span>
+            <span className="mx-2 text-gray-300 dark:text-gray-600">·</span>
+            <span>{elapsedSec}s elapsed</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function FilePageHeader() {
   return (
