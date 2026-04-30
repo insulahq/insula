@@ -46,6 +46,7 @@ suites=(
   "tier-flip:integration-tier-flip-e2e.sh"
   "grow:integration-grow-e2e.sh"
   "lifecycle:integration-lifecycle-e2e.sh"
+  "passkey:integration-passkey-e2e.sh"
 )
 
 passed_suites=()

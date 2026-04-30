@@ -22,3 +22,11 @@ data:
   # cookie is host-only to admin.<apex> and cross-subdomain iframes
   # hit the nginx auth_request gate with no cookie → redirect loop.
   session-cookie-domain: ".staging.phoenix-host.net"
+  # Passkey (WebAuthn) RP. rp-id is the registrable suffix shared by
+  # admin + client panels. origins is a CSV of every panel origin —
+  # the backend rejects assertions whose clientDataJSON.origin isn't
+  # in this list. RP_NAME is the friendly name shown to users on the
+  # OS biometric prompt.
+  passkey-rp-id: "staging.phoenix-host.net"
+  passkey-rp-name: "Phoenix Hosting (staging)"
+  passkey-origins: "https://admin.staging.phoenix-host.net,https://client.staging.phoenix-host.net"
