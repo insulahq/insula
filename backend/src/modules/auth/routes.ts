@@ -250,6 +250,30 @@ export async function authRoutes(app: FastifyInstance) {
     });
   });
 
+  /**
+   * Runtime-info: surfaces which platform-api pod served the request,
+   * the running version, and the build's git branch. Lightweight,
+   * cacheable; both admin and client panels render it under the
+   * sidebar title so operators can tell at a glance which node is
+   * answering them and which build is live.
+   *
+   * Auth: any authenticated user (admin or client). Reads NODE_NAME,
+   * POD_NAME, PLATFORM_VERSION, PLATFORM_BRANCH from env (downward
+   * API + platform-version configmap).
+   */
+  app.get('/auth/runtime-info', async (request) => {
+    await request.jwtVerify();
+    return {
+      data: {
+        version: process.env.PLATFORM_VERSION ?? 'unknown',
+        branch: process.env.PLATFORM_BRANCH ?? null,
+        node: process.env.NODE_NAME ?? null,
+        pod: process.env.POD_NAME ?? null,
+        environment: process.env.PLATFORM_ENV ?? null,
+      },
+    };
+  });
+
   app.get('/auth/me', async (request) => {
     await request.jwtVerify();
     const payload = request.user as { sub: string; role: string };
