@@ -177,6 +177,30 @@ spec:
                   name: platform-config
                   key: cluster-issuer-name
                   optional: true
+            # Passkey (WebAuthn) RP configuration. RP_ID must be the
+            # registrable suffix shared by both panel domains (e.g.
+            # example.test for admin.example.test + client.X).
+            # ORIGINS is a CSV of fully-qualified panel origins; both
+            # admin and client panel URLs MUST be included.
+            # See: backend/src/modules/auth/passkey-service.ts → loadPasskeyConfig
+            - name: PLATFORM_PASSKEY_RP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: passkey-rp-id
+                  optional: true
+            - name: PLATFORM_PASSKEY_RP_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: passkey-rp-name
+                  optional: true
+            - name: PLATFORM_PASSKEY_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: passkey-origins
+                  optional: true
             - name: PLATFORM_ENV
               valueFrom:
                 configMapKeyRef:
