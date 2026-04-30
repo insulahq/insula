@@ -10,9 +10,18 @@ import {
   timestamp,
   jsonb,
   inet,
+  customType,
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
+
+// PostgreSQL bytea — Drizzle has no first-class bytea helper, so we
+// declare a custom type that maps Buffer ↔ bytea. Used for WebAuthn
+// credential ids, public keys, challenges, and the random
+// passkey_user_handle (migration 0061).
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() { return 'bytea'; },
+});
 
 // ─── Enums ───
 
@@ -107,6 +116,17 @@ export const users = pgTable('users', {
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),
   timezone: varchar('timezone', { length: 50 }),
+  // Passkey integration (migration 0061). NULL = password-only (default).
+  // 'alternative' = either factor logs in. 'second_factor' = password
+  // then passkey, 2-step. Setting 'second_factor' requires ≥1 verified
+  // passkey (enforced in passkey-service); deleting the last passkey
+  // while in second_factor mode is rejected.
+  passkeyMode: varchar('passkey_mode', { length: 16 }),
+  // Random per-user value embedded as WebAuthn userHandle on every
+  // assertion. Keeping this distinct from users.id avoids leaking
+  // internal row UUIDs to authenticators / password managers and lets
+  // us rotate without invalidating credentials.
+  passkeyUserHandle: bytea('passkey_user_handle'),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('users_email_unique').on(table.email),
@@ -1746,3 +1766,85 @@ export const clusterNodes = pgTable('cluster_nodes', {
 
 export type ClusterNode = typeof clusterNodes.$inferSelect;
 export type NewClusterNode = typeof clusterNodes.$inferInsert;
+
+// ─── Passkey (WebAuthn) tables (migration 0061) ──────────────────────
+
+/**
+ * One row per registered passkey credential. A user may have many.
+ * Deletion cascades on the user row so a hard-deleted user can't leave
+ * orphan credentials behind.
+ *
+ * sign_count rollback detection: only enforced when stored > 0 AND
+ * incoming <= stored. Synced passkeys (Apple iCloud Keychain,
+ * 1Password, Bitwarden) often report sign_count=0 every time, so a
+ * naive `incoming <= stored` check breaks them on every login.
+ */
+export const userPasskeys = pgTable('user_passkeys', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  credentialId: bytea('credential_id').notNull(),
+  publicKey: bytea('public_key').notNull(),
+  signCount: integer('sign_count').notNull().default(0),
+  transports: jsonb('transports').$type<string[] | null>(),
+  aaguid: varchar('aaguid', { length: 36 }),
+  nickname: varchar('nickname', { length: 100 }).notNull(),
+  backupEligible: boolean('backup_eligible').notNull().default(false),
+  backedUp: boolean('backed_up').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+}, (table) => [
+  uniqueIndex('user_passkeys_credential_id_unique').on(table.credentialId),
+  index('user_passkeys_user_idx').on(table.userId),
+]);
+
+export type UserPasskey = typeof userPasskeys.$inferSelect;
+export type NewUserPasskey = typeof userPasskeys.$inferInsert;
+
+/**
+ * Ephemeral WebAuthn challenge store. Single-use, 5-min TTL.
+ * Pruned by a nightly cron. Reading on /verify also marks consumed.
+ *
+ * userId is set on register and login_2fa flows (we know the user
+ * up front), and NULL for login_userless flows where the user is
+ * resolved post-assertion via the credential's userHandle.
+ */
+export const passkeyChallenges = pgTable('passkey_challenges', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  challenge: bytea('challenge').notNull(),
+  purpose: varchar('purpose', { length: 16 }).notNull(),
+  userId: varchar('user_id', { length: 36 })
+    .references(() => users.id, { onDelete: 'cascade' }),
+  panel: varchar('panel', { length: 16 }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (table) => [
+  index('passkey_challenges_expires_idx').on(table.expiresAt),
+  index('passkey_challenges_user_idx').on(table.userId),
+]);
+
+export type PasskeyChallenge = typeof passkeyChallenges.$inferSelect;
+export type NewPasskeyChallenge = typeof passkeyChallenges.$inferInsert;
+
+/**
+ * Single-use token marker. Replaces an in-memory JTI cache because
+ * platform-api runs 3 replicas and we can't trust a per-replica
+ * Map. Used for pre-auth tokens (issued during 2FA step 1) and
+ * password-reset tokens.
+ */
+export const authConsumedTokens = pgTable('auth_consumed_tokens', {
+  jti: varchar('jti', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  purpose: varchar('purpose', { length: 32 }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (table) => [
+  index('auth_consumed_tokens_expires_idx').on(table.expiresAt),
+]);
+
+export type AuthConsumedToken = typeof authConsumedTokens.$inferSelect;
+export type NewAuthConsumedToken = typeof authConsumedTokens.$inferInsert;

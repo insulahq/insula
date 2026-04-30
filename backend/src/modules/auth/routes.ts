@@ -95,6 +95,32 @@ function signAccessToken(app: FastifyInstance, input: AccessTokenInput): string 
   return app.jwt.sign(payload as any);
 }
 
+const PRE_AUTH_TOKEN_TTL_SECONDS = 5 * 60;
+
+/**
+ * Issue a short-lived JWT that proves "step 1 (password) succeeded
+ * for this user; awaiting passkey assertion as step 2".
+ *
+ * The token is signed with the same JWT secret as the access token —
+ * differentiated by the `step: 'passkey_2fa'` claim and the JTI being
+ * tracked single-use in auth_consumed_tokens. An attacker who steals
+ * a pre-auth token can't use it as an access token because the access
+ * verifier rejects payloads with non-empty `step` claims.
+ */
+function signPreAuthToken(app: FastifyInstance, userId: string, panel: 'admin' | 'client', jti: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    sub: userId,
+    panel,
+    step: 'passkey_2fa',
+    exp: now + PRE_AUTH_TOKEN_TTL_SECONDS,
+    iat: now,
+    jti,
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return app.jwt.sign(payload as any);
+}
+
 export async function authRoutes(app: FastifyInstance) {
   app.post('/auth/login', {
     config: {
@@ -159,6 +185,35 @@ export async function authRoutes(app: FastifyInstance) {
 
     const { email, password } = parsed.data;
     const user = await authenticateUser(app.db, email, password);
+
+    // Passkey 2FA branch: when user opted into 'second_factor' mode,
+    // step 1 (password) must NOT issue session tokens. Return a
+    // pre-auth token; the frontend transitions to a passkey-prompt
+    // view and calls /auth/passkey/login/verify with the token.
+    if (user.passkeyMode === 'second_factor') {
+      const { issuePreAuthToken } = await import('./passkey-service.js');
+      const pre = await issuePreAuthToken(
+        app.db,
+        user.id,
+        (user.panel ?? 'admin') as 'admin' | 'client',
+      );
+      const preAuthToken = signPreAuthToken(app, user.id, pre.panel, pre.jti);
+      return reply.send({
+        data: {
+          requires_passkey: true,
+          pre_auth_token: preAuthToken,
+          expires_in: PRE_AUTH_TOKEN_TTL_SECONDS,
+          user: {
+            id: user.id,
+            email: user.email,
+            fullName: user.fullName,
+            role: user.role,
+            panel: user.panel,
+            clientId: user.clientId,
+          },
+        },
+      });
+    }
 
     const accessToken = signAccessToken(app, {
       userId: user.id,

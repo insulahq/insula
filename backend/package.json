@@ -32,6 +32,7 @@
     "@fastify/websocket": "^11.2.0",
     "@k8s-hosting/api-contracts": "*",
     "@kubernetes/client-node": "^1.4.0",
+    "@simplewebauthn/server": "^11.0.0",
     "bcrypt": "^6.0.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.8.5",

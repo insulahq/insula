@@ -37,6 +37,7 @@ import { backupRoutes } from './modules/backups/routes.js';
 import { metricsRoutes } from './modules/metrics/routes.js';
 import { cronJobRoutes } from './modules/cron-jobs/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { passkeyRoutes } from './modules/auth/passkey-routes.js';
 import { planRoutes } from './modules/plans/routes.js';
 import { regionRoutes } from './modules/regions/routes.js';
 import { catalogRoutes } from './modules/catalog/routes.js';
@@ -256,6 +257,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Routes
   await app.register(authRoutes, { prefix: '/api/v1' });
+  await app.register(passkeyRoutes, { prefix: '/api/v1' });
   await app.register(planRoutes, { prefix: '/api/v1' });
   await app.register(regionRoutes, { prefix: '/api/v1' });
   await app.register(clientRoutes, { prefix: '/api/v1' });
@@ -552,6 +554,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       }, 24 * 60 * 60 * 1000); // 24h
       app.addHook('onClose', () => clearInterval(refreshPruneInterval));
+
+      // Hourly prune of expired passkey challenges + consumed tokens.
+      // Both have 5-min TTL so the table grows fast under sustained
+      // login traffic — hourly is plenty. Failure is non-fatal.
+      const passkeyPruneInterval = setInterval(async () => {
+        try {
+          const { pruneExpiredChallenges, pruneExpiredConsumedTokens } = await import('./modules/auth/passkey-service.js');
+          const ch = await pruneExpiredChallenges(app.db);
+          const tk = await pruneExpiredConsumedTokens(app.db);
+          if (ch > 0 || tk > 0) {
+            app.log.info(`passkey-prune: removed ${ch} challenges + ${tk} consumed tokens`);
+          }
+        } catch (err) {
+          app.log.warn({ err }, 'passkey-prune failed — will retry next hour');
+        }
+      }, 60 * 60 * 1000); // 1h
+      app.addHook('onClose', () => clearInterval(passkeyPruneInterval));
 
       app.addHook('onClose', async () => { await closeRedis(); });
     });
