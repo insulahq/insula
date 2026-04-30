@@ -223,6 +223,31 @@ export function readEntryFirewall(entry: typeof catalogEntries.$inferSelect): Ma
 }
 
 /**
+ * Shape of `networking.host_ports[]` — manifest-level declaration of which
+ * (component, port, protocol) tuples must bind on the host's network
+ * namespace via k8s `hostPort`. This is the bit the firewall reconciler
+ * relies on: opening a port at the kernel level only matters if a
+ * process is actually listening on it.
+ */
+export interface ManifestHostPort {
+  readonly component: string;
+  readonly port: number;
+  readonly protocol: 'TCP' | 'UDP';
+}
+
+export function readEntryHostPorts(entry: typeof catalogEntries.$inferSelect): readonly ManifestHostPort[] {
+  const networking = parseJsonField<{ host_ports?: readonly { component?: string; port?: number; protocol?: string }[] }>(entry.networking);
+  const list = networking?.host_ports ?? [];
+  return list
+    .filter(hp => typeof hp.component === 'string' && typeof hp.port === 'number')
+    .map(hp => ({
+      component: hp.component as string,
+      port: hp.port as number,
+      protocol: ((hp.protocol ?? 'TCP').toUpperCase() === 'UDP' ? 'UDP' : 'TCP') as 'TCP' | 'UDP',
+    }));
+}
+
+/**
  * Resolve the target node role for a deployment from the client's
  * pinned worker. Defaults to 'worker' when no pin is set OR when the
  * pinned hostname doesn't have a cluster_nodes row yet (newly-joined
@@ -462,6 +487,7 @@ export async function createDeployment(
         // either the manifest didn't declare any host ports OR the
         // toggle let the deploy through with no ports requested.
         firewall: firewall ?? undefined,
+        hostPorts: readEntryHostPorts(entry),
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
 
@@ -964,6 +990,7 @@ export async function updateDeploymentResources(
           envVars: { fixed: resolved.fixedEnvVars },
           configurableEnvKeys: resolved.configurableEnvKeys,
           firewall: reFirewall ?? undefined,
+          hostPorts: readEntryHostPorts(entry),
         });
         // Force pod restart by deleting existing pods — K8s recreates from updated spec.
         // The patchNamespacedDeployment annotation approach doesn't work reliably
@@ -1084,6 +1111,7 @@ export async function redeployWithCurrentConfig(
     // rotations / config redeploys so a host-port app doesn't lose its
     // pod annotations between deploys.
     firewall: readEntryFirewall(entry) ?? undefined,
+    hostPorts: readEntryHostPorts(entry),
   });
 
   // Force pod restart by deleting existing pods — K8s recreates from updated spec.
