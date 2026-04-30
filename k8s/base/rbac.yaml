@@ -165,6 +165,17 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["volumes"]
     verbs: ["patch", "delete"]
+  # fsck on detached volume needs to force-attach via the
+  # VolumeAttachment CR (Longhorn 1.6+ uses attachment tickets to
+  # coordinate attach/detach across competing consumers — direct
+  # Volume.spec.nodeID patches are silently cleared by the mutation
+  # webhook). The fsck flow patches a single ticket per volume:
+  #   spec.attachmentTickets["platform-fsck"] = { id, type:
+  #   'longhorn-api', nodeID, parameters: {disableFrontend:'false'} }
+  # …and clears it on completion via merge-patch with null.
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "patch"]
   # M14: Apply HA also scales the CNPG Cluster CR. apps/deployments
   # is already covered by the broader apps verbs:["*"] rule above.
   - apiGroups: ["postgresql.cnpg.io"]
