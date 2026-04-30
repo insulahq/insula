@@ -2736,16 +2736,16 @@ apply_platform_manifests() {
   fi
 
   # Compute hostnames from --domain (operator provides the full base domain).
-  # Staging gets a `staging.` subdomain prefix to match the checked-in
-  # ingress-patch.yaml in k8s/overlays/staging/. Production uses the bare
-  # apex (api.example.com), dev uses bare apex too (example.com is local).
-  local host_prefix=""
-  if [[ "$PLATFORM_ENV" == "staging" ]]; then
-    host_prefix="staging."
-  fi
-  local api_host="api.${host_prefix}${PLATFORM_DOMAIN}"
-  local admin_host="admin.${host_prefix}${PLATFORM_DOMAIN}"
-  local client_host="client.${host_prefix}${PLATFORM_DOMAIN}"
+  # ALL environments use bare apex — no env prefix. The historical staging
+  # `<svc>.staging.<domain>` shape was a example.test deployment artefact
+  # that confused operators ("admin.testing.example.test 404, but
+  # admin.staging.testing.example.test works") and made print_summary
+  # lie about the URL. Operators who want a separate cluster per environment
+  # should pass distinct --domain values (e.g. testing.example.test vs
+  # example.test) — bootstrap doesn't sub-namespace by env.
+  local api_host="api.${PLATFORM_DOMAIN}"
+  local admin_host="admin.${PLATFORM_DOMAIN}"
+  local client_host="client.${PLATFORM_DOMAIN}"
   log "Hostnames: ${api_host}, ${admin_host}, ${client_host}"
 
   # Generate the environment overlay with real hostnames.
@@ -2769,7 +2769,12 @@ spec:
         - ${api_host}
         - ${admin_host}
         - ${client_host}
-      secretName: platform-tls
+      # Match staging overlay's ingress-patch.yaml secretName so cert-
+      # manager doesn't churn between two Certificate objects every time
+      # bootstrap re-runs. (Last-patch-wins applies to spec.tls too —
+      # the staging overlay's ingress-patch.yaml uses platform-staging-
+      # tls and we want its Certificate to keep working.)
+      secretName: platform-staging-tls
   rules:
     - host: ${api_host}
     - host: ${admin_host}
@@ -2813,6 +2818,19 @@ with open(path, 'w') as f:
     f.writelines(lines)
 PY
     fi
+    # Rewrite hardcoded `staging.example.test` → operator's --domain
+    # across every overlay file. The staging overlay was authored against
+    # example.test deployment; operators using a different domain
+    # (testing.example.test, customer-foo.com, …) need every host /
+    # CORS origin / cookie domain / passkey RP-ID rewritten. Files
+    # touched: ingress-patch.yaml, longhorn-ui-patch.yaml,
+    # platform-config-patch.yaml, stalwart/webadmin-ingress.yaml, the
+    # dex config, and any future overlay file shipping the literal
+    # `staging.example.test` token.
+    log "Rewriting overlay hostnames: staging.example.test → ${PLATFORM_DOMAIN}..."
+    grep -rl "staging.example.test" "$overlay_dir" 2>/dev/null \
+      | xargs -r sed -i "s/staging\\.example-host\\.net/${PLATFORM_DOMAIN}/g"
+
     # Replace Dex PLACEHOLDER URLs and inject generated client secrets
     local dex_config="${overlay_dir}/dex/config.yaml"
     if [[ -f "$dex_config" ]]; then
@@ -2936,6 +2954,101 @@ verify() {
 
   log ""
   log "════════════════════════════════════════════════"
+}
+
+# Real install verification — moves beyond "kubectl get nodes shows
+# Ready". Probes the admin-panel HTTPS endpoint at the operator's
+# --domain, hits /api/v1/healthz on platform-api, and logs in via the
+# seeded admin credentials. Fails loudly on any step that the user
+# would notice when they open the browser. Skip cert verification (-k)
+# because LE staging issuer is the bootstrap default — the cert chain
+# is untrusted intentionally.
+verify_install() {
+  log ""
+  log "── Verifying install ──"
+  local admin_host="admin.${PLATFORM_DOMAIN}"
+  local api_host="api.${PLATFORM_DOMAIN}"
+  local creds_file="/etc/platform/admin-credentials"
+  local rc=0
+
+  # Wait up to 5 min for the platform-api Deployment to finish rolling
+  # out — Helm/Flux may still be settling at this point.
+  log "  Waiting for platform-api rollout..."
+  if ! kctl rollout status -n platform deploy/platform-api --timeout=300s 2>&1 | tail -1; then
+    warn "  platform-api rollout did not complete; verification will likely fail."
+  fi
+
+  # 1. /healthz — checks API process and DB connectivity.
+  log "  Probing https://${api_host}/api/v1/healthz ..."
+  local health
+  health=$(curl -sk -m 15 -o /dev/null -w '%{http_code}' \
+             -H "Host: ${api_host}" "https://127.0.0.1/api/v1/healthz" 2>/dev/null || echo "000")
+  if [[ "$health" != "200" ]]; then
+    warn "  /healthz returned ${health} (expected 200)"
+    rc=1
+  else
+    log "  /healthz: 200 OK"
+  fi
+
+  # 2. Admin login — POST /api/v1/auth/login with seeded credentials.
+  if [[ ! -f "$creds_file" ]]; then
+    warn "  ${creds_file} missing; cannot exercise admin login."
+    rc=1
+  else
+    local admin_email admin_password
+    admin_email=$(awk -F= '/^ADMIN_EMAIL=/{print $2}' "$creds_file")
+    admin_password=$(awk -F= '/^ADMIN_PASSWORD=/{print $2}' "$creds_file")
+    if [[ -z "$admin_email" || -z "$admin_password" ]]; then
+      warn "  could not read ADMIN_EMAIL/ADMIN_PASSWORD from ${creds_file}"
+      rc=1
+    else
+      log "  Logging in as ${admin_email}..."
+      local login_body
+      login_body=$(printf '{"email":"%s","password":"%s"}' "$admin_email" "$admin_password")
+      local login_resp login_code
+      login_resp=$(curl -sk -m 15 -X POST \
+                     -H "Host: ${api_host}" \
+                     -H "Content-Type: application/json" \
+                     -d "$login_body" \
+                     -w '\n%{http_code}' \
+                     "https://127.0.0.1/api/v1/auth/login" 2>/dev/null || true)
+      login_code="${login_resp##*$'\n'}"
+      local login_json="${login_resp%$'\n'*}"
+      if [[ "$login_code" != "200" ]]; then
+        warn "  /auth/login returned ${login_code} (expected 200)"
+        warn "  body: $(echo "$login_json" | head -c 200)"
+        rc=1
+      elif ! echo "$login_json" | grep -qE '"accessToken"|"token"'; then
+        warn "  /auth/login 200 but no accessToken/token in body: $(echo "$login_json" | head -c 200)"
+        rc=1
+      else
+        log "  /auth/login: 200 OK, access token issued"
+      fi
+    fi
+  fi
+
+  # 3. Admin panel HTTP shell — should redirect HTTP→HTTPS or serve the
+  # SPA shell on HTTPS. The exact body doesn't matter; we verify that
+  # the Ingress is routing the host to the admin-panel Service.
+  log "  Probing https://${admin_host}/ ..."
+  local panel_code
+  panel_code=$(curl -sk -m 15 -o /dev/null -w '%{http_code}' \
+                 -H "Host: ${admin_host}" "https://127.0.0.1/" 2>/dev/null || echo "000")
+  case "$panel_code" in
+    200|301|302) log "  admin panel: ${panel_code}" ;;
+    *) warn "  admin panel returned ${panel_code} (expected 200/301/302)"; rc=1 ;;
+  esac
+
+  if (( rc == 0 )); then
+    log "  ✓ verify_install: all checks passed."
+  else
+    warn "  ✗ verify_install: one or more checks failed (see warnings above)."
+    warn "    Bootstrap finished but the admin panel may not be usable yet."
+    warn "    Common causes: cert-manager still issuing TLS, DNS not yet"
+    warn "    propagated to operator's resolver, ingress controller still"
+    warn "    rolling out. Re-run verify_install in a few minutes."
+  fi
+  return $rc
 }
 
 print_summary() {
@@ -3159,6 +3272,10 @@ main() {
     log ""
     log "── Phase 4: Verification ──"
     verify
+    # Real install verification — actually probe admin login + healthz.
+    # Non-fatal (warn only) so a transient cert-manager / DNS issue
+    # doesn't fail bootstrap; operator gets a clear message either way.
+    verify_install || true
     print_summary
 
     # Phase 5: post-install cluster-network smoke. Advisory by default;
