@@ -120,15 +120,8 @@ nft_apply_diff() {
 }
 
 # ─── Annotation parser ──────────────────────────────────────────────────────
-# CSV "16384-32768, 3478,5349" → one nft element per line. nft accepts the
-# same syntax for ranges, so we trim whitespace and pass through unchanged.
-parse_csv_ports() {
-  local csv="${1:-}"
-  [[ -z "$csv" ]] && return 0
-  printf '%s\n' "$csv" | tr ',' '\n' \
-    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-    | grep -v '^$'
-}
+# (parse_csv_ports was an early-draft helper — replaced by jq-side parsing in
+# build_desired_sets. Kept removed so shellcheck doesn't flag dead code.)
 
 # ─── Pod scan ───────────────────────────────────────────────────────────────
 #
