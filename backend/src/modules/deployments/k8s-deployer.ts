@@ -112,6 +112,18 @@ export interface DeployCatalogEntryInput {
    * same annotation format.
    */
   readonly firewall?: { tcp?: readonly number[]; udp?: readonly (number | string)[] };
+  /**
+   * Manifest's `networking.host_ports[]`: each entry binds the named
+   * component's container port to the host's network namespace
+   * (`hostPort` in k8s spec). Without this, the firewall reconciler
+   * opens the kernel rule for the port, but no process listens on the
+   * host — STUN/TURN traffic times out at the wire.
+   *
+   * The catalog deploy gate (service.ts) has already approved the
+   * exposure by the time we land here; it's safe to stamp `hostPort` on
+   * the matching container port unconditionally.
+   */
+  readonly hostPorts?: readonly { component: string; port: number; protocol: 'TCP' | 'UDP' }[];
 }
 
 export interface ComponentPodStatus {
@@ -376,11 +388,28 @@ export async function deployCatalogEntry(
 
     const compCpu = component.resources?.cpu ?? cpuRequest;
     const compMem = component.resources?.memory ?? memoryRequest;
+    // Pull host-port bindings for this component out of the manifest's
+    // top-level networking.host_ports[]. The shape is
+    // `{ component, port, protocol }`; we match on component name and
+    // (port, uppercase protocol) and stamp `hostPort` on the matching
+    // containerPort. Missing match ⇒ container-only port (default).
+    const hostPortFor = (port: number, proto: string): number | undefined => {
+      const wanted = (proto || 'TCP').toUpperCase() === 'UDP' ? 'UDP' : 'TCP';
+      const match = (input.hostPorts ?? []).find(hp =>
+        hp.component === component.name && hp.port === port && hp.protocol === wanted,
+      );
+      return match ? port : undefined;
+    };
     const container = {
       name: component.name,
       image: component.image,
       imagePullPolicy: 'Always' as const,
-      ports: component.ports.map(p => ({ containerPort: p.port })),
+      ports: component.ports.map(p => {
+        const hp = hostPortFor(p.port, (p as { protocol?: string }).protocol ?? 'TCP');
+        return hp !== undefined
+          ? { containerPort: p.port, hostPort: hp, ...(((p as { protocol?: string }).protocol === 'UDP' || (p as { protocol?: string }).protocol === 'udp') ? { protocol: 'UDP' } : {}) }
+          : { containerPort: p.port, ...(((p as { protocol?: string }).protocol === 'UDP' || (p as { protocol?: string }).protocol === 'udp') ? { protocol: 'UDP' } : {}) };
+      }),
       resources: {
         requests: { cpu: compCpu, memory: compMem },
         limits: { cpu: compCpu, memory: compMem },

@@ -221,6 +221,116 @@ else
   warn "  current set: $(echo "$NFT_TCP" | tr '\n' ' ' | head -c 200)"
 fi
 
+# ─── Phase 4b: actually reach the server from outside ─────────────────────
+# Everything before this point only verified plumbing — annotations on the
+# Pod, elements in the host nft set. The real claim of the runtime-firewall
+# feature is "an external client on the public internet can reach a port
+# the catalog opened". So speak STUN to the node's public IP:3478 and
+# verify a real Binding-Success-Response with a matching transaction ID.
+#
+# We resolve the node's public IP from the K8s `Node.status.addresses[]`
+# (ExternalIP if present, otherwise InternalIP — on bare-metal Hetzner the
+# public IP is the InternalIP).
+log "── phase 4b: STUN probe against public IP — proves end-to-end reach ──"
+
+# Wait for coturn to actually accept connections; the container takes ~5s
+# to bind sockets after the Pod is Running.
+log "  waiting up to 90s for coturn to be Ready"
+for _ in $(seq 1 45); do
+  READY=$(ssh_cluster "kubectl -n $NAMESPACE get pod $POD_NAME -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null" || echo "false")
+  [[ "$READY" == "true" ]] && break
+  sleep 2
+done
+[[ "$READY" == "true" ]] && ok "coturn pod Ready" || warn "coturn pod not Ready yet ($READY) — STUN may fail spuriously"
+
+# Resolve the public IP of the pod's node.
+NODE_IP=$(ssh_cluster "kubectl get node $POD_NODE -o jsonpath='{.status.addresses[?(@.type==\"ExternalIP\")].address}'" 2>/dev/null)
+if [[ -z "$NODE_IP" ]]; then
+  NODE_IP=$(ssh_cluster "kubectl get node $POD_NODE -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'" 2>/dev/null)
+fi
+log "  probing $POD_NODE → $NODE_IP:3478"
+
+stun_probe() {
+  local proto="$1" ip="$2" port="$3"
+  python3 - "$proto" "$ip" "$port" <<'PY'
+import os, secrets, socket, struct, sys, time
+proto, ip, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+# RFC 5389 binding request: 0x0001 method, 0x0000 length, magic cookie, txid.
+txid = secrets.token_bytes(12)
+req  = struct.pack('!HHI', 0x0001, 0x0000, 0x2112A442) + txid
+try:
+    if proto == 'udp':
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(5.0); s.sendto(req, (ip, port))
+        data, _ = s.recvfrom(2048)
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0); s.connect((ip, port))
+        s.sendall(req)
+        data = b''
+        deadline = time.time() + 5
+        while len(data) < 20 and time.time() < deadline:
+            chunk = s.recv(2048)
+            if not chunk: break
+            data += chunk
+    s.close()
+except Exception as e:
+    print(f"FAIL: {type(e).__name__}: {e}"); sys.exit(2)
+if len(data) < 20:
+    print(f"FAIL: short reply ({len(data)} bytes)"); sys.exit(3)
+mtype, mlen, magic = struct.unpack('!HHI', data[:8])
+rtxid = data[8:20]
+# 0x0101 == binding success response.
+if mtype != 0x0101 or magic != 0x2112A442 or rtxid != txid:
+    print(f"FAIL: bad header type=0x{mtype:04x} magic=0x{magic:08x} txid_match={rtxid==txid}"); sys.exit(4)
+print("OK")
+PY
+}
+
+UDP_RES=$(stun_probe udp "$NODE_IP" 3478)
+[[ "$UDP_RES" == "OK" ]] && ok "STUN over UDP/3478 → Binding-Success-Response" || fail "STUN UDP probe: $UDP_RES"
+
+TCP_RES=$(stun_probe tcp "$NODE_IP" 3478)
+[[ "$TCP_RES" == "OK" ]] && ok "STUN over TCP/3478 → Binding-Success-Response" || fail "STUN TCP probe: $TCP_RES"
+
+# ─── Phase 4c: same probe with the gate OFF should be REJECTED ────────────
+# Flip the toggle off, wait for the cache to roll over on every replica,
+# wait for the reconciler to remove the elements from the nft set, then
+# probe again — should time out (UDP) / connection-refused (TCP) at the
+# host firewall before reaching the pod.
+#
+# This proves the gate isn't decorative: turning it off actually closes
+# the port at the kernel level even while the Pod stays up.
+log "── phase 4c: gate OFF → expect STUN to fail at the host firewall ──"
+api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":false,\"allowHostPortsServer\":false}" >/dev/null
+log "  waiting up to 60s for reconciler to drain tenant_ports_tcp"
+for _ in $(seq 1 12); do
+  CUR=$(ssh_cluster "nft list set inet filter tenant_ports_tcp 2>/dev/null | tr -d '\n'" || echo "")
+  if [[ "$CUR" != *"3478"* ]]; then break; fi
+  sleep 5
+done
+
+# Now hit it again — UDP should silently drop (timeout); TCP should refuse.
+NEG_UDP=$(stun_probe udp "$NODE_IP" 3478 2>&1 || true)
+NEG_TCP=$(stun_probe tcp "$NODE_IP" 3478 2>&1 || true)
+if [[ "$NEG_UDP" == "OK" ]]; then
+  fail "STUN UDP still answers after gate=OFF — host firewall didn't close (got OK)"
+else
+  ok "STUN UDP/3478 blocked after gate=OFF ($NEG_UDP)"
+fi
+if [[ "$NEG_TCP" == "OK" ]]; then
+  fail "STUN TCP still answers after gate=OFF — host firewall didn't close (got OK)"
+else
+  ok "STUN TCP/3478 blocked after gate=OFF ($NEG_TCP)"
+fi
+
+# Re-enable so phase 5 cleanup is testing the deletion path against an
+# OPEN firewall (so we can tell "deletion removed the element" from
+# "the gate just closed it"). This is independent of the cleanup trap —
+# the trap restores ORIG values; we want both ON for phase 5.
+api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":true,\"allowHostPortsServer\":true}" >/dev/null
+sleep 7  # cache + reconciler converge
+
 # ─── Phase 5: deletion closes the ports (reconciler diff path) ────────────
 log "── phase 5: delete deployment, expect ports to be removed within 60s ──"
 api DELETE "/clients/$CID/deployments/$DEP_ID" >/dev/null 2>&1 || true
