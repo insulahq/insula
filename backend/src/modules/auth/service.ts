@@ -65,5 +65,9 @@ export async function authenticateUser(
     role: user.roleName,
     panel: user.panel ?? 'admin',
     clientId: user.clientId ?? undefined,
+    // Passkey integration: caller decides whether to issue tokens
+    // immediately (NULL or 'alternative') or to require a second
+    // factor ('second_factor').
+    passkeyMode: user.passkeyMode as 'alternative' | 'second_factor' | null,
   };
 }

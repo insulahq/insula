@@ -194,6 +194,12 @@ BEGIN;
 WITH updated AS (
   UPDATE users
     SET password_hash = '${HASH_ESC}',
+        -- Operator escape-hatch: a user that's been locked into 2FA
+        -- mode and lost all their passkeys is recovered by this
+        -- script. Clear passkey_mode so the new password alone can
+        -- log them back in. Existing passkeys (if any) are kept;
+        -- the user can re-enable 2FA in one click after login.
+        passkey_mode = NULL,
         updated_at = NOW()
     WHERE email = '${EMAIL_ESC}'
     RETURNING id
