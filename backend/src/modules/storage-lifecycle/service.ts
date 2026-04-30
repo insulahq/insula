@@ -1475,8 +1475,15 @@ async function runFsckOp(
  * Used after fsck (which detaches via quiesce + uses hostPath instead
  * of PVC mount, so Longhorn has no reason to keep the volume attached).
  *
- * The file-manager idle-cleanup scheduler will scale it back to 0
- * after the inactivity window, so this is not a permanent state change.
+ * Also bumps the file-manager last-access annotation so the
+ * idle-cleanup scheduler doesn't immediately scale FM back to 0
+ * (cleanup uses Deployment creationTimestamp as the floor when no
+ * annotation is set — for a long-lived Deployment that's effectively
+ * "idle since creation", which trips the timeout instantly).
+ *
+ * The idle-cleanup will scale FM back to 0 after the inactivity
+ * window from NOW, so this is a transient state change — long enough
+ * for Longhorn to re-attach the volume.
  */
 async function ensureVolumeReattached(k8s: K8sClients, namespace: string): Promise<void> {
   try {
@@ -1484,6 +1491,11 @@ async function ensureVolumeReattached(k8s: K8sClients, namespace: string): Promi
       readNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<{ spec?: { replicas?: number } }>;
     }).readNamespacedDeployment({ name: 'file-manager', namespace });
     const current = dep.spec?.replicas ?? 0;
+    // Bump the last-access annotation in BOTH cases (current=0 and
+    // current>=1) so the idle-cleanup sees a fresh access timestamp
+    // and doesn't reap the FM during the post-fsck attach window.
+    const { recordFileManagerAccess } = await import('../file-manager/idle-cleanup.js');
+    recordFileManagerAccess(namespace, k8s);
     if (current >= 1) return; // someone else already kept it up
     await (k8s.apps as unknown as {
       patchNamespacedDeploymentScale: (a: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
