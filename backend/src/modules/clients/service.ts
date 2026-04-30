@@ -213,11 +213,26 @@ interface KubeletHttpsContext {
   proxyAgent: import('node:https').Agent;
 }
 
-// Per-process learned state: if direct :10250 returns 401/403 once
-// (kubelet RBAC not granted to the platform-api SA — common in
-// stock installs), don't keep paying the 500ms TLS handshake to
-// re-discover it. Cleared only on process restart.
-let _directKubeletKnownUnauthorized = false;
+// Per-node learned state: if direct :10250 fails for a node (firewall,
+// RBAC denial, TLS error), remember it for KUBELET_BAD_NODE_TTL_MS so
+// we don't keep paying the 800ms direct timeout per cold call.
+// Per-node (not global) so a single firewalled node doesn't disable
+// the direct path for healthy nodes. Cleared on process restart or
+// after the TTL — short enough that genuine recoveries are picked up.
+const KUBELET_BAD_NODE_TTL_MS = 5 * 60_000; // 5 min
+const _directKubeletBadNodes = new Map<string, number>();
+function noteDirectKubeletFailure(node: string): void {
+  _directKubeletBadNodes.set(node, Date.now());
+}
+function isDirectKubeletKnownBad(node: string): boolean {
+  const at = _directKubeletBadNodes.get(node);
+  if (!at) return false;
+  if (Date.now() - at > KUBELET_BAD_NODE_TTL_MS) {
+    _directKubeletBadNodes.delete(node);
+    return false;
+  }
+  return true;
+}
 let _kubeletCtx: KubeletHttpsContext | null = null;
 let _kubeletCtxInitPromise: Promise<KubeletHttpsContext | null> | null = null;
 async function getKubeletHttpsContext(): Promise<KubeletHttpsContext | null> {
@@ -407,7 +422,7 @@ export async function getClientStoragePlacement(
           interface KubeletPod { volume?: KubeletVolume[] }
           interface KubeletSummary { pods?: KubeletPod[] }
 
-          const fetchDirect = (host: string, port = 10250): Promise<KubeletSummary | null> => new Promise((resolve) => {
+          const fetchDirect = (node: string, host: string, port = 10250): Promise<KubeletSummary | null> => new Promise((resolve) => {
             const req = https.request({
               method: 'GET',
               host,
@@ -419,20 +434,20 @@ export async function getClientStoragePlacement(
               headers: ctx.opts.headers ?? {},
               agent: ctx.directAgent,
               // Short timeout — if the node's :10250 isn't reachable
-              // (firewall) we want to fall back to apiserver-proxy
-              // quickly, not pay 4s every cold load.
+              // (firewall, RBAC) we want to fall back to apiserver-
+              // proxy fast, not pay 4s every cold load.
               timeout: 800,
             }, (res) => {
-              if (res.statusCode === 401 || res.statusCode === 403) {
-                // Kubelet RBAC denies our SA — typical on stock installs
-                // where only system:kubelet-api-admin can hit
-                // /stats/summary directly. Latch and skip from now on.
-                _directKubeletKnownUnauthorized = true;
+              if (res.statusCode !== 200) {
+                // Any non-200 (401/403 RBAC denial, 5xx kubelet hiccup)
+                // is treated as "direct path doesn't work for this node
+                // right now". Skip direct for this node for KUBELET_BAD_
+                // NODE_TTL_MS.
+                noteDirectKubeletFailure(node);
                 res.resume();
                 resolve(null);
                 return;
               }
-              if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
               let data = '';
               res.setEncoding('utf8');
               res.on('data', (chunk) => { data += chunk; });
@@ -441,8 +456,8 @@ export async function getClientStoragePlacement(
                 catch { resolve(null); }
               });
             });
-            req.on('error', () => resolve(null));
-            req.on('timeout', () => { req.destroy(); resolve(null); });
+            req.on('error', () => { noteDirectKubeletFailure(node); resolve(null); });
+            req.on('timeout', () => { noteDirectKubeletFailure(node); req.destroy(); resolve(null); });
             req.end();
           });
 
@@ -478,10 +493,10 @@ export async function getClientStoragePlacement(
 
           const summaries = await Promise.all(Array.from(nodeNames).map(async (node) => {
             const ip = ipByNode.get(node);
-            // Skip direct path if we already know the SA lacks kubelet
-            // RBAC (saves 800ms × N nodes on every cold load thereafter).
-            if (ip && !_directKubeletKnownUnauthorized) {
-              const direct = await fetchDirect(ip);
+            // Skip direct path for nodes we've recently seen fail —
+            // saves 800ms per cold call per known-bad node.
+            if (ip && !isDirectKubeletKnownBad(node)) {
+              const direct = await fetchDirect(node, ip);
               if (direct) return direct;
             }
             return fetchProxy(node);
