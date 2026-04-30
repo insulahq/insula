@@ -1416,6 +1416,18 @@ async function runFsckOp(
 
     await progress('unquiescing', 85, 'Scaling workloads back up');
     if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
+    // fsck used hostPath /dev/longhorn/<vol> instead of PVC mount, so
+    // Longhorn detached the volume during quiesce and has no reason
+    // to re-attach unless a Pod actually consumes the PVC. If
+    // unquiesce restored zero workloads (e.g. file-manager was 0
+    // before fsck — its idle default — and the tenant deployment is
+    // also 0), the volume is left dangling. Bump file-manager to 1
+    // so the PVC has a consumer; idle-cleanup will scale it back down
+    // after the inactivity window. Best-effort — failure here doesn't
+    // invalidate the fsck result.
+    await ensureVolumeReattached(ctx.k8s, namespace).catch((err) => {
+      console.warn(`[storage-lifecycle] fsck post-attach (op ${opId}):`, err);
+    });
 
     // Persist the captured output. Clean → progressMessage; dirty →
     // both progressMessage (summary) AND lastError (full output) so
@@ -1448,8 +1460,42 @@ async function runFsckOp(
     if (quiesceSnap) {
       await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
     }
+    // Same volume-reattach as the success path — failure midway
+    // through fsck still detached the volume during quiesce, so we
+    // need a Pod consumer to bring it back. Best-effort.
+    await ensureVolumeReattached(ctx.k8s, namespace).catch(() => {});
     const cId = await currentClientId(ctx.db, opId);
     if (cId) await markClientState(ctx.db, cId, 'failed', null);
+  }
+}
+
+/**
+ * Best-effort: scale file-manager to 1 if it isn't already, so the
+ * tenant PVC gains a Pod consumer and Longhorn re-attaches the volume.
+ * Used after fsck (which detaches via quiesce + uses hostPath instead
+ * of PVC mount, so Longhorn has no reason to keep the volume attached).
+ *
+ * The file-manager idle-cleanup scheduler will scale it back to 0
+ * after the inactivity window, so this is not a permanent state change.
+ */
+async function ensureVolumeReattached(k8s: K8sClients, namespace: string): Promise<void> {
+  try {
+    const dep = await (k8s.apps as unknown as {
+      readNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<{ spec?: { replicas?: number } }>;
+    }).readNamespacedDeployment({ name: 'file-manager', namespace });
+    const current = dep.spec?.replicas ?? 0;
+    if (current >= 1) return; // someone else already kept it up
+    await (k8s.apps as unknown as {
+      patchNamespacedDeploymentScale: (a: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
+    }).patchNamespacedDeploymentScale({
+      name: 'file-manager',
+      namespace,
+      body: { spec: { replicas: 1 } },
+    });
+  } catch {
+    // file-manager Deployment may not exist (suspended/archived
+    // client). The next lifecycle op or Files-page interaction will
+    // recreate it; we don't try to provision it from here.
   }
 }
 
