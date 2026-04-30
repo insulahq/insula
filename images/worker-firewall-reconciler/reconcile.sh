@@ -83,9 +83,19 @@ nft_apply_diff() {
   to_add=$(comm -23 <(printf '%s\n' "$desired") <(printf '%s\n' "$current"))
   to_del=$(comm -13 <(printf '%s\n' "$desired") <(printf '%s\n' "$current"))
 
+  # Defense-in-depth: even if a malicious value snuck past the jq filter,
+  # reject anything that isn't a bare port or interval before splicing it
+  # into the nft command. nft uses { } and ; as syntax — an injection of
+  # `3478 } flush ruleset ;` here would be catastrophic on a privileged
+  # process.
+  local SAFE='^[0-9]+(-[0-9]+)?$'
   if [[ -n "$to_add" ]]; then
     while IFS= read -r el; do
       [[ -z "$el" ]] && continue
+      if [[ ! "$el" =~ $SAFE ]]; then
+        log "REFUSE add $set_name { $el } — fails $SAFE"
+        continue
+      fi
       if nft add element "$NFT_TABLE" "$set_name" "{ $el }" 2>/tmp/nft.err; then
         log "+ $set_name { $el }"
       else
@@ -96,6 +106,10 @@ nft_apply_diff() {
   if [[ -n "$to_del" ]]; then
     while IFS= read -r el; do
       [[ -z "$el" ]] && continue
+      if [[ ! "$el" =~ $SAFE ]]; then
+        log "REFUSE del $set_name { $el } — fails $SAFE"
+        continue
+      fi
       if nft delete element "$NFT_TABLE" "$set_name" "{ $el }" 2>/tmp/nft.err; then
         log "- $set_name { $el }"
       else
@@ -134,16 +148,21 @@ build_desired_sets() {
     return 1
   }
 
-  # jq emits "<proto> <element>" lines. The annotation values pass through
-  # verbatim because nft accepts the same CSV/range syntax we receive.
+  # jq emits "<proto> <element>" lines. Every emitted element is filtered
+  # through a regex allowing only digits and an optional single hyphen
+  # (port or interval), then re-validated in shell — defense in depth
+  # against a malicious annotation injecting nft commands. A value like
+  # `3478 } flush ruleset ;` is silently dropped at the jq stage.
   printf '%s' "$pods_json" | jq -r '
+    def safe_port: tostring | select(test("^[0-9]+(-[0-9]+)?$"));
+
     .items[]?
     | (
         # 1. Literal hostPort declarations on every container port.
         (.spec.containers // [])[]?
         | (.ports // [])[]?
         | select(.hostPort != null)
-        | "\((.protocol // "TCP") | ascii_downcase) \(.hostPort)"
+        | "\((.protocol // "TCP") | ascii_downcase) \(.hostPort | safe_port)"
       ),
       (
         # 2. platform.io/firewall-tcp-ports annotation (CSV w/ ranges).
@@ -151,7 +170,7 @@ build_desired_sets() {
         | split(",")
         | .[]
         | gsub("^\\s+|\\s+$"; "")
-        | select(length > 0)
+        | safe_port
         | "tcp \(.)"
       ),
       (
@@ -159,10 +178,10 @@ build_desired_sets() {
         | split(",")
         | .[]
         | gsub("^\\s+|\\s+$"; "")
-        | select(length > 0)
+        | safe_port
         | "udp \(.)"
       )
-  '
+  ' | grep -E '^(tcp|udp) [0-9]+(-[0-9]+)?$' || true
 }
 
 # ─── Reconcile loop ────────────────────────────────────────────────────────

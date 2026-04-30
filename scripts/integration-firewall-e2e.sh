@@ -200,6 +200,30 @@ else
   warn "  current set: $(echo "$NFT_TCP" | tr '\n' ' ' | head -c 200)"
 fi
 
+# ─── Phase 5: deletion closes the ports (reconciler diff path) ────────────
+log "── phase 5: delete deployment, expect ports to be removed within 60s ──"
+api DELETE "/clients/$CID/deployments/$DEP_ID" >/dev/null 2>&1 || true
+
+# Wait for pod gone, then for the reconciler to converge.
+for _ in $(seq 1 30); do
+  STILL=$(ssh_cluster "kubectl -n $NAMESPACE get pods -l app=$DEPLOY_NAME --no-headers 2>/dev/null | wc -l" 2>/dev/null || echo "1")
+  [[ "$STILL" == "0" ]] && break
+  sleep 2
+done
+
+NFT_AFTER=""
+for _ in $(seq 1 12); do
+  NFT_AFTER=$(ssh_cluster "ssh -o StrictHostKeyChecking=no $POD_NODE 'nft list set inet filter tenant_ports_tcp 2>/dev/null'" 2>/dev/null || \
+              ssh_cluster "nft list set inet filter tenant_ports_tcp 2>/dev/null" || echo "")
+  if [[ "$NFT_AFTER" != *"3478"* ]]; then break; fi
+  sleep 5
+done
+if [[ "$NFT_AFTER" != *"3478"* ]]; then
+  ok "tenant_ports_tcp no longer contains the deleted deployment's ports"
+else
+  warn "ports still present after 60s — reconciler may not be deployed yet on this node"
+fi
+
 # ─── Summary ───────────────────────────────────────────────────────────────
 echo
 log "── summary ──"
