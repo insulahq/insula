@@ -21,11 +21,23 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { users, notifications } from '../../db/schema.js';
 import { getSettings } from '../system-settings/service.js';
-import { getInUseImages, classifyImage } from './service.js';
+import { getInUseImages, classifyImageByNames, isAnyNameInUse } from './service.js';
 import { reapImageNow } from './image-reaper.js';
 
 const WATCHER_INTERVAL_MS = 60_000; // 1 minute
 const PRESSURE_IMAGE_FRACTION = 0.75; // 75% of ephemeral-storage used → trigger
+const NOTIFY_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes per node
+
+// HIGH #2: a single tick can take longer than the interval (a reap polls a
+// privileged pod up to 180s). If we don't gate concurrent ticks, ticks pile
+// up and fan out duplicate purge pods. Module-level flag is fine — even
+// with N replicas each replica's flag scopes its own ticks.
+let ticking = false;
+
+// HIGH #3: per-node last-notified timestamps. Suppresses duplicate
+// notifications when a node stays under sustained pressure across many
+// ticks. Resets on process restart, which is acceptable.
+const lastNotifiedAt = new Map<string, number>();
 
 interface RawNodeImage {
   names?: readonly string[] | null;
@@ -146,8 +158,10 @@ async function tick(
         const realTag = names.find(n => n.includes(':') && !n.includes('@sha256') && !n.endsWith(':<none>'));
         const digestRef = names.find(n => n.includes('@sha256:'));
         const imageRef = realTag ?? digestRef ?? names[0];
-        const inUse = names.some(n => inUseSet.has(n));
-        const isProtected = classifyImage(imageRef, inUse).protected;
+        // HIGH #4 + #1: use the same normalisation paths the aggregator uses
+        // so docker.io/library/* and digest-vs-tag mismatches don't leak.
+        const inUse = isAnyNameInUse(names, inUseSet);
+        const isProtected = classifyImageByNames(names, inUse).protected;
         if (inUse || isProtected) return [];
         return [{ imageRef, sizeBytes: img.sizeBytes ?? 0 }];
       })
@@ -184,7 +198,20 @@ async function tick(
       const title = `Auto-purged ${reclaimedCount} image${reclaimedCount !== 1 ? 's' : ''} on node ${nodeName}`;
       const message = `Reclaimed ${mb} MB of image cache storage due to disk pressure.`;
       log.info({ node: nodeName, reclaimedCount, mb }, '[pressure-watcher] ' + message);
-      await notifyAdmins(db, title, message);
+
+      // HIGH #3: cooldown guard. Don't spam admins with one notification per
+      // tick when the node sits above the threshold continuously.
+      const now = Date.now();
+      const last = lastNotifiedAt.get(nodeName) ?? 0;
+      if (now - last >= NOTIFY_COOLDOWN_MS) {
+        lastNotifiedAt.set(nodeName, now);
+        await notifyAdmins(db, title, message);
+      } else {
+        log.debug(
+          { node: nodeName, sinceLastMs: now - last },
+          '[pressure-watcher] skipping notification — within cooldown',
+        );
+      }
     }
   }
 }
@@ -199,10 +226,29 @@ export function startImagePressureWatcher(
   log: FastifyBaseLogger,
 ): PressureWatcherHandle {
   const timer = setInterval(() => {
-    tick(db, k8s, log).catch(err => {
-      log.warn({ err }, '[pressure-watcher] tick failed');
-    });
+    if (ticking) {
+      log.debug('[pressure-watcher] previous tick still running — skipping');
+      return;
+    }
+    ticking = true;
+    tick(db, k8s, log)
+      .catch(err => {
+        log.warn({ err }, '[pressure-watcher] tick failed');
+      })
+      .finally(() => {
+        ticking = false;
+      });
   }, WATCHER_INTERVAL_MS);
 
   return { stop: () => clearInterval(timer) };
+}
+
+/**
+ * Test-only: reset module-level state (ticking flag, notification cooldown
+ * map). Vitest runs tests in the same process; without this guard, state
+ * leaks between cases.
+ */
+export function _resetWatcherStateForTests(): void {
+  ticking = false;
+  lastNotifiedAt.clear();
 }

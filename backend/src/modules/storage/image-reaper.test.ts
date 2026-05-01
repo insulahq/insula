@@ -15,6 +15,16 @@ const mockRunPurgeOnNode = vi.fn();
 vi.mock('./service.js', () => ({
   getInUseImages: mockGetInUseImages,
   runPurgeOnNode: mockRunPurgeOnNode,
+  // Real implementation re-exported for the in-use guard normalisation path
+  isAnyNameInUse: (names: readonly string[], set: ReadonlySet<string>): boolean => {
+    for (const n of names) {
+      if (set.has(n)) return true;
+      const stripped = n.replace(/^docker\.io\/library\//, '');
+      if (set.has(stripped)) return true;
+      if (!n.includes('/') && set.has(`docker.io/library/${n}`)) return true;
+    }
+    return false;
+  },
 }));
 
 vi.mock('../../db/schema.js', () => ({

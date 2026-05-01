@@ -26,7 +26,7 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { imageReapLog } from '../../db/schema.js';
-import { getInUseImages, runPurgeOnNode } from './service.js';
+import { getInUseImages, runPurgeOnNode, isAnyNameInUse } from './service.js';
 
 export interface ReapInput {
   /** Canonical image ref — with tag or digest (e.g. `ghcr.io/foo/bar:v1.2.3`). */
@@ -77,8 +77,12 @@ export async function reapImageNow(
   const { image, triggeredBy, triggerRef } = input;
 
   // ── 1. In-use guard ────────────────────────────────────────────────────────
+  // HIGH #1: use the same docker.io/library/ normalisation the aggregator
+  // uses. A direct `inUseSet.has(image)` misses when the caller passes
+  // `docker.io/library/nginx:latest` while the pod spec says `nginx:latest`
+  // (or vice-versa).
   const inUseSet = await getInUseImages(k8s);
-  if (inUseSet.has(image)) {
+  if (isAnyNameInUse([image], inUseSet)) {
     await insertLog(db, { imageName: image, triggeredBy, triggerRef, succeeded: false, error: 'image still in use — skipped' });
     return { reclaimedBytes: 0, nodes: [], skipped: true, reason: 'in_use' };
   }
