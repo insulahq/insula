@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { HardDrive, Archive, Loader2, Settings as SettingsIcon, Cloud, Server, ExternalLink, RotateCcw } from 'lucide-react';
+import { HardDrive, Archive, Loader2, Settings as SettingsIcon, Cloud, Server, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useBackups } from '@/hooks/use-backups';
 import { useDashboardMetrics } from '@/hooks/use-dashboard';
 import { useBackupConfigs, useBackupList } from '@/hooks/use-backup-config';
+import { useSystemSnapshots } from '@/hooks/use-system-snapshots';
+import SystemSnapshotsModal from '@/components/SystemSnapshotsModal';
+import type { SystemPvcSnapshotSummary } from '@k8s-hosting/api-contracts';
 import {
   useSnapshots,
   useCreateSnapshot,
@@ -133,7 +136,12 @@ function SnapshotsTab({
   const snapshots = data?.data ?? [];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      <SystemSnapshotsSection />
+
+      <hr className="border-gray-200 dark:border-gray-700" />
+
+      <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Tenant Snapshots</h2>
       <SearchableClientSelect
         selectedClientId={selectedClientId}
         onSelect={onClientChange}
@@ -757,5 +765,102 @@ function SecretInput({ label, isSet, onChange, onClear }: {
         )}
       </div>
     </div>
+  );
+}
+
+// ─── System Snapshots ────────────────────────────────────────────────────────
+
+/**
+ * Inventory section for platform/system PVCs (postgres, stalwart-mail,
+ * monitoring, etc). One row per PVC with snapshot count + total bytes;
+ * click a row to open the per-volume management modal where the operator
+ * can take/delete/restore individual snapshots, prune, or edit the
+ * RecurringJob retention policy.
+ */
+function SystemSnapshotsSection() {
+  const { data, isLoading, error } = useSystemSnapshots();
+  const [openVolume, setOpenVolume] = useState<SystemPvcSnapshotSummary | null>(null);
+  const items = data?.data.items ?? [];
+
+  return (
+    <section className="space-y-3" data-testid="system-snapshots-section">
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">System Snapshots</h2>
+        {!isLoading && (
+          <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+            {items.length} volume(s)
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        Platform-managed PVCs (Postgres, Stalwart, etc). Click a row to manage per-volume snapshots and edit the RecurringJob schedule.
+      </p>
+
+      {isLoading && (
+        <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+          <Loader2 size={14} className="animate-spin" /> Loading system PVCs…
+        </div>
+      )}
+      {error && (
+        <p className="text-sm text-red-600 dark:text-red-400">{(error as Error).message}</p>
+      )}
+
+      {!isLoading && !error && items.length === 0 && (
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-5 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+          No platform/system PVCs detected.
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm" data-testid="system-snapshots-table">
+            <thead className="bg-gray-50 dark:bg-gray-900 text-xs uppercase text-gray-500 dark:text-gray-400">
+              <tr>
+                <th className="px-4 py-2 text-left">PVC</th>
+                <th className="px-4 py-2 text-left">Volume size</th>
+                <th className="px-4 py-2 text-right">Snapshots</th>
+                <th className="px-4 py-2 text-right">Total size</th>
+                <th className="px-4 py-2 text-left">Newest</th>
+                <th className="px-4 py-2 text-left">Schedule</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+              {items.map((v) => (
+                <tr
+                  key={v.longhornVolumeName}
+                  onClick={() => setOpenVolume(v)}
+                  className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  data-testid={`system-snapshots-row-${v.longhornVolumeName}`}
+                >
+                  <td className="px-4 py-2.5">
+                    <div className="font-medium text-gray-900 dark:text-gray-100">{v.namespace}/{v.pvcName}</div>
+                    <div className="text-[11px] font-mono text-gray-500 dark:text-gray-400">{v.longhornVolumeName}</div>
+                  </td>
+                  <td className="px-4 py-2.5 tabular-nums text-gray-700 dark:text-gray-300">{formatBytes(v.volumeSizeBytes)}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums">{v.snapshotCount}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums">{formatBytes(v.snapshotBytesTotal)}</td>
+                  <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 text-xs">
+                    {v.newestSnapshotAt ? new Date(v.newestSnapshotAt).toISOString().slice(0, 16).replace('T', ' ') : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-gray-400">
+                    {v.recurringJobs.length > 0 ? v.recurringJobs.join(', ') : <span className="italic">none</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    {v.degraded && (
+                      <span className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300" title="Volume robustness=degraded">
+                        <AlertTriangle size={10} /> degraded
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {openVolume && <SystemSnapshotsModal volume={openVolume} onClose={() => setOpenVolume(null)} />}
+    </section>
   );
 }

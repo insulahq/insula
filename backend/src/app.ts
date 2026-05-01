@@ -64,6 +64,7 @@ import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
 import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
+import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -292,6 +293,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });
+  await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
@@ -486,6 +488,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startStoragePolicyAdvisor } = await import('./modules/platform-storage-policy/scheduler.js');
         const storageAdvisorHandle = startStoragePolicyAdvisor(app.db, k8sForImapsync);
         app.addHook('onClose', () => storageAdvisorHandle.stop());
+
+        // System pod placement: pin Helm-installed singletons (Longhorn
+        // CSI controllers, Calico typha + kube-controllers, Longhorn UI)
+        // to server-role nodes, scale Calico typha with HA size, and
+        // assert 10 % storageReserved on every worker disk so new
+        // workers automatically get the lower reserve.
+        const { startSystemPodPlacement } = await import('./modules/system-pod-placement/scheduler.js');
+        const systemPodPlacementHandle = startSystemPodPlacement(app.db, k8sForImapsync);
+        app.addHook('onClose', () => systemPodPlacementHandle.stop());
 
         // Backup-health: watches Jobs cluster-wide via the
         // platform.example.test/backup-health-watch=true label and
