@@ -70,6 +70,7 @@ suites=(
   "lifecycle:integration-lifecycle-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
   "firewall:integration-firewall-e2e.sh"
+  "system-snapshots:integration-system-snapshots.sh"
 )
 
 passed_suites=()

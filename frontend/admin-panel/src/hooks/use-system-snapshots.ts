@@ -107,11 +107,21 @@ export function usePruneSystemSnapshots() {
 }
 
 export function useRestoreSystemSnapshot() {
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { volumeName: string; snapshotName: string }) =>
-      apiFetch<Envelope<{ ok: true }>>(
+    mutationFn: (input: { volumeName: string; snapshotName: string; pvcNamespace: string; pvcName: string }) =>
+      apiFetch<Envelope<{
+        volumeName: string;
+        snapshotName: string;
+        consumer: { kind: 'CnpgCluster' | 'StatefulSet' | 'Deployment'; namespace: string; name: string; replicaField: string; originalCount: number };
+        steps: Array<{ step: string; ok: boolean; detail?: string }>;
+      }>>(
         `/api/v1/admin/system-snapshots/${encodeURIComponent(input.volumeName)}/snapshots/${encodeURIComponent(input.snapshotName)}/restore`,
-        { method: 'POST', body: JSON.stringify({}) },
+        { method: 'POST', body: JSON.stringify({ pvcNamespace: input.pvcNamespace, pvcName: input.pvcName }) },
       ),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ['system-snapshots', vars.volumeName] });
+      qc.invalidateQueries({ queryKey: ['system-snapshots'] });
+    },
   });
 }
