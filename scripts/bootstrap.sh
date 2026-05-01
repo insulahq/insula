@@ -552,9 +552,15 @@ install_packages_apt() {
   # gettext-base provides envsubst — required by apply_platform_manifests
   # to substitute ${DOMAIN} (and any future placeholders) into the
   # rendered staging overlay before kubectl apply.
+  # tar is needed by Helm's get-helm-3 installer (extracts the binary
+  # archive). Debian/Ubuntu cloud images include it by default; RHEL
+  # minimal images do not — caught on Rocky 10.1 fresh install
+  # 2026-05-01 ("Could not find tar. It is required to extract the
+  # helm binary archive."). Pin it explicitly on both families so
+  # the helm install step never depends on a base-image quirk.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates \
-    nftables fail2ban jq unzip git open-iscsi nfs-common \
+    nftables fail2ban jq unzip tar git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext-base \
@@ -584,7 +590,7 @@ install_packages_dnf() {
   # ships it inside the main gettext package).
   dnf install -y -q --allowerasing \
     wget gnupg2 ca-certificates \
-    nftables fail2ban jq unzip git iscsi-initiator-utils nfs-utils \
+    nftables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext \
