@@ -348,7 +348,12 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
               </>
             }
             onConfirm={async () => {
-              await restore.mutateAsync({ volumeName: volume.longhornVolumeName, snapshotName: confirmRestore });
+              await restore.mutateAsync({
+                volumeName: volume.longhornVolumeName,
+                snapshotName: confirmRestore,
+                pvcNamespace: volume.namespace,
+                pvcName: volume.pvcName,
+              });
               setConfirmRestore(null);
             }}
             onCancel={() => setConfirmRestore(null)}
