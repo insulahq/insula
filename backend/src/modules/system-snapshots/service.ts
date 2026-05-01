@@ -706,6 +706,49 @@ export async function revertSnapshot(
     steps.push({ step: 'wait-detach', ok: detach.ok, detail: `final=${detach.state ?? 'unknown'}` });
     if (!detach.ok) throw new Error(`Volume did not detach within ${detachTimeoutMs / 1000}s (last=${detach.state ?? 'unknown'})`);
 
+    // Longhorn snapshotRevert requires the volume attached with
+    // frontend disabled (engine running, but block device not exposed
+    // to any pod). Detach alone gives "frontend enabled" once the
+    // snapshot-controller re-attaches for pending snapshot work.
+    // Pick a node that has a running replica so we minimise rebuild
+    // chatter, then explicitly attach with disableFrontend=true via
+    // the manager REST API.
+    const volForAttach = await k8s.custom.getNamespacedCustomObject({
+      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { ownerID?: string }; spec?: { numberOfReplicas?: number } };
+    const targetNode = volForAttach.status?.ownerID;
+    if (!targetNode) throw new Error('Cannot determine a node to attach the volume on for revert');
+
+    const attachUrl = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=attach`;
+    const attachResp = await fetchFn(attachUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hostId: targetNode, disableFrontend: true, attachedBy: 'system-snapshots-revert' }),
+      signal: AbortSignal.timeout(revertTimeoutMs),
+    });
+    if (!attachResp.ok) {
+      const body = await attachResp.text().catch(() => '<no body>');
+      throw new Error(`Longhorn maintenance-attach failed: HTTP ${attachResp.status} ${body.slice(0, 240)}`);
+    }
+    steps.push({ step: 'attach-maintenance', ok: true, detail: `node=${targetNode}` });
+
+    // Wait for the engine to come up with frontend disabled
+    const maintDeadline = Date.now() + revertTimeoutMs;
+    let maintReady = false;
+    while (Date.now() < maintDeadline) {
+      try {
+        const v = await k8s.custom.getNamespacedCustomObject({
+          group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
+        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { state?: string; frontendDisabled?: boolean } };
+        if (v.status?.state === 'attached' && v.status?.frontendDisabled === true) {
+          maintReady = true; break;
+        }
+      } catch { /* keep polling */ }
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+    if (!maintReady) throw new Error('Volume did not enter maintenance-attached state in time');
+    steps.push({ step: 'wait-maintenance', ok: true });
+
     const url = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=snapshotRevert`;
     const resp = await fetchFn(url, {
       method: 'POST',
@@ -718,6 +761,17 @@ export async function revertSnapshot(
       throw new Error(`Longhorn snapshotRevert failed: HTTP ${resp.status} ${body.slice(0, 240)}`);
     }
     steps.push({ step: 'longhorn-revert', ok: true });
+
+    // Detach from maintenance mode so the consumer's CSI attach can
+    // bind cleanly when we scale it back up.
+    const detachUrl = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=detach`;
+    await fetchFn(detachUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(revertTimeoutMs),
+    }).catch(() => undefined);
+    steps.push({ step: 'detach-maintenance', ok: true });
 
     await scaleConsumer(k8s, consumer, consumer.originalCount);
     restored = true;
