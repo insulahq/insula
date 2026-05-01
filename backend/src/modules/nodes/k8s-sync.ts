@@ -1,5 +1,6 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import {
   upsertNodeFromK8s,
   NODE_ROLE_LABEL,
@@ -113,16 +114,31 @@ async function reconcileLonghornNodeTags(
       : currentTags.filter((t) => t !== SYSTEM_TAG);
 
     try {
-      await k8s.custom.patchNamespacedCustomObject({
-        group: 'longhorn.io',
-        version: 'v1beta2',
-        namespace: 'longhorn-system',
-        plural: 'nodes',
-        name,
-        body: { spec: { tags: nextTags } },
-      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-      // Use merge-patch — JSON-patch on optional arrays is fragile.
-      { headers: { 'Content-Type': 'application/merge-patch+json' } } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[1]);
+      // @kubernetes/client-node v1.4 IGNORES `headers.Content-Type` on
+      // patch calls and always sends `application/json-patch+json`,
+      // which rejects our object-shaped body with
+      //   error decoding patch: json: cannot unmarshal object into
+      //   Go value of type []handlers.jsonPatchOp
+      // Use the shared MERGE_PATCH middleware shim that overrides the
+      // header at the request-pipeline level (the only thing the v1.4
+      // library actually honours). Pattern matches storage-placement-
+      // service.ts and longhorn-reconciler.ts.
+      await (k8s.custom as unknown as {
+        patchNamespacedCustomObject: (
+          a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+          mw: typeof MERGE_PATCH,
+        ) => Promise<unknown>;
+      }).patchNamespacedCustomObject(
+        {
+          group: 'longhorn.io',
+          version: 'v1beta2',
+          namespace: 'longhorn-system',
+          plural: 'nodes',
+          name,
+          body: { spec: { tags: nextTags } },
+        },
+        MERGE_PATCH,
+      );
       console.log(`[node-sync] longhorn node ${name} tags: ${currentTags.join(',') || '(none)'} → ${nextTags.join(',') || '(none)'}`);
     } catch (err) {
       console.warn(`[node-sync] longhorn node ${name} tag patch failed:`, (err as Error).message);
