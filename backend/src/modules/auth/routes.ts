@@ -121,12 +121,29 @@ function signPreAuthToken(app: FastifyInstance, userId: string, panel: 'admin' |
   return app.jwt.sign(payload as any);
 }
 
+// Login rate limit. Production gets the conservative 10 / 15 minutes —
+// real users only re-login a few times per day, so this is plenty for
+// legitimate traffic and tight enough to throttle credential-stuffing
+// botnets. Non-production (dev / staging / testing clusters) gets a
+// much higher cap because integration test harnesses login on every
+// scenario step and quickly exceed 10/15 min on any meaningful suite,
+// which is what triggered the testing.example.test 429s on
+// 2026-05-01. Operator can also pin AUTH_LOGIN_RATE_LIMIT_MAX env var
+// for custom values (e.g. CI runners that need even higher).
+const LOGIN_RATE_LIMIT_MAX = (() => {
+  const fromEnv = Number(process.env.AUTH_LOGIN_RATE_LIMIT_MAX);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  const env = (process.env.PLATFORM_ENV ?? process.env.NODE_ENV ?? '').toLowerCase();
+  return env === 'production' ? 10 : 200;
+})();
+const LOGIN_RATE_LIMIT_WINDOW = process.env.AUTH_LOGIN_RATE_LIMIT_WINDOW ?? '15 minutes';
+
 export async function authRoutes(app: FastifyInstance) {
   app.post('/auth/login', {
     config: {
       rateLimit: {
-        max: 10,
-        timeWindow: '15 minutes',
+        max: LOGIN_RATE_LIMIT_MAX,
+        timeWindow: LOGIN_RATE_LIMIT_WINDOW,
       },
     },
     schema: {

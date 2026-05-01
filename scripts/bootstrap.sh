@@ -2066,10 +2066,21 @@ install_longhorn() {
   # with 100+ volumes; for 3-4 server clusters with <50 volumes the
   # extra concurrency just produces CPU spikes during recovery without
   # meaningful rebuild-time benefit.
+  # csi.kubeletRootDir: Longhorn's auto-discovery spawns a discover-
+  # proc-kubelet-cmdline Pod that reads kubelet's /proc/<pid>/cmdline
+  # to find --root-dir. On RHEL-family hosts (Rocky 10.1, Alma 9, RHEL
+  # 9) SELinux blocks /proc cross-process reads from a Pod, the
+  # discover Pod stays Pending, the driver-deployer aborts after 120s
+  # with "didn't complete within 120 seconds", and CSI never deploys.
+  # Skipping the auto-discovery by passing the path explicitly is safe
+  # on every distro because k3s ALWAYS uses /var/lib/kubelet (see
+  # install_k3s_server — no --kubelet-arg=root-dir override). Surfaced
+  # on Rocky 10.1 fresh install 2026-05-01.
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
     --version "${LONGHORN_VERSION}" \
+    --set csi.kubeletRootDir=/var/lib/kubelet \
     --set defaultSettings.defaultReplicaCount=1 \
     --set defaultSettings.replicaAutoBalance=best-effort \
     --set defaultSettings.storageMinimalAvailablePercentage=15 \
@@ -2321,47 +2332,61 @@ generate_platform_secrets() {
     log "Platform secrets created."
   fi
 
-  # OAuth2 Proxy config secret — generated per-environment with unique OIDC client secrets
+  # OAuth2 Proxy config secret. Generation is split: the random secrets
+  # (client_secret, cookie_secret) are computed ONCE on first creation
+  # and preserved across re-runs to avoid invalidating active sessions /
+  # the corresponding Dex client. The URL fields, by contrast, are
+  # ALWAYS recomputed from the current PLATFORM_DOMAIN — earlier
+  # versions of this code skipped the whole secret if it existed,
+  # leaving stale env-prefixed hostnames in place when an operator
+  # re-bootstrapped after a domain change. Caught on testing.phoenix-
+  # host.net 2026-05-01 (oauth2-proxy crashlooped because the secret
+  # still pointed at dex.staging.testing.example.test).
+  local oidc_client_secret="" cookie_secret=""
   if kctl get secret -n platform oauth2-proxy-config &>/dev/null 2>&1; then
-    log "OAuth2 Proxy config secret already exists, skipping."
-  else
-    local oidc_client_secret
-    oidc_client_secret="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
-    local cookie_secret
-    cookie_secret="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
-
-    # Staging hostnames take a `staging.` subdomain prefix (matches
-    # k8s/overlays/staging/ingress-patch.yaml). Without this prefix the
-    # OIDC discovery URL resolves to dex.${PLATFORM_DOMAIN} which has
-    # no DNS record on staging, and oauth2-proxy CrashLoopBackOffs at
-    # startup.
-    local issuer_url=""
-    local redirect_url=""
-    local oauth_subdomain=""
-    if [[ "$PLATFORM_ENV" == "staging" ]]; then
-      oauth_subdomain="staging."
-    fi
-    if [[ "$PLATFORM_ENV" == "dev" ]]; then
-      issuer_url="http://dex.${PLATFORM_DOMAIN}/dex"
-      redirect_url="http://admin.${PLATFORM_DOMAIN}/oauth2/callback"
-    elif [[ "$PLATFORM_ENV" == "staging" ]]; then
-      issuer_url="https://dex.${oauth_subdomain}${PLATFORM_DOMAIN}/dex"
-      redirect_url="https://admin.${oauth_subdomain}${PLATFORM_DOMAIN}/oauth2/callback"
-    else
-      # Production: operator must configure external OIDC issuer
-      issuer_url="${OIDC_ISSUER_URL:-https://auth.${PLATFORM_DOMAIN}}"
-      redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
-    fi
-
-    kctl create secret generic oauth2-proxy-config \
-      --namespace=platform \
-      --from-literal=OIDC_ISSUER_URL="$issuer_url" \
-      --from-literal=OAUTH2_PROXY_CLIENT_ID="hosting-platform-oauth2-proxy" \
-      --from-literal=OAUTH2_PROXY_CLIENT_SECRET="$oidc_client_secret" \
-      --from-literal=OAUTH2_PROXY_COOKIE_SECRET="$cookie_secret" \
-      --from-literal=OAUTH2_PROXY_REDIRECT_URL="$redirect_url"
-    log "OAuth2 Proxy config secret created (env=${PLATFORM_ENV})."
+    oidc_client_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d 2>/dev/null || true)
+    cookie_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_COOKIE_SECRET}' 2>/dev/null | base64 -d 2>/dev/null || true)
   fi
+  # Guard against an existing secret with missing / blank fields (older
+  # bootstrap layout, partial apply, key rename). Empty values would
+  # otherwise pass through as `--from-literal=KEY=` and oauth2-proxy
+  # would boot with a blank client_secret — Dex would reject every
+  # auth attempt with no obvious upstream error.
+  if [[ -z "$oidc_client_secret" ]]; then
+    oidc_client_secret="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
+    log "OAuth2 Proxy: minted fresh client_secret (no usable value in existing secret)."
+  fi
+  if [[ -z "$cookie_secret" ]]; then
+    cookie_secret="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
+    log "OAuth2 Proxy: minted fresh cookie_secret (no usable value in existing secret)."
+  fi
+
+  # Hostnames are bare-apex across all environments (no env prefix).
+  # See apply_platform_manifests for the matching design choice.
+  local issuer_url redirect_url
+  if [[ "$PLATFORM_ENV" == "dev" ]]; then
+    issuer_url="http://dex.${PLATFORM_DOMAIN}/dex"
+    redirect_url="http://admin.${PLATFORM_DOMAIN}/oauth2/callback"
+  elif [[ "$PLATFORM_ENV" == "staging" ]]; then
+    issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
+    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
+  else
+    # Production: operator may configure an external OIDC issuer
+    # (e.g. Auth0, Keycloak). Default to the in-cluster Dex if the
+    # operator didn't pin one via OIDC_ISSUER_URL env.
+    issuer_url="${OIDC_ISSUER_URL:-https://dex.${PLATFORM_DOMAIN}/dex}"
+    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
+  fi
+
+  kctl create secret generic oauth2-proxy-config \
+    --namespace=platform \
+    --from-literal=OIDC_ISSUER_URL="$issuer_url" \
+    --from-literal=OAUTH2_PROXY_CLIENT_ID="hosting-platform-oauth2-proxy" \
+    --from-literal=OAUTH2_PROXY_CLIENT_SECRET="$oidc_client_secret" \
+    --from-literal=OAUTH2_PROXY_COOKIE_SECRET="$cookie_secret" \
+    --from-literal=OAUTH2_PROXY_REDIRECT_URL="$redirect_url" \
+    --dry-run=client -o yaml | kctl apply -f -
+  log "OAuth2 Proxy config secret applied (env=${PLATFORM_ENV}, issuer=${issuer_url})."
 
   # sftp-gateway needs an ed25519 host key mounted as `sftp-host-keys`
   # in the platform-system namespace. Only local.sh generated this
