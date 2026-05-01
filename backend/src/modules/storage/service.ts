@@ -418,12 +418,11 @@ export async function getImageInventory(k8s: K8sClients): Promise<ImageInventory
 // ─── Image Purge via Privileged Pod ──────────────────────────────────────────
 
 const PURGE_NAMESPACE = 'kube-system';
-const PURGE_TIMEOUT_MS = 120_000;
+const PURGE_TIMEOUT_MS = 180_000;
 const PURGE_POLL_MS = 2_000;
-const CONTAINERD_SOCKET_PATHS: readonly string[] = [
-  '/run/k3s/containerd/containerd.sock',
-  '/run/containerd/containerd.sock',
-];
+// k3s places its containerd socket at /run/k3s/containerd/containerd.sock.
+// We do not (yet) support upstream containerd installations.
+const CONTAINERD_SOCKET_PATH = '/run/k3s/containerd/containerd.sock';
 
 interface PerNodePurgeResult {
   readonly node: string;
@@ -445,25 +444,18 @@ async function runPurgeOnNode(
   let freedBytes = 0;
 
   const imageList = targets.map(t => `'${t.crictlName.replace(/'/g, "'\\''")}'`).join(' ');
-  // Try each containerd socket location until one works.
-  const socketTryList = CONTAINERD_SOCKET_PATHS.map(p => `unix://${p}`).join(' ');
   const script = `
 set -u
-SOCKET=""
-for s in ${socketTryList}; do
-  path="\${s#unix://}"
-  if [ -S "\$path" ]; then SOCKET="\$s"; break; fi
-done
-if [ -z "\$SOCKET" ]; then
+SOCKET="unix://${CONTAINERD_SOCKET_PATH}"
+if [ ! -S "${CONTAINERD_SOCKET_PATH}" ]; then
   echo "NOSOCKET"
   exit 0
 fi
-echo "USING:\$SOCKET"
 for img in ${imageList}; do
-  if crictl --runtime-endpoint "\$SOCKET" rmi "\$img" >/tmp/out 2>&1; then
-    echo "REMOVED:\$img"
+  if crictl --runtime-endpoint "$SOCKET" rmi "$img" >/tmp/out 2>&1; then
+    echo "REMOVED:$img"
   else
-    echo "FAILED:\$img"
+    echo "FAILED:$img"
   fi
 done
 `;
@@ -482,16 +474,16 @@ done
             name: 'purge',
             image: 'rancher/k3s:v1.33.10-k3s1',
             command: ['sh', '-c', script],
-            volumeMounts: CONTAINERD_SOCKET_PATHS.map((p, i) => ({
-              name: `sock-${i}`,
-              mountPath: p,
-            })),
+            volumeMounts: [{
+              name: 'containerd-sock',
+              mountPath: CONTAINERD_SOCKET_PATH,
+            }],
             securityContext: { privileged: true },
           }],
-          volumes: CONTAINERD_SOCKET_PATHS.map((p, i) => ({
-            name: `sock-${i}`,
-            hostPath: { path: p, type: 'Socket' as const },
-          })),
+          volumes: [{
+            name: 'containerd-sock',
+            hostPath: { path: CONTAINERD_SOCKET_PATH, type: 'Socket' as const },
+          }],
         },
       },
     });
