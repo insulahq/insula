@@ -17,7 +17,7 @@ export async function bulkVerifyDomains(
 ): Promise<BulkResult> {
   const succeeded: string[] = [];
   const failed: Array<{ id: string; error: string }> = [];
-  const platformConfig = getPlatformConfig();
+  const platformConfig = await getPlatformConfig(db);
 
   for (const id of domainIds) {
     try {
@@ -34,7 +34,11 @@ export async function bulkVerifyDomains(
       const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, db);
 
       const now = new Date();
-      const updateValues: Record<string, unknown> = { lastVerifiedAt: now };
+      const updateValues: Record<string, unknown> = {
+        lastVerifiedAt: now,
+        verificationCacheAt: now,
+        verificationCacheResult: result,
+      };
       if (result.verified && !domain.verifiedAt) {
         updateValues.verifiedAt = now;
       }

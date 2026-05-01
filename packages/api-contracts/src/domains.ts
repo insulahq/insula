@@ -109,6 +109,26 @@ export const domainDeletePreviewSchema = z.object({
   webmailIngressHostname: z.string().nullable(),
 });
 
+// ─── Verification Response ────────────────────────────────────────────────────
+
+export const verificationCheckSchema = z.object({
+  type: z.string(),
+  status: z.enum(['pass', 'fail']),
+  detail: z.string(),
+});
+
+export const verificationResultSchema = z.object({
+  verified: z.boolean(),
+  checks: z.array(verificationCheckSchema),
+  domainId: z.string(),
+  domainName: z.string(),
+  /** true when the result was served from the 24-hour cache, false when freshly computed */
+  cached: z.boolean(),
+});
+
+export type VerificationCheck = z.infer<typeof verificationCheckSchema>;
+export type VerificationResultResponse = z.infer<typeof verificationResultSchema>;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CreateDomainInput = z.infer<typeof createDomainSchema>;
