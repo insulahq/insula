@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview } from '@/hooks/use-domains';
+import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useCatalog } from '@/hooks/use-catalog';
@@ -56,6 +56,20 @@ export default function DomainDetail() {
       setActiveTab('routing');
     }
   }, [activeTab, domain?.dnsMode, domain]);
+
+  // Auto-verify on mount when the cached result is stale (older than 24h or missing).
+  // One call per domain ID; not re-fired on every render.
+  useEffect(() => {
+    if (!domain) return;
+    if (verifyDomain.isPending) return;
+    const rawDomain = domain as Record<string, unknown>;
+    const cacheAt = rawDomain.verificationCacheAt ? new Date(rawDomain.verificationCacheAt as string) : null;
+    const stale = !cacheAt || (Date.now() - cacheAt.getTime() > 24 * 60 * 60 * 1000);
+    if (stale) {
+      verifyDomain.mutate(domainId!);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domain?.id]);
 
   if (isLoading) {
     return (
@@ -472,6 +486,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
   const { data: deploymentsData } = useDeployments(clientId);
   const { data: catalogData } = useCatalog();
+  const { data: ingressBaseData } = useIngressBaseDomain();
+  const ingressBaseDomain = ingressBaseData?.data?.ingressBaseDomain ?? '';
   const createRoute = useCreateIngressRoute(clientId, domainId);
   const updateRoute = useUpdateIngressRoute(clientId, domainId);
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
@@ -606,7 +622,12 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                     </td>
                   )}
                   {dnsMode !== 'primary' && (
-                    <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
+                      {/* Show the plain ingress base domain as the customer-facing CNAME target.
+                          The slug-prefixed route.ingressCname is still used internally by the
+                          K8s ingress reconciler — only the display label changes here. */}
+                      {ingressBaseDomain || route.ingressCname}
+                    </td>
                   )}
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">

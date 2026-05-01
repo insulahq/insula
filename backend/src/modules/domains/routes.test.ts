@@ -4,30 +4,25 @@ import fastifyJwt from '@fastify/jwt';
 import { errorHandler } from '../../middleware/error-handler.js';
 import { registerAuth } from '../../middleware/auth.js';
 
-const mockDomain = {
-  id: 'd1',
-  clientId: 'c1',
-  domainName: 'example.com',
-  dnsMode: 'cname',
-  status: 'active',
-};
-
+// vi.mock factories are hoisted — don't reference file-level variables inside them.
 vi.mock('./service.js', () => ({
-  createDomain: vi.fn().mockResolvedValue(mockDomain),
-  getDomainById: vi.fn().mockResolvedValue(mockDomain),
+  createDomain: vi.fn().mockResolvedValue({
+    id: 'd1', clientId: 'c1', domainName: 'example.com',
+    dnsMode: 'cname', status: 'active',
+    verifiedAt: null, verificationCacheAt: null, verificationCacheResult: null,
+  }),
+  getDomainById: vi.fn().mockResolvedValue({
+    id: 'd1', clientId: 'c1', domainName: 'example.com',
+    dnsMode: 'cname', status: 'active',
+    verifiedAt: null, verificationCacheAt: null, verificationCacheResult: null,
+  }),
   listDomains: vi.fn().mockResolvedValue({
-    data: [mockDomain],
+    data: [{ id: 'd1', clientId: 'c1', domainName: 'example.com', dnsMode: 'cname', status: 'active' }],
     pagination: { cursor: null, has_more: false, page_size: 1, total_count: 1 },
   }),
-  updateDomain: vi.fn().mockResolvedValue({ ...mockDomain, dnsMode: 'primary' }),
+  updateDomain: vi.fn().mockResolvedValue({ id: 'd1', clientId: 'c1', domainName: 'example.com', dnsMode: 'primary', status: 'active' }),
   deleteDomain: vi.fn().mockResolvedValue({
-    deleted: {
-      emailDomains: 0,
-      mailboxes: 0,
-      aliases: 0,
-      dnsRecords: 0,
-      ingressRoutes: 0,
-    },
+    deleted: { emailDomains: 0, mailboxes: 0, aliases: 0, dnsRecords: 0, ingressRoutes: 0 },
   }),
   getDomainDeletePreview: vi.fn().mockResolvedValue({
     domainName: 'example.com',
@@ -38,7 +33,28 @@ vi.mock('./service.js', () => ({
   }),
 }));
 
+vi.mock('./verification.js', () => ({
+  getPlatformConfig: vi.fn().mockResolvedValue({ nameservers: [], ingressHostname: 'ingress.test' }),
+  verifyDomain: vi.fn().mockResolvedValue({ verified: true, checks: [{ type: 'cname_to_ingress', status: 'pass', detail: 'ok' }] }),
+}));
+
+import { getDomainById } from './service.js';
+import { verifyDomain as verifyDomainFn } from './verification.js';
+const mockGetDomainById = vi.mocked(getDomainById);
+const mockVerifyDomainFn = vi.mocked(verifyDomainFn);
+
 const { domainRoutes } = await import('./routes.js');
+
+const BASE_DOMAIN = {
+  id: 'd1',
+  clientId: 'c1',
+  domainName: 'example.com',
+  dnsMode: 'cname',
+  status: 'active',
+  verifiedAt: null,
+  verificationCacheAt: null,
+  verificationCacheResult: null,
+};
 
 describe('domain routes', () => {
   let app: FastifyInstance;
@@ -52,7 +68,9 @@ describe('domain routes', () => {
     registerAuth(app);
     app.setErrorHandler(errorHandler);
 
-    app.decorate('db', {});
+    app.decorate('db', {
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }),
+    });
     await app.register(domainRoutes, { prefix: '/api/v1' });
     await app.ready();
 
@@ -155,5 +173,61 @@ describe('domain routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);
+  });
+
+  describe('POST /verify cache semantics', () => {
+    it('returns fresh result with cached:false when no cache exists', async () => {
+      mockGetDomainById.mockResolvedValueOnce({ ...BASE_DOMAIN, verificationCacheAt: null } as typeof BASE_DOMAIN);
+      mockVerifyDomainFn.mockClear();
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/domains/d1/verify',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.cached).toBe(false);
+      expect(mockVerifyDomainFn).toHaveBeenCalled();
+    });
+
+    it('returns cached result with cached:true within 24h', async () => {
+      const recentCache = new Date(Date.now() - 1000 * 60 * 5); // 5 min ago
+      const cachedResult = { verified: true, checks: [{ type: 'cname_to_ingress', status: 'pass', detail: 'cached' }] };
+      mockGetDomainById.mockResolvedValueOnce({
+        ...BASE_DOMAIN,
+        verificationCacheAt: recentCache.toISOString(),
+        verificationCacheResult: cachedResult,
+      } as typeof BASE_DOMAIN);
+      mockVerifyDomainFn.mockClear();
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/domains/d1/verify',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.cached).toBe(true);
+      expect(mockVerifyDomainFn).not.toHaveBeenCalled();
+    });
+
+    it('bypasses cache with ?force=true', async () => {
+      const recentCache = new Date(Date.now() - 1000 * 60 * 5); // 5 min ago
+      const cachedResult = { verified: true, checks: [{ type: 'cname_to_ingress', status: 'pass', detail: 'cached' }] };
+      mockGetDomainById.mockResolvedValueOnce({
+        ...BASE_DOMAIN,
+        verificationCacheAt: recentCache.toISOString(),
+        verificationCacheResult: cachedResult,
+      } as typeof BASE_DOMAIN);
+      mockVerifyDomainFn.mockClear();
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/domains/d1/verify?force=true',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.cached).toBe(false);
+      expect(mockVerifyDomainFn).toHaveBeenCalled();
+    });
   });
 });

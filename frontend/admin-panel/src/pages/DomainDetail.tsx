@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
+import { useIngressSettings } from '@/hooks/use-ingress-settings';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
@@ -141,6 +142,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
 }) {
   const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
   const { data: deploymentsData } = useDeployments(clientId);
+  const { data: ingressSettingsData } = useIngressSettings();
+  const ingressBaseDomain = ingressSettingsData?.data?.ingressBaseDomain ?? '';
   const createRoute = useCreateIngressRoute(clientId, domainId);
   const updateRoute = useUpdateIngressRoute(clientId, domainId);
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
@@ -219,7 +222,9 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                     </Link>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
-                    {route.ingressCname}
+                    {/* Plain ingress base domain as customer-facing CNAME target;
+                        slug-prefixed ingressCname is kept internally for K8s routing. */}
+                    {ingressBaseDomain || route.ingressCname}
                   </td>
                   <td className="px-4 py-3">
                     <select

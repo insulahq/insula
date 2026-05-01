@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { verifyNsDelegation, verifyCnameRecord, verifyDomain } from './verification.js';
 
 // Mock dns.promises
 vi.mock('node:dns/promises', () => ({
   default: {
     resolveNs: vi.fn(),
     resolveCname: vi.fn(),
+    resolve4: vi.fn(),
+    resolve6: vi.fn(),
   },
 }));
 
@@ -17,9 +18,12 @@ vi.mock('../dns-servers/service.js', () => ({
 
 import dns from 'node:dns/promises';
 import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
+import { verifyNsDelegation, verifyCnameRecord, verifyDomain, verifyResolvesToIngress } from './verification.js';
 
 const mockResolveNs = vi.mocked(dns.resolveNs);
 const mockResolveCname = vi.mocked(dns.resolveCname);
+const mockResolve4 = vi.mocked(dns.resolve4);
+const mockResolve6 = vi.mocked(dns.resolve6);
 const mockGetActiveServers = vi.mocked(getActiveServers);
 const mockGetProviderForServer = vi.mocked(getProviderForServer);
 
@@ -27,6 +31,9 @@ const mockDb = {} as Parameters<typeof verifyDomain>[3];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: resolve6 returns ENODATA (most test cases are IPv4-only)
+  mockResolve6.mockRejectedValue(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }));
+  mockResolveCname.mockRejectedValue(Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }));
 });
 
 describe('verifyNsDelegation', () => {
@@ -63,7 +70,7 @@ describe('verifyNsDelegation', () => {
   });
 });
 
-describe('verifyCnameRecord', () => {
+describe('verifyCnameRecord (deprecated — legacy exact-match)', () => {
   it('should pass when CNAME points to expected target', async () => {
     mockResolveCname.mockResolvedValue(['ingress.platform.com']);
 
@@ -90,6 +97,91 @@ describe('verifyCnameRecord', () => {
   });
 });
 
+describe('verifyResolvesToIngress', () => {
+  it('passes when customer IPs overlap with ingress IPs', async () => {
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') return Promise.resolve(['1.2.3.4', '1.2.3.5']);
+      if (hostname === 'ingress.platform.net') return Promise.resolve(['1.2.3.4', '5.6.7.8']);
+      return Promise.resolve([]);
+    });
+
+    const result = await verifyResolvesToIngress('customer.example.com', 'ingress.platform.net');
+    expect(result.status).toBe('pass');
+    expect(result.detail).toContain('1.2.3.4');
+    expect(result.detail).toContain('matches ingress base IPs');
+  });
+
+  it('passes when customer resolves through a CDN chain to ingress IP', async () => {
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') return Promise.resolve(['1.2.3.4']);
+      if (hostname === 'ingress.platform.net') return Promise.resolve(['1.2.3.4', '5.6.7.8']);
+      return Promise.resolve([]);
+    });
+    mockResolveCname.mockResolvedValue(['cdn.cloudflare.com']);
+
+    const result = await verifyResolvesToIngress('customer.example.com', 'ingress.platform.net');
+    expect(result.status).toBe('pass');
+    expect(result.detail).toContain('cdn.cloudflare.com');
+  });
+
+  it('fails when customer IPs are disjoint from ingress IPs', async () => {
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') return Promise.resolve(['9.9.9.9']);
+      if (hostname === 'ingress.platform.net') return Promise.resolve(['1.2.3.4']);
+      return Promise.resolve([]);
+    });
+
+    const result = await verifyResolvesToIngress('customer.example.com', 'ingress.platform.net');
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('do not overlap');
+    expect(result.detail).toContain('9.9.9.9');
+    expect(result.detail).toContain('1.2.3.4');
+  });
+
+  it('fails with descriptive message when customer hostname has no records', async () => {
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') {
+        return Promise.reject(Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }));
+      }
+      if (hostname === 'ingress.platform.net') return Promise.resolve(['1.2.3.4']);
+      return Promise.resolve([]);
+    });
+
+    const result = await verifyResolvesToIngress('customer.example.com', 'ingress.platform.net');
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('No A/AAAA records resolve for customer.example.com');
+  });
+
+  it('fails with operator misconfiguration message when ingress has no records', async () => {
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') return Promise.resolve(['1.2.3.4']);
+      return Promise.reject(Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }));
+    });
+
+    const result = await verifyResolvesToIngress('customer.example.com', 'ingress.platform.net');
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('operator misconfiguration');
+  });
+
+  it('fails when ingress is IPv6-only but customer is IPv4-only (no overlap)', async () => {
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') return Promise.resolve(['1.2.3.4']);
+      return Promise.reject(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }));
+    });
+    mockResolve6.mockImplementation((hostname: string) => {
+      if (hostname === 'customer.example.com') {
+        return Promise.reject(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }));
+      }
+      if (hostname === 'ingress.platform.net') return Promise.resolve(['2001:db8::1']);
+      return Promise.reject(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }));
+    });
+
+    const result = await verifyResolvesToIngress('customer.example.com', 'ingress.platform.net');
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('do not overlap');
+  });
+});
+
 describe('verifyDomain', () => {
   const platformConfig = {
     nameservers: ['ns1.platform.com', 'ns2.platform.com'],
@@ -105,13 +197,18 @@ describe('verifyDomain', () => {
     expect(result.checks[0].type).toBe('ns_delegation');
   });
 
-  it('should dispatch CNAME check for cname mode', async () => {
-    mockResolveCname.mockResolvedValue(['ingress.platform.com']);
+  it('should dispatch IP-set check for cname mode', async () => {
+    // cname mode now uses verifyResolvesToIngress (IP-set intersection)
+    mockResolve4.mockImplementation((hostname: string) => {
+      if (hostname === 'example.com') return Promise.resolve(['1.2.3.4']);
+      if (hostname === 'ingress.platform.com') return Promise.resolve(['1.2.3.4']);
+      return Promise.resolve([]);
+    });
 
     const result = await verifyDomain('example.com', 'cname', platformConfig, mockDb);
     expect(result.verified).toBe(true);
     expect(result.checks).toHaveLength(1);
-    expect(result.checks[0].type).toBe('cname_record');
+    expect(result.checks[0].type).toBe('cname_to_ingress');
   });
 
   it('should dispatch AXFR check for secondary mode', async () => {

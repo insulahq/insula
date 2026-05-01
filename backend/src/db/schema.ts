@@ -287,6 +287,9 @@ export const domains = pgTable('domains', {
   masterIp: varchar('master_ip', { length: 45 }),
   verifiedAt: timestamp('verified_at'),
   lastVerifiedAt: timestamp('last_verified_at'),
+  // 0068: verification result cache — avoids hammering DNS on every page load.
+  verificationCacheAt: timestamp('verification_cache_at', { withTimezone: true }),
+  verificationCacheResult: jsonb('verification_cache_result').$type<{ verified: boolean; checks: Array<{ type: string; status: string; detail: string }> }>(),
   sslAutoRenew: integer('ssl_auto_renew').notNull().default(1),
   // Set by deployment-network-access reconciler when the underlying
   // deployment goes mesh-only (mode='tunneler'). annotation-sync.ts

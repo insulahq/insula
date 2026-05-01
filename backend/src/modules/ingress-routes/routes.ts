@@ -447,6 +447,22 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     return success(logs);
   });
 
+  // ─── Client-facing: Ingress Base Domain ──────────────────────────────────
+  // Exposes only the public ingress base domain so the client panel can display
+  // the correct CNAME target label without calling the admin-only settings endpoint.
+
+  app.get('/platform/ingress-base-domain', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Ingress Settings'],
+      summary: 'Get the public ingress base domain (client-accessible)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const settings = await getIngressSettings(app.db);
+    return success({ ingressBaseDomain: settings.ingressBaseDomain });
+  });
+
   // ─── Admin: Ingress Settings ──────────────────────────────────────────────
 
   app.get('/admin/ingress-settings', {
