@@ -17,7 +17,13 @@ import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 
-const PLATFORM_BUNDLES_HOSTPATH = '/var/lib/platform/bundles';
+// Bundles share the same hostPath as `/snapshots` (mounted at /snapshots
+// in the platform-api Deployment, backed by /var/lib/platform/snapshots
+// on the node). Keeping them as a sibling subdir avoids a new
+// volumeMount and keeps Phase 2 a code-only deploy. Phase 3 may move to
+// a dedicated PVC-backed location.
+const PLATFORM_BUNDLES_INPOD_ROOT = '/snapshots/_bundles_v2';
+const PLATFORM_BUNDLES_HOSTPATH = '/var/lib/platform/snapshots/_bundles_v2';
 
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -113,6 +119,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       : `${store.kind}://${input.targetConfigId ?? 'unknown'}`;
 
     const result = await runBundle(
+      // The Job needs the *node* path so its hostPath volume sees the
+      // same files the platform-api pod sees through /snapshots.
+      // Phase 3 will swap to a PVC-backed mount and unify the paths.
       { db: app.db, k8s, store, platformVersion, secretsKeyHex, hostpathRoot: PLATFORM_BUNDLES_HOSTPATH },
       {
         clientId: input.clientId,
@@ -152,7 +161,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
 async function resolveStore(app: FastifyInstance, targetConfigId: string | null): Promise<BackupStore> {
   if (!targetConfigId) {
-    return new LocalHostPathBackupStore(PLATFORM_BUNDLES_HOSTPATH);
+    return new LocalHostPathBackupStore(PLATFORM_BUNDLES_INPOD_ROOT);
   }
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);

@@ -1956,7 +1956,7 @@ export const clientBackupScheduleFreqEnum = pgEnum('client_backup_schedule_freq'
 ]);
 
 export const backupJobs = pgTable('backup_jobs', {
-  id: varchar('id', { length: 36 }).primaryKey(),
+  id: varchar('id', { length: 64 }).primaryKey(),
   clientId: varchar('client_id', { length: 36 })
     .notNull()
     .references(() => clients.id, { onDelete: 'cascade' }),
@@ -1988,7 +1988,7 @@ export const backupJobs = pgTable('backup_jobs', {
 
 export const backupComponents = pgTable('backup_components', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  backupJobId: varchar('backup_job_id', { length: 36 })
+  backupJobId: varchar('backup_job_id', { length: 64 })
     .notNull()
     .references(() => backupJobs.id, { onDelete: 'cascade' }),
   component: backupComponentNameEnum('component').notNull(),
