@@ -11,6 +11,8 @@
  */
 
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { detectOrphans } from '../orphaned-volumes/service.js';
+import type { Database } from '../../db/index.js';
 
 const LONGHORN_GROUP = 'longhorn.io';
 const LONGHORN_VERSION = 'v1beta2';
@@ -30,6 +32,17 @@ export interface StorageInventory {
     readonly degraded: number;
     readonly capacityBytes: number;
     readonly allocatedBytes: number;
+  };
+  /**
+   * Orphaned volume summary — surfaces the count + total bytes that would
+   * be freed if every orphan were deleted. Drives the "Orphaned" tile on
+   * the Storage Inventory card. Falls back to {count:0, totalBytes:0} when
+   * the orphan classifier fails (e.g. Longhorn unreachable) so the rest of
+   * the inventory still renders.
+   */
+  readonly orphaned: {
+    readonly count: number;
+    readonly totalBytes: number;
   };
   readonly backupTarget: {
     readonly url: string;
@@ -65,12 +78,13 @@ interface LonghornBackupTarget {
   };
 }
 
-export async function getStorageInventory(): Promise<StorageInventory> {
+export async function getStorageInventory(db?: Database): Promise<StorageInventory> {
   const empty: StorageInventory = {
     available: false,
     message: 'Longhorn not reachable',
     nodes: { total: 0, ready: 0, schedulable: 0 },
     volumes: { total: 0, attached: 0, degraded: 0, capacityBytes: 0, allocatedBytes: 0 },
+    orphaned: { count: 0, totalBytes: 0 },
     backupTarget: { url: '', available: false, message: 'unknown' },
   };
 
@@ -82,7 +96,7 @@ export async function getStorageInventory(): Promise<StorageInventory> {
   }
 
   try {
-    const [nodesResp, volumesResp, targetResp] = await Promise.allSettled([
+    const [nodesResp, volumesResp, targetResp, orphansResp] = await Promise.allSettled([
       clients.custom.listNamespacedCustomObject({
         group: LONGHORN_GROUP,
         version: LONGHORN_VERSION,
@@ -102,6 +116,10 @@ export async function getStorageInventory(): Promise<StorageInventory> {
         plural: 'backuptargets',
         name: 'default',
       } as Parameters<typeof clients.custom.getNamespacedCustomObject>[0]),
+      // Orphan classifier needs db for client-row lookup; skip when caller
+      // didn't pass it (older code paths). Result tile shows 0/0 in that
+      // case rather than failing the whole inventory.
+      db ? detectOrphans(db, clients) : Promise.resolve(null),
     ]);
 
     const nodes = nodesResp.status === 'fulfilled'
@@ -116,10 +134,15 @@ export async function getStorageInventory(): Promise<StorageInventory> {
       ? summariseBackupTarget(targetResp.value as LonghornBackupTarget)
       : empty.backupTarget;
 
+    const orphaned = orphansResp.status === 'fulfilled' && orphansResp.value
+      ? { count: orphansResp.value.totalCount, totalBytes: orphansResp.value.totalBytes }
+      : empty.orphaned;
+
     return {
       available: true,
       nodes,
       volumes,
+      orphaned,
       backupTarget,
     };
   } catch (err) {

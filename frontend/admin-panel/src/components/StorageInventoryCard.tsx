@@ -1,5 +1,7 @@
-import { HardDrive, Server, Cloud, Loader2, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { useState } from 'react';
+import { HardDrive, Server, Cloud, Loader2, AlertTriangle, CheckCircle, XCircle, AlertOctagon } from 'lucide-react';
 import { usePlatformStorage, formatBytes } from '@/hooks/use-platform-storage';
+import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
 
 /**
  * Storage Inventory — Longhorn nodes, volumes, backup target at a glance.
@@ -16,6 +18,7 @@ import { usePlatformStorage, formatBytes } from '@/hooks/use-platform-storage';
  */
 export default function StorageInventoryCard() {
   const { data, isLoading, isError } = usePlatformStorage();
+  const [orphansOpen, setOrphansOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -61,7 +64,7 @@ export default function StorageInventoryCard() {
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Inventory</h2>
       </div>
 
-      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatTile
           icon={<Server size={16} />}
           label="Longhorn Nodes"
@@ -85,6 +88,19 @@ export default function StorageInventoryCard() {
           testId="stat-capacity"
         />
         <StatTile
+          icon={<AlertOctagon size={16} />}
+          label="Orphaned"
+          primary={String(data.orphaned.count)}
+          secondary={
+            data.orphaned.count > 0
+              ? `${formatBytes(data.orphaned.totalBytes)} reclaimable`
+              : 'none detected'
+          }
+          accent={data.orphaned.count > 0 ? 'warn' : undefined}
+          onClick={() => setOrphansOpen(true)}
+          testId="stat-orphaned"
+        />
+        <StatTile
           icon={<Cloud size={16} />}
           label="Backup Target"
           primary={
@@ -97,6 +113,8 @@ export default function StorageInventoryCard() {
           testId="stat-backup-target"
         />
       </dl>
+
+      {orphansOpen && <OrphanedVolumesModal onClose={() => setOrphansOpen(false)} />}
     </div>
   );
 }
@@ -107,18 +125,19 @@ interface StatTileProps {
   readonly primary: React.ReactNode;
   readonly secondary?: string;
   readonly accent?: 'warn';
+  readonly onClick?: () => void;
   readonly testId: string;
 }
 
-function StatTile({ icon, label, primary, secondary, accent, testId }: StatTileProps) {
+function StatTile({ icon, label, primary, secondary, accent, onClick, testId }: StatTileProps) {
   const accentClass = accent === 'warn'
     ? 'border-amber-200 dark:border-amber-800'
     : 'border-gray-200 dark:border-gray-700';
-  return (
-    <div
-      className={`rounded-lg border ${accentClass} bg-gray-50 dark:bg-gray-900/30 p-3`}
-      data-testid={testId}
-    >
+  const interactive = onClick
+    ? 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900/50 transition-colors'
+    : '';
+  const content = (
+    <>
       <dt className="flex items-center gap-1 text-xs font-medium text-gray-500 dark:text-gray-400">
         {icon}
         {label}
@@ -129,6 +148,26 @@ function StatTile({ icon, label, primary, secondary, accent, testId }: StatTileP
           {secondary}
         </dd>
       )}
+    </>
+  );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`text-left rounded-lg border ${accentClass} bg-gray-50 dark:bg-gray-900/30 p-3 ${interactive}`}
+        data-testid={testId}
+      >
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div
+      className={`rounded-lg border ${accentClass} bg-gray-50 dark:bg-gray-900/30 p-3`}
+      data-testid={testId}
+    >
+      {content}
     </div>
   );
 }
