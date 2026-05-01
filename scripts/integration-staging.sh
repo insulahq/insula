@@ -32,21 +32,39 @@
 
 set -euo pipefail
 
+# Connection settings — every default targets the historical phoenix-
+# host.net staging cluster, but every value is overridable so the
+# harness runs cleanly against any cluster bootstrapped by this repo.
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
-CONTROL_HOST="${CONTROL_HOST:-192.0.2.58}"
+SSH_HOST="${SSH_HOST:-}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -q}"
 
-# Test fixtures: known catalog entry IDs on staging. If these change,
-# resolve via `GET /api/v1/catalog?limit=200` and look up the `code`.
-# Use nginx-php (docker.io/serversideup/php — publicly pullable)
-# rather than static-nginx (ghcr.io/insulahq/k8s-application-catalog/...
-# which requires GHCR auth that the cluster doesn't have).
+# CONTROL_HOST is the SSH target for cluster-internal kubectl probes.
+# Operators usually only set SSH_HOST (which integration-all.sh expects);
+# derive CONTROL_HOST from it if not set explicitly. SSH_HOST is in the
+# form `user@host` or just `host`; strip the user prefix.
+if [[ -z "${CONTROL_HOST:-}" ]]; then
+  if [[ -n "$SSH_HOST" ]]; then
+    CONTROL_HOST="${SSH_HOST##*@}"
+  else
+    CONTROL_HOST="192.0.2.58"  # example-host staging1 fallback
+  fi
+fi
+
+# Test fixtures: known catalog entry IDs. Default points at the
+# nginx-php entry in the seeded catalog; override via env var if your
+# cluster's catalog uses a different UUID. Resolve via
+# `GET /api/v1/catalog?limit=200` if you need to look up the `code`.
 CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"
 
-# Domain template — uses the example.test wildcard so DNS just works.
+# Wildcard DNS domain used to construct ephemeral test hostnames
+# (HTTPS scenario provisions `t<timestamp>.${HTTPS_TEST_DOMAIN_BASE}`).
+# REQUIRED — the wildcard must resolve to the cluster's ingress IPs.
+# Default is the example-tech `staging.example.test` zone; operators
+# of other clusters MUST set this to a wildcard they control.
 HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-staging.example.test}"
 
 if [[ -z "$ADMIN_PASSWORD" ]]; then
