@@ -407,6 +407,41 @@ log "logging in as $ADMIN_EMAIL"
 TOKEN=$(login_token)
 [[ -n "$TOKEN" ]] || { echo "login failed" >&2; exit 1; }
 
+# Auto-resolve CATALOG_NGINX_PHP if the operator-supplied UUID isn't
+# present in this cluster's catalog (the seeded UUID varies by
+# install/migration version). Falls back to lookup-by-code so the
+# suite isn't tied to a specific catalog seed. The default value is
+# the historical staging UUID; if the catalog was reseeded or
+# re-imported, look up the entry whose `code` is `nginx-php`.
+verify_catalog_uuid() {
+  api GET "/catalog/$CATALOG_NGINX_PHP" 2>/dev/null \
+    | grep -q '"code":"nginx-php"'
+}
+if ! verify_catalog_uuid; then
+  log "CATALOG_NGINX_PHP=${CATALOG_NGINX_PHP} not present in catalog; resolving by code=nginx-php..."
+  resolved=$(api GET '/catalog?limit=200' 2>/dev/null \
+    | python3 -c "
+import json, sys
+try:
+    body = json.load(sys.stdin)
+    items = body.get('data', body) if isinstance(body, dict) else body
+    items = items if isinstance(items, list) else items.get('items', [])
+    for entry in items:
+        if entry.get('code') == 'nginx-php':
+            print(entry.get('id') or entry.get('uuid') or '')
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+  if [[ -n "$resolved" ]]; then
+    CATALOG_NGINX_PHP="$resolved"
+    log "  resolved CATALOG_NGINX_PHP=$CATALOG_NGINX_PHP"
+  else
+    fail "could not resolve catalog entry code=nginx-php from /api/v1/catalog. Set CATALOG_NGINX_PHP explicitly."
+    exit 2
+  fi
+fi
+
 case "$SCENARIO" in
   all)
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
