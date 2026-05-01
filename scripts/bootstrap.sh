@@ -600,6 +600,28 @@ configure_firewall() {
 
   log "Configuring nftables firewall..."
 
+  # Stop + mask any firewall daemon that would compete with our
+  # /etc/nftables.conf. These run on default OS images and silently
+  # write rules into different nft tables (firewalld → `inet firewalld`,
+  # ufw → `inet ufw`), which interferes with how the runtime-firewall
+  # reconciler reads/writes our `inet filter` table — and breaks the
+  # tenant_ports_{tcp,udp} accept rules. Mask so a `dnf upgrade` doesn't
+  # silently re-enable them on the next reboot.
+  #
+  #   firewalld  — RHEL 9 / Rocky 9 / Alma 9 / CentOS Stream 9/10 (default)
+  #   ufw        — Ubuntu user installs (not enabled by default but common)
+  #   nftables.service is OUR managed unit; nothing to disable there.
+  for unit in firewalld.service ufw.service; do
+    if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "^${unit}"; then
+      systemctl is-active --quiet "$unit" 2>/dev/null \
+        && systemctl stop "$unit" 2>/dev/null \
+        && log "  stopped competing firewall unit: $unit"
+      systemctl is-enabled --quiet "$unit" 2>/dev/null \
+        && systemctl mask "$unit" 2>/dev/null \
+        && log "  masked competing firewall unit: $unit"
+    fi
+  done
+
   # ─── Resolve firewall mode ────────────────────────────────────────────
   # Three modes, all dual-stack v4+v6:
   #   cidr   — CLUSTER_NETWORK_CIDR is set (explicit flag, NetBird
