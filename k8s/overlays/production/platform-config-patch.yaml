@@ -12,3 +12,7 @@ data:
   admin-url: "https://admin.${DOMAIN}"
   client-url: "https://client.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
+  # Passkey (WebAuthn) RP — placeholder-templated. Resolved by Flux
+  # postBuild.substituteFrom (or bootstrap envsubst).
+  passkey-rp-id: "${DOMAIN}"
+  passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
