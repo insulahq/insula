@@ -11,6 +11,25 @@
 #
 # USAGE
 #   ADMIN_PASSWORD=<…> ./scripts/integration-all.sh
+#
+# All connection settings are env-overridable. To run against a non-
+# phoenix-host.net cluster (e.g. testing.phoenix-host.net), pass:
+#   SSH_HOST=root@<ip>                      [default: root@89.167.3.56]
+#   SSH_KEY=/path/to/key                    [default: ~/hosting-platform.key]
+#   ADMIN_HOST=https://admin.<domain>       [default: phoenix staging]
+#   ADMIN_EMAIL=admin@<domain>              [default: admin@phoenix-host.net]
+#   ADMIN_PASSWORD=<…>                      [REQUIRED]
+#   HTTPS_TEST_DOMAIN_BASE=<wildcard zone>  [default: staging.success.com.na]
+#                                           Must wildcard-resolve to the cluster
+#                                           ingress IPs; required by the HTTPS
+#                                           tenant-provisioning scenario.
+#   CATALOG_NGINX_PHP=<UUID>                [default: seeded UUID; lookup via
+#                                           GET /api/v1/catalog?limit=200 if
+#                                           your cluster's catalog differs]
+#
+# CONTROL_HOST (the SSH target for cluster-internal kubectl probes) is
+# auto-derived from SSH_HOST; override only if your control plane is
+# reachable on a different IP than the bastion.
 
 set -uo pipefail
 
@@ -31,12 +50,15 @@ warn()  { printf '%b⚠%b %s\n' "$YELLOW" "$RESET" "$*"; }
 
 # Reset admin password before each suite — pod restarts cycle the
 # bcrypt hash and a stale password breaks every login. The reset
-# script is idempotent and lives on staging1.
+# script is idempotent. Both the SSH target and the admin email are
+# operator-overridable so the harness runs against any cluster
+# bootstrapped by this repo, not just the phoenix-host.net staging
+# cluster.
 reset_admin_password() {
   ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" \
     -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
     "${SSH_HOST:-root@89.167.3.56}" \
-    "/tmp/admin-password-reset.sh --email admin@phoenix-host.net --password '$ADMIN_PASSWORD' >/dev/null 2>&1" \
+    "/tmp/admin-password-reset.sh --email '${ADMIN_EMAIL:-admin@phoenix-host.net}' --password '$ADMIN_PASSWORD' >/dev/null 2>&1" \
     || warn "admin password reset failed — auth may fail in suite"
 }
 
