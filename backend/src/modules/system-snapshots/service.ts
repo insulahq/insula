@@ -69,12 +69,12 @@ export interface RecurringJobPolicy {
 interface RawPvc {
   readonly metadata?: { readonly name?: string; readonly namespace?: string; readonly labels?: Record<string, string> };
   readonly spec?: { readonly volumeName?: string };
-  readonly status?: { readonly capacity?: { readonly storage?: string } };
+  readonly status?: { readonly capacity?: { readonly storage?: string | number } };
 }
 
 interface RawLhVolume {
   readonly metadata?: { readonly name?: string; readonly labels?: Record<string, string> };
-  readonly spec?: { readonly size?: string };
+  readonly spec?: { readonly size?: string | number };
   readonly status?: {
     readonly kubernetesStatus?: { readonly pvName?: string; readonly namespace?: string; readonly pvcName?: string };
     readonly robustness?: string;
@@ -86,7 +86,7 @@ interface RawLhSnapshot {
   readonly spec?: { readonly volume?: string };
   readonly status?: {
     readonly creationTime?: string;
-    readonly size?: string;
+    readonly size?: string | number;
     readonly readyToUse?: boolean;
     readonly markRemoved?: boolean;
     readonly userCreated?: boolean;
@@ -98,11 +98,16 @@ interface RawLhRecurringJob {
   readonly spec?: { readonly task?: string; readonly cron?: string; readonly retain?: number; readonly groups?: readonly string[] };
 }
 
-function parseQuantityBytes(value: string | undefined): number {
-  if (!value) return 0;
-  const m = value.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?$/);
+function parseQuantityBytes(value: string | number | undefined): number {
+  if (value === undefined || value === null) return 0;
+  // Longhorn sometimes returns sizes as raw numbers (e.g. snapshot.status.size)
+  // and sometimes as quantity strings (e.g. pvc.status.capacity.storage = "10Gi").
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value) : 0;
+  const s = String(value);
+  if (!s) return 0;
+  const m = s.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?$/);
   if (!m) {
-    const n = Number(value);
+    const n = Number(s);
     return Number.isFinite(n) ? n : 0;
   }
   const num = parseFloat(m[1]);

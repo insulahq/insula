@@ -39,14 +39,16 @@ interface SingletonTarget {
   readonly replicas?: 'tracksHaServerCount' | number;
 }
 
+/**
+ * Helm-installed Deployments we patch directly. Longhorn's CSI controllers
+ * + UI have no operator on top so direct Deployment patches stick.
+ */
 const SINGLETONS: readonly SingletonTarget[] = Object.freeze([
   { namespace: 'longhorn-system', name: 'csi-attacher', replicas: 1 },
   { namespace: 'longhorn-system', name: 'csi-provisioner', replicas: 1 },
   { namespace: 'longhorn-system', name: 'csi-resizer', replicas: 1 },
   { namespace: 'longhorn-system', name: 'csi-snapshotter', replicas: 1 },
   { namespace: 'longhorn-system', name: 'longhorn-ui', replicas: 1 },
-  { namespace: 'calico-system', name: 'calico-kube-controllers', replicas: 1 },
-  { namespace: 'calico-system', name: 'calico-typha', replicas: 'tracksHaServerCount' },
 ]);
 
 interface RawDeployment {
@@ -166,6 +168,104 @@ interface RawLhNode {
   readonly status?: { readonly diskStatus?: Record<string, { readonly storageMaximum?: number }> };
 }
 
+/**
+ * Calico is operator-managed (`Installation.operator.tigera.io`). Direct
+ * Deployment patches on calico-typha / calico-kube-controllers /
+ * calico-apiserver are reverted by the Tigera operator on its next
+ * reconcile, so we patch the Installation CR instead — Tigera then
+ * propagates nodeSelector + tolerations to every component Deployment.
+ */
+async function reconcileCalicoInstallation(k8s: K8sClients): Promise<{ readonly patched: boolean; readonly error?: string }> {
+  interface RawInstallation {
+    readonly spec?: {
+      readonly controlPlaneNodeSelector?: Record<string, string>;
+      readonly controlPlaneTolerations?: ReadonlyArray<{ readonly key?: string; readonly operator?: string; readonly value?: string; readonly effect?: string }>;
+      readonly typhaDeployment?: {
+        readonly spec?: {
+          readonly template?: {
+            readonly spec?: {
+              readonly nodeSelector?: Record<string, string>;
+              readonly tolerations?: ReadonlyArray<{ readonly key?: string; readonly operator?: string; readonly value?: string; readonly effect?: string }>;
+            };
+          };
+        };
+      };
+    };
+  }
+  let inst: RawInstallation | null = null;
+  try {
+    inst = await k8s.custom.getNamespacedCustomObject({
+      group: 'operator.tigera.io', version: 'v1',
+      plural: 'installations', name: 'default',
+      namespace: '',
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as RawInstallation;
+  } catch (err) {
+    const status = (err as { code?: number; statusCode?: number }).code
+      ?? (err as { statusCode?: number }).statusCode;
+    if (status === 404) return { patched: false }; // Calico via operator not installed
+    return { patched: false, error: `read installation: ${(err as Error).message}` };
+  }
+
+  const cpNs = inst.spec?.controlPlaneNodeSelector?.[NODE_ROLE_LABEL];
+  const cpTol = inst.spec?.controlPlaneTolerations?.find((t) => t.key === SERVER_ONLY_TAINT_KEY) !== undefined;
+  const typhaNs = inst.spec?.typhaDeployment?.spec?.template?.spec?.nodeSelector?.[NODE_ROLE_LABEL];
+  const typhaTol = inst.spec?.typhaDeployment?.spec?.template?.spec?.tolerations
+    ?.find((t) => t.key === SERVER_ONLY_TAINT_KEY) !== undefined;
+
+  if (cpNs === 'server' && cpTol && typhaNs === 'server' && typhaTol) {
+    return { patched: false };
+  }
+
+  const existingCpNs = inst.spec?.controlPlaneNodeSelector ?? {};
+  const existingCpTol = inst.spec?.controlPlaneTolerations ?? [];
+  const existingTyphaNs = inst.spec?.typhaDeployment?.spec?.template?.spec?.nodeSelector ?? {};
+  const existingTyphaTol = inst.spec?.typhaDeployment?.spec?.template?.spec?.tolerations ?? [];
+
+  const patch = {
+    spec: {
+      controlPlaneNodeSelector: { ...existingCpNs, [NODE_ROLE_LABEL]: 'server' },
+      controlPlaneTolerations: [
+        ...existingCpTol.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY),
+        { key: SERVER_ONLY_TAINT_KEY, operator: 'Exists', effect: 'NoSchedule' },
+      ],
+      typhaDeployment: {
+        spec: {
+          template: {
+            spec: {
+              nodeSelector: { ...existingTyphaNs, [NODE_ROLE_LABEL]: 'server' },
+              tolerations: [
+                ...existingTyphaTol.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY),
+                { key: SERVER_ONLY_TAINT_KEY, operator: 'Exists', effect: 'NoSchedule' },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+
+  try {
+    await (k8s.custom as unknown as {
+      patchNamespacedCustomObject: (
+        a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+        mw: typeof MERGE_PATCH,
+      ) => Promise<unknown>;
+    }).patchNamespacedCustomObject(
+      {
+        group: 'operator.tigera.io', version: 'v1',
+        plural: 'installations', name: 'default',
+        namespace: '',
+        body: patch,
+      },
+      MERGE_PATCH,
+    );
+    console.log('[system-pod-placement] patched Calico Installation: controlPlane + typha pinned to server');
+    return { patched: true };
+  } catch (err) {
+    return { patched: false, error: `patch installation: ${(err as Error).message}` };
+  }
+}
+
 async function reconcileWorkerStorageReserve(k8s: K8sClients): Promise<{ readonly patched: number; readonly errors: readonly string[] }> {
   const errors: string[] = [];
   let patched = 0;
@@ -245,11 +345,14 @@ export function startSystemPodPlacement(_db: Database, k8s: K8sClients): { reado
     try {
       const a = await reconcileSingletonAffinity(k8s);
       const b = await reconcileWorkerStorageReserve(k8s);
-      const total = a.patched + b.patched;
-      if (total > 0 || a.errors.length > 0 || b.errors.length > 0) {
-        console.log(`[system-pod-placement] tick: singletons=${a.patched} worker-disks=${b.patched} errors=${[...a.errors, ...b.errors].length}`);
+      const c = await reconcileCalicoInstallation(k8s);
+      const cErrors = c.error ? [c.error] : [];
+      const allErrors = [...a.errors, ...b.errors, ...cErrors];
+      const total = a.patched + b.patched + (c.patched ? 1 : 0);
+      if (total > 0 || allErrors.length > 0) {
+        console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} errors=${allErrors.length}`);
       }
-      for (const e of [...a.errors, ...b.errors]) console.warn('[system-pod-placement]', e);
+      for (const e of allErrors) console.warn('[system-pod-placement]', e);
     } catch (err) {
       console.error('[system-pod-placement] tick failed:', (err as Error).message);
     } finally {
