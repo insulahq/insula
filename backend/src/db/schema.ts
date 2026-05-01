@@ -203,6 +203,11 @@ export const hostingPlans = pgTable('hosting_plans', {
   // clients.max_mailboxes_override.
   maxMailboxes: integer('max_mailboxes').notNull().default(50),
   weeklyAiBudgetCents: integer('weekly_ai_budget_cents').notNull().default(100),
+  // Backup quota — see migration 0066 / ADR-032.
+  defaultBackupRetentionDays: integer('default_backup_retention_days').notNull().default(30),
+  maxBackupRetentionDays: integer('max_backup_retention_days').notNull().default(90),
+  maxBackups: integer('max_backups').notNull().default(10),
+  maxBackupSizeBytes: bigint('max_backup_size_bytes', { mode: 'number' }).notNull().default(53687091200),
   features: jsonb('features').$type<Record<string, unknown>>(),
   status: planStatusEnum().notNull().default('active'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -1897,3 +1902,131 @@ export const authConsumedTokens = pgTable('auth_consumed_tokens', {
 
 export type AuthConsumedToken = typeof authConsumedTokens.$inferSelect;
 export type NewAuthConsumedToken = typeof authConsumedTokens.$inferInsert;
+
+// ─── Backup Bundles v2 (ADR-032 / migration 0066) ───────────────────────────
+
+export const backupInitiatorEnum = pgEnum('backup_initiator', [
+  'client',
+  'admin',
+  'system',
+  'cluster',
+]);
+
+export const backupSystemTriggerEnum = pgEnum('backup_system_trigger', [
+  'pre_resize',
+  'pre_archive',
+  'scheduled',
+  'manual',
+]);
+
+export const backupJobStatusEnum = pgEnum('backup_job_status', [
+  'pending',
+  'running',
+  'completed',
+  'partial',
+  'failed',
+  'expired',
+]);
+
+export const backupComponentNameEnum = pgEnum('backup_component_name', [
+  'files',
+  'mailboxes',
+  'config',
+  'secrets',
+]);
+
+export const backupComponentStatusEnum = pgEnum('backup_component_status', [
+  'pending',
+  'running',
+  'completed',
+  'skipped',
+  'failed',
+]);
+
+export const backupTargetKindEnum = pgEnum('backup_target_kind', [
+  'hostpath',
+  's3',
+  'ssh',
+]);
+
+export const clientBackupScheduleFreqEnum = pgEnum('client_backup_schedule_freq', [
+  'daily',
+  'weekly',
+  'monthly',
+]);
+
+export const backupJobs = pgTable('backup_jobs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  initiator: backupInitiatorEnum('initiator').notNull(),
+  systemTrigger: backupSystemTriggerEnum('system_trigger'),
+  status: backupJobStatusEnum('status').notNull().default('pending'),
+  targetKind: backupTargetKindEnum('target_kind').notNull(),
+  targetUri: varchar('target_uri', { length: 1000 }).notNull(),
+  targetConfigId: varchar('target_config_id', { length: 36 })
+    .references(() => backupConfigurations.id, { onDelete: 'set null' }),
+  label: varchar('label', { length: 255 }),
+  description: text('description'),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+  retentionDays: integer('retention_days').notNull(),
+  expiresAt: timestamp('expires_at'),
+  exportMode: varchar('export_mode', { length: 32 }),
+  exportArtifact: varchar('export_artifact', { length: 1000 }),
+  startedAt: timestamp('started_at'),
+  finishedAt: timestamp('finished_at'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('backup_jobs_client_idx').on(table.clientId),
+  index('backup_jobs_status_idx').on(table.status),
+  index('backup_jobs_initiator_idx').on(table.initiator),
+  index('backup_jobs_expires_idx').on(table.expiresAt),
+]);
+
+export const backupComponents = pgTable('backup_components', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  backupJobId: varchar('backup_job_id', { length: 36 })
+    .notNull()
+    .references(() => backupJobs.id, { onDelete: 'cascade' }),
+  component: backupComponentNameEnum('component').notNull(),
+  artifactName: varchar('artifact_name', { length: 255 }).notNull(),
+  status: backupComponentStatusEnum('status').notNull().default('pending'),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+  sha256: varchar('sha256', { length: 64 }),
+  startedAt: timestamp('started_at'),
+  finishedAt: timestamp('finished_at'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  uniqueIndex('backup_components_job_component_artifact_unique')
+    .on(table.backupJobId, table.component, table.artifactName),
+  index('backup_components_job_idx').on(table.backupJobId),
+  index('backup_components_status_idx').on(table.status),
+]);
+
+export const clientBackupSchedules = pgTable('client_backup_schedules', {
+  clientId: varchar('client_id', { length: 36 })
+    .primaryKey()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(false),
+  frequency: clientBackupScheduleFreqEnum('frequency').notNull().default('weekly'),
+  hourOfDayUtc: integer('hour_of_day_utc').notNull().default(3),
+  dayOfWeek: integer('day_of_week'),
+  dayOfMonth: integer('day_of_month'),
+  retentionDays: integer('retention_days').notNull().default(14),
+  lastRunAt: timestamp('last_run_at'),
+  lastRunStatus: backupJobStatusEnum('last_run_status'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type BackupJob = typeof backupJobs.$inferSelect;
+export type NewBackupJob = typeof backupJobs.$inferInsert;
+export type BackupComponent = typeof backupComponents.$inferSelect;
+export type NewBackupComponent = typeof backupComponents.$inferInsert;
+export type ClientBackupSchedule = typeof clientBackupSchedules.$inferSelect;
+export type NewClientBackupSchedule = typeof clientBackupSchedules.$inferInsert;

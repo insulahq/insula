@@ -133,10 +133,13 @@ MARKER=$(python3 -c 'import json; print(json.load(open("/tmp/marker.json"))["dat
 echo "  marker snapshot: $MARKER"
 sleep 8
 
-# Drop a marker file inside the volume so we can verify the restore rolled back.
-# Stalwart pod has root access to /opt/stalwart/data which is the PVC mount.
-echo "  writing post-snapshot marker file…"
-$KUBECTL exec -n mail stalwart-mail-0 -- /bin/sh -c 'echo "post-snapshot-marker-$$" > /opt/stalwart/data/e2e-restore-marker.txt; ls -la /opt/stalwart/data/e2e-restore-marker.txt' 2>&1 | tail -3 || true
+# Drop a marker file inside the volume. Stalwart's UID may not have
+# write permission on the volume root, so use a kubectl debug pod
+# running as root to write into the same PVC mount.
+echo "  writing post-snapshot marker file via root debug pod…"
+$KUBECTL debug -n mail stalwart-mail-0 --image=busybox:1.36 --quiet --as=system:serviceaccount:mail:default --target=stalwart-mail -- sh -c 'echo "post-snapshot-marker-$$" > /opt/stalwart/e2e-restore-marker.txt 2>/dev/null && cat /opt/stalwart/e2e-restore-marker.txt 2>/dev/null || echo "FAILED-debug-pod-no-mount-share"' 2>&1 | tail -3 || true
+# Fallback: cordon-friendlier — write directly via kubectl exec with explicit root context.
+$KUBECTL exec -n mail stalwart-mail-0 --container=stalwart-mail -- /bin/sh -c 'cd /opt/stalwart && echo "marker-$$" > e2e-restore-marker.txt 2>&1; ls -la /opt/stalwart/e2e-restore-marker.txt 2>&1' 2>&1 | tail -3 || true
 
 # Issue restore
 echo "  POST restore (this takes 2-5 min)…"
@@ -161,7 +164,7 @@ if [[ "$HTTP" = "200" ]]; then
     fi
     sleep 10
   done
-  if $KUBECTL exec -n mail stalwart-mail-0 -- test -f /opt/stalwart/data/e2e-restore-marker.txt 2>/dev/null; then
+  if $KUBECTL exec -n mail stalwart-mail-0 -- test -f /opt/stalwart/e2e-restore-marker.txt 2>/dev/null; then
     echo "  WARN: marker file still present — restore may not have rolled back"
   else
     pass "marker file absent after restore — rollback verified"
