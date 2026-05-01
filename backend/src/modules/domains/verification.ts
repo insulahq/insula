@@ -49,6 +49,10 @@ export async function verifyNsDelegation(
   }
 }
 
+/**
+ * @deprecated Use verifyResolvesToIngress for cname-mode domains instead.
+ * This function does an exact CNAME match which rejects CDN/proxy setups.
+ */
 export async function verifyCnameRecord(
   hostname: string,
   expectedTarget: string,
@@ -74,6 +78,109 @@ export async function verifyCnameRecord(
       detail: `CNAME lookup failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
     };
   }
+}
+
+/**
+ * Resolve IPs for a hostname using both A and AAAA queries.
+ * dns.resolve4/6 follow CNAME chains transparently.
+ * Returns an empty array (and optionally logs into `errors`) if no records exist.
+ */
+async function resolveAllIps(
+  hostname: string,
+  errors: string[],
+): Promise<string[]> {
+  const [v4Result, v6Result] = await Promise.allSettled([
+    dns.resolve4(hostname),
+    dns.resolve6(hostname),
+  ]);
+
+  const ips: string[] = [];
+
+  if (v4Result.status === 'fulfilled') {
+    ips.push(...v4Result.value);
+  } else {
+    const code = (v4Result.reason as NodeJS.ErrnoException).code;
+    if (code !== 'ENODATA' && code !== 'ENOTFOUND') {
+      errors.push(`A lookup error: ${v4Result.reason instanceof Error ? v4Result.reason.message : String(v4Result.reason)}`);
+    }
+  }
+
+  if (v6Result.status === 'fulfilled') {
+    ips.push(...v6Result.value);
+  } else {
+    const code = (v6Result.reason as NodeJS.ErrnoException).code;
+    if (code !== 'ENODATA' && code !== 'ENOTFOUND') {
+      errors.push(`AAAA lookup error: ${v6Result.reason instanceof Error ? v6Result.reason.message : String(v6Result.reason)}`);
+    }
+  }
+
+  return ips;
+}
+
+/**
+ * Verify that a customer hostname ultimately resolves to one or more IPs
+ * that are also served by the ingress base domain.
+ *
+ * Pass/fail is determined by IP-set intersection — any CDN or proxy chain
+ * that ends at the platform's ingress IPs will pass.
+ *
+ * The CNAME chain is also walked (informational only) and included in the
+ * detail message.
+ */
+export async function verifyResolvesToIngress(
+  hostname: string,
+  ingressBaseDomain: string,
+): Promise<VerificationCheck> {
+  // Resolve ingress base IPs first — if this fails it's an operator config problem
+  const ingressErrors: string[] = [];
+  const ingressIps = await resolveAllIps(ingressBaseDomain, ingressErrors);
+
+  if (ingressIps.length === 0) {
+    const detail = ingressErrors.length > 0
+      ? `Platform ingress base domain has no resolvable A/AAAA records — operator misconfiguration (${ingressErrors.join('; ')})`
+      : `Platform ingress base domain has no resolvable A/AAAA records — operator misconfiguration`;
+    return { type: 'cname_to_ingress', status: 'fail', detail };
+  }
+
+  // Resolve customer hostname IPs (follows CNAME chain transparently)
+  const customerErrors: string[] = [];
+  const customerIps = await resolveAllIps(hostname, customerErrors);
+
+  if (customerIps.length === 0) {
+    let detail = `No A/AAAA records resolve for ${hostname}`;
+    if (customerErrors.length > 0) {
+      detail += ` (${customerErrors.join('; ')})`;
+    }
+    return { type: 'cname_to_ingress', status: 'fail', detail };
+  }
+
+  // IP-set intersection check
+  const ingressSet = new Set(ingressIps);
+  const overlap = customerIps.filter((ip) => ingressSet.has(ip));
+  const passes = overlap.length > 0;
+
+  // Build a friendly CNAME-chain prefix for the detail message (best-effort)
+  let chainPrefix = '';
+  try {
+    const cnames = await dns.resolveCname(hostname);
+    if (cnames.length > 0) {
+      chainPrefix = `${hostname} → ${cnames.join(' → ')} → `;
+    }
+  } catch {
+    // CNAME chain is informational only — ignore lookup failures
+  }
+
+  const resolvedDisplay = `${chainPrefix}${customerIps.join(', ')}`;
+
+  const detail = passes
+    ? `${resolvedDisplay} (matches ingress base IPs: ${[...ingressSet].join(', ')})`
+    : `Resolved IPs (${resolvedDisplay}) do not overlap with ingress base IPs (${ingressIps.join(', ')})`;
+
+  return {
+    type: 'cname_to_ingress',
+    status: passes ? 'pass' : 'fail',
+    detail,
+  };
 }
 
 export async function verifyAxfrSync(
@@ -140,7 +247,9 @@ export async function verifyDomain(
       break;
     }
     case 'cname': {
-      const cnameCheck = await verifyCnameRecord(domain, platformConfig.ingressHostname);
+      // Use IP-set intersection instead of exact CNAME match so CDN/proxy
+      // chains (e.g. customer.com → CDN → platform IP) are accepted.
+      const cnameCheck = await verifyResolvesToIngress(domain, platformConfig.ingressHostname);
       checks.push(cnameCheck);
       break;
     }
@@ -158,14 +267,37 @@ export async function verifyDomain(
 
 // ─── Config Helper ──────────────────────────────────────────────────────────
 
-export function getPlatformConfig(): PlatformConfig {
+/**
+ * Read platform configuration.
+ * ingressHostname is read from platform_settings.ingress_base_domain (DB-first),
+ * then falls back to the PLATFORM_INGRESS_HOSTNAME env var, then empty string.
+ *
+ * The DB lookup is delegated to the caller to keep verification.ts free of
+ * direct ORM imports (drizzle-orm is not available in the test environment).
+ * Pass a pre-fetched `dbIngressBaseDomain` value; the function will fall back
+ * to the env var if it is null/undefined.
+ */
+export async function getPlatformConfig(db: Database): Promise<PlatformConfig> {
   const nameserversEnv = process.env.PLATFORM_NAMESERVERS ?? '';
   const nameservers = nameserversEnv
     .split(',')
     .map((ns) => ns.trim())
     .filter(Boolean);
 
-  const ingressHostname = process.env.PLATFORM_INGRESS_HOSTNAME ?? '';
+  // DB-first for ingressHostname — delegate to ingress-routes service to avoid
+  // direct drizzle-orm imports here.
+  let ingressHostname = '';
+  try {
+    const { getIngressSettings } = await import('../ingress-routes/service.js');
+    const settings = await getIngressSettings(db);
+    ingressHostname = settings.ingressBaseDomain;
+  } catch {
+    // DB unavailable — fall through to env fallback
+  }
+
+  if (!ingressHostname) {
+    ingressHostname = process.env.PLATFORM_INGRESS_HOSTNAME ?? '';
+  }
 
   return { nameservers, ingressHostname };
 }
