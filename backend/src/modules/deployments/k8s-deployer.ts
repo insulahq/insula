@@ -57,7 +57,7 @@ export interface DeployCatalogEntryInput {
   readonly storagePath: string;
   readonly namespace: string;
   readonly components: readonly DeployComponentInput[];
-  readonly volumes: Array<{ container_path: string; local_path?: string }>;
+  readonly volumes: Array<{ container_path: string; local_path?: string | null }>;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
@@ -570,7 +570,7 @@ async function deployK8sDeployment(
   container: Record<string, unknown>,
   replicaCount: number,
   storagePath: string,
-  volumes: Array<{ container_path: string; local_path?: string }> = [],
+  volumes: Array<{ container_path: string; local_path?: string | null }> = [],
   passwordResetContainer?: { name: string; image: string; command: readonly string[]; volumeMounts: readonly Record<string, unknown>[]; resources: Record<string, unknown>; securityContext?: Record<string, unknown> } | null,
   envVars?: Array<{ name: string; value: string }>,
   // M3/HA: optional worker pin + tier-aware affinity. Local tier =
@@ -683,7 +683,7 @@ async function deployK8sCronJob(
   container: Record<string, unknown>,
   schedule: string,
   storagePath: string = '',
-  volumes: Array<{ container_path: string; local_path?: string }> = [],
+  volumes: Array<{ container_path: string; local_path?: string | null }> = [],
 ): Promise<void> {
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
   const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
@@ -728,7 +728,7 @@ async function deployK8sJob(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   storagePath: string = '',
-  volumes: Array<{ container_path: string; local_path?: string }> = [],
+  volumes: Array<{ container_path: string; local_path?: string | null }> = [],
 ): Promise<void> {
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
   const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
