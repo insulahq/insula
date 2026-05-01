@@ -68,13 +68,18 @@ export default function PlatformStoragePolicyCard() {
       <div className="flex items-center gap-3">
         <Database size={20} className="text-gray-700 dark:text-gray-300" />
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          Platform Storage Replication
+          Platform High Availability Settings
         </h2>
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Controls Longhorn replica count for the platform's own Postgres and Stalwart-mail volumes.
-        Distinct from per-tenant storage tier (set on each client).
+        Controls how the platform's own system pods and persistent storage tolerate node failure.
+        Apply <strong>High Availability</strong> when the cluster has at least three Ready server
+        nodes — Longhorn replicates Postgres + Stalwart-mail volumes 3× (system-tagged nodes only),
+        CNPG scales Postgres instances 1 → 3 with streaming replication, and stateless platform
+        Deployments (admin-panel, client-panel, platform-api, oauth2-proxy, dex) scale to 3 with
+        a per-server topology spread so a single node loss never takes the platform offline.
+        Reversible at any time. Distinct from per-tenant storage tier, which is set on each client.
       </p>
 
       {showRecommendBanner && (
