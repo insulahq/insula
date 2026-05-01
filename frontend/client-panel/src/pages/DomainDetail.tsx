@@ -68,7 +68,6 @@ export default function DomainDetail() {
     if (stale) {
       verifyDomain.mutate(domainId!);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [domain?.id]);
 
   if (isLoading) {
