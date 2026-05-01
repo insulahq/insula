@@ -565,9 +565,12 @@ export async function revertSnapshot(
 ): Promise<RevertResult> {
   const apiBase = opts.apiBase ?? process.env.LONGHORN_API_BASE ?? DEFAULT_LONGHORN_API_BASE;
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
-  const detachTimeoutMs = opts.detachTimeoutMs ?? 90_000;
+  // 5 min default — Longhorn delays the detach handshake until any
+  // in-flight engine upgrade or replica rebuild finishes. A 90s
+  // timeout was too short for degraded volumes that are mid-rebuild.
+  const detachTimeoutMs = opts.detachTimeoutMs ?? 300_000;
   const revertTimeoutMs = opts.revertTimeoutMs ?? 60_000;
-  const attachTimeoutMs = opts.attachTimeoutMs ?? 120_000;
+  const attachTimeoutMs = opts.attachTimeoutMs ?? 180_000;
   const steps: { step: string; ok: boolean; detail?: string }[] = [];
 
   type SnapShape = { spec?: { volume?: string }; status?: { readyToUse?: boolean } };
@@ -630,6 +633,24 @@ export async function revertSnapshot(
     (e as Error & { code?: number }).code = 409; throw e;
   }
   steps.push({ step: 'snapshot-ready', ok: true });
+
+  // Block restore on a faulted volume — engine can't safely revert
+  // when no replica is healthy. Degraded (some replicas missing) is
+  // OK; the surviving replicas can still serve the revert.
+  try {
+    const v = await k8s.custom.getNamespacedCustomObject({
+      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { robustness?: string; currentImage?: string } };
+    const robustness = v.status?.robustness ?? '';
+    if (robustness === 'faulted') {
+      const e = new Error(`Volume '${volumeName}' is faulted — restore refused. Inspect Longhorn UI and recover before retrying.`);
+      (e as Error & { code?: number }).code = 409; throw e;
+    }
+    steps.push({ step: 'volume-health-check', ok: true, detail: `robustness=${robustness || 'unknown'}` });
+  } catch (err) {
+    if ((err as { code?: number }).code === 409) throw err;
+    // Non-fatal: continue if we can't read the volume
+  }
 
   let restored = false;
   try {
