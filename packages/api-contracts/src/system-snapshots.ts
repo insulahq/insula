@@ -17,8 +17,32 @@ export const systemPvcSnapshotSummarySchema = z.object({
   newestSnapshotAt: z.string().nullable(),
   recurringJobs: z.array(z.string()).default([]),
   degraded: z.boolean(),
+  cnpgCluster: z.object({
+    namespace: z.string(),
+    name: z.string(),
+  }).nullable().default(null),
+  cnpgRole: z.enum(['primary', 'replica']).nullable().default(null),
 });
 export type SystemPvcSnapshotSummary = z.infer<typeof systemPvcSnapshotSummarySchema>;
+
+export const restoreStepSchema = z.object({
+  step: z.string(),
+  ok: z.boolean(),
+  detail: z.string().optional(),
+});
+export const restoreResultSchema = z.object({
+  volumeName: z.string(),
+  snapshotName: z.string(),
+  consumer: z.object({
+    kind: z.enum(['CnpgCluster', 'StatefulSet', 'Deployment']),
+    namespace: z.string(),
+    name: z.string(),
+    replicaField: z.enum(['instances', 'replicas']),
+    originalCount: z.number().int().nonnegative(),
+  }),
+  steps: z.array(restoreStepSchema),
+});
+export type RestoreResult = z.infer<typeof restoreResultSchema>;
 
 export const systemSnapshotEntrySchema = z.object({
   snapshotName: z.string(),
