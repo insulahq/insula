@@ -180,6 +180,9 @@ parameters:
   fsType: "ext4"
   dataLocality: "best-effort"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
+  # Mail is platform-managed (Stalwart). Same rule as the system tier:
+  # replicas must land on tagged server nodes, never on a worker.
+  nodeSelector: "system"
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -198,3 +201,6 @@ parameters:
   fsType: "ext4"
   dataLocality: "disabled"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
+  # Mail is platform-managed (Stalwart). Same rule as the system tier:
+  # replicas must land on tagged server nodes, never on a worker.
+  nodeSelector: "system"
