@@ -101,6 +101,19 @@ export function useVerifyDomain(clientId: string | undefined) {
   });
 }
 
+// ─── Platform ingress base domain ──────────────────────────────────────────
+// Fetches the public ingress base domain from the platform — used to display
+// the operator-recommended CNAME target to the client (plain ingress base
+// domain, not the slug-prefixed internal route).
+
+export function useIngressBaseDomain() {
+  return useQuery({
+    queryKey: ['ingress-base-domain'],
+    queryFn: () => apiFetch<{ data: { ingressBaseDomain: string } }>('/api/v1/platform/ingress-base-domain'),
+    staleTime: 5 * 60 * 1000, // 5 min — rarely changes
+  });
+}
+
 // ─── DNS Provider Groups ────────────────────────────────────────────────────
 
 export interface DnsProviderGroup {

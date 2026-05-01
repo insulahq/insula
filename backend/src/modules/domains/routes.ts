@@ -132,23 +132,51 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/clients/:clientId/domains/:domainId/verify
+  //
+  // Cache strategy: single POST with optional ?force=true query param.
+  // - Without force: return cached result (with cached:true) if verification_cache_at
+  //   is within 24 hours. This lets the client-panel auto-fire on mount without
+  //   hammering DNS on every page load.
+  // - With force=true (or stale cache): run full verification, store result.
+  //
+  // We chose single-POST-with-force over a separate GET because the verify
+  // mutation already exists on both panels; callers that want a no-op read
+  // can just check domain.verificationCacheAt before calling.
   app.post('/clients/:clientId/domains/:domainId/verify', async (request) => {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const query = request.query as Record<string, unknown>;
+    const force = query.force === 'true' || query.force === '1';
+
     const domain = await service.getDomainById(app.db, clientId, domainId);
 
-    const platformConfig = getPlatformConfig();
+    // Cache check — skip if force=true
+    const cacheAge = 24 * 60 * 60 * 1000; // 24 hours in ms
+    const rawDomain = domain as Record<string, unknown>;
+    const cacheAt = rawDomain.verificationCacheAt ? new Date(rawDomain.verificationCacheAt as string) : null;
+    if (!force && cacheAt && (Date.now() - cacheAt.getTime()) < cacheAge) {
+      const cachedResult = rawDomain.verificationCacheResult as { verified: boolean; checks: Array<{ type: string; status: string; detail: string }> } | null;
+      if (cachedResult) {
+        return success({ ...cachedResult, domainId, domainName: domain.domainName, cached: true });
+      }
+    }
+
+    const platformConfig = await getPlatformConfig(app.db);
     const dnsMode = domain.dnsMode as 'primary' | 'cname' | 'secondary';
     const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, app.db);
 
-    // Update verification timestamps
+    // Update verification timestamps + cache
     const now = new Date();
-    const updateValues: Record<string, unknown> = { lastVerifiedAt: now };
+    const updateValues: Record<string, unknown> = {
+      lastVerifiedAt: now,
+      verificationCacheAt: now,
+      verificationCacheResult: result,
+    };
     if (result.verified && !domain.verifiedAt) {
       updateValues.verifiedAt = now;
     }
     await app.db.update(domains).set(updateValues).where(eq(domains.id, domainId));
 
-    return success({ ...result, domainId, domainName: domain.domainName });
+    return success({ ...result, domainId, domainName: domain.domainName, cached: false });
   });
 
   // POST /api/v1/clients/:clientId/domains/:domainId/migrate-dns
