@@ -182,6 +182,9 @@ export async function systemSnapshotsRoutes(app: FastifyInstance): Promise<void>
   });
 
   // POST /api/v1/admin/system-snapshots/:volumeName/snapshots/:snapshotName/restore
+  // Body: { pvcNamespace, pvcName }. Full lifecycle: scale consumer→0,
+  // wait detach, snapshotRevert via Longhorn manager REST, scale back,
+  // wait reattach. Sync (~2-5 min wall-clock).
   app.post('/admin/system-snapshots/:volumeName/snapshots/:snapshotName/restore', {
     schema: {
       tags: ['SystemSnapshots'],
@@ -192,18 +195,34 @@ export async function systemSnapshotsRoutes(app: FastifyInstance): Promise<void>
         required: ['volumeName', 'snapshotName'],
         properties: { volumeName: { type: 'string' }, snapshotName: { type: 'string' } },
       },
+      body: {
+        type: 'object',
+        required: ['pvcNamespace', 'pvcName'],
+        properties: {
+          pvcNamespace: { type: 'string', minLength: 1, maxLength: 253 },
+          pvcName: { type: 'string', minLength: 1, maxLength: 253 },
+        },
+      },
     },
   }, async (request) => {
     const { volumeName, snapshotName } = request.params as { volumeName: string; snapshotName: string };
+    const { pvcNamespace, pvcName } = request.body as { pvcNamespace: string; pvcName: string };
     validateName(volumeName, 'volumeName');
     validateName(snapshotName, 'snapshotName');
+    validateName(pvcNamespace, 'pvcNamespace');
+    validateName(pvcName, 'pvcName');
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
     try {
-      await revertSnapshot(k8s, volumeName, snapshotName);
-      return success({ ok: true });
+      const result = await revertSnapshot(k8s, pvcNamespace, pvcName, volumeName, snapshotName);
+      return success(result);
     } catch (err) {
-      throw new ApiError('RESTORE_NOT_SUPPORTED', (err as Error).message, 501);
+      const code = (err as { code?: number }).code;
+      const stepsTrace = (err as { steps?: ReadonlyArray<{ step: string; ok: boolean; detail?: string }> }).steps ?? [];
+      if (code === 404) throw new ApiError('SNAPSHOT_NOT_FOUND', (err as Error).message, 404);
+      if (code === 409) throw new ApiError('SNAPSHOT_NOT_RESTORABLE', (err as Error).message, 409, { steps: stepsTrace });
+      if (code === 422) throw new ApiError('CONSUMER_UNRESOLVED', (err as Error).message, 422, { steps: stepsTrace });
+      throw new ApiError('RESTORE_FAILED', (err as Error).message, 500, { steps: stepsTrace });
     }
   });
 }

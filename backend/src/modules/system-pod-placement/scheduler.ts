@@ -266,6 +266,87 @@ async function reconcileCalicoInstallation(k8s: K8sClients): Promise<{ readonly 
   }
 }
 
+/**
+ * Phase B: only the CNPG primary's PVC carries the
+ * `recurring-job-group.longhorn.io/default: enabled` label. Replicas
+ * lose the label and stop accumulating identical hourly snapshots.
+ * On failover Longhorn's RecurringJob controller picks up the new
+ * primary on the next tick (jobs are evaluated against PVC labels at
+ * fire time). The demoted replica's existing snapshots stay on disk
+ * but no NEW snapshots are taken there.
+ */
+const PRIMARY_ONLY_LABEL = 'recurring-job-group.longhorn.io/default';
+
+async function reconcileCnpgPrimaryOnlySnapshots(k8s: K8sClients): Promise<{ readonly patched: number; readonly errors: readonly string[] }> {
+  const errors: string[] = [];
+  let patched = 0;
+
+  interface RawCluster {
+    readonly metadata?: { readonly name?: string; readonly namespace?: string };
+    readonly status?: { readonly currentPrimary?: string };
+  }
+  let clusters: ReadonlyArray<RawCluster> = [];
+  try {
+    const resp = await k8s.custom.listClusterCustomObject({
+      group: 'postgresql.cnpg.io', version: 'v1', plural: 'clusters',
+    } as unknown as Parameters<typeof k8s.custom.listClusterCustomObject>[0]) as { items?: readonly RawCluster[] };
+    clusters = resp.items ?? [];
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code
+      ?? (err as { statusCode?: number }).statusCode;
+    if (code !== 404) errors.push(`list cnpg clusters: ${(err as Error).message}`);
+    return { patched, errors };
+  }
+
+  for (const cl of clusters) {
+    const ns = cl.metadata?.namespace; const clusterName = cl.metadata?.name;
+    const primary = cl.status?.currentPrimary;
+    if (!ns || !clusterName || !primary) continue;
+
+    let pvcs: ReadonlyArray<{ metadata?: { name?: string; labels?: Record<string, string> } }> = [];
+    try {
+      const resp = await k8s.core.listNamespacedPersistentVolumeClaim({
+        namespace: ns,
+        labelSelector: `cnpg.io/cluster=${clusterName}`,
+      } as unknown as Parameters<typeof k8s.core.listNamespacedPersistentVolumeClaim>[0]) as { items?: typeof pvcs };
+      pvcs = resp.items ?? [];
+    } catch (err) {
+      errors.push(`list pvcs for ${ns}/${clusterName}: ${(err as Error).message}`);
+      continue;
+    }
+
+    for (const pvc of pvcs) {
+      const pvcName = pvc.metadata?.name;
+      if (!pvcName) continue;
+      const isPrimary = pvcName === primary;
+      const has = pvc.metadata?.labels?.[PRIMARY_ONLY_LABEL] === 'enabled';
+      const want = isPrimary;
+      if (has === want) continue;
+
+      // Strategic-merge: `null` removes the label, the value adds it.
+      const labelPatch = {
+        metadata: { labels: { [PRIMARY_ONLY_LABEL]: want ? 'enabled' : null } },
+      };
+      try {
+        await (k8s.core as unknown as {
+          patchNamespacedPersistentVolumeClaim: (
+            a: { namespace: string; name: string; body: unknown },
+            mw: typeof STRATEGIC_MERGE_PATCH,
+          ) => Promise<unknown>;
+        }).patchNamespacedPersistentVolumeClaim(
+          { namespace: ns, name: pvcName, body: labelPatch },
+          STRATEGIC_MERGE_PATCH,
+        );
+        patched++;
+        console.log(`[system-pod-placement] cnpg ${ns}/${clusterName}: pvc ${pvcName} recurring-jobs label → ${want ? 'enabled' : 'removed'} (primary=${primary})`);
+      } catch (err) {
+        errors.push(`patch pvc ${ns}/${pvcName}: ${(err as Error).message}`);
+      }
+    }
+  }
+  return { patched, errors };
+}
+
 async function reconcileWorkerStorageReserve(k8s: K8sClients): Promise<{ readonly patched: number; readonly errors: readonly string[] }> {
   const errors: string[] = [];
   let patched = 0;
@@ -346,11 +427,12 @@ export function startSystemPodPlacement(_db: Database, k8s: K8sClients): { reado
       const a = await reconcileSingletonAffinity(k8s);
       const b = await reconcileWorkerStorageReserve(k8s);
       const c = await reconcileCalicoInstallation(k8s);
+      const d = await reconcileCnpgPrimaryOnlySnapshots(k8s);
       const cErrors = c.error ? [c.error] : [];
-      const allErrors = [...a.errors, ...b.errors, ...cErrors];
-      const total = a.patched + b.patched + (c.patched ? 1 : 0);
+      const allErrors = [...a.errors, ...b.errors, ...cErrors, ...d.errors];
+      const total = a.patched + b.patched + (c.patched ? 1 : 0) + d.patched;
       if (total > 0 || allErrors.length > 0) {
-        console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} errors=${allErrors.length}`);
+        console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} cnpg-primary-labels=${d.patched} errors=${allErrors.length}`);
       }
       for (const e of allErrors) console.warn('[system-pod-placement]', e);
     } catch (err) {

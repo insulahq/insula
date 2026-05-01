@@ -43,6 +43,15 @@ export interface SystemPvcSnapshotSummary {
   readonly recurringJobs: readonly string[];
   /** True when status.robustness == 'degraded'. */
   readonly degraded: boolean;
+  /**
+   * CNPG cluster owner. Set from PVC label `cnpg.io/cluster=<name>`.
+   * Frontend collapses every PVC with the same `{namespace, name}`
+   * into one row keyed by cluster. Stalwart and other plain
+   * StatefulSets carry null.
+   */
+  readonly cnpgCluster: { readonly namespace: string; readonly name: string } | null;
+  /** Pod role per CNPG: 'primary', 'replica', or null when unknown. */
+  readonly cnpgRole: 'primary' | 'replica' | null;
 }
 
 export interface SystemSnapshotEntry {
@@ -70,6 +79,11 @@ interface RawPvc {
   readonly metadata?: { readonly name?: string; readonly namespace?: string; readonly labels?: Record<string, string> };
   readonly spec?: { readonly volumeName?: string };
   readonly status?: { readonly capacity?: { readonly storage?: string | number } };
+}
+
+interface RawCnpgCluster {
+  readonly metadata?: { readonly name?: string; readonly namespace?: string };
+  readonly status?: { readonly currentPrimary?: string };
 }
 
 interface RawLhVolume {
@@ -161,8 +175,9 @@ function resolveRecurringJobsForVolume(
 export async function listSystemPvcSnapshots(k8s: K8sClients): Promise<readonly SystemPvcSnapshotSummary[]> {
   // Fan out the K8s LIST calls in parallel — same pattern as the
   // orphan classifier. PVC list is per-namespace; volumes/snapshots/
-  // recurring-jobs all live in longhorn-system.
-  const [pvcResults, volResp, snapResp, jobResp] = await Promise.all([
+  // recurring-jobs all live in longhorn-system. CNPG clusters are
+  // listed cluster-wide for currentPrimary lookup.
+  const [pvcResults, volResp, snapResp, jobResp, cnpgResp] = await Promise.all([
     Promise.all(SYSTEM_NAMESPACES.map((ns) =>
       k8s.core.listNamespacedPersistentVolumeClaim({ namespace: ns })
         .catch(() => ({ items: [] }))
@@ -177,7 +192,19 @@ export async function listSystemPvcSnapshots(k8s: K8sClients): Promise<readonly 
     k8s.custom.listNamespacedCustomObject({
       group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'recurringjobs',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawLhRecurringJob[] }>,
+    k8s.custom.listClusterCustomObject({
+      group: 'postgresql.cnpg.io', version: 'v1', plural: 'clusters',
+    } as unknown as Parameters<typeof k8s.custom.listClusterCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawCnpgCluster[] }>,
   ]);
+
+  // (namespace, cluster) → currentPrimary pod name
+  const cnpgPrimary = new Map<string, string>();
+  for (const c of cnpgResp.items ?? []) {
+    const ns = c.metadata?.namespace; const name = c.metadata?.name;
+    if (!ns || !name) continue;
+    const primary = c.status?.currentPrimary;
+    if (primary) cnpgPrimary.set(`${ns}/${name}`, primary);
+  }
 
   const volByName = new Map<string, RawLhVolume>();
   for (const v of volResp.items ?? []) {
@@ -218,6 +245,16 @@ export async function listSystemPvcSnapshots(k8s: K8sClients): Promise<readonly 
       }
       const labels = vol?.metadata?.labels ?? pvc.metadata?.labels ?? {};
       const recurringJobs = resolveRecurringJobsForVolume(labels, jobs);
+      const cnpgClusterName = pvc.metadata?.labels?.['cnpg.io/cluster'] ?? null;
+      const cnpgCluster = cnpgClusterName ? { namespace: ns, name: cnpgClusterName } : null;
+      let cnpgRole: 'primary' | 'replica' | null = null;
+      if (cnpgCluster) {
+        const primary = cnpgPrimary.get(`${ns}/${cnpgClusterName}`);
+        // CNPG: one PVC per instance, named identically to the pod.
+        // status.currentPrimary holds the primary pod name; PVC equality
+        // against that name is the canonical role check.
+        cnpgRole = primary && primary === pvcName ? 'primary' : 'replica';
+      }
       result.push({
         namespace: ns,
         pvcName,
@@ -229,6 +266,8 @@ export async function listSystemPvcSnapshots(k8s: K8sClients): Promise<readonly 
         newestSnapshotAt: newestSnap,
         recurringJobs,
         degraded: vol?.status?.robustness === 'degraded',
+        cnpgCluster,
+        cnpgRole,
       });
     }
   }
@@ -352,45 +391,259 @@ export async function takeSnapshot(
   return { snapshotName };
 }
 
+// ─── Restore (in-place snapshot revert) ──────────────────────────────────────
+
+const DEFAULT_LONGHORN_API_BASE = 'http://longhorn-backend.longhorn-system:9500';
+
+interface ConsumerRef {
+  readonly kind: 'CnpgCluster' | 'StatefulSet' | 'Deployment';
+  readonly namespace: string;
+  readonly name: string;
+  readonly replicaField: 'instances' | 'replicas';
+  readonly originalCount: number;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
- * Restore-from-snapshot pattern (Longhorn): create a new volume from the
- * snapshot's underlying backing image. We expose this as
- *   POST /api/v1/admin/system-snapshots/:vol/snapshots/:snap/restore
- *
- * which kicks off Longhorn's `revertSnapshot` action — it stops the volume
- * frontend, reverts the live head to the snapshot, and re-attaches.
- *
- * Note: the volume MUST be detached during the revert. The caller is
- * responsible for scaling down the consumer (e.g. CNPG cluster, Stalwart
- * StatefulSet) before invoking this. We surface a 409 if Longhorn refuses.
+ * Resolve the workload that mounts pvcName so the restore orchestrator
+ * can scale it to 0 and back. Order: CNPG (label) → StatefulSet
+ * (PVC name pattern) → Deployment (pod owner walk).
+ */
+async function resolveConsumer(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+): Promise<ConsumerRef | null> {
+  type PvcShape = { metadata?: { labels?: Record<string, string> } };
+  let pvc: PvcShape | null = null;
+  try {
+    pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ namespace, name: pvcName }) as PvcShape;
+  } catch {
+    return null;
+  }
+  const cnpgCluster = pvc?.metadata?.labels?.['cnpg.io/cluster'];
+  if (cnpgCluster) {
+    try {
+      const cl = await k8s.custom.getNamespacedCustomObject({
+        group: 'postgresql.cnpg.io', version: 'v1',
+        namespace, plural: 'clusters', name: cnpgCluster,
+      } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { instances?: number } };
+      const instances = cl.spec?.instances ?? 0;
+      return { kind: 'CnpgCluster', namespace, name: cnpgCluster, replicaField: 'instances', originalCount: instances };
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const stsList = await k8s.apps.listNamespacedStatefulSet({ namespace }) as { items?: ReadonlyArray<{
+      metadata?: { name?: string };
+      spec?: { replicas?: number; volumeClaimTemplates?: ReadonlyArray<{ metadata?: { name?: string } }> };
+    }> };
+    for (const sts of stsList.items ?? []) {
+      const stsName = sts.metadata?.name;
+      if (!stsName) continue;
+      for (const vct of sts.spec?.volumeClaimTemplates ?? []) {
+        const vctName = vct.metadata?.name;
+        if (!vctName) continue;
+        // PVC name pattern is `<vctName>-<stsName>-<ordinal>`. Escape
+        // each segment so weird (but valid) chart names with regex
+        // metacharacters can't construct an arbitrary pattern.
+        const re = new RegExp(`^${escapeRegex(vctName)}-${escapeRegex(stsName)}-\\d+$`);
+        if (re.test(pvcName)) {
+          return { kind: 'StatefulSet', namespace, name: stsName, replicaField: 'replicas', originalCount: sts.spec?.replicas ?? 1 };
+        }
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  try {
+    const pods = await k8s.core.listNamespacedPod({ namespace }) as { items?: ReadonlyArray<{
+      metadata?: { ownerReferences?: ReadonlyArray<{ kind?: string; name?: string }> };
+      spec?: { volumes?: ReadonlyArray<{ persistentVolumeClaim?: { claimName?: string } }> };
+    }> };
+    for (const p of pods.items ?? []) {
+      if (!p.spec?.volumes?.some((v) => v.persistentVolumeClaim?.claimName === pvcName)) continue;
+      const owner = p.metadata?.ownerReferences?.[0];
+      if (owner?.kind === 'ReplicaSet' && owner.name) {
+        const rs = await k8s.apps.readNamespacedReplicaSet({ namespace, name: owner.name }) as { metadata?: { ownerReferences?: ReadonlyArray<{ kind?: string; name?: string }> } };
+        const rsOwner = rs.metadata?.ownerReferences?.[0];
+        if (rsOwner?.kind === 'Deployment' && rsOwner.name) {
+          const dep = await k8s.apps.readNamespacedDeployment({ namespace, name: rsOwner.name }) as { spec?: { replicas?: number } };
+          return { kind: 'Deployment', namespace, name: rsOwner.name, replicaField: 'replicas', originalCount: dep.spec?.replicas ?? 1 };
+        }
+      }
+    }
+  } catch {
+    /* give up */
+  }
+  return null;
+}
+
+async function scaleConsumer(k8s: K8sClients, c: ConsumerRef, count: number): Promise<void> {
+  if (c.kind === 'CnpgCluster') {
+    await (k8s.custom as unknown as {
+      patchNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown }, mw: typeof MERGE_PATCH) => Promise<unknown>;
+    }).patchNamespacedCustomObject(
+      { group: 'postgresql.cnpg.io', version: 'v1', namespace: c.namespace, plural: 'clusters', name: c.name, body: { spec: { instances: count } } },
+      MERGE_PATCH,
+    );
+  } else if (c.kind === 'StatefulSet') {
+    await (k8s.apps as unknown as {
+      patchNamespacedStatefulSetScale: (a: { namespace: string; name: string; body: unknown }, mw: typeof MERGE_PATCH) => Promise<unknown>;
+    }).patchNamespacedStatefulSetScale(
+      { namespace: c.namespace, name: c.name, body: { spec: { replicas: count } } },
+      MERGE_PATCH,
+    );
+  } else {
+    await (k8s.apps as unknown as {
+      patchNamespacedDeploymentScale: (a: { namespace: string; name: string; body: unknown }, mw: typeof MERGE_PATCH) => Promise<unknown>;
+    }).patchNamespacedDeploymentScale(
+      { namespace: c.namespace, name: c.name, body: { spec: { replicas: count } } },
+      MERGE_PATCH,
+    );
+  }
+}
+
+async function pollVolumeState(
+  k8s: K8sClients,
+  volumeName: string,
+  expected: 'detached' | 'attached',
+  timeoutMs: number,
+): Promise<{ readonly ok: boolean; readonly state: string | undefined }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: string | undefined;
+  while (Date.now() < deadline) {
+    try {
+      const v = await k8s.custom.getNamespacedCustomObject({
+        group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
+      } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { state?: string } };
+      last = v.status?.state;
+      if (last === expected) return { ok: true, state: last };
+    } catch { /* keep polling */ }
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+  return { ok: false, state: last };
+}
+
+export interface RevertOpts {
+  readonly apiBase?: string;
+  readonly fetchFn?: typeof globalThis.fetch;
+  readonly detachTimeoutMs?: number;
+  readonly revertTimeoutMs?: number;
+  readonly attachTimeoutMs?: number;
+}
+
+export interface RevertResult {
+  readonly volumeName: string;
+  readonly snapshotName: string;
+  readonly consumer: ConsumerRef;
+  readonly steps: ReadonlyArray<{ readonly step: string; readonly ok: boolean; readonly detail?: string }>;
+}
+
+/**
+ * Full snapshot-revert lifecycle:
+ *   1. Resolve consumer (CNPG / StatefulSet / Deployment)
+ *   2. Scale to 0; wait for Longhorn volume to detach (90s)
+ *   3. POST /v1/volumes/<vol>?action=snapshotRevert via longhorn-backend
+ *   4. Scale back to original count; wait for reattach (120s)
+ * On any step failure we try to scale back to original to avoid
+ * leaving the workload at 0 replicas.
  */
 export async function revertSnapshot(
   k8s: K8sClients,
+  pvcNamespace: string,
+  pvcName: string,
   volumeName: string,
   snapshotName: string,
-): Promise<void> {
-  // Longhorn exposes the revert action via the manager's REST API
-  // rather than a CRD verb. The mainstream way from k8s is to patch
-  // the Volume CR with `spec.frontendVolumeAttached: false` and then
-  // create a `volumes.longhorn.io/<vol>/action/snapshotRevert` request
-  // — which the Longhorn manager polls. Simpler path: write a Snapshot
-  // CR with `restoreVolumeRecurringJob` semantics is NOT what we want
-  // (that's for backups). The correct in-cluster path is to PATCH the
-  // Volume's `spec.standby`/manager triggers, which is brittle.
-  //
-  // Pragmatic alternative we use: emit a Longhorn `support-bundles` or
-  // direct manager REST call via in-cluster Service. For now this
-  // implementation refuses the revert and surfaces a clear error so the
-  // operator falls back to the Longhorn UI for in-place revert; the
-  // delete + take buttons cover 95% of operator needs.
-  void k8s;
-  void volumeName;
-  void snapshotName;
-  throw new Error(
-    'In-place snapshot revert is not yet wired to the Longhorn manager. '
-    + 'Use the Longhorn UI restore action, or create a backup and restore from '
-    + 'the backup CR (already supported in storage-lifecycle).',
-  );
+  opts: RevertOpts = {},
+): Promise<RevertResult> {
+  const apiBase = opts.apiBase ?? process.env.LONGHORN_API_BASE ?? DEFAULT_LONGHORN_API_BASE;
+  const fetchFn = opts.fetchFn ?? globalThis.fetch;
+  const detachTimeoutMs = opts.detachTimeoutMs ?? 90_000;
+  const revertTimeoutMs = opts.revertTimeoutMs ?? 60_000;
+  const attachTimeoutMs = opts.attachTimeoutMs ?? 120_000;
+  const steps: { step: string; ok: boolean; detail?: string }[] = [];
+
+  type SnapShape = { spec?: { volume?: string }; status?: { readyToUse?: boolean } };
+  let snap: SnapShape | null = null;
+  try {
+    snap = await k8s.custom.getNamespacedCustomObject({
+      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: snapshotName,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as SnapShape;
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (code === 404) {
+      const e = new Error(`Snapshot '${snapshotName}' not found`);
+      (e as Error & { code?: number }).code = 404; throw e;
+    }
+    throw err;
+  }
+  if (snap?.spec?.volume !== volumeName) {
+    const e = new Error(`Snapshot '${snapshotName}' does not belong to volume '${volumeName}'`);
+    (e as Error & { code?: number }).code = 409; throw e;
+  }
+  if (snap.status?.readyToUse !== true) {
+    const e = new Error(`Snapshot '${snapshotName}' is not ready to use`);
+    (e as Error & { code?: number }).code = 409; throw e;
+  }
+
+  const consumer = await resolveConsumer(k8s, pvcNamespace, pvcName);
+  if (!consumer) {
+    const e = new Error(`Cannot resolve workload mounting ${pvcNamespace}/${pvcName} — manual restore required`);
+    (e as Error & { code?: number }).code = 422; throw e;
+  }
+  steps.push({ step: 'resolve-consumer', ok: true, detail: `${consumer.kind}/${consumer.name} (count=${consumer.originalCount})` });
+
+  let restored = false;
+  try {
+    await scaleConsumer(k8s, consumer, 0);
+    steps.push({ step: 'scale-down', ok: true });
+
+    const detach = await pollVolumeState(k8s, volumeName, 'detached', detachTimeoutMs);
+    steps.push({ step: 'wait-detach', ok: detach.ok, detail: `final=${detach.state ?? 'unknown'}` });
+    if (!detach.ok) throw new Error(`Volume did not detach within ${detachTimeoutMs / 1000}s (last=${detach.state ?? 'unknown'})`);
+
+    const url = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=snapshotRevert`;
+    const resp = await fetchFn(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: snapshotName }),
+      signal: AbortSignal.timeout(revertTimeoutMs),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '<no body>');
+      throw new Error(`Longhorn snapshotRevert failed: HTTP ${resp.status} ${body.slice(0, 240)}`);
+    }
+    steps.push({ step: 'longhorn-revert', ok: true });
+
+    await scaleConsumer(k8s, consumer, consumer.originalCount);
+    restored = true;
+    steps.push({ step: 'scale-up', ok: true, detail: `to=${consumer.originalCount}` });
+
+    const attach = await pollVolumeState(k8s, volumeName, 'attached', attachTimeoutMs);
+    steps.push({ step: 'wait-attach', ok: attach.ok, detail: `final=${attach.state ?? 'unknown'}` });
+    if (!attach.ok) throw new Error(`Volume did not reattach within ${attachTimeoutMs / 1000}s (last=${attach.state ?? 'unknown'})`);
+
+    return { volumeName, snapshotName, consumer, steps };
+  } catch (err) {
+    if (!restored) {
+      try {
+        await scaleConsumer(k8s, consumer, consumer.originalCount);
+        steps.push({ step: 'recovery-scale-up', ok: true, detail: `to=${consumer.originalCount}` });
+      } catch (e2) {
+        steps.push({ step: 'recovery-scale-up', ok: false, detail: (e2 as Error).message });
+      }
+    }
+    const e = err instanceof Error ? err : new Error(String(err));
+    (e as Error & { steps?: typeof steps }).steps = steps;
+    throw e;
+  }
 }
 
 // ─── Recurring job retention policy ──────────────────────────────────

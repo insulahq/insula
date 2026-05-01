@@ -27,8 +27,10 @@ spec:
   # wall-clock second as the daily-backup.
   cron: "5 * * * *"
   task: snapshot
-  # 24 hourly snapshots kept — one day of in-volume rollback points.
-  retain: 24
+  # 6 hourly snapshots kept — last six hours of in-volume rollback.
+  # Older recovery comes from the daily/weekly off-cluster backups.
+  # Shorter chain dramatically speeds up Longhorn replica rebuilds.
+  retain: 6
   concurrency: 2
   groups:
     - default
@@ -46,7 +48,9 @@ spec:
   # backup_configurations.
   cron: "0 2 * * *"
   task: backup
-  retain: 14
+  # 7 daily off-cluster backups — one week of point-in-time restore.
+  # Combined with weekly retain=4, ~5 weeks of restore depth.
+  retain: 7
   concurrency: 2
   groups:
     - default
