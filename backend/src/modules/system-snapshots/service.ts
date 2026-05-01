@@ -588,22 +588,18 @@ export async function revertSnapshot(
     const e = new Error(`Snapshot '${snapshotName}' does not belong to volume '${volumeName}'`);
     (e as Error & { code?: number }).code = 409; throw e;
   }
-  if (snap.status?.readyToUse !== true) {
-    const e = new Error(`Snapshot '${snapshotName}' is not ready to use`);
-    (e as Error & { code?: number }).code = 409; throw e;
-  }
 
+  // Resolve consumer FIRST and refuse CNPG immediately. The CNPG
+  // refusal doesn't depend on snapshot readiness — surfacing the
+  // "use barman-cloud" remediation regardless of snapshot state is
+  // both more honest and useful (no point asking the operator to
+  // wait for a snapshot to become ready when the restore can never
+  // succeed via this code path).
   const consumer = await resolveConsumer(k8s, pvcNamespace, pvcName);
   if (!consumer) {
     const e = new Error(`Cannot resolve workload mounting ${pvcNamespace}/${pvcName} — manual restore required`);
     (e as Error & { code?: number }).code = 422; throw e;
   }
-  // CNPG validates spec.instances >= 1, so the orchestrator can't scale
-  // the cluster to 0 to detach the primary's PVC. CNPG has its own
-  // restore path (barman-cloud PITR / `kubectl cnpg restore`) that
-  // operates at the WAL layer instead of block-level snapshot revert.
-  // Refuse here with a clear remediation rather than fail mid-flight
-  // with the admission-webhook error.
   if (consumer.kind === 'CnpgCluster') {
     const e = new Error(
       `In-place snapshot revert is not supported for CNPG-managed PVCs. `
@@ -614,6 +610,26 @@ export async function revertSnapshot(
     (e as Error & { code?: number }).code = 422; throw e;
   }
   steps.push({ step: 'resolve-consumer', ok: true, detail: `${consumer.kind}/${consumer.name} (count=${consumer.originalCount})` });
+
+  // Snapshot readiness check after CNPG refusal but before scaling —
+  // we don't want to scale-down a workload only to fail on a not-ready
+  // snapshot mid-flight. Poll briefly so a fresh snapshot has time to
+  // settle before bouncing the operator with a 409.
+  const readyDeadline = Date.now() + 30_000;
+  while (Date.now() < readyDeadline) {
+    if (snap.status?.readyToUse === true) break;
+    await new Promise((r) => setTimeout(r, 2_000));
+    try {
+      snap = await k8s.custom.getNamespacedCustomObject({
+        group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: snapshotName,
+      } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as SnapShape;
+    } catch { /* keep polling */ }
+  }
+  if (snap.status?.readyToUse !== true) {
+    const e = new Error(`Snapshot '${snapshotName}' is not ready to use after 30s`);
+    (e as Error & { code?: number }).code = 409; throw e;
+  }
+  steps.push({ step: 'snapshot-ready', ok: true });
 
   let restored = false;
   try {

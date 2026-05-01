@@ -41,6 +41,9 @@ function makeK8s(opts: MockOpts): { k8s: K8sClients; spies: Record<string, Retur
         if (plural === 'recurringjobs') return Promise.resolve({ items: opts.longhornRecurringJobs ?? [] });
         return Promise.resolve({ items: [] });
       }),
+      // CNPG cluster lookup is cluster-scoped — return empty by default
+      // so existing tests don't need to mock CNPG state.
+      listClusterCustomObject: vi.fn().mockResolvedValue({ items: [] }),
       getNamespacedCustomObject: getSpy,
       createNamespacedCustomObject: createSpy,
       deleteNamespacedCustomObject: deleteSpy,
