@@ -73,6 +73,22 @@ export function classifyImage(name: string, inUse = true): ClassifiedImage {
   return { protected: isProtected };
 }
 
+/**
+ * HIGH #4: classify by examining ALL names attached to an image.
+ *
+ * The aggregator's display name has `docker.io/library/` stripped, which
+ * causes prefix entries like `docker.io/library/busybox` and
+ * `docker.io/library/file-manager-sidecar` to never match. Pass every name
+ * the kubelet reports for the image; if any one matches a protected prefix
+ * (and the image is in use), the image is protected.
+ */
+export function classifyImageByNames(names: readonly string[], inUse: boolean): ClassifiedImage {
+  for (const n of names) {
+    if (classifyImage(n, inUse).protected) return { protected: true };
+  }
+  return { protected: false };
+}
+
 // ─── Image Name Formatting ───────────────────────────────────────────────────
 
 /**
@@ -313,30 +329,46 @@ export async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
   try {
     const podList = await k8s.core.listPodForAllNamespaces();
     type PodContainer = { readonly image?: string };
+    type StatusContainer = { readonly image?: string; readonly imageID?: string };
     type Pod = {
       readonly spec?: {
         readonly containers?: readonly PodContainer[];
         readonly initContainers?: readonly PodContainer[];
+        readonly ephemeralContainers?: readonly PodContainer[];
       };
       readonly status?: {
-        readonly containerStatuses?: readonly { readonly image?: string; readonly imageID?: string }[];
-        readonly initContainerStatuses?: readonly { readonly image?: string; readonly imageID?: string }[];
+        readonly containerStatuses?: readonly StatusContainer[];
+        readonly initContainerStatuses?: readonly StatusContainer[];
+        readonly ephemeralContainerStatuses?: readonly StatusContainer[];
       };
     };
     const pods = (podList as { items?: readonly Pod[] }).items ?? [];
+    const addStatus = (s: StatusContainer): void => {
+      // CRITICAL #2: also pin the resolved digest (imageID) so digest-pinned
+      // images aren't reaped when crictlName resolves to the digest form.
+      if (s.image) inUse.add(s.image);
+      if (s.imageID) {
+        inUse.add(s.imageID);
+        // Strip the docker-pullable:// prefix some runtimes emit
+        const stripped = s.imageID.replace(/^docker-pullable:\/\//, '');
+        if (stripped !== s.imageID) inUse.add(stripped);
+      }
+    };
     for (const pod of pods) {
+      // CRITICAL #1: ephemeral containers (kubectl debug) hold images that
+      // must not be reaped while the debug session is alive.
       for (const c of pod.spec?.containers ?? []) {
         if (c.image) inUse.add(c.image);
       }
       for (const c of pod.spec?.initContainers ?? []) {
         if (c.image) inUse.add(c.image);
       }
-      for (const s of pod.status?.containerStatuses ?? []) {
-        if (s.image) inUse.add(s.image);
+      for (const c of pod.spec?.ephemeralContainers ?? []) {
+        if (c.image) inUse.add(c.image);
       }
-      for (const s of pod.status?.initContainerStatuses ?? []) {
-        if (s.image) inUse.add(s.image);
-      }
+      for (const s of pod.status?.containerStatuses ?? []) addStatus(s);
+      for (const s of pod.status?.initContainerStatuses ?? []) addStatus(s);
+      for (const s of pod.status?.ephemeralContainerStatuses ?? []) addStatus(s);
     }
   } catch {
     // Return empty set on error — all images will be shown as not-in-use
@@ -344,11 +376,15 @@ export async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
   return inUse;
 }
 
-function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySet<string>): boolean {
+export function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySet<string>): boolean {
   for (const name of allNames) {
     if (inUseSet.has(name)) return true;
     const normalized = name.replace(/^docker\.io\/library\//, '');
     if (inUseSet.has(normalized)) return true;
+    // Also accept the docker.io/library/ form when the in-use set has the bare name
+    if (!name.includes('/')) {
+      if (inUseSet.has(`docker.io/library/${name}`)) return true;
+    }
   }
   return false;
 }
@@ -482,8 +518,10 @@ async function aggregateImagesAcrossNodes(k8s: K8sClients): Promise<readonly Agg
   for (const entry of byKey.values()) {
     const totalSizeBytes = entry.perNode.reduce((s, p) => s + p.sizeBytes, 0);
     const inUse = isAnyNameInUse([...entry.allNames, entry.displayName], inUseSet);
-    // B0.3: pass inUse so deprecated system images become purgeable
-    const isProtected = classifyImage(entry.displayName, inUse).protected;
+    // B0.3 + HIGH #4: pass ALL names (not the stripped display name) so that
+    // protected prefixes containing `docker.io/library/...` actually match.
+    // inUse remains the gate so deprecated system images become purgeable.
+    const isProtected = classifyImageByNames([...entry.allNames], inUse).protected;
     result.push({
       displayName: entry.displayName,
       perNode: entry.perNode,
