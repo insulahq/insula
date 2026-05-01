@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, RefreshCw, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, RefreshCw, Loader2, CheckCircle, AlertCircle, AlertOctagon } from 'lucide-react';
+import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
@@ -257,6 +258,7 @@ function NamespaceIntegrityCard() {
   const sweep = useSweepNamespaceIntegrity();
   const result = sweep.data?.data;
   const err = sweep.error as { message?: string } | null;
+  const [orphansOpen, setOrphansOpen] = useState(false);
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4">
       <div className="flex items-center gap-3">
@@ -269,7 +271,12 @@ function NamespaceIntegrityCard() {
         sweeps every provisioned client every 30 minutes and re-creates the missing pieces.
         Run it now from here when you suspect drift after an incident.
       </p>
-      <div className="flex items-center gap-3">
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Orphaned volumes are a related drift class — PVs / Longhorn volumes whose owning
+        namespace was deleted, whose client row was removed, or that have been stuck in
+        Released phase past the stale threshold. Use the Manage button to review and reclaim them.
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={() => sweep.mutate()}
@@ -279,6 +286,15 @@ function NamespaceIntegrityCard() {
         >
           {sweep.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           Run fleet sweep
+        </button>
+        <button
+          type="button"
+          onClick={() => setOrphansOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100 dark:hover:bg-amber-900/50"
+          data-testid="manage-orphaned-volumes-button"
+        >
+          <AlertOctagon size={14} />
+          Manage Orphaned Volumes
         </button>
         {result && (
           <span className="inline-flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300">
@@ -293,6 +309,7 @@ function NamespaceIntegrityCard() {
           </span>
         )}
       </div>
+      {orphansOpen && <OrphanedVolumesModal onClose={() => setOrphansOpen(false)} />}
     </div>
   );
 }

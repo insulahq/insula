@@ -63,6 +63,7 @@ import { tenantMigrationRoutes } from './modules/tenant-migration/routes.js';
 import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
 import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
+import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -290,6 +291,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(clusterHealthRoutes, { prefix: '/api/v1' });
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
+  await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });

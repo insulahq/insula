@@ -107,7 +107,10 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
       security: [{ bearerAuth: [] }],
     },
   }, async () => {
-    const inventory = await getStorageInventory();
+    // Pass app.db so the orphan classifier can attribute namespaces to
+    // platform clients. Without it the orphaned tile reports 0/0 even
+    // when orphans exist.
+    const inventory = await getStorageInventory(app.db);
     return success(inventory);
   });
 

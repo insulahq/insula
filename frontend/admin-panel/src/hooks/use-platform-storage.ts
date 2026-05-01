@@ -16,6 +16,10 @@ interface StorageInventory {
     readonly capacityBytes: number;
     readonly allocatedBytes: number;
   };
+  readonly orphaned: {
+    readonly count: number;
+    readonly totalBytes: number;
+  };
   readonly backupTarget: {
     readonly url: string;
     readonly available: boolean;
