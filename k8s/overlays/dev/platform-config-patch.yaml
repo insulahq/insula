@@ -36,3 +36,7 @@ data:
   # Cookie domain for platform_session — covers admin.*, client.*, and
   # mail-admin.* so a single login works across all three hostnames.
   session-cookie-domain: ".${DOMAIN}"
+  # Passkey (WebAuthn) RP — placeholder-templated. Resolved by Flux
+  # postBuild.substituteFrom (or bootstrap envsubst).
+  passkey-rp-id: "${DOMAIN}"
+  passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
