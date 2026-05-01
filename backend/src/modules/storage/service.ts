@@ -315,48 +315,93 @@ async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
   return inUse;
 }
 
-/**
- * Check if a parsed image is in use by any pod.
- * Pods may reference images by different names (tag vs digest), so we check
- * all known names for an image against the in-use set.
- */
-function isImageInUse(parsed: ParsedImage, inUseSet: ReadonlySet<string>, allNames: readonly string[]): boolean {
-  if (inUseSet.has(parsed.name)) return true;
+function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySet<string>): boolean {
   for (const name of allNames) {
     if (inUseSet.has(name)) return true;
-    // Normalize for comparison
     const normalized = name.replace(/^docker\.io\/library\//, '');
     if (inUseSet.has(normalized)) return true;
   }
   return false;
 }
 
-export async function getImageInventory(k8s: K8sClients): Promise<ImageInventoryResponse> {
-  let nodeImages: readonly { names?: readonly string[] | null; sizeBytes?: number }[] = [];
+interface NodeImagePresence {
+  readonly node: string;
+  readonly crictlName: string; // tag-preferred full name (or digest fallback) for crictl rmi
+  readonly sizeBytes: number;  // bytes on this specific node
+  readonly allNames: readonly string[]; // every name reported for the image on this node
+}
+
+interface AggregatedImage {
+  readonly displayName: string;       // formatted, deduped key
+  readonly perNode: readonly NodeImagePresence[];
+  readonly totalSizeBytes: number;    // sum of per-node sizeBytes (cluster-wide cache footprint)
+  readonly inUse: boolean;
+  readonly protected: boolean;
+}
+
+type RawImage = { names?: readonly string[] | null; sizeBytes?: number };
+
+async function aggregateImagesAcrossNodes(k8s: K8sClients): Promise<readonly AggregatedImage[]> {
+  let nodes: readonly { metadata?: { name?: string }; status?: { images?: readonly RawImage[] } }[] = [];
   try {
     const nodeList = await k8s.core.listNode();
-    const nodes = (nodeList as { items?: readonly { status?: { images?: readonly { names?: readonly string[] | null; sizeBytes?: number }[] } }[] }).items ?? [];
-    if (nodes.length > 0) {
-      nodeImages = nodes[0].status?.images ?? [];
-    }
+    nodes = (nodeList as { items?: typeof nodes }).items ?? [];
   } catch {
-    // No access to node status
+    return [];
   }
 
-  const parsed = parseNodeImages(nodeImages);
   const inUseSet = await getInUseImages(k8s);
+  const byDisplay = new Map<string, { displayName: string; perNode: NodeImagePresence[]; allNames: Set<string> }>();
 
-  const images: ImageEntry[] = parsed.map((img, idx) => {
-    const allNames = nodeImages[idx]?.names ?? [];
-    const isProtected = classifyImage(img.name).protected;
-    const inUse = isImageInUse(img, inUseSet, allNames);
-    return {
-      name: formatImageName(img.name),
-      sizeBytes: img.sizeBytes,
+  for (const node of nodes) {
+    const nodeName = node.metadata?.name ?? 'unknown';
+    const images = node.status?.images ?? [];
+    for (const img of images) {
+      const names = img.names ?? [];
+      if (names.length === 0) continue;
+      const tagName = names.find(n => n.includes(':') && !n.includes('@sha256')) ?? names[0];
+      const displayName = formatImageName(tagName);
+
+      let entry = byDisplay.get(displayName);
+      if (!entry) {
+        entry = { displayName, perNode: [], allNames: new Set<string>() };
+        byDisplay.set(displayName, entry);
+      }
+      entry.perNode.push({
+        node: nodeName,
+        crictlName: tagName,
+        sizeBytes: img.sizeBytes ?? 0,
+        allNames: names,
+      });
+      for (const n of names) entry.allNames.add(n);
+    }
+  }
+
+  const result: AggregatedImage[] = [];
+  for (const entry of byDisplay.values()) {
+    const totalSizeBytes = entry.perNode.reduce((s, p) => s + p.sizeBytes, 0);
+    const isProtected = classifyImage(entry.displayName).protected;
+    const inUse = isAnyNameInUse([...entry.allNames, entry.displayName], inUseSet);
+    result.push({
+      displayName: entry.displayName,
+      perNode: entry.perNode,
+      totalSizeBytes,
       inUse,
       protected: isProtected,
-    };
-  });
+    });
+  }
+  return result;
+}
+
+export async function getImageInventory(k8s: K8sClients): Promise<ImageInventoryResponse> {
+  const aggregated = await aggregateImagesAcrossNodes(k8s);
+
+  const images: ImageEntry[] = aggregated.map(a => ({
+    name: a.displayName,
+    sizeBytes: a.totalSizeBytes,
+    inUse: a.inUse,
+    protected: a.protected,
+  }));
 
   const totalBytes = images.reduce((sum, img) => sum + img.sizeBytes, 0);
   const purgeable = filterPurgeableImages(images);
@@ -372,11 +417,157 @@ export async function getImageInventory(k8s: K8sClients): Promise<ImageInventory
 
 // ─── Image Purge via Privileged Pod ──────────────────────────────────────────
 
+const PURGE_NAMESPACE = 'kube-system';
+const PURGE_TIMEOUT_MS = 120_000;
+const PURGE_POLL_MS = 2_000;
+const CONTAINERD_SOCKET_PATHS: readonly string[] = [
+  '/run/k3s/containerd/containerd.sock',
+  '/run/containerd/containerd.sock',
+];
+
+interface PerNodePurgeResult {
+  readonly node: string;
+  readonly removedDisplayNames: readonly string[];
+  readonly failedDisplayNames: readonly string[];
+  readonly freedBytes: number;
+  readonly podError?: string;
+}
+
+async function runPurgeOnNode(
+  k8s: K8sClients,
+  node: string,
+  targets: readonly { crictlName: string; displayName: string; sizeBytes: number }[],
+): Promise<PerNodePurgeResult> {
+  const podName = `image-purge-${node.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 40)}-${Date.now()}`;
+  const crictlByName = new Map(targets.map(t => [t.crictlName, t]));
+  const removedDisplayNames: string[] = [];
+  const failedDisplayNames: string[] = [];
+  let freedBytes = 0;
+
+  const imageList = targets.map(t => `'${t.crictlName.replace(/'/g, "'\\''")}'`).join(' ');
+  // Try each containerd socket location until one works.
+  const socketTryList = CONTAINERD_SOCKET_PATHS.map(p => `unix://${p}`).join(' ');
+  const script = `
+set -u
+SOCKET=""
+for s in ${socketTryList}; do
+  path="\${s#unix://}"
+  if [ -S "\$path" ]; then SOCKET="\$s"; break; fi
+done
+if [ -z "\$SOCKET" ]; then
+  echo "NOSOCKET"
+  exit 0
+fi
+echo "USING:\$SOCKET"
+for img in ${imageList}; do
+  if crictl --runtime-endpoint "\$SOCKET" rmi "\$img" >/tmp/out 2>&1; then
+    echo "REMOVED:\$img"
+  else
+    echo "FAILED:\$img"
+  fi
+done
+`;
+
+  try {
+    await k8s.core.createNamespacedPod({
+      namespace: PURGE_NAMESPACE,
+      body: {
+        metadata: { name: podName, namespace: PURGE_NAMESPACE, labels: { app: 'image-purge', node } },
+        spec: {
+          restartPolicy: 'Never',
+          hostPID: true,
+          nodeName: node,
+          tolerations: [{ operator: 'Exists' }],
+          containers: [{
+            name: 'purge',
+            image: 'rancher/k3s:v1.33.10-k3s1',
+            command: ['sh', '-c', script],
+            volumeMounts: CONTAINERD_SOCKET_PATHS.map((p, i) => ({
+              name: `sock-${i}`,
+              mountPath: p,
+            })),
+            securityContext: { privileged: true },
+          }],
+          volumes: CONTAINERD_SOCKET_PATHS.map((p, i) => ({
+            name: `sock-${i}`,
+            hostPath: { path: p, type: 'Socket' as const },
+          })),
+        },
+      },
+    });
+  } catch (err) {
+    return {
+      node,
+      removedDisplayNames: [],
+      failedDisplayNames: targets.map(t => t.displayName),
+      freedBytes: 0,
+      podError: `create pod on ${node}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  let podError: string | undefined;
+  const start = Date.now();
+  let logs = '';
+  while (Date.now() - start < PURGE_TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, PURGE_POLL_MS));
+    try {
+      const pod = await k8s.core.readNamespacedPod({ name: podName, namespace: PURGE_NAMESPACE });
+      const phase = (pod as { status?: { phase?: string } }).status?.phase;
+      if (phase === 'Succeeded' || phase === 'Failed') {
+        try {
+          const raw = await k8s.core.readNamespacedPodLog({ name: podName, namespace: PURGE_NAMESPACE });
+          logs = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        } catch (err) {
+          podError = `read logs on ${node}: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        break;
+      }
+    } catch {
+      // pod may not yet be visible — keep polling
+    }
+  }
+
+  if (logs.includes('NOSOCKET')) {
+    podError = `containerd socket not found on ${node}`;
+  }
+  if (logs) {
+    for (const line of logs.split('\n')) {
+      if (line.startsWith('REMOVED:')) {
+        const crictlName = line.slice('REMOVED:'.length).trim();
+        const t = crictlByName.get(crictlName);
+        if (t) {
+          removedDisplayNames.push(t.displayName);
+          freedBytes += t.sizeBytes;
+        } else {
+          removedDisplayNames.push(crictlName);
+        }
+      } else if (line.startsWith('FAILED:')) {
+        const crictlName = line.slice('FAILED:'.length).trim();
+        const t = crictlByName.get(crictlName);
+        failedDisplayNames.push(t?.displayName ?? crictlName);
+      }
+    }
+  } else if (!podError) {
+    podError = `purge pod on ${node} did not finish within ${PURGE_TIMEOUT_MS / 1000}s`;
+  }
+
+  // Best-effort cleanup
+  try {
+    await k8s.core.deleteNamespacedPod({ name: podName, namespace: PURGE_NAMESPACE });
+  } catch {
+    // pod may already be gone
+  }
+
+  return { node, removedDisplayNames, failedDisplayNames, freedBytes, podError };
+}
+
 /**
- * Purge unused, non-protected images from the k3s node.
+ * Purge unused, non-protected images from every k3s node that has a copy.
  *
- * Approach: Create a one-shot privileged pod with crictl + containerd socket mounted.
- * The pod runs `crictl rmi` for each purgeable image, then exits.
+ * Each node's containerd is independent: removing an image on node A does not
+ * remove it from node B. We therefore fan out one privileged pod per node that
+ * holds at least one purgeable image, run `crictl rmi` against that node's
+ * containerd socket, and aggregate the results.
  *
  * In dry-run mode, returns the list of images that WOULD be removed without acting.
  */
@@ -384,14 +575,14 @@ export async function purgeUnusedImages(
   k8s: K8sClients,
   dryRun: boolean,
 ): Promise<PurgeImagesResponse> {
-  const inventory = await getImageInventory(k8s);
-  const purgeable = filterPurgeableImages(inventory.images);
+  const aggregated = await aggregateImagesAcrossNodes(k8s);
+  const purgeable = aggregated.filter(a => !a.protected && !a.inUse);
 
   if (dryRun) {
     return {
       dryRun: true,
-      removedImages: purgeable.map(i => i.name),
-      freedBytes: purgeable.reduce((sum, i) => sum + i.sizeBytes, 0),
+      removedImages: purgeable.map(i => i.displayName),
+      freedBytes: purgeable.reduce((sum, i) => sum + i.totalSizeBytes, 0),
       errors: [],
     };
   }
@@ -400,139 +591,47 @@ export async function purgeUnusedImages(
     return { dryRun: false, removedImages: [], freedBytes: 0, errors: [] };
   }
 
-  // Look up the original (full) image names from node status — crictl needs
-  // the full containerd reference (e.g. docker.io/library/mysql:9.0, not mysql:9.0).
-  let nodeImages: readonly { names?: readonly string[] | null }[] = [];
-  try {
-    const nodeList = await k8s.core.listNode();
-    const nodes = (nodeList as { items?: readonly { status?: { images?: readonly { names?: readonly string[] | null }[] } }[] }).items ?? [];
-    if (nodes.length > 0) {
-      nodeImages = nodes[0].status?.images ?? [];
+  // Group purgeable presences by the node that holds them.
+  const byNode = new Map<string, { crictlName: string; displayName: string; sizeBytes: number }[]>();
+  for (const img of purgeable) {
+    for (const presence of img.perNode) {
+      let bucket = byNode.get(presence.node);
+      if (!bucket) {
+        bucket = [];
+        byNode.set(presence.node, bucket);
+      }
+      bucket.push({
+        crictlName: presence.crictlName,
+        displayName: img.displayName,
+        sizeBytes: presence.sizeBytes,
+      });
     }
-  } catch {
-    // No access — will fall back to formatted names
   }
 
-  // Map formatted name → all possible full names
-  const nameToFullNames = new Map<string, readonly string[]>();
-  for (const img of nodeImages) {
-    const names = img.names ?? [];
-    if (names.length === 0) continue;
-    const tagName = names.find(n => n.includes(':') && !n.includes('@sha256')) ?? names[0];
-    const formatted = formatImageName(tagName);
-    nameToFullNames.set(formatted, names);
-  }
+  const perNodeResults = await Promise.all(
+    Array.from(byNode.entries()).map(([node, targets]) => runPurgeOnNode(k8s, node, targets)),
+  );
 
   const errors: string[] = [];
-  const removedImages: string[] = [];
+  const removedSet = new Set<string>();
+  const failedSet = new Set<string>();
   let freedBytes = 0;
 
-  // Create a one-shot privileged pod that runs crictl rmi
-  const podName = `image-purge-${Date.now()}`;
-  const namespace = 'kube-system';
-  // Use the first (usually the tag-format) full name for crictl.
-  // If no full name is available, fall back to the formatted name.
-  const imageNamesForCrictl = purgeable
-    .map(i => {
-      const fullNames = nameToFullNames.get(i.name);
-      // Pick the one with a tag (not a digest)
-      const tagName = fullNames?.find(n => n.includes(':') && !n.includes('@sha256'));
-      return tagName ?? fullNames?.[0] ?? i.name;
-    })
-    .join(' ');
-  // Keep a mapping from crictl-name back to display-name for reporting
-  const crictlToDisplay = new Map<string, { display: string; sizeBytes: number }>();
-  for (const img of purgeable) {
-    const fullNames = nameToFullNames.get(img.name);
-    const tagName = fullNames?.find(n => n.includes(':') && !n.includes('@sha256')) ?? fullNames?.[0] ?? img.name;
-    crictlToDisplay.set(tagName, { display: img.name, sizeBytes: img.sizeBytes });
+  for (const r of perNodeResults) {
+    for (const name of r.removedDisplayNames) removedSet.add(name);
+    for (const name of r.failedDisplayNames) failedSet.add(name);
+    freedBytes += r.freedBytes;
+    if (r.podError) errors.push(r.podError);
   }
-  const imageNames = imageNamesForCrictl;
 
-  try {
-    await k8s.core.createNamespacedPod({
-      namespace,
-      body: {
-        metadata: { name: podName, namespace },
-        spec: {
-          restartPolicy: 'Never',
-          hostPID: true,
-          nodeSelector: { 'kubernetes.io/os': 'linux' },
-          tolerations: [{ operator: 'Exists' }],
-          containers: [{
-            name: 'purge',
-            image: 'rancher/k3s:v1.31.4-k3s1',
-            command: ['sh', '-c', `
-              for img in ${imageNames}; do
-                echo "Removing $img..."
-                crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock rmi "$img" && echo "REMOVED:$img" || echo "FAILED:$img"
-              done
-            `],
-            volumeMounts: [{
-              name: 'containerd-sock',
-              mountPath: '/run/k3s/containerd/containerd.sock',
-            }],
-            securityContext: { privileged: true },
-          }],
-          volumes: [{
-            name: 'containerd-sock',
-            hostPath: {
-              path: '/run/k3s/containerd/containerd.sock',
-              type: 'Socket',
-            },
-          }],
-        },
-      },
-    });
-
-    // Poll for pod completion (up to 60 seconds)
-    for (let i = 0; i < 30; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      try {
-        const pod = await k8s.core.readNamespacedPod({ name: podName, namespace });
-        const phase = (pod as { status?: { phase?: string } }).status?.phase;
-        if (phase === 'Succeeded' || phase === 'Failed') {
-          // Get logs
-          try {
-            const logs = await k8s.core.readNamespacedPodLog({ name: podName, namespace });
-            const logText = typeof logs === 'string' ? logs : JSON.stringify(logs);
-            const lines = logText.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('REMOVED:')) {
-                const name = line.slice('REMOVED:'.length).trim();
-                const entry = crictlToDisplay.get(name);
-                const displayName = entry?.display ?? name;
-                removedImages.push(displayName);
-                if (entry) freedBytes += entry.sizeBytes;
-              } else if (line.startsWith('FAILED:')) {
-                const name = line.slice('FAILED:'.length).trim();
-                const entry = crictlToDisplay.get(name);
-                errors.push(entry?.display ?? name);
-              }
-            }
-          } catch (err) {
-            errors.push(`Failed to read purge pod logs: ${err instanceof Error ? err.message : String(err)}`);
-          }
-          break;
-        }
-      } catch {
-        // Keep polling
-      }
-    }
-  } catch (err) {
-    errors.push(`Failed to run purge pod: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    // Best-effort cleanup
-    try {
-      await k8s.core.deleteNamespacedPod({ name: podName, namespace });
-    } catch {
-      // Pod may already be gone
-    }
+  // Surface per-image failures only when the image was not also removed elsewhere
+  for (const name of failedSet) {
+    if (!removedSet.has(name)) errors.push(`failed to remove ${name}`);
   }
 
   return {
     dryRun: false,
-    removedImages,
+    removedImages: Array.from(removedSet),
     freedBytes,
     errors,
   };
