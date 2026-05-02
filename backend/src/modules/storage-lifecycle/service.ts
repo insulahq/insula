@@ -969,8 +969,9 @@ export async function suspendClient(
       completedAt: new Date(),
       params: { quiesceSnapshot: snap as unknown as Record<string, unknown> },
     });
-    // applySuspended already set status='suspended'; just clear the
-    // storage-lifecycle state.
+    // applySuspended dispatched the suspended-transition hooks
+    // (clients-status-stamp wrote status='suspended'); here we just
+    // clear the storage-lifecycle state since that's not hook-owned.
     await ctx.db.update(clients).set({
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
@@ -1028,7 +1029,9 @@ export async function resumeClient(
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Client resumed', completedAt: new Date(),
     });
-    // applyActive already set status='active'; clear storage state.
+    // applyActive dispatched the active-transition hooks
+    // (clients-status-stamp wrote status='active' + cleared
+    // suspendedAt/archivedAt); clear the storage-lifecycle state.
     await ctx.db.update(clients).set({
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
