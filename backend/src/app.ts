@@ -109,6 +109,7 @@ import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
 import { startKubeletGcReconciler } from './modules/cluster-settings/kubelet-gc-reconciler.js';
+import { startVerificationCron } from './modules/domains/verification-cron.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -612,6 +613,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       } catch (err) {
         app.log.warn({ err }, 'image-pressure-watcher / kubelet-gc-reconciler: startup skipped');
       }
+
+      // Domain verification cron — hourly DNS re-check with regression notifications.
+      // Does not require k8s clients; uses only DB + DNS resolution.
+      void startVerificationCron(app.db, app.log).then((handle) => {
+        app.addHook('onClose', () => handle.stop());
+      }).catch((err) => {
+        app.log.warn({ err }, 'verification-cron: startup failed');
+      });
 
       // Auto-sync: fire a one-time catalog sync for every active repo that has
       // never been synced (last_synced_at IS NULL). This ensures that on a
