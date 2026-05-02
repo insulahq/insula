@@ -487,18 +487,36 @@ scenario_reaper() {
 }
 
 # ─── scenario: backup bundle (Phase 2 / ADR-032) ─────────────────
-# Creates a client, runs a hostpath bundle, asserts that meta.json +
-# config + secrets components landed on disk and the bundle row in the
-# DB is `completed`. Files component is exercised only if the client
-# already has a bound PVC (deployments running) — otherwise the
-# scenario asserts `partial` is acceptable, since files capture
-# requires a tenant PVC and we're not provisioning one to keep the
-# scenario fast.
+# Provisions a client, runs a backups-v2 bundle against the cluster's
+# active backup target (S3 or SSH — required, no fallback), asserts
+# bundle status=completed, and verifies the artefacts exist on the
+# remote target via the SAME admin API the dashboard uses (the GET
+# detail endpoint lists components with non-zero sizeBytes if they
+# were successfully uploaded). The scenario does NOT poke at the
+# remote target out-of-band — the API's view IS the user-visible truth.
 scenario_bundle() {
   if [[ "${SKIP_BUNDLE_SCENARIO:-}" == "1" ]]; then
     log "scenario bundle skipped — SKIP_BUNDLE_SCENARIO=1"
     return 0
   fi
+
+  # Resolve the active backup target — bundles MUST go off-cluster.
+  local cfg_resp; cfg_resp=$(api GET "/admin/backup-configs")
+  local target_id; target_id=$(echo "$cfg_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+items = d.get('data', d) if isinstance(d, dict) else d
+if isinstance(items, dict): items = items.get('items', items.get('data', []))
+for c in items if isinstance(items, list) else []:
+    if c.get('active'):
+        print(c.get('id', ''))
+        break
+" 2>/dev/null)
+  if [[ -z "$target_id" ]]; then
+    fail "bundle: no active backup target configured. Activate an S3 or SSH target via Admin → Backups before running this scenario."
+    return 1
+  fi
+  ok "bundle: using active backup target $target_id"
 
   local plan_id region_id
   plan_id=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
@@ -515,31 +533,33 @@ scenario_bundle() {
   wait_for 120 "bundle: client provisioned" '"provisioningStatus":"provisioned"' \
     "api GET '/clients/$cid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
 
-  # Skip the slow files component — config + secrets only, so the
-  # scenario completes in <30s without needing a tenant deployment.
-  local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"E2E bundle $stamp\",\"retentionDays\":1,\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+  # config + secrets only (files + mailboxes deferred to Phase 3).
+  local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"E2E bundle $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
   local b_resp; b_resp=$(api POST "/admin/backups/bundles" "$body")
   local bundle_id status
   bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
   status=$(echo "$b_resp"   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-  [[ -n "$bundle_id" ]] || { fail "bundle: create failed: $(echo "$b_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  [[ "$status" == "completed" ]] || { fail "bundle: status=$status (expected completed) — $(echo "$b_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ -n "$bundle_id" ]] || { fail "bundle: create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ "$status" == "completed" ]] || { fail "bundle: status=$status (expected completed) — $(echo "$b_resp" | head -c 400)"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "bundle: created $bundle_id status=$status"
 
-  # Assert meta.json + config + secrets exist on the platform-data PVC.
-  local found_meta found_config found_secrets
-  # Bundles live on a Longhorn RWX PVC mounted into platform-api at
-  # /bundles. We can read them via `kubectl exec` into any platform-api
-  # replica — no node-side path lookup needed.
-  local kx="ssh_cp kubectl -n platform exec deploy/platform-api -c api --"
-  found_meta=$($kx ls /bundles/$bundle_id/meta.json 2>/dev/null && echo OK || true)
-  found_config=$($kx ls /bundles/$bundle_id/components/config/db-rows.json.gz 2>/dev/null && echo OK || true)
-  found_secrets=$($kx ls /bundles/$bundle_id/components/secrets/tls.json.gz.enc 2>/dev/null && echo OK || true)
-
-  [[ "$found_meta" =~ OK ]]    || { fail "bundle: meta.json missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  [[ "$found_config" =~ OK ]]  || { fail "bundle: config component missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  [[ "$found_secrets" =~ OK ]] || { fail "bundle: secrets component missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  ok "bundle: all 3 expected artifacts present on disk"
+  # Assert via the detail endpoint that both components landed on the
+  # remote target with non-zero size — that proves the bytes left the
+  # platform-api pod. The detail endpoint reads from the DB rows that
+  # the orchestrator only writes after the BackupStore.writeComponent
+  # promise resolves (= bytes on the remote).
+  local detail; detail=$(api GET "/admin/backups/bundles/$bundle_id")
+  local check; check=$(echo "$detail" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)['data']
+out = {c['component']: {'status': c['status'], 'size': c['sizeBytes']} for c in d.get('components', [])}
+print(json.dumps(out))
+" 2>/dev/null)
+  echo "$check" | grep -q '"config".*"completed"' || { fail "bundle: config component not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  echo "$check" | grep -q '"secrets".*"completed"' || { fail "bundle: secrets component not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  # Both components must have written at least one byte to the remote.
+  echo "$check" | grep -qE '"size":\s*0\b' && { fail "bundle: at least one component reported sizeBytes=0 (no remote write?): $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "bundle: config + secrets components completed, sizeBytes>0 on remote target"
 
   # Assert detail endpoint returns the components rows.
   local detail; detail=$(api GET "/admin/backups/bundles/$bundle_id")
