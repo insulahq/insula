@@ -1,6 +1,10 @@
 # ADR-032: BackupStore Interface and Bundle Orchestration
 
-**Status:** Draft · 2026-05-01
+**Status:** Accepted · 2026-05-02
+**Amended:** 2026-05-02 — bundle storage is **off-cluster only**. Cluster
+disk is reserved for live tenant data; backups always stream to S3 or
+SSH. The hostpath store is dev/test-only (`mkdtemp` in unit tests). No
+production code path constructs a `LocalHostPathBackupStore`.
 **Relates to:**
 - ADR-028 — backup architecture (component model, tiered initiators, multi-target storage)
 - `docs/06-features/BACKUP_COMPONENT_MODEL.md` — bundle layout + `meta.json` schema
@@ -110,23 +114,32 @@ has to re-derive state from the store on every retry.
 | `S3BackupStore` | `s3://<bucket>/<prefix>/<backupId>/` | `backup_configurations` row (KMS-encrypted access key) | `@aws-sdk/client-s3` + multipart upload streaming. Presigned URLs for client downloads (Phase 5). |
 | `SshBackupStore` | `ssh://<user>@<host>:<port>/<base>/<backupId>/` | encrypted private key in `platform_settings.storage_backup_ssh_private_key` (`OIDC_ENCRYPTION_KEY`) | **Job-based** (see decision 5). |
 
-### 5. SSH backend uses short-lived k8s Jobs, not in-process `ssh2`
+### 5. SSH backend: in-process SFTP for Phase 2; Job-based for Phase 3 files
 
-Each `writeComponent` to an SSH backend launches a small Job in the
-`platform-system` namespace that streams data from the source PVC over SSH.
-The backend pod itself never opens an outbound SSH connection.
+**Phase 2 (config + secrets components).** The `SshBackupStore` opens
+SFTP connections from the platform-api pod and streams components
+directly. Reasons:
+- The component data already lives in the platform-api pod (DB rows,
+  k8s Secret API). Routing it through a Job sidecar adds latency for
+  no security benefit — the OIDC encryption key + DB credentials are
+  already in this pod, so the SSH key is no incremental risk.
+- Per-call connect/teardown (~hundreds of ms) is acceptable for the
+  ~tens-of-KB Phase 2 components.
+- Off-site upload is non-negotiable (cluster disk is for live tenant
+  data); in-process streaming is the simplest correct path.
 
-**Rationale.**
-- Avoids carving SSH egress into the platform-api NetworkPolicy.
-- Reuses the existing `snapshot.ts` Job-template path for capture.
-- Decouples credential scope: the SSH key is mounted only into the Job, not
-  into the long-lived backend pod.
-- Trades a few seconds of pod-spawn latency for a much smaller credential
-  exposure window.
+**Phase 3 (files component).** When the `files` component lights up,
+the source data is the **tenant** PVC, not the platform-api pod. At
+that point the capture moves to a k8s Job that mounts the tenant PVC
+read-only and streams the tar via SFTP from inside the Job. Reasons
+to use a Job at that point:
+- The Job already needs to mount the tenant PVC, so it's already
+  short-lived.
+- Keeps long-lived platform-api credentials separate from
+  tenant-data-handling code paths.
 
-`readComponent` from SSH similarly uses a Job that streams the artifact back
-into a transient PVC, then the backend pod reads from that PVC. This is the
-slow path; restore UX must show progress.
+`readComponent` (restore path) similarly uses an in-process SFTP read
+stream for Phase 2 components.
 
 ### 6. The orchestrator runs components in a fixed pipeline with isolated failure
 

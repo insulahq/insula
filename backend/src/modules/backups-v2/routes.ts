@@ -11,20 +11,19 @@ import {
   type BundleDetail,
   type BackupComponentInfo,
 } from '@k8s-hosting/api-contracts';
-import { LocalHostPathBackupStore } from './local-hostpath-backup-store.js';
 import { S3BackupStore } from './s3-backup-store.js';
+import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 
-// Bundles live on a Longhorn RWX PVC mounted into platform-api at
-// /bundles (see k8s/base/backups-v2-pvc.yaml + backend-deployment.yaml).
-// All 3 replicas share the same view, so a GET that lands on replica B
-// can serve a bundle written by replica A. The PVC is provisioned by
-// Longhorn's share-manager with mode 0777, so the pod (uid 1000) can
-// mkdir bundle subdirs in-process — no privileged Job required.
-const PLATFORM_BUNDLES_INPOD_ROOT = '/bundles';
-const PLATFORM_BUNDLES_TARGET_URI = `pvc://platform-bundles${PLATFORM_BUNDLES_INPOD_ROOT}`;
+// Backups-v2 stores bundles OFF-CLUSTER only (S3 / SSH). The cluster's
+// disk is reserved for live tenant data — backups must never compete
+// for it. Every bundle request therefore requires `targetConfigId`
+// pointing at an active row in `backup_configurations`.
+//
+// (LocalHostPathBackupStore still exists for unit tests via mkdtemp;
+// it is never used by the route layer in production.)
 
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -96,8 +95,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
     const input = parsed.data;
 
-    // Resolve the BackupStore from the chosen target.
-    const store = await resolveStore(app, input.targetConfigId ?? null);
+    // Backups MUST go to an off-cluster target. The cluster's disk is
+    // for live tenant data, not bundles. Reject any request without
+    // an explicit targetConfigId.
+    if (!input.targetConfigId) {
+      throw new ApiError('VALIDATION_ERROR',
+        'targetConfigId is required: bundles must be written to an active off-site backup target (S3 or SSH).',
+        400);
+    }
+    const store = await resolveStore(app, input.targetConfigId);
 
     // Resolve client + plan retention.
     const [client] = await app.db.select().from(clients).where(eq(clients.id, input.clientId)).limit(1);
@@ -115,16 +121,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       k8s = undefined;
     }
 
-    const targetUri = store.kind === 'hostpath'
-      ? PLATFORM_BUNDLES_TARGET_URI
-      : `${store.kind}://${input.targetConfigId ?? 'unknown'}`;
+    const targetUri = `${store.kind}://${input.targetConfigId}`;
 
     const result = await runBundle(
-      // For the PVC-backed bundle store the pod path IS the canonical
-      // path everywhere (no host vs container divergence), so the
-      // files-component Job mounts the same PVC at /bundles via a
-      // sub-path. hostpathRoot is unused in that path.
-      { db: app.db, k8s, store, platformVersion, secretsKeyHex, hostpathRoot: PLATFORM_BUNDLES_INPOD_ROOT },
+      // hostpathRoot is unused in production (S3/SSH stores stream
+      // straight to the off-site target); it remains a parameter so
+      // the orchestrator's signature is stable for unit tests that
+      // wire a tmpdir-backed LocalHostPathBackupStore.
+      { db: app.db, k8s, store, platformVersion, secretsKeyHex },
       {
         clientId: input.clientId,
         initiator: input.initiator,
@@ -159,55 +163,95 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
-    const store = await resolveStore(app, job.targetConfigId);
-    const handle = await store.open(id);
-    if (handle) await store.delete(handle);
+    // Best-effort remote delete: only attempt if the bundle has an
+    // off-site target configured. (Older rows could have null
+    // targetConfigId from the pre-D-redesign world; for those we
+    // just drop the DB row.)
+    if (job.targetConfigId) {
+      const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+      const handle = await store.open(id);
+      if (handle) await store.delete(handle);
+    }
     await app.db.delete(backupJobs).where(eq(backupJobs.id, id));
     reply.status(204).send();
   });
 }
 
-async function resolveStore(app: FastifyInstance, targetConfigId: string | null): Promise<BackupStore> {
-  if (!targetConfigId) {
-    // PVC-backed default store. Mount + access mode are defined in the
-    // manifest; the pod sees /bundles as a regular pod-writable dir
-    // shared across all 3 replicas (Longhorn RWX share-manager).
-    return new LocalHostPathBackupStore(PLATFORM_BUNDLES_INPOD_ROOT);
-  }
+async function resolveStore(
+  app: FastifyInstance,
+  targetConfigId: string,
+  opts: { requireActive: boolean } = { requireActive: true },
+): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
-  if (cfg.storageType !== 's3') {
-    throw new ApiError('NOT_IMPLEMENTED', `Backup store kind '${cfg.storageType}' is not yet wired in backups-v2`, 501);
+  // Inactive targets must not accept NEW writes — an operator may have
+  // taken the target out of service (rotated keys, decommissioning).
+  // DELETE callers pass requireActive=false so cleanup of existing
+  // bundles on a deactivated target still works.
+  if (opts.requireActive && !cfg.active) {
+    throw new ApiError('CONFIG_INVALID',
+      `Backup target ${cfg.id} is not active. Activate it via Admin → Backup Settings before writing bundles.`,
+      400);
   }
-  // Decrypt the S3 access keys using the platform-wide OIDC_ENCRYPTION_KEY.
-  // Same key the backup-config module uses to encrypt them at write time.
+
   const encKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
     ?? process.env.OIDC_ENCRYPTION_KEY
     ?? '0'.repeat(64);
-  // Decrypt with a sanitised error wrapper — the underlying decrypt()
-  // can throw OpenSSL strings that include ciphertext fragments, and
-  // those would otherwise leak through Fastify's default 500 handler
-  // into the response body.
-  let accessKey = '';
-  let secretKey = '';
-  try {
-    accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
-    secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
-  } catch (err) {
-    app.log.error({ err, configId: cfg.id }, 'backups-v2: S3 credential decryption failed');
-    throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed (encryption key may have rotated)', 500);
+
+  if (cfg.storageType === 's3') {
+    // Decrypt with a sanitised error wrapper — the underlying decrypt()
+    // can throw OpenSSL strings that include ciphertext fragments, and
+    // those would otherwise leak through Fastify's default 500 handler
+    // into the response body.
+    let accessKey = '';
+    let secretKey = '';
+    try {
+      accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
+      secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
+    } catch (err) {
+      app.log.error({ err, configId: cfg.id }, 'backups-v2: S3 credential decryption failed');
+      throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed (encryption key may have rotated)', 500);
+    }
+    if (!accessKey || !secretKey) {
+      throw new ApiError('CONFIG_INVALID', `Backup target ${cfg.id} has no S3 credentials configured`, 400);
+    }
+    return new S3BackupStore({
+      bucket: cfg.s3Bucket ?? '',
+      region: cfg.s3Region ?? 'us-east-1',
+      endpoint: cfg.s3Endpoint ?? undefined,
+      accessKeyId: accessKey,
+      secretAccessKey: secretKey,
+      pathPrefix: cfg.s3Prefix ?? undefined,
+    });
   }
-  if (!accessKey || !secretKey) {
-    throw new ApiError('CONFIG_INVALID', `Backup target ${cfg.id} has no S3 credentials configured`, 400);
+
+  if (cfg.storageType === 'ssh') {
+    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted || !cfg.sshPath) {
+      throw new ApiError('CONFIG_INVALID',
+        `Backup target ${cfg.id} is missing SSH host/user/key/path`, 400);
+    }
+    let privateKey = '';
+    try {
+      privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
+    } catch (err) {
+      app.log.error({ err, configId: cfg.id }, 'backups-v2: SSH key decryption failed');
+      throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed (encryption key may have rotated)', 500);
+    }
+    if (!privateKey) {
+      throw new ApiError('CONFIG_INVALID', `Backup target ${cfg.id} has empty SSH key`, 400);
+    }
+    return new SshBackupStore({
+      host: cfg.sshHost,
+      port: cfg.sshPort ?? 22,
+      user: cfg.sshUser,
+      privateKey,
+      basePath: cfg.sshPath,
+      logFn: (level, ctx, msg) => app.log[level](ctx, msg),
+    });
   }
-  return new S3BackupStore({
-    bucket: cfg.s3Bucket ?? '',
-    region: cfg.s3Region ?? 'us-east-1',
-    endpoint: cfg.s3Endpoint ?? undefined,
-    accessKeyId: accessKey,
-    secretAccessKey: secretKey,
-    pathPrefix: cfg.s3Prefix ?? undefined,
-  });
+
+  throw new ApiError('NOT_IMPLEMENTED',
+    `Backup store kind '${cfg.storageType}' is not supported`, 501);
 }
 
 function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {

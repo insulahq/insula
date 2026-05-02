@@ -52,18 +52,11 @@ export class LocalHostPathBackupStore implements BackupStore {
   private readonly normalizedRoot: string;
 
   /**
-   * `root` is the in-pod path where the store reads/writes bundles.
-   *
-   * Production: `/bundles` — backed by a Longhorn RWX PVC mounted into
-   * platform-api (see k8s/base/backups-v2-pvc.yaml). All 3 replicas
-   * see the same files, so a GET that lands on replica B can serve a
-   * bundle written by replica A.
-   *
-   * Tests: any pod-writable tmpdir.
-   *
-   * The path must be writable by the running process (uid 1000 in
-   * production); the PVC is provisioned with mode 0777 by Longhorn's
-   * share-manager.
+   * Test-only store. Production paths use S3 / SSH; backups never
+   * sit on cluster disk (see ADR-032 amendment 2026-05-02). Unit
+   * tests pass an `mkdtemp(...)` path so the same code exercises
+   * the BackupStore contract without needing a real bucket or
+   * remote host.
    */
   constructor(private readonly root: string) {
     this.normalizedRoot = resolve(root);

@@ -34,6 +34,7 @@
     "@k8s-hosting/api-contracts": "*",
     "@kubernetes/client-node": "^1.4.0",
     "@simplewebauthn/server": "^11.0.0",
+    "@types/ssh2": "^1.15.5",
     "bcrypt": "^6.0.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.8.5",
@@ -42,6 +43,7 @@
     "nodemailer": "^8.0.5",
     "openai": "^6.34.0",
     "pg": "^8.16.0",
+    "ssh2": "^1.17.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
