@@ -20,6 +20,104 @@ export interface PlatformConfig {
   readonly ingressHostname: string;
 }
 
+export interface PlatformIngressIps {
+  readonly v4: Set<string>;
+  readonly v6: Set<string>;
+  readonly source: 'cluster_nodes' | 'dns' | 'mixed' | 'none';
+}
+
+// ─── Platform IP Detector ────────────────────────────────────────────────────
+
+/**
+ * Build the set of IPs that identify this platform's ingress.
+ *
+ * Sources (both merged):
+ * 1. All cluster_nodes rows with role in ('server','worker') active in the
+ *    last 7 days — uses publicIp for v4.
+ * 2. DNS resolution of the ingressBaseDomain — A + AAAA records.
+ *
+ * Survives empty cluster_nodes table (falls back to DNS-only).
+ * Survives DNS failure (falls back to cluster_nodes-only).
+ */
+export async function getPlatformIngressIps(
+  db: Database,
+  ingressBaseDomain?: string,
+): Promise<PlatformIngressIps> {
+  const v4Set = new Set<string>();
+  const v6Set = new Set<string>();
+  let hasNodes = false;
+  let hasDns = false;
+
+  // Source 1: cluster_nodes table
+  // Use dynamic imports to keep drizzle-orm out of the top-level imports
+  // (the test environment cannot resolve drizzle-orm as a package — see
+  // the getPlatformConfig function below for the same pattern).
+  try {
+    const { clusterNodes } = await import('../../db/schema.js');
+    const { and, gt, inArray } = await import('drizzle-orm');
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // HIGH fix from code review: explicit role filter — both server and
+    // worker run the ingress DaemonSet today, but documenting the intent
+    // protects us against a future role (e.g. `storage_only`) that
+    // shouldn't accept tenant ingress traffic.
+    const nodes = await db
+      .select({ publicIp: clusterNodes.publicIp })
+      .from(clusterNodes)
+      .where(
+        and(
+          gt(clusterNodes.lastSeenAt, sevenDaysAgo),
+          inArray(clusterNodes.role, ['server', 'worker']),
+        ),
+      );
+    for (const node of nodes) {
+      if (node.publicIp) {
+        const ip = String(node.publicIp);
+        // Rough IPv6 detection: contains ':'
+        if (ip.includes(':')) {
+          v6Set.add(ip);
+        } else {
+          v4Set.add(ip);
+        }
+        hasNodes = true;
+      }
+    }
+  } catch {
+    // cluster_nodes unavailable — will rely on DNS
+  }
+
+  // Source 2: DNS resolution of the ingress base domain
+  if (ingressBaseDomain) {
+    try {
+      const [v4Result, v6Result] = await Promise.allSettled([
+        dns.resolve4(ingressBaseDomain),
+        dns.resolve6(ingressBaseDomain),
+      ]);
+      if (v4Result.status === 'fulfilled') {
+        for (const ip of v4Result.value) {
+          v4Set.add(ip);
+          hasDns = true;
+        }
+      }
+      if (v6Result.status === 'fulfilled') {
+        for (const ip of v6Result.value) {
+          v6Set.add(ip);
+          hasDns = true;
+        }
+      }
+    } catch {
+      // DNS resolution failed — cluster_nodes is the only source
+    }
+  }
+
+  const source: PlatformIngressIps['source'] =
+    hasNodes && hasDns ? 'mixed'
+    : hasNodes ? 'cluster_nodes'
+    : hasDns ? 'dns'
+    : 'none';
+
+  return { v4: v4Set, v6: v6Set, source };
+}
+
 // ─── DNS Verification Functions ─────────────────────────────────────────────
 
 export async function verifyNsDelegation(
@@ -50,7 +148,7 @@ export async function verifyNsDelegation(
 }
 
 /**
- * @deprecated Use verifyResolvesToIngress for cname-mode domains instead.
+ * @deprecated Use verifyResolvesToPlatform for cname-mode domains instead.
  * This function does an exact CNAME match which rejects CDN/proxy setups.
  */
 export async function verifyCnameRecord(
@@ -88,16 +186,17 @@ export async function verifyCnameRecord(
 async function resolveAllIps(
   hostname: string,
   errors: string[],
-): Promise<string[]> {
+): Promise<{ v4: string[]; v6: string[] }> {
   const [v4Result, v6Result] = await Promise.allSettled([
     dns.resolve4(hostname),
     dns.resolve6(hostname),
   ]);
 
-  const ips: string[] = [];
+  const v4: string[] = [];
+  const v6: string[] = [];
 
   if (v4Result.status === 'fulfilled') {
-    ips.push(...v4Result.value);
+    v4.push(...v4Result.value);
   } else {
     const code = (v4Result.reason as NodeJS.ErrnoException).code;
     if (code !== 'ENODATA' && code !== 'ENOTFOUND') {
@@ -106,7 +205,7 @@ async function resolveAllIps(
   }
 
   if (v6Result.status === 'fulfilled') {
-    ips.push(...v6Result.value);
+    v6.push(...v6Result.value);
   } else {
     const code = (v6Result.reason as NodeJS.ErrnoException).code;
     if (code !== 'ENODATA' && code !== 'ENOTFOUND') {
@@ -114,18 +213,85 @@ async function resolveAllIps(
     }
   }
 
-  return ips;
+  return { v4, v6 };
 }
 
 /**
  * Verify that a customer hostname ultimately resolves to one or more IPs
- * that are also served by the ingress base domain.
+ * that overlap with the platform's known ingress IPs (from cluster_nodes
+ * table + DNS resolution of the ingressBaseDomain).
  *
  * Pass/fail is determined by IP-set intersection — any CDN or proxy chain
- * that ends at the platform's ingress IPs will pass.
+ * that ends at the platform's ingress IPs will pass. Checks both v4 and v6.
  *
- * The CNAME chain is also walked (informational only) and included in the
- * detail message.
+ * Pre-fetched platformIps can be passed to avoid redundant lookups across
+ * multiple domains in the same cron tick.
+ */
+export async function verifyResolvesToPlatform(
+  hostname: string,
+  ingressBaseDomain: string,
+  db: Database,
+  precomputedPlatformIps?: PlatformIngressIps,
+): Promise<VerificationCheck> {
+  // Get platform IPs (from cache if pre-fetched by cron)
+  const platformIps = precomputedPlatformIps ?? await getPlatformIngressIps(db, ingressBaseDomain);
+
+  if (platformIps.v4.size === 0 && platformIps.v6.size === 0) {
+    const detail = platformIps.source === 'none'
+      ? `Platform ingress has no resolvable A/AAAA records — operator misconfiguration (ingress_base_domain not set or DNS not resolving)`
+      : `Platform ingress base domain has no resolvable A/AAAA records — operator misconfiguration`;
+    return { type: 'cname_to_ingress', status: 'fail', detail };
+  }
+
+  // Resolve customer hostname IPs (follows CNAME chain transparently)
+  const customerErrors: string[] = [];
+  const customerIps = await resolveAllIps(hostname, customerErrors);
+  const allCustomerIps = [...customerIps.v4, ...customerIps.v6];
+
+  if (allCustomerIps.length === 0) {
+    let detail = `No A/AAAA records resolve for ${hostname}`;
+    if (customerErrors.length > 0) {
+      detail += ` (${customerErrors.join('; ')})`;
+    }
+    return { type: 'cname_to_ingress', status: 'fail', detail };
+  }
+
+  // IP-set intersection check — v4 and v6 independently
+  const v4Overlap = customerIps.v4.filter((ip) => platformIps.v4.has(ip));
+  const v6Overlap = customerIps.v6.filter((ip) => platformIps.v6.has(ip));
+  const passes = v4Overlap.length > 0 || v6Overlap.length > 0;
+
+  // Build a friendly CNAME-chain prefix for the detail message (best-effort)
+  let chainPrefix = '';
+  try {
+    const cnames = await dns.resolveCname(hostname);
+    if (cnames.length > 0) {
+      chainPrefix = `${hostname} → ${cnames.join(' → ')} → `;
+    }
+  } catch {
+    // CNAME chain is informational only — ignore lookup failures
+  }
+
+  const resolvedDisplay = `${chainPrefix}${allCustomerIps.join(', ')}`;
+  const platformDisplay = [...platformIps.v4, ...platformIps.v6].join(', ');
+
+  const detail = passes
+    ? `${resolvedDisplay} (matches platform IPs: ${[...v4Overlap, ...v6Overlap].join(', ')})`
+    : `Resolved IPs (${resolvedDisplay}) do not overlap with platform IPs (${platformDisplay})`;
+
+  return {
+    type: 'cname_to_ingress',
+    status: passes ? 'pass' : 'fail',
+    detail,
+  };
+}
+
+/**
+ * Legacy shim — resolves ingress IPs via DNS only (no cluster_nodes lookup).
+ * Used by the routes.ts verify endpoint which passes an explicit
+ * ingressBaseDomain string. Keep for backwards compat with existing tests.
+ *
+ * @deprecated Prefer verifyResolvesToPlatform(hostname, ingressBaseDomain, db)
  */
 export async function verifyResolvesToIngress(
   hostname: string,
@@ -133,7 +299,8 @@ export async function verifyResolvesToIngress(
 ): Promise<VerificationCheck> {
   // Resolve ingress base IPs first — if this fails it's an operator config problem
   const ingressErrors: string[] = [];
-  const ingressIps = await resolveAllIps(ingressBaseDomain, ingressErrors);
+  const ingressIpsResult = await resolveAllIps(ingressBaseDomain, ingressErrors);
+  const ingressIps = [...ingressIpsResult.v4, ...ingressIpsResult.v6];
 
   if (ingressIps.length === 0) {
     const detail = ingressErrors.length > 0
@@ -144,7 +311,8 @@ export async function verifyResolvesToIngress(
 
   // Resolve customer hostname IPs (follows CNAME chain transparently)
   const customerErrors: string[] = [];
-  const customerIps = await resolveAllIps(hostname, customerErrors);
+  const customerIpsResult = await resolveAllIps(hostname, customerErrors);
+  const customerIps = [...customerIpsResult.v4, ...customerIpsResult.v6];
 
   if (customerIps.length === 0) {
     let detail = `No A/AAAA records resolve for ${hostname}`;
@@ -237,6 +405,7 @@ export async function verifyDomain(
   dnsMode: 'primary' | 'cname' | 'secondary',
   platformConfig: PlatformConfig,
   db: Database,
+  precomputedPlatformIps?: PlatformIngressIps,
 ): Promise<VerificationResult> {
   const checks: VerificationCheck[] = [];
 
@@ -247,9 +416,14 @@ export async function verifyDomain(
       break;
     }
     case 'cname': {
-      // Use IP-set intersection instead of exact CNAME match so CDN/proxy
-      // chains (e.g. customer.com → CDN → platform IP) are accepted.
-      const cnameCheck = await verifyResolvesToIngress(domain, platformConfig.ingressHostname);
+      // Use platform IP-set intersection (cluster_nodes + DNS) so worker IPs
+      // and IPv6 addresses are included in the match set.
+      const cnameCheck = await verifyResolvesToPlatform(
+        domain,
+        platformConfig.ingressHostname,
+        db,
+        precomputedPlatformIps,
+      );
       checks.push(cnameCheck);
       break;
     }
