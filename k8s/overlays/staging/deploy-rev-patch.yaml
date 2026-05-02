@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-b744c71"
+        platform.example.test/deploy-rev: "0.0.0-867019c"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-b744c71"
+        platform.example.test/deploy-rev: "0.0.0-867019c"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,4 +34,4 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-b744c71"
+        platform.example.test/deploy-rev: "0.0.0-867019c"
