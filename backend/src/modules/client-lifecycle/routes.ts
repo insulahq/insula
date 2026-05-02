@@ -15,7 +15,7 @@
  *          a slow provider).
  */
 import type { FastifyInstance } from 'fastify';
-import { eq, desc, inArray } from 'drizzle-orm';
+import { eq, desc, inArray, sql } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -91,6 +91,56 @@ export async function clientLifecycleRoutes(app: FastifyInstance): Promise<void>
       .limit(50);
     const hookRuns = await fetchHookRunsForTransitions(app.db, transitions.map((t) => t.id));
     return success({ transitions, hookRuns });
+  });
+
+  // GET /admin/lifecycle/bulk-ops/:bulkOpId
+  // Returns every transition row whose detail.bulkOpId matches, with
+  // per-row hook_runs. Used by the bulk-progress modal to poll a
+  // single endpoint instead of N per-client requests.
+  app.get('/admin/lifecycle/bulk-ops/:bulkOpId', {
+    schema: {
+      tags: ['ClientLifecycle'],
+      summary: 'List all transitions for one bulk operation',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['bulkOpId'], properties: { bulkOpId: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { bulkOpId } = request.params as { bulkOpId: string };
+    // Postgres JSONB containment: detail @> '{"bulkOpId":"..."}'
+    const transitions = await app.db.select().from(clientLifecycleTransitions)
+      .where(sql`${clientLifecycleTransitions.detail} @> ${JSON.stringify({ bulkOpId })}::jsonb`)
+      .orderBy(desc(clientLifecycleTransitions.startedAt));
+    const hookRuns = await fetchHookRunsForTransitions(app.db, transitions.map((t) => t.id));
+    return success({ bulkOpId, transitions, hookRuns });
+  });
+
+  // POST /admin/lifecycle/breakers/:hookName/reset
+  // Clear the in-memory circuit breaker for one hook so the next
+  // retry tick can attempt it immediately.
+  //
+  // IMPORTANT: breaker state is per-replica (in-memory Map). This
+  // endpoint only resets the breaker on the SINGLE pod that handles
+  // the request. The response includes `replicaHostname` so the
+  // operator can re-issue the call N times (or use kubectl exec) to
+  // hit other replicas. A future enhancement would persist breakers
+  // in Redis to make resets cluster-wide.
+  app.post('/admin/lifecycle/breakers/:hookName/reset', {
+    schema: {
+      tags: ['ClientLifecycle'],
+      summary: 'Clear the circuit breaker for one hook (per-replica)',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['hookName'], properties: { hookName: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { hookName } = request.params as { hookName: string };
+    const { resetBreakerForHook } = await import('./scheduler.js');
+    const wasOpen = resetBreakerForHook(hookName);
+    return success({
+      hookName,
+      wasOpen,
+      replicaHostname: process.env.HOSTNAME ?? 'unknown',
+      note: 'Breaker state is per-replica. Re-issue this call N times in a multi-replica deploy to reset all pods.',
+    });
   });
 
   // POST /admin/lifecycle/hook-runs/:runId/retry

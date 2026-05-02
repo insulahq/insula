@@ -1812,6 +1812,9 @@ export const clientLifecycleTransitions = pgTable('client_lifecycle_transitions'
   state: clientLifecycleTransitionStateEnum('state').notNull().default('running'),
   startedAt: timestamp('started_at').notNull().defaultNow(),
   completedAt: timestamp('completed_at'),
+  // Captured at dispatch time so the Phase 5 retry scheduler can
+  // re-run hooks even after the client row is gone (deleted transitions).
+  namespace: varchar('namespace', { length: 63 }),
   detail: jsonb('detail').$type<Record<string, unknown> | null>(),
 }, (table) => [
   index('client_lifecycle_transitions_client_idx').on(table.clientId, table.startedAt),

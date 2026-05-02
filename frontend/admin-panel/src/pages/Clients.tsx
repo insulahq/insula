@@ -5,6 +5,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import BulkResultModal, { type BulkResult } from '@/components/BulkResultModal';
+import BulkProgressModal from '@/components/BulkProgressModal';
 import CreateClientModal from '@/components/CreateClientModal';
 import { useClients } from '@/hooks/use-clients';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
@@ -57,6 +58,14 @@ export default function Clients() {
   };
 
   const [bulkResult, setBulkResult] = useState<{ action: 'suspend' | 'reactivate' | 'delete'; result: BulkResult } | null>(null);
+  // Phase B3: open the bulk-progress modal when the bulk operation
+  // returns a bulkOpId so the operator can watch per-client hook
+  // progress in real time.
+  const [bulkProgress, setBulkProgress] = useState<{
+    bulkOpId: string;
+    action: 'suspend' | 'reactivate' | 'delete';
+    clientCount: number;
+  } | null>(null);
 
   const handleBulkAction = async () => {
     if (!confirmAction) return;
@@ -67,8 +76,27 @@ export default function Clients() {
       else if (confirmAction === 'reactivate') res = await bulkReactivate.mutateAsync(ids);
       else res = await bulkDelete.mutateAsync(ids);
       selection.deselectAll();
-      // Surface aggregate result so per-client failures are visible.
-      setBulkResult({ action: confirmAction, result: res.data });
+      // Open the live progress modal first so the operator sees
+      // hook_runs draining; the static result modal stays hidden
+      // unless they explicitly want the per-client errored view.
+      if (res.data.bulkOpId) {
+        setBulkProgress({
+          bulkOpId: res.data.bulkOpId,
+          action: confirmAction,
+          clientCount: ids.length,
+        });
+      } else {
+        // Backwards-compat: if backend didn't return a bulkOpId
+        // (older deploy), fall back to the static result modal.
+        // The shape is structurally compatible — succeeded/failed
+        // arrays carry the same per-client info, just minus the
+        // live transition_id link.
+        const compat: BulkResult = {
+          succeeded: res.data.succeeded.map((r) => r.id),
+          failed: res.data.failed.map((r) => ({ id: r.id, error: r.error ?? 'unknown' })),
+        };
+        setBulkResult({ action: confirmAction, result: compat });
+      }
     } finally {
       setConfirmAction(null);
     }
@@ -303,6 +331,15 @@ export default function Clients() {
         action={bulkResult?.action ?? 'suspend'}
         onClose={() => setBulkResult(null)}
       />
+
+      {bulkProgress && (
+        <BulkProgressModal
+          bulkOpId={bulkProgress.bulkOpId}
+          action={bulkProgress.action}
+          clientCount={bulkProgress.clientCount}
+          onClose={() => setBulkProgress(null)}
+        />
+      )}
     </div>
   );
 }

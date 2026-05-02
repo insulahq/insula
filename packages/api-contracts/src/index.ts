@@ -70,3 +70,4 @@ export * from './platform-storage-policy.js';
 export * from './system-settings.js';
 export * from './orphaned-volumes.js';
 export * from './system-snapshots.js';
+export * from './lifecycle-hooks.js';
