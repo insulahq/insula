@@ -30,6 +30,7 @@ import AiSettings from '@/pages/AiSettings';
 import Placeholder from '@/pages/Placeholder';
 import NodesAndStorage from '@/pages/NodesAndStorage';
 import LoadBalancerSettings from '@/pages/LoadBalancerSettings';
+import LifecycleHooksSettings from '@/pages/LifecycleHooksSettings';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
@@ -85,6 +86,7 @@ export default function App() {
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
             <Route path="settings/email" element={<EmailManagement />} />
             <Route path="settings/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiSettings /></ProtectedRoute>} />
+            <Route path="settings/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksSettings /></ProtectedRoute>} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

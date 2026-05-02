@@ -95,6 +95,7 @@ export async function runTransition(
     triggeredByUserId: opts.triggeredByUserId ?? null,
     state: 'running',
     startedAt,
+    namespace: opts.namespace ?? null,
     detail: opts.detail ?? null,
   });
 

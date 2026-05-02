@@ -1244,8 +1244,14 @@ async function runRestoreArchive(
       progressMessage: 'Restore complete — redeploy workloads via deployments API to bring the tenant back online',
       completedAt: new Date(),
     });
+    // Phase A1: dispatch the explicit `restored` transition so the
+    // hook_runs audit trail records this as restore-from-archive
+    // rather than plain unsuspend. clients-status-stamp hook writes
+    // status='active' + clears archivedAt; here we only clear the
+    // storage-lifecycle state.
+    const { applyRestored } = await import('../client-lifecycle/cascades.js');
+    await applyRestored({ db: ctx.db, k8s: ctx.k8s }, clientId, namespace);
     await ctx.db.update(clients).set({
-      status: 'active',
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
     }).where(eq(clients.id, clientId));

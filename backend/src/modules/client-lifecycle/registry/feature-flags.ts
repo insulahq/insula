@@ -39,6 +39,7 @@ interface FlagDef {
 const FLAGS: Record<string, FlagDef> = {
   'dns-zone-cleanup': { env: 'LIFECYCLE_HOOK_DNS_ZONE_CLEANUP', default: 'hook' },
   'backups-v2-bundle-cleanup': { env: 'LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP', default: 'hook' },
+  'cluster-scoped-refs-cleanup': { env: 'LIFECYCLE_HOOK_CLUSTER_SCOPED_REFS', default: 'hook' },
 };
 
 const _testOverrides = new Map<string, 'legacy' | 'hook'>();

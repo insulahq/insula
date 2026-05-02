@@ -554,7 +554,8 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('INVALID_FIELD_VALUE', "action must be 'suspend' or 'reactivate'", 400, { field: 'action' });
     }
 
-    const result = await bulkUpdateClientStatus(app.db, body.client_ids, body.action);
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
+    const result = await bulkUpdateClientStatus(app.db, body.client_ids, body.action, getK8s(), userId);
     return success(result);
   });
 
@@ -568,7 +569,8 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'client_ids (non-empty array) is required', 400);
     }
 
-    const result = await bulkDeleteClients(app.db, body.client_ids, getK8s());
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
+    const result = await bulkDeleteClients(app.db, body.client_ids, getK8s(), userId);
     return success(result);
   });
 }

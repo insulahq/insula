@@ -1,10 +1,21 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
+interface PerClientResult {
+  readonly id: string;
+  readonly transitionId: string | null;
+  readonly error?: string;
+}
+
 interface BulkResult {
   readonly data: {
-    readonly succeeded: readonly string[];
-    readonly failed: readonly { readonly id: string; readonly error: string }[];
+    /** Always present after Phase A2; declared optional for backwards
+     *  compatibility with older deployments that haven't rolled out
+     *  the bulk-cascade rewrite yet. UI falls back to the static
+     *  result modal when missing. */
+    readonly bulkOpId?: string;
+    readonly succeeded: readonly PerClientResult[];
+    readonly failed: readonly PerClientResult[];
   };
 }
 

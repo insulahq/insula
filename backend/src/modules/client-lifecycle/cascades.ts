@@ -99,6 +99,29 @@ export async function applySuspended(
   await dispatchTransition(ctx, clientId, namespace, 'suspended', null, 'suspended');
 }
 
+// ─── archived → active (snapshot restore completed) ────────────────────
+
+/**
+ * Restore cascades — explicit reverse of archived. Distinguished from
+ * plain `applyActive` so the audit trail records which path the
+ * client took: a freshly-archived client coming back via snapshot
+ * restore is a fundamentally different operation than a suspended
+ * client being unsuspended.
+ *
+ * Hook coverage is identical to `active` for the DB writes (the same
+ * domains-status/cronjobs-enable/etc. hooks subscribe to both
+ * transitions). Future hooks may diverge — e.g. a hook that
+ * notifies the client on restore-from-archive should subscribe only
+ * to `restored`.
+ */
+export async function applyRestored(
+  ctx: CascadeCtx,
+  clientId: string,
+  namespace: string,
+): Promise<void> {
+  await dispatchTransition(ctx, clientId, namespace, 'restored', null, 'active');
+}
+
 // ─── * → archived ────────────────────────────────────────────────────────
 
 /**

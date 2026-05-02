@@ -87,6 +87,7 @@ interface TransitionLite {
   id: string;
   clientId: string;
   transitionKind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted';
+  namespace: string | null;
 }
 
 /**
@@ -149,6 +150,7 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
       id: clientLifecycleTransitions.id,
       clientId: clientLifecycleTransitions.clientId,
       transitionKind: clientLifecycleTransitions.transitionKind,
+      namespace: clientLifecycleTransitions.namespace,
     })
       .from(clientLifecycleTransitions)
       .where(eq(clientLifecycleTransitions.id, row.transitionId))
@@ -168,19 +170,21 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
       .set({ state: 'running', attempts: attempt, startedAt: new Date() })
       .where(eq(clientLifecycleHookRuns.id, row.id));
 
-    // Note: namespace is not stored on the transition row in Phase 1.
-    // We re-derive it from the clients table — best-effort, since a
-    // deleted client has no row. For 'deleted' transitions, fall back
-    // to a synthesised name; the hook handles missing namespace itself.
-    let namespace = '';
-    try {
-      const { clients } = await import('../../db/schema.js');
-      const r = await db.select({ ns: clients.kubernetesNamespace })
-        .from(clients)
-        .where(eq(clients.id, parent.clientId))
-        .limit(1);
-      namespace = r[0]?.ns ?? '';
-    } catch { /* fall through with empty namespace */ }
+    // Phase A1: namespace was captured at dispatch time on the
+    // transition row. For pre-A1 rows where namespace IS NULL, fall
+    // back to the clients-table lookup (which fails silently for
+    // deleted clients — the hook handles missing namespace itself).
+    let namespace = parent.namespace ?? '';
+    if (!namespace) {
+      try {
+        const { clients } = await import('../../db/schema.js');
+        const r = await db.select({ ns: clients.kubernetesNamespace })
+          .from(clients)
+          .where(eq(clients.id, parent.clientId))
+          .limit(1);
+        namespace = r[0]?.ns ?? '';
+      } catch { /* fall through with empty namespace */ }
+    }
 
     const ctx: HookCtx = {
       db,
@@ -256,6 +260,13 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
     recordFailure(hook.name);
     const backoff = hook.backoffMs ?? DEFAULT_BACKOFF_MS;
     const isRetryable = result.status === 'retry' && attempt < (hook.maxAttempts ?? row.maxAttempts);
+    if (!isRetryable) {
+      // Permanent failure — fire-and-forget notify admins so the
+      // operator sees this in the bell icon. Best-effort, do not
+      // block the tick on notification failure.
+      void notifyHookPermanentFailure(db, hook.name, parent, result.envelope ?? null)
+        .catch(() => { /* swallowed */ });
+    }
     await db.update(clientLifecycleHookRuns)
       .set({
         state: 'failed',
@@ -282,6 +293,47 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
  */
 export function _resetBreakersForTests(): void {
   breakers.clear();
+}
+
+/**
+ * Operator-triggered: clear the breaker for a single hook so the
+ * next retry tick can attempt it immediately. Returns true when the
+ * named hook had an open breaker.
+ */
+export function resetBreakerForHook(hookName: string): boolean {
+  const state = breakers.get(hookName);
+  if (!state) return false;
+  const wasOpen = state.openUntil > Date.now();
+  state.recentFailures = [];
+  state.openUntil = 0;
+  return wasOpen;
+}
+
+async function notifyHookPermanentFailure(
+  db: Database,
+  hookName: string,
+  parent: TransitionLite,
+  envelope: { title?: string; detail?: string } | null,
+): Promise<void> {
+  // Resolve admin recipients; fire one notification per recipient.
+  const { getAdminRecipients } = await import('../notifications/recipients.js');
+  const { createNotification } = await import('../notifications/service.js');
+  const recipients = await getAdminRecipients(db, ['super_admin', 'admin']);
+  if (recipients.length === 0) return;
+
+  const title = envelope?.title ?? `Lifecycle hook permanently failed: ${hookName}`;
+  const detail = envelope?.detail
+    ?? `Hook '${hookName}' on a ${parent.transitionKind} transition failed every retry. Operator action required.`;
+  for (const userId of recipients) {
+    await createNotification(db, {
+      userId,
+      type: 'error',
+      title,
+      message: `${detail}\n\nclient_id=${parent.clientId} transition_id=${parent.id}`,
+      resourceType: 'lifecycle_hook_run',
+      resourceId: parent.id,
+    });
+  }
 }
 
 /**

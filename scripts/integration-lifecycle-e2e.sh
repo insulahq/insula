@@ -390,13 +390,21 @@ else
   # hooks. With no domains/backup_bundles attached, dns-zone-cleanup +
   # backups-v2-bundle-cleanup return noop — both states are acceptable.
   DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
-  for hook in dns-zone-cleanup backups-v2-bundle-cleanup; do
+  for hook in dns-zone-cleanup backups-v2-bundle-cleanup cluster-scoped-refs-cleanup; do
     if echo "$DEL_HOOKS" | grep -q "^$hook|"; then
       ok "hook_run row for $hook recorded"
     else
       fail "no hook_run row for $hook (got: $DEL_HOOKS)"
     fi
   done
+
+  # Phase A1: namespace must be persisted on the transition row.
+  DEL_NS_FROM_TX=$(PSQL "SELECT namespace FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted' LIMIT 1")
+  if [[ -n "$DEL_NS_FROM_TX" ]]; then
+    ok "namespace persisted on transitions row: $DEL_NS_FROM_TX"
+  else
+    fail "namespace NULL on deleted transition row — A1 wiring missing"
+  fi
 
   # Poll hook_runs until they reach ok|noop. Phase 5's retry scheduler
   # ticks every 2 min so a freshly-failed hook (e.g. pv-cleanup-released
@@ -443,6 +451,66 @@ TX_COUNT=$(echo "$TX_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);
 [[ "$TX_COUNT" -ge 3 ]] \
   && ok "GET .../clients/$CID/lifecycle/transitions returned $TX_COUNT rows" \
   || fail "GET .../clients/$CID/lifecycle/transitions returned $TX_COUNT rows (expected ≥3)"
+
+# ─── Scenario 11: Phase A1 explicit `restored` transition ─────────────
+# Phase A1 split applyActive/applyRestored so the audit trail
+# distinguishes unsuspend from snapshot-restore. The main test client
+# was archived then restored in Scenario 5 — assert there's at least
+# one transition row of kind=restored for it.
+log "── Scenario 11: explicit 'restored' transition row exists ──"
+RESTORED_COUNT=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE client_id='$CID' AND transition_kind='restored'")
+[[ "$RESTORED_COUNT" -ge 1 ]] \
+  && ok "client has $RESTORED_COUNT restored transition row(s)" \
+  || fail "no 'restored' transition row for $CID (Phase A1 wiring missing)"
+
+# ─── Scenario 12: Phase A2 bulk delete dispatches per-client transitions
+log "── Scenario 12: bulk delete dispatches via cascades ──"
+BULK_NAMES=()
+BULK_IDS=()
+for i in 1 2; do
+  BN="lifecycle-bulk-$(date +%s)-$i"
+  BR=$(api POST "/clients" "{\"company_name\":\"$BN\",\"company_email\":\"$BN@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+  BID=$(echo "$BR" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
+  [[ -n "$BID" ]] && BULK_NAMES+=("$BN") && BULK_IDS+=("$BID")
+done
+if [[ ${#BULK_IDS[@]} -lt 2 ]]; then
+  fail "could not provision 2 throwaway clients for bulk-delete scenario"
+else
+  ok "provisioned ${#BULK_IDS[@]} throwaway clients"
+  IDS_JSON=$(printf '"%s",' "${BULK_IDS[@]}" | sed 's/,$//')
+  BULK_RESP=$(curl -sk --max-time 240 -X DELETE "$ADMIN_HOST/api/v1/admin/clients/bulk" -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d "{\"client_ids\":[$IDS_JSON]}")
+  BULK_OP_ID=$(echo "$BULK_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bulkOpId',''))" 2>/dev/null || echo "")
+  [[ -n "$BULK_OP_ID" ]] \
+    && ok "bulk DELETE returned bulkOpId=$BULK_OP_ID" \
+    || fail "bulk DELETE did not return bulkOpId — body: $(echo "$BULK_RESP" | head -c 200)"
+
+  # Each per-client transition should be tagged with the bulkOpId.
+  if [[ -n "$BULK_OP_ID" ]]; then
+    for i in $(seq 1 30); do
+      MATCHED=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE detail @> '{\"bulkOpId\":\"$BULK_OP_ID\"}'::jsonb")
+      [[ "$MATCHED" -ge 2 ]] && break
+      sleep 2
+    done
+    [[ "$MATCHED" -ge 2 ]] \
+      && ok "bulkOpId tagged on $MATCHED transition(s)" \
+      || fail "expected 2 transitions tagged with bulkOpId, got $MATCHED"
+
+    # And the bulk-ops endpoint returns those rows.
+    BULK_GET=$(api GET "/admin/lifecycle/bulk-ops/$BULK_OP_ID")
+    BULK_TX_COUNT=$(echo "$BULK_GET" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('data',{}).get('transitions',[])))" 2>/dev/null || echo "0")
+    [[ "$BULK_TX_COUNT" -ge 2 ]] \
+      && ok "GET .../bulk-ops/$BULK_OP_ID returned $BULK_TX_COUNT transition(s)" \
+      || fail "bulk-ops endpoint returned $BULK_TX_COUNT transitions (expected ≥2)"
+  fi
+fi
+
+# ─── Scenario 13: Phase A4 breaker reset endpoint ─────────────────────
+log "── Scenario 13: breaker reset endpoint ──"
+BRK_RESP=$(api POST "/admin/lifecycle/breakers/dns-zone-cleanup/reset" "")
+BRK_HOOK=$(echo "$BRK_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('hookName',''))" 2>/dev/null || echo "")
+[[ "$BRK_HOOK" == "dns-zone-cleanup" ]] \
+  && ok "POST .../breakers/dns-zone-cleanup/reset returns hookName" \
+  || fail "breaker reset returned hookName=$BRK_HOOK (expected dns-zone-cleanup)"
 
 # ─── summary ─────────────────────────────────────────────────────────
 echo

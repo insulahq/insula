@@ -17,6 +17,7 @@ import { registerClientsStatusStampHook } from './db-clients-stamp.js';
 import { registerIngressHooks } from './k8s-ingress.js';
 import { registerDnsZoneCleanupHook } from './dns-zone-cleanup.js';
 import { registerBackupsV2BundleCleanupHook } from './backups-v2-cleanup.js';
+import { registerClusterScopedRefsCleanupHook } from './cluster-scoped-refs.js';
 
 export function registerAllLifecycleHooks(): void {
   // Phase 2: PV/Longhorn cleanup on delete.
@@ -42,4 +43,5 @@ export function registerAllLifecycleHooks(): void {
   // through retries.
   registerDnsZoneCleanupHook();
   registerBackupsV2BundleCleanupHook();
+  registerClusterScopedRefsCleanupHook();
 }

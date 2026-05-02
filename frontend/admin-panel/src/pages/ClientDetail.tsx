@@ -6,6 +6,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import OperationProgressModal from '@/components/OperationProgressModal';
+import TransitionProgressModal from '@/components/TransitionProgressModal';
 import ClientUsersTab from '@/components/ClientUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
@@ -77,6 +78,11 @@ export default function ClientDetail() {
   // an op id; the StorageLifecycleCard's local progress strip still
   // shows that path.
   const [statusOpId, setStatusOpId] = useState<string | null>(null);
+  // Phase B2: open the transition progress modal whenever a lifecycle
+  // operation is triggered. The modal latches onto the most recent
+  // transition row matching `kind` started after `since` so concurrent
+  // transitions don't bleed across.
+  const [txModal, setTxModal] = useState<{ kind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted'; since: number } | null>(null);
 
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
@@ -89,8 +95,14 @@ export default function ClientDetail() {
   const handleDelete = async () => {
     if (!id) return;
     try {
+      // Open the modal BEFORE the delete completes so the operator can
+      // watch the deleted-transition hooks drain. Modal continues to
+      // poll lifecycle/transitions even after the client row is gone
+      // (transitions table is intentionally not cascade-on-delete).
+      setTxModal({ kind: 'deleted', since: Date.now() });
       await deleteClient.mutateAsync(id);
-      navigate('/clients');
+      // Don't navigate immediately — let the operator close the modal.
+      // The modal's "polling stopped" indicator signals when it's safe.
     } catch {
       // error stays visible in dialog
     }
@@ -99,6 +111,7 @@ export default function ClientDetail() {
   const handleSuspend = async () => {
     if (!id) return;
     try {
+      setTxModal({ kind: 'suspended', since: Date.now() });
       const res = await updateClient.mutateAsync({ status: 'suspended' });
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
@@ -123,6 +136,14 @@ export default function ClientDetail() {
       if (!ok) return;
     }
     try {
+      // Distinguish unsuspend (transition='active') from
+      // restore-from-archive (transition='restored') so the audit
+      // trail records the right kind. Backend dispatches the right
+      // transition based on prior client.status.
+      setTxModal({
+        kind: client?.status === 'archived' ? 'restored' : 'active',
+        since: Date.now(),
+      });
       const res = await updateClient.mutateAsync({ status: 'active' });
       const opId = res?.data?.storageRestoreOperationId
         ?? res?.data?.storageArchiveOperationId
@@ -333,6 +354,7 @@ export default function ClientDetail() {
                   client={client}
                   clientId={id!}
                   onOpStarted={(opId) => setStatusOpId(opId)}
+                  onTransitionStarted={(kind) => setTxModal({ kind, since: Date.now() })}
                 />
               </dd>
             </div>
@@ -450,6 +472,20 @@ export default function ClientDetail() {
         isPending={deleteClient.isPending}
       />
 
+      {txModal && id && (
+        <TransitionProgressModal
+          clientId={id}
+          transition={txModal.kind}
+          since={txModal.since}
+          onClose={() => {
+            setTxModal(null);
+            // After a delete, navigate away once the operator dismisses
+            // the modal. Other transitions stay on the page.
+            if (txModal.kind === 'deleted') navigate('/clients');
+          }}
+        />
+      )}
+
       {provisioningOpen && id && (
         <ProvisioningProgressModal
           clientId={id}
@@ -506,10 +542,12 @@ function LifecycleStatusControl({
   client,
   clientId,
   onOpStarted,
+  onTransitionStarted,
 }: {
   readonly client: import('@/types/api').Client;
   readonly clientId: string;
   readonly onOpStarted: (opId: string) => void;
+  readonly onTransitionStarted?: (kind: 'active' | 'suspended' | 'archived' | 'restored') => void;
 }) {
   const updateClient = useUpdateClient(clientId);
   const [editing, setEditing] = useState(false);
@@ -564,6 +602,14 @@ function LifecycleStatusControl({
       const payload: import('@k8s-hosting/api-contracts').UpdateClientInput = { status: pending };
       if (pending === 'archived' && client.status !== 'archived') {
         payload.archive_retention_days = retentionDays;
+      }
+      // Open the transition progress modal BEFORE the mutate completes
+      // so the operator can watch hook_runs in real time. archived→active
+      // is `restored`; everything else maps directly.
+      if (onTransitionStarted) {
+        const kind: 'active' | 'suspended' | 'archived' | 'restored' =
+          pending === 'active' && client.status === 'archived' ? 'restored' : pending;
+        onTransitionStarted(kind);
       }
       const res = await updateClient.mutateAsync(payload);
       const opId = res?.data?.storageArchiveOperationId
