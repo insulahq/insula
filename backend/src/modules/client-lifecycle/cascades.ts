@@ -13,6 +13,34 @@ import {
   suspendNamespaceIngresses,
   resumeNamespaceIngresses,
 } from './ingress-suspend.js';
+import { runTransition, type Transition } from './registry/index.js';
+import { isHookAuthoritative } from './registry/feature-flags.js';
+
+/**
+ * Phase 1 dispatcher hook: every cascade calls this AFTER its inline
+ * work so the registry sees the transition. Until later phases register
+ * hooks, this is a no-op apart from writing one row to
+ * `client_lifecycle_transitions`. We swallow errors — a registry write
+ * failure must not corrupt an otherwise-successful transition.
+ */
+async function dispatchTransition(
+  ctx: CascadeCtx,
+  clientId: string,
+  namespace: string,
+  transition: Transition,
+  fromStatus: string | null,
+  toStatus: string,
+): Promise<void> {
+  try {
+    await runTransition(ctx.db, ctx.k8s, {
+      clientId, namespace, transition, fromStatus, toStatus,
+    });
+  } catch (err) {
+    console.warn(
+      `[cascades.dispatchTransition] registry write failed for client ${clientId} ${transition}: ${(err as Error).message}`,
+    );
+  }
+}
 
 /**
  * Client-lifecycle cascades.
@@ -50,46 +78,60 @@ export async function applyActive(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // DB cascades — the four tables are independent so fire in parallel.
-  // `allSettled` (not `all`) so one table failing (e.g. a FK constraint
-  // edge case) doesn't abort the rest — the reconciler picks up the
-  // remainder on the next cycle. Per-failure logging surfaces which
-  // cascade needs attention.
-  const results = await Promise.allSettled([
-    ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.clientId, clientId)),
-    ctx.db.update(cronJobs).set({ enabled: 1 }).where(eq(cronJobs.clientId, clientId)),
-    ctx.db.update(mailboxes).set({ status: 'active' }).where(eq(mailboxes.clientId, clientId)),
-    ctx.db.update(emailAliases).set({ enabled: 1 }).where(eq(emailAliases.clientId, clientId)),
-  ]);
-  const labels = ['domains', 'cronJobs', 'mailboxes', 'emailAliases'];
-  results.forEach((r, i) => {
-    if (r.status === 'rejected') {
-      console.warn(`[cascades.applyActive] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
+  // Phase 3: when LIFECYCLE_HOOK_DB_CASCADES=hook, all of the inline
+  // work below is owned by registered hooks. Dispatcher.runTransition
+  // executes them in topo order, with full hook_runs observability.
+  // Default `legacy`: inline still runs AND hooks run (parallel/
+  // observational; every write below is idempotent).
+  if (!isHookAuthoritative('db-cascades')) {
+    // DB cascades — the four tables are independent so fire in parallel.
+    // `allSettled` (not `all`) so one table failing (e.g. a FK constraint
+    // edge case) doesn't abort the rest — the reconciler picks up the
+    // remainder on the next cycle. Per-failure logging surfaces which
+    // cascade needs attention.
+    const results = await Promise.allSettled([
+      ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.clientId, clientId)),
+      ctx.db.update(cronJobs).set({ enabled: 1 }).where(eq(cronJobs.clientId, clientId)),
+      ctx.db.update(mailboxes).set({ status: 'active' }).where(eq(mailboxes.clientId, clientId)),
+      ctx.db.update(emailAliases).set({ enabled: 1 }).where(eq(emailAliases.clientId, clientId)),
+    ]);
+    const labels = ['domains', 'cronJobs', 'mailboxes', 'emailAliases'];
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`[cascades.applyActive] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
+      }
+    });
+
+    // K8s: first remove the suspend markers, then tell the ingress
+    // reconciler to rebuild from `ingress_routes` — this handles both
+    // the redirect-annotation suspend (new) and any historical ingress
+    // swap (in case we're resuming a client that was suspended under
+    // an older code path).
+    try {
+      await resumeNamespaceIngresses(ctx.k8s, namespace);
+    } catch (err) {
+      console.warn(`[cascades.applyActive] resumeNamespaceIngresses failed for ${namespace}: ${(err as Error).message}`);
     }
-  });
+    try {
+      const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+      await reconcileIngress(ctx.db, ctx.k8s, clientId, namespace);
+    } catch (err) {
+      console.warn(`[cascades.applyActive] reconcileIngress failed for ${namespace}: ${(err as Error).message}`);
+    }
 
-  // K8s: first remove the suspend markers, then tell the ingress
-  // reconciler to rebuild from `ingress_routes` — this handles both
-  // the redirect-annotation suspend (new) and any historical ingress
-  // swap (in case we're resuming a client that was suspended under
-  // an older code path).
-  try {
-    await resumeNamespaceIngresses(ctx.k8s, namespace);
-  } catch (err) {
-    console.warn(`[cascades.applyActive] resumeNamespaceIngresses failed for ${namespace}: ${(err as Error).message}`);
-  }
-  try {
-    const { reconcileIngress } = await import('../domains/k8s-ingress.js');
-    await reconcileIngress(ctx.db, ctx.k8s, clientId, namespace);
-  } catch (err) {
-    console.warn(`[cascades.applyActive] reconcileIngress failed for ${namespace}: ${(err as Error).message}`);
+    // Clear suspendedAt/archivedAt on active so the auto-archive clock
+    // resets cleanly if the client is re-suspended later.
+    await ctx.db.update(clients)
+      .set({ status: 'active', suspendedAt: null, archivedAt: null })
+      .where(eq(clients.id, clientId));
+  } else {
+    console.log(`[cascades.applyActive] db-cascades hook is authoritative; legacy block skipped for ${clientId}`);
   }
 
-  // Clear suspendedAt/archivedAt on active so the auto-archive clock
-  // resets cleanly if the client is re-suspended later.
-  await ctx.db.update(clients)
-    .set({ status: 'active', suspendedAt: null, archivedAt: null })
-    .where(eq(clients.id, clientId));
+  // Phase 1+: dispatch through the registry. Hooks: domains-status,
+  // cronjobs-enable, mailboxes-status, email-aliases-enable, ingress-
+  // resume, ingress-reconcile, clients-status-stamp.
+  await dispatchTransition(ctx, clientId, namespace, 'active', null, 'active');
 }
 
 // ─── active → suspended ──────────────────────────────────────────────────
@@ -109,35 +151,41 @@ export async function applySuspended(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // See applyActive for the allSettled rationale.
-  const results = await Promise.allSettled([
-    ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId)),
-    ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId)),
-    ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId)),
-    ctx.db.update(mailboxes).set({ status: 'disabled' }).where(eq(mailboxes.clientId, clientId)),
-    ctx.db.update(emailAliases).set({ enabled: 0 }).where(eq(emailAliases.clientId, clientId)),
-  ]);
-  const labels = ['domains', 'deployments', 'cronJobs', 'mailboxes', 'emailAliases'];
-  results.forEach((r, i) => {
-    if (r.status === 'rejected') {
-      console.warn(`[cascades.applySuspended] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
-    }
-  });
+  if (!isHookAuthoritative('db-cascades')) {
+    // See applyActive for the allSettled rationale.
+    const results = await Promise.allSettled([
+      ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId)),
+      ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId)),
+      ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId)),
+      ctx.db.update(mailboxes).set({ status: 'disabled' }).where(eq(mailboxes.clientId, clientId)),
+      ctx.db.update(emailAliases).set({ enabled: 0 }).where(eq(emailAliases.clientId, clientId)),
+    ]);
+    const labels = ['domains', 'deployments', 'cronJobs', 'mailboxes', 'emailAliases'];
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`[cascades.applySuspended] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
+      }
+    });
 
-  // K8s: swap tenant ingresses to platform-suspended.
-  try {
-    await suspendNamespaceIngresses(ctx.k8s, namespace);
-  } catch (err) {
-    console.warn(`[cascades.applySuspended] suspendNamespaceIngresses failed for ${namespace}: ${(err as Error).message}`);
+    // K8s: swap tenant ingresses to platform-suspended.
+    try {
+      await suspendNamespaceIngresses(ctx.k8s, namespace);
+    } catch (err) {
+      console.warn(`[cascades.applySuspended] suspendNamespaceIngresses failed for ${namespace}: ${(err as Error).message}`);
+    }
+
+    // Stamp suspendedAt unconditionally — auto-archive cron compares this
+    // to its threshold. Idempotent: re-suspending an already-suspended
+    // client bumps the timestamp, which is the right semantic (fresh
+    // suspension, restart the clock).
+    await ctx.db.update(clients)
+      .set({ status: 'suspended', suspendedAt: new Date() })
+      .where(eq(clients.id, clientId));
+  } else {
+    console.log(`[cascades.applySuspended] db-cascades hook is authoritative; legacy block skipped for ${clientId}`);
   }
 
-  // Stamp suspendedAt unconditionally — auto-archive cron compares this
-  // to its threshold. Idempotent: re-suspending an already-suspended
-  // client bumps the timestamp, which is the right semantic (fresh
-  // suspension, restart the clock).
-  await ctx.db.update(clients)
-    .set({ status: 'suspended', suspendedAt: new Date() })
-    .where(eq(clients.id, clientId));
+  await dispatchTransition(ctx, clientId, namespace, 'suspended', null, 'suspended');
 }
 
 // ─── * → archived ────────────────────────────────────────────────────────
@@ -154,26 +202,32 @@ export async function applySuspended(
 export async function applyArchived(
   ctx: CascadeCtx,
   clientId: string,
-  _namespace: string,
+  namespace: string,
 ): Promise<void> {
-  // Delete mailboxes + aliases — the user confirmed these should go on
-  // archive (no 90d alias retention). Stalwart picks this up via the
-  // `stalwart.*` views; bodies stored on Stalwart's side are GC'd by
-  // its own retention.
-  await ctx.db.delete(mailboxes).where(eq(mailboxes.clientId, clientId));
-  await ctx.db.delete(emailAliases).where(eq(emailAliases.clientId, clientId));
+  if (!isHookAuthoritative('db-cascades')) {
+    // Delete mailboxes + aliases — the user confirmed these should go on
+    // archive (no 90d alias retention). Stalwart picks this up via the
+    // `stalwart.*` views; bodies stored on Stalwart's side are GC'd by
+    // its own retention.
+    await ctx.db.delete(mailboxes).where(eq(mailboxes.clientId, clientId));
+    await ctx.db.delete(emailAliases).where(eq(emailAliases.clientId, clientId));
 
-  // Domains and DNS: mark domains archived (status=suspended — no
-  // "archived" state on domain_status enum) and let the DNS reconciler
-  // stop publishing records. The actual DNS zone in PowerDNS is owned
-  // by the DNS module which will pick up the status change.
-  await ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId));
-  await ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId));
-  await ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId));
+    // Domains and DNS: mark domains archived (status=suspended — no
+    // "archived" state on domain_status enum) and let the DNS reconciler
+    // stop publishing records. The actual DNS zone in PowerDNS is owned
+    // by the DNS module which will pick up the status change.
+    await ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId));
+    await ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId));
+    await ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId));
 
-  await ctx.db.update(clients)
-    .set({ status: 'archived', archivedAt: new Date() })
-    .where(eq(clients.id, clientId));
+    await ctx.db.update(clients)
+      .set({ status: 'archived', archivedAt: new Date() })
+      .where(eq(clients.id, clientId));
+  } else {
+    console.log(`[cascades.applyArchived] db-cascades hook is authoritative; legacy block skipped for ${clientId}`);
+  }
+
+  await dispatchTransition(ctx, clientId, namespace, 'archived', null, 'archived');
 }
 
 // ─── * → deleted (hard remove) ──────────────────────────────────────────
@@ -193,6 +247,12 @@ export async function applyDeleted(
   clientId: string,
   namespace: string,
 ): Promise<void> {
+  // Phase 1: open a transitions row BEFORE the FK cascade nukes the
+  // client row. The transitions table is intentionally NOT cascade-on-
+  // client-delete (audit-log style tombstone), so this row survives the
+  // delete and provides a queryable trail for the operator.
+  await dispatchTransition(ctx, clientId, namespace, 'deleted', null, 'deleted');
+
   // Snapshot which PVs claim this namespace BEFORE the namespace is
   // deleted. The tenant SC uses reclaimPolicy=Retain (intentional —
   // protects against accidental data loss), so when the namespace
@@ -242,25 +302,26 @@ export async function applyDeleted(
   // cascade) so the deletion event stays auditable.
   await ctx.db.delete(clients).where(eq(clients.id, clientId));
 
-  // Released PV + Longhorn volume cleanup. Runs in the background
-  // (no await on the caller) — `deleteNamespace()` returns while the
-  // namespace is still Terminating, so we have to poll for the PVCs
-  // to actually go away (which transitions PVs Bound → Released)
-  // before we can delete them. Without this, every client deletion
-  // leaves orphan PVs that fill up storageScheduled until Longhorn
-  // refuses new replicas with "insufficient storage".
+  // Released PV + Longhorn volume cleanup.
   //
-  // We always kick off the poll — even with an empty pre-snapshot —
-  // because PVC binding is async. A test that creates+deletes a
-  // client within ~5s sees the cascade fire BEFORE Longhorn has
-  // allocated the PV (PVC still Pending, no claimRef on any PV).
-  // Pre-snapshot returns empty in that race, but the PV binds
-  // moments later and becomes a Released orphan. The poll
-  // continually re-discovers PVs by claimRef.namespace so a
-  // late-binding PV still gets cleaned up.
-  void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
-    console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
-  });
+  // Phase 2 migration: when the `pv-cleanup-released` hook is
+  // authoritative, the registry-driven hook runs the same poll +
+  // delete logic with durable retry. The legacy fire-and-forget
+  // path stays in place but early-returns so we don't double-cleanup.
+  //
+  // Default state (LIFECYCLE_HOOK_PV_CLEANUP unset) is `legacy`:
+  // legacy still runs, hook still runs (purely observational —
+  // dispatcher records its outcome to client_lifecycle_hook_runs).
+  // Operator flips to `hook` after staging confirms zero divergence.
+  if (isHookAuthoritative('pv-cleanup-released')) {
+    console.log(`[cascades.applyDeleted] pv-cleanup-released hook is authoritative; legacy poll skipped for ${namespace}`);
+  } else {
+    // Legacy path. Identical semantics to before Phase 2: poll for up
+    // to 60s, reap each Released PV + matching Longhorn volume CR.
+    void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
+      console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
+    });
+  }
 }
 
 /**
