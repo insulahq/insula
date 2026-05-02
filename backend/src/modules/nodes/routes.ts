@@ -122,7 +122,16 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     const updated = await updateNode(app.db, k8s, name, parsed.data, user
       ? { userId: user.sub, role: user.role }
       : undefined);
-    return success(updated);
+    // Enrich with live cordoned/drained from K8s so the response
+    // surfaces the field the operator just toggled. Without this
+    // round-trip the response would be missing `cordoned` entirely
+    // (only GET /admin/nodes enriches), and an API client would have
+    // no way to confirm the cordon flip from the PATCH itself.
+    const allEnriched = await listNodesEnriched(app.db, k8s);
+    const enriched = allEnriched.find((n) => n.name === updated.name) ?? {
+      ...updated, cordoned: false, drained: false,
+    };
+    return success(enriched);
   });
 
   // GET /api/v1/admin/nodes/:name/drain-impact

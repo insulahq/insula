@@ -887,9 +887,27 @@ export async function drainNode(
   // load it can land elsewhere (the ReplicaSet snapshot may still
   // reflect the old template when the eviction's replacement pod
   // is created). Documented; operator must verify post-drain.
+  // Auto-fill: any pinned workload / tenant PVC the caller didn't
+  // explicitly target gets "" (auto = clear pin → scheduler/Longhorn
+  // chooses a peer). Without this, an API caller passing empty maps
+  // (curl, scripts, or a UI that forgets to populate them) cordons
+  // the node and evicts pods but leaves their nodeSelector pointing
+  // at the cordoned host — pods come back Pending. The React UI also
+  // does this client-side; doing it server-side too means *every*
+  // caller is correct, not just the modal.
+  const workloadPlacement: Record<string, string> = { ...(opts.workloadPlacement ?? {}) };
+  for (const w of impact.pinnedWorkloads) {
+    const k = `${w.namespace}/${w.kind}/${w.name}`;
+    if (!(k in workloadPlacement)) workloadPlacement[k] = '';
+  }
+  const pvcPlacement: Record<string, string> = { ...(opts.pvcPlacement ?? {}) };
+  for (const p of impact.tenantPvcs) {
+    if (!(p.volumeName in pvcPlacement)) pvcPlacement[p.volumeName] = '';
+  }
+
   let rePinnedWorkloads = 0;
   let rePinnedDbSyncFailures = 0;
-  for (const [key, target] of Object.entries(opts.workloadPlacement ?? {})) {
+  for (const [key, target] of Object.entries(workloadPlacement)) {
     const parts = key.split('/');
     if (parts.length !== 3) continue;
     const [ns, kind, wname] = parts;
@@ -979,7 +997,7 @@ export async function drainNode(
   // automatically once the disk is in eviction mode + cordoned).
   let rePinnedPvcs = 0;
   const PER_HOST_TAG_PREFIX = 'node-';
-  for (const [volumeName, target] of Object.entries(opts.pvcPlacement ?? {})) {
+  for (const [volumeName, target] of Object.entries(pvcPlacement)) {
     if (target === 'stay') continue;
 
     let nextSelector: string[] = [];
