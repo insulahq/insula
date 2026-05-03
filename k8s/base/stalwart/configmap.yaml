@@ -214,6 +214,14 @@ data:
     # Or restart the StatefulSet — Stalwart's in-memory block state
     # persists across config reloads but is reset on pod restart when
     # auto-ban.enable is false (see below).
+    # NOTE: Service type is ClusterIP with externalIPs. K8s kube-proxy SNATs
+    # external traffic to the node's IP regardless of externalTrafficPolicy
+    # (which only honours LoadBalancer/NodePort). Stalwart therefore sees
+    # external SMTP submission as coming from a cluster-node IP and triggers
+    # security.ip-blocked. Each environment overlay's reloader-patch.yaml
+    # MUST extend this list with its own cluster node IPs (server + worker
+    # public IPs). The base lists only the universal CIDRs below; staging /
+    # production overlays patch in their actual node IPs.
     [server.security]
     allowed-ips = ["127.0.0.0/8", "::1/128", "10.42.0.0/16", "10.43.0.0/16"]
 
