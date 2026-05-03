@@ -58,17 +58,18 @@ patches:
     target:
       kind: StatefulSet
       name: stalwart-mail
-  # Override the stalwart-config ConfigMap's config.toml key with the
-  # TLS-aware production TOML. Using a strategic-merge patch (not
-  # configMapGenerator{behavior:merge}) because the base defines the
-  # ConfigMap as a plain resource, not a generator — the configMap-
-  # Generator merge path requires both sides to be generators,
-  # otherwise Kustomize fails with
-  #   "merging from generator … stalwart-config does not exist;
-  #    cannot merge or replace"
-  # which was a latent bug until the 2026-04-23 staging deploy tried
-  # to build this overlay end-to-end.
-  - path: configmap-patch.yaml
-    target:
-      kind: ConfigMap
-      name: stalwart-config
+
+# Replace config.toml with the production-specific version via
+# configMapGenerator{behavior: merge}. "merge" for file entries
+# replaces the file content for any key listed in the overlay —
+# it does NOT do TOML-level deep-merge. The full TOML is in
+# config-overrides.toml; it adds [certificate.default] and
+# enables [store.pg.tls]. CI guard scripts/ci-stalwart-config-drift.sh
+# diffs against the base and fails on unexpected divergence.
+configMapGenerator:
+  - name: stalwart-config
+    behavior: merge
+    files:
+      - config.toml=config-overrides.toml
+    options:
+      disableNameSuffixHash: true

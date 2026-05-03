@@ -5,7 +5,6 @@ namespace: mail
 
 resources:
   - namespace.yaml
-  - configmap.yaml
   - statefulset.yaml
   - service.yaml
   - networkpolicy.yaml
@@ -21,6 +20,17 @@ resources:
   # automatically trigger a restart without any exec/credentials coupling.
   # secret.example.yaml is NOT included — operators provide the real Secret
   # per environment via kubectl / sealed-secrets / SOPS.
+
+# Generate the stalwart-config ConfigMap from a standalone TOML file.
+# disableNameSuffixHash is required: the StatefulSet volumes.configMap.name
+# and the Reloader annotation both reference the literal name "stalwart-config".
+# Without this flag Kustomize appends a content hash and breaks those references.
+configMapGenerator:
+  - name: stalwart-config
+    files:
+      - config.toml=stalwart-config.toml
+    options:
+      disableNameSuffixHash: true
 
 labels:
   - pairs:
