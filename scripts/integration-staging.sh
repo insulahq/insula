@@ -668,7 +668,7 @@ scenario_mail() {
   local c_resp; c_resp=$(api POST "/clients" \
     "{\"company_name\":\"Mail E2E $stamp\",\"company_email\":\"mail-e2e-$stamp@phoenix-host.net\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   mail_cid=$(echo "$c_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-  [[ -n "$mail_cid" ]] || { fail "mail: client create failed: $(echo "$c_resp" | head -c 300)"; return 1; }
+  [[ -n "$mail_cid" ]] || { fail "mail: client create failed: $(echo "$c_resp" | head -c 300)"; cleanup_mail; return 1; }
   ok "mail/client: created cid=$mail_cid"
 
   wait_for 120 "mail/client: provisioned" '"provisioningStatus":"provisioned"' \
@@ -792,7 +792,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-found = False
+last_error = None
 for attempt in range(15):
     try:
         with imaplib.IMAP4_SSL(host, port, ssl_context=ctx) as M:
@@ -806,11 +806,15 @@ for attempt in range(15):
                 if subject_line in raw:
                     print("IMAP_OK")
                     sys.exit(0)
+            last_error = None  # connected OK, message just not here yet
     except Exception as e:
-        pass
+        last_error = str(e)
     time.sleep(2)
 
-print("IMAP_NOT_FOUND: message not received after 30s", file=sys.stderr)
+if last_error:
+    print(f"IMAP_NOT_FOUND: last error: {last_error}", file=sys.stderr)
+else:
+    print("IMAP_NOT_FOUND: message not received after 30s", file=sys.stderr)
 sys.exit(1)
 PYEOF
 )

@@ -66,16 +66,8 @@ rules:
       - get
       - update
       - patch
-  - apiGroups:
-      - "extensions"
-    resources:
-      - deployments
-      - daemonsets
-    verbs:
-      - list
-      - get
-      - update
-      - patch
+  # extensions/v1beta1 was removed in Kubernetes 1.22; all clusters
+  # run k3s 1.28+ which uses apps/v1 exclusively. Rule omitted.
   - apiGroups:
       - ""
     resources:
