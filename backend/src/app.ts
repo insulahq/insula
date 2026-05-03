@@ -109,6 +109,7 @@ import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
+import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
@@ -527,6 +528,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const dkimEncKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
       const dkimTimer = startDkimScheduler(app.db, dkimEncKey);
       app.addHook('onClose', () => clearInterval(dkimTimer));
+
+      // Stalwart 0.16 principals-sync: reconciles platform mailbox +
+      // email_domain mirror rows against Stalwart's JMAP principal store.
+      // Disabled by STALWART_PRINCIPALS_SYNC_DISABLE=true.
+      if (process.env.STALWART_PRINCIPALS_SYNC_DISABLE !== 'true') {
+        const principalsSyncHandle = createPrincipalsSyncScheduler(app.db);
+        principalsSyncHandle.start();
+        app.addHook('onClose', () => { principalsSyncHandle.stop(); });
+      }
 
       // Phase 3 T2.1: IMAPSync reconciler. Polls active K8s Jobs
       // and writes terminal status + log tail back to the DB.

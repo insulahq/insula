@@ -49,18 +49,15 @@ export default function StalwartAdminPanel() {
 
       <div
         role="note"
-        data-testid="stalwart-sql-directory-note"
+        data-testid="stalwart-jmap-directory-note"
         className="flex items-start gap-2.5 rounded-lg border border-blue-200 dark:border-blue-900/50 bg-blue-50 dark:bg-blue-900/20 px-3 py-2.5 text-sm text-blue-900 dark:text-blue-200"
       >
         <Info size={16} className="mt-0.5 shrink-0 text-blue-600 dark:text-blue-300" />
         <div>
           <p>
-            Platform mailboxes and domains <strong>will not appear</strong> in
-            Stalwart&apos;s <em>Accounts</em> or <em>Domains</em> pages.
-            Stalwart reads them directly from the platform database via a
-            read-only SQL directory, so they&apos;re invisible to Stalwart&apos;s
-            internal principal store — but authentication, routing, and
-            delivery all work normally.
+            Platform mailboxes and domains are{' '}
+            <strong>JMAP-provisioned</strong> and appear natively in
+            Stalwart&apos;s <em>Accounts</em> and <em>Domains</em> pages.
           </p>
           <p className="mt-1 text-blue-800 dark:text-blue-300">
             Use this admin panel for per-tenant mailboxes and domains. Use the
@@ -279,14 +276,13 @@ function RotateConfirmModal({ pending, error, onClose, onConfirm }: RotateConfir
               Rotate Stalwart admin password?
             </h3>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-              This generates a new random password, writes it to the{' '}
-              <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart-secrets</code>{' '}
-              Kubernetes Secret, and then <strong>restarts</strong>:
+              This generates a new random password and updates it{' '}
+              <strong>in-flight via JMAP</strong> — no Stalwart restart required.
+              The{' '}
+              <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart-admin-creds</code>{' '}
+              Kubernetes Secret is also patched; platform-api picks it up
+              from its volume mount within ~60 s (no restart needed).
             </p>
-            <ul className="mt-2 list-disc pl-5 text-sm text-gray-600 dark:text-gray-400 space-y-0.5">
-              <li><code className="text-xs">stalwart-mail</code> StatefulSet (brief SMTP/IMAP outage)</li>
-              <li><code className="text-xs">platform-api</code> Deployment (brief admin-panel API brownout)</li>
-            </ul>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
               The new password will be shown after rotation succeeds.
             </p>

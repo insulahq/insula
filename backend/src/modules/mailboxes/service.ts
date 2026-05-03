@@ -5,11 +5,39 @@ import { mailboxes, mailboxAccess, emailDomains, domains, users, clients } from 
 import { ApiError } from '../../shared/errors.js';
 import { getClientMailboxLimit, getClientMailboxCount } from './limit.js';
 import { notifyClientMailboxLimitReached } from '../notifications/events.js';
+import {
+  getJmapSession,
+  createMailbox as jmapCreateMailbox,
+  destroyPrincipal as jmapDestroyPrincipal,
+  updatePrincipal as jmapUpdatePrincipal,
+  type JmapAccountId,
+} from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateMailboxInput, UpdateMailboxInput } from '@k8s-hosting/api-contracts';
 import type { FastifyInstance } from 'fastify';
 
 const BCRYPT_ROUNDS = 12;
+
+// ── Stalwart JMAP helpers ─────────────────────────────────────────────────────
+
+/**
+ * Resolve the Stalwart JMAP principals account ID.
+ * Returns null if Stalwart is unreachable (unit tests, no mail stack).
+ */
+let _jmapAccountIdCache: JmapAccountId | null = null;
+
+async function getJmapAccountId(): Promise<JmapAccountId | null> {
+  if (_jmapAccountIdCache) return _jmapAccountIdCache;
+  try {
+    const baseUrl = process.env.STALWART_MGMT_URL;
+    const session = await getJmapSession(baseUrl, process.env);
+    const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+    if (id) _jmapAccountIdCache = id;
+    return id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function mailboxNotFound(id: string): ApiError {
   return new ApiError('MAILBOX_NOT_FOUND', `Mailbox '${id}' not found`, 404, { mailbox_id: id }, 'Verify mailbox exists');
@@ -34,6 +62,7 @@ const mailboxColumns = {
   autoReply: mailboxes.autoReply,
   autoReplySubject: mailboxes.autoReplySubject,
   autoReplyBody: mailboxes.autoReplyBody,
+  stalwartPrincipalId: mailboxes.stalwartPrincipalId,
   createdAt: mailboxes.createdAt,
   updatedAt: mailboxes.updatedAt,
 } as const;
@@ -115,6 +144,33 @@ export async function createMailbox(
   // 5. Hash password
   const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
 
+  // 5b. Provision mailbox in Stalwart 0.16 via JMAP Principal/set.
+  //     This must happen BEFORE the DB insert so a failure here leaves
+  //     the platform DB clean (no zombie row). If Stalwart is unreachable
+  //     (mail stack not installed) we skip gracefully.
+  let stalwartPrincipalId: string | null = null;
+  const accountId = await getJmapAccountId();
+  if (accountId) {
+    try {
+      const principal = await jmapCreateMailbox({
+        accountId,
+        name: input.local_part,
+        emails: [fullAddress],
+        password: input.password,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+      stalwartPrincipalId = principal.id ?? null;
+    } catch (err) {
+      throw new ApiError(
+        'MAIL_SERVER_ERROR',
+        `Stalwart mailbox provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+        {},
+        'Check Stalwart JMAP API reachability and logs',
+      );
+    }
+  }
+
   // 6. Insert mailbox row
   const id = crypto.randomUUID();
   await db.insert(mailboxes).values({
@@ -128,6 +184,7 @@ export async function createMailbox(
     quotaMb: input.quota_mb,
     mailboxType: input.mailbox_type,
     status: 'active',
+    stalwartPrincipalId,
   });
 
   // 7. Return created mailbox without passwordHash
@@ -221,7 +278,32 @@ export async function deleteMailbox(
   clientId: string,
   mailboxId: string,
 ) {
-  await getMailbox(db, clientId, mailboxId);
+  // Load full row so we have stalwartPrincipalId for JMAP cleanup.
+  const [row] = await db
+    .select({ id: mailboxes.id, clientId: mailboxes.clientId, fullAddress: mailboxes.fullAddress, stalwartPrincipalId: mailboxes.stalwartPrincipalId })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.clientId, clientId)));
+
+  if (!row) throw mailboxNotFound(mailboxId);
+
+  // Best-effort JMAP destroy — failure here is not fatal. The
+  // principals-sync reconciler will catch any orphan in Stalwart.
+  if (row.stalwartPrincipalId) {
+    const accountId = await getJmapAccountId();
+    if (accountId) {
+      try {
+        await jmapDestroyPrincipal({
+          accountId,
+          id: row.stalwartPrincipalId,
+          baseUrl: process.env.STALWART_MGMT_URL,
+        });
+      } catch (err) {
+        console.warn(
+          `[mailboxes] deleteMailbox: JMAP destroy failed for '${row.fullAddress}' (${row.stalwartPrincipalId}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
 
   // Delete access rows first
   await db.delete(mailboxAccess).where(eq(mailboxAccess.mailboxId, mailboxId));
@@ -236,6 +318,31 @@ export async function changeMailboxPassword(
   newPassword: string,
 ) {
   await getMailbox(db, clientId, mailboxId);
+
+  // Best-effort JMAP password update — keeps Stalwart in sync.
+  // Non-fatal: the bcrypt hash update below is the authoritative write.
+  const [row] = await db
+    .select({ stalwartPrincipalId: mailboxes.stalwartPrincipalId })
+    .from(mailboxes)
+    .where(eq(mailboxes.id, mailboxId));
+
+  if (row?.stalwartPrincipalId) {
+    const accountId = await getJmapAccountId();
+    if (accountId) {
+      try {
+        await jmapUpdatePrincipal({
+          accountId,
+          id: row.stalwartPrincipalId,
+          patch: { 'secrets/0': newPassword },
+          baseUrl: process.env.STALWART_MGMT_URL,
+        });
+      } catch (err) {
+        console.warn(
+          `[mailboxes] changeMailboxPassword: JMAP update failed for mailbox '${mailboxId}': ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
 
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   await db.update(mailboxes).set({ passwordHash }).where(eq(mailboxes.id, mailboxId));

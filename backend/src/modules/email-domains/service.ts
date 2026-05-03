@@ -8,10 +8,34 @@ import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getActiveServersForDomain } from '../dns-servers/service.js';
+import {
+  getJmapSession,
+  createDomain as jmapCreateDomain,
+  findDomainByName as jmapFindDomainByName,
+  destroyPrincipal as jmapDestroyPrincipal,
+  type JmapAccountId,
+} from '../stalwart-jmap/client.js';
 import type { EmailDomainDisablePreview, WebmailStatus } from '@k8s-hosting/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+// ── Stalwart JMAP helper ──────────────────────────────────────────────────────
+
+let _jmapAccountIdCache: JmapAccountId | null = null;
+
+async function getDomainJmapAccountId(): Promise<JmapAccountId | null> {
+  if (_jmapAccountIdCache) return _jmapAccountIdCache;
+  try {
+    const baseUrl = process.env.STALWART_MGMT_URL;
+    const session = await getJmapSession(baseUrl, process.env);
+    const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+    if (id) _jmapAccountIdCache = id;
+    return id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
   const [domain] = await db
@@ -145,6 +169,44 @@ export async function enableEmailForDomain(
     { webmailEnabled: true },
   );
 
+  // Provision the domain principal in Stalwart 0.16 via JMAP.
+  // Fatal: if Stalwart is reachable and fails, we throw MAIL_SERVER_ERROR
+  // so the operator sees it immediately. If Stalwart is unreachable
+  // (no mail stack), we skip gracefully (stalwartDomainId = null).
+  const domainAccountId = await getDomainJmapAccountId();
+  if (domainAccountId) {
+    try {
+      // Idempotency: check if Stalwart already has this domain principal
+      // (previous enable that died before the DB update below).
+      const existingJmap = await jmapFindDomainByName({
+        accountId: domainAccountId,
+        domainName: domain.domainName,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+      const stalwartDomainId = existingJmap?.id
+        ?? (await jmapCreateDomain({
+          accountId: domainAccountId,
+          name: domain.domainName,
+          baseUrl: process.env.STALWART_MGMT_URL,
+        })).id;
+
+      if (stalwartDomainId) {
+        await db
+          .update(emailDomains)
+          .set({ stalwartDomainId })
+          .where(eq(emailDomains.id, id));
+      }
+    } catch (err) {
+      throw new ApiError(
+        'MAIL_SERVER_ERROR',
+        `Stalwart domain provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+        {},
+        'Check Stalwart JMAP API reachability and logs',
+      );
+    }
+  }
+
   const [created] = await db
     .select()
     .from(emailDomains)
@@ -174,6 +236,24 @@ export async function disableEmailForDomain(
 
   if (!existing) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
+  }
+
+  // Best-effort JMAP domain destroy — failure is not fatal.
+  if (existing.stalwartDomainId) {
+    const accountId = await getDomainJmapAccountId();
+    if (accountId) {
+      try {
+        await jmapDestroyPrincipal({
+          accountId,
+          id: existing.stalwartDomainId,
+          baseUrl: process.env.STALWART_MGMT_URL,
+        });
+      } catch (err) {
+        console.warn(
+          `[email-domains] disableEmailForDomain: JMAP destroy failed for domain '${domainId}' (${existing.stalwartDomainId}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   await db.delete(emailDomains).where(eq(emailDomains.id, existing.id));

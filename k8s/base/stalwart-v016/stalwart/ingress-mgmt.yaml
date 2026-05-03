@@ -50,9 +50,11 @@ metadata:
     # WebSocket support for live metrics / log streaming.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    # Frame-ancestors scoped to admin subdomain only.
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_set_headers "Content-Security-Policy: frame-ancestors https://admin.${DOMAIN}";
+    # Frame-ancestors CSP header is set by overlay-specific patches so
+    # the correct domain is substituted at apply time (nginx would expand
+    # ${DOMAIN} as a variable and fail webhook validation at kustomize
+    # render time). Base leaves this annotation empty; overlays override it.
+    # nginx.ingress.kubernetes.io/configuration-snippet: ""
 spec:
   ingressClassName: nginx
   tls:
