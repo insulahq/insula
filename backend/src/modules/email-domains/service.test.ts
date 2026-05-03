@@ -21,6 +21,24 @@ vi.mock('./dns-provisioning.js', () => ({
   deprovisionEmailDns: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Mock getActiveServersForDomain so it returns a primary+managed server
+// for 'primary' mode tests and empty for 'cname' mode tests.
+vi.mock('../dns-servers/service.js', () => ({
+  getActiveServersForDomain: vi.fn().mockResolvedValue([
+    { id: 'srv1', providerType: 'powerdns', enabled: 1, role: 'primary' },
+  ]),
+}));
+
+// Mock notifications (fire-and-forget; must not throw)
+vi.mock('../notifications/events.js', () => ({
+  notifyClientEmailBootstrapped: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Mock webmail-settings so getMailServerHostname resolves without a real DB
+vi.mock('../webmail-settings/service.js', () => ({
+  getMailServerHostname: vi.fn().mockResolvedValue('mail.example.com'),
+}));
+
 const DOMAIN = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
 const EMAIL_DOMAIN = {
   id: 'ed1',
@@ -46,17 +64,24 @@ function createMockDb(options: {
   emailDomainResult?: unknown[];
   insertResult?: unknown;
   mailboxCountResult?: unknown[];
+  // dnsMode used when the domains-dnsMode select is called during enableEmailForDomain
+  dnsMode?: string;
 } = {}) {
-  const { domainResult = [DOMAIN], emailDomainResult = [], mailboxCountResult = [{ count: 0 }] } = options;
+  const {
+    domainResult = [DOMAIN],
+    emailDomainResult = [],
+    mailboxCountResult = [{ count: 0 }],
+    dnsMode = 'primary',
+  } = options;
 
   let selectCallCount = 0;
   const whereFn = vi.fn().mockImplementation(() => {
     selectCallCount++;
-    // First select is always domain ownership check
-    if (selectCallCount === 1) return Promise.resolve(domainResult);
-    // Second select is email domain lookup
+    // 1. domain ownership check (verifyDomainOwnership) — returns full domain row incl. dnsMode
+    if (selectCallCount === 1) return Promise.resolve(domainResult.map((d) => ({ ...(d as object), dnsMode })));
+    // 2. email domain existence check
     if (selectCallCount === 2) return Promise.resolve(emailDomainResult);
-    // Third select is re-fetch after insert
+    // 3. re-fetch email domain after insert
     return Promise.resolve(emailDomainResult.length > 0 ? emailDomainResult : [EMAIL_DOMAIN]);
   });
 
@@ -70,8 +95,13 @@ function createMockDb(options: {
   }));
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
+  // Track which tables were inserted into by capturing arguments to insertFn
+  const insertedTables: unknown[] = [];
   const insertValues = vi.fn().mockResolvedValue(undefined);
-  const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+  const insertFn = vi.fn().mockImplementation((table: unknown) => {
+    insertedTables.push(table);
+    return { values: insertValues };
+  });
 
   const updateWhere = vi.fn().mockResolvedValue(undefined);
   const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
@@ -80,13 +110,42 @@ function createMockDb(options: {
   const deleteWhere = vi.fn().mockResolvedValue(undefined);
   const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 
-  return {
+  // db.transaction(callback) — yields a tx handle that exposes the same
+  // insert/select/update/delete methods. We pass `db` itself as the tx so
+  // calls inside the callback are recorded by the same mocks. Mirrors
+  // Drizzle's transaction signature `<T>(cb: (tx: this) => Promise<T>) => Promise<T>`.
+  const transactionFn = vi.fn().mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
+    return cb(dbObj);
+  });
+
+  // limit() chained off where() — returns the same Promise so existing
+  // tests that don't .limit() keep working.
+  const originalWhere = whereFn.getMockImplementation();
+  whereFn.mockImplementation((...args: unknown[]) => {
+    const result = originalWhere ? originalWhere(...args) : Promise.resolve([]);
+    // Wrap so .limit(n) returns the same data
+    if (result && typeof (result as { then?: unknown }).then === 'function') {
+      const promise = result as Promise<unknown[]>;
+      // Attach .limit so callers like recovery branch work
+      (promise as Promise<unknown[]> & { limit?: (n: number) => Promise<unknown[]> }).limit = (_n: number) => promise;
+      return promise;
+    }
+    return result;
+  });
+
+  const dbObj = {
     select: selectFn,
     insert: insertFn,
     update: updateFn,
     delete: deleteFn,
-    _mocks: { selectFn, insertFn, updateFn, deleteFn, whereFn },
-  } as unknown as Parameters<typeof enableEmailForDomain>[0] & { _mocks: Record<string, ReturnType<typeof vi.fn>> };
+    transaction: transactionFn,
+    _mocks: { selectFn, insertFn, updateFn, deleteFn, whereFn, insertValues, transactionFn },
+    _insertedTables: insertedTables,
+  };
+  return dbObj as unknown as Parameters<typeof enableEmailForDomain>[0] & {
+    _mocks: Record<string, ReturnType<typeof vi.fn>>;
+    _insertedTables: unknown[];
+  };
 }
 
 describe('enableEmailForDomain', () => {
@@ -98,6 +157,47 @@ describe('enableEmailForDomain', () => {
     expect((db as any)._mocks.insertFn).toHaveBeenCalled();
   });
 
+  it('inserts an email_dkim_keys row with status=active for primary+managed dns mode (Bug A)', async () => {
+    const { emailDomains: edTable, emailDkimKeys: dkimTable } = await import('../../db/schema.js');
+    const db = createMockDb({ dnsMode: 'primary' });
+    await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
+
+    // Two inserts must have happened: emailDomains + emailDkimKeys
+    expect((db as any)._mocks.insertFn).toHaveBeenCalledTimes(2);
+
+    // Second insert should be for emailDkimKeys
+    const secondInsertTable = (db as any)._insertedTables[1];
+    expect(secondInsertTable).toBe(dkimTable);
+
+    // The values passed to the second insert must carry status='active'
+    const valuesCallArgs = (db as any)._mocks.insertValues.mock.calls;
+    // valuesCallArgs[1][0] is the object passed to the emailDkimKeys insert
+    const dkimInsertPayload = valuesCallArgs[1][0] as Record<string, unknown>;
+    expect(dkimInsertPayload.status).toBe('active');
+    expect(dkimInsertPayload.selector).toBe('default');
+    expect(dkimInsertPayload.activatedAt).toBeInstanceOf(Date);
+    // MEDIUM-3 fix: dnsVerifiedAt stays null at bootstrap — the TXT was
+    // just submitted to the provider, propagation isn't yet confirmed.
+    // Background DNS verification sets it later.
+    expect(dkimInsertPayload.dnsVerifiedAt).toBeNull();
+  });
+
+  it('inserts an email_dkim_keys row with status=pending for cname dns mode (Bug A)', async () => {
+    const { getActiveServersForDomain } = await import('../dns-servers/service.js');
+    // Override to return empty — no managed primary server → pending
+    vi.mocked(getActiveServersForDomain).mockResolvedValueOnce([]);
+
+    const db = createMockDb({ dnsMode: 'cname' });
+    await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
+
+    expect((db as any)._mocks.insertFn).toHaveBeenCalledTimes(2);
+
+    const dkimInsertPayload = (db as any)._mocks.insertValues.mock.calls[1][0] as Record<string, unknown>;
+    expect(dkimInsertPayload.status).toBe('pending');
+    expect(dkimInsertPayload.activatedAt).toBeNull();
+    expect(dkimInsertPayload.dnsVerifiedAt).toBeNull();
+  });
+
   it('should return existing record when already enabled (idempotent)', async () => {
     const db = createMockDb({ emailDomainResult: [EMAIL_DOMAIN] });
     const result = await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
@@ -105,6 +205,7 @@ describe('enableEmailForDomain', () => {
     expect(result).toBeDefined();
     expect(result.domainName).toBe('example.com');
     // insert should not be called for idempotent case
+    expect((db as any)._mocks.insertFn).not.toHaveBeenCalled();
   });
 
   it('should throw DOMAIN_NOT_FOUND for non-existent domain', async () => {
