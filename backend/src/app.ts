@@ -79,7 +79,7 @@ import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
-import { emailDkimRoutes } from './modules/email-dkim/routes.js';
+import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
 import { mailSubmitRoutes } from './modules/mail-submit/routes.js';
 import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { mailAdminRoutes } from './modules/mail-admin/routes.js';
@@ -108,7 +108,7 @@ import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
-import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
+// M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
@@ -363,7 +363,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
-  await app.register(emailDkimRoutes, { prefix: '/api/v1' });
+  await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
   await app.register(mailSubmitRoutes, { prefix: '/api/v1' });
   await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   await app.register(mailAdminRoutes, { prefix: '/api/v1' });
@@ -522,12 +522,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
       }
 
-      // Phase 3 T1.1: DKIM rotation scheduler. Auto-rotates primary-mode
-      // email domains, retires old keys after the grace period, and
-      // purges retired keys after the retention period.
-      const dkimEncKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
-      const dkimTimer = startDkimScheduler(app.db, dkimEncKey);
-      app.addHook('onClose', () => clearInterval(dkimTimer));
+      // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM
+      // key generation and rotation natively. Platform now reads DKIM
+      // status read-only from Stalwart's dnsZoneFile via JMAP.
 
       // Stalwart 0.16 principals-sync: reconciles platform mailbox +
       // email_domain mirror rows against Stalwart's JMAP principal store.

@@ -1,5 +1,5 @@
 import { eq, and, sql } from 'drizzle-orm';
-import { emailDomains, domains, mailboxes, clients, emailAliases, emailDkimKeys, dnsRecords } from '../../db/schema.js';
+import { emailDomains, domains, mailboxes, clients, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { generateDkimKeyPair } from './dkim.js';
 import { encrypt } from '../oidc/crypto.js';
@@ -58,38 +58,15 @@ export async function enableEmailForDomain(
 ) {
   const domain = await verifyDomainOwnership(db, clientId, domainId);
 
-  // Idempotency: if email_domains row exists, also confirm a matching
-  // email_dkim_keys row exists. HIGH-2 fix: a previous enable that died
-  // between the two inserts (or before the transaction wrapping was
-  // added) leaves the email_domains row but no DKIM key — without this
-  // recovery branch the caller gets a "success" response and an empty
-  // /dkim/keys forever.
+  // Idempotency: if the email_domains row already exists, return it.
+  // M12: no longer checks email_dkim_keys — Stalwart 0.16 manages
+  // DKIM natively; the email_dkim_keys table is retired.
   const [existing] = await db
     .select()
     .from(emailDomains)
     .where(eq(emailDomains.domainId, domainId));
 
   if (existing) {
-    const [existingKey] = await db
-      .select({ id: emailDkimKeys.id })
-      .from(emailDkimKeys)
-      .where(eq(emailDkimKeys.emailDomainId, existing.id))
-      .limit(1);
-    if (!existingKey) {
-      // Recover: backfill the DKIM key row from the legacy columns.
-      // Status='pending' is the safe default — `dkim/rotate` or DNS
-      // verification will activate it later.
-      await db.insert(emailDkimKeys).values({
-        id: crypto.randomUUID(),
-        emailDomainId: existing.id,
-        selector: existing.dkimSelector ?? 'default',
-        privateKeyEncrypted: existing.dkimPrivateKeyEncrypted!,
-        publicKey: existing.dkimPublicKey!,
-        status: 'pending',
-        activatedAt: null,
-        dnsVerifiedAt: null,
-      });
-    }
     return { ...existing, domainName: domain.domainName };
   }
 
@@ -115,41 +92,22 @@ export async function enableEmailForDomain(
       role: s.role,
     })),
   });
-  const dkimKeyStatus: 'active' | 'pending' = managedPrimary ? 'active' : 'pending';
-  const now = new Date();
+  // M12: email_dkim_keys table is retired. DKIM is managed natively by
+  // Stalwart 0.16. We still write dkim_* columns on email_domains for
+  // provisionEmailDns (the legacy DKIM TXT record in the platform's
+  // dns_records table) — those columns and the DNS provisioning will be
+  // cleaned up in M13.
 
-  await db.transaction(async (tx) => {
-    await tx.insert(emailDomains).values({
-      id,
-      domainId,
-      clientId,
-      enabled: 1,
-      dkimSelector,
-      dkimPrivateKeyEncrypted,
-      dkimPublicKey: publicKey,
-      // max_mailboxes + max_quota_mb removed in migration 0019.
-      // Mailbox count is now capped at the plan level via
-      // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
-      catchAllAddress: input.catch_all_address ?? null,
-    });
-
-    // Sync the initial DKIM keypair into email_dkim_keys so that
-    // GET /dkim/keys returns a row immediately after enable without
-    // requiring a separate /dkim/rotate call.
-    // MEDIUM-3 fix: leave dnsVerifiedAt=null even when status='active'.
-    // The DKIM TXT was just submitted — propagation isn't yet confirmed.
-    // The background DNS-verification path sets dnsVerifiedAt when
-    // resolvers actually return the record.
-    await tx.insert(emailDkimKeys).values({
-      id: crypto.randomUUID(),
-      emailDomainId: id,
-      selector: dkimSelector,
-      privateKeyEncrypted: dkimPrivateKeyEncrypted,
-      publicKey,
-      status: dkimKeyStatus,
-      activatedAt: dkimKeyStatus === 'active' ? now : null,
-      dnsVerifiedAt: null,
-    });
+  await db.insert(emailDomains).values({
+    id,
+    domainId,
+    clientId,
+    enabled: 1,
+    dkimSelector,
+    dkimPrivateKeyEncrypted,
+    dkimPublicKey: publicKey,
+    // max_mailboxes + max_quota_mb removed in migration 0019.
+    catchAllAddress: input.catch_all_address ?? null,
   });
 
   // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
@@ -297,14 +255,11 @@ export async function getEmailDomainDisablePreview(
     .from(emailAliases)
     .where(eq(emailAliases.emailDomainId, ed.id));
 
-  const dkimRows = await db
-    .select({
-      id: emailDkimKeys.id,
-      selector: emailDkimKeys.selector,
-      status: emailDkimKeys.status,
-    })
-    .from(emailDkimKeys)
-    .where(eq(emailDkimKeys.emailDomainId, ed.id));
+  // M12: email_dkim_keys table retired — dkimRows now always empty.
+  // DKIM status is read from Stalwart's zone file via the jmap-status
+  // endpoint. The dkimKeys field is kept in the response for backward
+  // compatibility; it returns an empty array.
+  const dkimRows: { id: string; selector: string; status: string }[] = [];
 
   // DNS records that disableEmailForDomain → deprovisionEmailDns
   // would remove. deprovisionEmailDns targets MX + A 'mail.*' + TXT
