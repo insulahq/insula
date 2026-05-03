@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isPostgresRestoreInProgress, promotePostgresFromSnapshot } from './service.js';
+import { isPostgresRestoreInProgress, promotePostgresFromSnapshot, acquirePitrLockOrThrow } from './service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
 vi.mock('../../db/schema.js', () => ({
   notifications: { id: 'notifications.id' },
   users: { id: 'users.id', roleName: 'users.roleName' },
+  // platformSettings is the DB-backed PITR lock table; service.ts
+  // reads/writes it via acquirePitrLockOrThrow + writePersistedLock.
+  // Tests don't exercise lock contention — the mock makeDb returns
+  // empty rows so the lock check passes.
+  platformSettings: { key: 'platform_settings.key', value: 'platform_settings.value' },
 }));
 
 vi.mock('../../shared/k8s-exec.js', () => ({
@@ -21,9 +26,23 @@ vi.mock('../../shared/k8s-exec.js', () => ({
 }));
 
 function makeDb(): Database {
+  // Drizzle-shaped mock: each chained call returns an object exposing
+  // the next method. .where() resolves to an empty rowset (no lock
+  // held); .onConflictDoUpdate / .delete().where() / .limit() all
+  // return resolved promises so the orchestrator's lock-related
+  // writes succeed silently.
+  const empty = Promise.resolve([]);
+  const ok = Promise.resolve(undefined);
   return {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
-    insert: () => ({ values: () => Promise.resolve(undefined) }),
+    select: () => ({
+      from: () => ({
+        where: () => Object.assign(empty, { limit: () => empty }),
+      }),
+    }),
+    insert: () => ({
+      values: () => Object.assign(ok, { onConflictDoUpdate: () => ok }),
+    }),
+    delete: () => ({ where: () => ok }),
   } as unknown as Database;
 }
 
@@ -130,5 +149,41 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     // failure (covered above implicitly), and that
     // isPostgresRestoreInProgress returns false at module idle.
     expect(isPostgresRestoreInProgress().inProgress).toBe(false);
+  });
+
+  it('acquirePitrLockOrThrow is race-safe — second concurrent call gets 409', async () => {
+    // After the previous tests, the in-memory lock is released (each
+    // promotePostgresFromSnapshot's finally clears it). Acquire it
+    // synchronously, then verify a second acquire fails fast with 409
+    // BEFORE the first's DB write returns. This is the core anti-race
+    // property — the synchronous in-memory set in the critical
+    // section between the cluster-wide check and the DB write closes
+    // the window where a concurrent route handler could slip through.
+    expect(isPostgresRestoreInProgress().inProgress).toBe(false);
+    const db = makeDb();
+    const inputs = { clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'snap-test' };
+
+    // Fire two concurrent acquisitions
+    const [first, second] = await Promise.allSettled([
+      acquirePitrLockOrThrow(db, inputs),
+      acquirePitrLockOrThrow(db, inputs),
+    ]);
+
+    // Exactly one should succeed
+    const fulfilled = [first, second].filter((r) => r.status === 'fulfilled');
+    const rejected = [first, second].filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    if (rejected[0].status === 'rejected') {
+      expect((rejected[0].reason as { code?: number }).code).toBe(409);
+    }
+
+    // Lock is held — manual cleanup for test isolation. The lock
+    // would normally be released by promotePostgresFromSnapshot's
+    // finally; we hijack the module-state by re-acquiring after a
+    // forced-clear in a real test, but for this unit test we just
+    // assert the contract and let the next test's makeDb scope
+    // contain the fallout.
+    expect(isPostgresRestoreInProgress().inProgress).toBe(true);
   });
 });

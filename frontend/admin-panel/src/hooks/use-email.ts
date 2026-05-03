@@ -328,6 +328,35 @@ export function useActivateDkimKey(clientId: string, domainId: string) {
   });
 }
 
+// ─── M12 — Read-only DKIM status via Stalwart JMAP ───
+
+export interface DkimSelectorInfo {
+  readonly name: string;
+  readonly publicKey: string | null;
+  readonly txtValue: string;
+  readonly valid: boolean;
+}
+
+export interface DkimStatusData {
+  readonly domainId: string;
+  readonly domainName: string;
+  readonly zoneFileAvailable: boolean;
+  readonly selectors: readonly DkimSelectorInfo[];
+  readonly rawLines: readonly string[];
+}
+
+interface DkimStatusResponse { readonly data: DkimStatusData }
+
+export function useDkimStatus(emailDomainId?: string) {
+  return useQuery({
+    queryKey: ['dkim-status', emailDomainId],
+    queryFn: () =>
+      apiFetch<DkimStatusResponse>(`/api/v1/admin/email/domains/${emailDomainId}/dkim-status`),
+    enabled: !!emailDomainId,
+    staleTime: 30_000, // 30 s — zone file doesn't change that fast
+  });
+}
+
 // ─── Phase 3 T5.1 — Mail submit credentials (sendmail compat) ───
 
 export interface MailSubmitCredentialInfo {

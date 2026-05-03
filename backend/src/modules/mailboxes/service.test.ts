@@ -1,11 +1,50 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ApiError } from '../../shared/errors.js';
 
+// Stub drizzle-orm so the module can load without the real package.
+vi.mock('drizzle-orm', () => ({
+  eq: vi.fn((_col: unknown, _val: unknown) => ({ _type: 'eq' })),
+  and: vi.fn((...args: unknown[]) => ({ _type: 'and', args })),
+  isNull: vi.fn((_col: unknown) => ({ _type: 'isNull' })),
+  isNotNull: vi.fn((_col: unknown) => ({ _type: 'isNotNull' })),
+  ne: vi.fn((_col: unknown, _val: unknown) => ({ _type: 'ne' })),
+  or: vi.fn((...args: unknown[]) => ({ _type: 'or', args })),
+  sql: vi.fn((_parts: TemplateStringsArray, ..._vals: unknown[]) => ({ _type: 'sql' })),
+}));
+
+// Stub the DB schema so service.ts (+ its helpers: limit.ts, notifications/events.ts)
+// can resolve without a real database.
+vi.mock('../../db/schema.js', () => ({
+  mailboxes: { id: 'id', clientId: 'client_id', emailDomainId: 'email_domain_id', fullAddress: 'full_address', hashedPassword: 'hashed_password', quota: 'quota', stalwartPrincipalId: 'stalwart_principal_id' },
+  mailboxAccess: { id: 'id', mailboxId: 'mailbox_id', userId: 'user_id', role: 'role' },
+  emailDomains: { id: 'id', clientId: 'client_id', domainId: 'domain_id' },
+  domains: { id: 'id', domainName: 'domain_name' },
+  users: { id: 'id', email: 'email', role: 'role' },
+  clients: { id: 'id', planId: 'plan_id' },
+  // Referenced by mailboxes/limit.ts
+  hostingPlans: { id: 'id', maxMailboxes: 'max_mailboxes' },
+  // Referenced by notifications/events.ts and other modules pulled in transitively
+  cronJobs: { id: 'id', clientId: 'client_id' },
+  deployments: { id: 'id', clientId: 'client_id' },
+  emailAliases: { id: 'id', mailboxId: 'mailbox_id' },
+  sftp_users: { id: 'id', clientId: 'client_id' },
+}));
+
 // Mock bcrypt
 vi.mock('bcrypt', () => ({
   default: {
     hash: vi.fn().mockResolvedValue('$2b$12$hashed'),
   },
+}));
+
+// Mock stalwart-jmap/client so createMailbox service tests don't need
+// a live Stalwart instance. By default JMAP session returns null (no
+// mail stack in unit tests) so the JMAP path is bypassed gracefully.
+vi.mock('../stalwart-jmap/client.js', () => ({
+  getJmapSession: vi.fn().mockRejectedValue(new Error('no mail stack in unit tests')),
+  createMailbox: vi.fn().mockResolvedValue({ id: 'sp-test-123', type: 'individual', name: 'test' }),
+  destroyPrincipal: vi.fn().mockResolvedValue(undefined),
+  updatePrincipal: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Track select call results per test
@@ -232,7 +271,7 @@ describe('updateMailbox', () => {
 
 describe('deleteMailbox', () => {
   it('should delete access rows and then the mailbox', async () => {
-    const mailbox = { id: 'mb1', clientId: 'c1' };
+    const mailbox = { id: 'mb1', clientId: 'c1', fullAddress: 'test@example.com', stalwartPrincipalId: null };
     selectResults = [[mailbox]];
     const db = createMockDb();
 

@@ -5,7 +5,10 @@ import { z } from 'zod';
 // Snapshot-only point-in-time-recovery for CNPG-managed Postgres.
 // Operator picks a Longhorn snapshot in the System Snapshots modal,
 // optionally a sub-hour PITR target, and the orchestrator auto-promotes
-// the restored cluster (replaces the source). Sync HTTP (~5–10 min).
+// the restored cluster (replaces the source).
+//
+// Async API: POST returns 202 immediately; orchestration runs in
+// background (~5-10 min). Poll /status for progress.
 
 export const pitrStepSchema = z.object({
   step: z.string(),
@@ -29,8 +32,22 @@ export const pitrStatusSchema = z.object({
   inProgress: z.boolean(),
   startedAt: z.string().optional(),
   snapshot: z.string().optional(),
+  source: z.enum(['in-memory', 'db', 'none']).optional(),
 });
 export type PitrStatus = z.infer<typeof pitrStatusSchema>;
+
+// 202 response from POST /admin/postgres-restore — orchestration kicked
+// off in background. Operator polls pitrStatusSchema for progress.
+export const pitrAcceptedSchema = z.object({
+  status: z.literal('started'),
+  clusterNamespace: z.string(),
+  clusterName: z.string(),
+  snapshotName: z.string(),
+  recoveryTargetTime: z.string().nullable(),
+  pollUrl: z.string(),
+  message: z.string(),
+});
+export type PitrAccepted = z.infer<typeof pitrAcceptedSchema>;
 
 export const pitrRequestSchema = z.object({
   clusterNamespace: z.string().min(1).max(253),
