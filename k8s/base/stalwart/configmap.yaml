@@ -186,6 +186,37 @@ data:
     # in this file (and adding one would produce a "local config
     # overriding database key" warning at startup).
 
+    # ─── Security: IP allowlist ────────────────────────────────────────────
+    # Allowlist for cluster-internal traffic.
+    #
+    # Without externalTrafficPolicy=Local (already set on stalwart-mail
+    # Service), kube-proxy SNATs external connections to the node IP,
+    # which makes Stalwart see its own node IP as the client and
+    # auto-blocks it (security.ip-blocked, anti-loop heuristic).
+    # externalTrafficPolicy=Local is the primary fix (B.1).
+    #
+    # This allowlist is the secondary defence (B.2): even with Local policy,
+    # intra-cluster traffic (platform-api → Stalwart mgmt port) originates
+    # from pod/service CIDRs. Those must never be auto-blocked.
+    #
+    # CIDRs:
+    #   127.0.0.0/8, ::1/128  — loopback (health probes, local CLI)
+    #   10.42.0.0/16           — Calico pod CIDR (k3s default)
+    #   10.43.0.0/16           — k3s service CIDR
+    #
+    # After a node IP was already auto-blocked (e.g., during a previous
+    # deploy without Local policy), clear Stalwart's RocksDB block store
+    # via:
+    #   kubectl exec -n mail stalwart-mail-0 -- \
+    #     stalwart-cli --url http://127.0.0.1:8080 \
+    #     --credentials "admin:<ADMIN_SECRET>" \
+    #     security ip-unblock <blocked-ip>
+    # Or restart the StatefulSet — Stalwart's in-memory block state
+    # persists across config reloads but is reset on pod restart when
+    # auto-ban.enable is false (see below).
+    [server.security]
+    allowed-ips = ["127.0.0.0/8", "::1/128", "10.42.0.0/16", "10.43.0.0/16"]
+
     # ─── Telemetry ─────────────────────────────────────────────────────────
     [tracer.stdout]
     type = "stdout"
