@@ -635,7 +635,11 @@ scenario_mail() {
   fi
 
   local stamp; stamp=$(date +%s)
-  local mail_host="${MAIL_HOST:-${CONTROL_HOST}}"
+  # Stalwart's SMTP/IMAP/Submission listeners are bound to the Service
+  # externalIP (staging3 = 89.167.3.56), NOT every cluster node. Defaulting
+  # MAIL_HOST to CONTROL_HOST (staging2) sends traffic to a node where
+  # Stalwart isn't listening → ECONNREFUSED on 587/993.
+  local mail_host="${MAIL_HOST:-89.167.3.56}"
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.staging.phoenix-host.net}"
   local admin_ui_url="${ADMIN_UI_URL:-https://mail-admin.staging.phoenix-host.net}"
@@ -686,7 +690,7 @@ scenario_mail() {
   # ── Step 3: create test domain ──────────────────────────────────
   local test_domain="mail-e2e-${stamp}.${mail_domain_apex}"
   local d_resp; d_resp=$(api POST "/clients/$mail_cid/domains" \
-    "{\"domainName\":\"$test_domain\",\"dnsMode\":\"cname\"}")
+    "{\"domain_name\":\"$test_domain\",\"dns_mode\":\"cname\"}")
   mail_did=$(echo "$d_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_did" ]] || { fail "mail: domain create failed: $(echo "$d_resp" | head -c 300)"; cleanup_mail; return 1; }
   ok "mail/domain: created did=$mail_did ($test_domain)"
@@ -707,7 +711,11 @@ scenario_mail() {
   ok "mail/email-domain: enabled edid=$mail_edid"
 
   # ── Step 5: verify DKIM key generated ───────────────────────────
-  local dkim_resp; dkim_resp=$(api GET "/clients/$mail_cid/email/domains/$mail_edid/dkim")
+  # Route is /dkim/keys (not /dkim) — see backend/src/modules/email-dkim/routes.ts
+  # DKIM endpoints take :domainId (parent domain.id), NOT the email_domain
+  # pivot id. Mailbox routes use :emailDomainId (mail_edid). The platform
+  # has both; verified at backend/src/modules/email-dkim/routes.ts:36.
+  local dkim_resp; dkim_resp=$(api GET "/clients/$mail_cid/email/domains/$mail_did/dkim/keys")
   local dkim_count; dkim_count=$(echo "$dkim_resp" \
     | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('data',d) if isinstance(d.get('data'),list) else []))" 2>/dev/null)
   # Accept ≥ 1 DKIM key entry (status pending or active)
@@ -718,7 +726,7 @@ scenario_mail() {
   fi
 
   # Manually trigger a DKIM rotation via the API and verify the key count increments.
-  local rot_resp; rot_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_edid/dkim/rotate" "{}" 2>/dev/null || echo '{}')
+  local rot_resp; rot_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_did/dkim/rotate" "{}" 2>/dev/null || echo '{}')
   local new_selector; new_selector=$(echo "$rot_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('newSelector',''))" 2>/dev/null)
   if [[ -n "$new_selector" ]]; then
     ok "mail/dkim-rotate: new selector=$new_selector"
@@ -730,7 +738,7 @@ scenario_mail() {
   # ── Step 6: create a test mailbox ───────────────────────────────
   local mb_local="e2e${stamp}"
   local mb_resp; mb_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_edid/mailboxes" \
-    "{\"localPart\":\"$mb_local\",\"password\":\"$mail_box_pass\",\"quotaMb\":100}")
+    "{\"local_part\":\"$mb_local\",\"password\":\"$mail_box_pass\",\"quota_mb\":100}")
   mail_mbid=$(echo "$mb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_mbid" ]] || { fail "mail/mailbox: create failed: $(echo "$mb_resp" | head -c 400)"; cleanup_mail; return 1; }
   mail_box_user="${mb_local}@${test_domain}"
