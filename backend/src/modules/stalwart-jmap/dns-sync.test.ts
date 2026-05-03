@@ -166,7 +166,19 @@ describe('isStalwartOwnedRecord', () => {
   });
 
   it('owns SPF TXT at apex', () => {
-    expect(isStalwartOwnedRecord('example.com', 'TXT', domain)).toBe(true);
+    expect(isStalwartOwnedRecord('example.com', 'TXT', domain, 'v=spf1 mx -all')).toBe(true);
+  });
+
+  it('does not own non-SPF TXT at apex (e.g. Google site verification)', () => {
+    // Code-review HIGH 2026-05-03: apex TXT match must be content-aware
+    // so a tenant's google-site-verification or other apex TXT isn't
+    // accidentally deleted on the next sync.
+    expect(
+      isStalwartOwnedRecord('example.com', 'TXT', domain, 'google-site-verification=abc123'),
+    ).toBe(false);
+    // Apex TXT with no value is also not ours.
+    expect(isStalwartOwnedRecord('example.com', 'TXT', domain, '')).toBe(false);
+    expect(isStalwartOwnedRecord('example.com', 'TXT', domain)).toBe(false);
   });
 
   it('owns DKIM TXT', () => {

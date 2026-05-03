@@ -55,6 +55,11 @@ IMAGE="docker.io/stalwartlabs/stalwart:v0.16.3"
 CLI_IMAGE="docker.io/stalwartlabs/stalwart:v0.16.3"  # cli injected at runtime
 CLI_VERSION="v1.0.4"
 CLI_URL="https://github.com/stalwartlabs/cli/releases/download/${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
+# SHA256 of the tar.xz tarball, pinned 2026-05-03 from GitHub release.
+# Update when bumping CLI_VERSION. The verify step in ensure_cli aborts
+# if the download doesn't match — protects against a poisoned cache or
+# a tampered upstream release.
+CLI_SHA256="01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa"
 CLI_CACHE="/tmp/stalwart-cli-cache"
 
 ADMIN_USER="admin"
@@ -75,11 +80,22 @@ ensure_cli() {
   echo "Downloading stalwart-cli ${CLI_VERSION}..."
   mkdir -p "$CLI_CACHE"
   local tmp_tar="$CLI_CACHE/stalwart-cli.tar.xz"
-  curl -sL "$CLI_URL" -o "$tmp_tar"
+  curl -fsSL "$CLI_URL" -o "$tmp_tar"
+  # SHA256 verification — refuses to install a tampered binary even
+  # against a poisoned cache. The binary runs inside the spike container
+  # with admin credentials so trust is not optional.
+  local actual; actual=$(sha256sum "$tmp_tar" | awk '{print $1}')
+  if [[ "$actual" != "$CLI_SHA256" ]]; then
+    echo "ERROR: stalwart-cli SHA256 mismatch" >&2
+    echo "  expected: $CLI_SHA256" >&2
+    echo "  actual:   $actual" >&2
+    rm -f "$tmp_tar"
+    exit 3
+  fi
   tar xJf "$tmp_tar" -C "$CLI_CACHE" --strip-components=1
   chmod +x "$CLI_CACHE/stalwart-cli"
   rm -f "$tmp_tar"
-  echo "stalwart-cli ready at $CLI_CACHE/stalwart-cli"
+  echo "stalwart-cli ready at $CLI_CACHE/stalwart-cli (sha256 verified)"
 }
 
 inject_cli() {
