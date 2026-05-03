@@ -154,9 +154,12 @@ export async function createMailbox(
     try {
       const principal = await jmapCreateMailbox({
         accountId,
-        name: input.local_part,
-        emails: [fullAddress],
-        password: input.password,
+        input: {
+          type: 'individual',
+          name: input.local_part,
+          emails: [fullAddress],
+          secrets: input.password ? [input.password] : undefined,
+        },
         baseUrl: process.env.STALWART_MGMT_URL,
       });
       stalwartPrincipalId = principal.id ?? null;
