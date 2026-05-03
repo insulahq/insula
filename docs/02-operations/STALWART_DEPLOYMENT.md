@@ -76,7 +76,7 @@ Stalwart Mail Server v0.16.0 started
 ```bash
 # The webadmin is gated by platform_session cookie — you'll be 302'd
 # to admin.<env>.example.test/login unless you have that cookie.
-curl -ILks https://mail-admin.staging.example.test/ | head -5
+curl -ILks https://stalwart.staging.example.test/ | head -5
 
 # Expected: HTTP/2 302 ; location: https://admin.staging.example.test/login?...
 ```
