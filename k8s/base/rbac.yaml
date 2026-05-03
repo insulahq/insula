@@ -191,9 +191,20 @@ rules:
     verbs: ["get", "list", "patch"]
   # M14: Apply HA also scales the CNPG Cluster CR. apps/deployments
   # is already covered by the broader apps verbs:["*"] rule above.
+  # PITR adds create+delete: the auto-promote path provisions a temp
+  # cluster from a VolumeSnapshot, deletes the source, then recreates
+  # the source from the temp's snapshot.
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
-    verbs: ["get", "list", "patch"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  # PITR uses the external-snapshotter API (snapshot.storage.k8s.io)
+  # to wrap a Longhorn snapshot as a CSI VolumeSnapshot that CNPG
+  # bootstrap.recovery.volumeSnapshots can consume. VolumeSnapshot is
+  # namespace-scoped; VolumeSnapshotContent is cluster-scoped (hence
+  # the ClusterRole grant).
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots", "volumesnapshotcontents"]
+    verbs: ["get", "list", "create", "delete"]
   # The Backup-Now admin action creates Backup CRs directly; Longhorn's
   # controller then snapshots the volume and uploads to the active
   # BackupTarget. Snapshot CRs are needed for the two-step create-
