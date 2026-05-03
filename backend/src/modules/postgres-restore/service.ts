@@ -176,7 +176,7 @@ const CNPG_GROUP = 'postgresql.cnpg.io';
 const CNPG_VERSION = 'v1';
 
 interface CnpgCluster {
-  readonly metadata?: { readonly name?: string; readonly namespace?: string };
+  readonly metadata?: { readonly name?: string; readonly namespace?: string; readonly labels?: Readonly<Record<string, string>> };
   readonly spec?: {
     readonly instances?: number;
     readonly imageName?: string;
@@ -582,10 +582,19 @@ function buildRecoveryCluster(
   // source's spec.resources (1 Gi limit, etc.) so the recreated
   // cluster matches the original sizing.
   const resources = isTemp ? TEMP_CLUSTER_RESOURCES : src.spec?.resources;
+  // pitr-restore=true label IDENTIFIES the temp cluster only — the
+  // recoverInterruptedRestore cleanup + integration harness use it to
+  // safely delete leftovers without ever touching the source. The
+  // rebuilt source MUST NOT carry it (it's the production cluster).
+  // Inherit source labels for the rebuild path so monitoring /
+  // PodMonitor / network policies still match.
+  const labels = isTemp
+    ? { 'platform.phoenix-host.net/pitr-restore': 'true' }
+    : (src.metadata as { labels?: Record<string, string> } | undefined)?.labels;
   return {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
     kind: 'Cluster',
-    metadata: { name: newName, namespace, labels: { 'platform.phoenix-host.net/pitr-restore': 'true' } },
+    metadata: { name: newName, namespace, ...(labels ? { labels } : {}) },
     spec: {
       instances,
       imageName: src.spec?.imageName,
