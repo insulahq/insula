@@ -15,7 +15,7 @@ import {
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
+import { sql, isNotNull } from 'drizzle-orm';
 
 // PostgreSQL bytea — Drizzle has no first-class bytea helper, so we
 // declare a custom type that maps Buffer ↔ bytea. Used for WebAuthn
@@ -994,11 +994,15 @@ export const emailDomains = pgTable('email_domains', {
   dmarcProvisioned: integer('dmarc_provisioned').notNull().default(0),
   spamThresholdJunk: numeric('spam_threshold_junk', { precision: 4, scale: 1 }).notNull().default('5.0'),
   spamThresholdReject: numeric('spam_threshold_reject', { precision: 4, scale: 1 }).notNull().default('10.0'),
+  // Stalwart 0.16: domain principal ID from Stalwart's JMAP store.
+  // Null until provisioned via JMAP or backfilled by principals-sync.
+  stalwartDomainId: text('stalwart_domain_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('email_domains_domain_unique').on(table.domainId),
   index('email_domains_client_idx').on(table.clientId),
+  index('email_domains_stalwart_domain_idx').on(table.stalwartDomainId).where(isNotNull(table.stalwartDomainId)),
 ]);
 
 export const mailboxes = pgTable('mailboxes', {
@@ -1022,12 +1026,18 @@ export const mailboxes = pgTable('mailboxes', {
   autoReply: integer('auto_reply').notNull().default(0),
   autoReplySubject: varchar('auto_reply_subject', { length: 255 }),
   autoReplyBody: text('auto_reply_body'),
+  // Stalwart 0.16: principal ID from Stalwart's JMAP store.
+  // Null until the principals-sync reconciler backfills it (or until the
+  // mailbox is first provisioned via JMAP). Used for in-place password
+  // changes and deletes without a full principal list scan.
+  stalwartPrincipalId: text('stalwart_principal_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('mailboxes_address_unique').on(table.fullAddress),
   index('mailboxes_client_idx').on(table.clientId),
   index('mailboxes_domain_idx').on(table.emailDomainId),
+  index('mailboxes_stalwart_principal_idx').on(table.stalwartPrincipalId).where(isNotNull(table.stalwartPrincipalId)),
 ]);
 
 export const mailboxAccess = pgTable('mailbox_access', {

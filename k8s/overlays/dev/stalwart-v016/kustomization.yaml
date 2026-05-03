@@ -93,7 +93,10 @@ patches:
       kind: NetworkPolicy
       name: stalwart-mail-v016
 
-  # mail-pg CNPG Cluster: pin storage class to local-path (DinD has no Longhorn)
+  # mail-pg CNPG Cluster: pin storage class to local-path (DinD has no Longhorn).
+  # Also clear the node affinity — DinD has a single unlabelled node.
+  # CNPG affinity must be completely replaced (strategic-merge won't null
+  # nodeSelector keys); use a full spec.affinity replacement patch.
   - patch: |
       apiVersion: postgresql.cnpg.io/v1
       kind: Cluster
@@ -103,10 +106,9 @@ patches:
       spec:
         storage:
           storageClass: local-path
-        # Relax affinity — dev DinD cluster has no server/worker node split
         affinity:
-          nodeSelector: {}
-          tolerations: []
+          podAntiAffinityType: preferred
+          topologyKey: kubernetes.io/hostname
     target:
       kind: Cluster
       name: mail-pg
@@ -124,10 +126,10 @@ patches:
       spec:
         tls:
           - hosts:
-              - mail-admin.k8s-platform.test
+              - mail16-admin.k8s-platform.test
             secretName: stalwart-v016-webadmin-dev-tls
         rules:
-          - host: mail-admin.k8s-platform.test
+          - host: mail16-admin.k8s-platform.test
             http:
               paths:
                 - path: /
