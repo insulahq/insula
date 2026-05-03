@@ -26,6 +26,11 @@ metadata:
     # If a future overlay omits `stalwart-secrets`, Reloader will silently
     # stop rolling on admin-password rotation.
     secret.reloader.stakater.com/reload: "stalwart-secrets"
+    # Configmap reloader — Stakater needs a SEPARATE annotation for
+    # ConfigMaps; `secret.reloader...` only watches Secrets. Without this,
+    # changes to stalwart-config (config.toml) don't trigger a roll and
+    # operators must `kubectl rollout restart` manually.
+    configmap.reloader.stakater.com/reload: "stalwart-config"
 spec:
   serviceName: stalwart-mail-headless
   replicas: 1
