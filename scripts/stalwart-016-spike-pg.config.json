@@ -1,0 +1,18 @@
+{
+  "@type": "PostgreSql",
+  "host": "${STALWART_PG_HOST}",
+  "port": 5432,
+  "database": "${STALWART_PG_DATABASE}",
+  "authUsername": "${STALWART_PG_USER}",
+  "authSecret": {
+    "@type": "Value",
+    "secret": "${STALWART_PG_PASSWORD}"
+  },
+  "useTls": false,
+  "allowInvalidCerts": false,
+  "poolMaxConnections": 10,
+  "poolRecyclingMethod": "fast",
+  "timeout": 15000,
+  "options": null,
+  "readReplicas": {}
+}
