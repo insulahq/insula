@@ -230,6 +230,15 @@ function extractResponse<T>(
   );
 }
 
+/**
+ * Default per-request timeout. A hung Stalwart pod or network partition
+ * would otherwise block the caller indefinitely; the scheduler's
+ * `running = true` guard means a single stuck cycle blocks all future
+ * cycles. Override via JMAP_TIMEOUT_MS env var when needed (e.g. for
+ * long-running snapshot/apply operations).
+ */
+const DEFAULT_TIMEOUT_MS = 10_000;
+
 /** Raw JMAP request/response cycle */
 async function jmapPost(
   baseUrl: string,
@@ -237,6 +246,7 @@ async function jmapPost(
   body: JmapRequest,
 ): Promise<JmapResponse> {
   const url = `${baseUrl}/jmap/`;
+  const timeoutMs = Number(process.env.JMAP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -245,6 +255,7 @@ async function jmapPost(
       Accept: 'application/json',
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {
@@ -271,11 +282,13 @@ export async function getJmapSession(
   baseUrl: string = STALWART_MGMT_URL,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<JmapSession> {
+  const timeoutMs = Number(env.JMAP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const res = await fetch(`${baseUrl}/jmap/session`, {
     headers: {
       Authorization: adminBasicAuth(env),
       Accept: 'application/json',
     },
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');

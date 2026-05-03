@@ -297,7 +297,11 @@ export async function syncDomainDnsRecords(params: {
   let added = 0;
   let removed = 0;
 
-  // 5. INSERT missing
+  // 5. INSERT missing — provider FIRST, DB second.
+  // Original code wrote DB first then swallowed provider errors with .catch,
+  // leaving DB rows with no matching DNS record (the next sync sees them in
+  // existingByKey and skips, so the record is permanently lost). The fixed
+  // order makes DB the cache of confirmed-published state.
   for (const zr of desired) {
     const key = recordKey(zr.type, zr.name, zr.rdata);
     if (existingByKey.has(key)) continue;
@@ -307,6 +311,22 @@ export async function syncDomainDnsRecords(params: {
     const normalRdata = zr.rdata.replace(/\.$/, '');
 
     const recType = zr.type as 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS';
+
+    try {
+      await syncRecordToProviders(db, domainName, 'create', {
+        type: zr.type,
+        name: normalName,
+        content: normalRdata,
+        ttl: zr.ttl,
+        priority: zr.priority,
+      }, domainId);
+    } catch (err) {
+      console.warn(
+        `[stalwart-dns-sync] Provider push failed for ${zr.type} '${normalName}'; deferring DB write:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      continue;  // next sync cycle will retry — provider is source of truth
+    }
 
     await db.insert(dnsRecords).values({
       id,
@@ -320,44 +340,34 @@ export async function syncDomainDnsRecords(params: {
       port: zr.port,
     });
 
-    await syncRecordToProviders(db, domainName, 'create', {
-      type: zr.type,
-      name: normalName,
-      content: normalRdata,
-      ttl: zr.ttl,
-      priority: zr.priority,
-    }, domainId).catch((err: unknown) => {
-      console.warn(
-        `[stalwart-dns-sync] Failed to push ${zr.type} '${normalName}' to DNS providers:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    });
-
     added++;
   }
 
-  // 6. DELETE orphaned stalwart-owned records
+  // 6. DELETE orphaned stalwart-owned records — provider FIRST, DB second.
+  // If we deleted the DB row first and the provider call failed, the
+  // PowerDNS record was orphaned with no way to find it again.
   for (const [key, row] of existingByKey) {
     if (!desiredKeys.has(key)) {
-      // Only delete records that look like Stalwart owns them (name
-      // is under the domain or is a known Stalwart record type).
-      if (!isStalwartOwnedRecord(row.recordName ?? '', row.recordType, domainName)) {
+      // Only delete records that look like Stalwart owns them — the
+      // heuristic below is intentionally conservative.
+      if (!isStalwartOwnedRecord(row.recordName ?? '', row.recordType, domainName, row.recordValue)) {
         continue;
       }
-      await db.delete(dnsRecords).where(eq(dnsRecords.id, row.id));
-
-      await syncRecordToProviders(db, domainName, 'delete', {
-        type: row.recordType,
-        name: row.recordName ?? '',
-        content: row.recordValue ?? '',
-        id: row.id,
-      }, domainId).catch((err: unknown) => {
+      try {
+        await syncRecordToProviders(db, domainName, 'delete', {
+          type: row.recordType,
+          name: row.recordName ?? '',
+          content: row.recordValue ?? '',
+          id: row.id,
+        }, domainId);
+      } catch (err) {
         console.warn(
-          `[stalwart-dns-sync] Failed to delete ${row.recordType} '${row.recordName}' from DNS providers:`,
+          `[stalwart-dns-sync] Provider delete failed for ${row.recordType} '${row.recordName}'; deferring DB delete:`,
           err instanceof Error ? err.message : String(err),
         );
-      });
-
+        continue;  // next sync cycle will retry
+      }
+      await db.delete(dnsRecords).where(eq(dnsRecords.id, row.id));
       removed++;
     }
   }
@@ -385,17 +395,23 @@ export function isStalwartOwnedRecord(
   recordName: string,
   recordType: string,
   domainName: string,
+  recordValue?: string | null,
 ): boolean {
   const n = recordName.replace(/\.$/, '').toLowerCase();
   const d = domainName.toLowerCase();
   const t = recordType.toUpperCase();
+  const v = (recordValue ?? '').toLowerCase();
 
   switch (t) {
     case 'MX':
       return n === d;
     case 'TXT':
+      // Apex TXT: only ours if it's an SPF (v=spf1 prefix). Stops the
+      // sync from deleting Google site-verification, DMARC-aggregator
+      // postmaster TXTs, or any other apex TXT that another component
+      // owns — code-review HIGH from 2026-05-03.
+      if (n === d) return v.startsWith('v=spf1');
       return (
-        n === d ||             // SPF at apex
         n.endsWith(`._domainkey.${d}`) || // DKIM
         n === `_dmarc.${d}` ||
         n === `_mta-sts.${d}`
