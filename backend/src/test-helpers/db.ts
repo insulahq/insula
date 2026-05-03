@@ -106,7 +106,7 @@ export async function cleanTables() {
     'mailbox_access',
     'mailboxes',
     'email_aliases',
-    'email_dkim_keys',
+    'email_dkim_keys_legacy', // M12: renamed from email_dkim_keys
     'email_domains',
     'dns_records',
     'ingress_routes',

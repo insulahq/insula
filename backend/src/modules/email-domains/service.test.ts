@@ -157,45 +157,16 @@ describe('enableEmailForDomain', () => {
     expect((db as any)._mocks.insertFn).toHaveBeenCalled();
   });
 
-  it('inserts an email_dkim_keys row with status=active for primary+managed dns mode (Bug A)', async () => {
-    const { emailDomains: edTable, emailDkimKeys: dkimTable } = await import('../../db/schema.js');
+  it('inserts only the email_domains row (no email_dkim_keys — M12: Stalwart owns DKIM)', async () => {
+    const { emailDomains: edTable } = await import('../../db/schema.js');
     const db = createMockDb({ dnsMode: 'primary' });
     await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
 
-    // Two inserts must have happened: emailDomains + emailDkimKeys
-    expect((db as any)._mocks.insertFn).toHaveBeenCalledTimes(2);
+    // M12: only one insert — email_dkim_keys table is retired.
+    expect((db as any)._mocks.insertFn).toHaveBeenCalledTimes(1);
 
-    // Second insert should be for emailDkimKeys
-    const secondInsertTable = (db as any)._insertedTables[1];
-    expect(secondInsertTable).toBe(dkimTable);
-
-    // The values passed to the second insert must carry status='active'
-    const valuesCallArgs = (db as any)._mocks.insertValues.mock.calls;
-    // valuesCallArgs[1][0] is the object passed to the emailDkimKeys insert
-    const dkimInsertPayload = valuesCallArgs[1][0] as Record<string, unknown>;
-    expect(dkimInsertPayload.status).toBe('active');
-    expect(dkimInsertPayload.selector).toBe('default');
-    expect(dkimInsertPayload.activatedAt).toBeInstanceOf(Date);
-    // MEDIUM-3 fix: dnsVerifiedAt stays null at bootstrap — the TXT was
-    // just submitted to the provider, propagation isn't yet confirmed.
-    // Background DNS verification sets it later.
-    expect(dkimInsertPayload.dnsVerifiedAt).toBeNull();
-  });
-
-  it('inserts an email_dkim_keys row with status=pending for cname dns mode (Bug A)', async () => {
-    const { getActiveServersForDomain } = await import('../dns-servers/service.js');
-    // Override to return empty — no managed primary server → pending
-    vi.mocked(getActiveServersForDomain).mockResolvedValueOnce([]);
-
-    const db = createMockDb({ dnsMode: 'cname' });
-    await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
-
-    expect((db as any)._mocks.insertFn).toHaveBeenCalledTimes(2);
-
-    const dkimInsertPayload = (db as any)._mocks.insertValues.mock.calls[1][0] as Record<string, unknown>;
-    expect(dkimInsertPayload.status).toBe('pending');
-    expect(dkimInsertPayload.activatedAt).toBeNull();
-    expect(dkimInsertPayload.dnsVerifiedAt).toBeNull();
+    const insertedTable = (db as any)._insertedTables[0];
+    expect(insertedTable).toBe(edTable);
   });
 
   it('should return existing record when already enabled (idempotent)', async () => {
@@ -314,16 +285,17 @@ describe('getEmailDomainDisablePreview', () => {
     emailDomain?: unknown[];
     mailboxes?: unknown[];
     aliases?: unknown[];
+    /** @deprecated M12: email_dkim_keys retired; this field is ignored. */
     dkimKeys?: unknown[];
     dnsRecords?: unknown[];
   }) {
     let n = 0;
+    // M12: dkimRows is now hardcoded to [] in the service; no DB query.
     const seq = [
       rows.domain ?? [DOMAIN], // verifyDomainOwnership
       rows.emailDomain ?? [], // join select for ed
       rows.mailboxes ?? [],
       rows.aliases ?? [],
-      rows.dkimKeys ?? [],
       rows.dnsRecords ?? [],
     ];
     const whereFn = vi.fn().mockImplementation(() => Promise.resolve(seq[n++] ?? []));
@@ -366,8 +338,8 @@ describe('getEmailDomainDisablePreview', () => {
     expect(preview.mailboxes).toHaveLength(2);
     expect(preview.mailboxes[0].fullAddress).toBe('alice@example.com');
     expect(preview.aliases).toHaveLength(1);
-    expect(preview.dkimKeys).toHaveLength(1);
-    expect(preview.dkimKeys[0].selector).toBe('default');
+    // M12: email_dkim_keys retired — dkimKeys always returns []
+    expect(preview.dkimKeys).toHaveLength(0);
     // 7 email records (MX, A mail, A webmail, SPF, DMARC, DKIM, MTA-STS); www, CNAME, SRV filtered out
     expect(preview.dnsRecords).toHaveLength(7);
     // Purpose mapping
