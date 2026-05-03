@@ -50,17 +50,31 @@ pass() { printf '%b✓%b %s\n' "$GREEN" "$RESET" "$*"; }
 warn() { printf '%b⚠%b %s\n' "$YELLOW" "$RESET" "$*"; }
 fail() { printf '%b✗%b %s\n' "$RED" "$RESET" "$*"; exit 1; }
 
-KUBECTL="ssh -i $SSH_KEY -o StrictHostKeyChecking=no $SSH_HOST kubectl"
+SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no $SSH_HOST"
+KUBECTL="$SSH kubectl"
 
 curl_admin() {
   curl -sS -k -H "Authorization: Bearer $TOKEN" "$@"
 }
 
+# Run a kubectl command on the staging server. Pass the full kubectl
+# argv as a single quoted string to avoid double-shell interpretation
+# of SQL/JSON arguments (otherwise parens, semicolons, quotes get
+# eaten by the remote shell).
+kubectl_remote() {
+  $SSH "$@"
+}
+
 psql_pg() {
-  # Exec into the current primary and run psql.
-  local primary
-  primary=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.currentPrimary}')
-  $KUBECTL exec -n platform "$primary" -c postgres -- psql -tA -d hosting_platform -c "$1"
+  # Exec into the current primary and run psql. The SQL is passed via
+  # stdin (-- < EOF) to sidestep all quoting issues across the
+  # local-shell → ssh → remote-shell → kubectl exec → bash hops.
+  local primary sql="$1"
+  primary=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.currentPrimary}' 2>/dev/null)
+  [[ -n "$primary" ]] || { echo "psql_pg: no primary found" >&2; return 1; }
+  $SSH "kubectl exec -n platform '$primary' -c postgres -i -- psql -tA -d hosting_platform" <<EOF
+$sql
+EOF
 }
 
 log "1) Login"

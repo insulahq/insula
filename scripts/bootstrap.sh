@@ -2160,6 +2160,28 @@ install_longhorn() {
   kctl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || true
   kctl patch storageclass longhorn -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
 
+  # External CSI snapshotter — installs the snapshot.storage.k8s.io
+  # CRDs (VolumeSnapshot, VolumeSnapshotContent, VolumeSnapshotClass)
+  # and the snapshot-controller Deployment. Required by:
+  #   - The platform-managed VolumeSnapshotClass `longhorn`
+  #     (k8s/base/longhorn/csi-snapshots.yaml) that bridges Longhorn
+  #     snapshots to Kubernetes snapshot CRs.
+  #   - CNPG bootstrap.recovery.volumeSnapshots — the Postgres PITR
+  #     auto-promote endpoint depends on this to wrap an existing
+  #     Longhorn snapshot for CNPG to recover from.
+  # Pinned to v6.3.0 (matches Longhorn v1.11.x compatibility matrix).
+  log "Installing external-snapshotter CRDs + controller (CNPG PITR + VolumeSnapshotClass dep)…"
+  local snap_ver="v6.3.0"
+  local snap_base="https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${snap_ver}"
+  for f in \
+    "client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml" \
+    "client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml" \
+    "client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml" \
+    "deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml" \
+    "deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml"; do
+    kctl apply -f "${snap_base}/${f}" 2>&1 | grep -v "unchanged" || true
+  done
+
   marker_set "longhorn-installed"
   log "Longhorn installed (replicas=1, auto-balance=best-effort). Add nodes to increase replicas."
 }
