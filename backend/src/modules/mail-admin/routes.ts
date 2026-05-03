@@ -12,12 +12,15 @@
  *                                             UI can reveal + copy them.
  *                                             Gated to super_admin/admin/
  *                                             support (same as other routes).
- *   POST /admin/mail/rotate-stalwart-password
- *                                           →  Generate a fresh password,
- *                                             patch the `stalwart-secrets`
- *                                             k8s Secret, rollout restart
- *                                             Stalwart + platform-api, verify.
- *                                             super_admin only.
+ *   POST /admin/mail/rotate-admin-password →  (Stalwart 0.16) Generate a fresh
+ *                                             password, call JMAP Principal/set
+ *                                             to update the admin principal's
+ *                                             secret in-flight (no Stalwart
+ *                                             restart needed), then patch the
+ *                                             stalwart-admin-creds k8s Secret
+ *                                             mirror. super_admin only.
+ *                                             Alias: rotate-stalwart-password
+ *                                             (kept for back-compat).
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -26,7 +29,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
-import { rotateStalwartPassword } from './rotate.js';
+import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -64,41 +67,39 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.post('/admin/mail/rotate-stalwart-password', {
-    preHandler: requireRole('super_admin'),
-  }, async (req) => {
+  // Stalwart 0.16: JMAP-backed admin password rotation.
+  // New canonical route name. No Stalwart StatefulSet restart required —
+  // JMAP Principal/set updates the admin secret in-flight.
+  const handleRotateAdminPassword = async (req: { user?: { sub?: string } }) => {
     const cfg = app.config as Record<string, unknown>;
     const userId = req.user?.sub ?? 'unknown';
-    app.log.warn({ userId }, 'mail-admin: rotate-stalwart-password requested');
+    app.log.warn({ userId }, 'mail-admin: rotate-admin-password requested (JMAP)');
     try {
-      const result = await rotateStalwartPassword({
+      const result = await rotateAdminPasswordViaJmap({
         kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
         stalwartNamespace: 'mail',
-        platformNamespace: 'platform',
-        secretName: 'stalwart-secrets',
-        platformMirrorSecretName: 'platform-stalwart-creds',
-        stalwartStatefulSetName: 'stalwart-mail',
-        platformDeploymentName: 'platform-api',
-        stalwartMgmtHost:
-          process.env.STALWART_MGMT_HOST ?? 'stalwart-mail-mgmt.mail.svc.cluster.local',
-        stalwartMgmtPort: Number(process.env.STALWART_MGMT_PORT ?? '8080'),
+        secretName: 'stalwart-admin-creds',
         username: readStalwartCredentials(process.env).username,
-        verifyTimeoutMs: 120_000,
       });
-      app.log.warn({ userId, rotatedAt: result.rotatedAt }, 'mail-admin: rotation succeeded');
+      app.log.warn({ userId, rotatedAt: result.rotatedAt }, 'mail-admin: rotation succeeded (JMAP)');
       return success(result);
     } catch (err) {
       app.log.error({ err, userId }, 'mail-admin: rotation failed');
       if (err instanceof ApiError) throw err;
-      // Generic client message — do not echo err.message (may include
-      // namespace / resource names, timeouts, or internal details).
       throw new ApiError(
         'STALWART_ROTATION_FAILED',
-        'Stalwart password rotation failed. See server logs; you may need to manually restart platform-api if Stalwart restarted successfully but verification timed out.',
+        'Stalwart admin password rotation failed. See server logs.',
         500,
       );
     }
-  });
+  };
+
+  // Canonical 0.16 route
+  app.post('/admin/mail/rotate-admin-password', { preHandler: requireRole('super_admin') }, handleRotateAdminPassword);
+
+  // Legacy alias — keeps the frontend hook working without a breaking change
+  // until we rename the UI label in a follow-up.
+  app.post('/admin/mail/rotate-stalwart-password', { preHandler: requireRole('super_admin') }, handleRotateAdminPassword);
 
   app.get('/admin/mail/queue', async () => {
     try {

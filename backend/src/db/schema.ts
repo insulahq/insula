@@ -15,7 +15,7 @@ import {
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
+import { sql, isNotNull } from 'drizzle-orm';
 
 // PostgreSQL bytea — Drizzle has no first-class bytea helper, so we
 // declare a custom type that maps Buffer ↔ bytea. Used for WebAuthn
@@ -981,9 +981,9 @@ export const emailDomains = pgTable('email_domains', {
   webmailStatus: varchar('webmail_status', { length: 16 }).notNull().default('pending'),
   webmailStatusMessage: text('webmail_status_message'),
   webmailStatusUpdatedAt: timestamp('webmail_status_updated_at'),
-  dkimSelector: varchar('dkim_selector', { length: 63 }).notNull().default('default'),
-  dkimPrivateKeyEncrypted: text('dkim_private_key_encrypted'),
-  dkimPublicKey: text('dkim_public_key'),
+  // M13: dkimSelector, dkimPrivateKeyEncrypted, dkimPublicKey removed.
+  // Platform-side DKIM is retired (M12). Stalwart 0.16 manages DKIM natively.
+  // Columns dropped by migration 0075.
   // NOTE: max_mailboxes + max_quota_mb were removed in migration
   // 0019. Mailbox count is now capped at the plan level via
   // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
@@ -994,11 +994,15 @@ export const emailDomains = pgTable('email_domains', {
   dmarcProvisioned: integer('dmarc_provisioned').notNull().default(0),
   spamThresholdJunk: numeric('spam_threshold_junk', { precision: 4, scale: 1 }).notNull().default('5.0'),
   spamThresholdReject: numeric('spam_threshold_reject', { precision: 4, scale: 1 }).notNull().default('10.0'),
+  // Stalwart 0.16: domain principal ID from Stalwart's JMAP store.
+  // Null until provisioned via JMAP or backfilled by principals-sync.
+  stalwartDomainId: text('stalwart_domain_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('email_domains_domain_unique').on(table.domainId),
   index('email_domains_client_idx').on(table.clientId),
+  index('email_domains_stalwart_domain_idx').on(table.stalwartDomainId).where(isNotNull(table.stalwartDomainId)),
 ]);
 
 export const mailboxes = pgTable('mailboxes', {
@@ -1022,12 +1026,18 @@ export const mailboxes = pgTable('mailboxes', {
   autoReply: integer('auto_reply').notNull().default(0),
   autoReplySubject: varchar('auto_reply_subject', { length: 255 }),
   autoReplyBody: text('auto_reply_body'),
+  // Stalwart 0.16: principal ID from Stalwart's JMAP store.
+  // Null until the principals-sync reconciler backfills it (or until the
+  // mailbox is first provisioned via JMAP). Used for in-place password
+  // changes and deletes without a full principal list scan.
+  stalwartPrincipalId: text('stalwart_principal_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('mailboxes_address_unique').on(table.fullAddress),
   index('mailboxes_client_idx').on(table.clientId),
   index('mailboxes_domain_idx').on(table.emailDomainId),
+  index('mailboxes_stalwart_principal_idx').on(table.stalwartPrincipalId).where(isNotNull(table.stalwartPrincipalId)),
 ]);
 
 export const mailboxAccess = pgTable('mailbox_access', {
@@ -1158,25 +1168,10 @@ export const mailSubmitCredentials = pgTable('mail_submit_credentials', {
   index('mail_submit_credentials_client_idx').on(table.clientId),
 ]);
 
-export const emailDkimKeys = pgTable('email_dkim_keys', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  emailDomainId: varchar('email_domain_id', { length: 36 })
-    .notNull()
-    .references(() => emailDomains.id, { onDelete: 'cascade' }),
-  selector: varchar('selector', { length: 63 }).notNull(),
-  privateKeyEncrypted: text('private_key_encrypted').notNull(),
-  publicKey: text('public_key').notNull(),
-  status: varchar('status', { length: 16 }).notNull().default('pending'),
-  dnsVerifiedAt: timestamp('dns_verified_at'),
-  activatedAt: timestamp('activated_at'),
-  retiredAt: timestamp('retired_at'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-}, (table) => [
-  index('email_dkim_keys_domain_idx').on(table.emailDomainId),
-  index('email_dkim_keys_status_idx').on(table.status),
-  uniqueIndex('email_dkim_keys_domain_selector_unique').on(table.emailDomainId, table.selector),
-]);
+// emailDkimKeys table removed in M13 (migration 0075).
+// Platform-side DKIM was retired in M12; Stalwart 0.16 manages DKIM natively.
+// The physical table was renamed to email_dkim_keys_legacy (migration 0074)
+// and dropped (migration 0075).
 
 export const smtpRelayConfigs = pgTable('smtp_relay_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -1562,8 +1557,7 @@ export type MailboxAccessRow = typeof mailboxAccess.$inferSelect;
 export type EmailAlias = typeof emailAliases.$inferSelect;
 export type NewEmailAlias = typeof emailAliases.$inferInsert;
 export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
-export type EmailDkimKey = typeof emailDkimKeys.$inferSelect;
-export type NewEmailDkimKey = typeof emailDkimKeys.$inferInsert;
+// EmailDkimKey types removed in M13 — emailDkimKeys table dropped.
 export type MailSubmitCredential = typeof mailSubmitCredentials.$inferSelect;
 export type NewMailSubmitCredential = typeof mailSubmitCredentials.$inferInsert;
 export type ImapSyncJob = typeof imapSyncJobs.$inferSelect;

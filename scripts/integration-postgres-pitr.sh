@@ -128,51 +128,47 @@ log "6) Verify status endpoint reports no restore in progress"
 STATUS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])')
 [[ "$STATUS" = "False" ]] && pass "status=in-progress=false (idle)" || fail "expected idle, got inProgress=$STATUS"
 
-log "7) Trigger PITR auto-promote (sync, ≤10 min wall-clock)"
+log "7) Trigger PITR auto-promote (async — returns 202 immediately)"
 echo "  POST /api/v1/admin/postgres-restore { snapshot=$SNAP }"
 echo "  this will: wrap snap → temp cluster → handoff → DELETE source → recreate from temp → cleanup"
-echo "  NOTE: platform-api pods may briefly fail readiness during cutover (postgres unreachable),"
-echo "  causing nginx 502. The orchestration continues server-side — we verify via cluster state."
 START=$(date +%s)
 HTTP=$(curl -sS -k -o /tmp/pitr.json -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST "$ADMIN_HOST/api/v1/admin/postgres-restore" \
-  --max-time 900 \
+  --max-time 30 \
   -d "{\"clusterNamespace\":\"platform\",\"clusterName\":\"postgres\",\"snapshotName\":\"$SNAP\"}")
 ELAPSED=$(( $(date +%s) - START ))
 echo "  HTTP=$HTTP in ${ELAPSED}s"
-cat /tmp/pitr.json | python3 -m json.tool 2>/dev/null | head -80 || cat /tmp/pitr.json
+cat /tmp/pitr.json | python3 -m json.tool 2>/dev/null | head -20 || cat /tmp/pitr.json
 
-# Three accepted outcomes:
-#   200 = orchestration completed synchronously, full step trace in body
-#   502/503 = platform-api crashed/unhealthy mid-cutover; CNPG operator
-#             continues the recreate in the cluster — fall through to
-#             cluster-state polling
-#   anything else = real failure
-if [[ "$HTTP" = "200" ]]; then
-  STEPS=$(python3 -c 'import json; d=json.load(open("/tmp/pitr.json"))["data"]; print(",".join(s["step"] for s in d["steps"] if s["ok"]))')
-  DOWNTIME_MS=$(python3 -c 'import json; print(json.load(open("/tmp/pitr.json"))["data"]["downtimeMs"])')
-  TEMP_NAME=$(python3 -c 'import json; print(json.load(open("/tmp/pitr.json"))["data"]["tempClusterName"])')
-  echo "  steps OK: $STEPS"
-  echo "  downtime: $((DOWNTIME_MS/1000))s"
-  pass "PITR returned 200 in ${ELAPSED}s with full step trace"
-elif [[ "$HTTP" = "502" || "$HTTP" = "503" || "$HTTP" = "000" ]]; then
-  warn "HTTP=$HTTP — platform-api dropped mid-cutover (expected during the postgres-down window). Verifying via cluster state..."
-  TEMP_NAME=""  # we don't know the exact name; cleanup will discover
-else
-  fail "PITR returned HTTP $HTTP after ${ELAPSED}s"
+if [[ "$HTTP" != "202" ]]; then
+  fail "POST returned HTTP $HTTP (expected 202): $(cat /tmp/pitr.json)"
 fi
+pass "PITR async accepted in ${ELAPSED}s — orchestration started"
 
-log "8) Wait for source cluster to come back healthy (≤10 min)"
-for i in {1..120}; do
-  PHASE_AFTER=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
-  [[ "$PHASE_AFTER" = "Cluster in healthy state" ]] && break
-  if (( i % 6 == 0 )); then
-    echo "  waiting... phase=$PHASE_AFTER (${i}×5s)"
+log "7b) Poll status until orchestration completes (≤12 min)"
+START_POLL=$(date +%s)
+LAST_PHASE=""
+for i in {1..72}; do
+  IN_PROGRESS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])' 2>/dev/null || echo "unreachable")
+  CLUSTER_PHASE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
+  if [[ "$CLUSTER_PHASE" != "$LAST_PHASE" ]]; then
+    echo "  [$(( $(date +%s) - START_POLL ))s] inProgress=$IN_PROGRESS  cluster.phase=$CLUSTER_PHASE"
+    LAST_PHASE="$CLUSTER_PHASE"
   fi
-  sleep 5
+  # Done when status is idle AND cluster is healthy
+  if [[ "$IN_PROGRESS" = "False" && "$CLUSTER_PHASE" = "Cluster in healthy state" ]]; then
+    pass "orchestration finished after $(( $(date +%s) - START_POLL ))s — cluster healthy + lock released"
+    break
+  fi
+  sleep 10
 done
-[[ "$PHASE_AFTER" = "Cluster in healthy state" ]] && pass "source healthy: $PHASE_AFTER" || fail "source not healthy after 10min: $PHASE_AFTER"
+TOTAL_ELAPSED=$(( $(date +%s) - START ))
+ELAPSED=$TOTAL_ELAPSED  # for final log line
+
+log "8) Confirm source healthy (already verified by status poll above)"
+PHASE_AFTER=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
+[[ "$PHASE_AFTER" = "Cluster in healthy state" ]] && pass "source healthy: $PHASE_AFTER" || fail "source not healthy: $PHASE_AFTER"
 
 log "9) Round-trip assertion: post-snapshot row MUST be gone, pre-snapshot row MUST remain"
 ROW_PRE=$(psql_pg "SELECT label FROM e2e_pitr_marker WHERE id=1;" 2>/dev/null || echo "")
@@ -233,4 +229,4 @@ log "13) Cleanup sentinel table"
 psql_pg "DROP TABLE IF EXISTS e2e_pitr_marker;" >/dev/null
 pass "sentinel table dropped"
 
-log "DONE: Postgres PITR E2E green (total=${ELAPSED}s, HTTP=${HTTP})"
+log "DONE: Postgres PITR E2E green (total=${ELAPSED}s, async pattern)"
