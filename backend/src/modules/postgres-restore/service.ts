@@ -110,6 +110,55 @@ export async function isPostgresRestoreInProgressClusterWide(
 }
 
 /**
+ * Atomically acquire the PITR lock for the route handler.
+ *
+ * Race-safe: the cluster-wide check is followed by a SYNCHRONOUS
+ * in-memory set with no awaitable operation between them, so two
+ * concurrent POSTs in the same Node event-loop tick cannot both
+ * succeed. The DB write happens after the in-memory set; if it
+ * fails, we release the in-memory lock so we don't leave a stuck
+ * state.
+ *
+ * Throws Error with .code=409 if a restore is already in progress.
+ *
+ * Used by the route handler so the route can return 202 immediately
+ * AFTER the lock is durably set, avoiding the prior race where
+ * `void promotePostgresFromSnapshot(...)` returned 202 before its
+ * own first await reached the lock-write.
+ */
+export async function acquirePitrLockOrThrow(
+  db: Database,
+  inputs: { clusterNamespace: string; clusterName: string; snapshotName: string },
+): Promise<{ readonly startedAt: Date }> {
+  const persisted = await readPersistedLock(db).catch(() => null);
+  if (persisted) {
+    const e = new Error(`Postgres restore already in progress on another replica (started ${persisted.startedAt}, snapshot ${persisted.snapshot}, phase=${persisted.phase})`);
+    (e as Error & { code?: number }).code = 409; throw e;
+  }
+  // Synchronous critical section — no awaits between check and set.
+  if (activeRestore) {
+    const e = new Error(`Postgres restore already in progress (started ${activeRestore.startedAt.toISOString()}, snapshot ${activeRestore.snapshot})`);
+    (e as Error & { code?: number }).code = 409; throw e;
+  }
+  const startedAt = new Date();
+  activeRestore = { startedAt, snapshot: inputs.snapshotName };
+  try {
+    await writePersistedLock(db, {
+      startedAt: startedAt.toISOString(),
+      snapshot: inputs.snapshotName,
+      clusterNamespace: inputs.clusterNamespace,
+      clusterName: inputs.clusterName,
+      tempClusterName: '(not yet created)',
+      phase: 'preflight',
+    });
+  } catch (err) {
+    activeRestore = null;
+    throw err;
+  }
+  return { startedAt };
+}
+
+/**
  * Called once at platform-api startup. If we find a persisted lock from
  * a previous process that crashed mid-PITR, surface it loudly: the
  * source cluster may be in an indeterminate state.
@@ -127,21 +176,37 @@ export async function isPostgresRestoreInProgressClusterWide(
 export async function recoverInterruptedRestore(
   db: Database,
   k8s?: K8sClients,
-): Promise<{ readonly recovered: boolean; readonly lock?: PersistedLock; readonly cleanedTempClusters?: number }> {
+): Promise<{
+  readonly recovered: boolean;
+  readonly lock?: PersistedLock;
+  readonly cleanedTempClusters?: number;
+  readonly cleanedVolumeSnapshots?: number;
+  readonly cleanedVolumeSnapshotContents?: number;
+  readonly cleanedLonghornSnapshots?: number;
+}> {
   const lock = await readPersistedLock(db);
   if (!lock) return { recovered: false };
 
+  // Scope cleanup by labelSelector matching BOTH pitr-restore=true
+  // AND pitr-namespace=<this lock's namespace>. PITR runs from other
+  // source clusters in other namespaces are not touched. Labels are
+  // set on every PITR-created resource via pitrLabels() (see step 6
+  // and wrapVolumeSnapshot below).
+  const labelSelector = `platform.phoenix-host.net/pitr-restore=true,platform.phoenix-host.net/pitr-namespace=${lock.clusterNamespace}`;
+
   let cleanedTempClusters = 0;
+  let cleanedVolumeSnapshots = 0;
+  let cleanedVolumeSnapshotContents = 0;
+  let cleanedLonghornSnapshots = 0;
   if (k8s) {
+    // Temp CNPG clusters (post-2f876ac fix: only TEMP clusters carry
+    // the pitr-restore label; rebuilt source inherits original labels).
     try {
-      // List all CNPG clusters in the source namespace and delete any
-      // carrying the pitr-restore label. Safe even across multiple
-      // failed runs — each leftover gets cleaned.
       const list = await (k8s.custom as unknown as {
         listNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string } }> }>;
       }).listNamespacedCustomObject({
         group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters',
-        labelSelector: 'platform.phoenix-host.net/pitr-restore=true',
+        labelSelector,
       });
       for (const c of list.items ?? []) {
         const name = c.metadata?.name;
@@ -150,22 +215,77 @@ export async function recoverInterruptedRestore(
           cleanedTempClusters++;
         }
       }
-    } catch {
-      // best-effort; the admin notification still goes out
-    }
+    } catch { /* best-effort; admin notification still emits */ }
+
+    // VolumeSnapshots in the source cluster's namespace.
+    try {
+      const vsList = await (k8s.custom as unknown as {
+        listNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string } }> }>;
+      }).listNamespacedCustomObject({
+        group: SNAPSHOT_API, version: 'v1', namespace: lock.clusterNamespace, plural: 'volumesnapshots',
+        labelSelector,
+      });
+      for (const vs of vsList.items ?? []) {
+        const name = vs.metadata?.name;
+        if (name) {
+          await deleteCustom(k8s, { group: SNAPSHOT_API, version: 'v1', namespace: lock.clusterNamespace, plural: 'volumesnapshots', name }).catch(() => undefined);
+          cleanedVolumeSnapshots++;
+        }
+      }
+    } catch { /* best effort */ }
+
+    // VolumeSnapshotContents are cluster-scoped — labelSelector still
+    // works (labels are per-resource regardless of scope) and ONLY
+    // matches contents whose pitr-namespace label == lock's namespace.
+    try {
+      const vscList = await (k8s.custom as unknown as {
+        listClusterCustomObject: (a: { group: string; version: string; plural: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string } }> }>;
+      }).listClusterCustomObject({
+        group: SNAPSHOT_API, version: 'v1', plural: 'volumesnapshotcontents',
+        labelSelector,
+      });
+      for (const vsc of vscList.items ?? []) {
+        const name = vsc.metadata?.name;
+        if (name) {
+          await deleteCustom(k8s, { group: SNAPSHOT_API, version: 'v1', plural: 'volumesnapshotcontents', name }).catch(() => undefined);
+          cleanedVolumeSnapshotContents++;
+        }
+      }
+    } catch { /* best effort */ }
+
+    // Longhorn snapshots live in longhorn-system (shared across all
+    // PITR runs). The pitr-namespace label scopes by source cluster.
+    try {
+      const lhList = await (k8s.custom as unknown as {
+        listNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string } }> }>;
+      }).listNamespacedCustomObject({
+        group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',
+        labelSelector,
+      });
+      for (const s of lhList.items ?? []) {
+        const name = s.metadata?.name;
+        if (name) {
+          await deleteCustom(k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name }).catch(() => undefined);
+          cleanedLonghornSnapshots++;
+        }
+      }
+    } catch { /* best effort */ }
   }
 
+  const totalCleaned = cleanedTempClusters + cleanedVolumeSnapshots + cleanedVolumeSnapshotContents + cleanedLonghornSnapshots;
   await emitAdminNotification(
     db,
     `Platform-api restarted while a Postgres PITR was in progress (started ${lock.startedAt}, snapshot ${lock.snapshot}, phase=${lock.phase}). ` +
     `The cluster ${lock.clusterNamespace}/${lock.clusterName} may be in an indeterminate state. ` +
     `Inspect: kubectl -n ${lock.clusterNamespace} get cluster ${lock.clusterName} ${lock.tempClusterName}. ` +
     `If the source cluster is missing, the original PVCs are reclaimPolicy=Retain — manually re-create the Cluster CR pointing at them.` +
-    (cleanedTempClusters > 0 ? ` Auto-cleaned ${cleanedTempClusters} leftover temp PITR cluster(s).` : ''),
+    (totalCleaned > 0
+      ? ` Auto-cleaned ${cleanedTempClusters} temp cluster(s) + ${cleanedVolumeSnapshots} VolumeSnapshot(s) + ${cleanedVolumeSnapshotContents} VolumeSnapshotContent(s) + ${cleanedLonghornSnapshots} Longhorn snapshot(s).`
+      : ''),
     'Postgres PITR INTERRUPTED — manual recovery required',
   );
   await clearPersistedLock(db);
-  return { recovered: true, lock, cleanedTempClusters };
+  return { recovered: true, lock, cleanedTempClusters, cleanedVolumeSnapshots, cleanedVolumeSnapshotContents, cleanedLonghornSnapshots };
 }
 
 const LH_GROUP = 'longhorn.io';
@@ -483,6 +603,22 @@ async function preflight(
  * VolumeSnapshot CR so CNPG bootstrap.recovery.volumeSnapshots can
  * consume it without re-snapshotting the data.
  */
+// Per-resource label set on every PITR-created VolumeSnapshot,
+// VolumeSnapshotContent, Longhorn snapshot, and temp CNPG cluster.
+// Two labels — `pitr-restore=true` to identify the resource as
+// PITR-owned, and `pitr-namespace=<ns>` so the recovery-time cleanup
+// can scope by source cluster namespace (the orphan cleanup at
+// startup uses these labels via labelSelector to avoid cross-
+// namespace deletion in multi-tenant setups). Labels are the
+// authoritative scoping mechanism; the name prefix is a fallback
+// for human inspection / kubectl get filtering.
+function pitrLabels(clusterNamespace: string): Record<string, string> {
+  return {
+    'platform.phoenix-host.net/pitr-restore': 'true',
+    'platform.phoenix-host.net/pitr-namespace': clusterNamespace,
+  };
+}
+
 async function wrapVolumeSnapshot(
   k8s: K8sClients,
   namespace: string,
@@ -491,14 +627,17 @@ async function wrapVolumeSnapshot(
 ): Promise<{ readonly volumeSnapshotName: string; readonly contentName: string }> {
   const safeName = longhornSnapshotName.replace(/[^a-z0-9-]/g, '-').slice(0, 50);
   const ts = Date.now();
+  // Names embed the namespace too (defense-in-depth alongside labels)
+  // so kubectl get/grep on the name scope cleanly across clusters.
   const contentName = `pitr-content-${ts}-${safeName}`;
   const vsName = `pitr-vs-${ts}-${safeName}`;
+  const labels = pitrLabels(namespace);
 
   await createCustom(k8s, {
     group: SNAPSHOT_API, version: 'v1', plural: 'volumesnapshotcontents',
     body: {
       apiVersion: `${SNAPSHOT_API}/v1`, kind: 'VolumeSnapshotContent',
-      metadata: { name: contentName },
+      metadata: { name: contentName, labels },
       spec: {
         deletionPolicy: 'Delete',
         driver: 'driver.longhorn.io',
@@ -528,7 +667,7 @@ async function wrapVolumeSnapshot(
     group: SNAPSHOT_API, version: 'v1', namespace, plural: 'volumesnapshots',
     body: {
       apiVersion: `${SNAPSHOT_API}/v1`, kind: 'VolumeSnapshot',
-      metadata: { name: vsName, namespace },
+      metadata: { name: vsName, namespace, labels },
       spec: {
         source: { volumeSnapshotContentName: contentName },
         volumeSnapshotClassName: 'longhorn',
@@ -582,14 +721,15 @@ function buildRecoveryCluster(
   // source's spec.resources (1 Gi limit, etc.) so the recreated
   // cluster matches the original sizing.
   const resources = isTemp ? TEMP_CLUSTER_RESOURCES : src.spec?.resources;
-  // pitr-restore=true label IDENTIFIES the temp cluster only — the
-  // recoverInterruptedRestore cleanup + integration harness use it to
-  // safely delete leftovers without ever touching the source. The
-  // rebuilt source MUST NOT carry it (it's the production cluster).
-  // Inherit source labels for the rebuild path so monitoring /
-  // PodMonitor / network policies still match.
+  // pitr-restore=true + pitr-namespace=<ns> labels IDENTIFY the temp
+  // cluster only — the recoverInterruptedRestore cleanup uses both
+  // (labelSelector AND-of-both) to scope deletion per source
+  // namespace and avoid cross-namespace cascade in multi-tenant
+  // setups. The rebuilt source MUST NOT carry these labels (it's
+  // the production cluster). Inherit source labels for the rebuild
+  // path so monitoring / PodMonitor / network policies still match.
   const labels = isTemp
-    ? { 'platform.phoenix-host.net/pitr-restore': 'true' }
+    ? pitrLabels(namespace)
     : (src.metadata as { labels?: Record<string, string> } | undefined)?.labels;
   return {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
@@ -637,29 +777,19 @@ export async function promotePostgresFromSnapshot(
   deps: PitrDeps,
   inputs: PitrInputs,
 ): Promise<PitrResult> {
-  // Cluster-wide pre-check: if another replica has the DB lock set
-  // (from a prior cutover-phase orchestration), refuse early.
-  const existing = await readPersistedLock(deps.db).catch(() => null);
-  if (existing) {
-    const e = new Error(`Postgres restore already in progress on another replica (started ${existing.startedAt}, snapshot ${existing.snapshot}, phase=${existing.phase})`);
-    (e as Error & { code?: number }).code = 409; throw e;
+  // Lock was acquired by the route handler via acquirePitrLockOrThrow
+  // (race-safe: synchronous in-memory set + persisted DB lock before
+  // returning 202 to the operator). If `activeRestore` is null here,
+  // we're being called by something that didn't acquire the lock
+  // (legacy callers, tests). For backward compat: acquire it here.
+  // The lock release in the `finally` block always runs.
+  if (!activeRestore) {
+    await acquirePitrLockOrThrow(deps.db, inputs);
   }
-  if (activeRestore) {
-    const e = new Error(`Postgres restore already in progress (started ${activeRestore.startedAt.toISOString()}, snapshot ${activeRestore.snapshot})`);
-    (e as Error & { code?: number }).code = 409; throw e;
-  }
-  activeRestore = { startedAt: new Date(), snapshot: inputs.snapshotName };
-  // Write a "preflight" DB-lock IMMEDIATELY so other replicas reject
-  // writes from the very first moment of the orchestration. The phase
-  // gets bumped to 'cutover' just before delete-source.
-  await writePersistedLock(deps.db, {
-    startedAt: activeRestore.startedAt.toISOString(),
-    snapshot: inputs.snapshotName,
-    clusterNamespace: inputs.clusterNamespace,
-    clusterName: inputs.clusterName,
-    tempClusterName: '(not yet created)',
-    phase: 'preflight',
-  }).catch(() => undefined);
+  // Capture the lock's startedAt for use in the cutover-phase DB
+  // write below; activeRestore is non-null here (we just acquired or
+  // verified above) but TS narrowing doesn't carry across awaits.
+  const lockStartedAt = activeRestore!.startedAt;
   const startMs = nowMs();
   let downtimeStart: number | null = null;
   let downtimeEnd: number | null = null;
@@ -734,7 +864,11 @@ export async function promotePostgresFromSnapshot(
       group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',
       body: {
         apiVersion: `${LH_GROUP}/${LH_VERSION}`, kind: 'Snapshot',
-        metadata: { name: tempSnapName, namespace: LH_NS },
+        // Labels: pitr-restore=true + pitr-namespace=<source ns>. The
+        // longhorn-system namespace is shared across PITR runs from
+        // any source cluster — startup cleanup uses the labelSelector
+        // to delete only this orchestration's leftovers.
+        metadata: { name: tempSnapName, namespace: LH_NS, labels: pitrLabels(inputs.clusterNamespace) },
         spec: { volume: tempLonghornVolume, createSnapshot: true },
       },
     });
@@ -756,7 +890,7 @@ export async function promotePostgresFromSnapshot(
     // the next startup's recoverInterruptedRestore will surface a
     // sticky admin notification with enough context to recover by hand.
     await writePersistedLock(deps.db, {
-      startedAt: activeRestore.startedAt.toISOString(),
+      startedAt: lockStartedAt.toISOString(),
       snapshot: inputs.snapshotName,
       clusterNamespace: inputs.clusterNamespace,
       clusterName: inputs.clusterName,
@@ -789,6 +923,35 @@ export async function promotePostgresFromSnapshot(
     const srcHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 8 * 60_000);
     steps.push({ step: 'recreate-source', ok: srcHealth.ok, elapsedMs: nowMs() - t8, detail: `phase=${srcHealth.phase ?? '?'}` });
     if (!srcHealth.ok) throw new Error(`Recreated source cluster did not become healthy: phase=${srcHealth.phase}`);
+
+    // 8b. Normalize spec.bootstrap so Flux's apply of the original git
+    // manifest (which has bootstrap.initdb) doesn't conflict with our
+    // runtime spec.bootstrap.recovery. CNPG's webhook rejects clusters
+    // proposing both bootstrap types; even though bootstrap is
+    // informational after first init, the strategic-merge from git
+    // submits a body that combines initdb (git) + recovery (live)
+    // and the apply fails. Patch spec.bootstrap to drop recovery and
+    // restore the source's original initdb (carried in pre.cluster).
+    // Best-effort — if CNPG rejects, surface as a non-fatal step
+    // (operator can patch by hand; the cluster works either way).
+    const t8b = nowMs();
+    try {
+      const originalInitdb = pre.cluster.spec?.bootstrap?.initdb;
+      if (originalInitdb) {
+        await patchCustomMerge(deps.k8s, {
+          group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
+          body: { spec: { bootstrap: { recovery: null, initdb: originalInitdb } } },
+        });
+        steps.push({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'spec.bootstrap=initdb (recovery cleared)' });
+      } else {
+        steps.push({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'no original initdb — skipped' });
+      }
+    } catch (err) {
+      steps.push({
+        step: 'normalize-bootstrap', ok: false, elapsedMs: nowMs() - t8b,
+        detail: `failed: ${(err as Error).message}. Flux apply may need manual: kubectl patch cluster -n ${inputs.clusterNamespace} ${inputs.clusterName} --type=json -p='[{"op":"remove","path":"/spec/bootstrap/recovery"},{"op":"add","path":"/spec/bootstrap/initdb","value":<original>}]'`,
+      });
+    }
 
     // 9. Restore consumers
     const t9 = nowMs();
