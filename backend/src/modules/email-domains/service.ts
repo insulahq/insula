@@ -186,7 +186,7 @@ export async function enableEmailForDomain(
       const stalwartDomainId = existingJmap?.id
         ?? (await jmapCreateDomain({
           accountId: domainAccountId,
-          name: domain.domainName,
+          input: { type: 'domain', name: domain.domainName },
           baseUrl: process.env.STALWART_MGMT_URL,
         })).id;
 
