@@ -6,6 +6,8 @@ import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
+import { canManageDnsZone } from '../dns-servers/authority.js';
+import { getActiveServersForDomain } from '../dns-servers/service.js';
 import type { EmailDomainDisablePreview, WebmailStatus } from '@k8s-hosting/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
@@ -61,6 +63,36 @@ export async function enableEmailForDomain(
     // Mailbox count is now capped at the plan level via
     // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
     catchAllAddress: input.catch_all_address ?? null,
+  });
+
+  // Sync the initial DKIM keypair into email_dkim_keys so that
+  // GET /dkim/keys returns a row immediately after enable without
+  // requiring a separate /dkim/rotate call.
+  // Use the same mode logic as rotateDkimKey: primary+managed → active;
+  // cname/secondary → pending (operator must publish the TXT manually).
+  const domainRow = await db.select({ dnsMode: domains.dnsMode }).from(domains).where(eq(domains.id, domainId));
+  const resolvedDnsMode = (domainRow[0]?.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
+  const activeServers = await getActiveServersForDomain(db, domainId);
+  const managedPrimary = canManageDnsZone({
+    dnsMode: resolvedDnsMode,
+    activeServers: activeServers.map((s) => ({
+      id: s.id,
+      providerType: s.providerType,
+      enabled: s.enabled,
+      role: s.role,
+    })),
+  });
+  const dkimKeyStatus: 'active' | 'pending' = managedPrimary ? 'active' : 'pending';
+  const now = new Date();
+  await db.insert(emailDkimKeys).values({
+    id: crypto.randomUUID(),
+    emailDomainId: id,
+    selector: dkimSelector,
+    privateKeyEncrypted: dkimPrivateKeyEncrypted,
+    publicKey,
+    status: dkimKeyStatus,
+    activatedAt: dkimKeyStatus === 'active' ? now : null,
+    dnsVerifiedAt: dkimKeyStatus === 'active' ? now : null,
   });
 
   // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
