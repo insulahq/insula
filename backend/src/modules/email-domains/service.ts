@@ -1,17 +1,39 @@
 import { eq, and, sql } from 'drizzle-orm';
-import { emailDomains, domains, mailboxes, clients, emailAliases, emailDkimKeys, dnsRecords } from '../../db/schema.js';
+import { emailDomains, domains, mailboxes, clients, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { generateDkimKeyPair } from './dkim.js';
-import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getActiveServersForDomain } from '../dns-servers/service.js';
+import {
+  getJmapSession,
+  createDomain as jmapCreateDomain,
+  findDomainByName as jmapFindDomainByName,
+  destroyPrincipal as jmapDestroyPrincipal,
+  type JmapAccountId,
+} from '../stalwart-jmap/client.js';
 import type { EmailDomainDisablePreview, WebmailStatus } from '@k8s-hosting/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+// ── Stalwart JMAP helper ──────────────────────────────────────────────────────
+
+let _jmapAccountIdCache: JmapAccountId | null = null;
+
+async function getDomainJmapAccountId(): Promise<JmapAccountId | null> {
+  if (_jmapAccountIdCache) return _jmapAccountIdCache;
+  try {
+    const baseUrl = process.env.STALWART_MGMT_URL;
+    const session = await getJmapSession(baseUrl, process.env);
+    const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+    if (id) _jmapAccountIdCache = id;
+    return id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
   const [domain] = await db
@@ -34,55 +56,32 @@ export async function enableEmailForDomain(
 ) {
   const domain = await verifyDomainOwnership(db, clientId, domainId);
 
-  // Idempotency: if email_domains row exists, also confirm a matching
-  // email_dkim_keys row exists. HIGH-2 fix: a previous enable that died
-  // between the two inserts (or before the transaction wrapping was
-  // added) leaves the email_domains row but no DKIM key — without this
-  // recovery branch the caller gets a "success" response and an empty
-  // /dkim/keys forever.
+  // Idempotency: if the email_domains row already exists, return it.
+  // M12: no longer checks email_dkim_keys — Stalwart 0.16 manages
+  // DKIM natively; the email_dkim_keys table is retired.
   const [existing] = await db
     .select()
     .from(emailDomains)
     .where(eq(emailDomains.domainId, domainId));
 
   if (existing) {
-    const [existingKey] = await db
-      .select({ id: emailDkimKeys.id })
-      .from(emailDkimKeys)
-      .where(eq(emailDkimKeys.emailDomainId, existing.id))
-      .limit(1);
-    if (!existingKey) {
-      // Recover: backfill the DKIM key row from the legacy columns.
-      // Status='pending' is the safe default — `dkim/rotate` or DNS
-      // verification will activate it later.
-      await db.insert(emailDkimKeys).values({
-        id: crypto.randomUUID(),
-        emailDomainId: existing.id,
-        selector: existing.dkimSelector ?? 'default',
-        privateKeyEncrypted: existing.dkimPrivateKeyEncrypted!,
-        publicKey: existing.dkimPublicKey!,
-        status: 'pending',
-        activatedAt: null,
-        dnsVerifiedAt: null,
-      });
-    }
     return { ...existing, domainName: domain.domainName };
   }
 
-  // Generate DKIM key pair
-  const { privateKey, publicKey } = generateDkimKeyPair();
-  const dkimPrivateKeyEncrypted = encrypt(privateKey, encryptionKey);
-  const dkimSelector = 'default';
+  // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey columns
+  // are dropped (migration 0075). Stalwart 0.16 manages DKIM natively.
+  // The DKIM TXT record is published to DNS by the dns-sync reconciler
+  // reading Stalwart's dnsZoneFile via JMAP — no local key generation needed.
+  //
+  // canManageDnsZone / getActiveServersForDomain retained for the
+  // provisionEmailDns path (MX, SPF, DMARC, SRV, etc. still come from here).
 
   const id = crypto.randomUUID();
 
-  // HIGH-1 fix: wrap the two inserts in a transaction so a failure
-  // between them can't leave an email_domains row without a matching
-  // email_dkim_keys row (the original Bug A). The active-server query
-  // and canManageDnsZone() are pure reads and live outside the tx.
   const resolvedDnsMode = (domain.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
   const activeServers = await getActiveServersForDomain(db, domainId);
-  const managedPrimary = canManageDnsZone({
+  // canManageDnsZone is still used by provisionEmailDns internally
+  void canManageDnsZone({
     dnsMode: resolvedDnsMode,
     activeServers: activeServers.map((s) => ({
       id: s.id,
@@ -91,59 +90,68 @@ export async function enableEmailForDomain(
       role: s.role,
     })),
   });
-  const dkimKeyStatus: 'active' | 'pending' = managedPrimary ? 'active' : 'pending';
-  const now = new Date();
 
-  await db.transaction(async (tx) => {
-    await tx.insert(emailDomains).values({
-      id,
-      domainId,
-      clientId,
-      enabled: 1,
-      dkimSelector,
-      dkimPrivateKeyEncrypted,
-      dkimPublicKey: publicKey,
-      // max_mailboxes + max_quota_mb removed in migration 0019.
-      // Mailbox count is now capped at the plan level via
-      // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
-      catchAllAddress: input.catch_all_address ?? null,
-    });
-
-    // Sync the initial DKIM keypair into email_dkim_keys so that
-    // GET /dkim/keys returns a row immediately after enable without
-    // requiring a separate /dkim/rotate call.
-    // MEDIUM-3 fix: leave dnsVerifiedAt=null even when status='active'.
-    // The DKIM TXT was just submitted — propagation isn't yet confirmed.
-    // The background DNS-verification path sets dnsVerifiedAt when
-    // resolvers actually return the record.
-    await tx.insert(emailDkimKeys).values({
-      id: crypto.randomUUID(),
-      emailDomainId: id,
-      selector: dkimSelector,
-      privateKeyEncrypted: dkimPrivateKeyEncrypted,
-      publicKey,
-      status: dkimKeyStatus,
-      activatedAt: dkimKeyStatus === 'active' ? now : null,
-      dnsVerifiedAt: null,
-    });
+  await db.insert(emailDomains).values({
+    id,
+    domainId,
+    clientId,
+    enabled: 1,
+    // max_mailboxes + max_quota_mb removed in migration 0019.
+    catchAllAddress: input.catch_all_address ?? null,
   });
 
-  // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
-  // MTA-STS records; the mail server hostname comes from the platform
-  // setting mail_server_hostname). Round-3: webmail_enabled defaults
-  // to 1 on new email domains, so we also publish the
-  // webmail.<domain> A record in the same batch.
+  // Provision MX, SPF, DMARC, SRV, autoconfig, MTA-STS, webmail DNS records.
+  // DKIM TXT record is NO LONGER provisioned here — Stalwart 0.16 generates
+  // the DKIM key natively; the dns-sync reconciler publishes its dnsZoneFile.
   const mailServerHostname = await getMailServerHostname(db);
   await provisionEmailDns(
     db,
     domainId,
     domain.domainName,
-    dkimSelector,
-    publicKey,
+    '', // dkimSelector: empty — DKIM not provisioned here in M13
+    '', // dkimPublicKey: empty — DKIM not provisioned here in M13
     encryptionKey,
     mailServerHostname,
     { webmailEnabled: true },
   );
+
+  // Provision the domain principal in Stalwart 0.16 via JMAP.
+  // Fatal: if Stalwart is reachable and fails, we throw MAIL_SERVER_ERROR
+  // so the operator sees it immediately. If Stalwart is unreachable
+  // (no mail stack), we skip gracefully (stalwartDomainId = null).
+  const domainAccountId = await getDomainJmapAccountId();
+  if (domainAccountId) {
+    try {
+      // Idempotency: check if Stalwart already has this domain principal
+      // (previous enable that died before the DB update below).
+      const existingJmap = await jmapFindDomainByName({
+        accountId: domainAccountId,
+        domainName: domain.domainName,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+      const stalwartDomainId = existingJmap?.id
+        ?? (await jmapCreateDomain({
+          accountId: domainAccountId,
+          input: { type: 'domain', name: domain.domainName },
+          baseUrl: process.env.STALWART_MGMT_URL,
+        })).id;
+
+      if (stalwartDomainId) {
+        await db
+          .update(emailDomains)
+          .set({ stalwartDomainId })
+          .where(eq(emailDomains.id, id));
+      }
+    } catch (err) {
+      throw new ApiError(
+        'MAIL_SERVER_ERROR',
+        `Stalwart domain provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+        {},
+        'Check Stalwart JMAP API reachability and logs',
+      );
+    }
+  }
 
   const [created] = await db
     .select()
@@ -174,6 +182,24 @@ export async function disableEmailForDomain(
 
   if (!existing) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
+  }
+
+  // Best-effort JMAP domain destroy — failure is not fatal.
+  if (existing.stalwartDomainId) {
+    const accountId = await getDomainJmapAccountId();
+    if (accountId) {
+      try {
+        await jmapDestroyPrincipal({
+          accountId,
+          id: existing.stalwartDomainId,
+          baseUrl: process.env.STALWART_MGMT_URL,
+        });
+      } catch (err) {
+        console.warn(
+          `[email-domains] disableEmailForDomain: JMAP destroy failed for domain '${domainId}' (${existing.stalwartDomainId}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   await db.delete(emailDomains).where(eq(emailDomains.id, existing.id));
@@ -217,14 +243,11 @@ export async function getEmailDomainDisablePreview(
     .from(emailAliases)
     .where(eq(emailAliases.emailDomainId, ed.id));
 
-  const dkimRows = await db
-    .select({
-      id: emailDkimKeys.id,
-      selector: emailDkimKeys.selector,
-      status: emailDkimKeys.status,
-    })
-    .from(emailDkimKeys)
-    .where(eq(emailDkimKeys.emailDomainId, ed.id));
+  // M12: email_dkim_keys table retired — dkimRows now always empty.
+  // DKIM status is read from Stalwart's zone file via the jmap-status
+  // endpoint. The dkimKeys field is kept in the response for backward
+  // compatibility; it returns an empty array.
+  const dkimRows: { id: string; selector: string; status: string }[] = [];
 
   // DNS records that disableEmailForDomain → deprovisionEmailDns
   // would remove. deprovisionEmailDns targets MX + A 'mail.*' + TXT
@@ -310,8 +333,9 @@ export async function getEmailDomain(
       webmailStatus: emailDomains.webmailStatus,
       webmailStatusMessage: emailDomains.webmailStatusMessage,
       webmailStatusUpdatedAt: emailDomains.webmailStatusUpdatedAt,
-      dkimSelector: emailDomains.dkimSelector,
-      dkimPublicKey: emailDomains.dkimPublicKey,
+      // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
+      // DKIM status is now read-only from Stalwart's dnsZoneFile via
+      // the jmap-status endpoint. These columns are gone from schema.
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -371,10 +395,14 @@ export async function getEmailDomainDnsRecords(
   const { buildEmailDnsRecordsForDisplay } = await import('./dns-provisioning.js');
   const mailServerHostname = await getMailServerHostname(db);
 
+  // M13: dkimSelector / dkimPublicKey dropped from email_domains (migration 0075).
+  // DKIM TXT records are now published by the dns-sync reconciler from
+  // Stalwart's dnsZoneFile. Pass empty strings so buildEmailDnsRecordsForDisplay
+  // omits the DKIM entry from the display set.
   const specs = buildEmailDnsRecordsForDisplay(
     ed.domainName,
-    ed.dkimSelector,
-    ed.dkimPublicKey ?? '',
+    '', // dkimSelector — now managed by Stalwart; shown via /dkim-status
+    '', // dkimPublicKey — now managed by Stalwart; shown via /dkim-status
     mailServerHostname,
     { webmailEnabled: ed.webmailEnabled === 1 },
   );
@@ -413,8 +441,7 @@ export async function listEmailDomains(
       webmailStatus: emailDomains.webmailStatus,
       webmailStatusMessage: emailDomains.webmailStatusMessage,
       webmailStatusUpdatedAt: emailDomains.webmailStatusUpdatedAt,
-      dkimSelector: emailDomains.dkimSelector,
-      dkimPublicKey: emailDomains.dkimPublicKey,
+      // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -442,8 +469,7 @@ export async function listAllEmailDomains(db: Database) {
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
-      dkimSelector: emailDomains.dkimSelector,
-      dkimPublicKey: emailDomains.dkimPublicKey,
+      // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
