@@ -95,6 +95,14 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "create", "update", "delete"]
+  # Phase 4 cluster-scoped-refs-cleanup hook: lists ClusterRoleBindings
+  # cluster-wide and deletes those whose subjects[*].namespace points
+  # at a deleted tenant namespace (e.g. SFTP gateway per-tenant SAs
+  # that were granted CRBs for impersonation). Without this the hook
+  # surfaces a 403 retry envelope and orphan CRBs accumulate forever.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["get", "list", "delete"]
   # Pod metrics via metrics-server (resource-metrics.ts, deployments/routes.ts)
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]

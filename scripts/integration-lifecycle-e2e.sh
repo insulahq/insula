@@ -485,15 +485,18 @@ else
     || fail "bulk DELETE did not return bulkOpId — body: $(echo "$BULK_RESP" | head -c 200)"
 
   # Each per-client transition should be tagged with the bulkOpId.
+  # Use detail->>'bulkOpId' = '...' instead of @> '{json}'::jsonb so we
+  # don't get bitten by the 4-layer quote escaping (bash → ssh →
+  # kubectl exec → psql) that swallowed the JSONB literal in run #1.
   if [[ -n "$BULK_OP_ID" ]]; then
     for i in $(seq 1 30); do
-      MATCHED=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE detail @> '{\"bulkOpId\":\"$BULK_OP_ID\"}'::jsonb")
+      MATCHED=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE detail->>'bulkOpId' = '$BULK_OP_ID'")
       [[ "$MATCHED" -ge 2 ]] && break
       sleep 2
     done
     [[ "$MATCHED" -ge 2 ]] \
       && ok "bulkOpId tagged on $MATCHED transition(s)" \
-      || fail "expected 2 transitions tagged with bulkOpId, got $MATCHED"
+      || fail "expected 2 transitions tagged with bulkOpId, got '$MATCHED'"
 
     # And the bulk-ops endpoint returns those rows.
     BULK_GET=$(api GET "/admin/lifecycle/bulk-ops/$BULK_OP_ID")
