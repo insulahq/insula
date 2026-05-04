@@ -56,7 +56,10 @@ async function mailHost(app: FastifyInstance): Promise<string> {
   } catch {
     // Fall through to env + service DNS
   }
-  return process.env.STALWART_HOSTNAME ?? 'stalwart-mail.mail.svc.cluster.local';
+  // Default to the 0.16 Service name. v015 was retired in Cut 3
+  // (2026-05-04); clusters still on v015 must set STALWART_HOSTNAME
+  // explicitly. Otherwise SMTP submission picks up the new service.
+  return process.env.STALWART_HOSTNAME ?? 'stalwart-mail-v016.mail.svc.cluster.local';
 }
 
 const mailPort = (): number =>
