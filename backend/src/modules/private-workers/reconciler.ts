@@ -660,13 +660,14 @@ async function upsertTunnelIngress(
         // /c/<slug>/). $2 captures whatever follows the prefix.
         'nginx.ingress.kubernetes.io/use-regex': 'true',
         'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
-        // WebSocket Upgrade headers. frpc's WSS dial-in requires a
-        // long-lived connection with the Upgrade header preserved.
+        // WebSocket Upgrade headers are forwarded automatically by
+        // NGINX-ingress when the client requests them and the backend
+        // speaks HTTP/1.1. The configuration-snippet is intentionally
+        // not used because the cluster's ingress-nginx ConfigMap has
+        // allow-snippet-annotations=false (admission webhook rejects).
+        'nginx.ingress.kubernetes.io/proxy-http-version': '1.1',
         'nginx.ingress.kubernetes.io/proxy-read-timeout': '3600',
         'nginx.ingress.kubernetes.io/proxy-send-timeout': '3600',
-        'nginx.ingress.kubernetes.io/proxy-http-version': '1.1',
-        'nginx.ingress.kubernetes.io/configuration-snippet':
-          'proxy_set_header Upgrade $http_upgrade;\nproxy_set_header Connection "upgrade";\n',
         // Rate-limit failed handshakes per source IP. frps rejects
         // bad-token connections quickly so this caps brute-force
         // throughput against the auth.token at ~5 attempts/sec/IP.
