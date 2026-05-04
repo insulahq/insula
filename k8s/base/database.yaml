@@ -82,7 +82,12 @@ spec:
 
   storage:
     size: 10Gi
-    storageClass: longhorn
+    # System PVCs MUST use longhorn-system-local (or -ha when policy
+    # is HA — operator flip via Apply Tier patches both numberOfReplicas
+    # and nodeSelector on the live volume). The bare `longhorn` class
+    # has no nodeSelector, so any new PVC bound through it could land
+    # a replica on a worker node — never desired for postgres.
+    storageClass: longhorn-system-local
 
   # Per-instance resources. Conservative defaults for staging;
   # production overlay should bump to 4Gi memory + 2 CPU.
