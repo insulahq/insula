@@ -31,6 +31,7 @@ import Placeholder from '@/pages/Placeholder';
 import NodesAndStorage from '@/pages/NodesAndStorage';
 import LoadBalancerSettings from '@/pages/LoadBalancerSettings';
 import LifecycleHooksSettings from '@/pages/LifecycleHooksSettings';
+import PrivateWorkerTunnelSettings from '@/pages/PrivateWorkerTunnelSettings';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
@@ -87,6 +88,7 @@ export default function App() {
             <Route path="settings/email" element={<EmailManagement />} />
             <Route path="settings/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiSettings /></ProtectedRoute>} />
             <Route path="settings/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksSettings /></ProtectedRoute>} />
+            <Route path="system/private-worker-tunnels" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PrivateWorkerTunnelSettings /></ProtectedRoute>} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

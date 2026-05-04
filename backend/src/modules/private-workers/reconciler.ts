@@ -27,7 +27,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { and, eq, inArray } from 'drizzle-orm';
-import { clients, privateWorkers, type PrivateWorker } from '../../db/schema.js';
+import { clients, platformSettings, privateWorkers, type PrivateWorker } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -41,6 +41,13 @@ const PLATFORM_SYSTEM_NAMESPACE = 'platform-system';
 // can override via env (deferred — overlays + bootstrap pin this).
 const NGINX_INGRESS_NAMESPACE =
   process.env.NGINX_INGRESS_NAMESPACE ?? 'ingress-nginx';
+
+// platform_settings key for the cluster-issuer used on per-worker tunnel
+// Ingresses. Default is HTTP-01 (works without DNS-API access). Operators
+// with a wired DNS-01 ClusterIssuer can flip this in System Settings to
+// avoid per-FQDN issuance + LE rate-limit pressure at scale.
+const TUNNEL_ISSUER_SETTING_KEY = 'private_worker_tunnel_issuer';
+const DEFAULT_TUNNEL_ISSUER = 'letsencrypt-prod-http01';
 const FRPS_BIND_PORT = 7000;
 const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.62.1';
 
@@ -124,6 +131,7 @@ async function apply(
     return 'private-worker shared secret missing on clients row; refusing to render unauthenticated frps';
   }
   const allowedPorts = workers.map((w) => w.exposedPort);
+  const issuer = await loadTunnelIssuer(deps.db);
 
   // 1. ConfigMap — frps.toml with auth.token + allowPorts. The home
   //    agent's frpc dynamically registers proxies over the control
@@ -196,7 +204,7 @@ async function apply(
     await safe(
       errors,
       `tunnel-ingress:${w.slug}`,
-      () => upsertTunnelIngress(deps.k8s.networking, w.slug, namespace),
+      () => upsertTunnelIngress(deps.k8s.networking, w.slug, namespace, issuer),
     );
   }
 
@@ -322,6 +330,15 @@ async function loadClientSharedSecret(
     .from(clients)
     .where(eq(clients.id, clientId));
   return row?.secret ?? null;
+}
+
+export async function loadTunnelIssuer(db: Database): Promise<string> {
+  const [row] = await db
+    .select({ value: platformSettings.value })
+    .from(platformSettings)
+    .where(eq(platformSettings.key, TUNNEL_ISSUER_SETTING_KEY));
+  const v = row?.value?.trim();
+  return v && v.length > 0 ? v : DEFAULT_TUNNEL_ISSUER;
 }
 
 // ─── K8s upserts ────────────────────────────────────────────────────────────
@@ -701,6 +718,7 @@ async function upsertTunnelIngress(
   networking: k8s.NetworkingV1Api,
   slug: string,
   clientNamespace: string,
+  issuer: string,
 ): Promise<void> {
   const name = `tunnel-${slug}`;
   const platformDomain = resolvePlatformDomain();
@@ -726,9 +744,13 @@ async function upsertTunnelIngress(
         'platform.example.test/client-namespace': clientNamespace,
       },
       annotations: {
-        // cert-manager issues a per-FQDN HTTP-01 cert. The default
-        // ClusterIssuer matches what tenant ingresses use.
-        'cert-manager.io/cluster-issuer': 'letsencrypt-prod-http01',
+        // cert-manager issues the cert via the operator-configured
+        // ClusterIssuer (System Settings → Private Worker Tunnels).
+        // Default is HTTP-01 (no DNS-API needed). Operators with
+        // DNS-01 wired can flip to letsencrypt-prod-dns01-powerdns
+        // (or equivalent) to get a single wildcard cert instead of
+        // per-FQDN issuance.
+        'cert-manager.io/cluster-issuer': issuer,
         // WebSocket Upgrade headers are forwarded automatically by
         // NGINX-ingress when the client requests them and the backend
         // speaks HTTP/1.1.
