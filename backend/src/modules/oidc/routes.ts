@@ -50,6 +50,25 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── Public: Authorization redirect (per provider) ─────────────────────────
 
+  // Resolve the public scheme behind nginx-ingress. Fastify's
+  // `request.protocol` is unreliable here in Fastify v5 — even with
+  // `trustProxy: true`, it returned 'http' on staging. Read
+  // X-Forwarded-Proto directly (set by nginx-ingress to the actual
+  // client scheme via $pass_access_scheme) and fall back to
+  // request.protocol only if the header is missing. Surfaced by
+  // integration-oidc-dex.sh: Dex's static client only allows https://
+  // redirect_uris, so an http:// scheme produces "Unregistered
+  // redirect_uri" and the entire auth flow breaks.
+  const resolveScheme = (request: { headers: Record<string, string | string[] | undefined>; protocol: string }): string => {
+    const xfp = request.headers['x-forwarded-proto'];
+    const value = Array.isArray(xfp) ? xfp[0] : xfp;
+    if (typeof value === 'string' && value.length > 0) {
+      // X-Forwarded-Proto can be a comma-separated list across multiple proxies.
+      return value.split(',')[0].trim().toLowerCase();
+    }
+    return request.protocol;
+  };
+
   app.get('/auth/oidc/authorize/:providerId', async (request, reply) => {
     const { providerId } = request.params as { providerId: string };
     const query = request.query as { redirect_uri?: string };
@@ -62,7 +81,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     pkceStore.set(state, { codeVerifier, frontendRedirect: frontendCallback, providerId, expiresAt: Date.now() + 600_000 });
 
     const host = request.headers.host ?? request.hostname;
-    const backendCallback = `${request.protocol}://${host}/api/v1/auth/oidc/callback`;
+    const backendCallback = `${resolveScheme(request)}://${host}/api/v1/auth/oidc/callback`;
 
     const authUrl = await service.buildAuthorizationUrl(app.db, providerId, backendCallback, state, codeChallenge);
     return reply.redirect(authUrl);
@@ -87,7 +106,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     pkceStore.delete(query.state);
 
     const host = request.headers.host ?? request.hostname;
-    const callbackUrl = `${request.protocol}://${host}/api/v1/auth/oidc/callback`;
+    const callbackUrl = `${resolveScheme(request)}://${host}/api/v1/auth/oidc/callback`;
 
     const { idToken, provider } = await service.exchangeCodeForTokens(
       app.db, pkce.providerId, query.code, callbackUrl, pkce.codeVerifier, encryptionKey,
