@@ -2,6 +2,8 @@ import { useState } from 'react';
 import {
   AlertCircle,
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Loader2,
   RefreshCw,
@@ -11,6 +13,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
+  PrivateWorkerAuditEntry,
   PrivateWorkerResponse,
   PrivateWorkerSecretResponse,
   PrivateWorkerStatus,
@@ -39,13 +42,21 @@ const STATUS_BADGE: Record<PrivateWorkerStatus, string> = {
   suspended: 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
 };
 
-function StatusBadge({ status }: { status: PrivateWorkerStatus }) {
+const STATUS_TOOLTIP: Record<PrivateWorkerStatus, string> = {
+  pending: 'Created but no agent has connected yet.',
+  active: 'Agent connected, ready to forward traffic.',
+  revoked: 'Token invalidated; the agent can no longer connect. Rotate to mint a new token.',
+  suspended: 'Worker is paused by the platform (account hold or maintenance).',
+};
+
+function StatusBadge({ status }: { readonly status: PrivateWorkerStatus }) {
   return (
     <span
       className={clsx(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize',
         STATUS_BADGE[status],
       )}
+      title={STATUS_TOOLTIP[status]}
       data-testid={`pw-status-${status}`}
     >
       {status}
@@ -53,11 +64,20 @@ function StatusBadge({ status }: { status: PrivateWorkerStatus }) {
   );
 }
 
-function CopyInline({ value, testId }: { value: string; testId?: string }) {
+interface CopyInlineProps {
+  readonly value: string;
+  readonly testId?: string;
+}
+
+function CopyInline({ value, testId }: CopyInlineProps) {
   const [copied, setCopied] = useState(false);
-  const onClick = async () => {
+  const onClick = async (): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(value);
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        throw new Error('clipboard unavailable');
+      }
     } catch {
       const textarea = document.createElement('textarea');
       textarea.value = value;
@@ -169,13 +189,12 @@ function ConfirmModal({
   );
 }
 
-function DetailRow({
-  label,
-  children,
-}: {
+interface DetailRowProps {
   readonly label: string;
   readonly children: React.ReactNode;
-}) {
+}
+
+function DetailRow({ label, children }: DetailRowProps) {
   return (
     <div className="grid grid-cols-3 gap-3 text-sm">
       <span className="text-gray-500 dark:text-gray-400">{label}</span>
@@ -184,15 +203,30 @@ function DetailRow({
   );
 }
 
-function AuditTable({
-  clientId,
-  workerId,
-}: {
+const EVENT_BADGE_CLASS: Record<string, string> = {
+  'auth-fail': 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400',
+  connect: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400',
+  disconnect: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
+  mint: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
+  rotate: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
+  revoke: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400',
+};
+
+function eventBadgeClass(event: string): string {
+  return (
+    EVENT_BADGE_CLASS[event] ??
+    'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+  );
+}
+
+interface AuditTableProps {
   readonly clientId: string;
   readonly workerId: string;
-}) {
+}
+
+function AuditTable({ clientId, workerId }: AuditTableProps) {
   const { data, isLoading } = usePrivateWorkerAudit(clientId, workerId, 50);
-  const items = data?.data?.items ?? [];
+  const items: readonly PrivateWorkerAuditEntry[] = data?.data?.items ?? [];
 
   if (isLoading) {
     return (
@@ -204,8 +238,11 @@ function AuditTable({
 
   if (items.length === 0) {
     return (
-      <p className="py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-        No events recorded yet.
+      <p
+        className="py-4 text-center text-sm text-gray-500 dark:text-gray-400"
+        data-testid="pw-audit-empty"
+      >
+        No activity yet
       </p>
     );
   }
@@ -230,13 +267,7 @@ function AuditTable({
                 <span
                   className={clsx(
                     'inline-block rounded px-1.5 py-0.5 font-medium',
-                    e.event === 'auth-fail'
-                      ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                      : e.event === 'connect'
-                        ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                        : e.event === 'revoke'
-                          ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+                    eventBadgeClass(e.event),
                   )}
                 >
                   {e.event}
@@ -256,6 +287,149 @@ function AuditTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Builds a docker-compose hint snippet that does NOT contain the
+ * plaintext token (which is only ever returned by create/rotate).
+ * Operators see this in the post-create drawer as a recipe placeholder
+ * — the literal token is `<paste your saved PRIVATE_WORKER_TOKEN>` so
+ * they can drop in the value they captured from the token modal.
+ */
+function buildComposeHint(worker: PrivateWorkerResponse): string {
+  return [
+    'services:',
+    `  ${worker.slug}-agent:`,
+    '    image: ghcr.io/k8s-hosting/private-worker-agent:latest',
+    '    restart: unless-stopped',
+    '    environment:',
+    '      PRIVATE_WORKER_TOKEN: <paste your saved PRIVATE_WORKER_TOKEN>',
+    `      LOCAL_TARGET: "127.0.0.1:${worker.exposedPort}"`,
+    '    network_mode: host',
+  ].join('\n');
+}
+
+interface TunnelInfoCardProps {
+  readonly worker: PrivateWorkerResponse;
+}
+
+function TunnelInfoCard({ worker }: TunnelInfoCardProps) {
+  return (
+    <section
+      className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-4 space-y-3"
+      data-testid="pw-tunnel-info"
+    >
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+        Tunnel info
+      </h3>
+      <div className="space-y-2 text-sm">
+        <div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">
+            Tunnel URL
+          </div>
+          <div className="flex items-center">
+            <span className="font-mono text-xs text-gray-800 dark:text-gray-200 break-all">
+              {worker.tunnelUrl}
+            </span>
+            <CopyInline value={worker.tunnelUrl} testId="copy-pw-tunnel-url" />
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">
+            Exposed port
+          </div>
+          <span className="font-mono text-xs text-gray-800 dark:text-gray-200">
+            {worker.exposedPort}
+          </span>
+        </div>
+        <div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">
+            Service name
+          </div>
+          <div className="flex items-center">
+            <span className="font-mono text-xs text-gray-800 dark:text-gray-200 break-all">
+              {worker.serviceName}
+            </span>
+            <CopyInline value={worker.serviceName} testId="copy-pw-service-name" />
+          </div>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Use this in an Ingress route.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+interface HowToConnectCardProps {
+  readonly worker: PrivateWorkerResponse;
+  readonly onReissue: () => void;
+  readonly canManage: boolean;
+}
+
+function HowToConnectCard({ worker, onReissue, canManage }: HowToConnectCardProps) {
+  const [open, setOpen] = useState(false);
+  const snippet = buildComposeHint(worker);
+
+  return (
+    <section
+      className="rounded-lg border border-gray-200 dark:border-gray-700"
+      data-testid="pw-how-to-connect"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded-lg"
+        data-testid="pw-how-to-connect-toggle"
+      >
+        <span>How to connect</span>
+        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+      </button>
+      {open && (
+        <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-3 space-y-3">
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            The plaintext token is only shown once at creation. Replace the
+            placeholder below with the token you saved, then run{' '}
+            <code className="rounded bg-gray-200 dark:bg-gray-700 px-1 py-0.5 font-mono">
+              docker compose up -d
+            </code>
+            .
+          </p>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+              docker-compose.yml
+            </span>
+            <CopyInline value={snippet} testId="copy-pw-compose-hint" />
+          </div>
+          <textarea
+            readOnly
+            value={snippet}
+            rows={9}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100"
+            data-testid="pw-compose-hint-textarea"
+          />
+          {canManage && (
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3">
+              <p className="text-xs text-amber-900 dark:text-amber-200">
+                Lost the token? Re-issue a new one — the previous token will
+                stop working immediately.
+              </p>
+              <button
+                type="button"
+                onClick={onReissue}
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-900 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/50"
+                data-testid="pw-reissue-token-btn"
+              >
+                <RefreshCw size={12} /> Re-issue token
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -364,9 +538,6 @@ export default function PrivateWorkerDetailDrawer({
                 <DetailRow label="Status">
                   <StatusBadge status={worker.status} />
                 </DetailRow>
-                <DetailRow label="Exposed port">
-                  <span className="font-mono">{worker.exposedPort}</span>
-                </DetailRow>
                 <DetailRow label="Last seen">
                   <span title={worker.lastSeenAt ?? 'never'}>
                     {formatRelative(worker.lastSeenAt)}
@@ -380,24 +551,20 @@ export default function PrivateWorkerDetailDrawer({
                     {formatBytes(worker.bytesIn)} / {formatBytes(worker.bytesOut)}
                   </span>
                 </DetailRow>
-                <DetailRow label="Service name">
-                  <span className="inline-flex items-center font-mono text-gray-600 dark:text-gray-400">
-                    {worker.serviceName}
-                    <CopyInline value={worker.serviceName} />
-                  </span>
-                </DetailRow>
-                <DetailRow label="Tunnel URL">
-                  <span className="inline-flex items-center font-mono text-xs text-gray-500 dark:text-gray-400 break-all">
-                    {worker.tunnelUrl}
-                    <CopyInline value={worker.tunnelUrl} />
-                  </span>
-                </DetailRow>
                 {worker.description && (
                   <DetailRow label="Description">
                     <span>{worker.description}</span>
                   </DetailRow>
                 )}
               </section>
+
+              <TunnelInfoCard worker={worker} />
+
+              <HowToConnectCard
+                worker={worker}
+                canManage={canManage}
+                onReissue={() => setRotateOpen(true)}
+              />
 
               {canManage && (
                 <section className="space-y-2">
