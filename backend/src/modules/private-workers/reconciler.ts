@@ -639,7 +639,12 @@ async function upsertTunnelIngress(
 ): Promise<void> {
   const name = `tunnel-${slug}`;
   const platformDomain = resolvePlatformDomain();
-  const tunnelHost = `tunnels.${platformDomain}`;
+  // Per-worker subdomain `<slug>.tunnels.${DOMAIN}`. frp v0.62 hardcodes
+  // its WSS path to `/~!frp` so we cannot route by URL path — every
+  // worker needs a distinct hostname. cert-manager issues a per-FQDN
+  // HTTP-01 cert (no DNS-API requirement).
+  const tunnelHost = `${slug}.tunnels.${platformDomain}`;
+  const tlsSecret = `${name}-tls`;
 
   const body: k8s.V1Ingress = {
     apiVersion: 'networking.k8s.io/v1',
@@ -656,36 +661,39 @@ async function upsertTunnelIngress(
         'platform.example.test/client-namespace': clientNamespace,
       },
       annotations: {
-        // Path rewrite so frps sees `/` (it doesn't know about
-        // /c/<slug>/). $2 captures whatever follows the prefix.
-        'nginx.ingress.kubernetes.io/use-regex': 'true',
-        'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+        // cert-manager issues a per-FQDN HTTP-01 cert. The default
+        // ClusterIssuer matches what tenant ingresses use.
+        'cert-manager.io/cluster-issuer': 'letsencrypt-prod-http01',
         // WebSocket Upgrade headers are forwarded automatically by
         // NGINX-ingress when the client requests them and the backend
-        // speaks HTTP/1.1. The configuration-snippet is intentionally
-        // not used because the cluster's ingress-nginx ConfigMap has
-        // allow-snippet-annotations=false (admission webhook rejects).
+        // speaks HTTP/1.1.
         'nginx.ingress.kubernetes.io/proxy-http-version': '1.1',
         'nginx.ingress.kubernetes.io/proxy-read-timeout': '3600',
         'nginx.ingress.kubernetes.io/proxy-send-timeout': '3600',
         // Rate-limit failed handshakes per source IP. frps rejects
         // bad-token connections quickly so this caps brute-force
         // throughput against the auth.token at ~5 attempts/sec/IP.
-        // limit-connections caps concurrent agents per IP at 5.
         'nginx.ingress.kubernetes.io/limit-rps': '5',
         'nginx.ingress.kubernetes.io/limit-connections': '5',
       },
     },
     spec: {
       ingressClassName: 'nginx',
+      tls: [
+        {
+          hosts: [tunnelHost],
+          secretName: tlsSecret,
+        },
+      ],
       rules: [
         {
           host: tunnelHost,
           http: {
             paths: [
               {
-                path: `/c/${slug}(/|$)(.*)`,
-                pathType: 'ImplementationSpecific',
+                // No rewrite — frpc dials the default WSS path `/~!frp`.
+                path: '/',
+                pathType: 'Prefix',
                 backend: {
                   service: {
                     name,
