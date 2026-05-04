@@ -884,13 +884,17 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
-  // POST /api/v1/admin/deployments/bulk-restart — restart all running deployments
-  // Optional filter: { catalog_entry_id?: string }
+  // POST /api/v1/admin/deployments/bulk-restart
+  // Body modes:
+  //   { deployment_ids: string[] } — explicit targets, NO status filter
+  //     (use this to force-restart stuck deployments — pending/deploying/failed)
+  //   { catalog_entry_id?: string } — fleet-wide, restricted to running rows
+  //     (the original "pull & restart all WordPress instances" use case)
   app.post('/admin/deployments/bulk-restart', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Deployments'],
-      summary: 'Bulk restart running deployments (pulls latest images)',
+      summary: 'Bulk restart deployments (force when deployment_ids given)',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
@@ -899,10 +903,18 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
     }
 
-    const body = (request.body ?? {}) as { catalog_entry_id?: string };
-    const conditions = [eq(deployments.status, 'running')];
-    if (body.catalog_entry_id) {
-      conditions.push(eq(deployments.catalogEntryId, body.catalog_entry_id));
+    const body = (request.body ?? {}) as { catalog_entry_id?: string; deployment_ids?: string[] };
+    const conditions = [ne(deployments.status, 'deleted')];
+    // Explicit ids override the running-only filter — operator chose them
+    // deliberately, often to recover a stuck row that the fleet-wide filter
+    // would skip silently.
+    if (body.deployment_ids?.length) {
+      conditions.push(inArray(deployments.id, body.deployment_ids));
+    } else {
+      conditions.push(eq(deployments.status, 'running'));
+      if (body.catalog_entry_id) {
+        conditions.push(eq(deployments.catalogEntryId, body.catalog_entry_id));
+      }
     }
 
     const runningDeployments = await app.db
