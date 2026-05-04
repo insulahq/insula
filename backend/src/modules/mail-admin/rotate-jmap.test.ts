@@ -94,13 +94,20 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     });
   });
 
-  it('throws when admin principal not found', async () => {
+  it('falls through to Secret-only rotation when admin principal not found', async () => {
+    // Cut 3 follow-up (2026-05-04): Stalwart 0.16 supports a recovery-
+    // admin path where no x:Account row exists in the DB. Rotation now
+    // skips the JMAP-update step cleanly in that case and patches the
+    // Secret only — Reloader rolls the Stalwart pod which picks up the
+    // new STALWART_RECOVERY_ADMIN env-var value. Verified live on
+    // staging via 3 successive rotations (memory finding #7).
     const deps = makeDeps({ findAdminPrincipalId: vi.fn().mockResolvedValue(null) });
 
-    await expect(rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps)).rejects.toThrow(
-      /admin principal.*not found/i,
-    );
+    const result = await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+
     expect(deps.updateAdminPassword).not.toHaveBeenCalled();
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+    expect(result.password).toBe('new-secret-password');
   });
 
   it('throws when JMAP session fails', async () => {

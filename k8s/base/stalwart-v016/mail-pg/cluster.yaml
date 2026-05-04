@@ -62,7 +62,11 @@ spec:
 
   storage:
     size: 5Gi
-    storageClass: longhorn
+    # mail-pg is a system PVC — must use longhorn-system-local (1 replica
+    # + system tag) so replicas never land on worker nodes. Apply HA
+    # patches numberOfReplicas at runtime via the storage-policy
+    # reconciler. See k8s/base/database.yaml for the same rationale.
+    storageClass: longhorn-system-local
 
   # Conservative defaults. Mail metadata is small; 256Mi is fine for
   # a single-domain install. Production overlay should bump to 512Mi+.

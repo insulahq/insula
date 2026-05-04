@@ -172,34 +172,80 @@ export async function createMailbox(
   let stalwartPrincipalId: string | null = null;
   const accountId = await getJmapAccountId();
   if (accountId) {
-    try {
-      // Security review M1 (2026-05-03): cleartext password sent to
-      // Stalwart over internal HTTP. Stalwart claims `$2b$` bcrypt
-      // support but the staging E2E for hashed-secret login is still
-      // pending; until that is verified, the fastest safe path is to
-      // keep cleartext (Stalwart stores it as a hash internally; the
-      // wire-time exposure is within the cluster, port 8080 not
-      // externally reachable). Follow-up: pass `passwordHash` once
-      // hashed-secret IMAP login is proven on staging.
-      const principal = await jmapCreateMailbox({
-        accountId,
-        input: {
-          type: 'individual',
-          name: input.local_part,
-          emails: [fullAddress],
-          secrets: input.password ? [input.password] : undefined,
-        },
-        baseUrl: process.env.STALWART_MGMT_URL,
-      });
-      stalwartPrincipalId = principal.id ?? null;
-    } catch (err) {
-      throw new ApiError(
-        'MAIL_SERVER_ERROR',
-        `Stalwart mailbox provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
-        502,
-        {},
-        'Check Stalwart JMAP API reachability and logs',
-      );
+    // Stalwart 0.16: x:Account User payload requires `domainId` (the
+    // server-side JMAP id of the parent x:Domain). The platform stores
+    // that id on email_domains.stalwartDomainId after enableEmailForDomain
+    // ran successfully. Without it, Stalwart can't bind the account to a
+    // domain and rejects the create. If the email_domains row predates
+    // the JMAP step (orphan), skip the JMAP create and let principals-
+    // sync reconcile later when the domain has been provisioned.
+    if (!emailDomain.stalwartDomainId) {
+      log.warn({
+        emailDomainId,
+        domainName: domain.domainName,
+      }, 'createMailbox: email_domain has no stalwartDomainId — skipping JMAP create (principals-sync will reconcile after domain is enabled)');
+    } else {
+      try {
+        // Security review M1 (2026-05-03): cleartext password sent to
+        // Stalwart over internal HTTP. Stalwart claims `$2b$` bcrypt
+        // support but the staging E2E for hashed-secret login is still
+        // pending; until that is verified, the fastest safe path is to
+        // keep cleartext (Stalwart stores it as a hash internally; the
+        // wire-time exposure is within the cluster, port 8080 not
+        // externally reachable). Follow-up: pass `passwordHash` once
+        // hashed-secret IMAP login is proven on staging.
+        const { accountSet } = await import('../stalwart-jmap/client.js');
+        const credentials: Record<string, unknown> = {};
+        if (input.password) {
+          credentials['0'] = {
+            '@type': 'Password',
+            secret: input.password,
+            allowedIps: {},
+            expiresAt: null,
+          };
+        }
+        const xAccountResult = await accountSet({
+          accountId,
+          baseUrl: process.env.STALWART_MGMT_URL,
+          request: {
+            create: {
+              'new-mailbox': {
+                '@type': 'User',
+                name: input.local_part,
+                domainId: emailDomain.stalwartDomainId,
+                ...(Object.keys(credentials).length > 0 ? { credentials } : {}),
+                ...(input.display_name ? { description: input.display_name } : {}),
+              },
+            },
+          },
+        });
+        const created = xAccountResult.created?.['new-mailbox'];
+        const notCreated = xAccountResult.notCreated?.['new-mailbox'];
+        if (notCreated) {
+          throw new ApiError(
+            'MAIL_SERVER_ERROR',
+            `Stalwart x:Account/set rejected create: ${notCreated.description ?? notCreated.type}`,
+            502,
+            { type: notCreated.type, properties: notCreated.properties ?? null },
+            'Check Stalwart JMAP API reachability and logs',
+          );
+        }
+        const newId = (created as { id?: string } | undefined)?.id;
+        stalwartPrincipalId = typeof newId === 'string' ? newId : null;
+        // Suppress unused-warning on the legacy import — we still need
+        // it for the compensating destroy path below, but this create
+        // arm now bypasses the legacy `createMailbox` shim.
+        void jmapCreateMailbox;
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        throw new ApiError(
+          'MAIL_SERVER_ERROR',
+          `Stalwart mailbox provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+          502,
+          {},
+          'Check Stalwart JMAP API reachability and logs',
+        );
+      }
     }
   }
 

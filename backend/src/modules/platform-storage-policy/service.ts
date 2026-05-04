@@ -35,10 +35,21 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
   { namespace: 'mail', pvcPrefix: 'data-stalwart-mail' },    // data-stalwart-mail-0
 ];
 
-// 1 → "local" tier, 3 → "ha" tier. We use 3 (not 2) for system to
-// match the longhorn-system-ha StorageClass — the platform's
-// reliability budget justifies the extra replica.
-const REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
+// HA tier replicates a system volume to EVERY ready server node so
+// that a 4-server cluster survives 2 simultaneous server failures
+// (vs. a fixed 3-replica scheme that survives only 1, regardless of
+// server count). Capped at MAX_HA_REPLICAS to avoid pathological
+// replication overhead — Longhorn write amplification scales linearly
+// with replica count, and beyond ~5 the throughput hit on a postgres
+// primary outweighs the extra fault tolerance.
+const MAX_HA_REPLICAS = 5;
+
+export function replicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+  if (tier === 'local') return 1;
+  // HA: replicate to every ready server (min 2; 1 would mean local).
+  // Cap so a 10-server cluster doesn't fanout to 10 replicas.
+  return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
+}
 
 // Stateless platform Deployments that scale 2↔3 with the tier.
 // Adding topologySpreadConstraints on each scale-up so a 3-replica
@@ -53,12 +64,14 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   { namespace: 'platform', name: 'dex' },
 ];
 // Single-server (local) installs default to 1 replica per stateless
-// service — pre-HA. Going to 2 on a single node provides no fault
-// isolation (both pods on the same node) and only doubles memory + the
-// rolling-deploy gap. HA tier (3+ servers) gets 3 because that's the
-// only count that survives a node failure DURING a rolling update
-// (2 replicas + maxUnavailable=1 + node failure can hit 0).
-const DEPLOYMENT_REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
+// service. HA scales to readyServerCount (capped) so each Deployment
+// has one pod per server — 4 servers = 4 replicas = survives 2
+// simultaneous failures during a rolling update. Same MAX_HA_REPLICAS
+// cap as the storage tier to avoid runaway scale.
+export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+  if (tier === 'local') return 1;
+  return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
+}
 
 // CNPG clusters. Apply HA flips spec.instances 1↔3 — CNPG streams
 // replication from primary, no manual data migration needed.
@@ -71,7 +84,13 @@ const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'postgres' },
   { namespace: 'mail', name: 'mail-pg' },
 ];
-const CNPG_INSTANCES_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
+// CNPG instance count tracks the same readyServerCount-aware policy
+// so postgres replication fans out across every server in HA mode
+// (matching Longhorn replicas for symmetric tolerance).
+export function cnpgInstancesForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+  if (tier === 'local') return 1;
+  return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
+}
 
 const SINGLETON_ID = 'singleton';
 const HA_SERVER_THRESHOLD = 3;
@@ -153,23 +172,35 @@ export async function readClusterState(
   db: Database,
 ): Promise<{ readyServerCount: number; totalNodeCount: number; recommendedTier: 'local' | 'ha'; volumes: VolumeFact[] }> {
   const policy = await getPolicy(db);
-  const desiredReplicas = REPLICAS_FOR[policy.systemTier];
+  // desiredReplicas is computed AFTER readyServerCount is known —
+  // HA tier scales to the number of ready servers (so 4 servers = 4
+  // replicas = survives 2 failures, vs the prior fixed 3).
 
   // Count Ready server nodes by label
   // (platform.phoenix-host.net/node-role=server) so workers don't
   // bump the recommendation. A 3-server quorum is the threshold.
+  //
+  // `totalNodeCount` is named for the API field but means "total
+  // server-tagged nodes" — workers are excluded so the UI banner's
+  // "X of Y server nodes" denominator only counts what's eligible to
+  // host the platform-storage replicas. Including workers here would
+  // make the ratio meaningless on mixed clusters (e.g. 3-of-7 with
+  // 4 workers reads as under-resourced when the 3 servers are exactly
+  // what the recommendation needs).
   const nodes = await k8s.core.listNode();
   let readyServerCount = 0;
+  let totalNodeCount = 0;
   for (const node of nodes.items ?? []) {
     const labels = node.metadata?.labels ?? {};
     const isServer = labels['platform.phoenix-host.net/node-role'] === 'server'
       || (node.spec?.taints ?? []).some((t) => t.key === 'node-role.kubernetes.io/control-plane');
     if (!isServer) continue;
+    totalNodeCount++;
     const ready = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
     if (ready?.status === 'True') readyServerCount++;
   }
-  const totalNodeCount = nodes.items?.length ?? 0;
   const recommendedTier: 'local' | 'ha' = readyServerCount >= HA_SERVER_THRESHOLD ? 'ha' : 'local';
+  const desiredReplicas = replicasForSystemTier(policy.systemTier, readyServerCount);
 
   // M-NS-2: build the set of system-tagged nodes once so each volume's
   // placement check is a constant-time lookup. A k8s node carries
@@ -352,8 +383,8 @@ export async function applyPolicy(
 
   return {
     volumes: await patchLonghornVolumes(k8s, state.volumes),
-    deployments: await patchStatelessDeployments(k8s, tier),
-    cnpgClusters: await patchCnpgClusters(k8s, tier),
+    deployments: await patchStatelessDeployments(k8s, tier, state.readyServerCount),
+    cnpgClusters: await patchCnpgClusters(k8s, tier, state.readyServerCount),
   };
 }
 
@@ -464,8 +495,9 @@ async function readLiveNodeSelectors(
 async function patchStatelessDeployments(
   k8s: K8sClients,
   tier: 'local' | 'ha',
+  readyServerCount: number,
 ): Promise<DeploymentPatchResult[]> {
-  const desired = DEPLOYMENT_REPLICAS_FOR[tier];
+  const desired = deploymentReplicasForSystemTier(tier, readyServerCount);
   const results: DeploymentPatchResult[] = [];
   for (const d of STATELESS_DEPLOYMENTS) {
     let previousReplicas = 0;
@@ -518,8 +550,9 @@ async function patchStatelessDeployments(
 async function patchCnpgClusters(
   k8s: K8sClients,
   tier: 'local' | 'ha',
+  readyServerCount: number,
 ): Promise<CnpgClusterPatchResult[]> {
-  const desired = CNPG_INSTANCES_FOR[tier];
+  const desired = cnpgInstancesForSystemTier(tier, readyServerCount);
   const results: CnpgClusterPatchResult[] = [];
   for (const c of CNPG_CLUSTERS) {
     let previousInstances = 0;

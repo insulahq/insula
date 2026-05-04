@@ -2,7 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { notifications, users, platformStoragePolicy } from '../../db/schema.js';
-import { getPolicy, readClusterState } from './service.js';
+import { getPolicy, readClusterState, applyPolicy } from './service.js';
 
 // M13 Phase 6: emit a one-time admin notification when the cluster
 // reaches HA size (>=3 Ready servers) AND policy is still 'local' AND
@@ -21,13 +21,40 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
     if (stopped) return;
     try {
       const policy = await getPolicy(db);
-      // Three-way short-circuit: tier already ha, operator pinned local,
-      // or already notified — nothing to do.
+      const state = await readClusterState(k8s, db);
+
+      // Drift correction: re-apply the current policy to the live
+      // cluster every tick. Catches new PVCs (PITR rebuild, fresh
+      // CNPG instance), node count changes (HA replica count tracks
+      // readyServerCount dynamically), and config drift from manual
+      // kubectl edits. Idempotent — patchLonghornVolumes etc. skip
+      // when the live state already matches desired. Without this,
+      // the cluster only converges when an operator clicks "Apply
+      // Tier" in the UI; in practice that means stale state most of
+      // the time.
+      const drift = state.volumes.some(
+        (v) => v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica,
+      );
+      if (drift) {
+        console.log(`[storage-policy-advisor] drift detected — applying ${policy.systemTier} tier`);
+        try {
+          const outcome = await applyPolicy(k8s, db);
+          const patched = outcome.volumes.filter((v) => v.patched).length
+            + outcome.deployments.filter((d) => d.patched).length
+            + outcome.cnpgClusters.filter((c) => c.patched).length;
+          console.log(`[storage-policy-advisor] reconciled ${patched} resource(s)`);
+        } catch (err) {
+          console.error('[storage-policy-advisor] reconcile failed:', (err as Error).message);
+        }
+      }
+
+      // Recommendation: notify ONCE when cluster reaches HA size and
+      // policy is still local + un-pinned. Three-way short-circuit:
+      // tier already ha, operator pinned local, or already notified.
       if (policy.systemTier === 'ha' || policy.pinnedByAdmin || policy.haRecommendationNotifiedAt) {
         if (!stopped) timer = setTimeout(tick, TICK_MS);
         return;
       }
-      const state = await readClusterState(k8s, db);
       if (state.recommendedTier !== 'ha') {
         if (!stopped) timer = setTimeout(tick, TICK_MS);
         return;
@@ -41,7 +68,7 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
         .set({ haRecommendationNotifiedAt: new Date() })
         .where(eq(platformStoragePolicy.id, 'singleton'));
       const adminRows = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-      const message = `Cluster has ${state.readyServerCount} Ready servers — switch platform-storage tier to HA (3 replicas) on the Storage Settings page so the postgres + stalwart-mail volumes survive a single-node outage.`;
+      const message = `Cluster has ${state.readyServerCount} Ready servers — switch platform-storage tier to HA on the Storage Settings page. HA replicates system volumes to every server (4 servers = 4 replicas = 2-failure tolerance).`;
       for (const a of adminRows) {
         await db.insert(notifications).values({
           id: crypto.randomUUID(),
