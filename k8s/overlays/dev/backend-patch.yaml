@@ -134,7 +134,8 @@ spec:
             - name: STALWART_MASTER_SECRET
               value: stalwart-dev-master
             - name: STALWART_IMAP_HOST
-              value: stalwart-mail.mail.svc.cluster.local
+              # 0.16 service name; v015 was retired in Cut 3 (2026-05-04).
+              value: stalwart-mail-v016.mail.svc.cluster.local
             - name: STALWART_IMAP_PORT
               value: "143"
             # STALWART_ADMIN_PASSWORD is read from the mounted secret file
