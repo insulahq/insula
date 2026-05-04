@@ -37,9 +37,10 @@ spec:
       app: mail-pg
       app.kubernetes.io/part-of: hosting-platform
 
-  # Single instance by default. Apply HA patches this to 3 via
-  # patchCnpgClusters() when the platform tier is `ha`. See M6.2.
-  instances: 1
+  # spec.instances is INTENTIONALLY OMITTED — see k8s/base/database.yaml
+  # for the full rationale. tl;dr: setting it here means Flux's merge-
+  # patch reverts Apply HA's runtime patch every 60s, oscillating
+  # between 1 and 3. CNPG defaults to 1 if unset.
 
   # Postgres 16 — matches the spike validation. Stalwart 0.16 supports
   # PG 14+ but we align with the upstream-recommended 16.
