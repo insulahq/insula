@@ -1,0 +1,100 @@
+# Staging overlay for Stalwart 0.16 (mail-pg CNPG + Stalwart Deployment).
+#
+# Replaces the stalwart-v015-deprecated overlay during the staging cutover.
+# The cutover script (scripts/cutover-stalwart-v015-to-v016.sh) deletes the
+# 0.15 StatefulSet/PVC/Secrets manually; Flux then converges on 0.16.
+#
+# Differences from the base:
+#   1. stalwart-mail-v016 Service: LoadBalancer → ClusterIP+externalIPs
+#      (single Hetzner VPS — no cloud LB). Mirrors v015's service-patch.
+#   2. ingress-mgmt: hardcoded letsencrypt-prod-http01 cert-issuer +
+#      auth-signin URL with the staging admin login. The base uses a
+#      ${CLUSTER_ISSUER_NAME} placeholder that staging's
+#      platform-cluster-config ConfigMap does NOT define (only DOMAIN is
+#      substituted), so we patch the literal value here.
+#   3. Reloader annotation: also watch stalwart-webadmin-prod-tls so the
+#      Deployment rolls when the LE cert is renewed.
+#
+# 0.15 overlay (k8s/overlays/staging/stalwart/) MUST be removed from the
+# parent kustomization.yaml before applying this overlay — both share
+# the `mail` namespace and would race for the Stalwart Service name.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/stalwart-v016
+  # NOTE: 0.16 does NOT need the platform-postgres ExternalName bridge
+  # that 0.15 used. The 0.16 Deployment connects directly to its own
+  # dedicated mail-pg CNPG cluster (mail-pg-rw.mail.svc.cluster.local)
+  # — see base/stalwart-v016/stalwart/deployment.yaml STALWART_PG_HOST.
+
+patches:
+  # Stalwart-mail-v016 Service: LoadBalancer → ClusterIP+externalIPs.
+  # The single staging VPS has no cloud LB controller (k3s --disable=
+  # servicelb, no MetalLB). externalIPs is the vendor-neutral path to
+  # bind public-facing mail ports to the node's external IP.
+  #
+  # MULTI-NODE NOTE: when staging grows past one node, extend the list
+  # to the additional nodes' public IPs. kube-proxy iptables mode SNATs
+  # cross-node traffic, so source-IP-based rate limits become per-node;
+  # see k8s/overlays/staging/stalwart/service-patch.yaml header for the
+  # full caveat (also applies here).
+  - patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: stalwart-mail-v016
+        namespace: mail
+      spec:
+        type: ClusterIP
+        externalTrafficPolicy: Cluster
+        externalIPs:
+          - 192.0.2.56
+    target:
+      kind: Service
+      name: stalwart-mail-v016
+
+  # Ingress: hardcode cert-issuer (no ${CLUSTER_ISSUER_NAME} substitution
+  # on staging). Match the auth-signin pattern from the v015 webadmin-
+  # ingress so users land on /settings/mail after re-login.
+  - patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: stalwart-v016-webadmin
+        namespace: mail
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod-http01
+          nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
+      spec:
+        tls:
+          - hosts:
+              - stalwart.${DOMAIN}
+            secretName: stalwart-webadmin-prod-tls
+    target:
+      kind: Ingress
+      name: stalwart-v016-webadmin
+
+  # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
+  # The base watches `mail-pg-app-credentials,stalwart-admin-creds`. We
+  # APPEND `stalwart-webadmin-prod-tls` while preserving both base
+  # entries — strategic-merge replaces the annotation value (it's a
+  # single string, not a list), so the patch must include all three.
+  # Code-review CRITICAL fix (2026-05-04): the prior patch listed only
+  # `stalwart-webadmin-prod-tls,stalwart-admin-creds` which silently
+  # dropped `mail-pg-app-credentials` from the watch list — when CNPG
+  # rotates the mail-pg credentials, Stalwart would keep the old
+  # password and fail to connect with no auto-recovery.
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: stalwart-mail-v016
+        namespace: mail
+        annotations:
+          secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
+    target:
+      kind: Deployment
+      name: stalwart-mail-v016
