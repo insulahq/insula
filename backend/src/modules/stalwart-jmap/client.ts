@@ -19,7 +19,7 @@
  * the infrequent provisioning calls this module makes).
  *
  * Base URL: STALWART_MGMT_URL (default:
- *   http://stalwart-mail-mgmt.mail.svc.cluster.local:8080)
+ *   http://stalwart-mgmt-v016.mail.svc.cluster.local:8080)
  */
 
 // ── JMAP protocol types (RFC 8620) ─────────────────────────────────────────
@@ -160,7 +160,7 @@ export interface JmapSession {
 // ── Client implementation ───────────────────────────────────────────────────
 
 const STALWART_MGMT_URL =
-  process.env.STALWART_MGMT_URL ?? 'http://stalwart-mail-mgmt.mail.svc.cluster.local:8080';
+  process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt-v016.mail.svc.cluster.local:8080';
 
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_PRINCIPALS = 'urn:ietf:params:jmap:principals';

@@ -1,0 +1,17 @@
+# Dev overlay patch — pin platform CNPG cluster's storage class to
+# `local-path` because DinD k3s ships with no Longhorn (the base default).
+#
+# Mirrors the same override the stalwart-v016 dev overlay already does for
+# `mail-pg`. Without this patch, the CNPG initdb Job's PVC stays Pending
+# forever and platform-api can't reach the DB.
+#
+# Strategic-merge is sufficient — the only field changed under spec is
+# `storage.storageClass` (a string), no list-merging required.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  namespace: platform
+spec:
+  storage:
+    storageClass: local-path

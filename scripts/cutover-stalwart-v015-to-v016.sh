@@ -55,14 +55,21 @@ _kubectl() {
 
 # ── psql wrapper — query the platform Postgres ────────────────────────────
 _psql() {
-  # Try in-cluster via kubectl exec into the cnpg pod first.
+  # Try in-cluster via kubectl exec into the CNPG primary pod first.
+  # The cluster's CR name is `postgres` (see k8s/base/database.yaml); the
+  # label selector that picks the current primary is
+  # `cnpg.io/cluster=postgres,role=primary`. Fix from cutover-on-staging
+  # (2026-05-04) — original selector had cluster=platform-pg which never
+  # matched any pod and silently fell through to the host psql fallback.
   local pg_pod
-  pg_pod=$(_kubectl get pod -n platform -l cnpg.io/cluster=platform-pg,role=primary \
+  pg_pod=$(_kubectl get pod -n platform -l cnpg.io/cluster=postgres,role=primary \
              --no-headers -o custom-columns=":metadata.name" 2>/dev/null | head -1 || true)
 
   if [[ -n "$pg_pod" ]]; then
+    # DB name + owner come from CNPG bootstrap.initdb in
+    # k8s/base/database.yaml — `hosting_platform` / `platform`.
     _kubectl exec -n platform "$pg_pod" -- \
-      psql -U platform_app -d platform -tAc "$1"
+      psql -U platform -d hosting_platform -tAc "$1"
   else
     # Fallback: direct psql on localhost (if running outside cluster)
     psql "${PLATFORM_DB_URL:-postgresql://platform_app@localhost:5432/platform}" -tAc "$1"
@@ -133,6 +140,43 @@ echo "    Done."
 echo "==> Step 5: Deleting stalwart-mail Services (0.15)..."
 _kubectl delete service stalwart-mail stalwart-mail-mgmt -n mail --ignore-not-found=true
 echo "    Done."
+
+# ── Step 6: Ensure stalwart-admin-creds Secret exists for v016 ─────────────
+echo "==> Step 6: Checking stalwart-admin-creds Secret (required by 0.16)..."
+if _kubectl get secret -n mail stalwart-admin-creds &>/dev/null; then
+  echo "    OK — stalwart-admin-creds already exists."
+else
+  echo "    Secret missing. Generating a fresh admin password and creating it."
+  # Code-review M-2 fix (2026-05-04): use `openssl rand -hex` so the
+  # password length is deterministic. The previous `rand -base64 24 |
+  # tr -d '/+=' | head -c 32` could yield <32 chars when the random
+  # bytes happened to contain many strippable base64 chars. Hex is
+  # always 2 × byte-count and uses a fixed 16-char alphabet — 256 bits
+  # of source entropy, 64 chars of output, no stripping.
+  stalwart_admin_pw="$(openssl rand -hex 32)"
+  _kubectl create secret generic stalwart-admin-creds \
+    --namespace=mail \
+    --from-literal=adminPassword="$stalwart_admin_pw" \
+    --from-literal=recoveryPassword="$stalwart_admin_pw" \
+    --from-literal=recoveryAdmin="admin:${stalwart_admin_pw}"
+  # Code-review M-1 fix (2026-05-04): write the cleartext to a chmod-600
+  # tempfile instead of stdout. CI runs of this script with --force
+  # would otherwise leak the password into job log artifacts. The
+  # operator can `cat` the printed path interactively.
+  pw_file="$(mktemp -t stalwart-admin-pw.XXXXXX)"
+  chmod 600 "$pw_file"
+  printf '%s\n' "$stalwart_admin_pw" > "$pw_file"
+  echo ""
+  echo "    GENERATED Stalwart 0.16 admin password written to:"
+  echo "        $pw_file   (chmod 600)"
+  echo ""
+  echo "    Capture the value before this terminal closes — then delete the file:"
+  echo "        cat $pw_file"
+  echo "        shred -u $pw_file"
+  echo ""
+  echo "    DO NOT echo this password into a CI log. If running in CI, capture"
+  echo "    via the file path above into a secret store, then delete the file."
+fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
