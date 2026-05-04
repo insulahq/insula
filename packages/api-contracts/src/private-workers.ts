@@ -115,3 +115,46 @@ export type PrivateWorkerSecretResponse = z.infer<typeof privateWorkerSecretResp
 export type PrivateWorkerListResponse = z.infer<typeof privateWorkerListResponseSchema>;
 export type PrivateWorkerAuditEntry = z.infer<typeof privateWorkerAuditEntrySchema>;
 export type PrivateWorkerAuditListResponse = z.infer<typeof privateWorkerAuditListResponseSchema>;
+
+// ─── Admin: Tunnel Settings ─────────────────────────────────────────────────
+// Operator-facing config + verification surface for the cert-manager
+// ClusterIssuer used on per-worker tunnel Ingresses. Default is HTTP-01
+// (no DNS-API requirement). Operators with a DNS-01 ClusterIssuer wired
+// can flip to that for one wildcard cert at scale.
+
+export const tunnelSettingsResponseSchema = z.object({
+  issuer: z.string().describe('cert-manager ClusterIssuer name used on tunnel Ingresses'),
+});
+
+export const updateTunnelSettingsSchema = z.object({
+  issuer: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'issuer must be a valid Kubernetes resource name'),
+});
+
+export const clusterIssuerSummarySchema = z.object({
+  name: z.string(),
+  ready: z.boolean(),
+  type: z.enum(['http01', 'dns01', 'unknown']),
+});
+
+export const tunnelStatusResponseSchema = z.object({
+  anchorCertReady: z.boolean(),
+  anchorCertReason: z.string().nullable(),
+  perWorkerCerts: z.object({
+    issued: z.number().int(),
+    pending: z.number().int(),
+    failed: z.number().int(),
+  }),
+  availableIssuers: z.array(clusterIssuerSummarySchema),
+  currentIssuer: z.string(),
+  currentIssuerReady: z.boolean(),
+  activeWorkerCount: z.number().int(),
+});
+
+export type TunnelSettingsResponse = z.infer<typeof tunnelSettingsResponseSchema>;
+export type UpdateTunnelSettingsInput = z.infer<typeof updateTunnelSettingsSchema>;
+export type ClusterIssuerSummary = z.infer<typeof clusterIssuerSummarySchema>;
+export type TunnelStatusResponse = z.infer<typeof tunnelStatusResponseSchema>;
