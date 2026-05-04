@@ -56,12 +56,14 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod-http01
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # WebSocket support for frp WSS transport. $connection_upgrade is
-    # provided by ingress-nginx's default `map` directive.
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      # WebSocket support for frp WSS transport
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection $connection_upgrade;
+    # WebSocket support: NGINX-ingress passes Upgrade/Connection headers
+    # through automatically when the client sends them and the backend
+    # speaks HTTP/1.1. We just need long timeouts for the long-lived
+    # tunnel control-plane connection. (configuration-snippet was
+    # removed because the cluster's ingress-nginx ConfigMap has
+    # allow-snippet-annotations disabled — the snippet was redundant
+    # anyway.)
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     # Rate-limit anchor catch-all to defend against scanning. The
