@@ -89,9 +89,14 @@ spec:
               fi
 
               echo "SHA256 verified. Extracting..."
-              # tar.xz — busybox's tar supports -J (xz) since 1.27
+              # tar.xz — busybox's tar supports -J (xz) since 1.27.
+              # The release tarball contains a top-level dir named
+              # `stalwart-cli-x86_64-unknown-linux-musl/` with the
+              # `stalwart-cli` binary inside it. The previous mv
+              # `/tmp/stalwart-cli` failed because there's no such
+              # path at the root — fixed by reaching into the dir.
               tar -xJf /tmp/stalwart-cli.tar.xz -C /tmp/
-              mv /tmp/stalwart-cli /shared/stalwart-cli
+              mv /tmp/stalwart-cli-*/stalwart-cli /shared/stalwart-cli
               chmod +x /shared/stalwart-cli
               echo "stalwart-cli ready at /shared/stalwart-cli"
           volumeMounts:
