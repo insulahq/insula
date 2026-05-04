@@ -58,5 +58,7 @@ patches:
   # ── mail namespace ────────────────────────────────────────────────
   - target: { kind: Deployment, name: roundcube, namespace: mail }
     path: affinity-patch.yaml
-  - target: { kind: StatefulSet, name: stalwart-mail, namespace: mail }
+  # Cut 3 (2026-05-04): v015 StatefulSet `stalwart-mail` retired;
+  # v016 ships as a Deployment named `stalwart-mail-v016`.
+  - target: { kind: Deployment, name: stalwart-mail-v016, namespace: mail }
     path: affinity-patch.yaml
