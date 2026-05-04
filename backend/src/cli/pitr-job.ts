@@ -30,6 +30,7 @@
  *   2 = setup error (missing env, DB connect failed)
  */
 
+import { sql } from 'drizzle-orm';
 import { loadConfig } from '../config/index.js';
 import { getDb, closeDb } from '../db/index.js';
 import { createK8sClients } from '../modules/k8s-provisioner/k8s-client.js';
@@ -60,6 +61,24 @@ async function main(): Promise<void> {
     clusterNamespace, clusterName, snapshotName, recoveryTargetTime, actorUserId,
   }));
 
+  // Wait briefly for the DB pool to settle. The Job pod doesn't go
+  // through docker-entrypoint.sh's postgres-wait, so the first query
+  // can race the pg pool's TCP+TLS handshake. A single SELECT 1 round
+  // forces the pool to actually connect before we attempt the lock
+  // read in promotePostgresFromSnapshot.
+  try {
+    await db.execute(sql`SELECT 1`);
+  } catch (err) {
+    const e = err as Error & { cause?: Error };
+    console.error(JSON.stringify({
+      msg: 'pitr-job db-connect failed',
+      error: e.message,
+      cause: e.cause?.message,
+      databaseUrlMasked: config.DATABASE_URL.replace(/:[^@/]+@/, ':***@'),
+    }));
+    process.exit(2);
+  }
+
   try {
     const result = await promotePostgresFromSnapshot(
       { k8s, db },
@@ -69,10 +88,11 @@ async function main(): Promise<void> {
     await closeDb();
     process.exit(0);
   } catch (err) {
-    const e = err as Error & { steps?: readonly PitrStep[]; code?: number };
+    const e = err as Error & { steps?: readonly PitrStep[]; code?: number; cause?: Error };
     console.error(JSON.stringify({
       msg: 'pitr-job failed',
       error: e.message,
+      cause: e.cause?.message,
       code: e.code,
       steps: e.steps,
     }));
