@@ -13,10 +13,15 @@ resources:
   - ../../base/longhorn
   - ../../base/backup
   - dex/
-  # Stalwart mail server + its staging webadmin ingress (stalwart.staging.
-  # example.test). Requires a one-time operator step to generate the
-  # stalwart-secrets — see stalwart/kustomization.yaml comment.
-  - stalwart/
+  # Stalwart 0.16 mail server (Cut 3 cutover, 2026-05-04). Replaces the
+  # 0.15 StatefulSet that lived under stalwart/. The cutover script
+  # scripts/cutover-stalwart-v015-to-v016.sh removes the 0.15 resources
+  # before this overlay applies.
+  #
+  # Requires a one-time operator step to generate stalwart-admin-creds
+  # (the bcrypt-hashed admin password Secret consumed by the Deployment).
+  # See docs/02-operations/STALWART_DEPLOYMENT.md.
+  - stalwart-v016/
   # Cross-namespace NetworkPolicy so Stalwart (mail ns) can reach
   # Postgres (platform ns). Lives at the overlay root, not under
   # stalwart/, because it targets the platform namespace and the

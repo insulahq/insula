@@ -32,6 +32,11 @@ patches:
   - path: ingress-patch.yaml
   - path: backend-patch.yaml
   - path: frontends-grace-patch.yaml
+  # CNPG platform Postgres: longhorn → local-path (DinD has no Longhorn).
+  - path: postgres-cluster-patch.yaml
+    target:
+      kind: Cluster
+      name: postgres
 
 images:
   - name: ghcr.io/insulahq/hosting-platform/backend

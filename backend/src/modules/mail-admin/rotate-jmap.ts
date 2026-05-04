@@ -153,7 +153,7 @@ export async function rotateAdminPasswordViaJmapImpl(
  * the test only exercises `rotateAdminPasswordViaJmapImpl` with injected deps.
  */
 function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
-  const baseUrl = process.env.STALWART_MGMT_URL ?? 'http://stalwart-mail-mgmt.mail.svc.cluster.local:8080';
+  const baseUrl = process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt-v016.mail.svc.cluster.local:8080';
 
   return {
     generatePassword: () =>
