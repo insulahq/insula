@@ -1,3 +1,5 @@
+import { readFileSync as fsReadFileSync } from 'node:fs';
+
 /**
  * Typed JMAP client for Stalwart 0.16+.
  *
@@ -173,7 +175,19 @@ const JMAP_PRINCIPALS = 'urn:ietf:params:jmap:principals';
  * can set process.env overrides after import.
  */
 function adminBasicAuth(env: NodeJS.ProcessEnv = process.env): string {
+  // Resolution chain (first match wins):
+  //   1. Secret volume mount at STALWART_ADMIN_CREDS_DIR (default
+  //      /etc/stalwart-creds). Canonical path: kubelet refreshes the
+  //      mounted file within ~60s of a rotation, so platform-api
+  //      picks up the new password without a pod restart.
+  //   2. STALWART_ADMIN_PASSWORD / STALWART_ADMIN_SECRET_PLAIN /
+  //      ADMIN_SECRET_PLAIN env vars (legacy, dev-mode only).
+  // Cut 3 follow-up (2026-05-04): the file-based path was missing here
+  // even though the doc-comment promised it. Symptom: the staging
+  // /admin/mail/rotate-admin-password 500'd with "STALWART_ADMIN_PASSWORD
+  // not configured" because only the env-var fallback was implemented.
   const password =
+    readPasswordFromCredsDir(env) ??
     env.STALWART_ADMIN_PASSWORD ??
     env.STALWART_ADMIN_SECRET_PLAIN ??
     env.ADMIN_SECRET_PLAIN ??
@@ -182,11 +196,27 @@ function adminBasicAuth(env: NodeJS.ProcessEnv = process.env): string {
   if (!trimmed) {
     throw new Error(
       'Stalwart admin password is not configured '
-      + '(STALWART_ADMIN_PASSWORD / STALWART_ADMIN_SECRET_PLAIN / ADMIN_SECRET_PLAIN)',
+      + '(STALWART_ADMIN_CREDS_DIR/ADMIN_SECRET_PLAIN file or '
+      + 'STALWART_ADMIN_PASSWORD / STALWART_ADMIN_SECRET_PLAIN / ADMIN_SECRET_PLAIN env)',
     );
   }
   const username = (env.STALWART_ADMIN_USER?.trim()) || 'admin';
   return `Basic ${Buffer.from(`${username}:${trimmed}`).toString('base64')}`;
+}
+
+function readPasswordFromCredsDir(env: NodeJS.ProcessEnv): string | undefined {
+  const dir = env.STALWART_ADMIN_CREDS_DIR?.trim();
+  if (!dir) return undefined;
+  try {
+    // Sync read — ~64-byte file, well under 1ms per call. An async
+    // path would require threading awaits through every JMAP call site
+    // for no measurable benefit.
+    const content = fsReadFileSync(`${dir}/ADMIN_SECRET_PLAIN`, 'utf8');
+    const trimmed = content.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export class JmapError extends Error {

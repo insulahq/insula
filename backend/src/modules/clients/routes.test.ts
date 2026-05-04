@@ -21,7 +21,10 @@ vi.mock('./service.js', () => ({
     pagination: { cursor: null, has_more: false, page_size: 1, total_count: 1 },
   }),
   updateClient: vi.fn().mockResolvedValue({ ...mockClient, companyName: 'Updated' }),
-  deleteClient: vi.fn().mockResolvedValue(undefined),
+  // deleteClient now returns { transitionId } so the route can wrap it
+  // in the standard success envelope (the UI uses the id to open the
+  // progress modal without polling-by-since races).
+  deleteClient: vi.fn().mockResolvedValue({ transitionId: 'tx-test-1' }),
 }));
 
 // Mock the sub-users-service so the routes layer can be tested
@@ -226,13 +229,17 @@ describe('client routes', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('DELETE /api/v1/clients/:id should return 204', async () => {
+  it('DELETE /api/v1/clients/:id returns 200 with a transitionId', async () => {
+    // The route used to 204 with an empty body; it now returns
+    // { data: { transitionId } } so the admin panel can open the
+    // progress modal by ID without a polling-by-since race.
     const res = await app.inject({
       method: 'DELETE',
       url: '/api/v1/clients/c1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.transitionId).toBe('tx-test-1');
   });
 
   // ─── Sub-User Routes (Phase 1 regression coverage) ──────────────────────
