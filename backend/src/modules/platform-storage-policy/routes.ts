@@ -5,7 +5,7 @@ import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { updatePlatformStoragePolicySchema } from '@k8s-hosting/api-contracts';
 import { auditLogs, notifications, users } from '../../db/schema.js';
-import { inArray } from 'drizzle-orm';
+import { inArray, eq, and, desc } from 'drizzle-orm';
 import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.js';
 import { readClusterCapacity } from './capacity-reconciler.js';
 
@@ -19,6 +19,94 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/platform-storage-policy
+  // GET /api/v1/admin/platform-storage-policy/history
+  // Recent Apply HA / Apply Local runs with their step-by-step
+  // outcomes — drives the "Recent applies" history list on the
+  // Storage Settings page. Operator can see WHEN a tier change
+  // happened, WHO did it, and which resources patched / failed
+  // (the same per-resource breakdown the bell-icon notification
+  // surfaces, but durable + queryable).
+  app.get('/admin/platform-storage-policy/history', {
+    schema: {
+      tags: ['PlatformStoragePolicy'],
+      summary: 'Recent Apply HA/Local outcomes for the operator history list',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const q = request.query as { limit?: string };
+    const limit = Math.min(Math.max(parseInt(q.limit ?? '20', 10) || 20, 1), 100);
+    const rows = await app.db.select({
+      id: auditLogs.id,
+      actorId: auditLogs.actorId,
+      changes: auditLogs.changes,
+      createdAt: auditLogs.createdAt,
+      httpStatus: auditLogs.httpStatus,
+    }).from(auditLogs)
+      .where(and(eq(auditLogs.resourceType, 'platform_storage_policy'), eq(auditLogs.resourceId, 'singleton')))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit);
+    return success(rows.map((r) => {
+      const changes = r.changes as null | { before?: { systemTier?: string }; after?: { systemTier?: string }; volumes?: Array<{ ok?: boolean }>; deployments?: Array<{ ok?: boolean }>; cnpgClusters?: Array<{ ok?: boolean }> };
+      const volsOk = changes?.volumes?.filter((v) => v.ok).length ?? 0;
+      const volsTotal = changes?.volumes?.length ?? 0;
+      const depsOk = changes?.deployments?.filter((d) => d.ok).length ?? 0;
+      const depsTotal = changes?.deployments?.length ?? 0;
+      const cnpgOk = changes?.cnpgClusters?.filter((c) => c.ok).length ?? 0;
+      const cnpgTotal = changes?.cnpgClusters?.length ?? 0;
+      return {
+        id: r.id,
+        actorId: r.actorId,
+        createdAt: r.createdAt?.toISOString() ?? null,
+        before: changes?.before?.systemTier ?? null,
+        after: changes?.after?.systemTier ?? null,
+        summary: { volumes: { ok: volsOk, total: volsTotal }, deployments: { ok: depsOk, total: depsTotal }, cnpgClusters: { ok: cnpgOk, total: cnpgTotal } },
+        changes,
+      };
+    }));
+  });
+
+  // GET /api/v1/admin/stuck-deprovisions
+  // Lists tenant namespaces stuck in `Terminating` phase for >1 h.
+  // The lifecycle-DELETE cascade normally finishes within minutes,
+  // so anything past 1 h indicates a finalizer / orphan PV / Longhorn
+  // volume blocking termination. Operator-actionable: each row links
+  // to the namespace name + the time it's been Terminating; the
+  // existing /admin/clients/:id/storage/clear-failed route can clear
+  // stuck client storage state, but namespace-finalizer rescue is
+  // manual today (kubectl patch ns ... -p '{"spec":{"finalizers":[]}}').
+  // A future destructive force-delete route should land here.
+  app.get('/admin/stuck-deprovisions', {
+    schema: {
+      tags: ['PlatformStoragePolicy'],
+      summary: 'List tenant namespaces stuck in Terminating phase >1h',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    interface NsItem {
+      metadata?: { name?: string; deletionTimestamp?: string; finalizers?: string[]; labels?: Record<string, string> };
+      status?: { phase?: string };
+    }
+    const nsList = await k8s.core.listNamespace().catch(() => ({ items: [] as NsItem[] }));
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    const stuck = ((nsList.items ?? []) as NsItem[])
+      .filter((ns) => ns.status?.phase === 'Terminating')
+      .filter((ns) => {
+        const t = ns.metadata?.deletionTimestamp;
+        return t ? new Date(t).getTime() < oneHourAgo : false;
+      })
+      .map((ns) => ({
+        name: ns.metadata?.name ?? '',
+        deletionTimestamp: ns.metadata?.deletionTimestamp ?? null,
+        finalizers: ns.metadata?.finalizers ?? [],
+        clientId: ns.metadata?.labels?.client ?? null,
+        stuckForMs: ns.metadata?.deletionTimestamp ? Date.now() - new Date(ns.metadata.deletionTimestamp).getTime() : 0,
+      }))
+      .sort((a, b) => b.stuckForMs - a.stuckForMs);
+    return success(stuck);
+  });
+
   // GET /api/v1/admin/cluster-capacity
   // Per-node Longhorn commitPct + cluster aggregate. Drives the
   // top-of-page capacity banner in admin panel ("Storage at 92% —
