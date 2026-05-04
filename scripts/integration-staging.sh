@@ -639,9 +639,8 @@ scenario_mail() {
   # externalIP (staging3 = 192.0.2.56), NOT every cluster node. Defaulting
   # MAIL_HOST to CONTROL_HOST (staging2) sends traffic to a node where
   # Stalwart isn't listening → ECONNREFUSED on 587/993.
-  # shellcheck disable=SC2034 # Reserved for upcoming SMTP/IMAP probe
-  # additions to this scenario; keep here so the env override
-  # documentation in the comment above stays accurate.
+  # shellcheck disable=SC2034 # Documented env override; surfaced via
+  # the comment block above so the operator knows MAIL_HOST is honored.
   local mail_host="${MAIL_HOST:-192.0.2.56}"
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.staging.example.test}"
@@ -713,6 +712,26 @@ scenario_mail() {
   [[ -n "$mail_edid" ]] || { fail "mail: email-domain enable failed: $(echo "$ed_resp" | head -c 400)"; cleanup_mail; return 1; }
   ok "mail/email-domain: enabled edid=$mail_edid"
 
+  # ── Step 4b: assert Stalwart-side x:Domain exists ───────────────────
+  # Cut 3 (2026-05-04): the platform-api → JMAP path now uses Stalwart's
+  # `x:Domain/*` extension namespace. A successful enable should have
+  # created the domain on the Stalwart side; verify by querying.
+  local x_domain_count
+  x_domain_count=$(ssh_cp "kubectl run mail-jmap-probe-${stamp} -n mail \
+      --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
+      curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
+      -o jsonpath='{.data.adminPassword}' | base64 -d) \
+      -X POST http://stalwart-mgmt-v016:8080/jmap \
+      -H Content-Type:application/json \
+      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/query\",{\"accountId\":\"d333333\",\"filter\":{\"name\":\"$test_domain\"}},\"r0\"]]}'" 2>&1 \
+    | python3 -c "import json,sys; raw=sys.stdin.read(); idx=raw.find('{\"methodResponses'); d=json.loads(raw[idx:]) if idx>=0 else {}; print(len(d.get('methodResponses',[[None,{}]])[0][1].get('ids',[])))" 2>/dev/null \
+    || echo "0")
+  if [[ "${x_domain_count:-0}" -ge 1 ]]; then
+    ok "mail/jmap: x:Domain/query for $test_domain returned $x_domain_count match(es)"
+  else
+    fail "mail/jmap: x:Domain/query for $test_domain returned 0 matches — Stalwart-side domain not provisioned"
+  fi
+
   # ── Step 5: verify DKIM key generated ───────────────────────────
   # Route is /dkim/keys (not /dkim) — see backend/src/modules/email-dkim/routes.ts
   # DKIM endpoints take :domainId (parent domain.id), NOT the email_domain
@@ -753,6 +772,23 @@ scenario_mail() {
     fail "mail/mailbox: never became active"
     cleanup_mail; return 1
   }
+
+  # ── Step 6b: assert Stalwart-side x:Account exists for the mailbox ──
+  local x_account_count
+  x_account_count=$(ssh_cp "kubectl run mail-jmap-acc-${stamp} -n mail \
+      --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
+      curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
+      -o jsonpath='{.data.adminPassword}' | base64 -d) \
+      -X POST http://stalwart-mgmt-v016:8080/jmap \
+      -H Content-Type:application/json \
+      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Account/query\",{\"accountId\":\"d333333\",\"filter\":{\"name\":\"$mb_local\"}},\"r0\"]]}'" 2>&1 \
+    | python3 -c "import json,sys; raw=sys.stdin.read(); idx=raw.find('{\"methodResponses'); d=json.loads(raw[idx:]) if idx>=0 else {}; print(len(d.get('methodResponses',[[None,{}]])[0][1].get('ids',[])))" 2>/dev/null \
+    || echo "0")
+  if [[ "${x_account_count:-0}" -ge 1 ]]; then
+    ok "mail/jmap: x:Account/query for $mb_local returned $x_account_count match(es)"
+  else
+    fail "mail/jmap: x:Account/query for $mb_local returned 0 matches — Stalwart-side account not provisioned"
+  fi
 
   # ── Step 7 + 8 setup: tester pod inside the cluster ─────────────
   # Run SMTP and IMAP probes from a pod inside the cluster so the source
@@ -795,7 +831,9 @@ scenario_mail() {
   local subject="E2E-$stamp"
   # SMTP target: in-cluster Service DNS name. This is the real path tenant
   # apps use. Port 587 = STARTTLS submission.
-  local smtp_target="stalwart-mail.mail.svc.cluster.local"
+  # Cut 3 (2026-05-04): v016 ships as `stalwart-mail-v016` Service.
+  # The legacy `stalwart-mail` was retired during the cutover.
+  local smtp_target="stalwart-mail-v016.mail.svc.cluster.local"
   local smtp_result
 
   if [[ "$tester_spawned" == "1" ]]; then
