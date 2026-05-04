@@ -17,7 +17,7 @@
  */
 
 import { eq, inArray } from 'drizzle-orm';
-import { ingressRoutes, deployments, domains, catalogEntries } from '../../db/schema.js';
+import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
@@ -177,10 +177,15 @@ export async function reconcileIngress(
     return;
   }
 
-  // Get all ingress routes with assigned deployments for this client's domains
+  // Get all ingress routes with an assigned target (deployment OR
+  // private_worker) for this client's domains. Migration 0076 added
+  // the private_worker_id polymorphic target column.
   const allRoutes = await db.select().from(ingressRoutes);
   const clientRoutes = allRoutes.filter(
-    r => domainIds.includes(r.domainId) && r.deploymentId && r.status === 'active',
+    r =>
+      domainIds.includes(r.domainId)
+      && (r.deploymentId || r.privateWorkerId)
+      && r.status === 'active',
   );
 
   // Auto-migrate: create ingress_routes for legacy domains with deploymentId
@@ -209,7 +214,7 @@ export async function reconcileIngress(
   const updatedRoutes = updatedAllRoutes.filter(
     r =>
       domainIds.includes(r.domainId)
-      && r.deploymentId
+      && (r.deploymentId || r.privateWorkerId)
       && r.status === 'active'
       && !suppressedDomainIds.has(r.domainId),
   );
@@ -257,6 +262,24 @@ export async function reconcileIngress(
     }
   }
 
+  // Build private-worker → (service, port) lookup. Each active worker has a
+  // per-worker ClusterIP Service `pw-<id>` in the client's namespace
+  // (created by private-workers/reconciler.ts) backed by the frps pod
+  // bound to the worker's exposed_port. The Ingress backend is that
+  // Service — same shape as a deployment-targeted route.
+  const privateWorkerBackends = new Map<string, { serviceName: string; port: number }>();
+  const clientPrivateWorkers = await db
+    .select()
+    .from(privateWorkers)
+    .where(eq(privateWorkers.clientId, clientId));
+  for (const pw of clientPrivateWorkers) {
+    if (pw.status !== 'active' && pw.status !== 'pending') continue;
+    privateWorkerBackends.set(pw.id, {
+      serviceName: `pw-${pw.id}`,
+      port: pw.exposedPort,
+    });
+  }
+
   // Build rules from ingress_routes (single source of truth), tracking
   // each rule's (hostname, domainId) so we can resolve TLS secret names
   // below via the certificates module.
@@ -277,8 +300,15 @@ export async function reconcileIngress(
 
   const rulesWithDomain: RuleWithDomain[] = [];
   for (const route of updatedRoutes) {
-    const backend = backendMap.get(route.deploymentId!);
-    if (!backend) continue; // Not ingressable or deployment missing — skip.
+    // Resolve the backend Service from whichever target the route declares.
+    // Migration 0076's CHECK constraint guarantees exactly one of
+    // (deploymentId, privateWorkerId) is non-null.
+    const backend = route.privateWorkerId
+      ? privateWorkerBackends.get(route.privateWorkerId)
+      : route.deploymentId
+        ? backendMap.get(route.deploymentId)
+        : undefined;
+    if (!backend) continue; // Not ingressable / target missing — skip.
 
     const primaryRule = {
       host: route.hostname,

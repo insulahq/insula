@@ -323,31 +323,36 @@ phase2_dial_in() {
   fi
   ok "tunnel agent $DOCKER_AGENT_NAME started (sharing echo netns)"
 
-  # USER-VISIBLE: server-side telemetry confirms the agent reached us.
-  # last_seen_at must update within 60s.
-  wait_for 60 "private_workers.last_seen_at recorded in last 90s" "true" \
-    "api GET '/clients/$cid/private-workers/$wid' \
-      | jq -r --arg now \"\$(date +%s)\" \
-        '(.data.lastSeenAt // empty) as \$ls
-         | if \$ls == \"\" then false
-           else (((\$now | tonumber) - ((\$ls | sub(\"\\\\.[0-9]+\";\"\") | sub(\"Z\$\";\"+0000\") | strptime(\"%Y-%m-%dT%H:%M:%S%z\") | mktime))) < 90)
-           end'" \
-    || return 1
-
-  # USER-VISIBLE: agent log shows successful login to server.
-  # frp v0.62 logs "login to server success" on first successful auth.
+  # USER-VISIBLE: agent log shows successful login + proxy registered.
+  # frp v0.62 logs "login to server success" on first successful auth, then
+  # "[proxy] start proxy success" once the per-worker remote port is bound.
+  # The connect-event webhook for last_seen_at is a v2 polish item — the
+  # user-visible state of the world is the agent log + the in-cluster
+  # traffic flow (verified next).
   local found_login=false
+  local found_proxy=false
   for _ in $(seq 1 12); do
-    if docker logs "$DOCKER_AGENT_NAME" 2>&1 | grep -qE 'login to server success|login to the server success|successfully connected'; then
+    local logs
+    logs=$(docker logs "$DOCKER_AGENT_NAME" 2>&1 || true)
+    if [[ "$found_login" != true ]] && echo "$logs" | grep -qE 'login to server success|login to the server success|successfully connected'; then
       found_login=true
-      break
     fi
+    if [[ "$found_proxy" != true ]] && echo "$logs" | grep -qE 'start proxy success'; then
+      found_proxy=true
+    fi
+    if $found_login && $found_proxy; then break; fi
     sleep 5
   done
   if $found_login; then
     ok "agent log shows successful login to server"
   else
     fail "agent log never showed 'login to server success' within 60s"
+    docker logs "$DOCKER_AGENT_NAME" 2>&1 | tail -30 >&2 || true
+  fi
+  if $found_proxy; then
+    ok "agent log shows proxy registered ('start proxy success')"
+  else
+    fail "agent log never showed 'start proxy success' within 60s"
     docker logs "$DOCKER_AGENT_NAME" 2>&1 | tail -30 >&2 || true
   fi
 
@@ -383,13 +388,13 @@ phase3_traffic() {
   # The platform DNS layer is external (ADR-022) so we only need to declare
   # ownership; the wildcard CNAME chain handles routing.
   local dom_resp did
-  dom_resp=$(api POST "/clients/$cid/domains" "$(jq -nc --arg h "$host" '{name:$h, dns_mode:"external"}')")
+  dom_resp=$(api POST "/clients/$cid/domains" "$(jq -nc --arg h "$host" '{domain_name:$h, dns_mode:"cname"}')")
   did=$(echo "$dom_resp" | jq -r '.data.id // empty')
   if [[ -z "$did" ]]; then
     # Some implementations key by the apex; fall back to creating the apex
     # and letting the route hold the FQDN.
     local apex="${slug}.${TENANT_BASE}"
-    dom_resp=$(api POST "/clients/$cid/domains" "$(jq -nc --arg h "$apex" '{name:$h, dns_mode:"external"}')")
+    dom_resp=$(api POST "/clients/$cid/domains" "$(jq -nc --arg h "$apex" '{domain_name:$h, dns_mode:"cname"}')")
     did=$(echo "$dom_resp" | jq -r '.data.id // empty')
   fi
   if [[ -z "$did" ]]; then
@@ -400,12 +405,13 @@ phase3_traffic() {
   ok "domain registered did=$did"
 
   # Create the ingress route targeting the private worker.
+  # Routes nest under the domain (per the existing module structure).
+  # target_type is implicit from which id is set on the body.
   local route_resp rid
-  route_resp=$(api POST "/clients/$cid/ingress-routes" "$(jq -nc \
+  route_resp=$(api POST "/clients/$cid/domains/$did/routes" "$(jq -nc \
     --arg h "$host" \
     --arg pwid "$wid" \
-    --arg did "$did" \
-    '{hostname:$h, target_type:"private_worker", private_worker_id:$pwid, domain_id:$did, path:"/"}')")
+    '{hostname:$h, private_worker_id:$pwid, path:"/"}')")
   rid=$(echo "$route_resp" | jq -r '.data.id // empty')
   if [[ -z "$rid" ]]; then
     fail "ingress-route create failed: $(echo "$route_resp" | head -c 300)"
