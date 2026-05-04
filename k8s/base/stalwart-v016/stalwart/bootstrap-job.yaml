@@ -72,14 +72,15 @@ spec:
               set -eu
               CLI_VERSION="v1.0.4"
               # NOTE: $$ escapes Flux postBuild envsubst so the rendered
-              # YAML still carries `${...}` for sh to expand at runtime.
+              # YAML still carries shell-style variable references for
+              # sh to expand at runtime.
               CLI_URL="https://github.com/stalwartlabs/cli/releases/download/$${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
               CLI_SHA256="01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa"
 
               echo "Downloading stalwart-cli $${CLI_VERSION}..."
               wget -q -O /tmp/stalwart-cli.tar.xz "$${CLI_URL}"
 
-              actual=$(sha256sum /tmp/stalwart-cli.tar.xz | awk '{print $1}')
+              actual=$$(sha256sum /tmp/stalwart-cli.tar.xz | awk '{print $$1}')
               if [ "$${actual}" != "$${CLI_SHA256}" ]; then
                 echo "ERROR: stalwart-cli SHA256 mismatch" >&2
                 echo "  expected: $${CLI_SHA256}" >&2
@@ -108,10 +109,11 @@ spec:
 
               # The rendered plan (with passwords/DKIM substituted) is
               # mounted from stalwart-bootstrap-plan Secret at /plan/plan.json.
-              # Fail fast if it's the unrendered template (contains '${').
-              # The $${ escape stops Flux postBuild from trying to interpret
-              # the literal as a variable reference at apply time.
-              if grep -q '\$${' /plan/plan.json 2>/dev/null; then
+              # Fail fast if it's the unrendered template — guard by
+              # looking for known template variable NAMES rather than
+              # the literal dollar-brace syntax (Flux postBuild envsubst
+              # would otherwise try to interpret it on apply).
+              if grep -q 'STALWART_HOSTNAME\|STALWART_ADMIN_PASSWORD' /plan/plan.json 2>/dev/null; then
                 echo "ERROR: bootstrap plan contains unsubstituted variables." >&2
                 echo "       bootstrap.sh must render the plan before unsuspending this Job." >&2
                 exit 1
