@@ -50,10 +50,15 @@ spec:
       app: postgres
       app.kubernetes.io/part-of: hosting-platform
 
-  # Floor for fresh clusters. The kustomize.toolkit.fluxcd.io/ssa
-  # annotation above tells Flux to NOT force this field — Apply HA
-  # patches it to 3 imperatively via the reconciler and that wins.
-  instances: 1
+  # spec.instances is INTENTIONALLY OMITTED. CNPG defaults to 1 on
+  # first init. Apply HA patches this imperatively via
+  # patchCnpgClusters() and the patch sticks because Flux's merge-
+  # patch (per the ssa: merge annotation) only re-asserts fields
+  # PRESENT in the manifest. Setting `instances: 1` here would mean
+  # every Flux reconcile (every 60s) reverts Apply HA's patch to 1,
+  # producing the oscillation observed on 2026-05-04
+  # (mail-pg-2 created → 2 min later "Scaling down — removing
+  # mail-pg-2" → repeat forever).
 
   # Pin to PG 17. PG18 changed the expected mount layout (single
   # mount at /var/lib/postgresql with PGDATA in subdir) — vanilla
