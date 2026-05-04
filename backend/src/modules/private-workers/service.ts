@@ -44,21 +44,40 @@ function getAgentImage(): string {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function getTunnelBaseUrl(): string {
-  // wss://tunnels.${DOMAIN} — operators set this from TUNNEL_BASE_URL
-  // (preferred, populated by the overlay) or it falls back to a dev
-  // default derived from PLATFORM_BASE_DOMAIN. The trailing /c/<slug>/
-  // path is appended at token-mint time so the agent receives a
-  // fully-qualified server_url.
+function getTunnelBaseDomain(): string {
+  // Returns the apex of the per-worker subdomain (e.g. `tunnels.example.com`).
+  // Each worker gets its own FQDN `<slug>.tunnels.example.com` because frp
+  // v0.62 hardcodes its WebSocket path — we cannot route by URL path so
+  // each worker must have a distinct hostname. cert-manager issues a
+  // per-FQDN HTTP-01 cert at reconcile time.
+  //
+  // Priority: explicit TUNNEL_BASE_URL env (e.g. wss://tunnels.example.com)
+  //  → strip wss:// and extract the host. Otherwise derive from
+  // PLATFORM_BASE_DOMAIN as `tunnels.${PLATFORM_BASE_DOMAIN}`.
   const explicit = process.env.TUNNEL_BASE_URL;
   if (explicit && explicit.length > 0) {
-    return explicit.replace(/\/+$/, '');
+    const stripped = explicit
+      .replace(/^wss?:\/\//, '')
+      .replace(/\/+$/, '');
+    return stripped;
   }
   const platformDomain =
     process.env.PLATFORM_BASE_DOMAIN
     ?? process.env.INGRESS_BASE_DOMAIN
     ?? 'k8s-platform.test';
-  return `wss://tunnels.${platformDomain}`;
+  return `tunnels.${platformDomain}`;
+}
+
+function getTunnelScheme(): string {
+  // Operator-overridable for local dev. Default WSS. Local dev sets
+  // TUNNEL_BASE_URL=ws://... (no TLS) so we honour that.
+  const explicit = process.env.TUNNEL_BASE_URL;
+  if (explicit && explicit.startsWith('ws://')) return 'ws';
+  return 'wss';
+}
+
+function buildWorkerServerUrl(slug: string): string {
+  return `${getTunnelScheme()}://${slug}.${getTunnelBaseDomain()}/`;
 }
 
 export function slugify(name: string): string {
@@ -168,7 +187,7 @@ function buildTokenBlob(
   const blob: TokenBlobV1 = {
     v: 1,
     slug,
-    server_url: `${getTunnelBaseUrl()}/c/${slug}/`,
+    server_url: buildWorkerServerUrl(slug),
     secret,
     expose: [
       {
@@ -215,7 +234,7 @@ function mapPrivateWorkerToResponse(row: PrivateWorker): PrivateWorkerResponse {
     exposedPort: row.exposedPort,
     description: row.description ?? null,
     serviceName: `pw-${row.id}`,
-    tunnelUrl: `${getTunnelBaseUrl()}/c/${row.slug}/`,
+    tunnelUrl: buildWorkerServerUrl(row.slug),
     lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
     lastUsedIp: row.lastUsedIp ?? null,
     bytesIn: row.bytesIn,
