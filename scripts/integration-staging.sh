@@ -1181,15 +1181,15 @@ print("STRESS_SENT_OK=" + str(ok_count) + "/" + str(n), flush=True)
 sys.exit(0 if ok_count == n else 1)
 PY
 
-    # Materialize the script as a ConfigMap, mount it via kubectl cp.
-    # `kubectl cp` lands files in a running container without a roll
-    # (avoids needing to recreate the pod with a ConfigMap mount).
-    if ! ssh_cp "kubectl cp $stress_send_script default/${tester_pod}:/tmp/storm-send.py" >/dev/null 2>&1; then
-      # Some kubectl versions error on cp into a tester pod when there's
-      # no `tar` in the target image. python:3.12-alpine has tar. If
-      # cp fails, fall through to a file-on-disk + kubectl exec ... <
-      # path approach; for now treat as fatal so the failure is loud.
-      fail "mail/stress: kubectl cp of send script failed — pod missing tar?"
+    # Stream the script via kubectl-exec-stdin → `tee` inside the pod.
+    # `kubectl cp` would need the source file on the SSH'd-into control
+    # host (CONTROL_HOST), not on the harness host where the file was
+    # just created. Stdin-pipe avoids the round-trip: cat $local | ssh
+    # CONTROL_HOST kubectl exec -i ... -- tee /path/in/pod flows local
+    # → control → pod in one stream. -i is required so kubectl forwards
+    # stdin to the container.
+    if ! cat "$stress_send_script" | ssh_cp "kubectl exec -i -n default ${tester_pod} -- tee /tmp/storm-send.py" >/dev/null 2>&1; then
+      fail "mail/stress: stdin-pipe of send script failed"
       cleanup_tester_pod; cleanup_mail; return 1
     fi
     rm -f "$stress_send_script"
@@ -1274,8 +1274,9 @@ with open("/tmp/stress-recv.out", "w") as f:
 print("STRESS_RECV_FAIL: only " + str(found) + "/" + str(expected) + " after 60s; last_err=" + str(last_err), file=sys.stderr, flush=True)
 sys.exit(1)
 PY
-    if ! ssh_cp "kubectl cp $stress_recv_script default/${tester_pod}:/tmp/storm-recv.py" >/dev/null 2>&1; then
-      fail "mail/stress: kubectl cp of recv script failed"
+    # Same stdin-pipe pattern as the send script — see comment above.
+    if ! cat "$stress_recv_script" | ssh_cp "kubectl exec -i -n default ${tester_pod} -- tee /tmp/storm-recv.py" >/dev/null 2>&1; then
+      fail "mail/stress: stdin-pipe of recv script failed"
       cleanup_tester_pod; cleanup_mail; return 1
     fi
     rm -f "$stress_recv_script"
