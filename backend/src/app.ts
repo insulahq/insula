@@ -115,6 +115,7 @@ import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startRetentionScheduler } from './modules/backups-v2/retention.js';
+import { startBackupScheduleTick } from './modules/backups-v2/schedule.js';
 // M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
@@ -557,6 +558,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => clearInterval(retentionTimer));
       } catch (err) {
         app.log.warn({ err }, 'tenant-backup retention: scheduler startup skipped');
+      }
+
+      // Tenant Backup Tier-1 scheduler — fans out scheduled bundles
+      // for clients whose client_backup_schedules.last_run_at is
+      // older than the configured frequency (daily/weekly/monthly).
+      // Cross-replica CAS via UPDATE ... RETURNING serialises ticks.
+      try {
+        const scheduleTimer = startBackupScheduleTick(app);
+        app.addHook('onClose', () => clearInterval(scheduleTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'tenant-backup schedule: scheduler startup skipped');
       }
 
       // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM
