@@ -8,11 +8,12 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Calendar, Loader2, AlertCircle, CheckCircle2, Trash2 } from 'lucide-react';
+import { Calendar, Loader2, AlertCircle, CheckCircle2, Trash2, Play } from 'lucide-react';
 import {
   useClientBackupSchedule,
   useUpdateClientBackupSchedule,
   useDeleteClientBackupSchedule,
+  useRunBackupScheduleNow,
 } from '@/hooks/use-backup-schedule';
 
 interface Props { clientId: string }
@@ -21,6 +22,7 @@ export function BackupScheduleEditor({ clientId }: Props) {
   const q = useClientBackupSchedule(clientId);
   const upd = useUpdateClientBackupSchedule(clientId);
   const del = useDeleteClientBackupSchedule(clientId);
+  const runNow = useRunBackupScheduleNow(clientId);
 
   const [enabled, setEnabled] = useState(false);
   const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
@@ -113,7 +115,7 @@ export function BackupScheduleEditor({ clientId }: Props) {
               <CheckCircle2 className="h-4 w-4" /> Saved
             </div>
           )}
-          <div className="flex gap-2 pt-1">
+          <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="button"
               onClick={onSave}
@@ -123,6 +125,23 @@ export function BackupScheduleEditor({ clientId }: Props) {
               {upd.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               Save schedule
             </button>
+            {q.data?.data?.enabled && (
+              <button
+                type="button"
+                onClick={() => runNow.mutate()}
+                disabled={runNow.isPending}
+                className="flex items-center gap-1 rounded-md border border-brand-500 bg-white px-3 py-1.5 text-sm font-medium text-brand-700 hover:bg-brand-50 disabled:opacity-50 dark:bg-gray-800 dark:text-brand-300 dark:hover:bg-brand-950"
+                title="Force the next scheduler tick (within 5 min) to fire this client's bundle"
+              >
+                {runNow.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                Run now
+              </button>
+            )}
+            {runNow.isSuccess && (
+              <span className="self-center text-xs text-green-700 dark:text-green-300">
+                Scheduled for next tick
+              </span>
+            )}
             {q.data?.data && (
               <button
                 type="button"

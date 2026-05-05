@@ -54,14 +54,42 @@ export const systemBackupRunSchema = z.object({
 });
 export type SystemBackupRun = z.infer<typeof systemBackupRunSchema>;
 
+// RFC 1123 DNS label: lowercase alnum with hyphens, 1-63 chars, no
+// leading/trailing hyphen. Used for k8s namespace + CNPG cluster name.
+const dnsLabelSchema = z
+  .string()
+  .min(1)
+  .max(63)
+  .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, 'must be a lowercase DNS label (a-z, 0-9, hyphens)');
+
+// Postgres unquoted identifier: letter or underscore, then alnum or
+// underscore. Avoids needing to escape the value when it appears as a
+// `-d <db>` argument to pg_dump. Examples: hosting_platform, app, mail.
+const pgIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(63)
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_]*$/,
+    'must be an unquoted Postgres identifier (a-z, A-Z, 0-9, underscore; cannot start with a digit)',
+  );
+
 export const pgDumpRequestSchema = z.object({
-  sourceNamespace: z.string().min(1).max(63),
-  sourceCluster: z.string().min(1).max(63),
-  sourceDatabase: z.string().min(1).max(63),
+  sourceNamespace: dnsLabelSchema,
+  sourceCluster: dnsLabelSchema,
+  sourceDatabase: pgIdentifierSchema,
   targetConfigId: z.string().uuid(),
   reason: z.string().max(500).optional(),
 });
 export type PgDumpRequest = z.infer<typeof pgDumpRequestSchema>;
+
+// Query params for GET /pg-dump/runs.
+export const pgDumpListQuerySchema = z.object({
+  namespace: dnsLabelSchema.optional(),
+  cluster: dnsLabelSchema.optional(),
+  limit: z.string().regex(/^\d+$/, 'must be a positive integer').optional(),
+});
+export type PgDumpListQuery = z.infer<typeof pgDumpListQuerySchema>;
 
 export const pgDumpResponseSchema = z.object({
   runId: z.string().uuid(),

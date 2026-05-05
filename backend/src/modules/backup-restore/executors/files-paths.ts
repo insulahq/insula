@@ -210,9 +210,17 @@ function buildScript(opts: { downloadUrl: string; pathArgs: 'all' | readonly str
   // separate path argument — this is the safe way to pass user-
   // controlled path lists, since tar will not interpret leading `--`
   // as options when reading from a file.
+  //
+  // The bundle archive was produced by `find .` (capture's files-
+  // component build) so every entry path is prefixed with `./`.
+  // We normalise selectors to the same `./X` shape so tar's
+  // --files-from lookup matches the archive entry exactly. Without
+  // this, GNU tar exits 2 with "not found in archive" even when the
+  // file is present under a different path-prefix shape.
+  const normalize = (p: string): string => `./${p.replace(/^\.\//, '')}`;
   const linesScript = opts.pathArgs === 'all'
     ? '> /tmp/paths.lst' // empty paths file → tar -x without --files-from below
-    : opts.pathArgs.map((p) => `printf '%s\\n' '${p.replace(/'/g, "'\\''")}' >> /tmp/paths.lst`).join('\n');
+    : opts.pathArgs.map(normalize).map((p) => `printf '%s\\n' '${p.replace(/'/g, "'\\''")}' >> /tmp/paths.lst`).join('\n');
   const tarExtract = opts.pathArgs === 'all'
     ? 'tar -xzf /tmp/archive.tar.gz -C /target'
     : 'tar -xzf /tmp/archive.tar.gz -C /target --files-from=/tmp/paths.lst';
