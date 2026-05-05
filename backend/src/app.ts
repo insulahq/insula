@@ -73,6 +73,7 @@ import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { postgresRestoreRoutes } from './modules/postgres-restore/routes.js';
 import { isPostgresRestoreInProgress, isPostgresRestoreInProgressClusterWide } from './modules/postgres-restore/service.js';
 import { systemBackupRoutes } from './modules/system-backup/routes.js';
+import { systemBackupDownloadRoutes } from './modules/system-backup/download-route.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -390,6 +391,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(postgresRestoreRoutes, { prefix: '/api/v1' });
   await app.register(systemBackupRoutes, { prefix: '/api/v1' });
+  await app.register(systemBackupDownloadRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
