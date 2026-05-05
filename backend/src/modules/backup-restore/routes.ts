@@ -282,6 +282,26 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
       })
       .where(eq(restoreJobs.id, cartId));
 
+    // Notify platform operators on cart failure so a stuck restore
+    // is page-able. Fire-and-forget. We don't notify on success —
+    // the operator triggered the cart and is already watching.
+    if (finalStatus === 'failed' && firstFailureMsg) {
+      try {
+        const { resolveRecipients } = await import('../notifications/recipients.js');
+        const { notifyUsers } = await import('../notifications/service.js');
+        const recipients = await resolveRecipients(app.db, { kind: 'admin' });
+        await notifyUsers(app.db, recipients, {
+          type: 'error',
+          title: 'Restore cart failed',
+          message: `Restore cart ${cartId} for client ${job.clientId} stopped at a failed item. ${firstFailureMsg}. Re-invoke /execute to retry from the failed item, or roll back via the cart's pre-restore snapshot.`,
+          resourceType: 'restore-cart',
+          resourceId: cartId,
+        });
+      } catch (notifyErr) {
+        app.log.warn({ err: notifyErr, cartId }, 'tenant-backup-restore: failure-notification dispatch failed');
+      }
+    }
+
     const [refreshed] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, cartId)).limit(1);
     const refreshedItems = await app.db.select().from(restoreItems)
       .where(eq(restoreItems.restoreJobId, cartId))
