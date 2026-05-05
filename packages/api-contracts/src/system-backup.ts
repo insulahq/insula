@@ -55,20 +55,29 @@ export const systemBackupRunSchema = z.object({
 export type SystemBackupRun = z.infer<typeof systemBackupRunSchema>;
 
 // RFC 1123 DNS label: lowercase alnum with hyphens, 1-63 chars, no
-// leading/trailing hyphen. Matches what k8s accepts for namespace,
-// CNPG cluster name, and Postgres database name (DNS-label is a safe
-// over-approximation for SQL identifiers and avoids surprising
-// quoting in pg_dump args).
+// leading/trailing hyphen. Used for k8s namespace + CNPG cluster name.
 const dnsLabelSchema = z
   .string()
   .min(1)
   .max(63)
   .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, 'must be a lowercase DNS label (a-z, 0-9, hyphens)');
 
+// Postgres unquoted identifier: letter or underscore, then alnum or
+// underscore. Avoids needing to escape the value when it appears as a
+// `-d <db>` argument to pg_dump. Examples: hosting_platform, app, mail.
+const pgIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(63)
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_]*$/,
+    'must be an unquoted Postgres identifier (a-z, A-Z, 0-9, underscore; cannot start with a digit)',
+  );
+
 export const pgDumpRequestSchema = z.object({
   sourceNamespace: dnsLabelSchema,
   sourceCluster: dnsLabelSchema,
-  sourceDatabase: dnsLabelSchema,
+  sourceDatabase: pgIdentifierSchema,
   targetConfigId: z.string().uuid(),
   reason: z.string().max(500).optional(),
 });
