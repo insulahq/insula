@@ -211,27 +211,19 @@ function buildScript(opts: { downloadUrl: string; pathArgs: 'all' | readonly str
   // controlled path lists, since tar will not interpret leading `--`
   // as options when reading from a file.
   //
-  // The bundle archive was produced by `find .` (capture's
-  // files-component build) so every entry path is prefixed with
-  // `./`. The bundle-browse endpoint emits these paths verbatim.
-  // Operators may submit selectors with OR without the leading `./`
-  // (e.g. picking from the UI vs typed by hand). We normalise here
-  // by writing BOTH forms — tar matches whichever exists in the
-  // archive and silently skips the other. Without this, GNU tar
-  // throws "Not found in archive" + non-zero exit on the variant
-  // that doesn't match.
-  const normalize = (p: string): string[] => {
-    const stripped = p.replace(/^\.\//, '');
-    return [stripped, `./${stripped}`];
-  };
+  // The bundle archive was produced by `find .` (capture's files-
+  // component build) so every entry path is prefixed with `./`.
+  // We normalise selectors to the same `./X` shape so tar's
+  // --files-from lookup matches the archive entry exactly. Without
+  // this, GNU tar exits 2 with "not found in archive" even when the
+  // file is present under a different path-prefix shape.
+  const normalize = (p: string): string => `./${p.replace(/^\.\//, '')}`;
   const linesScript = opts.pathArgs === 'all'
     ? '> /tmp/paths.lst' // empty paths file → tar -x without --files-from below
-    : opts.pathArgs.flatMap(normalize).map((p) => `printf '%s\\n' '${p.replace(/'/g, "'\\''")}' >> /tmp/paths.lst`).join('\n');
-  // --ignore-failed-read so the dual-form normalisation above (one of
-  // each pair WILL miss) doesn't fail the whole extract.
+    : opts.pathArgs.map(normalize).map((p) => `printf '%s\\n' '${p.replace(/'/g, "'\\''")}' >> /tmp/paths.lst`).join('\n');
   const tarExtract = opts.pathArgs === 'all'
     ? 'tar -xzf /tmp/archive.tar.gz -C /target'
-    : 'tar -xzf /tmp/archive.tar.gz -C /target --files-from=/tmp/paths.lst --ignore-failed-read';
+    : 'tar -xzf /tmp/archive.tar.gz -C /target --files-from=/tmp/paths.lst';
   return [
     'set -e',
     'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl install failed"; exit 1; }',
