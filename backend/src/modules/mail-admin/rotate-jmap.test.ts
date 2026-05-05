@@ -130,11 +130,22 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     expect(deps.updateAdminPassword).toHaveBeenCalled();
   });
 
-  it('throws when credential verification times out', async () => {
+  it('returns success on verify timeout — Secret was rotated, Stalwart pod is rolling', async () => {
+    // Reloader-driven Stalwart pod restart can take 30-120s after a
+    // Secret patch. Treating a verify timeout as a 500 makes the
+    // operator click "rotate" again, double-rotating and worsening
+    // the drift. The Secret IS rotated; the rotate handler returns
+    // the new cleartext for the operator to capture.
     const deps = makeDeps({ verifyNewPassword: vi.fn().mockResolvedValue(false) });
 
-    await expect(
-      rotateAdminPasswordViaJmapImpl({ ...BASE_OPTS, verifyTimeoutMs: 50 }, deps),
-    ).rejects.toThrow(/credential verification timed out/i);
+    const result = await rotateAdminPasswordViaJmapImpl(
+      { ...BASE_OPTS, verifyTimeoutMs: 50 },
+      deps,
+    );
+    expect(result.password).toBe('new-secret-password');
+    expect(result.username).toBe('admin');
+    // The new cleartext is returned so the operator can copy + paste
+    // even when verify timed out — Stalwart will pick it up shortly.
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
   });
 });
