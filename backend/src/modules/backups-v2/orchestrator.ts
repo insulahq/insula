@@ -222,18 +222,49 @@ export async function runBundle(
     }
   }
 
-  // ── mailboxes (deferred to Phase 3) ─────────────────────────────
-  // The orchestrator advertises the component as `skipped` when
-  // requested, so the meta.json correctly reflects what was captured.
+  // ── mailboxes ──────────────────────────────────────────────────
+  let mailboxesResult: import('./components/mailboxes.js').MailboxesComponentResult | undefined;
   if (input.components.mailboxes) {
-    await deps.db.insert(backupComponents).values({
-      id: randomUUID(),
-      backupJobId: bundleId,
-      component: 'mailboxes',
-      artifactName: '__pending__',
-      status: 'skipped',
-      lastError: 'Phase 3 of backup roadmap — mailbox export not yet wired.',
-    } satisfies NewBackupComponent);
+    if (!deps.k8s) {
+      errors.push('mailboxes: kubernetes client unavailable');
+      await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'kubernetes client unavailable');
+    } else if (!deps.platformApiUrl) {
+      errors.push('mailboxes: platformApiUrl required for HTTP-upload pattern');
+      await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'platformApiUrl missing');
+    } else {
+      // We don't know the artifactName up-front (one per address).
+      // Insert a parent row with __pending__ which we update after the
+      // capture completes; per-mailbox detail rows can be added in
+      // Phase 4 if needed.
+      const componentRowId = await insertComponentRow(deps.db, bundleId, 'mailboxes', '__pending__');
+      try {
+        const { captureMailboxesComponent } = await import('./components/mailboxes.js');
+        mailboxesResult = await captureMailboxesComponent({
+          db: deps.db,
+          k8s: deps.k8s,
+          clientId: input.clientId,
+          backupId: bundleId,
+          store: deps.store,
+          handle,
+          platformApiUrl: deps.platformApiUrl,
+          secretsKeyHex: deps.secretsKeyHex,
+        });
+        await markComponentDone(
+          deps.db,
+          componentRowId,
+          { sizeBytes: mailboxesResult.sizeBytes, sha256: null },
+        );
+        componentInfos.mailboxes = {
+          sizeBytes: mailboxesResult.sizeBytes,
+          mailboxCount: mailboxesResult.mailboxCount,
+          addresses: [...mailboxesResult.addresses],
+        };
+      } catch (err) {
+        const msg = (err as Error).message ?? 'mailboxes capture failed';
+        errors.push(`mailboxes: ${msg}`);
+        await markComponentRowFailed(deps.db, componentRowId, msg);
+      }
+    }
   }
 
   // Decide bundle status: every enabled component must be `completed`.
@@ -241,7 +272,7 @@ export async function runBundle(
   if (input.components.files) enabled.push('files');
   if (input.components.config) enabled.push('config');
   if (input.components.secrets) enabled.push('secrets');
-  // mailboxes is skipped — does not block completion.
+  if (input.components.mailboxes) enabled.push('mailboxes');
 
   const status: 'completed' | 'partial' = errors.length === 0 ? 'completed' : 'partial';
 
@@ -251,7 +282,8 @@ export async function runBundle(
   const totalSize =
     (filesResult?.sizeBytes ?? 0) +
     (configResult?.sizeBytes ?? 0) +
-    (secretsResult?.sizeBytes ?? 0);
+    (secretsResult?.sizeBytes ?? 0) +
+    (mailboxesResult?.sizeBytes ?? 0);
 
   const meta: BackupMetaV1 = {
     schemaVersion: BACKUP_META_SCHEMA_VERSION,
