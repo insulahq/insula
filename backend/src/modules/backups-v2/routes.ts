@@ -4,9 +4,10 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { backupJobs, backupComponents, backupConfigurations, clients, hostingPlans } from '../../db/schema.js';
+import { backupJobs, backupComponents, backupConfigurations, clients, hostingPlans, clientBackupSchedules } from '../../db/schema.js';
 import {
   createBundleSchema,
+  updateClientBackupScheduleSchema,
   type BundleSummary,
   type BundleDetail,
   type BackupComponentInfo,
@@ -174,10 +175,60 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
           config: input.components?.config ?? true,
           secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
         },
+        exportMode: input.exportMode ?? null,
+        exportPassphrase: input.exportPassphrase ?? null,
       },
     );
 
     reply.status(201).send(success({ bundleId: result.bundleId, status: result.status, meta: result.meta }));
+  });
+
+  // ── GET /api/v1/admin/backups/bundles/:id/data-export ──────────────
+  // Streams the AES-256-CBC-encrypted tarball produced by the
+  // data_export wrapper to the caller. The body is opaque ciphertext;
+  // the client decrypts locally with the passphrase they provided at
+  // create time:
+  //
+  //   openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+  //     -in data-export-<bundleId>.tar.gz.enc -out bundle.tar.gz \
+  //     -pass stdin <<< "$PASSPHRASE"
+  //
+  // Auth is admin-gated — for client-panel download, the client-panel
+  // re-uses this same endpoint via its admin proxy + the existing
+  // tenant-context check on the bundle.
+  app.get('/admin/backups/bundles/:id/data-export', {
+    schema: { tags: ['BackupsV2'], summary: 'Download the GDPR data-export ciphertext for a bundle', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (job.exportMode !== 'data_export' || !job.exportArtifact) {
+      throw new ApiError(
+        'NO_DATA_EXPORT',
+        'This bundle has no data_export artifact. Re-create the bundle with exportMode=data_export + exportPassphrase to enable.',
+        400,
+      );
+    }
+    if (!job.targetConfigId) {
+      throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
+    }
+    const store = await resolveStore(app, job.targetConfigId);
+    const handle = await store.open(id);
+    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
+    // exportArtifact is `components/<comp>/<name>` — split.
+    const m = job.exportArtifact.match(/^components\/(files|mailboxes|config|secrets)\/(.+)$/);
+    if (!m) throw new ApiError('CONFIG_INVALID', `Malformed export_artifact path '${job.exportArtifact}'`, 400);
+    const [, component, artifactName] = m as unknown as [string, 'files' | 'mailboxes' | 'config' | 'secrets', string];
+    const stat = await store.stat(handle, component, artifactName);
+    if (!stat) throw new ApiError('NOT_FOUND', `Export artifact missing on remote target: ${job.exportArtifact}`, 404);
+    const body = await store.readComponent(handle, component, artifactName);
+    reply.header('Content-Type', 'application/octet-stream');
+    if (Number.isFinite(stat.sizeBytes) && stat.sizeBytes >= 0) {
+      reply.header('Content-Length', String(stat.sizeBytes));
+    }
+    reply.header('Content-Disposition', `attachment; filename="data-export-${id}.tar.gz.enc"`);
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(body);
   });
 
   // ── POST /api/v1/admin/backups/bundles/:id/verify ──────────────────
@@ -302,6 +353,103 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     await app.db.delete(backupJobs).where(eq(backupJobs.id, id));
     reply.status(204).send();
   });
+
+  // ── GET /api/v1/admin/clients/:clientId/backup-schedule ────────────
+  // Returns the client's schedule row, or null when none exists yet.
+  app.get('/admin/clients/:clientId/backup-schedule', {
+    schema: { tags: ['BackupsV2'], summary: 'Get the client backup schedule', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const [row] = await app.db.select().from(clientBackupSchedules)
+      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    if (!row) return success(null);
+    return success({
+      clientId: row.clientId,
+      enabled: row.enabled,
+      frequency: row.frequency,
+      hourOfDayUtc: row.hourOfDayUtc,
+      dayOfWeek: row.dayOfWeek,
+      dayOfMonth: row.dayOfMonth,
+      retentionDays: row.retentionDays,
+      lastRunAt: row.lastRunAt ? row.lastRunAt.toISOString() : null,
+      lastRunStatus: row.lastRunStatus,
+    });
+  });
+
+  // ── PUT /api/v1/admin/clients/:clientId/backup-schedule ────────────
+  // Upsert the schedule row. PUT semantics — full row supplied each time.
+  app.put('/admin/clients/:clientId/backup-schedule', {
+    schema: { tags: ['BackupsV2'], summary: 'Upsert the client backup schedule', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = updateClientBackupScheduleSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
+    }
+    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+    if (!client) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    // Plan retention cap applies here too (Tier-3 cannot bypass).
+    const [plan] = await app.db.select({
+      defaultDays: hostingPlans.defaultBackupRetentionDays,
+      maxDays: hostingPlans.maxBackupRetentionDays,
+    }).from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
+    if (!plan) throw new ApiError('CONFIG_INVALID', 'Client has no resolvable plan', 400);
+    const requestedRetention = parsed.data.retentionDays ?? plan.defaultDays;
+    if (requestedRetention > plan.maxDays) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `retentionDays ${requestedRetention} exceeds the plan's max_backup_retention_days (${plan.maxDays})`,
+        400,
+      );
+    }
+
+    // Upsert. Reset last_run_at when enabling so the next tick fires
+    // immediately; preserve when re-saving without flipping enable.
+    const existing = await app.db.select().from(clientBackupSchedules)
+      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    if (existing.length === 0) {
+      await app.db.insert(clientBackupSchedules).values({
+        clientId,
+        enabled: parsed.data.enabled ?? false,
+        frequency: parsed.data.frequency ?? 'weekly',
+        hourOfDayUtc: parsed.data.hourOfDayUtc ?? 3,
+        dayOfWeek: parsed.data.dayOfWeek ?? null,
+        dayOfMonth: parsed.data.dayOfMonth ?? null,
+        retentionDays: requestedRetention,
+      });
+    } else {
+      await app.db.update(clientBackupSchedules).set({
+        enabled: parsed.data.enabled ?? existing[0]!.enabled,
+        frequency: parsed.data.frequency ?? existing[0]!.frequency,
+        hourOfDayUtc: parsed.data.hourOfDayUtc ?? existing[0]!.hourOfDayUtc,
+        dayOfWeek: parsed.data.dayOfWeek === undefined ? existing[0]!.dayOfWeek : parsed.data.dayOfWeek,
+        dayOfMonth: parsed.data.dayOfMonth === undefined ? existing[0]!.dayOfMonth : parsed.data.dayOfMonth,
+        retentionDays: requestedRetention,
+      }).where(eq(clientBackupSchedules.clientId, clientId));
+    }
+    const [refreshed] = await app.db.select().from(clientBackupSchedules)
+      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    return success({
+      clientId: refreshed!.clientId,
+      enabled: refreshed!.enabled,
+      frequency: refreshed!.frequency,
+      hourOfDayUtc: refreshed!.hourOfDayUtc,
+      dayOfWeek: refreshed!.dayOfWeek,
+      dayOfMonth: refreshed!.dayOfMonth,
+      retentionDays: refreshed!.retentionDays,
+      lastRunAt: refreshed!.lastRunAt ? refreshed!.lastRunAt.toISOString() : null,
+      lastRunStatus: refreshed!.lastRunStatus,
+    });
+  });
+
+  // ── DELETE /api/v1/admin/clients/:clientId/backup-schedule ─────────
+  app.delete('/admin/clients/:clientId/backup-schedule', {
+    schema: { tags: ['BackupsV2'], summary: 'Disable + remove the client backup schedule', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { clientId } = request.params as { clientId: string };
+    await app.db.delete(clientBackupSchedules).where(eq(clientBackupSchedules.clientId, clientId));
+    reply.status(204).send();
+  });
 }
 
 async function resolveStore(
@@ -405,6 +553,7 @@ function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
     retentionDays: j.retentionDays,
     expiresAt: j.expiresAt ? j.expiresAt.toISOString() : null,
     exportMode: j.exportMode,
+    exportArtifact: j.exportArtifact,
     startedAt: j.startedAt ? j.startedAt.toISOString() : null,
     finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
     lastError: j.lastError,

@@ -73,6 +73,8 @@ import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { postgresRestoreRoutes } from './modules/postgres-restore/routes.js';
 import { isPostgresRestoreInProgress, isPostgresRestoreInProgressClusterWide } from './modules/postgres-restore/service.js';
 import { systemBackupRoutes } from './modules/system-backup/routes.js';
+import { systemBackupDownloadRoutes } from './modules/system-backup/download-route.js';
+import { systemBackupPgDumpRoutes } from './modules/system-backup/pg-dump-routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -80,6 +82,7 @@ import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { backupsV2Routes } from './modules/backups-v2/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/backups-v2/internal-upload-route.js';
 import { backupsV2InternalDownloadRoutes } from './modules/backups-v2/internal-download-route.js';
+import { backupsV2ClientRoutes } from './modules/backups-v2/client-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
@@ -169,6 +172,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     },
     genReqId: () => crypto.randomUUID(),
     bodyLimit: 50 * 1024 * 1024, // 50MB for SQL imports
+    // System Backup secrets-bundle download URL embeds the HMAC
+    // token as a path parameter: <uuid>.<expiresMs>.<mac> ≈ 115 chars.
+    // Default maxParamLength (100) makes find-my-way refuse to match
+    // and Fastify returns 404 silently. Bump generously — no other
+    // route uses 256-char params, and shorter URLs aren't constrained.
+    maxParamLength: 256,
     // trustProxy: nginx-ingress terminates TLS and forwards as HTTP
     // to the platform-api pod. Without this, request.protocol returns
     // "http" — which breaks OIDC because the redirect_uri sent to
@@ -390,12 +399,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(postgresRestoreRoutes, { prefix: '/api/v1' });
   await app.register(systemBackupRoutes, { prefix: '/api/v1' });
+  await app.register(systemBackupDownloadRoutes, { prefix: '/api/v1' });
+  await app.register(systemBackupPgDumpRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2Routes, { prefix: '/api/v1' });
   await app.register(backupsV2InternalUploadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2InternalDownloadRoutes, { prefix: '/api/v1' });
+  await app.register(backupsV2ClientRoutes, { prefix: '/api/v1' });
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });

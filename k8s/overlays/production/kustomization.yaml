@@ -37,6 +37,12 @@ resources:
 # docs/07-reference/NODE_ROLE_TAXONOMY.md.
 components:
   - ../../components/system-node-affinity
+  # Admin-only UIs (Stalwart web-admin, Longhorn, future) MUST be
+  # gated by an auth-gate component. Production currently uses the
+  # cookie-based gate (matches staging); flip to admin-auth-gate-oauth2
+  # when production cuts over to oauth2-proxy. Without one of these
+  # the ci-admin-auth-check.sh guardrail fails the build.
+  - ../../components/admin-auth-gate-cookie
 
 patches:
   - path: platform-config-patch.yaml
