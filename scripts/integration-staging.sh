@@ -742,6 +742,163 @@ for c in (items if isinstance(items, list) else []):
   echo "$d_back" | grep -q "$domain_id" || { fail "restore: domain $domain_id NOT restored after cart execute"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: domain id=$domain_id restored to live DB ✓"
 
+  # ─── files-paths sub-test (RESTORE_INCLUDE_FILES=1) ───
+  # Drops a marker file in the tenant PVC, captures, deletes the
+  # file, restores via files-paths cart item, verifies the file is
+  # back. Spawns the tenant-namespace Job — exercises the full
+  # internal-download + tar-extract path. ~2 min runtime.
+  if [[ "${RESTORE_INCLUDE_FILES:-}" == "1" ]]; then
+    local marker_path="restore-marker-${stamp}.txt"
+    local marker_content="restore-test-content-${stamp}"
+    local fns; fns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+    [[ -n "$fns" ]] || { fail "restore/files: could not resolve client namespace"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    local pv_name; pv_name=$(ssh_cp "kubectl -n $fns get pvc ${fns}-storage -o jsonpath='{.spec.volumeName}'" 2>/dev/null | tr -d '[:space:]')
+
+    # Wait for the tenant Longhorn volume to detach. Up to ${1}s.
+    _wait_lh_detach() {
+      local lim=${1:-120} wi=0 lh_state=""
+      [[ -z "$pv_name" ]] && { sleep 15; return 0; }
+      while (( wi < lim )); do
+        lh_state=$(ssh_cp "kubectl -n longhorn-system get volume.longhorn.io $pv_name -o jsonpath='{.status.state}' 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+        [[ "$lh_state" == "detached" ]] && return 0
+        sleep 3; wi=$((wi+3))
+      done
+      log "restore/files: detach wait timed out at ${lim}s (last state=$lh_state)"
+      return 1
+    }
+
+    log "restore/files: starting FM to seed marker file..."
+    api POST "/clients/$cid/files/start" "" >/dev/null
+    wait_for 180 "restore/files: FM ready" '"ready":true' \
+      "api GET '/clients/$cid/files/status'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    api POST "/clients/$cid/files/write" "{\"path\":\"/$marker_path\",\"content\":\"$marker_content\"}" >/dev/null \
+      || { fail "restore/files: write marker failed"; api POST "/clients/$cid/files/stop" "" >/dev/null; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/files: marker written at /$marker_path"
+
+    # Stop FM so the capture Job's RWO mount doesn't race.
+    api POST "/clients/$cid/files/stop" "" >/dev/null
+    local fns; fns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+    local fi=0 fpods=999
+    while (( fi < 120 )); do
+      fpods=$(ssh_cp "kubectl -n $fns get pods -l app=file-manager --no-headers 2>/dev/null | wc -l" | tr -d '[:space:]')
+      [[ "${fpods:-0}" -eq 0 ]] && break
+      sleep 4; fi=$((fi+4))
+    done
+    [[ "${fpods:-0}" -eq 0 ]] || { fail "restore/files: FM pod still around after 120s"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+
+    # Capture a NEW bundle that includes files.
+    local fbody; fbody="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-files-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":true,\"mailboxes\":false,\"config\":false,\"secrets\":false}}"
+    local fb_resp; fb_resp=$(api POST "/admin/backups/bundles" "$fbody")
+    local fbundle_id; fbundle_id=$(echo "$fb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
+    local fb_status; fb_status=$(echo "$fb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+    [[ "$fb_status" == "completed" && -n "$fbundle_id" ]] || { fail "restore/files: bundle create failed: $(echo "$fb_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/files: bundle $fbundle_id captured with files component"
+
+    # The capture Job has ttlSecondsAfterFinished=600 — its pod
+    # holds the tenant PVC's RWO attach until then, blocking FM
+    # restart. Force-delete the Job + its pod so Longhorn detaches
+    # the volume immediately, then poll the PV's Longhorn volume
+    # state until it goes 'detached' (or 'attaching' to the FM pod).
+    ssh_cp "kubectl -n $fns delete job -l platform.io/component=backup-files --ignore-not-found --wait=false" >/dev/null 2>&1 || true
+    ssh_cp "kubectl -n $fns delete pod -l platform.io/component=backup-files --ignore-not-found --grace-period=0 --force --wait=false" >/dev/null 2>&1 || true
+    # Resolve the PV name for the tenant PVC, then wait for the
+    # Longhorn volume to reach 'detached' state. Up to 120s.
+    local pv_name
+    pv_name=$(ssh_cp "kubectl -n $fns get pvc ${fns}-storage -o jsonpath='{.spec.volumeName}'" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$pv_name" ]]; then
+      local wi=0
+      while (( wi < 120 )); do
+        local lh_state
+        lh_state=$(ssh_cp "kubectl -n longhorn-system get volume.longhorn.io $pv_name -o jsonpath='{.status.state}' 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+        [[ "$lh_state" == "detached" ]] && break
+        sleep 3; wi=$((wi+3))
+      done
+      log "restore/files: post-capture detach wait ${wi}s (state=$lh_state pv=$pv_name)"
+    else
+      log "restore/files: could not resolve PV name; sleeping 30s as fallback"
+      sleep 30
+    fi
+
+    # Browse the file tree, confirm marker is in the dump.
+    local tree; tree=$(api GET "/admin/backups/bundles/$fbundle_id/browse/files/tree?limit=2000")
+    echo "$tree" | grep -q "$marker_path" || { fail "restore/files: marker $marker_path not in bundle tree: $(echo "$tree" | head -c 400)"; api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/files: bundle browse confirms marker in dump"
+
+    # Modify the marker via a one-off pod. This is what the restore
+    # must revert. Avoids restarting FM which has shown unreliable
+    # post-capture (RWO single-attach contention with bundle Job
+    # remnants). The one-off pod attaches RW, runs one shell line,
+    # exits + auto-deletes (--rm).
+    _wait_lh_detach 60 || true
+    local mod_out; mod_out=$(ssh_cp "kubectl -n $fns run restore-fs-mod-${stamp} \
+      --rm -i --restart=Never --image=alpine:3.20 --quiet \
+      --overrides='{\"spec\":{\"priorityClassName\":\"platform-tenant-overhead\",\"containers\":[{\"name\":\"sh\",\"image\":\"alpine:3.20\",\"stdin\":true,\"command\":[\"sh\",\"-c\",\"echo -n MODIFIED-${stamp} > /target/${marker_path} && echo MOD_OK\"],\"volumeMounts\":[{\"name\":\"target\",\"mountPath\":\"/target\"}],\"resources\":{\"requests\":{\"cpu\":\"50m\",\"memory\":\"64Mi\"},\"limits\":{\"cpu\":\"200m\",\"memory\":\"128Mi\"}}}],\"volumes\":[{\"name\":\"target\",\"persistentVolumeClaim\":{\"claimName\":\"${fns}-storage\"}}],\"restartPolicy\":\"Never\"}}' \
+      --command -- sh -c 'echo -n MODIFIED-${stamp} > /target/${marker_path} && echo MOD_OK' 2>&1")
+    if echo "$mod_out" | grep -q "MOD_OK"; then
+      ok "restore/files: marker modified in live PVC (will be reverted by cart)"
+    else
+      fail "restore/files: modify pod failed: $(echo "$mod_out" | head -c 400)"
+      api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true
+      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    _wait_lh_detach 60 || true
+
+    # Add a files-paths cart item with the marker path. The tree
+    # entries' paths look like "./<rel>" or "<rel>" depending on tar
+    # format — the executor's path-injection regex accepts both.
+    # Strip a leading ./ if present.
+    local cart_path="$marker_path"
+    local fcart_resp; fcart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E files restore $stamp\"}")
+    local fcart_id; fcart_id=$(echo "$fcart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+    [[ -n "$fcart_id" ]] || { fail "restore/files: cart create failed: $(echo "$fcart_resp" | head -c 300)"; api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/files: cart $fcart_id created"
+
+    local fitem_body="{\"bundleId\":\"$fbundle_id\",\"type\":\"files-paths\",\"selector\":{\"kind\":\"paths\",\"paths\":[\"$cart_path\"]},\"label\":\"restore-marker\"}"
+    local fitem_resp; fitem_resp=$(api POST "/admin/restores/carts/$fcart_id/items" "$fitem_body")
+    echo "$fitem_resp" | grep -q '"id"' || { fail "restore/files: add-item failed: $(echo "$fitem_resp" | head -c 400)"; api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/files: cart item added"
+
+    # Execute. Files restore spawns a Job; the API waits up to 30 min.
+    local fexec_resp; fexec_resp=$(api POST "/admin/restores/carts/$fcart_id/execute" "{}")
+    local fcart_status; fcart_status=$(echo "$fexec_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+    if [[ "$fcart_status" != "done" ]]; then
+      fail "restore/files: cart execute returned status=$fcart_status — resp: $(echo "$fexec_resp" | head -c 600)"
+      api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true
+      api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true
+      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    ok "restore/files: cart executed status=done"
+
+    # Force-delete the restore Job + wait for detach so the verify
+    # pod can attach RW.
+    ssh_cp "kubectl -n $fns delete job -l platform.io/component=restore-files --ignore-not-found --wait=false" >/dev/null 2>&1 || true
+    ssh_cp "kubectl -n $fns delete pod -l platform.io/component=restore-files --ignore-not-found --grace-period=0 --force --wait=false" >/dev/null 2>&1 || true
+    _wait_lh_detach 120 || true
+
+    # Verify the marker is BACK to its pre-modify content via a
+    # one-off pod. cat returns the file body to stdout; the kubectl
+    # run output is suffixed with VER_END so we can robustly grep.
+    local ver_out; ver_out=$(ssh_cp "kubectl -n $fns run restore-fs-ver-${stamp} \
+      --rm -i --restart=Never --image=alpine:3.20 --quiet \
+      --overrides='{\"spec\":{\"priorityClassName\":\"platform-tenant-overhead\",\"containers\":[{\"name\":\"sh\",\"image\":\"alpine:3.20\",\"stdin\":true,\"command\":[\"sh\",\"-c\",\"cat /target/${marker_path} 2>&1; echo; echo VER_END\"],\"volumeMounts\":[{\"name\":\"target\",\"mountPath\":\"/target\"}],\"resources\":{\"requests\":{\"cpu\":\"50m\",\"memory\":\"64Mi\"},\"limits\":{\"cpu\":\"200m\",\"memory\":\"128Mi\"}}}],\"volumes\":[{\"name\":\"target\",\"persistentVolumeClaim\":{\"claimName\":\"${fns}-storage\"}}],\"restartPolicy\":\"Never\"}}' \
+      --command -- sh -c 'cat /target/${marker_path} 2>&1; echo; echo VER_END' 2>&1")
+    if echo "$ver_out" | grep -q "$marker_content"; then
+      ok "restore/files: marker /$marker_path restored to live PVC ✓ (content matches '$marker_content')"
+    else
+      fail "restore/files: marker NOT restored to original content. verify-pod out=$(echo "$ver_out" | head -c 400)"
+      api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true
+      api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true
+      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      return 1
+    fi
+
+    # Cleanup files-test artefacts.
+    api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true
+    api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true
+  fi
+
   # Cleanup.
   api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true
   api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true

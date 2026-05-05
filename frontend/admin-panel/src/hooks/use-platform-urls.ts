@@ -54,14 +54,14 @@ export function useUpdatePlatformUrls() {
  * then to an empty string.
  */
 export function resolveLonghornUrl(data: PlatformUrlsResponse | undefined): string {
-  return data?.longhornUrl.value || runtimeConfig.LONGHORN_URL || '';
+  return data?.longhornUrl?.value || runtimeConfig.LONGHORN_URL || '';
 }
 export function resolveStalwartAdminUrl(data: PlatformUrlsResponse | undefined): string {
-  return data?.stalwartAdminUrl.value || runtimeConfig.STALWART_ADMIN_URL || '';
+  return data?.stalwartAdminUrl?.value || runtimeConfig.STALWART_ADMIN_URL || '';
 }
 export function resolveWebmailUrl(data: PlatformUrlsResponse | undefined): string {
-  return data?.webmailUrl.value || '';
+  return data?.webmailUrl?.value || '';
 }
 export function resolveMailServerHostname(data: PlatformUrlsResponse | undefined): string {
-  return data?.mailServerHostname.value || '';
+  return data?.mailServerHostname?.value || '';
 }
