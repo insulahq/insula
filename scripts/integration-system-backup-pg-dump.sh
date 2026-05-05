@@ -115,4 +115,32 @@ LIST=$(curl_admin "$ADMIN_HOST/api/v1/system-backup/pg-dump/runs?namespace=$SOUR
 FOUND=$(echo "$LIST" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; ids=[r['id'] for r in d]; print('$RUN_ID' in ids)")
 [[ "$FOUND" = "True" ]] && pass "run id in filtered list" || fail "run not found in /runs?cluster=$SOURCE_CLUSTER"
 
+log "7) Download artifact + pg_restore --list validates archive"
+# Download the artifact to a temp file. With If-Match to enforce the
+# server's sha256 matches what was stored — extra round-trip insurance.
+DUMP_FILE="$(mktemp -t pgdump-XXXXXX.pgdump)"
+trap '[[ -f "$DUMP_FILE" ]] && rm -f "$DUMP_FILE"' EXIT
+EXPECTED_SHA=$(echo "$DETAIL" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["sha256"])')
+HTTP_CODE=$(curl -sS -k -o "$DUMP_FILE" -w '%{http_code}' \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "If-Match: \"$EXPECTED_SHA\"" \
+  "$ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$RUN_ID/download")
+[[ "$HTTP_CODE" = "200" ]] || fail "download HTTP=$HTTP_CODE"
+DOWNLOADED_SIZE=$(stat -c '%s' "$DUMP_FILE" 2>/dev/null || stat -f '%z' "$DUMP_FILE")
+DOWNLOADED_SHA=$(sha256sum "$DUMP_FILE" | awk '{print $1}')
+[[ "$DOWNLOADED_SHA" = "$EXPECTED_SHA" ]] && pass "downloaded sha256 matches stored ($DOWNLOADED_SIZE B)" \
+  || fail "sha256 mismatch: got $DOWNLOADED_SHA, expected $EXPECTED_SHA"
+
+# pg_restore --list parses the TOC. Anything other than exit 0 with at
+# least one TABLE/SEQUENCE entry means the archive is malformed.
+if command -v pg_restore >/dev/null 2>&1; then
+  TOC=$(pg_restore --list "$DUMP_FILE" 2>&1)
+  [[ $? -eq 0 ]] || fail "pg_restore --list non-zero: $TOC"
+  TABLE_COUNT=$(echo "$TOC" | grep -cE '^\s*[0-9]+;\s*[0-9]+\s+[0-9]+\s+(TABLE|SEQUENCE|INDEX)\b' || true)
+  [[ "$TABLE_COUNT" -gt 0 ]] && pass "pg_restore --list parsed $TABLE_COUNT TABLE/SEQUENCE/INDEX entries" \
+    || fail "pg_restore --list: 0 schema entries — archive is empty or corrupt"
+else
+  warn "pg_restore not installed locally — skipped TOC validation (size+sha256 only)"
+fi
+
 log "DONE: pg_dump E2E green (total=${ELAPSED}s)"
