@@ -1987,6 +1987,21 @@ except Exception:
   else
     fail "system_backup: mail/mail-pg pg_dump"
   fi
+
+  # Phase 4 WAL archive — long-running (waits ≤6 min for CNPG to push
+  # a WAL). Skip in `all` runs unless RUN_WAL_HARNESS=1 is set; the
+  # wait dominates suite duration.
+  if [[ "${RUN_WAL_HARNESS:-0}" = "1" ]]; then
+    log "── scenario system_backup: WAL archive platform/postgres ──"
+    if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+       TARGET_CONFIG_ID="$target_id" \
+       CLUSTER_NS=platform CLUSTER_NAME=postgres \
+       bash "$script_dir/integration-system-wal-archive.sh"; then
+      ok "system_backup: platform/postgres WAL archive"
+    else
+      fail "system_backup: platform/postgres WAL archive"
+    fi
+  fi
 }
 
 case "$SCENARIO" in
