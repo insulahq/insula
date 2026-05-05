@@ -29,6 +29,7 @@ import {
   enableWalArchive,
   disableWalArchive,
   readClusterCR,
+  readScheduledBackup,
   extractStatus,
 } from './wal-archive.js';
 
@@ -72,14 +73,19 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
     const out: WalArchiveCluster[] = await Promise.all(KNOWN_CLUSTERS.map(async (c) => {
       const key = `${c.clusterNamespace}/${c.clusterName}`;
       const state = stateByKey.get(key);
-      const cr = await readClusterCR(k8s, c.clusterNamespace, c.clusterName);
+      const [cr, sb] = await Promise.all([
+        readClusterCR(k8s, c.clusterNamespace, c.clusterName),
+        readScheduledBackup(k8s, c.clusterNamespace, c.clusterName),
+      ]);
       const status = extractStatus(cr);
-      // Cross-check: `enabled` is true only when BOTH the DB row
-      // AND the CR's spec.backup.barmanObjectStore exist. This catches
-      // out-of-band CR edits (e.g. someone removed the section via
-      // Flux) so the UI doesn't lie about the archive being on.
       const crHasBackup = Boolean(cr?.spec?.backup?.barmanObjectStore?.destinationPath);
       const dbEnabled = state !== undefined;
+      const baseBackupStatus = sb
+        ? {
+            lastScheduleTime: sb.status?.lastScheduleTime ?? null,
+            nextScheduleTime: sb.status?.nextScheduleTime ?? null,
+          }
+        : null;
       return {
         clusterNamespace: c.clusterNamespace,
         clusterName: c.clusterName,
@@ -91,6 +97,10 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
               retentionDays: state.retentionDays,
               destinationPath: state.destinationPath,
               enabledAt: state.enabledAt.toISOString(),
+              archiveTimeout: state.archiveTimeout ?? null,
+              baseBackupSchedule: state.baseBackupSchedule ?? null,
+              baseBackupRetentionDays: state.baseBackupRetentionDays ?? null,
+              baseBackupStatus,
             }
           : null,
         status,
@@ -131,6 +141,9 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         retentionDays: parsed.data.retentionDays,
         operatorUserId: userId,
         operatorIp: clientIp(request),
+        archiveTimeout: parsed.data.archiveTimeout,
+        baseBackupSchedule: parsed.data.baseBackupSchedule ?? null,
+        baseBackupRetentionDays: parsed.data.baseBackupRetentionDays,
       });
       return success<WalArchiveActionResponse>({
         clusterNamespace: parsed.data.clusterNamespace,
