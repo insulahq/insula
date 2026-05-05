@@ -136,7 +136,9 @@ async function resolveCnpgCredentials(
   );
 }
 
-async function resolveSystemStore(
+export const SYSTEM_BACKUP_CLIENT_ID = SYSTEM_CLIENT_ID;
+
+export async function resolveSystemStore(
   db: Database,
   targetConfigId: string,
   oidcEncryptionKey: string | null,
