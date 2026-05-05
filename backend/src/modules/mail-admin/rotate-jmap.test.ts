@@ -121,6 +121,23 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     await expect(rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps)).rejects.toThrow('JMAP unreachable');
   });
 
+  it('falls back to Secret-patch path when JMAP /session returns 429 (rate-limited)', async () => {
+    // After several failed 401s (e.g. operator hit "rotate" repeatedly
+    // during a half-finished rollout), Stalwart's auth-attempt rate
+    // limiter kicks in and returns 429. Same downstream story as 401:
+    // patching the Secret doesn't touch Stalwart's auth surface.
+    const jmapErr: Error & { details?: { status: number } } = new Error('JMAP session fetch failed: HTTP 429');
+    jmapErr.details = { status: 429 };
+    const deps = makeDeps({
+      getJmapAccountId: vi.fn().mockRejectedValue(jmapErr),
+    });
+
+    const result = await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+    expect(result.password).toBe('new-secret-password');
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+    expect(deps.updateAdminPassword).not.toHaveBeenCalled();
+  });
+
   it('falls back to Secret-patch path when JMAP /session returns 401', async () => {
     // 401 from /session means either:
     //   (a) recovery-admin-only mode — no Account exists, so JMAP write
