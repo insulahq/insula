@@ -110,12 +110,40 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     expect(result.password).toBe('new-secret-password');
   });
 
-  it('throws when JMAP session fails', async () => {
+  it('throws when JMAP session fails with non-401 error (network / 5xx)', async () => {
+    // Non-401 errors (network unreachable, 503, etc.) surface to the
+    // operator — there's nothing safe to fall back to. 401 is the
+    // ONLY case where we proceed to the Secret-patch path.
     const deps = makeDeps({
       getJmapAccountId: vi.fn().mockRejectedValue(new Error('JMAP unreachable')),
     });
 
     await expect(rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps)).rejects.toThrow('JMAP unreachable');
+  });
+
+  it('falls back to Secret-patch path when JMAP /session returns 401', async () => {
+    // 401 from /session means either:
+    //   (a) recovery-admin-only mode — no Account exists, so JMAP write
+    //       is impossible. Patching the Secret + Reloader rollout is the
+    //       only mechanism to rotate.
+    //   (b) drift — a prior rotation patched the Secret but Stalwart's
+    //       pod hasn't picked up the new env var yet. platform-api's
+    //       Secret-mount view is ahead of Stalwart, so JMAP auth 401s.
+    //       Patching the Secret again (to a third value) doesn't make
+    //       things worse: Reloader will eventually catch up.
+    // Without this fallback every operator rotation request fails 401
+    // when there's any drift at all.
+    const jmapErr: Error & { details?: { status: number } } = new Error('JMAP session fetch failed: HTTP 401');
+    jmapErr.details = { status: 401 };
+    const deps = makeDeps({
+      getJmapAccountId: vi.fn().mockRejectedValue(jmapErr),
+    });
+
+    const result = await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+    expect(result.password).toBe('new-secret-password');
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+    // No JMAP write call — we couldn't authenticate.
+    expect(deps.updateAdminPassword).not.toHaveBeenCalled();
   });
 
   it('throws with helpful message when k8s Secret patch fails after JMAP update succeeds', async () => {
