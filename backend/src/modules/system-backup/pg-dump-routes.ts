@@ -27,7 +27,17 @@ import {
   type SystemBackupRun,
 } from '@k8s-hosting/api-contracts';
 import { createPgDumpJob } from './pg-dump-job-spawner.js';
+import { resolveSystemStore, SYSTEM_BACKUP_CLIENT_ID } from './pg-dump-orchestrator.js';
 import { getPlatformApiImage } from '../postgres-restore/service.js';
+
+// Cap on simultaneous /download streams. Each download pipes the
+// entire pgdump artifact (potentially multi-GB) S3/SSH→platform-api→
+// client. Without a limit a single operator can saturate the pod's
+// egress (sec review M-3). Module-scoped intentionally — per-replica
+// counter is fine for DoS-from-self protection; if multi-replica
+// total cap matters later, swap for a DB advisory-lock counter.
+let activeDownloads = 0;
+const MAX_CONCURRENT_DOWNLOADS = 3;
 
 export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -223,6 +233,126 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
       throw new ApiError('SYSTEM_BACKUP_RUN_NOT_FOUND', 'pg_dump run not found', 404);
     }
     return success(toApiRun(rows[0]));
+  });
+
+  // ── GET /system-backup/pg-dump/runs/:id/download ────────────────
+  // Stream the pg_dump artifact straight from the BackupStore back
+  // to the operator. Super_admin gated (already by addHook). Body is
+  // a Postgres custom-format archive (use with `pg_restore`).
+  //
+  // Supports If-Match: <sha256> for safety — the operator can pin to
+  // the exact bytes they expect, e.g. when piping into pg_restore in
+  // a script. If not provided, no integrity precheck is done; the
+  // sha256 is still in the JSON run row for after-the-fact verify.
+  app.get('/system-backup/pg-dump/runs/:id/download', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Stream the pg_dump artifact (super_admin)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ifMatch = (request.headers['if-match'] as string | undefined)?.replace(/^"|"$/g, '');
+
+    const rows = await app.db
+      .select({
+        id: systemBackupRuns.id,
+        kind: systemBackupRuns.kind,
+        status: systemBackupRuns.status,
+        targetConfigId: systemBackupRuns.targetConfigId,
+        bundleId: systemBackupRuns.bundleId,
+        artifactName: systemBackupRuns.artifactName,
+        sha256: systemBackupRuns.sha256,
+        sizeBytes: systemBackupRuns.sizeBytes,
+      })
+      .from(systemBackupRuns)
+      .where(and(eq(systemBackupRuns.id, id), eq(systemBackupRuns.kind, 'pg_dump')))
+      .limit(1);
+    const row = rows[0];
+    if (!row) throw new ApiError('SYSTEM_BACKUP_RUN_NOT_FOUND', 'pg_dump run not found', 404);
+    if (row.status !== 'succeeded') {
+      throw new ApiError('SYSTEM_BACKUP_NOT_DOWNLOADABLE',
+        `run is in status=${row.status}; only succeeded runs are downloadable`, 409);
+    }
+    if (!row.targetConfigId || !row.bundleId || !row.artifactName) {
+      throw new ApiError('SYSTEM_BACKUP_INCOMPLETE_RUN',
+        'run row missing target/bundle/artifact — likely a partial write', 500);
+    }
+    if (ifMatch && row.sha256 && ifMatch !== row.sha256) {
+      throw new ApiError('SYSTEM_BACKUP_PRECONDITION_FAILED',
+        `If-Match=${ifMatch} ≠ sha256=${row.sha256}`, 412);
+    }
+
+    if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+      throw new ApiError('SYSTEM_BACKUP_DOWNLOAD_BUSY',
+        `too many concurrent downloads (max ${MAX_CONCURRENT_DOWNLOADS}) — try again shortly`, 429);
+    }
+
+    const oidcKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined;
+    const { store } = await resolveSystemStore(app.db, row.targetConfigId, oidcKey ?? null);
+    const handle = await store.open(row.bundleId);
+    if (!handle) {
+      throw new ApiError('SYSTEM_BACKUP_BUNDLE_NOT_FOUND',
+        `bundle ${row.bundleId} not found at backup target — may have been pruned by retention`, 404);
+    }
+    const stat = await store.stat(handle, 'config', row.artifactName);
+    if (!stat) {
+      throw new ApiError('SYSTEM_BACKUP_ARTIFACT_NOT_FOUND',
+        `artifact ${row.artifactName} not found in bundle`, 404);
+    }
+    const body = await store.readComponent(handle, 'config', row.artifactName);
+
+    // Audit + downloadedAt stamp BEFORE response is committed (sec
+    // review M-2). On a partial-stream failure the timestamp + audit
+    // row may be ahead of the actual byte transfer — that's acceptable
+    // forensics-wise (logs the *attempt*, not "we know it succeeded").
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
+    try {
+      await app.db.transaction(async (tx) => {
+        await tx.insert(auditLogs).values({
+          id: randomUUID(),
+          actionType: 'system_backup_pg_dump_download',
+          resourceType: 'system_backup_run',
+          resourceId: row.id,
+          actorId: userId ?? '',
+          actorType: 'user',
+          httpMethod: 'GET',
+          httpPath: `/api/v1/system-backup/pg-dump/runs/${row.id}/download`,
+          httpStatus: 200,
+          changes: { bundleId: row.bundleId, sha256: row.sha256, sizeBytes: row.sizeBytes },
+          ipAddress: clientIp(request) ?? null,
+        });
+        await tx.update(systemBackupRuns)
+          .set({ downloadedAt: new Date() })
+          .where(eq(systemBackupRuns.id, row.id));
+      });
+    } catch (auditErr) {
+      // Audit failure should NOT block the download (operator may need
+      // it during incident response when DB is degraded). Log loudly.
+      app.log.error({ err: auditErr, runId: row.id }, '[system-backup] download audit write failed');
+    }
+
+    // RFC 5987-style filename* encoding so artifact names with edge
+    // chars (theoretically possible if Zod ever loosens) can't inject
+    // headers. Also strip CR/LF as belt-and-braces.
+    const safeName = row.artifactName.replace(/[\r\n"\\]/g, '_');
+    reply.header('Content-Type', 'application/octet-stream');
+    reply.header('Content-Disposition',
+      `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(row.artifactName)}`);
+    if (Number.isFinite(stat.sizeBytes) && stat.sizeBytes >= 0) {
+      reply.header('Content-Length', String(stat.sizeBytes));
+    }
+    if (row.sha256) reply.header('X-Content-Sha256', row.sha256);
+    reply.header('Cache-Control', 'no-store');
+
+    // Concurrency counter — increment before send, decrement on
+    // response close (success OR error path). Fastify emits 'close'
+    // on the underlying socket regardless of how the response ended.
+    activeDownloads++;
+    reply.raw.on('close', () => { activeDownloads = Math.max(0, activeDownloads - 1); });
+
+    void SYSTEM_BACKUP_CLIENT_ID;
+    return reply.send(body);
   });
 }
 
