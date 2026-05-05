@@ -1,9 +1,9 @@
 /**
- * System Backup, Phase 1 routes.
+ * System Backup, Phase 1 routes (admin-gated half).
  *
- * All endpoints under `/api/v1/system-backup` are super_admin gated
- * EXCEPT the download endpoint which is bearer-token-IS-auth (the
- * one-shot HMAC token in the URL is the only credential).
+ * Every route here requires super_admin. The unauthenticated download
+ * endpoint lives in download-route.ts as a sibling Fastify plugin —
+ * see that file for why splitting was necessary.
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -11,9 +11,8 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { systemBackupRuns, auditLogs } from '../../db/schema.js';
+import { systemBackupRuns } from '../../db/schema.js';
 import { desc, eq } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
 import {
   exportSecretsBundleRequestSchema,
   type ExportSecretsBundleResponse,
@@ -22,101 +21,22 @@ import {
 } from '@k8s-hosting/api-contracts';
 import {
   createSecretsBundleExport,
-  claimDownloadToken,
   readManifest,
 } from './service.js';
 
 export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
   // Fail-closed on missing/short JWT_SECRET — without this, download
-  // tokens would be signed with a known-zero key in the dev fallback
-  // path and any caller could forge. Read EXCLUSIVELY from app.config
-  // (the resolved auth source); no env-var fallback.
+  // tokens would be signed with a weak/predictable key. Read from
+  // app.config (the same auth source the rest of the app uses).
   const jwtSecret = (app.config as Record<string, unknown>).JWT_SECRET as string | undefined;
   if (!jwtSecret || jwtSecret.length < 32) {
     throw new Error('system-backup: app.config.JWT_SECRET must be set (≥32 chars) for download-token HMAC');
   }
   const effectiveJwtSecret = jwtSecret;
 
-  // The download route bypasses auth (token IS the credential), so it
-  // is registered FIRST without the auth hook. Subsequent routes
-  // inherit the auth hooks via app.addHook('onRequest', ...) below.
-  //
-  // Fastify hooks added after a route registration do NOT apply to
-  // that route — exactly the property we need here.
-
-  // ── GET /system-backup/secrets/download/:token ────────────────────
-  // Single-use, HMAC-signed, no Bearer auth. Token IS the auth.
-  app.get('/system-backup/secrets/download/:token', {
-    config: {
-      // Per-route rate limit. The download endpoint is unauthenticated
-      // (token IS auth) so the global rate-limit hook (registered
-      // AFTER this route) does not apply. 10 attempts/minute/IP is
-      // tight enough to deter token-fishing yet loose enough that a
-      // legitimate retry over a flaky network still works.
-      rateLimit: { max: 10, timeWindow: '1 minute' },
-    },
-    schema: {
-      tags: ['SystemBackup'],
-      summary: 'Single-use bundle download (HMAC token IS auth)',
-    },
-  }, async (request, reply) => {
-    const { token } = request.params as { token: string };
-    const auditFailed = (httpStatus: number, errCode: string): Promise<void> =>
-      app.db.insert(auditLogs).values({
-        id: randomUUID(),
-        actionType: 'system_backup_secrets_download_failed',
-        resourceType: 'system_backup_run',
-        // Token format: <runId>.<expiresMs>.<mac>; runId is the first segment.
-        resourceId: token?.split('.')[0]?.slice(0, 36) ?? 'unknown',
-        actorId: 'anonymous',
-        actorType: 'system',
-        httpMethod: 'GET',
-        httpPath: '/api/v1/system-backup/secrets/download/[REDACTED]',
-        httpStatus,
-        changes: { code: errCode },
-        ipAddress: clientIp(request),
-      })
-        .then(() => undefined)
-        .catch((err) => app.log.error({ err }, '[system-backup] audit-log failed for failed download'));
-
-    if (!token || token.length < 80 || token.length > 256) {
-      await auditFailed(400, 'SYSTEM_BACKUP_INVALID_TOKEN');
-      throw new ApiError('SYSTEM_BACKUP_INVALID_TOKEN', 'invalid token format', 400);
-    }
-    const claim = await claimDownloadToken(app.db, token, effectiveJwtSecret);
-    if (!claim) {
-      // Distinguish four cases would leak: doesn't exist vs expired vs
-      // already-used vs bad mac. Return a single 410 with no detail.
-      await auditFailed(410, 'SYSTEM_BACKUP_TOKEN_INVALID');
-      throw new ApiError('SYSTEM_BACKUP_TOKEN_INVALID',
-        'download token is invalid, expired, or already used', 410);
-    }
-    // Successful download — audit-log the successful claim with the
-    // bundle sha256 + size for forensic correlation.
-    await app.db.insert(auditLogs).values({
-      id: randomUUID(),
-      actionType: 'system_backup_secrets_download',
-      resourceType: 'system_backup_run',
-      resourceId: token.split('.')[0]?.slice(0, 36) ?? 'unknown',
-      actorId: 'token-bearer',
-      actorType: 'system',
-      httpMethod: 'GET',
-      httpPath: '/api/v1/system-backup/secrets/download/[REDACTED]',
-      httpStatus: 200,
-      changes: { sha256: claim.sha256, sizeBytes: claim.sizeBytes },
-      ipAddress: clientIp(request),
-    }).catch((err) => app.log.error({ err }, '[system-backup] audit-log failed for successful download'));
-
-    void reply
-      .header('Content-Type', 'application/octet-stream')
-      .header('Content-Disposition', `attachment; filename="secrets-bundle-${claim.sha256.slice(0, 12)}.tar.age"`)
-      .header('Content-Length', String(claim.sizeBytes))
-      .header('X-Content-SHA256', claim.sha256)
-      .header('Cache-Control', 'no-store, max-age=0');
-    return reply.send(claim.payload);
-  });
-
-  // All routes below require super_admin + admin panel.
+  // All routes in this plugin require super_admin + admin panel. The
+  // download route is in a separate plugin (download-route.ts) so we
+  // don't need to thread auth-bypass logic here.
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin'));
@@ -170,9 +90,9 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Project explicit columns (omit `payload` BYTEA) — list endpoint
-  // could return up to 100 rows, each carrying ~100 KiB encrypted
-  // bytes that are never serialised to the wire but ARE deserialised
-  // into the Drizzle result. Skip the cost.
+  // could return up to 100 rows × ~100 KiB encrypted bytes that are
+  // never serialised to the wire but WOULD be deserialised into the
+  // Drizzle result.
   const RUN_COLUMNS = {
     id: systemBackupRuns.id,
     kind: systemBackupRuns.kind,
@@ -208,8 +128,6 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(systemBackupRuns.kind, 'secrets'))
       .orderBy(desc(systemBackupRuns.createdAt))
       .limit(limit);
-    // List endpoint never surfaces the download URL — keeps the URL
-    // out of cached/logged list responses. Single-row GET below does.
     return success(rows.map((r) => toApiRun(r, /*includeDownloadUrl*/ false)));
   });
 
