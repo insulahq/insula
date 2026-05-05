@@ -19,6 +19,7 @@ import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
 import BackupSettings from '@/pages/BackupSettings';
+import RestoreCartPage from '@/pages/RestoreCart';
 import AdminUsers from '@/pages/AdminUsers';
 import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
@@ -75,6 +76,7 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
+            <Route path="restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
             <Route path="nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
             {/* Legacy direct-link compatibility: redirect to the new top-level page with the matching tab pre-selected. */}
             <Route path="settings/nodes-and-storage" element={<Navigate to="/nodes-and-storage" replace />} />

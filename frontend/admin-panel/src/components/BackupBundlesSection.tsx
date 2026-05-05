@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen } from 'lucide-react';
+import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
   useBundles,
@@ -204,6 +205,15 @@ function BundleRow({
           >
             <ShieldCheck size={14} /> Verify
           </button>
+          {bundle.status === 'completed' && (
+            <Link
+              to={`/restore?bundleId=${encodeURIComponent(bundle.id)}&clientId=${encodeURIComponent(bundle.clientId)}`}
+              className="cursor-pointer flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+              title="Open the Plesk-style cart to selectively restore from this bundle"
+            >
+              <RotateCcw size={14} /> Restore
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => onDelete(bundle.id)}
