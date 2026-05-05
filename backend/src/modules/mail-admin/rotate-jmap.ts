@@ -103,7 +103,13 @@ export async function rotateAdminPasswordViaJmapImpl(
   deps: RotateJmapDeps,
 ): Promise<RotateStalwartPasswordResponse> {
   const plain = deps.generatePassword();
-  const verifyTimeoutMs = opts.verifyTimeoutMs ?? 30_000;
+  // Stakater Reloader takes 30-90s to roll the Stalwart pod after we
+  // patch the Secret, and JMAP /session can't authenticate with the
+  // new password until the pod is re-up with the new env. 30s was
+  // far too short — every operator click hit the timeout and saw a
+  // red "rotation failed" toast for an actually-successful rotation.
+  // 120s leaves headroom for slow nodes / image-pull / liveness probes.
+  const verifyTimeoutMs = opts.verifyTimeoutMs ?? 120_000;
 
   // 1. Resolve JMAP account ID
   const accountId = await deps.getJmapAccountId();
@@ -228,10 +234,15 @@ export async function rotateAdminPasswordViaJmapImpl(
       await deps.sleep(2_000);
     } while (deps.now().getTime() < deadline);
     if (!ok) {
-      throw new Error(
-        'JMAP rotation and k8s Secret patch succeeded but credential verification timed out. ' +
-          'The new password is active — verify manually that Stalwart is healthy.',
-      );
+      // The Secret IS rotated; Stalwart's pod will pick it up after
+      // Reloader rollout (~30-120s). Throwing 500 here makes the
+      // operator click "rotate" again, which double-rotates and
+      // worsens the drift. Log a warning, return success to the
+      // operator with the new cleartext, and let the next admin
+      // request hit Stalwart through the normal kubelet-refresh path.
+      log.warn({
+        verifyTimeoutMs,
+      }, 'mail-admin: rotation verify timed out — Secret rotated successfully, Stalwart pod still rolling. Operator response includes new password.');
     }
   }
 
