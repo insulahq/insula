@@ -146,14 +146,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         targetConfigId: input.targetConfigId ?? null,
         targetUri,
         components: {
-          // files + mailboxes are deferred to Phase 3 (cross-namespace
-          // PVC + Stalwart export wiring). Default to false so a request
-          // that omits `components` doesn't get a misleading `partial`
-          // status. Callers wanting an explicit Phase-3 attempt can
-          // still set them to true and watch the orchestrator surface
-          // the deferred-component error.
-          files: input.components?.files ?? false,
-          mailboxes: input.components?.mailboxes ?? false,
+          // Phase 3 wires both files (HTTP-upload from tenant Job)
+          // and mailboxes (Stalwart export Job in mail ns). Both
+          // default to true. Callers can opt out per-bundle to keep
+          // a capture light.
+          files: input.components?.files ?? true,
+          mailboxes: input.components?.mailboxes ?? true,
           config: input.components?.config ?? true,
           secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
         },

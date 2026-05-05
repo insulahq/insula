@@ -2214,3 +2214,81 @@ export type PrivateWorker = typeof privateWorkers.$inferSelect;
 export type NewPrivateWorker = typeof privateWorkers.$inferInsert;
 export type PrivateWorkerAuditRow = typeof privateWorkerAudit.$inferSelect;
 export type NewPrivateWorkerAuditRow = typeof privateWorkerAudit.$inferInsert;
+
+// ─── Restore Carts (ADR-034 / migration 0079) ───────────────────────────────
+
+export const restoreJobStatusEnum = pgEnum('restore_job_status', [
+  'draft',
+  'executing',
+  'paused',
+  'done',
+  'failed',
+]);
+
+export const restoreItemTypeEnum = pgEnum('restore_item_type', [
+  'files-paths',
+  'mailboxes-by-address',
+  'deployments-by-id',
+  'domains-by-id',
+  'config-tables',
+]);
+
+export const restoreItemStatusEnum = pgEnum('restore_item_status', [
+  'pending',
+  'applying',
+  'done',
+  'failed',
+  'skipped',
+]);
+
+export const restoreJobs = pgTable('restore_jobs', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  initiatorUserId: varchar('initiator_user_id', { length: 36 })
+    .references(() => users.id, { onDelete: 'set null' }),
+  status: restoreJobStatusEnum('status').notNull().default('draft'),
+  preRestoreSnapshotId: varchar('pre_restore_snapshot_id', { length: 36 }),
+  description: text('description'),
+  startedAt: timestamp('started_at'),
+  finishedAt: timestamp('finished_at'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('restore_jobs_client_idx').on(table.clientId),
+  index('restore_jobs_status_idx').on(table.status),
+  index('restore_jobs_created_idx').on(table.createdAt),
+]);
+
+export const restoreItems = pgTable('restore_items', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  restoreJobId: varchar('restore_job_id', { length: 64 })
+    .notNull()
+    .references(() => restoreJobs.id, { onDelete: 'cascade' }),
+  // Loose FK to backup_jobs.id — we keep orphan visibility on bundle
+  // delete instead of cascade (operator sees the broken reference).
+  bundleId: varchar('bundle_id', { length: 64 }).notNull(),
+  type: restoreItemTypeEnum('type').notNull(),
+  selector: jsonb('selector').$type<Record<string, unknown>>().notNull(),
+  label: varchar('label', { length: 255 }),
+  seq: integer('seq').notNull(),
+  status: restoreItemStatusEnum('status').notNull().default('pending'),
+  progressMessage: varchar('progress_message', { length: 500 }),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+  startedAt: timestamp('started_at'),
+  finishedAt: timestamp('finished_at'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('restore_items_job_idx').on(table.restoreJobId),
+  index('restore_items_status_idx').on(table.status),
+  uniqueIndex('restore_items_seq_unique').on(table.restoreJobId, table.seq),
+]);
+
+export type RestoreJob = typeof restoreJobs.$inferSelect;
+export type NewRestoreJob = typeof restoreJobs.$inferInsert;
+export type RestoreItem = typeof restoreItems.$inferSelect;
+export type NewRestoreItem = typeof restoreItems.$inferInsert;
