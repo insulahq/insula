@@ -47,9 +47,19 @@ TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
 [[ -n "$TOKEN" ]] && pass "logged in" || fail "login failed"
 
 log "2) Verify target config exists + is active"
-CFG=$(curl_admin "$ADMIN_HOST/api/v1/admin/backup-configs/$TARGET_CONFIG_ID")
-ACTIVE=$(echo "$CFG" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(d.get("active", False))' 2>/dev/null || echo "?")
-[[ "$ACTIVE" = "True" ]] && pass "target $TARGET_CONFIG_ID is active" || fail "target not active: $ACTIVE"
+LIST=$(curl_admin "$ADMIN_HOST/api/v1/admin/backup-configs")
+ACTIVE=$(echo "$LIST" | TARGET_CONFIG_ID="$TARGET_CONFIG_ID" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+rows = d.get("data") or d
+target = os.environ["TARGET_CONFIG_ID"]
+for r in (rows if isinstance(rows, list) else []):
+    if r.get("id") == target:
+        print(bool(r.get("active")))
+        sys.exit(0)
+print("not_found")
+')
+[[ "$ACTIVE" = "True" ]] && pass "target $TARGET_CONFIG_ID is active" || fail "target $TARGET_CONFIG_ID active=$ACTIVE"
 
 log "3) Trigger pg_dump"
 RESP=$(curl_admin -X POST "$ADMIN_HOST/api/v1/system-backup/pg-dump" \
