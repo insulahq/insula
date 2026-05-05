@@ -58,29 +58,30 @@ export async function createPgDumpJob(
     app: 'platform-api',
   };
 
+  // Pod env: only what the orchestrator needs to bootstrap. PGUSER /
+  // PGPASSWORD are NOT here — they're resolved at runtime by reading
+  // the CNPG cluster's bootstrap Secret in its own namespace, which
+  // works for cross-namespace clusters like mail/mail-pg (pod env
+  // secretKeyRef is namespace-local). JWT_SECRET is also dropped:
+  // pg-dump-job never issues or verifies JWTs, so mounting it here
+  // would needlessly widen the blast radius of a container escape.
   const env: Array<Record<string, unknown>> = [
     { name: 'NODE_ENV', value: 'production' },
     { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'platform-db-credentials', key: 'url' } } },
-    { name: 'JWT_SECRET', valueFrom: { secretKeyRef: { name: 'platform-jwt-secret', key: 'secret' } } },
     {
+      // Key in platform-secrets is kebab-case (matches how the
+      // platform-api Deployment maps it). Optional so a Job pod can
+      // still start in dev clusters that don't have the key — the
+      // orchestrator will throw a clean error if the chosen backup
+      // target has encrypted credentials and the var is missing.
       name: 'OIDC_ENCRYPTION_KEY',
-      valueFrom: { secretKeyRef: { name: 'platform-secrets', key: 'OIDC_ENCRYPTION_KEY', optional: true } },
+      valueFrom: { secretKeyRef: { name: 'platform-secrets', key: 'oidc-encryption-key', optional: true } },
     },
     { name: 'PG_DUMP_RUN_ID', value: inputs.runId },
     { name: 'PG_DUMP_NAMESPACE', value: inputs.namespace },
     { name: 'PG_DUMP_CLUSTER', value: inputs.cluster },
     { name: 'PG_DUMP_DATABASE', value: inputs.database },
     { name: 'PG_DUMP_TARGET_CONFIG_ID', value: inputs.targetConfigId },
-    // libpq env so pg_dump picks up creds from the CNPG-managed Secret
-    // without us building a connection string.
-    {
-      name: 'PGUSER',
-      valueFrom: { secretKeyRef: { name: `${inputs.cluster}-app`, key: 'username' } },
-    },
-    {
-      name: 'PGPASSWORD',
-      valueFrom: { secretKeyRef: { name: `${inputs.cluster}-app`, key: 'password' } },
-    },
   ];
   if (inputs.actorUserId) env.push({ name: 'PG_DUMP_ACTOR_USER_ID', value: inputs.actorUserId });
 

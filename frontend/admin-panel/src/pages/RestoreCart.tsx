@@ -493,7 +493,7 @@ function FilesPicker({ bundleId, cartReady, addItem }: PickerProps) {
                 onChange={() => toggle(e.path)}
                 className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
               />
-              <span className="flex-1 truncate text-gray-900 dark:text-gray-100">{e.path}</span>
+              <span className="flex-1 truncate text-gray-900 dark:text-gray-100" title={e.path}>{e.path.replace(/^\.\//, '')}</span>
               <span className="text-xs text-gray-500">{formatSize(e.size)}</span>
             </li>
           ))}

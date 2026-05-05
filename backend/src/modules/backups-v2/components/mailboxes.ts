@@ -83,9 +83,13 @@ const STALWART_IMAGE_DEFAULT = 'docker.io/stalwartlabs/stalwart:v0.16.3';
  * iteration order across runs.
  */
 export async function listClientMailboxAddresses(db: Database, clientId: string): Promise<string[]> {
-  const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { address: string }[] }> };
-  const r = await rawDb.execute(sql`SELECT address FROM mailboxes WHERE client_id = ${clientId} ORDER BY address`);
-  return r.rows.map((row) => row.address);
+  // The mailboxes table column is `full_address`, NOT `address`
+  // (audited 2026-05-05 against staging DB schema). Earlier code
+  // selected `address` which silently failed at execute time;
+  // caught by the integration-staging restore/mbox scenario.
+  const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { full_address: string }[] }> };
+  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE client_id = ${clientId} ORDER BY full_address`);
+  return r.rows.map((row) => row.full_address);
 }
 
 /** Validate an address before letting it into a shell command. */
