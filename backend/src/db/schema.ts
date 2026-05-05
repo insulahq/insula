@@ -1347,10 +1347,16 @@ export const systemBackupRuns = pgTable('system_backup_runs', {
   manifest: jsonb('manifest'),
   payload: bytea('payload'),
   downloadTokenHash: varchar('download_token_hash', { length: 64 }),
+  // The unhashed token is persisted alongside the payload (and wiped
+  // in the same atomic UPDATE on first download) so any of the 3
+  // platform-api replicas can hand it to the UI on GET /runs/:id. An
+  // in-process Map would route 2 of 3 polls to the wrong replica and
+  // surface downloadUrl=null. See migration 0082.
+  downloadTokenRaw: varchar('download_token_raw', { length: 256 }),
   downloadUrlExpiresAt: timestamp('download_url_expires_at', { withTimezone: true }),
   downloadedAt: timestamp('downloaded_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 export type SystemBackupRun = typeof systemBackupRuns.$inferSelect;
 

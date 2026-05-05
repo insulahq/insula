@@ -11,9 +11,12 @@
  * cutover.
  *
  * On success: payload (BYTEA) holds the age-encrypted bundle, sha256
- * + size + manifest are persisted, a download token is signed and
- * its sha256 stored. Returns runId; UI fetches the row → unwraps
- * downloadUrl using the in-memory token (not persisted).
+ * + size + manifest are persisted, a download token is signed, and
+ * BOTH the token (download_token_raw) and its hash (download_token_hash)
+ * land in the row. Replication-safety: 3 platform-api replicas — any
+ * one must be able to hand the operator the URL on GET /runs/:id. The
+ * token + payload are wiped together by the atomic claim UPDATE on
+ * first download.
  */
 
 import type { Database } from '../../db/index.js';
@@ -21,7 +24,7 @@ import { systemBackupRuns, auditLogs } from '../../db/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { exportSecretsBundle, BUNDLE_SECRET_LIST, OPERATOR_KEY_SECRETS, type BundleManifestItem } from './secrets-bundle.js';
-import { signDownloadToken, sha256Hex } from './download-token.js';
+import { signDownloadToken, verifyDownloadToken, sha256Hex } from './download-token.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export interface ExportRunInput {
@@ -59,33 +62,32 @@ export async function createSecretsBundleExport(
   logger: FastifyLogger,
 ): Promise<CreateExportResult> {
   const runId = randomUUID();
-  await input.db.insert(systemBackupRuns).values({
-    id: runId,
-    kind: 'secrets',
-    status: 'pending',
-    operatorUserId: input.operatorUserId,
-    operatorIp: input.operatorIp,
-    operatorUserAgent: input.operatorUserAgent,
-  });
-
-  // Audit-log the export attempt before any work starts. Reason is a
-  // free-form string for the operator's own log trail.
-  await input.db.insert(auditLogs).values({
-    id: randomUUID(),
-    actionType: 'system_backup_secrets_export',
-    resourceType: 'system_backup_run',
-    resourceId: runId,
-    actorId: input.operatorUserId,
-    actorType: 'user',
-    httpMethod: 'POST',
-    httpPath: '/api/v1/system-backup/secrets/export',
-    httpStatus: 202,
-    changes: { reason: input.reason },
-    ipAddress: input.operatorIp ?? null,
-  }).catch((err) => {
-    // Audit-log failure must NOT block the export — but log loudly
-    // so operations notice a missing trail.
-    logger.error({ err, runId }, '[system-backup] failed to write audit log for export');
+  // Wrap the run-row + audit-log INSERTs in one transaction. If the
+  // audit-log INSERT fails we WANT the run-row INSERT to roll back —
+  // for a security-sensitive export we'd rather return 500 than ship
+  // an unaudited bundle.
+  await input.db.transaction(async (tx) => {
+    await tx.insert(systemBackupRuns).values({
+      id: runId,
+      kind: 'secrets',
+      status: 'pending',
+      operatorUserId: input.operatorUserId,
+      operatorIp: input.operatorIp,
+      operatorUserAgent: input.operatorUserAgent,
+    });
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'system_backup_secrets_export',
+      resourceType: 'system_backup_run',
+      resourceId: runId,
+      actorId: input.operatorUserId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/system-backup/secrets/export',
+      httpStatus: 202,
+      changes: { reason: input.reason },
+      ipAddress: input.operatorIp ?? null,
+    });
   });
 
   // Fire and forget. runExport handles its own errors + DB updates.
@@ -107,7 +109,7 @@ export async function createSecretsBundleExport(
 async function runExport(runId: string, input: ExportRunInput, logger: FastifyLogger): Promise<void> {
   try {
     await input.db.update(systemBackupRuns)
-      .set({ status: 'running', updatedAt: new Date() })
+      .set({ status: 'running' })
       .where(eq(systemBackupRuns.id, runId));
 
     const bundle = await exportSecretsBundle({ k8s: input.k8s });
@@ -122,15 +124,11 @@ async function runExport(runId: string, input: ExportRunInput, logger: FastifyLo
         manifest: bundle.manifest as unknown as Record<string, unknown>,
         payload: bundle.payload,
         downloadTokenHash: signed.tokenHash,
+        downloadTokenRaw: signed.token,
         downloadUrlExpiresAt: signed.expiresAt,
-        updatedAt: new Date(),
       })
       .where(eq(systemBackupRuns.id, runId));
 
-    // Stash the unhashed token in an in-process map so the UI can
-    // fetch it once. We never persist the unhashed token — see
-    // pendingTokenForRun() below.
-    pendingTokens.set(runId, { token: signed.token, expiresAt: signed.expiresAt });
     logger.info({ runId, sizeBytes: bundle.sizeBytes, sha256: bundle.sha256 }, '[system-backup] secrets export complete');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -140,53 +138,39 @@ async function runExport(runId: string, input: ExportRunInput, logger: FastifyLo
         status: 'failed',
         finishedAt: new Date(),
         errorEnvelope: { code: 'SYSTEM_BACKUP_EXPORT_FAILED', message: msg } as unknown as Record<string, unknown>,
-        updatedAt: new Date(),
       })
       .where(eq(systemBackupRuns.id, runId));
   }
 }
 
 /**
- * In-process map of unhashed download tokens. Populated by runExport
- * on success; consumed once by the route handler and immediately
- * deleted. The hashed token is the durable artifact in the DB row.
+ * Atomically claim a download token. Two-stage:
+ *   1. verifyDownloadToken — HMAC-SHA256 + expiry check, in-process.
+ *      Without this, the only authenticity guarantee at download time
+ *      is the sha256(token) DB lookup, which is pre-image resistance,
+ *      NOT what HMAC was designed for.
+ *   2. UPDATE…RETURNING by sha256(token) — atomic single-use claim.
+ *      Wipes payload + download_token_raw + sets downloaded_at in the
+ *      SAME statement so a second download sees no matching row.
  *
- * Eviction: a periodic sweep removes entries past their expiry.
- */
-const pendingTokens = new Map<string, { token: string; expiresAt: Date }>();
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [runId, entry] of pendingTokens) {
-    if (entry.expiresAt.getTime() <= now) pendingTokens.delete(runId);
-  }
-}, 60_000).unref();
-
-/** Pop and return the unhashed token for a runId, or null if absent. */
-export function pendingTokenForRun(runId: string): { token: string; expiresAt: Date } | null {
-  const entry = pendingTokens.get(runId);
-  if (!entry) return null;
-  if (entry.expiresAt.getTime() <= Date.now()) {
-    pendingTokens.delete(runId);
-    return null;
-  }
-  return entry;
-}
-
-/**
- * Atomically claim a download token: looks up by sha256(token),
- * verifies expiry + null downloaded_at, returns the payload, sets
- * downloaded_at = now() AND payload = NULL in the SAME UPDATE so a
- * second download fails. Returns null if the token is invalid /
- * already used / expired.
+ * Returns null if the token fails MAC verify, is expired, has been
+ * used, or its row doesn't exist. Callers MUST NOT distinguish these
+ * cases to the client (single 410 response — no oracle).
  */
 export async function claimDownloadToken(
   db: Database,
   rawToken: string,
+  jwtSecret: string,
 ): Promise<{ payload: Buffer; sha256: string; sizeBytes: number; manifest: BundleManifestItem[] } | null> {
+  // Stage 1: HMAC verify. Cheap, in-process; defends against attackers
+  // who would otherwise rely on guessing valid (runId, expiresMs)
+  // tuples + raw-token entropy alone.
+  const verified = verifyDownloadToken(rawToken, jwtSecret);
+  if ('err' in verified) return null;
+
   const tokenHash = sha256Hex(rawToken);
-  // Single-statement atomic claim. RETURNING gives us the payload only
-  // when the UPDATE succeeded (i.e. the row matched all WHERE clauses).
+  // Stage 2: single-statement atomic claim. RETURNING gives us the
+  // payload only when the UPDATE matched all WHERE clauses.
   const result = await db.execute<{
     payload: Buffer;
     sha256: string;
@@ -194,14 +178,16 @@ export async function claimDownloadToken(
     manifest: unknown;
   }>(sql`
     UPDATE system_backup_runs
-       SET downloaded_at = now(),
-           payload       = NULL,
-           updated_at    = now()
-     WHERE download_token_hash    = ${tokenHash}
-       AND downloaded_at          IS NULL
-       AND status                 = 'succeeded'
+       SET downloaded_at      = now(),
+           payload            = NULL,
+           download_token_raw = NULL,
+           updated_at         = now()
+     WHERE id                      = ${verified.ok.runId}
+       AND download_token_hash     = ${tokenHash}
+       AND downloaded_at           IS NULL
+       AND status                  = 'succeeded'
        AND download_url_expires_at > now()
-       AND payload                IS NOT NULL
+       AND payload                 IS NOT NULL
      RETURNING payload, sha256, size_bytes, manifest
   `);
   const rows = (result as unknown as { rows: Array<{
@@ -212,6 +198,11 @@ export async function claimDownloadToken(
   }> }).rows;
   if (rows.length === 0) return null;
   const r = rows[0];
+  // Defence-in-depth: validate Buffer at runtime in case the pg type
+  // parser was reconfigured (would arrive as a hex string with \x prefix).
+  if (!Buffer.isBuffer(r.payload)) {
+    return null;
+  }
   return {
     payload: r.payload,
     sha256: r.sha256,
@@ -224,7 +215,8 @@ export async function claimDownloadToken(
  * Read-only manifest of what the next bundle WOULD include. Probes
  * each Secret with a HEAD-equivalent (read + discard data). Recipient
  * is also surfaced so the operator can pre-confirm against their
- * stored age public key.
+ * stored age public key. Probes run in parallel — these are 10
+ * independent kube reads with no ordering dependency.
  */
 export async function readManifest(
   k8s: K8sClients,
@@ -237,19 +229,24 @@ export async function readManifest(
     readNamespacedConfigMap: (a: { namespace: string; name: string }) => Promise<{ data?: Record<string, string> }>;
   };
 
-  const items: Array<{ namespace: string; name: string; kind: 'Secret' | 'OperatorKey'; present: boolean }> = [];
-  for (const s of BUNDLE_SECRET_LIST) {
-    const present = await core.readNamespacedSecret({ namespace: s.namespace, name: s.name })
-      .then(() => true)
-      .catch(() => false);
-    items.push({ namespace: s.namespace, name: s.name, kind: 'Secret', present });
-  }
-  for (const s of OPERATOR_KEY_SECRETS) {
-    const present = await core.readNamespacedSecret({ namespace: s.namespace, name: s.name })
-      .then(() => true)
-      .catch(() => false);
-    items.push({ namespace: s.namespace, name: s.name, kind: 'OperatorKey', present });
-  }
+  const probes = await Promise.all([
+    ...BUNDLE_SECRET_LIST.map(async (s) => ({
+      namespace: s.namespace,
+      name: s.name,
+      kind: 'Secret' as const,
+      present: await core.readNamespacedSecret({ namespace: s.namespace, name: s.name })
+        .then(() => true)
+        .catch(() => false),
+    })),
+    ...OPERATOR_KEY_SECRETS.map(async (s) => ({
+      namespace: s.namespace,
+      name: s.name,
+      kind: 'OperatorKey' as const,
+      present: await core.readNamespacedSecret({ namespace: s.namespace, name: s.name })
+        .then(() => true)
+        .catch(() => false),
+    })),
+  ]);
 
   const operatorRecipient = await core.readNamespacedConfigMap({
     namespace: 'platform',
@@ -258,5 +255,5 @@ export async function readManifest(
     .then((cm) => cm.data?.recipient ?? null)
     .catch(() => null);
 
-  return { items, operatorRecipient };
+  return { items: probes, operatorRecipient };
 }

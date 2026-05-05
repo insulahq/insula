@@ -149,6 +149,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const app = Fastify({
     logger: deps.config.NODE_ENV !== 'test' && {
       level: deps.config.LOG_LEVEL,
+      // Redact sensitive segments from request URLs in access logs.
+      // The system-backup secrets-bundle download URL contains the
+      // one-shot HMAC token as a path parameter; without redaction it
+      // would land in pino's default `{ req: { url } }` line and any
+      // operator with log-read access could harvest tokens before
+      // their single-use mark fires. The redact path uses pino's
+      // bracket notation; censor with a literal placeholder.
+      redact: {
+        paths: ['req.url'],
+        censor: (value: unknown): unknown => {
+          if (typeof value !== 'string') return value;
+          return value.replace(
+            /\/api\/v1\/system-backup\/secrets\/download\/[^/?#]+/,
+            '/api/v1/system-backup/secrets/download/[REDACTED]',
+          );
+        },
+      },
     },
     genReqId: () => crypto.randomUUID(),
     bodyLimit: 50 * 1024 * 1024, // 50MB for SQL imports

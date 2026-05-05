@@ -29,11 +29,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as tar from 'tar-stream';
-import { gzip } from 'node:zlib';
-import { promisify } from 'node:util';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-
-const gzipAsync = promisify(gzip);
 
 /**
  * Bootstrap-time Secrets the bundle includes. MUST stay in lock-step
@@ -119,7 +115,11 @@ export async function readOperatorRecipient(k8s: K8sClients): Promise<string> {
     throw err;
   });
   const recipient = cm.data?.recipient;
-  if (!recipient || !recipient.startsWith('age1')) {
+  // age X25519 recipient is bech32: `age1` + 58 chars from the bech32
+  // charset (no '1', 'b', 'i', 'o' to avoid visual ambiguity).
+  // Strict regex prevents subprocess argument abuse if the ConfigMap
+  // is ever populated by a less-trusted path.
+  if (!recipient || !/^age1[ac-hj-np-z02-9]{58}$/i.test(recipient)) {
     throw new Error(`platform-operator-recipient ConfigMap.data.recipient invalid: ${recipient ?? '(missing)'}`);
   }
   return recipient;
@@ -261,17 +261,20 @@ export async function ageEncrypt(
 }
 
 /**
- * Top-level: list secrets, tar, gzip, age-encrypt, return.
+ * Top-level: list secrets, tar, age-encrypt, return.
  *
- * Pipeline order: tar(plaintext) → gzip → age. Gzip is in the middle
- * so age's compression-disabled mode (default) doesn't waste CPU; we
- * still get bundle compression and age remains the outermost format.
+ * Pipeline: tar(plaintext) → age. Matches the on-host
+ * `bundle_bootstrap_secrets` format in scripts/bootstrap.sh exactly,
+ * so a bundle exported through the API is byte-format-compatible
+ * with the existing `make secrets-restore BUNDLE=… KEY=…` flow + the
+ * `bootstrap.sh --secrets-bundle …` import. Compression deliberately
+ * NOT applied — age uses chacha20-poly1305 which produces high-
+ * entropy output, gzip on top wastes CPU on indistinguishable bytes.
  */
 export async function exportSecretsBundle(deps: ExportSecretsBundleDeps): Promise<SecretsBundle> {
   const recipient = await readOperatorRecipient(deps.k8s);
   const { tarBytes, manifest } = await buildSecretsTar(deps.k8s, recipient);
-  const gzipped = await gzipAsync(tarBytes);
-  const encrypted = await ageEncrypt(gzipped, recipient, deps.ageBinary);
+  const encrypted = await ageEncrypt(tarBytes, recipient, deps.ageBinary);
   const sha256 = createHash('sha256').update(encrypted).digest('hex');
   return {
     payload: encrypted,
