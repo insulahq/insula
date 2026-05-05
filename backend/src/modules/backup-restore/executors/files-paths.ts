@@ -5,10 +5,10 @@
  * namespace that mounts the tenant data PVC RW, downloads the
  * `archive.tar.gz` artifact from platform-api's internal-download
  * endpoint, and extracts the requested paths (or the whole archive
- * if selector.kind === 'all') into the PVC.
+ * if selector.kind === 'full') into the PVC.
  *
  * Selector shapes (per api-contracts/restore.ts):
- *   { kind: 'all' }
+ *   { kind: 'full' }
  *   { kind: 'paths', paths: ['var/www/html/index.php', …] }
  *
  * Idempotent re-execute: GNU tar's default behaviour is "overwrite
@@ -34,7 +34,7 @@ import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 
 interface Selector {
-  kind: 'all' | 'paths';
+  kind: 'full' | 'paths';
   paths?: readonly string[];
 }
 
@@ -51,7 +51,7 @@ export async function execFilesPathsItem(args: {
   const selector = item.selector as unknown as Selector;
   // Selector validation up-front. paths must be relative + no `..`.
   let pathArgs: 'all' | readonly string[];
-  if (selector.kind === 'all') {
+  if (selector.kind === 'full') {
     pathArgs = 'all';
   } else if (selector.kind === 'paths' && Array.isArray(selector.paths) && selector.paths.length > 0) {
     for (const p of selector.paths) {
