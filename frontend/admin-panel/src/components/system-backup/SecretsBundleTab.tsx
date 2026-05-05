@@ -38,15 +38,24 @@ export default function SecretsBundleTab() {
     }
   }, [activeRunId, runQ.data?.status]);
 
-  const onExport = async () => {
+  const onExport = (): void => {
     const reason = window.prompt(
       'Optional reason for the audit log (e.g. "Pre-upgrade snapshot", "DR drill"):',
       '',
     );
     // null = operator cancelled the prompt; abort the export.
     if (reason === null) return;
-    const result = await trigger.mutateAsync({ reason: reason || undefined });
-    setActiveRunId(result.runId);
+    // Wrap mutateAsync so the rejection lands on `trigger.error`
+    // (rendered by ExportPanel) instead of surfacing as an
+    // UnhandledPromiseRejection.
+    void (async () => {
+      try {
+        const result = await trigger.mutateAsync({ reason: reason || undefined });
+        setActiveRunId(result.runId);
+      } catch {
+        // useMutation owns trigger.error — nothing more to do here.
+      }
+    })();
   };
 
   return (

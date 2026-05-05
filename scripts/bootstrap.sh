@@ -2467,10 +2467,10 @@ import_secrets_bundle() {
   }
   trap _bundle_import_cleanup RETURN EXIT
 
-  # Decrypt + extract in a single pipeline. Age writes the tar to stdout;
-  # tar reads from stdin. Pipefail captures decrypt failures.
+  # Decrypt + extract in a single pipeline. Format is `tar | age` —
+  # both the in-cluster export (modules/system-backup/secrets-bundle.ts)
+  # and the on-host `bundle_bootstrap_secrets` produce the SAME bytes.
   if ! ( set -o pipefail; age -d -i "$SECRETS_BUNDLE_KEY" "$bundle_local" \
-           | gunzip -c \
            | tar -C "$stage" -xf - ); then
     error "Bundle decrypt/extract failed. Wrong --age-key? Corrupt bundle?"
   fi
@@ -2490,6 +2490,13 @@ import_secrets_bundle() {
   local applied=0
   for f in "$stage"/*.yaml; do
     [[ -f "$f" ]] || continue
+    # Defence in depth: refuse to apply anything that isn't a Secret.
+    # The bundle is age-encrypted so external tampering is mitigated,
+    # but a future operator-key compromise must not let an attacker
+    # smuggle ClusterRoleBindings or Deployments through this path.
+    if ! grep -qE '^kind: Secret[[:space:]]*$' "$f"; then
+      error "Refusing to apply non-Secret manifest from bundle: $f"
+    fi
     if ! kctl apply -f "$f" >/dev/null; then
       error "Failed to apply secret manifest: $f"
     fi
