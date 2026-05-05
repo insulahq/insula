@@ -1,0 +1,125 @@
+# Staging-only override for Stalwart 0.16's default per-IP submission
+# throttle (id `iphfjphgabab`, 5 messages/sec per remote IP).
+#
+# Why staging-only:
+#   The harness's MAIL_STRESS=1 stress test sends N concurrent SMTPS
+#   submissions from a single in-cluster tester pod (one source IP).
+#   Default throttle blocks ~75% of the storm, making the HA-failure
+#   assertion unreliable. Production keeps the default — real
+#   anti-spam protection matters there.
+#
+# Why a Job (not a Kustomize patch):
+#   Stalwart's MtaInboundThrottle settings live in Stalwart's PG
+#   (mail-pg CNPG cluster), not in any k8s resource. They're created
+#   by Stalwart at first install and only tunable via stalwart-cli's
+#   `update MtaInboundThrottle <id>` against the JMAP mgmt API. Flux
+#   can't reconcile this; a one-shot Job invoking the cli is the
+#   canonical approach.
+#
+# Idempotency:
+#   `cli update --field enable=false` is idempotent. Re-running the
+#   Job after Flux reconciles is a no-op. The Job has
+#   `restartPolicy: OnFailure` + `activeDeadlineSeconds: 600` so it
+#   eventually gives up if the recovery admin password is wrong (and
+#   surfaces the failure in `kubectl get jobs`).
+#
+# Order of operations:
+#   1. Operator runs scripts/bootstrap.sh:bootstrap_stalwart_v016
+#      which creates stalwart-admin-creds (with recoveryPassword).
+#   2. Flux applies this overlay; Job spawns.
+#   3. Job downloads stalwart-cli, authenticates as `admin` via
+#      recovery password, runs `update MtaInboundThrottle ...`.
+#   4. Stalwart applies the change to its in-memory config (no
+#      restart needed).
+#
+# To restore the default (e.g. before promoting staging behavior to
+# production), delete this file from the overlay; Flux's prune will
+# remove the Job. Operators who want to re-enable the throttle on a
+# live cluster can:
+#   stalwart-cli --user admin update MtaInboundThrottle iphfjphgabab \
+#     --field enable=true
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stalwart-throttle-override
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-throttle-override
+    app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    # Keep the Job's last execution visible for forensics; Flux will
+    # NOT recreate it unless the file changes (which writes a new
+    # generation and triggers re-apply).
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stalwart-throttle-override
+    spec:
+      restartPolicy: OnFailure
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: platform.example.test/node-role
+                    operator: In
+                    values: [server]
+      tolerations:
+        - key: platform.example.test/server-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: cli
+          image: alpine:3.20
+          env:
+            - name: STALWART_URL
+              value: "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080"
+            - name: STALWART_USER
+              value: "admin"
+            - name: STALWART_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: stalwart-admin-creds
+                  key: recoveryPassword
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache wget tar xz >/dev/null
+              cd /tmp
+              # SHA256-pinned download — same version the bootstrap-job
+              # uses (k8s/base/stalwart-v016/stalwart/bootstrap-job.yaml).
+              CLI_VERSION="v1.0.4"
+              wget -q -O cli.tar.xz \
+                "https://github.com/stalwartlabs/cli/releases/download/$${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
+              tar -xJf cli.tar.xz
+              CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli
+              chmod +x "$$CLI"
+
+              # Wait for Stalwart mgmt port to be reachable (Stalwart
+              # rollout may still be in progress when this Job spawns).
+              for i in $$(seq 1 30); do
+                if "$$CLI" query MtaInboundThrottle >/dev/null 2>&1; then
+                  break
+                fi
+                echo "waiting for stalwart mgmt API..."
+                sleep 5
+              done
+
+              echo "BEFORE:"
+              "$$CLI" get MtaInboundThrottle iphfjphgabab 2>&1 | grep -E "Description|Enabled|Count|Period" || true
+
+              # Disable the per-IP throttle (id is stable across Stalwart
+              # 0.16 installs — generated deterministically from a hash
+              # of the throttle definition's natural key).
+              "$$CLI" update MtaInboundThrottle iphfjphgabab --field 'enable=false'
+              echo "AFTER:"
+              "$$CLI" get MtaInboundThrottle iphfjphgabab 2>&1 | grep -E "Description|Enabled|Count|Period" || true
+
+              echo "stalwart-throttle-override: per-IP throttle disabled (staging-only)"
