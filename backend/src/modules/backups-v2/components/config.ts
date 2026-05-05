@@ -110,6 +110,14 @@ export const CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES: ReadonlyMap<string, string> 
   ['imapSyncJobs', 'point-in-time job state, not part of the restored client'],
   ['clientMeshProxyState', 'runtime proxy state, regenerated on restore'],
   ['clientOauth2ProxyState', 'runtime proxy state, regenerated on restore'],
+  // Tenant-backup-restore cart metadata — restoring carts from a
+  // bundle would recursively re-apply old restore items; the cart
+  // is operator-issued state that doesn't roundtrip with tenant data.
+  ['restoreJobs', 'restore cart metadata; out of band of tenant data'],
+  // Private worker tunnel state — issuer creds + agent registration
+  // are platform-managed; restoring a workers row resurrects stale
+  // tunnel state that the issuer no longer trusts.
+  ['privateWorkers', 'tunnel agent registration state; re-issued on restore'],
 ]);
 
 type ConfigDumpTable = typeof CONFIG_DUMP_TABLES[number];

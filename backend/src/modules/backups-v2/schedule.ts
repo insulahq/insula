@@ -91,6 +91,24 @@ export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTic
       await app.db.update(clientBackupSchedules)
         .set({ lastRunStatus: 'failed' })
         .where(eq(clientBackupSchedules.clientId, row.clientId));
+      // Notify platform operators (super_admin + admin) so a
+      // persistent schedule failure is page-able rather than buried
+      // in last_run_status. Fire-and-forget; notification failure
+      // does NOT regress the tick or other clients in the loop.
+      try {
+        const { resolveRecipients } = await import('../notifications/recipients.js');
+        const { notifyUsers } = await import('../notifications/service.js');
+        const recipients = await resolveRecipients(app.db, { kind: 'admin' });
+        await notifyUsers(app.db, recipients, {
+          type: 'error',
+          title: `Scheduled backup failed`,
+          message: `The ${row.frequency} scheduled backup for client ${row.clientId} failed: ${(err as Error).message}. The next tick (5 min) will retry; check the bundle list and the platform-api logs for details.`,
+          resourceType: 'client',
+          resourceId: row.clientId,
+        });
+      } catch (notifyErr) {
+        app.log.warn({ err: notifyErr, clientId: row.clientId }, 'tenant-backup schedule: failure-notification dispatch failed');
+      }
     }
   }
 

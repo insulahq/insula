@@ -30,7 +30,7 @@ FROM node:22-alpine
 # format created by scripts/bootstrap.sh and decoded by `make
 # secrets-restore`. age is a tiny static Go binary shipped in the
 # alpine community repo.
-RUN apk add --no-cache openssl age
+RUN apk add --no-cache openssl age postgresql-client
 
 WORKDIR /app
 

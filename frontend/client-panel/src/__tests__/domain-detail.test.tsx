@@ -174,48 +174,8 @@ describe('Client DNS tab', () => {
 
 // Hosting and Protected Directories test suites removed — tabs moved to RouteDetail.
 
-describe('auto-verify on mount', () => {
-  it('fires verifyDomain mutation on mount when verificationCacheAt is null (stale)', async () => {
-    // Domain has no cache — should trigger verify automatically
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/platform/ingress-base-domain'))
-        return Promise.resolve({ data: { ingressBaseDomain: 'ingress.platform.net' } });
-      if (url.includes('/domains') && !url.includes('/dns-records') && !url.includes('/verify'))
-        return Promise.resolve({ data: [MOCK_DOMAIN], pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
-      if (url.includes('/verify'))
-        return Promise.resolve({ data: { verified: true, checks: [], domainId: 'd1', domainName: 'example.com', cached: false } });
-      return Promise.resolve({ data: [] });
-    });
-
-    render(<DomainDetail />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toBeInTheDocument());
-
-    // Verify was called automatically
-    await waitFor(() => {
-      const calls = (mockApiFetch as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-      const verifyCalls = calls.filter(([url]) => typeof url === 'string' && url.includes('/verify'));
-      expect(verifyCalls.length).toBeGreaterThan(0);
-    });
-  });
-
-  it('does NOT fire verifyDomain mutation when cache is fresh (within 24h)', async () => {
-    // Domain has a fresh cache — should NOT trigger verify
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/platform/ingress-base-domain'))
-        return Promise.resolve({ data: { ingressBaseDomain: 'ingress.platform.net' } });
-      if (url.includes('/domains') && !url.includes('/dns-records') && !url.includes('/verify'))
-        return Promise.resolve({ data: [MOCK_DOMAIN_WITH_FRESH_CACHE], pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
-      return Promise.resolve({ data: [] });
-    });
-
-    render(<DomainDetail />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toBeInTheDocument());
-
-    // Give React time to settle effects
-    await new Promise((r) => setTimeout(r, 50));
-
-    const calls = (mockApiFetch as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-    const verifyCalls = calls.filter(([url]) => typeof url === 'string' && url.includes('/verify'));
-    expect(verifyCalls.length).toBe(0);
-  });
-});
+// Auto-verify-on-mount was intentionally removed (see DomainDetail.tsx
+// line 61–62): the cron re-verifies every 24h; per-page-mount auto-fire
+// caused duplicate DNS calls + delayed page render on every visit.
+// The "fresh cache skips verify" behaviour collapses to a no-op now —
+// verify is operator-triggered or cron-only.
