@@ -60,7 +60,10 @@ export function computeDefaults(apex: string): {
   }
   return {
     longhornUrl: `https://longhorn.${normalised}/`,
-    stalwartAdminUrl: `https://stalwart.${normalised}/`,
+    // Stalwart 0.16 web UI lives at `/admin/` — `/` returns 404 and `/admin`
+    // 302-redirects to `/admin/`. The trailing slash matters because the
+    // SPA's bundled assets are root-relative under that path.
+    stalwartAdminUrl: `https://stalwart.${normalised}/admin/`,
     webmailUrl: `https://webmail.${normalised}/`,
     mailServerHostname: `mail.${normalised}`,
   };
