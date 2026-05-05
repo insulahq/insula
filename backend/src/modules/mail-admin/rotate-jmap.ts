@@ -111,33 +111,42 @@ export async function rotateAdminPasswordViaJmapImpl(
   // 120s leaves headroom for slow nodes / image-pull / liveness probes.
   const verifyTimeoutMs = opts.verifyTimeoutMs ?? 120_000;
 
-  // 1. Resolve JMAP account ID
-  const accountId = await deps.getJmapAccountId();
-
-  // 2. Find admin principal ID. The admin can be served two ways:
-  //   (a) via STALWART_RECOVERY_ADMIN env (recovery / bootstrap mode —
-  //       no Account row exists in the DB); the credential lives in
-  //       the stalwart-admin-creds Secret only.
-  //   (b) via a real x:Account/User principal in the DB; createMailbox
-  //       puts user mailboxes here, and bootstrap installs `admin`
-  //       once the cluster is past first-init.
-  // For (a), JMAP rotation is impossible — there's nothing to update.
-  // For (b), we issue x:Account/set to update credentials/0/secret.
-  // Either way, the Secret-side patch in step 4 is what platform-api
-  // and the kubelet pick up; Reloader rolls Stalwart on Secret change
-  // so the recovery-admin path picks up the new password too.
-  const principalId = await deps.findAdminPrincipalId(accountId, opts.username);
-
-  // 3. If a real Account exists, update its secret via JMAP so the
-  //    rotation is in-flight (no Stalwart restart). Skip cleanly when
-  //    only the recovery-admin credential is in play.
-  if (principalId) {
-    await deps.updateAdminPassword(accountId, principalId, plain);
-  } else {
-    log.info({
-      username: opts.username,
-    }, 'no Stalwart Account principal — rotating recovery-admin Secret only (Reloader will roll the pod)');
+  // 1+2+3. Try the JMAP path. Two reasons it may 401:
+  //   (a) STALWART_RECOVERY_ADMIN-only mode — there's no Account row, so
+  //       JMAP /session refuses unauthenticated. No JMAP rotation
+  //       needed; the Secret-patch in step 4 plus Reloader is enough.
+  //   (b) Pre-existing drift between the platform-api-mounted Secret
+  //       and Stalwart's env var (from a half-finished prior rotation
+  //       where Reloader was mid-rollout). Same recovery: patch the
+  //       Secret, let Reloader sync.
+  // In both cases proceeding to the Secret patch is the correct fix.
+  // Without this fallback the operator was stuck in a loop: every
+  // click hit 401 because we couldn't even AUTHENTICATE to do the
+  // rotation, even though patching the Secret directly would unstick
+  // it.
+  let jmapPathSucceeded = false;
+  try {
+    const accountId = await deps.getJmapAccountId();
+    const principalId = await deps.findAdminPrincipalId(accountId, opts.username);
+    if (principalId) {
+      await deps.updateAdminPassword(accountId, principalId, plain);
+      jmapPathSucceeded = true;
+    } else {
+      log.info({
+        username: opts.username,
+      }, 'no Stalwart Account principal — rotating recovery-admin Secret only (Reloader will roll the pod)');
+    }
+  } catch (err) {
+    const status = (err as { code?: string; details?: { status?: number } })?.details?.status;
+    if (status === 401) {
+      log.warn({
+        username: opts.username,
+      }, 'JMAP /session 401 — falling back to recovery-admin Secret-patch path. Likely cause: prior rotation mid-rollout (Stalwart pod env still on previous password) OR cluster runs in recovery-admin-only mode (no Account row).');
+    } else {
+      throw err;
+    }
   }
+  void jmapPathSucceeded;
 
   // 4. Patch the k8s Secret mirror so platform-api picks up the new
   //    cleartext via volume-mount refresh (~60s, no restart needed).
