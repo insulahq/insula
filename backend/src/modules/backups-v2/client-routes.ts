@@ -23,7 +23,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq, desc, and } from 'drizzle-orm';
-import { authenticate, requirePanel } from '../../middleware/auth.js';
+import { authenticate, requirePanel, requireClientAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {
@@ -48,6 +48,13 @@ import { decrypt } from '../oidc/crypto.js';
 export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('client'));
+  // Defence-in-depth: even though every handler reads the clientId
+  // from the JWT (never the URL params) and filters DB queries by
+  // it, requireClientAccess gives a second enforcement layer so a
+  // future handler that forgets the WHERE clause can't leak across
+  // tenants. The middleware is a no-op for these handlers (no
+  // :clientId params) but rejects malformed client-panel tokens.
+  app.addHook('onRequest', requireClientAccess());
 
   // Resolve the client from the JWT — every route shares this.
   function clientIdFromRequest(request: { user?: { clientId?: string } }): string {
@@ -252,6 +259,13 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string): Promi
   if (!configuredKey && process.env.NODE_ENV === 'production') {
     throw new ApiError('CONFIG_INVALID', 'OIDC_ENCRYPTION_KEY is not configured', 500);
   }
+  if (!configuredKey) {
+    // Match the admin-side warn-log so operators see the zero-key
+    // fallback path on staging the same way they see it on the
+    // admin route. Without this, a staging-only reproduction is
+    // silent in the client-panel path.
+    app.log.warn('backups-v2 client: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Decrypted credentials are trivially recoverable in this environment.');
+  }
   const encKey = configuredKey ?? '0'.repeat(64);
   if (cfg.storageType === 's3') {
     let accessKey = '';
@@ -259,7 +273,8 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string): Promi
     try {
       accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
       secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
-    } catch {
+    } catch (err) {
+      app.log.error({ err, configId: cfg.id }, 'backups-v2 client: S3 credential decryption failed');
       throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed', 500);
     }
     if (!accessKey || !secretKey) throw new ApiError('CONFIG_INVALID', 'S3 credentials missing', 400);
@@ -279,7 +294,8 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string): Promi
     let privateKey = '';
     try {
       privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
-    } catch {
+    } catch (err) {
+      app.log.error({ err, configId: cfg.id }, 'backups-v2 client: SSH key decryption failed');
       throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed', 500);
     }
     return new SshBackupStore({
