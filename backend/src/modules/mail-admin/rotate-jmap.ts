@@ -138,10 +138,19 @@ export async function rotateAdminPasswordViaJmapImpl(
     }
   } catch (err) {
     const status = (err as { code?: string; details?: { status?: number } })?.details?.status;
-    if (status === 401) {
+    // 401: bad/stale credentials — see comment above.
+    // 429: Stalwart's auth-attempt rate-limit triggered after prior
+    // attempts hit 401 in succession. The Secret-patch path doesn't
+    // touch Stalwart's auth surface, so it bypasses the rate-limit
+    // window. Without this clause every operator click after the
+    // first 401 worsens the rate-limit window and ALL subsequent
+    // rotations 500 until Stalwart's auth-attempt counter resets
+    // (~5min on default config).
+    if (status === 401 || status === 429) {
       log.warn({
         username: opts.username,
-      }, 'JMAP /session 401 — falling back to recovery-admin Secret-patch path. Likely cause: prior rotation mid-rollout (Stalwart pod env still on previous password) OR cluster runs in recovery-admin-only mode (no Account row).');
+        status,
+      }, 'JMAP /session refused (auth) — falling back to recovery-admin Secret-patch path. Likely cause: prior rotation mid-rollout (Stalwart pod env still on previous password) OR cluster runs in recovery-admin-only mode (no Account row) OR Stalwart auth-attempt rate-limit window from prior failed attempts.');
     } else {
       throw err;
     }
