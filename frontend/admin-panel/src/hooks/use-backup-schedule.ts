@@ -32,6 +32,23 @@ export function useUpdateClientBackupSchedule(clientId: string) {
   });
 }
 
+/**
+ * Force the next Tier-1 scheduler tick to fire this client's
+ * scheduled bundle immediately (within 5 min). Server resets
+ * last_run_at to NULL on the row.
+ */
+export function useRunBackupScheduleNow(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { clientId: string; message: string } }>(
+        `/api/v1/admin/clients/${clientId}/backup-schedule/run-now`,
+        { method: 'POST', body: '{}' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-schedule', clientId] }),
+  });
+}
+
 export function useDeleteClientBackupSchedule(clientId: string) {
   const qc = useQueryClient();
   return useMutation({
