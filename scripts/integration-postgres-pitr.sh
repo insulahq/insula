@@ -146,10 +146,14 @@ if [[ "$HTTP" != "202" ]]; then
 fi
 pass "PITR async accepted in ${ELAPSED}s — orchestration started"
 
-log "7b) Poll status until orchestration completes (≤12 min)"
+log "7b) Poll status until orchestration completes (≤30 min for HA)"
+# Budget covers HA worst-case: 8min temp + 16min recreate-source @
+# 3 instances + ~5min snapshot/cleanup + slack. Single-instance
+# typically returns in ~6min so the loop exits via the inProgress=False
+# success check long before the deadline.
 START_POLL=$(date +%s)
 LAST_PHASE=""
-for _ in {1..72}; do
+for _ in {1..180}; do
   IN_PROGRESS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])' 2>/dev/null || echo "unreachable")
   CLUSTER_PHASE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
   if [[ "$CLUSTER_PHASE" != "$LAST_PHASE" ]]; then

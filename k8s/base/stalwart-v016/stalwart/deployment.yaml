@@ -41,7 +41,16 @@ metadata:
     configmap.reloader.stakater.com/reload: "stalwart-config-v016"
     secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds"
 spec:
-  replicas: 1
+  # Cut 3 (2026-05-05): replicas removed from manifest — owned by the
+  # platform-storage-policy reconciler (Apply HA / Apply Local). Same
+  # pattern as admin-panel / platform-api / roundcube. Without this,
+  # Flux's kustomize-controller (server-side-apply with force-conflicts)
+  # claims `.spec.replicas` and reverts every reconcile back to 1, so
+  # the operator's `kubectl scale` (via /scale subresource) gets undone
+  # within ~5 min. Empirically observed on staging 2026-05-04 evening
+  # — Apply HA scaled stalwart 1→3 but next Flux reconcile reverted to
+  # 1 because the manifest pinned it. Fresh clusters land at k8s
+  # default = 1 until storage-policy fires for the first time.
   selector:
     matchLabels:
       app: stalwart-mail-v016
