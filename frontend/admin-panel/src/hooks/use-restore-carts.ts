@@ -19,7 +19,13 @@ import type {
 interface CartDetailResponse { readonly data: RestoreJobDetail }
 interface CartSummaryResponse { readonly data: RestoreJobSummary }
 interface CartItemResponse { readonly data: RestoreItemInfo }
-interface CartListResponse { readonly data: ReadonlyArray<RestoreJobSummary> }
+// API envelope: success() wraps the handler's payload as {data: ...}.
+// The list handler returns success({data: [...]}) so the over-the-wire
+// shape is {data: {data: [...]}}. Earlier this interface declared
+// only one level of `data` — consumers that did `q.data?.data ?? []`
+// got the inner ENVELOPE OBJECT (not an array), and calling .map()
+// on it threw "s.map is not a function" once any cart existed.
+interface CartListResponse { readonly data: { readonly data: ReadonlyArray<RestoreJobSummary> } }
 
 /**
  * List recent restore carts. Auto-refreshes every 30s so an
