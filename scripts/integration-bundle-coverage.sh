@@ -220,25 +220,32 @@ else
 fi
 
 # ─── Coverage assertion: every CONFIG_DUMP_TABLE has a SELECT case ─
+#
+# This static check needs the source tree. When the harness runs on a
+# staging server (no checkout), skip — the CI schema-audit already
+# enforces it on every PR.
 
-log "asserting CONFIG_DUMP_TABLES contract…"
 DUMP_FILE="$ROOT/backend/src/modules/tenant-bundles/components/config.ts"
-declared=$(awk '/^export const CONFIG_DUMP_TABLES = \[/,/^\] as const;/' "$DUMP_FILE" \
-  | grep -oE "'[a-zA-Z]+'" | tr -d "'")
-declared_count=$(echo "$declared" | wc -l | tr -d ' ')
+if [[ -f "$DUMP_FILE" ]]; then
+  log "asserting CONFIG_DUMP_TABLES contract…"
+  declared=$(awk '/^export const CONFIG_DUMP_TABLES = \[/,/^\] as const;/' "$DUMP_FILE" \
+    | grep -oE "'[a-zA-Z]+'" | tr -d "'")
+  declared_count=$(echo "$declared" | wc -l | tr -d ' ')
 
-# Each table MUST have a `case "<table>":` in selectClientRows.
-missing_cases=()
-for t in $declared; do
-  if ! grep -q "case '$t':" "$DUMP_FILE"; then
-    missing_cases+=("$t")
+  missing_cases=()
+  for t in $declared; do
+    if ! grep -q "case '$t':" "$DUMP_FILE"; then
+      missing_cases+=("$t")
+    fi
+  done
+
+  if [[ ${#missing_cases[@]} -eq 0 ]]; then
+    ok "every declared CONFIG_DUMP_TABLE ($declared_count) has a SELECT case"
+  else
+    fail "tables declared but with no SELECT case: ${missing_cases[*]}"
   fi
-done
-
-if [[ ${#missing_cases[@]} -eq 0 ]]; then
-  ok "every declared CONFIG_DUMP_TABLE ($declared_count) has a SELECT case"
 else
-  fail "tables declared but with no SELECT case: ${missing_cases[*]}"
+  log "skipping static contract check — no source tree at $ROOT (CI schema-audit covers this)"
 fi
 
 # ─── Coverage assertion: rowCounts contains every captured table ─
