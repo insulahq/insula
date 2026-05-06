@@ -180,10 +180,12 @@ while IFS=$'\t' read -r name remote_port; do
     die "Invalid PRIVATE_WORKER_TARGET '${target}' — expected host:port."
   fi
   # Character-class whitelist — defends against TOML injection via newlines
-  # or quotes embedded in the env var. Only DNS-label / IPv4 / bracketed-IPv6
-  # characters allowed; port must be a bare 1-65535 integer.
-  if ! [[ "${target_ip}" =~ ^[A-Za-z0-9._\[\]-]+$ ]]; then
-    die "Invalid PRIVATE_WORKER_TARGET host '${target_ip}' — only alphanumeric, dots, hyphens, brackets allowed."
+  # or quotes embedded in the env var. Hostname / IPv4 only; port must be
+  # a bare 1-65535 integer. (IPv6 literals like [::1] aren't supported as
+  # PRIVATE_WORKER_TARGET — operators with IPv6-only home services should
+  # use a hostname; an A/AAAA record covers either family.)
+  if ! [[ "${target_ip}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    die "Invalid PRIVATE_WORKER_TARGET host '${target_ip}' — only alphanumeric, dots, hyphens allowed (use a hostname for IPv6 targets)."
   fi
   if ! [[ "${target_port}" =~ ^[0-9]+$ ]] || (( target_port < 1 || target_port > 65535 )); then
     die "Invalid PRIVATE_WORKER_TARGET port '${target_port}' — must be an integer 1-65535."
