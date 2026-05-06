@@ -324,6 +324,89 @@ export async function getMailbox(
   return record;
 }
 
+/**
+ * Drift recovery (2026-05-06): JMAP-create an orphaned mailbox in Stalwart.
+ *
+ * Used by `updateMailbox` when the operator sets a new password on a
+ * mailbox whose `stalwart_principal_id` is null — typically a leftover
+ * from a `mail-pg` wipe where the platform DB row survived but Stalwart's
+ * Account row was lost. Returns the new Stalwart principal id, or null
+ * if Stalwart isn't reachable / not configured / the email-domain itself
+ * is also orphan (no `stalwart_domain_id` to attach the account to).
+ *
+ * Best-effort by design: failures surface as the caller's logged warning,
+ * not a transaction abort. The platform-DB bcrypt is updated independently.
+ */
+export async function syncOrphanMailboxToStalwart(
+  db: Database,
+  existingMailbox: { id: string; emailDomainId: string; localPart: string; displayName: string | null; quotaMb: number },
+  plaintextPassword: string,
+): Promise<string | null> {
+  // Need the email_domain's stalwart_domain_id to attach the account to.
+  const [emailDomain] = await db
+    .select()
+    .from(emailDomains)
+    .where(eq(emailDomains.id, existingMailbox.emailDomainId));
+
+  if (!emailDomain) {
+    log.warn({ mailboxId: existingMailbox.id }, 'syncOrphanMailboxToStalwart: email_domain row missing');
+    return null;
+  }
+  if (!emailDomain.stalwartDomainId) {
+    log.warn({
+      mailboxId: existingMailbox.id,
+      emailDomainId: emailDomain.id,
+    }, 'syncOrphanMailboxToStalwart: email_domain has no stalwartDomainId — cannot attach account. Re-run enableEmailForDomain first.');
+    return null;
+  }
+
+  const accountId = await getJmapAccountId();
+  if (!accountId) {
+    log.info({ mailboxId: existingMailbox.id }, 'syncOrphanMailboxToStalwart: no JMAP account id (Stalwart unreachable?) — skipping');
+    return null;
+  }
+
+  const { accountSet } = await import('../stalwart-jmap/client.js');
+  const result = await accountSet({
+    accountId,
+    baseUrl: process.env.STALWART_MGMT_URL,
+    request: {
+      create: {
+        'orphan-recovery': {
+          '@type': 'User',
+          name: existingMailbox.localPart,
+          domainId: emailDomain.stalwartDomainId,
+          credentials: {
+            '0': {
+              '@type': 'Password',
+              secret: plaintextPassword,
+              allowedIps: {},
+              expiresAt: null,
+            },
+          },
+          ...(existingMailbox.displayName ? { description: existingMailbox.displayName } : {}),
+          // Stalwart `quota.storage` is bytes; the platform stores MB.
+          quotas: { storage: existingMailbox.quotaMb * 1024 * 1024 },
+        },
+      },
+    },
+  });
+
+  const created = result.created?.['orphan-recovery'];
+  const notCreated = result.notCreated?.['orphan-recovery'];
+  if (notCreated) {
+    throw new ApiError(
+      'MAIL_SERVER_ERROR',
+      `Stalwart x:Account/set rejected create during orphan recovery: ${notCreated.description ?? notCreated.type}`,
+      502,
+      { type: notCreated.type },
+      'Likely the local_part collides with an existing account in Stalwart (created out-of-band). Inspect with stalwart-cli query Account.',
+    );
+  }
+  const newId = (created as { id?: string } | undefined)?.id;
+  return typeof newId === 'string' ? newId : null;
+}
+
 export async function updateMailbox(
   db: Database,
   clientId: string,
@@ -372,6 +455,7 @@ export async function updateMailbox(
   // suspension shim was retired in M11.
   if (input.quota_mb !== undefined || input.password !== undefined) {
     if (existingMailbox.stalwartPrincipalId) {
+      // Synced mailbox: JMAP-PATCH the existing principal.
       const accountId = await getJmapAccountId();
       if (accountId) {
         const patch: Record<string, unknown> = {};
@@ -395,6 +479,46 @@ export async function updateMailbox(
             err: err instanceof Error ? err.message : String(err),
           }, 'updateMailbox: JMAP patch failed (platform DB authoritative; principals-sync will reconcile)');
         }
+      }
+    } else if (input.password !== undefined) {
+      // 2026-05-06: orphan-mailbox recovery path. The mailbox exists in
+      // platform DB but has no Stalwart counterpart (typical post-mail-pg-
+      // wipe state — see docs/02-operations/MAIL_PG_RESTORE.md for the
+      // root cause). When the operator sets a NEW password, we have an
+      // opportunity to JMAP-CREATE the mailbox in Stalwart with that
+      // plaintext, since Stalwart cannot import pre-hashed credentials
+      // (verified empirically 2026-05-06: any bcrypt secret passed to
+      // Account/credentials/0/secret is treated as plaintext + re-hashed).
+      //
+      // This is the EXISTING "Reset password" UI flow doubling as drift
+      // recovery — no new operator action required. Without it, every
+      // operator-initiated password reset on an orphan mailbox just
+      // updated the platform-DB bcrypt and Stalwart never saw the new
+      // password. The mailbox stayed orphan forever and the user could
+      // never log in.
+      //
+      // Best-effort: failures here surface as a logged warning + the
+      // platform-DB bcrypt update still completes. The mailbox stays
+      // orphan but the operator hasn't lost work — they can retry.
+      try {
+        const newPrincipalId = await syncOrphanMailboxToStalwart(db, existingMailbox, input.password);
+        if (newPrincipalId) {
+          await db
+            .update(mailboxes)
+            .set({ stalwartPrincipalId: newPrincipalId })
+            .where(eq(mailboxes.id, mailboxId));
+          log.info({
+            mailboxId,
+            fullAddress: existingMailbox.fullAddress,
+            stalwartPrincipalId: newPrincipalId,
+          }, 'updateMailbox: orphan mailbox recovered via JMAP-create on password set');
+        }
+      } catch (err) {
+        log.warn({
+          mailboxId,
+          fullAddress: existingMailbox.fullAddress,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'updateMailbox: orphan recovery failed (mailbox stays orphan; platform-DB bcrypt updated; operator can retry)');
       }
     }
   }

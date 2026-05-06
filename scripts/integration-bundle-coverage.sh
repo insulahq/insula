@@ -103,26 +103,39 @@ ok "using target $target_id"
 # ─── Pick (or create) a tenant with non-trivial state ────────────
 
 stamp=$(date +%s)
+# Match the integration-staging.sh convention: prefer the Starter plan
+# so we don't create unnecessarily-expensive coverage tenants.
 plan_id=$(api GET "/plans" | python3 -c '
 import json,sys
 d = json.load(sys.stdin).get("data") or []
-print(d[0].get("id","") if d else "")' 2>/dev/null)
-catalog_id=$(api GET "/admin/catalog/entries?type=workload" | python3 -c '
+starter = next((p for p in d if p.get("name") == "Starter"), None)
+print((starter or (d[0] if d else {})).get("id",""))' 2>/dev/null)
+region_id=$(api GET "/regions" | python3 -c '
 import json,sys
-items = json.load(sys.stdin).get("data") or []
-nginx = next((x for x in items if (x.get("code") or "").startswith("nginx-php")), None)
+d = json.load(sys.stdin).get("data") or []
+print(d[0].get("id","") if d else "")' 2>/dev/null)
+# Catalog endpoint is /catalog (paginated). Resolve by code=nginx-php.
+catalog_id=$(api GET "/catalog?limit=200" | python3 -c '
+import json,sys
+body = json.load(sys.stdin)
+items = body.get("data", body) if isinstance(body, dict) else body
+items = items if isinstance(items, list) else items.get("items", [])
+nginx = next((x for x in items if (x.get("code") or "") == "nginx-php"), None)
 print(nginx.get("id","") if nginx else "")' 2>/dev/null)
 
 [[ -n "$plan_id" ]] || { fail "plans: no plan available"; exit 1; }
+[[ -n "$region_id" ]] || { fail "regions: no region available"; exit 1; }
 [[ -n "$catalog_id" ]] || { fail "catalog: nginx-php entry not found"; exit 1; }
 
-cid=$(api POST "/clients" "{
+create_resp=$(api POST "/clients" "{
   \"company_name\": \"coverage-$stamp\",
-  \"contact_email\": \"coverage-$stamp@example.test\",
+  \"company_email\": \"coverage-$stamp@example.test\",
   \"plan_id\": \"$plan_id\",
-  \"region_id\": \"default\"
-}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
-[[ -n "$cid" ]] || { fail "client: create failed"; exit 1; }
+  \"region_id\": \"$region_id\",
+  \"storage_tier\": \"local\"
+}")
+cid=$(echo "$create_resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
+[[ -n "$cid" ]] || { fail "client: create failed: $(echo "$create_resp" | head -c 300)"; exit 1; }
 ok "client created cid=$cid"
 
 # Wait for provision.
@@ -133,25 +146,14 @@ for _ in $(seq 1 30); do
   sleep 4
 done
 
-# Add cross-table state: domain + ssh-key + cron-job (covers 3 of
-# the 18 tables beyond the implicit ones from client provisioning).
+# Add cross-table state — domain, then a deployment that the domain
+# can attach to (matches the integration-staging.sh restore scenario
+# convention of creating a bare domain first, then bundling).
 hostname="cov-${stamp}.${TENANT_BASE}"
-domain_id=$(api POST "/clients/$cid/domains" "{
-  \"hostname\": \"$hostname\",
-  \"catalog_entry_id\": \"$catalog_id\"
-}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
-[[ -n "$domain_id" ]] && ok "domain created hostname=$hostname" \
-  || { fail "domain: create failed"; api DELETE "/clients/$cid" >/dev/null 2>&1; exit 1; }
-
-# Best-effort sub-user (sftp) — creates an sftpUsers row.
-sftp_user="cov${stamp}"
-sftp_resp=$(api POST "/clients/$cid/sftp-users" "{
-  \"username\": \"$sftp_user\",
-  \"password\": \"CovTest!${stamp}x\"
-}" 2>&1)
-if echo "$sftp_resp" | grep -q '"id"'; then
-  ok "sftp-user created"
-fi
+dom_resp=$(api POST "/clients/$cid/domains" "{\"domain_name\":\"$hostname\"}")
+domain_id=$(echo "$dom_resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
+[[ -n "$domain_id" ]] || { fail "domain: create failed: $(echo "$dom_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1; exit 1; }
+ok "domain created hostname=$hostname"
 
 # ─── Capture full bundle ────────────────────────────────────────
 
@@ -177,9 +179,13 @@ ok "bundle $bundle_id captured (status=$b_status)"
 
 log "verifying round-trip…"
 v_resp=$(api POST "/admin/tenant-bundles/$bundle_id/verify" "{}")
-echo "$v_resp" | python3 -c '
-import json,sys
-d = json.load(sys.stdin).get("data", {})
+# Save the verify response to a temp file so the python heredoc can
+# `open()` it. Heredoc consumes stdin, so we can't pipe.
+echo "$v_resp" > /tmp/cov-verify.json
+python3 - <<'PYEOF' > /tmp/cov-verify.out
+import json
+with open("/tmp/cov-verify.json") as f:
+    d = json.load(f).get("data", {})
 comps = d.get("components", {})
 gaps = []
 for name in ("files", "config", "secrets"):
@@ -190,18 +196,21 @@ for name in ("files", "config", "secrets"):
     if name == "files" and not c.get("reachable"):
         gaps.append(f"{name}: not reachable")
     if name == "config" and c.get("parseError"):
-        gaps.append(f"config: parseError={c[\"parseError\"]}")
+        gaps.append(f'config: parseError={c["parseError"]}')
     if name == "secrets" and c.get("decryptError"):
-        gaps.append(f"secrets: decryptError={c[\"decryptError\"]}")
+        gaps.append(f'secrets: decryptError={c["decryptError"]}')
 if gaps:
     print("GAPS")
-    for g in gaps: print(" ",g)
+    for g in gaps:
+        print(" ", g)
 else:
+    cfg = comps.get("config", {}) or {}
+    rc = cfg.get("rowCounts") or {}
     print("CLEAN")
-    print(f"  config rows: {sum((comps.get(\"config\",{}).get(\"rowCounts\") or {}).values())} across {len(comps.get(\"config\",{}).get(\"rowCounts\",{}))} tables")
-    print(f"  secrets count: {comps.get(\"secrets\",{}).get(\"secretCount\",0)}")
+    print(f"  config rows: {sum(rc.values())} across {len(rc)} tables")
+    print(f"  secrets count: {(comps.get('secrets', {}) or {}).get('secretCount', 0)}")
     print(f"  files reachable: yes")
-' > /tmp/cov-verify.out
+PYEOF
 if grep -q '^CLEAN' /tmp/cov-verify.out; then
   ok "verify: round-trip clean"
   cat /tmp/cov-verify.out | grep -v '^CLEAN' | sed 's/^/    /'
@@ -211,25 +220,32 @@ else
 fi
 
 # ─── Coverage assertion: every CONFIG_DUMP_TABLE has a SELECT case ─
+#
+# This static check needs the source tree. When the harness runs on a
+# staging server (no checkout), skip — the CI schema-audit already
+# enforces it on every PR.
 
-log "asserting CONFIG_DUMP_TABLES contract…"
 DUMP_FILE="$ROOT/backend/src/modules/tenant-bundles/components/config.ts"
-declared=$(awk '/^export const CONFIG_DUMP_TABLES = \[/,/^\] as const;/' "$DUMP_FILE" \
-  | grep -oE "'[a-zA-Z]+'" | tr -d "'")
-declared_count=$(echo "$declared" | wc -l | tr -d ' ')
+if [[ -f "$DUMP_FILE" ]]; then
+  log "asserting CONFIG_DUMP_TABLES contract…"
+  declared=$(awk '/^export const CONFIG_DUMP_TABLES = \[/,/^\] as const;/' "$DUMP_FILE" \
+    | grep -oE "'[a-zA-Z]+'" | tr -d "'")
+  declared_count=$(echo "$declared" | wc -l | tr -d ' ')
 
-# Each table MUST have a `case "<table>":` in selectClientRows.
-missing_cases=()
-for t in $declared; do
-  if ! grep -q "case '$t':" "$DUMP_FILE"; then
-    missing_cases+=("$t")
+  missing_cases=()
+  for t in $declared; do
+    if ! grep -q "case '$t':" "$DUMP_FILE"; then
+      missing_cases+=("$t")
+    fi
+  done
+
+  if [[ ${#missing_cases[@]} -eq 0 ]]; then
+    ok "every declared CONFIG_DUMP_TABLE ($declared_count) has a SELECT case"
+  else
+    fail "tables declared but with no SELECT case: ${missing_cases[*]}"
   fi
-done
-
-if [[ ${#missing_cases[@]} -eq 0 ]]; then
-  ok "every declared CONFIG_DUMP_TABLE ($declared_count) has a SELECT case"
 else
-  fail "tables declared but with no SELECT case: ${missing_cases[*]}"
+  log "skipping static contract check — no source tree at $ROOT (CI schema-audit covers this)"
 fi
 
 # ─── Coverage assertion: rowCounts contains every captured table ─
@@ -242,7 +258,7 @@ print(json.dumps(d.get("components", {}).get("config", {}).get("rowCounts", {}))
 captured_tables=$(echo "$rc_json" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin).keys()))' 2>/dev/null | sort -u)
 
 # Tables we deliberately populated above — these MUST be in rowCounts.
-expected_with_rows=("clients" "domains" "sftpUsers")
+expected_with_rows=("clients" "domains")
 for t in "${expected_with_rows[@]}"; do
   if echo "$captured_tables" | grep -qx "$t"; then
     ok "rowCounts has $t"

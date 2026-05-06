@@ -103,7 +103,7 @@ LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 INGRESS_NGINX_CHART_VERSION="4.15.1"     # controller v1.15.1, 2026-03-19
 CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
 SEALED_SECRETS_CHART_VERSION="2.17.4"    # controller v0.36.6
-CNPG_CHART_VERSION="0.23.2"              # CloudNative-PG operator v1.24.2
+CNPG_CHART_VERSION="0.28.0"              # CloudNative-PG operator v1.29.0 (PG 14-18 support; 1.24/1.27 EOL)
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 ENABLE_MONITORING=false
@@ -2232,14 +2232,48 @@ install_cnpg() {
     return 0
   fi
 
-  if kctl get deployment -n cnpg-system cnpg-controller-manager &>/dev/null 2>&1; then
-    log "CloudNative-PG operator already installed, skipping."
+  helm_cmd repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
+  helm_cmd repo update
+
+  # Detect the currently-installed chart version. helm list -o json
+  # emits a single-line JSON array (no pretty-print); each element has
+  # `name`, `chart` ("cloudnative-pg-<ver>"), and `status`. We capture
+  # once (avoid TOCTOU between the existence check and the version
+  # extraction) and only treat a `deployed` release as "already at
+  # target" — a stuck `failed` / `pending-upgrade` release at the
+  # right version still needs to be re-run to recover.
+  #
+  # WHY upgrade-aware: bumping CNPG_CHART_VERSION alone wasn't
+  # picked up by re-running bootstrap; the previous skip-if-deployment
+  # -exists short-circuit prevented the upgrade. A bump now triggers
+  # a controlled operator roll (which in turn triggers a CNPG-managed
+  # rolling switchover on existing Cluster CRs — by design).
+  local helm_json
+  helm_json=$(helm_cmd list -n cnpg-system -o json 2>/dev/null || echo "[]")
+  local current_chart_ver=""
+  local current_status=""
+  if printf '%s' "$helm_json" | grep -q '"name":"cnpg"'; then
+    current_chart_ver=$(printf '%s' "$helm_json" \
+      | sed -n 's/.*"name":"cnpg".*"chart":"cloudnative-pg-\([^"]*\)".*/\1/p' \
+      | head -n1)
+    current_status=$(printf '%s' "$helm_json" \
+      | sed -n 's/.*"name":"cnpg".*"status":"\([^"]*\)".*/\1/p' \
+      | head -n1)
+  fi
+
+  if [[ -n "$current_chart_ver" \
+        && "$current_chart_ver" == "$CNPG_CHART_VERSION" \
+        && "$current_status" == "deployed" ]]; then
+    log "CloudNative-PG operator already at chart ${CNPG_CHART_VERSION} (deployed), skipping."
     return 0
   fi
 
-  log "Installing CloudNative-PG operator (passive — no Cluster CR applied)..."
-  helm_cmd repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
-  helm_cmd repo update
+  if [[ -n "$current_chart_ver" ]]; then
+    log "Upgrading CloudNative-PG operator: chart ${current_chart_ver} (${current_status:-unknown}) → ${CNPG_CHART_VERSION}."
+    log "  Existing Cluster CRs will undergo a rolling switchover (operator-managed)."
+  else
+    log "Installing CloudNative-PG operator (passive — no Cluster CR applied)..."
+  fi
 
   helm_cmd upgrade --install cnpg cnpg/cloudnative-pg \
     --namespace cnpg-system \
@@ -2247,11 +2281,10 @@ install_cnpg() {
     --version "${CNPG_CHART_VERSION}" \
     --set monitoring.podMonitorEnabled=false \
     --wait \
-    --timeout 300s
+    --timeout 600s
 
-  log "CloudNative-PG operator installed passively."
-  log "  To activate Postgres replication, see:"
-  log "  docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md"
+  log "CloudNative-PG operator at chart ${CNPG_CHART_VERSION}."
+  log "  Activation runbook: docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md"
 }
 
 install_monitoring() {
