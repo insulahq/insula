@@ -87,6 +87,7 @@ import { backupsV2ClientRoutes } from './modules/tenant-bundles/client-routes.js
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
@@ -413,6 +414,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
+  await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
