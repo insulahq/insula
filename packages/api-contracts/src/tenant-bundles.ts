@@ -264,3 +264,30 @@ export const listBackupSchedulesResponseSchema = z.object({
   data: z.array(backupScheduleSummarySchema),
 });
 export type ListBackupSchedulesResponse = z.infer<typeof listBackupSchedulesResponseSchema>;
+
+// ─── Coverage report (BundleComponent registry + drift) ──────────────────────
+//
+// GET /admin/tenant-bundles/coverage returns the static registry of
+// what each component claims to capture, plus a runtime drift report
+// that compares declared coverage to the actual DB schema. Powers the
+// operator "Coverage" tab on the Tenant Backup admin page.
+
+export const componentOwnershipSchema = z.object({
+  name: backupComponentNameSchema,
+  description: z.string(),
+  tables: z.array(z.string()),
+  pvcs: z.array(z.string()),
+  secretTypes: z.array(z.string()),
+  externalResources: z.array(z.string()),
+});
+export type ComponentOwnership = z.infer<typeof componentOwnershipSchema>;
+
+export const bundleCoverageResponseSchema = z.object({
+  components: z.array(componentOwnershipSchema),
+  drift: z.object({
+    orphanTables: z.array(z.object({ table: z.string() })),
+    ownedTableCount: z.number().int().nonnegative(),
+    totalTenantTables: z.number().int().nonnegative(),
+  }),
+});
+export type BundleCoverageResponse = z.infer<typeof bundleCoverageResponseSchema>;

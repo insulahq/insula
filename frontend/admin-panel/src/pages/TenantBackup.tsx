@@ -20,12 +20,12 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   Package, Calendar, RotateCcw, Cloud, Search, X, Play, Pencil,
   Trash2, ShieldCheck, Download, Loader2, AlertCircle, CheckCircle2,
-  Pause, FileText, Server, Plus,
+  Pause, FileText, Server, Plus, Shield, AlertTriangle,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, downloadDataExport } from '@/hooks/use-backup-bundles';
+import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, downloadDataExport } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
@@ -38,12 +38,13 @@ import type {
   BackupJobStatus,
 } from '@k8s-hosting/api-contracts';
 
-type Tab = 'bundles' | 'schedules' | 'carts' | 'targets';
+type Tab = 'bundles' | 'schedules' | 'carts' | 'targets' | 'coverage';
 const TABS: ReadonlyArray<{ id: Tab; label: string; icon: typeof Package }> = [
   { id: 'bundles', label: 'Bundles', icon: Package },
   { id: 'schedules', label: 'Schedules', icon: Calendar },
   { id: 'carts', label: 'Restore Carts', icon: RotateCcw },
   { id: 'targets', label: 'Off-site Targets', icon: Cloud },
+  { id: 'coverage', label: 'Coverage', icon: Shield },
 ];
 
 function isTab(v: string | null): v is Tab {
@@ -111,6 +112,142 @@ export default function TenantBackup() {
       {tab === 'schedules' && <SchedulesTab />}
       {tab === 'carts' && <CartsTab />}
       {tab === 'targets' && <TargetsTab />}
+      {tab === 'coverage' && <CoverageTab />}
+    </div>
+  );
+}
+
+// ─── Coverage Tab ───────────────────────────────────────────────────
+
+function CoverageTab() {
+  const { data, isLoading, error } = useBundleCoverage();
+  const report = data?.data;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-gray-500 dark:text-gray-400">
+        <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading coverage report…
+      </div>
+    );
+  }
+  if (error || !report) {
+    return (
+      <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+        <AlertCircle className="mr-2 inline h-4 w-4" />
+        Failed to load coverage: {error instanceof Error ? error.message : 'unknown error'}
+      </div>
+    );
+  }
+
+  const { components, drift } = report;
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <p className="text-sm text-gray-700 dark:text-gray-200">
+          The bundle coverage report shows what each component captures and detects drift between declared
+          coverage and the live database. Orphan tables (a tenant DB table no component claims) indicate a
+          gap that must be closed before tenant data starts dropping silently.
+        </p>
+        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+          Source: <code className="font-mono text-xs">backend/src/modules/tenant-bundles/component-registry.ts</code>
+        </p>
+      </div>
+
+      {/* Drift summary */}
+      <section className="rounded-lg border border-gray-200 dark:border-gray-700">
+        <header className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-2 dark:border-gray-700 dark:bg-gray-800">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Drift report</h3>
+          {drift.orphanTables.length === 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/40 dark:text-green-300">
+              <CheckCircle2 size={12} /> No drift
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300">
+              <AlertTriangle size={12} /> {drift.orphanTables.length} orphan{drift.orphanTables.length === 1 ? '' : 's'}
+            </span>
+          )}
+        </header>
+        <div className="px-4 py-3 text-sm">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Tenant tables (DB)</div>
+              <div className="mt-0.5 text-2xl font-semibold text-gray-900 dark:text-gray-100">{drift.totalTenantTables}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Owned by a component</div>
+              <div className="mt-0.5 text-2xl font-semibold text-green-700 dark:text-green-300">{drift.ownedTableCount}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Orphans (silently dropped)</div>
+              <div className={`mt-0.5 text-2xl font-semibold ${drift.orphanTables.length === 0 ? 'text-gray-700 dark:text-gray-200' : 'text-red-700 dark:text-red-300'}`}>
+                {drift.orphanTables.length}
+              </div>
+            </div>
+          </div>
+          {drift.orphanTables.length > 0 && (
+            <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
+              <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+                Tables in DB with <code className="font-mono text-xs">client_id</code> that NO component claims:
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-sm text-amber-900 dark:text-amber-200">
+                {drift.orphanTables.map((o) => (
+                  <li key={o.table}><code className="font-mono">{o.table}</code></li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
+                Fix: add the table to <code className="font-mono">CONFIG_DUMP_TABLES</code> (or to{' '}
+                <code className="font-mono">CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES</code> with a reason),
+                then add it to the corresponding entry in <code className="font-mono">component-registry.ts</code>.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Per-component declarations */}
+      <section className="rounded-lg border border-gray-200 dark:border-gray-700">
+        <header className="border-b border-gray-200 bg-gray-50 px-4 py-2 dark:border-gray-700 dark:bg-gray-800">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Component registry</h3>
+        </header>
+        <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+          {components.map((c) => (
+            <li key={c.name} className="px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Package size={14} className="text-brand-600 dark:text-brand-400" />
+                <span className="font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{c.name}</span>
+              </div>
+              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">{c.description}</p>
+              <div className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                {c.tables.length > 0 && (
+                  <div>
+                    <span className="font-medium text-gray-700 dark:text-gray-200">Tables: </span>
+                    <span className="font-mono text-gray-600 dark:text-gray-300">{c.tables.join(', ')}</span>
+                  </div>
+                )}
+                {c.pvcs.length > 0 && (
+                  <div>
+                    <span className="font-medium text-gray-700 dark:text-gray-200">PVCs: </span>
+                    <span className="font-mono text-gray-600 dark:text-gray-300">{c.pvcs.join(', ')}</span>
+                  </div>
+                )}
+                {c.secretTypes.length > 0 && (
+                  <div>
+                    <span className="font-medium text-gray-700 dark:text-gray-200">Secrets: </span>
+                    <span className="font-mono text-gray-600 dark:text-gray-300">{c.secretTypes.join(', ')}</span>
+                  </div>
+                )}
+                {c.externalResources.length > 0 && (
+                  <div>
+                    <span className="font-medium text-gray-700 dark:text-gray-200">External: </span>
+                    <span className="font-mono text-gray-600 dark:text-gray-300">{c.externalResources.join('; ')}</span>
+                  </div>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
     </div>
   );
 }

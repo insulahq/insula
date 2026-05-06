@@ -23,6 +23,7 @@ vi.mock('../hooks/use-backup-bundles', () => ({
   useDeleteBundle: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useVerifyBundle: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCreateBundle: vi.fn(() => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { bundleId: 'bkp-new', status: 'pending' } }), isPending: false })),
+  useBundleCoverage: vi.fn(),
   downloadDataExport: vi.fn(),
 }));
 vi.mock('../hooks/use-backup-schedule', () => ({
@@ -43,12 +44,13 @@ vi.mock('../hooks/use-clients', () => ({
   useClient: vi.fn(() => ({ data: undefined })),
 }));
 
-import { useBundles } from '../hooks/use-backup-bundles';
+import { useBundles, useBundleCoverage } from '../hooks/use-backup-bundles';
 import { useAllBackupSchedules } from '../hooks/use-backup-schedule';
 import { useRestoreCarts } from '../hooks/use-restore-carts';
 import { useBackupConfigs } from '../hooks/use-backup-config';
 
 const mockedBundles = useBundles as unknown as ReturnType<typeof vi.fn>;
+const mockedCoverage = useBundleCoverage as unknown as ReturnType<typeof vi.fn>;
 const mockedSchedules = useAllBackupSchedules as unknown as ReturnType<typeof vi.fn>;
 const mockedCarts = useRestoreCarts as unknown as ReturnType<typeof vi.fn>;
 const mockedConfigs = useBackupConfigs as unknown as ReturnType<typeof vi.fn>;
@@ -198,6 +200,51 @@ describe('TenantBackup', () => {
     // All four components default-checked.
     expect(screen.getByLabelText(/files/i)).toBeChecked();
     expect(screen.getByLabelText(/mailboxes/i)).toBeChecked();
+  });
+
+  it('coverage tab renders no-drift state when every table is owned', () => {
+    mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
+    mockedCoverage.mockReturnValue({
+      data: {
+        data: {
+          components: [
+            { name: 'files', description: 'tenant PVC', tables: [], pvcs: ['{ns}-storage'], secretTypes: [], externalResources: [] },
+            { name: 'config', description: 'json dump', tables: ['clients', 'domains'], pvcs: [], secretTypes: [], externalResources: [] },
+          ],
+          drift: { orphanTables: [], ownedTableCount: 12, totalTenantTables: 12 },
+        },
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<TenantBackup />, { wrapper: ({ children }) => wrapper({ children, initialEntries: ['/tenant-backup?tab=coverage'] }) });
+    expect(screen.getByText(/No drift/)).toBeInTheDocument();
+    expect(screen.getByText('Component registry')).toBeInTheDocument();
+    expect(screen.getByText(/clients, domains/)).toBeInTheDocument();
+  });
+
+  it('coverage tab flags orphan tables as red', () => {
+    mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
+    mockedCoverage.mockReturnValue({
+      data: {
+        data: {
+          components: [
+            { name: 'config', description: 'cfg', tables: ['clients'], pvcs: [], secretTypes: [], externalResources: [] },
+          ],
+          drift: {
+            orphanTables: [{ table: 'newFeatureTable' }, { table: 'anotherOrphan' }],
+            ownedTableCount: 1,
+            totalTenantTables: 3,
+          },
+        },
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<TenantBackup />, { wrapper: ({ children }) => wrapper({ children, initialEntries: ['/tenant-backup?tab=coverage'] }) });
+    expect(screen.getByText(/2 orphans/)).toBeInTheDocument();
+    expect(screen.getByText('newFeatureTable')).toBeInTheDocument();
+    expect(screen.getByText('anotherOrphan')).toBeInTheDocument();
   });
 
   it('targets tab nudges to add a target when none configured', () => {

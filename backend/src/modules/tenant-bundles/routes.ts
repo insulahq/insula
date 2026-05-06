@@ -18,6 +18,7 @@ import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 import { decryptSecretsPayload } from './components/secrets.js';
+import { BUNDLE_COMPONENTS, ownerOfTable } from './component-registry.js';
 import { createHash } from 'node:crypto';
 import { gunzip } from 'node:zlib';
 import type { Readable } from 'node:stream';
@@ -385,6 +386,64 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
     await app.db.delete(backupJobs).where(eq(backupJobs.id, id));
     reply.status(204).send();
+  });
+
+  // ── GET /api/v1/admin/tenant-bundles/coverage ──────────────────────
+  // Returns the BundleComponent registry + a drift report. The drift
+  // section flags any client-FK'd DB table that no component claims —
+  // the same check the schema-audit script runs at CI time, but
+  // available at runtime for the operator coverage UI.
+  app.get('/admin/tenant-bundles/coverage', {
+    schema: {
+      tags: ['TenantBundles'],
+      summary: 'Bundle coverage registry + runtime drift report',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    // Pull every table name that has a `client_id` column from the
+    // information schema. Fast and authoritative — beats parsing
+    // schema.ts at runtime.
+    const r = await app.db.execute(sql`
+      SELECT DISTINCT table_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND column_name = 'client_id'
+      ORDER BY table_name
+    `);
+    const rawDb = r as unknown as { rows: Array<{ table_name: string }> };
+    const dbTables = rawDb.rows.map((row) => row.table_name);
+
+    // The registry uses camelCase table names (matching the Drizzle
+    // schema export names); information_schema returns snake_case.
+    // Convert snake → camel for the comparison.
+    const snakeToCamel = (s: string): string =>
+      s.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
+
+    const owned: Array<{ table: string; component: string }> = [];
+    const orphans: Array<{ table: string }> = [];
+    for (const t of dbTables) {
+      const camel = snakeToCamel(t);
+      const owner = ownerOfTable(camel);
+      if (owner) {
+        owned.push({ table: camel, component: owner.name });
+      } else {
+        orphans.push({ table: camel });
+      }
+    }
+
+    return success({
+      data: {
+        components: BUNDLE_COMPONENTS,
+        drift: {
+          // Tables that have client_id but aren't claimed by any
+          // component. Empty list = clean coverage.
+          orphanTables: orphans,
+          // Sanity counter — handy for dashboards.
+          ownedTableCount: owned.length,
+          totalTenantTables: dbTables.length,
+        },
+      },
+    });
   });
 
   // ── GET /api/v1/admin/backup-schedules ─────────────────────────────
