@@ -718,6 +718,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           batch: k8sForImapsync.batch,
         });
         app.addHook('onClose', () => backupHealthStop());
+
+        // CNPG-backup-health: sister scheduler that watches CNPG Backup
+        // CRs (postgresql.cnpg.io/v1, distinct from K8s batch/v1 Jobs)
+        // and emits one admin notification per failed CR. Closes the
+        // gap that let mail-pg-daily-20260505031500 fail unnoticed
+        // for 24h on staging — operators were only learning about
+        // CNPG backup failures by visiting the admin UI.
+        const { startCnpgBackupHealthScheduler } = await import('./modules/cnpg-backup-health/scheduler.js');
+        const cnpgBackupHealthStop = startCnpgBackupHealthScheduler({
+          db: app.db,
+          custom: k8sForImapsync.custom,
+        });
+        app.addHook('onClose', () => cnpgBackupHealthStop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }
