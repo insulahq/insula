@@ -134,7 +134,7 @@ spec:
               # body, which made stalwart-cli v1.0.4 reject the plan
               # with the unhelpful `error: builder error` (HIGH-fix
               # follow-up, 2026-05-06).
-              printf '%s\n' '{"@type":"create","object":"Certificate","value":{"default-mail-tls":{"certificate":{"@type":"File","filePath":"/etc/stalwart/tls/tls.crt"},"privateKey":{"@type":"File","filePath":"/etc/stalwart/tls/tls.key"}}}}' > /tmp/plan.json
+              printf '%s\n' '{"@type":"create","object":"Certificate","value":{"default-mail-tls":{"certificate":{"@type":"File","filePath":"/run/stalwart-tls/tls.crt"},"privateKey":{"@type":"File","filePath":"/run/stalwart-tls/tls.key"}}}}' > /tmp/plan.json
 
               # Sanity-print the rendered plan + a wc so the operator
               # can confirm it's a single line of well-formed JSON.
