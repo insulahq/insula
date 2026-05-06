@@ -133,7 +133,7 @@ export function useBrowseConfigTables(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'config-tables', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseConfigTablesResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/config-tables`),
+    queryFn: () => apiFetch<BrowseConfigTablesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/config-tables`),
   });
 }
 
@@ -144,7 +144,7 @@ export function useBrowseMailboxes(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'mailboxes', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseMailboxesResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/mailboxes`),
+    queryFn: () => apiFetch<BrowseMailboxesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/mailboxes`),
   });
 }
 
@@ -155,7 +155,7 @@ export function useBrowseDeployments(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'deployments', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseDeploymentsResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/deployments`),
+    queryFn: () => apiFetch<BrowseDeploymentsResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/deployments`),
   });
 }
 
@@ -166,7 +166,7 @@ export function useBrowseDomains(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'domains', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseDomainsResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/domains`),
+    queryFn: () => apiFetch<BrowseDomainsResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/domains`),
   });
 }
 
@@ -185,7 +185,7 @@ export function useBrowseFiles(bundleId: string | null, after: string | null, li
     queryFn: () => {
       const qs = new URLSearchParams({ limit: String(limit) });
       if (after) qs.set('after', after);
-      return apiFetch<BrowseFilesResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/files/tree?${qs.toString()}`);
+      return apiFetch<BrowseFilesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/files/tree?${qs.toString()}`);
     },
   });
 }
