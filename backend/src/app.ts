@@ -87,6 +87,7 @@ import { backupsV2ClientRoutes } from './modules/tenant-bundles/client-routes.js
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
@@ -413,6 +414,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
+  await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
@@ -716,6 +718,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           batch: k8sForImapsync.batch,
         });
         app.addHook('onClose', () => backupHealthStop());
+
+        // CNPG-backup-health: sister scheduler that watches CNPG Backup
+        // CRs (postgresql.cnpg.io/v1, distinct from K8s batch/v1 Jobs)
+        // and emits one admin notification per failed CR. Closes the
+        // gap that let mail-pg-daily-20260505031500 fail unnoticed
+        // for 24h on staging — operators were only learning about
+        // CNPG backup failures by visiting the admin UI.
+        const { startCnpgBackupHealthScheduler } = await import('./modules/cnpg-backup-health/scheduler.js');
+        const cnpgBackupHealthStop = startCnpgBackupHealthScheduler({
+          db: app.db,
+          custom: k8sForImapsync.custom,
+        });
+        app.addHook('onClose', () => cnpgBackupHealthStop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }

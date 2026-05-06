@@ -16,6 +16,7 @@ import StalwartAdminPanel from '@/components/StalwartAdminPanel';
 import MailServerSettings from '@/components/MailServerSettings';
 import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
+import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -69,6 +70,8 @@ export default function EmailManagement() {
       <MailStorageCard />
 
       <StalwartBlobStoreCard />
+
+      <CnpgBackupHealthCard clusterFilter="mail-pg" />
     </div>
   );
 }
