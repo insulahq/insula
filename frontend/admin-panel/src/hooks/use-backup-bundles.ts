@@ -92,6 +92,21 @@ export async function downloadDataExport(bundleId: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+interface CoverageEnvelope { readonly data: import('@k8s-hosting/api-contracts').BundleCoverageResponse }
+
+/**
+ * Bundle coverage report — declared component registry + runtime
+ * drift against the live DB schema. Powers the Coverage tab on the
+ * Tenant Backup admin page.
+ */
+export function useBundleCoverage() {
+  return useQuery({
+    queryKey: ['tenant-bundles', 'coverage'],
+    queryFn: () => apiFetch<CoverageEnvelope>('/api/v1/admin/tenant-bundles/coverage'),
+    staleTime: 60_000,
+  });
+}
+
 export function useDeleteBundle() {
   const qc = useQueryClient();
   return useMutation({
