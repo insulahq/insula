@@ -251,8 +251,9 @@ describe('getMailbox', () => {
 });
 
 describe('updateMailbox', () => {
-  it('should rehash password if provided', async () => {
-    const mailbox = { id: 'mb1', clientId: 'c1', fullAddress: 'info@example.com' };
+  it('should rehash password if provided (already-synced mailbox path)', async () => {
+    // stalwartPrincipalId set → JMAP-PATCH path, NOT orphan-recovery path.
+    const mailbox = { id: 'mb1', clientId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
     const updated = { ...mailbox, displayName: 'Updated' };
 
     // 1) getMailbox select, 2) return updated after update
@@ -265,6 +266,46 @@ describe('updateMailbox', () => {
     });
 
     expect(result.displayName).toBe('Updated');
+    expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).toHaveBeenCalled();
+  });
+
+  it('orphan recovery: stalwartPrincipalId NULL + password set → tries JMAP-create + completes', async () => {
+    // 2026-05-06 drift recovery: a mailbox row that exists in the
+    // platform DB but has no Stalwart counterpart (e.g. after a
+    // mail-pg wipe) gets re-created in Stalwart on the operator's
+    // next "Reset password" action. The platform DB bcrypt update
+    // happens UNCONDITIONALLY first; the JMAP-create is best-effort
+    // (a failure logs a warning but does not fail the operation).
+    //
+    // In unit tests there's no mail stack — getJmapAccountId throws,
+    // syncOrphanMailboxToStalwart catches and returns null, the
+    // platform-DB update completes, the function returns the row.
+    const orphanMailbox = {
+      id: 'mb-orphan-1',
+      clientId: 'c1',
+      emailDomainId: 'ed1',
+      localPart: 'john',
+      fullAddress: 'john@x.staging.success.com.na',
+      displayName: 'John',
+      quotaMb: 1024,
+      stalwartPrincipalId: null,  // ← orphan
+    };
+    const updated = { ...orphanMailbox, stalwartPrincipalId: null };
+    // Selects in order:
+    //   1) getMailbox             → orphanMailbox
+    //   2) syncOrphanMailboxToStalwart → emailDomain lookup (will be empty,
+    //      but the function returns null without throwing)
+    //   3) final select after update → updated
+    selectResults = [[orphanMailbox], [], [updated]];
+    const db = createMockDb();
+
+    const result = await updateMailbox(db as never, 'c1', 'mb-orphan-1', {
+      password: 'NewPlaintext-12345',
+    });
+
+    expect(result.stalwartPrincipalId).toBeNull();
+    // The platform-DB password update IS called even when JMAP recovery
+    // is skipped (operator's password change is the source of truth).
     expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).toHaveBeenCalled();
   });
 });
