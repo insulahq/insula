@@ -385,8 +385,16 @@ export async function syncOrphanMailboxToStalwart(
             },
           },
           ...(existingMailbox.displayName ? { description: existingMailbox.displayName } : {}),
-          // Stalwart `quota.storage` is bytes; the platform stores MB.
-          quotas: { storage: existingMailbox.quotaMb * 1024 * 1024 },
+          // NOTE: deliberately NOT setting `quotas` at create time —
+          // Stalwart 0.16's `quotas` field is `map<enum StorageQuota, ...>`
+          // and JSON's lowercase keys (e.g. {"storage": ...}) don't match
+          // the enum's TitleCase variant names. The existing createMailbox
+          // path (above in this file) also omits quotas at create. To
+          // sync quota into Stalwart after the orphan-recovery create
+          // succeeds, the operator can issue a follow-up PATCH; that
+          // path uses Principal/set with `quota/storage` (forward-slash
+          // path patch, not enum-keyed map) which IS the documented
+          // shape.
         },
       },
     },
