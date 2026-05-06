@@ -169,14 +169,18 @@ function CoverageTab() {
           )}
         </header>
         <div className="px-4 py-3 text-sm">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div>
               <div className="text-xs text-gray-500 dark:text-gray-400">Tenant tables (DB)</div>
               <div className="mt-0.5 text-2xl font-semibold text-gray-900 dark:text-gray-100">{drift.totalTenantTables}</div>
             </div>
             <div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">Owned by a component</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Captured by a component</div>
               <div className="mt-0.5 text-2xl font-semibold text-green-700 dark:text-green-300">{drift.ownedTableCount}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Excluded (documented)</div>
+              <div className="mt-0.5 text-2xl font-semibold text-gray-700 dark:text-gray-200">{drift.excludedTables.length}</div>
             </div>
             <div>
               <div className="text-xs text-gray-500 dark:text-gray-400">Orphans (silently dropped)</div>
@@ -201,6 +205,21 @@ function CoverageTab() {
                 then add it to the corresponding entry in <code className="font-mono">component-registry.ts</code>.
               </p>
             </div>
+          )}
+          {drift.excludedTables.length > 0 && (
+            <details className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
+              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
+                {drift.excludedTables.length} table{drift.excludedTables.length === 1 ? '' : 's'} intentionally excluded
+              </summary>
+              <ul className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                {drift.excludedTables.map((e) => (
+                  <li key={e.table}>
+                    <code className="font-mono">{e.table}</code>{' '}
+                    <span className="text-gray-500 dark:text-gray-400">— {e.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
         </div>
       </section>

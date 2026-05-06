@@ -211,7 +211,7 @@ describe('TenantBackup', () => {
             { name: 'files', description: 'tenant PVC', tables: [], pvcs: ['{ns}-storage'], secretTypes: [], externalResources: [] },
             { name: 'config', description: 'json dump', tables: ['clients', 'domains'], pvcs: [], secretTypes: [], externalResources: [] },
           ],
-          drift: { orphanTables: [], ownedTableCount: 12, totalTenantTables: 12 },
+          drift: { orphanTables: [], excludedTables: [], ownedTableCount: 12, totalTenantTables: 12 },
         },
       },
       isLoading: false,
@@ -233,6 +233,7 @@ describe('TenantBackup', () => {
           ],
           drift: {
             orphanTables: [{ table: 'newFeatureTable' }, { table: 'anotherOrphan' }],
+            excludedTables: [],
             ownedTableCount: 1,
             totalTenantTables: 3,
           },
