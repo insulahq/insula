@@ -355,24 +355,43 @@ async function upsertScheduledBackup(
     },
   };
 
+  let exists = true;
   try {
     await custom.getNamespacedCustomObject({
       group: CNPG_GROUP, version: CNPG_VERSION, namespace,
       plural: 'scheduledbackups', name,
     });
-    // Exists — patch the schedule (immutable fields like cluster.name
-    // can't change anyway; we only need to update schedule).
+  } catch (err: unknown) {
+    const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (status !== 404) throw err;  // RBAC / network errors propagate
+    exists = false;
+  }
+  if (exists) {
     await custom.patchNamespacedCustomObject({
       group: CNPG_GROUP, version: CNPG_VERSION, namespace,
       plural: 'scheduledbackups', name,
       body: { spec: { schedule } },
     }, MERGE_PATCH);
-  } catch {
-    // Doesn't exist — create.
-    await custom.createNamespacedCustomObject({
-      group: CNPG_GROUP, version: CNPG_VERSION, namespace,
-      plural: 'scheduledbackups', body,
-    });
+  } else {
+    try {
+      await custom.createNamespacedCustomObject({
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+        plural: 'scheduledbackups', body,
+      });
+    } catch (err: unknown) {
+      // 409 = race with another concurrent enable; another operator
+      // beat us. Re-patch to ensure schedule reflects this caller's
+      // intent.
+      const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+        ?? (err as { code?: number })?.code;
+      if (status !== 409) throw err;
+      await custom.patchNamespacedCustomObject({
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+        plural: 'scheduledbackups', name,
+        body: { spec: { schedule } },
+      }, MERGE_PATCH);
+    }
   }
 }
 
@@ -386,8 +405,14 @@ async function deleteScheduledBackupIfPresent(
     }).deleteNamespacedCustomObject({
       group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'scheduledbackups', name,
     });
-  } catch {
-    // 404 = already gone, fine.
+  } catch (err: unknown) {
+    // 404 = already gone, fine. Anything else (RBAC 403, network) is
+    // a real failure and must propagate so disable returns a clean
+    // 5xx instead of falsely claiming success.
+    const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (status === 404) return;
+    throw err;
   }
 }
 
