@@ -472,7 +472,12 @@ export async function updateMailbox(
           patch['quota/storage'] = input.quota_mb * 1024 * 1024;
         }
         if (input.password !== undefined) {
-          patch['secrets/0'] = input.password;
+          // Stalwart 0.16 path is credentials/0/secret (the new schema
+          // uses `credentials` not `secrets`; secret is the inner field).
+          // The old `secrets/0` path was a 0.15-era leftover that 0.16
+          // rejects with "Invalid property" — verified empirically
+          // 2026-05-06 against staging while validating orphan-recovery.
+          patch['credentials/0/secret'] = input.password;
         }
         try {
           await jmapUpdatePrincipal({
