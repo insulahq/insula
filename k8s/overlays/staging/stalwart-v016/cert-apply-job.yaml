@@ -142,15 +142,16 @@ spec:
               # back-to-back applies created two rows with identical
               # SAN lists (iptnsouqabaa + iptnsmysaaqa).
               #
-              # The fix: check whether ANY Certificate row exists
-              # before creating. The `query` subcommand prints `0`
-              # rows (header line only) when empty, otherwise one
-              # data line per row. We grep for `mail.staging` (any
-              # SAN that contains the marker) — present means at
-              # least one row already covers this deployment.
+              # `--json` is REQUIRED here — the human-readable table
+              # output truncates the SAN list with `…` past the
+              # display width, so a grep for `mail.${DOMAIN}` would
+              # miss rows that genuinely cover that SAN. With
+              # `--json`, every row is one self-contained object
+              # carrying the full SAN map. We treat any line that
+              # mentions `"id":"` as a hit (one row = one match).
               echo "Probing for existing Certificate row..."
-              query_out="$$(/shared/stalwart-cli --url "$${CLI_URL}" --user admin query Certificate 2>&1 || true)"
-              if printf '%s\n' "$${query_out}" | grep -qE 'mail\.|smtp\.|imap\.'; then
+              query_out="$$(/shared/stalwart-cli --url "$${CLI_URL}" --user admin query Certificate --json 2>&1 || true)"
+              if printf '%s\n' "$${query_out}" | grep -qE '"id":"[a-z0-9]+"'; then
                 echo "Existing Certificate row(s) found — idempotent skip."
                 printf '%s\n' "$${query_out}"
                 exit 0
