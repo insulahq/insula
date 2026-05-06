@@ -253,7 +253,13 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
         const handle = await store.open(row.bundleId);
         if (handle) await store.delete(handle);
       } catch (err) {
-        app.log.warn({ err, runId: id }, '[system-backup] artifact delete failed (continuing with row delete)');
+        // Elevated to ERROR (was warn): once the row is deleted we
+        // lose the bundleId, and the orphan S3 object is invisible
+        // to retention. Surface to the production alerting pipeline.
+        app.log.error(
+          { err, runId: id, bundleId: row.bundleId, targetConfigId: row.targetConfigId },
+          '[system-backup] artifact delete failed — orphan possible at backup target',
+        );
       }
     }
 

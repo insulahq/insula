@@ -49,10 +49,13 @@ export function nextFireAt(cron: string, base: Date): Date {
   const b = new Date(base);
   b.setSeconds(0, 0);
 
-  // Pattern: `*/N * * * *` — every N minutes
+  // Pattern: `*/N * * * *` — every N minutes. Floor of 5 min protects
+  // against busy-loop if a future code path bypasses the route's Zod
+  // (e.g. a direct SQL insert with `*/1`). The 1-min tick interval
+  // wouldn't keep up with sub-5-min dispatches anyway.
   const everyN = /^\*\/(\d+)$/.exec(min);
   if (everyN && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
-    const n = Math.max(1, parseInt(everyN[1], 10));
+    const n = Math.max(5, parseInt(everyN[1], 10));
     return new Date(b.getTime() + n * 60_000);
   }
 
@@ -120,6 +123,25 @@ export async function runPgDumpScheduleTick(
   let dispatched = 0;
   for (const s of due) {
     try {
+      // Cross-replica CAS lock: the only way to "claim" this schedule
+      // for dispatch on this tick is to atomically advance its
+      // next_run_at AND see exactly 1 row affected. With 3 platform-api
+      // replicas all running this loop, only one will succeed; the
+      // others will get 0 rows back and skip.
+      const computedNext = nextFireAt(s.cronSchedule, now);
+      const claim = await db
+        .update(systemPgDumpSchedules)
+        .set({ nextRunAt: computedNext })
+        .where(and(
+          eq(systemPgDumpSchedules.id, s.id),
+          eq(systemPgDumpSchedules.nextRunAt, s.nextRunAt!),
+        ))
+        .returning({ id: systemPgDumpSchedules.id });
+      if (claim.length === 0) {
+        // Another replica beat us. Skip silently — they'll dispatch.
+        continue;
+      }
+
       // Validate target still active.
       const cfgRows = await db
         .select({
@@ -131,11 +153,6 @@ export async function runPgDumpScheduleTick(
         .limit(1);
       if (!cfgRows[0]?.active) {
         logger.warn({ scheduleId: s.id }, '[pg-dump-scheduler] target inactive, skipping');
-        // Bump next_run_at so we don't hammer it every tick.
-        await db
-          .update(systemPgDumpSchedules)
-          .set({ nextRunAt: nextFireAt(s.cronSchedule, now) })
-          .where(eq(systemPgDumpSchedules.id, s.id));
         continue;
       }
 
@@ -184,9 +201,10 @@ export async function runPgDumpScheduleTick(
         .set({ status: 'running', jobName: job.jobName })
         .where(eq(systemBackupRuns.id, runId));
 
-      const next = nextFireAt(s.cronSchedule, now);
+      // next_run_at was already advanced by the CAS claim above — only
+      // need to record last_run_at and last_run_id here.
       await db.update(systemPgDumpSchedules)
-        .set({ lastRunAt: now, lastRunId: runId, nextRunAt: next })
+        .set({ lastRunAt: now, lastRunId: runId })
         .where(eq(systemPgDumpSchedules.id, s.id));
       dispatched += 1;
     } catch (err) {

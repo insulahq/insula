@@ -187,8 +187,31 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       throw new ApiError('SYSTEM_WAL_DISABLED',
         'WAL archive not enabled for this cluster — nothing to recover from', 400);
     }
-    const recoveryName = body?.recoveryClusterName ?? `${name}-recovery-${Date.now()}`;
-    const targetTime = body?.targetTime ?? null;
+    // recoveryClusterName is freeform input → MUST be a DNS label
+    // before we interpolate it into YAML. The default we generate is
+    // already DNS-label-shaped (no operator input).
+    const dnsLabel = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+    const defaultName = `${name}-rec-${Date.now()}`.slice(0, 63);
+    const recoveryName = (() => {
+      const v = body?.recoveryClusterName;
+      if (typeof v !== 'string' || v.length === 0) return defaultName;
+      if (v.length > 63 || !dnsLabel.test(v)) {
+        throw new ApiError('SYSTEM_WAL_BAD_REQUEST',
+          'recoveryClusterName must be a lowercase DNS label (1-63 chars)', 400);
+      }
+      return v;
+    })();
+    // targetTime: ISO 8601 only — restrict shape so it can't break YAML quoting.
+    const isoRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})$/;
+    const targetTime = (() => {
+      const v = body?.targetTime;
+      if (typeof v !== 'string' || v.length === 0) return null;
+      if (!isoRe.test(v)) {
+        throw new ApiError('SYSTEM_WAL_BAD_REQUEST',
+          'targetTime must be an ISO 8601 datetime', 400);
+      }
+      return v;
+    })();
 
     const yaml = [
       `# Apply with: kubectl apply -f <this-file>`,
