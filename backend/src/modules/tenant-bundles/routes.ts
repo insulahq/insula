@@ -18,6 +18,7 @@ import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 import { decryptSecretsPayload } from './components/secrets.js';
+import { CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES } from './components/config.js';
 import { BUNDLE_COMPONENTS, ownerOfTable } from './component-registry.js';
 import { createHash } from 'node:crypto';
 import { gunzip } from 'node:zlib';
@@ -143,12 +144,18 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       s.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
 
     const owned: Array<{ table: string; component: string }> = [];
+    const excluded: Array<{ table: string; reason: string }> = [];
     const orphans: Array<{ table: string }> = [];
     for (const t of dbTables) {
       const camel = snakeToCamel(t);
       const owner = ownerOfTable(camel);
       if (owner) {
         owned.push({ table: camel, component: owner.name });
+        continue;
+      }
+      const reason = CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES.get(camel);
+      if (reason) {
+        excluded.push({ table: camel, reason });
       } else {
         orphans.push({ table: camel });
       }
@@ -158,7 +165,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     return success({
       components: BUNDLE_COMPONENTS,
       drift: {
+        // Tables claimed by no component AND not in the documented
+        // exclusion list. These are the silent-drop hazards — operator
+        // UI flags them red.
         orphanTables: orphans,
+        // Tables intentionally outside any component, with the
+        // documented reason (audit logs, billing, transient state).
+        excludedTables: excluded,
         ownedTableCount: owned.length,
         totalTenantTables: dbTables.length,
       },
