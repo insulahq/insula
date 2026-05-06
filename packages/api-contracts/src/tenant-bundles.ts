@@ -285,7 +285,15 @@ export type ComponentOwnership = z.infer<typeof componentOwnershipSchema>;
 export const bundleCoverageResponseSchema = z.object({
   components: z.array(componentOwnershipSchema),
   drift: z.object({
+    /** Tables claimed by no component AND not in the documented
+     *  exclusion list — these are real coverage gaps. */
     orphanTables: z.array(z.object({ table: z.string() })),
+    /** Tables intentionally outside any component, with the
+     *  documented reason (audit logs, billing, transient state). */
+    excludedTables: z.array(z.object({
+      table: z.string(),
+      reason: z.string(),
+    })),
     ownedTableCount: z.number().int().nonnegative(),
     totalTenantTables: z.number().int().nonnegative(),
   }),
