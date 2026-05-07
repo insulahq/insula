@@ -91,11 +91,11 @@ spec:
             # Stalwart connection details (IMAPS and submission, both go to
             # the same in-cluster service in the mail namespace)
             - name: ROUNDCUBEMAIL_DEFAULT_HOST
-              value: "ssl://stalwart-mail-v016.mail.svc.cluster.local"
+              value: "ssl://stalwart-mail.mail.svc.cluster.local"
             - name: ROUNDCUBEMAIL_DEFAULT_PORT
               value: "993"
             - name: ROUNDCUBEMAIL_SMTP_SERVER
-              value: "ssl://stalwart-mail-v016.mail.svc.cluster.local"
+              value: "ssl://stalwart-mail.mail.svc.cluster.local"
             - name: ROUNDCUBEMAIL_SMTP_PORT
               value: "465"
             # Phase 3.A.5: Postgres backend for Roundcube session /

@@ -1,7 +1,7 @@
 # ACME HTTP-01 Ingress for Stalwart-managed TLS certificate.
 #
 # URL: http://mail.${DOMAIN}/.well-known/acme-challenge/<token>
-# Backend: stalwart-mail-v016.mail.svc.cluster.local:80 (http-acme port)
+# Backend: stalwart-mail.mail.svc.cluster.local:80 (http-acme port)
 #
 # Why this exists:
 #   Stalwart 0.16 manages its own TLS cert via Let's Encrypt (the
@@ -50,7 +50,7 @@ metadata:
   name: stalwart-mail-acme
   namespace: mail
   labels:
-    app: stalwart-mail-v016
+    app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
   annotations:
@@ -69,6 +69,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: stalwart-mail-v016
+                name: stalwart-mail
                 port:
                   number: 80

@@ -15,15 +15,15 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: stalwart-mail-v016
+  name: stalwart-mail
   namespace: mail
   labels:
-    app: stalwart-mail-v016
+    app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
 spec:
   podSelector:
     matchLabels:
-      app: stalwart-mail-v016
+      app: stalwart-mail
   policyTypes:
     - Ingress
     - Egress

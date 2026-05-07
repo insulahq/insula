@@ -5,7 +5,7 @@
 # 0.15 StatefulSet/PVC/Secrets manually; Flux then converges on 0.16.
 #
 # Differences from the base:
-#   1. stalwart-mail-v016 Service: LoadBalancer → ClusterIP+externalIPs
+#   1. stalwart-mail Service: LoadBalancer → ClusterIP+externalIPs
 #      (single Hetzner VPS — no cloud LB). Mirrors v015's service-patch.
 #   2. ingress-mgmt: hardcoded letsencrypt-prod-http01 cert-issuer +
 #      auth-signin URL with the staging admin login. The base uses a
@@ -24,11 +24,11 @@ kind: Kustomization
 namespace: mail
 
 resources:
-  - ../../../base/stalwart-v016
+  - ../../../base/stalwart-mail
   # NOTE: 0.16 does NOT need the platform-postgres ExternalName bridge
   # that 0.15 used. The 0.16 Deployment connects directly to its own
   # dedicated mail-pg CNPG cluster (mail-pg-rw.mail.svc.cluster.local)
-  # — see base/stalwart-v016/stalwart/deployment.yaml STALWART_PG_HOST.
+  # — see base/stalwart-mail/stalwart/deployment.yaml STALWART_PG_HOST.
 
 patches:
   # Stalwart-mail-v016 Service: LoadBalancer → ClusterIP+externalIPs.
@@ -45,7 +45,7 @@ patches:
       apiVersion: v1
       kind: Service
       metadata:
-        name: stalwart-mail-v016
+        name: stalwart-mail
         namespace: mail
       spec:
         type: ClusterIP
@@ -54,7 +54,7 @@ patches:
           - 192.0.2.56
     target:
       kind: Service
-      name: stalwart-mail-v016
+      name: stalwart-mail
 
   # Ingress: hardcode cert-issuer (no ${CLUSTER_ISSUER_NAME} substitution
   # on staging). Match the auth-signin pattern from the v015 webadmin-
@@ -63,7 +63,7 @@ patches:
       apiVersion: networking.k8s.io/v1
       kind: Ingress
       metadata:
-        name: stalwart-v016-webadmin
+        name: stalwart-webadmin
         namespace: mail
         annotations:
           cert-manager.io/cluster-issuer: letsencrypt-prod-http01
@@ -75,7 +75,7 @@ patches:
             secretName: stalwart-webadmin-prod-tls
     target:
       kind: Ingress
-      name: stalwart-v016-webadmin
+      name: stalwart-webadmin
 
   # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
   # The base watches `mail-pg-app-credentials,stalwart-admin-creds`. We
@@ -91,10 +91,10 @@ patches:
       apiVersion: apps/v1
       kind: Deployment
       metadata:
-        name: stalwart-mail-v016
+        name: stalwart-mail
         namespace: mail
         annotations:
           secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
     target:
       kind: Deployment
-      name: stalwart-mail-v016
+      name: stalwart-mail

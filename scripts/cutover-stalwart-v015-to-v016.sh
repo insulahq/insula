@@ -142,7 +142,7 @@ echo "    Done."
 
 # ── Step 5b: Delete 0.15 webadmin Ingress (overlay-specific) ────────────────
 # The 0.15 staging overlay shipped a `stalwart-webadmin-ingress` Ingress on
-# stalwart.${DOMAIN}. The 0.16 base ships `stalwart-v016-webadmin` on the
+# stalwart.${DOMAIN}. The 0.16 base ships `stalwart-webadmin` on the
 # same host+path. Flux refuses the v016 apply with `host already defined
 # in ingress mail/stalwart-webadmin-ingress` until the old one is gone.
 # Flux's prune will eventually remove it (it's no longer in the kustomize
@@ -249,7 +249,7 @@ echo "==> Stalwart 0.15 resources removed."
 echo ""
 echo "    Next steps:"
 echo "    1. Apply 0.16 manifests:"
-echo "         kubectl apply -k k8s/overlays/dev/stalwart-v016/"
+echo "         kubectl apply -k k8s/overlays/dev/stalwart-mail/"
 echo "    OR"
 echo "         ./scripts/local.sh mail16-up"
 echo ""
@@ -257,5 +257,5 @@ echo "    2. Verify Stalwart 0.16 pod is Ready:"
 echo "         kubectl get pods -n mail"
 echo ""
 echo "    3. Run the E2E integration test:"
-echo "         ./scripts/integration-stalwart-v016-local.sh"
+echo "         ./scripts/integration-stalwart-local.sh"
 echo ""
