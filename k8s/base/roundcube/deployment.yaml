@@ -90,6 +90,15 @@ spec:
                 cp -f /jwt-plugin/jwt_auth.php /var/www/html/plugins/jwt_auth/jwt_auth.php
                 chown -R www-data:www-data /var/www/html/plugins/jwt_auth 2>/dev/null || true
                 echo "[jwt_auth] plugin installed"
+                # Platform branding assets — copy CSS + SVG into the
+                # webroot so Apache serves them at /branding/*. The
+                # branding.inc.php points $config['skin_logo'] +
+                # html_head hook at these paths.
+                mkdir -p /var/www/html/branding
+                cp -f /branding-src/branding.css /var/www/html/branding/branding.css
+                cp -f /branding-src/logo.svg /var/www/html/branding/logo.svg
+                chown -R www-data:www-data /var/www/html/branding 2>/dev/null || true
+                echo "[branding] assets installed"
               ) &
               exec /docker-entrypoint.sh apache2-foreground
           env:
@@ -194,6 +203,18 @@ spec:
               mountPath: /var/roundcube/config/jwt_auth.inc.php
               subPath: jwt_auth.inc.php
               readOnly: true
+            # Platform branding bundle. The CSS + SVG get copied into
+            # /var/www/html/branding/ at startup by the wrapper script;
+            # the .inc.php is loaded by the Roundcube entrypoint via
+            # the same `*.inc.php` glob that picks up jwt_auth.inc.php
+            # (subPath again so it doesn't shadow the writable dir).
+            - name: branding-src
+              mountPath: /branding-src
+              readOnly: true
+            - name: branding-config
+              mountPath: /var/roundcube/config/branding.inc.php
+              subPath: branding.inc.php
+              readOnly: true
           resources:
             requests:
               cpu: "50m"
@@ -254,3 +275,21 @@ spec:
             items:
               - key: jwt_auth.inc.php
                 path: jwt_auth.inc.php
+        # Platform branding — single ConfigMap holds CSS + SVG +
+        # branding.inc.php; mounted twice so the assets land in the
+        # webroot copy-source dir while branding.inc.php lands in
+        # /var/roundcube/config/ for the entrypoint loader.
+        - name: branding-src
+          configMap:
+            name: roundcube-branding
+            items:
+              - key: branding.css
+                path: branding.css
+              - key: logo.svg
+                path: logo.svg
+        - name: branding-config
+          configMap:
+            name: roundcube-branding
+            items:
+              - key: branding.inc.php
+                path: branding.inc.php
