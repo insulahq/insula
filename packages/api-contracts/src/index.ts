@@ -42,6 +42,7 @@ export * from './mailboxes.js';
 export * from './email-aliases.js';
 export * from './mail-admin.js';
 export * from './mail-storage.js';
+export * from './system-pvc.js';
 export * from './mail-blob-store.js';
 export * from './smtp-relay.js';
 export * from './webmail-settings.js';
