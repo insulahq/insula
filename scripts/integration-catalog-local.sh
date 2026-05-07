@@ -263,7 +263,7 @@ for e in d.get('data', []):
   local probe_ok=0
   case "$kind" in
     pod_ready_only)
-      probe_pod_ready_only "$ns" "app.kubernetes.io/instance" "$timeout" || probe_ok=$?
+      probe_pod_ready_only "$ns" "platform.io/managed=true" "$timeout" || probe_ok=$?
       ;;
     http_ingress)
       path=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('path','/'))")

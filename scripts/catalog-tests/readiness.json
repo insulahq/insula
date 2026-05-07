@@ -38,7 +38,7 @@
     "moodle-bitnami": { "path": "/login/index.php" },
     "prestashop": { "path": "/install/" },
     "matomo": { "path": "/index.php" },
-    "bookstack": { "path": "/login" },
+    "bookstack": { "path": "/login", "timeout_seconds": 900, "$comment": "Bookstack runs APP_KEY:generate + db:migrate at first boot — slow on starter plan" },
     "n8n": { "path": "/setup", "$comment": "n8n redirects / to /setup on first run" },
     "discourse": {
       "path": "/srv/status",
