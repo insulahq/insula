@@ -1,7 +1,7 @@
 # Management Ingress for Stalwart 0.16 web-admin.
 #
 # URL: https://stalwart.${DOMAIN}/
-# Backend: stalwart-mgmt-v016.mail.svc.cluster.local:8080
+# Backend: stalwart-mgmt.mail.svc.cluster.local:8080
 #
 # Access control:
 #   auth_request gate verifies the platform_session cookie against
@@ -21,10 +21,10 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: stalwart-v016-webadmin
+  name: stalwart-webadmin
   namespace: mail
   labels:
-    app: stalwart-mail-v016
+    app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
     # REQUIRED: marks this as an admin-only UI so ci-admin-auth-check.sh
@@ -63,7 +63,7 @@ spec:
   tls:
     - hosts:
         - stalwart.${DOMAIN}
-      secretName: stalwart-v016-webadmin-tls
+      secretName: stalwart-webadmin-tls
   rules:
     - host: stalwart.${DOMAIN}
       http:
@@ -72,6 +72,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: stalwart-mgmt-v016
+                name: stalwart-mgmt
                 port:
                   number: 8080

@@ -5,13 +5,13 @@
 # to avoid Flux SSA conflicts while 0.15 is still active in the staging
 # overlay. Deploy with:
 #
-#   kubectl apply -k k8s/overlays/dev/stalwart-v016/
+#   kubectl apply -k k8s/overlays/dev/stalwart-mail/
 #
 # Or via local.sh (once wired):
 #   ./scripts/local.sh mail16-up
 #
 # Differences from the base:
-#   1. stalwart-mail-v016 Service: LoadBalancer → NodePort (DinD has no LB)
+#   1. stalwart-mail Service: LoadBalancer → NodePort (DinD has no LB)
 #   2. NetworkPolicy deleted (DinD k3s has no NetworkPolicy enforcer)
 #   3. mail-pg CNPG Cluster storage class: longhorn → local-path
 #   4. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
@@ -26,13 +26,13 @@ kind: Kustomization
 namespace: mail
 
 resources:
-  - ../../../base/stalwart-v016
+  - ../../../base/stalwart-mail
 
 patches:
   # mail namespace: the 0.15 overlay already created it — skip re-creation.
-  # (namespace.yaml in stalwart-v016/stalwart/ is comment-only, no action needed.)
+  # (namespace.yaml in stalwart-mail/stalwart/ is comment-only, no action needed.)
 
-  # Patch stalwart-mail-v016 Service: LoadBalancer → NodePort
+  # Patch stalwart-mail Service: LoadBalancer → NodePort
   # Node ports are offset from the 0.15 ports (+1) to avoid collision:
   #   30026 → smtp (0.15 uses 30025)
   #   30027 → submission (0.15 uses 30587)
@@ -41,7 +41,7 @@ patches:
       apiVersion: v1
       kind: Service
       metadata:
-        name: stalwart-mail-v016
+        name: stalwart-mail
         namespace: mail
       spec:
         type: NodePort
@@ -79,7 +79,7 @@ patches:
             protocol: TCP
     target:
       kind: Service
-      name: stalwart-mail-v016
+      name: stalwart-mail
 
   # Remove NetworkPolicy — DinD k3s has no NP enforcer
   - patch: |-
@@ -87,11 +87,11 @@ patches:
       apiVersion: networking.k8s.io/v1
       kind: NetworkPolicy
       metadata:
-        name: stalwart-mail-v016
+        name: stalwart-mail
         namespace: mail
     target:
       kind: NetworkPolicy
-      name: stalwart-mail-v016
+      name: stalwart-mail
 
   # mail-pg CNPG Cluster: pin storage class to local-path (DinD has no Longhorn).
   # Also clear the node affinity — DinD has a single unlabelled node.
@@ -118,7 +118,7 @@ patches:
       apiVersion: networking.k8s.io/v1
       kind: Ingress
       metadata:
-        name: stalwart-v016-webadmin
+        name: stalwart-webadmin
         namespace: mail
         annotations:
           cert-manager.io/cluster-issuer: local-ca-issuer
@@ -127,7 +127,7 @@ patches:
         tls:
           - hosts:
               - stalwart16.k8s-platform.test
-            secretName: stalwart-v016-webadmin-dev-tls
+            secretName: stalwart-webadmin-dev-tls
         rules:
           - host: stalwart16.k8s-platform.test
             http:
@@ -136,9 +136,9 @@ patches:
                   pathType: Prefix
                   backend:
                     service:
-                      name: stalwart-mgmt-v016
+                      name: stalwart-mgmt
                       port:
                         number: 8080
     target:
       kind: Ingress
-      name: stalwart-v016-webadmin
+      name: stalwart-webadmin

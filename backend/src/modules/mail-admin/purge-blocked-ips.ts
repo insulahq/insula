@@ -37,7 +37,7 @@ const log = mailLogger().child({ module: 'mail-admin-purge-blocked-ips' });
 const MAIL_NAMESPACE = 'mail';
 const ADMIN_SECRET_NAME = 'stalwart-admin-creds';
 const STALWART_MGMT_URL =
-  'http://stalwart-mgmt-v016.mail.svc.cluster.local:8080';
+  'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 
 export interface PurgeBlockedIpsOptions {
   readonly kubeconfigPath: string | undefined;

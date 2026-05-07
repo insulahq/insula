@@ -252,7 +252,7 @@ describe('isStalwartOwnedRecord', () => {
 // domain dnsZoneFile through domainGet (urn:stalwart:jmap), not
 // Principal/get (urn:ietf:params:jmap:principals). Skipped until the
 // rewrite. Wire-format correctness is verified by
-// scripts/integration-stalwart-v016-local.sh on real Stalwart.
+// scripts/integration-stalwart-local.sh on real Stalwart.
 describe.skip('syncDomainDnsRecords', () => {
   // We test the sync logic by mocking the JMAP client and DB
   let fetchMock: ReturnType<typeof vi.fn>;

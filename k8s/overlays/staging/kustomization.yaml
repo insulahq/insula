@@ -21,7 +21,7 @@ resources:
   # Requires a one-time operator step to generate stalwart-admin-creds
   # (the bcrypt-hashed admin password Secret consumed by the Deployment).
   # See docs/02-operations/STALWART_DEPLOYMENT.md.
-  - stalwart-v016/
+  - stalwart-mail/
   # Cut 3 (2026-05-04): Roundcube webmail is always deployed alongside
   # Stalwart on staging+production. Operator-bootstrap step creates the
   # `roundcube-secrets` Secret + the `roundcube` PG database/role on

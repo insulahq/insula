@@ -11,7 +11,7 @@ data:
     // verify_peer is false on the in-cluster IMAP/SMTP hop because
     // Stalwart's LE cert SAN list covers the public subdomains
     // (mail.${DOMAIN}, stalwart.${DOMAIN}, webmail.${DOMAIN}), NOT
-    // the in-cluster Service hostname stalwart-mail-v016.mail.svc.
+    // the in-cluster Service hostname stalwart-mail.mail.svc.
     // The browser → ingress hop IS verified normally.
     //
     // To re-enable verify_peer=true on the internal hop, mount a

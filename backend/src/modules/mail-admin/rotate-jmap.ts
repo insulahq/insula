@@ -121,7 +121,7 @@ export interface RotateJmapDeps {
    * surface a partial failure to the operator instead of just logging.
    * Only called when `opts.recyclePodsBeforeVerify === true`. Test deps
    * supply a no-op or mock; production deps perform `kubectl delete pod
-   * -l app=stalwart-mail-v016` via the K8s client.
+   * -l app=stalwart-mail` via the K8s client.
    */
   recyclePods(): Promise<{ deletedCount: number; errors?: readonly string[] }>;
   sleep(ms: number): Promise<void>;
@@ -368,7 +368,7 @@ export async function rotateAdminPasswordViaJmapImpl(
  * the test only exercises `rotateAdminPasswordViaJmapImpl` with injected deps.
  */
 function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
-  const baseUrl = process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt-v016.mail.svc.cluster.local:8080';
+  const baseUrl = process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 
   return {
     generatePassword: () =>
@@ -406,7 +406,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       // Patch path `credentials/0/secret` mirrors the structure
       // x:Account/set expects when the User has a `credentials` map
       // with a single Password entry at index "0" — see
-      // scripts/integration-stalwart-v016-local.sh for the create-side
+      // scripts/integration-stalwart-local.sh for the create-side
       // shape that Stalwart accepts.
       const result = await accountSet({
         accountId,
@@ -483,7 +483,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       const r = await recycleStalwartPods({
         kubeconfigPath,
         namespace: 'mail',
-        labelSelector: 'app=stalwart-mail-v016',
+        labelSelector: 'app=stalwart-mail',
         gracePeriodSeconds: 15,
       });
       return { deletedCount: r.deletedCount, errors: r.errors };

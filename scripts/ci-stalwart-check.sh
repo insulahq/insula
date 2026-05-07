@@ -4,9 +4,9 @@
 # Fails if:
 #   1. A cert-reload CronJob still exists in any overlay's rendered output.
 #      (Regression guard: the old CronJob was replaced by Stakater Reloader.)
-#   2. The stalwart-mail-v016 Deployment is missing the
+#   2. The stalwart-mail Deployment is missing the
 #      `secret.reloader.stakater.com/reload` annotation in any overlay
-#      that includes the stalwart-v016 base.
+#      that includes the stalwart-mail base.
 #      (Ensures Reloader is wired to trigger cert + DB-credential restarts.)
 #
 # Cut 3 (2026-05-04): updated from the v015 StatefulSet to the v016
@@ -58,17 +58,17 @@ with open(sys.argv[1]) as f:
 for doc in docs:
     if doc and doc.get('kind') == 'Deployment':
         name = (doc.get('metadata') or {}).get('name', '')
-        if name == 'stalwart-mail-v016':
+        if name == 'stalwart-mail':
             ann = (doc.get('metadata') or {}).get('annotations') or {}
             if 'secret.reloader.stakater.com/reload' in ann:
                 sys.exit(0)
-            print('stalwart-mail-v016 Deployment missing secret.reloader.stakater.com/reload annotation', file=sys.stderr)
+            print('stalwart-mail Deployment missing secret.reloader.stakater.com/reload annotation', file=sys.stderr)
             sys.exit(1)
-# Deployment not found — skip (overlay may not include stalwart-v016)
+# Deployment not found — skip (overlay may not include stalwart-mail)
 sys.exit(0)
 PYEOF
   then
-    echo "ERROR [$overlay]: stalwart-mail-v016 Deployment is missing the Reloader annotation." >&2
+    echo "ERROR [$overlay]: stalwart-mail Deployment is missing the Reloader annotation." >&2
     echo "       Add to metadata.annotations:" >&2
     echo "         secret.reloader.stakater.com/reload: \"mail-pg-app-credentials,stalwart-admin-creds\"" >&2
     failures=$((failures + 1))

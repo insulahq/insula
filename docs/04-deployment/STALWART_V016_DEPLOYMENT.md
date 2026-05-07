@@ -8,8 +8,8 @@ Stalwart 0.16 mail server layer (Cut 2 of the mail rearchitecture).
 | Component | CPU request | CPU limit | Memory request | Memory limit | Storage |
 |-----------|------------|-----------|----------------|--------------|---------|
 | mail-pg (CNPG, single) | 50m | 200m | 256Mi | 512Mi | 5Gi (longhorn) |
-| stalwart-mail-v016 | 100m | 1000m | 128Mi | 512Mi | none (DB-backed) |
-| stalwart-v016-bootstrap (Job, transient) | 100m | 500m | 64Mi | 128Mi | none |
+| stalwart-mail | 100m | 1000m | 128Mi | 512Mi | none (DB-backed) |
+| stalwart-bootstrap (Job, transient) | 100m | 500m | 64Mi | 128Mi | none |
 
 Total steady-state overhead: ~150m CPU, ~400Mi RAM, 5Gi disk.
 
@@ -27,22 +27,22 @@ Bootstrap is driven by `scripts/bootstrap.sh`. The Stalwart 0.16 step
    namespace `mail` (username: `stalwart_app`, random password).
 
 2. `apply_platform_manifests` applies the env overlay (which must include
-   `k8s/overlays/dev/stalwart-v016/` or the equivalent production path).
+   `k8s/overlays/dev/stalwart-mail/` or the equivalent production path).
    Flux/kubectl creates: CNPG Cluster `mail-pg`, Stalwart Deployment,
    Services, Ingress, bootstrap Job (suspended).
 
 3. `bootstrap_stalwart_v016`:
    - Waits for `mail-pg` CNPG Cluster → Ready (up to 300s)
-   - Waits for `stalwart-mail-v016` Deployment rollout (up to 300s)
+   - Waits for `stalwart-mail` Deployment rollout (up to 300s)
    - Probes `/jmap/session` on the Stalwart pod via `kubectl exec`
    - **If JMAP 200**: Stalwart is already in full mode → skip.
    - **If JMAP non-200** (bootstrap mode):
      - Generates `stalwart-admin-creds` Secret (adminPassword + recoveryPassword)
-     - Renders bootstrap plan from `stalwart-v016-bootstrap-plan` ConfigMap
+     - Renders bootstrap plan from `stalwart-bootstrap-plan` ConfigMap
        (substitutes STALWART_HOSTNAME, STALWART_DOMAIN, STALWART_ADMIN_PASSWORD,
        DKIM private key)
      - Writes rendered plan to `stalwart-bootstrap-plan` Secret
-     - Patches `stalwart-v016-bootstrap` Job `spec.suspend = false`
+     - Patches `stalwart-bootstrap` Job `spec.suspend = false`
      - Waits for Job completion (up to 300s)
      - `kubectl rollout restart` on the Deployment
      - Verifies `/jmap/session` returns 200 on the new pod
@@ -81,21 +81,21 @@ kubectl create secret generic mail-pg-app-credentials \
 # Check logs
 kubectl logs -n mail -l app.kubernetes.io/component=mail-bootstrap
 # Delete the failed Job and re-trigger bootstrap
-kubectl delete job stalwart-v016-bootstrap -n mail
+kubectl delete job stalwart-bootstrap -n mail
 # Re-run bootstrap.sh, or manually:
-kubectl apply -k k8s/overlays/dev/stalwart-v016/   # re-creates the Job (suspended)
-kubectl patch job stalwart-v016-bootstrap -n mail -p '{"spec":{"suspend":false}}'
-kubectl wait --for=condition=complete job/stalwart-v016-bootstrap -n mail --timeout=300s
-kubectl rollout restart -n mail deploy/stalwart-mail-v016
+kubectl apply -k k8s/overlays/dev/stalwart-mail/   # re-creates the Job (suspended)
+kubectl patch job stalwart-bootstrap -n mail -p '{"spec":{"suspend":false}}'
+kubectl wait --for=condition=complete job/stalwart-bootstrap -n mail --timeout=300s
+kubectl rollout restart -n mail deploy/stalwart-mail
 ```
 
 ### Case 3: Stalwart stuck in bootstrap mode after Job completion
 
 ```bash
-kubectl rollout restart -n mail deploy/stalwart-mail-v016
-kubectl rollout status -n mail deploy/stalwart-mail-v016
+kubectl rollout restart -n mail deploy/stalwart-mail
+kubectl rollout status -n mail deploy/stalwart-mail
 # Verify:
-POD=$(kubectl get pod -n mail -l app=stalwart-mail-v016 -o name | head -1)
+POD=$(kubectl get pod -n mail -l app=stalwart-mail -o name | head -1)
 kubectl exec -n mail $POD -- wget -qO- http://localhost:8080/jmap/session
 ```
 
@@ -103,7 +103,7 @@ kubectl exec -n mail $POD -- wget -qO- http://localhost:8080/jmap/session
 
 ```bash
 # On the bootstrap host:
-cat /etc/platform/stalwart-v016-credentials
+cat /etc/platform/stalwart-mail-credentials
 # Or from the cluster:
 kubectl get secret -n mail stalwart-admin-creds -o jsonpath='{.data.adminPassword}' | base64 -d
 ```
@@ -140,7 +140,7 @@ Do NOT delete it until the migration + cutover is complete.
 To enable barman backups:
 1. Activate an S3 backup config in Admin Panel → System → Backup.
 2. Uncomment the `backup.barmanObjectStore` section in `cluster.yaml`.
-3. Apply the overlay: `kubectl apply -k k8s/overlays/<env>/stalwart-v016/`.
+3. Apply the overlay: `kubectl apply -k k8s/overlays/<env>/stalwart-mail/`.
 
 ### Longhorn block backup (mail-pg PVCs)
 

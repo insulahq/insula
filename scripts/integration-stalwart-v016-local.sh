@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# integration-stalwart-v016-local.sh — Stalwart 0.16 local DinD smoke test.
+# integration-stalwart-local.sh — Stalwart 0.16 local DinD smoke test.
 #
 # Exercises the Stalwart 0.16 JMAP management API directly via kubectl exec.
 # Stalwart 0.16 uses JMAP for ALL management operations (domains, accounts).
@@ -8,13 +8,13 @@
 #
 # Prerequisites:
 #   - Local DinD k3s running (./scripts/local.sh up)
-#   - stalwart-v016 overlay applied (kubectl apply -k k8s/overlays/dev/stalwart-v016/)
+#   - stalwart-mail overlay applied (kubectl apply -k k8s/overlays/dev/stalwart-mail/)
 #   - CNPG operator installed + mail-pg Ready
 #   - stalwart-admin-creds Secret in namespace mail (bootstrap.sh creates it)
 #   - DOCKER_HOST=tcp://dind:2375 set (or DinD accessible)
 #
 # Usage:
-#   DOCKER_HOST=tcp://dind:2375 bash scripts/integration-stalwart-v016-local.sh
+#   DOCKER_HOST=tcp://dind:2375 bash scripts/integration-stalwart-local.sh
 #
 set -euo pipefail
 
@@ -52,7 +52,7 @@ jmap_call() {
 }
 
 NS="mail"
-STALWART_DEPLOY="stalwart-mail-v016"
+STALWART_DEPLOY="stalwart-mail"
 MGMT_PORT="8080"
 STALWART_ADMIN="${STALWART_ADMIN:-admin}"
 STALWART_ADMIN_PW="${STALWART_ADMIN_PW:-}"
@@ -100,11 +100,11 @@ if [[ -z "$STALWART_POD" ]]; then
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 fi
 if [[ -z "$STALWART_POD" ]]; then
-  echo "  FATAL: No stalwart-mail-v016 pod found. Deploy the overlay first:"
-  echo "    kubectl apply -k k8s/overlays/dev/stalwart-v016/"
+  echo "  FATAL: No stalwart-mail pod found. Deploy the overlay first:"
+  echo "    kubectl apply -k k8s/overlays/dev/stalwart-mail/"
   exit 1
 fi
-pass "stalwart-mail-v016 pod found: ${STALWART_POD}"
+pass "stalwart-mail pod found: ${STALWART_POD}"
 
 # ── Step 1: platform-api healthz (informational) ─────────────────────────
 echo ""

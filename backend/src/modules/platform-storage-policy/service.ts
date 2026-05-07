@@ -68,7 +68,7 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   // so it fits the stateless replicas list. Roundcube is similarly
   // stateless (sessions persisted in Postgres since Phase 3.A.5,
   // emptyDir for the install dir).
-  { namespace: 'mail', name: 'stalwart-mail-v016' },
+  { namespace: 'mail', name: 'stalwart-mail' },
   { namespace: 'mail', name: 'roundcube' },
 ];
 // Single-server (local) installs default to 1 replica per stateless
@@ -87,7 +87,7 @@ export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServe
 // mail-pg: dedicated CNPG cluster for Stalwart 0.16. Independent
 // snapshot/recovery cycle from platform-PG; same Apply-HA scaling
 // path so a single admin action scales both clusters together.
-// (Cut 2 / M6.2 — stalwart-v016 deploy layer.)
+// (Cut 2 / M6.2 — stalwart-mail deploy layer.)
 // Cluster names track the role-based naming scheme (no version baggage).
 // Cluster name history (cleaned up 2026-05-07):
 //   platform: postgres → postgres-18 → system-db

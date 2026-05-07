@@ -9,7 +9,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     cartId: 'rstr-1',
     itemId: 'item-1',
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
-    imapServiceHost: 'stalwart-mail-v016.mail.svc.cluster.local',
+    imapServiceHost: 'stalwart-mail.mail.svc.cluster.local',
     imapServicePort: 993,
     stalwartMasterUser: 'master',
     masterSecretName: 'roundcube-secrets',

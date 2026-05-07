@@ -18,9 +18,9 @@
 # as "no issuer" → no Cert CR was created → the Secret
 # `platform-webmail-tls` never existed → nginx-ingress fell back to its
 # built-in "Kubernetes Ingress Controller Fake Certificate" self-signed.
-# Same pattern + reasoning as the staging stalwart-v016 overlay's
+# Same pattern + reasoning as the staging stalwart-mail overlay's
 # inline patch on the webadmin Ingress (k8s/overlays/staging/
-# stalwart-v016/kustomization.yaml).
+# stalwart-mail/kustomization.yaml).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

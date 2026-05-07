@@ -697,18 +697,18 @@ cmd_k3s_status() {
 # ─── Mail commands (Stalwart) ────────────────────────────────────────────────
 
 cmd_mail_up() {
-  # M13: mail-up now deploys Stalwart 0.16 (stalwart-v016 overlay).
+  # M13: mail-up now deploys Stalwart 0.16 (stalwart-mail overlay).
   # The 0.15 overlay (overlays/dev/stalwart/) was removed in M13.
   # To remove any remaining 0.15 resources, run:
   #   ./scripts/cutover-stalwart-v015-to-v016.sh
   echo "Deploying Stalwart 0.16 mail server..."
   _ensure_k3s_running
   _sync_manifests
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart-v016
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart-mail
   echo ""
   echo "Waiting for Stalwart 0.16 pod (up to 3 minutes)..."
   k3s_exec kubectl wait --for=condition=Ready pod \
-    -l app.kubernetes.io/name=stalwart-mail-v016 \
+    -l app.kubernetes.io/name=stalwart-mail \
     -n mail --timeout=180s || {
     echo "Pod not ready within 3 minutes. Recent events:"
     k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
@@ -739,7 +739,7 @@ cmd_mail16_up() { cmd_mail_up "$@"; }
 
 cmd_mail_down() {
   _sync_manifests
-  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/stalwart-v016 --ignore-not-found=true
+  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/stalwart-mail --ignore-not-found=true
 }
 
 cmd_mail_status() {
