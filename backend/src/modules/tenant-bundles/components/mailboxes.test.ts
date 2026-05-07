@@ -10,7 +10,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
     imapServiceHost: 'stalwart-mail.mail.svc.cluster.local',
     imapServicePort: 993,
-    stalwartMasterUser: 'master',
+    stalwartMasterUser: 'master@master.local',
     masterSecretName: 'roundcube-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
     uploadBase: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-test/components/mailboxes',
@@ -78,7 +78,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     const find = (n: string) => env.find((e) => e.name === n)?.value;
     expect(find('IMAP_HOST')).toBe('stalwart-mail.mail.svc.cluster.local');
     expect(find('IMAP_PORT')).toBe('993');
-    expect(find('STALWART_MASTER_USER')).toBe('master');
+    expect(find('STALWART_MASTER_USER')).toBe('master@master.local');
   });
 
   it('rejects unsafe addresses (defence against shell injection from forged DB rows)', () => {

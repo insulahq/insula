@@ -959,7 +959,11 @@ for c in (items if isinstance(items, list) else []):
       # service certificate is self-signed).
       local imap_host="stalwart-mail.mail.svc.cluster.local"
       local imap_port="993"
-      local imap_user="${mb_addr}%master"
+      # Stalwart master proxy needs the FQ master account (the short
+      # 'master' form resolves to master@localhost.local which doesn't
+      # exist → AUTHENTICATIONFAILED). master@master.local is the
+      # default account managed by mail-admin/rotate-webmail-master.
+      local imap_user="${mb_addr}%master@master.local"
       local master_pw
       master_pw=$(ssh_cp "kubectl -n mail get secret roundcube-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
       [[ -n "$master_pw" ]] || { echo "ERROR: master password fetch failed" >&2; return 1; }

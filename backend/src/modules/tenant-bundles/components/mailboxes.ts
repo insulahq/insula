@@ -71,7 +71,7 @@ export interface CaptureMailboxesComponentOpts {
   readonly mailNamespace?: string;       // defaults to 'mail'
   readonly imapServiceHost?: string;     // defaults to stalwart-mail.mail.svc.cluster.local
   readonly imapServicePort?: number;     // defaults to 993 (IMAPS — Stalwart 0.16 disables LOGIN on cleartext 143)
-  readonly stalwartMasterUser?: string;  // defaults to 'master'
+  readonly stalwartMasterUser?: string;  // defaults to 'master@master.local' (FQ — Stalwart needs the domain)
   readonly masterSecretName?: string;    // defaults to 'roundcube-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
   readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
@@ -84,7 +84,13 @@ const UPLOAD_TOKEN_TTL_SEC = 60 * 60;
 const MAIL_NAMESPACE_DEFAULT = 'mail';
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
-const MASTER_USER_DEFAULT = 'master';
+// Stalwart master-user proxy syntax is `<addr>%<masterFQ>`. The
+// master account lives at master@master.local; an unqualified
+// 'master' resolves to master@<defaultDomain> (typically
+// localhost.local) which doesn't exist → AUTHENTICATIONFAILED.
+// Same convention Roundcube's jwt_auth.php uses, modulo the
+// implicit default-domain assumption.
+const MASTER_USER_DEFAULT = 'master@master.local';
 const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
@@ -108,10 +114,12 @@ function isSafeImapHost(host: string): boolean {
   return /^[A-Za-z0-9.\-]+$/.test(host);
 }
 
-// Master user: alphanumeric + dot + underscore. Same justification
-// as isSafeImapHost — value is interpolated into the script.
+// Master user: <local>@<domain> or bare alphanumeric. The bare form
+// is for legacy / non-Stalwart servers; Stalwart requires the FQ
+// form. Same justification as isSafeImapHost — value is interpolated
+// into the script body.
 function isSafeMasterUser(user: string): boolean {
-  return /^[A-Za-z0-9._\-]+$/.test(user);
+  return /^[A-Za-z0-9._\-]+(@[A-Za-z0-9.\-]+)?$/.test(user);
 }
 
 /**
