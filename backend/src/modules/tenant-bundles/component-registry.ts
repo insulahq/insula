@@ -86,7 +86,7 @@ export const BUNDLE_COMPONENTS: ReadonlyArray<ComponentOwnership> = [
     pvcs: [],
     secretTypes: [],
     externalResources: [
-      'Stalwart IMAP (stalwart-mail-v016.mail.svc.cluster.local:993)',
+      'Stalwart IMAP (stalwart-mail.mail.svc.cluster.local:993)',
     ],
   },
   {

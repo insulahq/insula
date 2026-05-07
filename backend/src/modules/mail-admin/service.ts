@@ -22,22 +22,22 @@
 import * as k8s from '@kubernetes/client-node';
 
 const STALWART_NAMESPACE = 'mail';
-// stalwart-mail-v016 (the public-facing Service) only exposes mail
+// stalwart-mail (the public-facing Service) only exposes mail
 // listener ports. The management HTTP API on 8080 is on a separate
-// ClusterIP Service named stalwart-mgmt-v016 — see
-// k8s/base/stalwart-v016/stalwart/service.yaml.
+// ClusterIP Service named stalwart-mgmt — see
+// k8s/base/stalwart-mail/stalwart/service.yaml.
 //
 // The k8s service-proxy URL accepts either the port NUMBER or the
 // port NAME after the colon. We use the name (`mgmt-http`) so the
 // proxy works regardless of any future port-number reshuffle.
-const STALWART_MGMT_SERVICE = 'stalwart-mgmt-v016';
+const STALWART_MGMT_SERVICE = 'stalwart-mgmt';
 const STALWART_MGMT_PORT_NAME = 'mgmt-http';
 // Stalwart 0.16 runs as a Deployment, not a StatefulSet, so the pod
 // name is non-deterministic. resolveStalwartPodName() looks it up via
 // the label selector. Fallback constant retained for the rare case
 // where label-selector lookup fails (e.g. apiserver throttle).
-const STALWART_DEFAULT_POD = 'stalwart-mail-v016-0';
-const STALWART_POD_LABEL_SELECTOR = 'app=stalwart-mail-v016';
+const STALWART_DEFAULT_POD = 'stalwart-mail-0';
+const STALWART_POD_LABEL_SELECTOR = 'app=stalwart-mail';
 
 interface ProxyResult {
   readonly status: number;

@@ -31,7 +31,7 @@
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 
-const STALWART_SERVICE = 'stalwart-mail-v016.mail.svc.cluster.local';
+const STALWART_SERVICE = 'stalwart-mail.mail.svc.cluster.local';
 
 export const PROBE_TIMEOUT_MS = 5000;
 export const CACHE_TTL_MS = 30_000;

@@ -957,7 +957,7 @@ for c in (items if isinstance(items, list) else []):
       # ("LOGIN is disabled on the clear-text port"), so probes use
       # IMAPS on 993 with cert verification disabled (in-cluster
       # service certificate is self-signed).
-      local imap_host="stalwart-mail-v016.mail.svc.cluster.local"
+      local imap_host="stalwart-mail.mail.svc.cluster.local"
       local imap_port="993"
       local imap_user="${mb_addr}%master"
       local master_pw
@@ -1300,7 +1300,7 @@ scenario_mail() {
       --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
       curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
       -o jsonpath='{.data.adminPassword}' | base64 -d) \
-      -X POST http://stalwart-mgmt-v016:8080/jmap \
+      -X POST http://stalwart-mgmt:8080/jmap \
       -H Content-Type:application/json \
       -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"accountId\":\"d333333\",\"ids\":null,\"properties\":[\"id\",\"name\"]},\"r0\"]]}'" 2>&1)
   if echo "$x_domain_blob" | grep -qF "\"name\":\"$test_domain\""; then
@@ -1360,7 +1360,7 @@ scenario_mail() {
       --rm -i --restart=Never --image=python:3.12-alpine --timeout=20s -- \
       python3 -c 'import imaplib,ssl,sys;
 ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE;
-M=imaplib.IMAP4_SSL(\"stalwart-mail-v016.mail.svc.cluster.local\",993,ssl_context=ctx);
+M=imaplib.IMAP4_SSL(\"stalwart-mail.mail.svc.cluster.local\",993,ssl_context=ctx);
 M.login(\"${mail_box_user}\",\"${mail_box_pass}\"); M.select(\"INBOX\"); print(\"IMAP_LOGIN_OK\"); M.logout()'" 2>&1)
   if echo "$imap_probe" | grep -qF "IMAP_LOGIN_OK"; then
     ok "mail/jmap: Stalwart-side account provisioned (IMAP LOGIN ok for $mail_box_user)"
@@ -1409,13 +1409,13 @@ M.login(\"${mail_box_user}\",\"${mail_box_pass}\"); M.select(\"INBOX\"); print(\
   local subject="E2E-$stamp"
   # SMTP target: in-cluster Service DNS name. This is the real path tenant
   # apps use.
-  # Cut 3 (2026-05-04): v016 ships as `stalwart-mail-v016` Service.
+  # Cut 3 (2026-05-04): v016 ships as `stalwart-mail` Service.
   # The legacy `stalwart-mail` was retired during the cutover.
   # Out-of-the-box Stalwart 0.16 binds 465 (SMTPS, implicit TLS) but
   # NOT 587 (submission STARTTLS) — listener config lives in the DB,
   # not the ConfigMap. Until the bootstrap-plan adds a 587 listener,
   # the harness probes the SMTPS port instead.
-  local smtp_target="stalwart-mail-v016.mail.svc.cluster.local"
+  local smtp_target="stalwart-mail.mail.svc.cluster.local"
   local smtp_result
 
   if [[ "$tester_spawned" == "1" ]]; then
@@ -1534,7 +1534,7 @@ sys.exit(1)
     local stalwart_replicas
     # Use spec.replicas not status.readyReplicas — readyReplicas lags
     # during rolling updates and can read 1 transiently while spec=3.
-    stalwart_replicas=$(ssh_cp "kubectl get deploy -n mail stalwart-mail-v016 \
+    stalwart_replicas=$(ssh_cp "kubectl get deploy -n mail stalwart-mail \
         -o jsonpath='{.spec.replicas}'" 2>/dev/null || echo "1")
     log "mail/stress: starting N=${stress_n} concurrent sends (stalwart replicas=${stalwart_replicas})"
 
@@ -1550,7 +1550,7 @@ sys.exit(1)
     if [[ "${MAIL_STRESS_KILL:-0}" == "1" \
         && "$stalwart_replicas" =~ ^[0-9]+$ && "$stalwart_replicas" -ge 2 ]]; then
       ssh_cp "( sleep 2 && \
-        kubectl get pod -n mail -l app=stalwart-mail-v016 \
+        kubectl get pod -n mail -l app=stalwart-mail \
           -o jsonpath='{.items[0].metadata.name}' \
         | xargs -r kubectl delete pod -n mail --grace-period=0 --force \
         ) >/dev/null 2>&1 &" >/dev/null 2>&1 || true
@@ -2241,7 +2241,7 @@ apk add --no-cache wget tar xz >/dev/null 2>&1
 cd /tmp; wget -q -O cli.tar.xz https://github.com/stalwartlabs/cli/releases/download/v1.0.4/stalwart-cli-x86_64-unknown-linux-musl.tar.xz 2>&1
 tar -xJf cli.tar.xz; CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli; chmod +x \$CLI
 PW=\$(cat /var/run/stalwart-recovery 2>/dev/null || echo \"\")
-STALWART_USER=admin STALWART_PASSWORD=\$PW STALWART_URL=http://stalwart-mgmt-v016.mail.svc.cluster.local:8080 \
+STALWART_USER=admin STALWART_PASSWORD=\$PW STALWART_URL=http://stalwart-mgmt.mail.svc.cluster.local:8080 \
   \$CLI query Account 2>&1 | awk \"NR>1 && \\\$2 == \\\"master@master.local\\\" {print \\\$2; exit}\"
 "' 2>&1 | tail -1 || true)
   # Soft check — the harness can't easily mount the recovery secret,

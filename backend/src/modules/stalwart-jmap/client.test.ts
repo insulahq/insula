@@ -191,7 +191,7 @@ describe('getJmapSession', () => {
 // 2 parallel fetches (account + domain) depending on `ids: null` vs
 // specific IDs, so these tests need 2 mocked responses each. Skipped
 // until the rewrite. Refactored client wire-format is verified by
-// scripts/integration-stalwart-v016-local.sh on real Stalwart.
+// scripts/integration-stalwart-local.sh on real Stalwart.
 describe.skip('principalGet', () => {
   it('returns list of principals', async () => {
     const p = makePrincipal();

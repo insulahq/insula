@@ -24,21 +24,21 @@
 #   the Secret is present when the Deployment rolls out.
 #
 # RELOADER:
-#   Stakater Reloader rolls the Deployment when stalwart-config-v016
+#   Stakater Reloader rolls the Deployment when stalwart-config
 #   ConfigMap or mail-pg-app-credentials Secret changes.
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: stalwart-mail-v016
+  name: stalwart-mail
   namespace: mail
   labels:
-    app: stalwart-mail-v016
+    app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
   annotations:
     # Stakater Reloader: roll on config or credentials change.
-    configmap.reloader.stakater.com/reload: "stalwart-config-v016"
+    configmap.reloader.stakater.com/reload: "stalwart-config"
     secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds"
 spec:
   # Cut 3 (2026-05-05): replicas removed from manifest — owned by the
@@ -53,11 +53,11 @@ spec:
   # default = 1 until storage-policy fires for the first time.
   selector:
     matchLabels:
-      app: stalwart-mail-v016
+      app: stalwart-mail
   template:
     metadata:
       labels:
-        app: stalwart-mail-v016
+        app: stalwart-mail
         app.kubernetes.io/part-of: hosting-platform
       annotations:
         # Declarative hostPort manifest read by worker-firewall-reconciler:
@@ -83,7 +83,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app: stalwart-mail-v016
+              app: stalwart-mail
       securityContext:
         runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
       initContainers:
@@ -259,7 +259,7 @@ spec:
       volumes:
         - name: config-tmpl
           configMap:
-            name: stalwart-config-v016
+            name: stalwart-config
             items:
               - key: config.json
                 path: config.json

@@ -7,10 +7,10 @@
 # create_roundcube_db). The Stalwart master user is provisioned
 # separately by the cutover script (one-time JMAP call).
 #
-# In-cluster IMAP/SMTP from Roundcube → stalwart-mail-v016 uses
+# In-cluster IMAP/SMTP from Roundcube → stalwart-mail uses
 # verify_peer=false because Stalwart's LE cert has SANs for the public
 # subdomains (mail.${DOMAIN}, stalwart.${DOMAIN}) but NOT the in-cluster
-# Service hostname (stalwart-mail-v016.mail.svc.cluster.local). The
+# Service hostname (stalwart-mail.mail.svc.cluster.local). The
 # external HTTPS the user's browser hits at https://webmail.${DOMAIN} is
 # verified normally by the browser; only the Roundcube → Stalwart hop is
 # unverified, and that hop never leaves the cluster.
