@@ -209,6 +209,12 @@ export const createBundleSchema = z
     // Optional GDPR-export wrapper (client initiator only).
     exportMode: z.literal('data_export').optional(),
     exportPassphrase: z.string().min(12).max(256).optional(),
+    // When true, the route returns immediately with status='running'
+    // and the orchestrator continues in the background. The caller
+    // polls GET /admin/tenant-bundles/:id for per-component progress.
+    // Default false preserves the synchronous behaviour the
+    // integration harness depends on.
+    async: z.boolean().optional(),
   })
   .refine(
     (input) =>
