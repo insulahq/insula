@@ -24,7 +24,10 @@ vi.mock('../hooks/use-backup-bundles', () => ({
   useVerifyBundle: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCreateBundle: vi.fn(() => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { bundleId: 'bkp-new', status: 'pending' } }), isPending: false })),
   useBundleCoverage: vi.fn(),
+  useVerifyAllBundles: vi.fn(() => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { summary: { total: 0, passed: 0, failed: 0, skipped: 0 }, results: [] } }), isPending: false })),
   downloadDataExport: vi.fn(),
+  downloadBundleExport: vi.fn(),
+  importBundle: vi.fn(),
 }));
 vi.mock('../hooks/use-backup-schedule', () => ({
   useAllBackupSchedules: vi.fn(),
@@ -246,6 +249,20 @@ describe('TenantBackup', () => {
     expect(screen.getByText(/2 orphans/)).toBeInTheDocument();
     expect(screen.getByText('newFeatureTable')).toBeInTheDocument();
     expect(screen.getByText('anotherOrphan')).toBeInTheDocument();
+  });
+
+  it('toolbar exposes Verify-all + Import buttons', () => {
+    mockedBundles.mockReturnValue({ data: { data: { data: [BUNDLE], pagination: {} } }, isLoading: false });
+    render(<TenantBackup />, { wrapper });
+    expect(screen.getByTestId('bundle-verify-all')).toBeInTheDocument();
+    expect(screen.getByTestId('bundle-import')).toBeInTheDocument();
+  });
+
+  it('Import button opens the import modal', () => {
+    mockedBundles.mockReturnValue({ data: { data: { data: [BUNDLE], pagination: {} } }, isLoading: false });
+    render(<TenantBackup />, { wrapper });
+    fireEvent.click(screen.getByTestId('bundle-import'));
+    expect(screen.getByRole('dialog', { name: /Import bundle/i })).toBeInTheDocument();
   });
 
   it('targets tab nudges to add a target when none configured', () => {

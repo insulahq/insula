@@ -19,13 +19,14 @@ import { useState, useMemo, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   Package, Calendar, RotateCcw, Cloud, Search, X, Play, Pencil,
-  Trash2, ShieldCheck, Download, Loader2, AlertCircle, CheckCircle2,
+  Trash2, ShieldCheck, Download, Upload, Loader2, AlertCircle, CheckCircle2,
   Pause, FileText, Server, Plus, Shield, AlertTriangle,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, downloadDataExport } from '@/hooks/use-backup-bundles';
+import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle } from '@/hooks/use-backup-bundles';
+import type { VerifyAllResult } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
@@ -288,6 +289,11 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [exportPromptId, setExportPromptId] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const [verifyAllResult, setVerifyAllResult] = useState<VerifyAllResult | null>(null);
+  const [verifyAllError, setVerifyAllError] = useState<string | null>(null);
+  const verifyAll = useVerifyAllBundles();
 
   // useBundles wraps as { data: { data: [...], pagination } } —
   // see hooks/use-backup-bundles.ts ListResponse type.
@@ -424,6 +430,36 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
 
         <button
           type="button"
+          onClick={async () => {
+            setVerifyAllResult(null);
+            setVerifyAllError(null);
+            try {
+              const r = await verifyAll.mutateAsync();
+              setVerifyAllResult(r.data);
+            } catch (err) {
+              setVerifyAllError(err instanceof Error ? err.message : 'Verify-all failed');
+            }
+          }}
+          disabled={verifyAll.isPending || bundles.length === 0}
+          className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+          data-testid="bundle-verify-all"
+          title="Round-trip integrity check on every bundle"
+        >
+          {verifyAll.isPending ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />} Verify all
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowImport(true)}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+          data-testid="bundle-import"
+          title="Import an encrypted bundle from another region"
+        >
+          <Upload size={14} /> Import
+        </button>
+
+        <button
+          type="button"
           onClick={() => setShowCreate(true)}
           className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
           data-testid="bundle-create"
@@ -431,6 +467,44 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           <Plus size={14} /> New bundle
         </button>
       </div>
+
+      {verifyAllError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+          <AlertCircle className="mr-2 inline h-4 w-4" />
+          Verify-all failed: {verifyAllError}
+          <button type="button" className="ml-2 underline" onClick={() => setVerifyAllError(null)}>dismiss</button>
+        </div>
+      )}
+
+      {verifyAllResult && (
+        <div className={
+          verifyAllResult.summary.failed === 0
+            ? 'rounded-lg border border-green-300 bg-green-50 p-3 text-sm text-green-900 dark:border-green-800 dark:bg-green-950/40 dark:text-green-200'
+            : 'rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200'
+        }>
+          <div className="flex items-center justify-between">
+            <span>
+              <strong>Verify-all:</strong> {verifyAllResult.summary.passed} passed,{' '}
+              {verifyAllResult.summary.failed} failed,{' '}
+              {verifyAllResult.summary.skipped} skipped
+              <span className="text-xs opacity-70"> (of {verifyAllResult.summary.total})</span>
+            </span>
+            <button type="button" className="underline" onClick={() => setVerifyAllResult(null)}>dismiss</button>
+          </div>
+          {verifyAllResult.summary.failed > 0 && (
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {verifyAllResult.results.filter((r) => r.status === 'failed').slice(0, 10).map((r) => (
+                <li key={r.bundleId}>
+                  <code className="font-mono">{r.bundleId.slice(0, 24)}…</code> — {r.reason}
+                </li>
+              ))}
+              {verifyAllResult.results.filter((r) => r.status === 'failed').length > 10 && (
+                <li>… and {verifyAllResult.results.filter((r) => r.status === 'failed').length - 10} more</li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
 
       {verifyResult && (
         <div className={
@@ -480,6 +554,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
                   onVerify={() => handleVerify(b.id)}
                   onDelete={() => { setDeleteError(null); setDeletePromptId(b.id); }}
                   onDataExport={() => downloadDataExport(b.id)}
+                  onExportForRegion={() => setExportPromptId(b.id)}
                   verifying={verifyingId === b.id}
                 />
               ))}
@@ -504,6 +579,234 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           onClose={() => setShowCreate(false)}
         />
       )}
+
+      {exportPromptId && (
+        <ExportBundleModal
+          bundleId={exportPromptId}
+          onClose={() => setExportPromptId(null)}
+        />
+      )}
+
+      {showImport && (
+        <ImportBundleModal
+          configs={configs}
+          onClose={() => setShowImport(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: () => void }) {
+  const [passphrase, setPassphrase] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const valid = passphrase.length >= 12 && passphrase === confirm;
+
+  const handleExport = async () => {
+    if (!valid) {
+      setError('Passphrases must match and be at least 12 characters.');
+      return;
+    }
+    setError(null);
+    setPending(true);
+    try {
+      await downloadBundleExport(bundleId, passphrase);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="export-bundle-title">
+      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 id="export-bundle-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">Export bundle</h3>
+          <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          Builds a single passphrase-encrypted tarball containing every component artifact + meta.json.
+          Decryptable in another region with stock <code className="font-mono text-xs">openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000</code>.
+        </p>
+        <p className="mt-1 font-mono text-xs text-gray-500">{bundleId}</p>
+
+        <div className="mt-4 space-y-3 text-sm">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Passphrase (≥12 chars)</label>
+            <input
+              type="password"
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              autoComplete="new-password"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm passphrase</label>
+            <input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              autoComplete="new-password"
+            />
+          </div>
+          <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+            The platform never stores this passphrase. If you lose it the export is unrecoverable.
+            The secrets component remains encrypted with the source region's <code className="font-mono">OIDC_ENCRYPTION_KEY</code> — for full cross-region restore the target region needs the same KEK or the bundle will surface a decrypt error on the secrets component only.
+          </p>
+          {error && (
+            <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+              <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={!valid || pending}
+            className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            {pending ? <><Loader2 size={14} className="animate-spin" /> Encrypting…</> : <><Download size={14} /> Download</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportBundleModal({ configs, onClose }: {
+  configs: ReadonlyArray<{ readonly id: string; readonly name: string; readonly active: boolean }>;
+  onClose: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [passphrase, setPassphrase] = useState('');
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [targetConfigId, setTargetConfigId] = useState<string>(
+    () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [success, setSuccess] = useState<{ bundleId: string; sizeBytes: number } | null>(null);
+
+  const valid = !!file && passphrase.length >= 12 && !!clientId && !!targetConfigId;
+
+  const handleImport = async () => {
+    if (!valid || !file || !clientId) {
+      setError('All fields required; passphrase must be ≥12 chars.');
+      return;
+    }
+    setError(null);
+    setPending(true);
+    try {
+      const r = await importBundle({ file, passphrase, clientId, targetConfigId });
+      setSuccess({ bundleId: r.bundleId, sizeBytes: r.sizeBytes });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="import-bundle-title">
+      <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 id="import-bundle-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">Import bundle</h3>
+          <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+
+        {success ? (
+          <div className="space-y-3">
+            <div className="rounded-md border border-green-300 bg-green-50 p-3 text-sm text-green-900 dark:border-green-800 dark:bg-green-950/40 dark:text-green-200">
+              <CheckCircle2 className="mr-1 inline h-4 w-4" />
+              Imported as <code className="font-mono text-xs">{success.bundleId}</code> ({(success.sizeBytes / 1024 / 1024).toFixed(1)} MiB).
+              The bundle now appears in the list and is restorable via the standard Restore Cart flow.
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={onClose} className="rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700">Done</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3 text-sm">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Encrypted bundle file (.tar.gz.enc)</label>
+                <input
+                  type="file"
+                  accept=".enc,.tar.gz.enc,application/octet-stream"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  className="block w-full text-sm text-gray-700 dark:text-gray-300"
+                />
+                {file && <p className="mt-1 text-xs text-gray-500">{file.name} ({(file.size / 1024 / 1024).toFixed(1)} MiB)</p>}
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Passphrase</label>
+                <input
+                  type="password"
+                  value={passphrase}
+                  onChange={(e) => setPassphrase(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Target client (in this region)</label>
+                <SearchableClientSelect selectedClientId={clientId} onSelect={setClientId} placeholder="Pick a client…" />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Off-site target</label>
+                <select
+                  value={targetConfigId}
+                  onChange={(e) => setTargetConfigId(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                >
+                  {configs.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}{c.active ? ' (active)' : ''}</option>
+                  ))}
+                </select>
+              </div>
+
+              {error && (
+                <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+                  <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleImport}
+                disabled={!valid || pending}
+                className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {pending ? <><Loader2 size={14} className="animate-spin" /> Importing…</> : <><Upload size={14} /> Import</>}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -655,10 +958,11 @@ interface BundleRowProps {
   readonly onVerify: () => void;
   readonly onDelete: () => void;
   readonly onDataExport: () => void;
+  readonly onExportForRegion: () => void;
   readonly verifying: boolean;
 }
 
-function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, verifying }: BundleRowProps) {
+function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, onExportForRegion, verifying }: BundleRowProps) {
   return (
     <tr className="text-sm">
       <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-300">
@@ -704,6 +1008,14 @@ function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, ve
               <Download size={14} />
             </button>
           )}
+          <button
+            type="button"
+            onClick={onExportForRegion}
+            className="rounded p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30"
+            title="Export for multi-region transfer (encrypted tarball download)"
+          >
+            <Upload size={14} />
+          </button>
           <button
             type="button"
             onClick={onDelete}
