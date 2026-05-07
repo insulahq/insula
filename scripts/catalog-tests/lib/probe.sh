@@ -39,9 +39,10 @@ probe_http_ingress() {
     fail "no pods Ready in ${ns} after ${timeout}s"
     return 1
   fi
-  # Discover the ingress-target Service: prefer the one with port 80, fall
-  # back to the first Service that isn't `file-manager` (which the deployer
-  # always provisions alongside the workload).
+  # Discover the ingress-target Service: take the first non-file-manager
+  # Service in the namespace and use its first declared port. The deployer
+  # provisions one Service per ingress component plus a `file-manager`
+  # Service that we never want to probe.
   local svc port
   svc=$(kctl -n "$ns" get svc -o json \
     | python3 -c "
@@ -51,7 +52,7 @@ for s in d.get('items', []):
     n = s['metadata']['name']
     if n == 'file-manager': continue
     ports = s.get('spec', {}).get('ports', [])
-    if any(p.get('port') in (80, 8080, 443, 8443, 3000, 8000, 5000, 9000) for p in ports):
+    if ports:
         print(n, ports[0]['port']); break
 " 2>/dev/null)
   if [[ -z "$svc" ]]; then
