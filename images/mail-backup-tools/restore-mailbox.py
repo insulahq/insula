@@ -112,21 +112,33 @@ def list_maildir_folders(maildir: Path) -> list[Path]:
     """
     Return every folder containing a Maildir (has cur/ + new/).
 
-    Maildir++ layout:
+    Two layouts supported:
+
+    1. Strict Maildir++ (INBOX at root):
         <root>/cur/        — INBOX cur
         <root>/new/        — INBOX new
         <root>/.Sent/cur/  — sub-folder cur
         <root>/.Drafts/cur/
 
-    mbsync writes folder names with a leading dot for sub-folders;
-    INBOX is at the root.
+    2. mbsync-with-subdir-INBOX (Inbox set to $MAILDIR/INBOX in cfg,
+       which is what capture-mailbox.sh generates today):
+        <root>/INBOX/cur/    — INBOX cur
+        <root>/INBOX/new/    — INBOX new
+        <root>/.Sent/cur/    — sub-folder
+       This layout doesn't put INBOX at the maildir root, so we
+       additionally walk every non-dotted subdirectory and treat it
+       as a named folder.
     """
     folders: list[Path] = []
     if (maildir / "cur").is_dir() or (maildir / "new").is_dir():
-        folders.append(maildir)  # INBOX
+        folders.append(maildir)  # INBOX-at-root (layout 1)
     for child in sorted(maildir.iterdir()):
-        if child.is_dir() and child.name.startswith("."):
-            if (child / "cur").is_dir() or (child / "new").is_dir():
+        if not child.is_dir():
+            continue
+        # Both .Sent (Maildir++ subfolder) and INBOX (mbsync subdir
+        # layout) qualify if they have cur/ or new/.
+        if (child / "cur").is_dir() or (child / "new").is_dir():
+            if child not in folders:
                 folders.append(child)
     return folders
 
@@ -136,12 +148,16 @@ def folder_to_imap_name(maildir_root: Path, folder: Path) -> str:
     Convert a Maildir++ subdirectory name to an IMAP folder name.
 
     INBOX (the root) stays "INBOX".
+    `INBOX` (a subdir from the mbsync layout) also stays "INBOX".
     `.Sent` → "Sent"
     `.Archive.2024` → "Archive/2024"   (Maildir++ uses dots as separators)
     """
     if folder == maildir_root:
         return "INBOX"
-    name = folder.name.lstrip(".")
+    name = folder.name
+    if name == "INBOX":
+        return "INBOX"
+    name = name.lstrip(".")
     return name.replace(".", "/")
 
 

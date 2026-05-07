@@ -25,7 +25,7 @@ import {
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle } from '@/hooks/use-backup-bundles';
+import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useBundleDetailLive, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle } from '@/hooks/use-backup-bundles';
 import type { VerifyAllResult } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
@@ -824,6 +824,9 @@ function CreateBundleModal({ configs, onClose }: {
   const [label, setLabel] = useState('');
   const [retentionDays, setRetentionDays] = useState(30);
   const [error, setError] = useState<string | null>(null);
+  // Once the orchestrator has reserved the bundle (async path), we
+  // get the bundleId and switch the modal into "live progress" mode
+  // — polling /:id every 2s and rendering per-component status.
   const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
 
   const handleSubmit = async () => {
@@ -838,10 +841,10 @@ function CreateBundleModal({ configs, onClose }: {
         label: label.trim() || null,
         retentionDays,
         targetConfigId,
+        async: true,
       });
       setProgressBundleId(r.data.bundleId);
-      // Capture is synchronous in the orchestrator path → close on done.
-      onClose();
+      // Don't auto-close — operator watches per-component progress.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Create failed');
     }
@@ -927,27 +930,140 @@ function CreateBundleModal({ configs, onClose }: {
               <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
             </div>
           )}
-          {progressBundleId && createBundle.isPending && (
-            <div className="rounded-md border border-blue-300 bg-blue-50 p-2 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
-              <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> Capturing bundle {progressBundleId}…
-            </div>
+          {progressBundleId && (
+            <BundleCaptureProgress bundleId={progressBundleId} onAcknowledge={onClose} />
           )}
         </div>
 
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!clientId || !targetConfigId || createBundle.isPending}
-            className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
-          >
-            {createBundle.isPending ? <><Loader2 size={14} className="animate-spin" /> Capturing…</> : <><Plus size={14} /> Create bundle</>}
-          </button>
+          {!progressBundleId && (
+            <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
+              Cancel
+            </button>
+          )}
+          {!progressBundleId && (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!clientId || !targetConfigId || createBundle.isPending}
+              className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+            >
+              {createBundle.isPending ? <><Loader2 size={14} className="animate-spin" /> Starting…</> : <><Plus size={14} /> Create bundle</>}
+            </button>
+          )}
+          {progressBundleId && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100"
+              title="Close the modal — capture continues in background"
+            >
+              Close (capture continues in background)
+            </button>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Live capture-progress widget: polls the bundle detail every 2s
+// while still in flight. Renders per-component pending/running/done/
+// failed/skipped pills and surfaces last_error inline so the operator
+// can see WHICH component is stuck or has failed without leaving the
+// modal.
+function BundleCaptureProgress({ bundleId, onAcknowledge }: {
+  bundleId: string;
+  onAcknowledge: () => void;
+}) {
+  const { data, error, isLoading } = useBundleDetailLive(bundleId);
+  const detail = data?.data;
+
+  if (isLoading || !detail) {
+    return (
+      <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
+        <Loader2 className="mr-1 inline h-4 w-4 animate-spin" />
+        Reserving bundle <code className="font-mono text-xs">{bundleId}</code>…
+        {error && <div className="mt-1 text-red-700">poll error: {error instanceof Error ? error.message : String(error)}</div>}
+      </div>
+    );
+  }
+
+  const inFlight = detail.status === 'pending' || detail.status === 'running';
+  const succeeded = detail.status === 'completed';
+  const partial = detail.status === 'partial';
+  const failed = detail.status === 'failed' || detail.status === 'expired';
+
+  const startedAt = detail.startedAt ? new Date(detail.startedAt) : null;
+  const elapsedSec = startedAt
+    ? Math.round((Date.now() - startedAt.getTime()) / 1000)
+    : 0;
+
+  const pillClass = (s: string): string => {
+    if (s === 'completed') return 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300';
+    if (s === 'failed') return 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300';
+    if (s === 'running') return 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300';
+    if (s === 'skipped') return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
+    return 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'; // pending
+  };
+
+  return (
+    <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          {inFlight && <><Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> Capturing</>}
+          {succeeded && <><CheckCircle2 className="mr-1 inline h-4 w-4" /> Capture complete</>}
+          {partial && <><AlertTriangle className="mr-1 inline h-4 w-4" /> Captured with partial failures</>}
+          {failed && <><AlertCircle className="mr-1 inline h-4 w-4" /> Capture failed</>}
+          <code className="ml-1 font-mono text-xs">{bundleId.slice(0, 24)}…</code>
+        </div>
+        <span className="text-xs opacity-70">{elapsedSec}s elapsed</span>
+      </div>
+
+      {/* Per-component status — the heart of the new UX. Operator sees
+          exactly which component is in flight, complete, or failed.  */}
+      <div className="mt-3 space-y-1">
+        {detail.components.length === 0 ? (
+          <div className="text-xs italic opacity-70">no components recorded yet…</div>
+        ) : (
+          detail.components.map((c) => (
+            <div key={`${c.component}-${c.artifactName}`} className="flex items-start justify-between gap-2 text-xs">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium capitalize">{c.component}</span>
+                  <span className={`rounded-full px-2 py-0.5 ${pillClass(c.status)}`}>{c.status}</span>
+                  {c.sizeBytes > 0 && (
+                    <span className="opacity-70">{(c.sizeBytes / 1024 / 1024).toFixed(1)} MiB</span>
+                  )}
+                </div>
+                {c.lastError && (
+                  <div className="mt-0.5 break-words text-red-700 dark:text-red-300">
+                    {c.lastError}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {detail.lastError && (
+        <div className="mt-3 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+          <strong>Bundle-level error:</strong> {detail.lastError}
+        </div>
+      )}
+
+      {!inFlight && (
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={onAcknowledge}
+            className="rounded-md bg-brand-600 px-3 py-1.5 text-xs text-white hover:bg-brand-700"
+          >
+            {succeeded ? 'Close' : 'Acknowledge & close'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

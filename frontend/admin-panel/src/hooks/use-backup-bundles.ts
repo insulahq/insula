@@ -46,6 +46,32 @@ export function useBundleDetail(bundleId: string | null) {
   });
 }
 
+/**
+ * Poll a bundle's detail every 2s while it's still in flight
+ * (status='pending' or 'running'). Once a terminal status lands the
+ * polling stops automatically — TanStack Query reads the next
+ * `refetchInterval` from the latest data and an `undefined` return
+ * disables further intervals. Used by the create-bundle progress
+ * modal to render per-component live status.
+ */
+export function useBundleDetailLive(bundleId: string | null) {
+  return useQuery({
+    queryKey: ['backup-bundle', 'live', bundleId],
+    queryFn: () => apiFetch<SingleResponse<BundleDetail>>(`/api/v1/admin/tenant-bundles/${bundleId}`),
+    enabled: !!bundleId,
+    // Poll every 2s while the bundle is still in flight; stop once
+    // it reaches a terminal status.
+    refetchInterval: (query) => {
+      const status = query.state.data?.data?.status;
+      const inFlight = status === 'pending' || status === 'running';
+      return inFlight ? 2000 : false;
+    },
+    refetchIntervalInBackground: true,
+    // No cache hold: the modal needs the FRESHEST row each refetch.
+    staleTime: 0,
+  });
+}
+
 export function useCreateBundle() {
   const qc = useQueryClient();
   return useMutation({
