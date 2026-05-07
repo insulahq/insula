@@ -257,37 +257,48 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       ?? process.env.PLATFORM_API_INTERNAL_URL
       ?? 'http://platform-api.platform.svc:3000';
 
-    const result = await runBundle(
-      { db: app.db, k8s, store, platformVersion, secretsKeyHex, platformApiUrl },
-      {
-        clientId: input.clientId,
-        initiator: input.initiator,
-        systemTrigger: input.systemTrigger ?? null,
-        label: input.label ?? null,
-        description: input.description ?? null,
-        retentionDays,
-        targetConfigId: input.targetConfigId ?? null,
-        targetUri,
-        components: {
-          // Phase 3 wires both files (HTTP-upload from tenant Job)
-          // and mailboxes (Stalwart export Job in mail ns). Both
-          // default to true. Callers can opt out per-bundle to keep
-          // a capture light.
-          files: input.components?.files ?? true,
-          // Re-enabled 2026-05-05: capture now uses the
-          // mail-backup-tools image (mbsync over IMAP master-user
-          // proxy) instead of the dropped `stalwart-cli`. See
-          // backend/src/modules/tenant-bundles/components/mailboxes.ts
-          // and docs/02-operations/TENANT_BACKUP.md.
-          mailboxes: input.components?.mailboxes ?? true,
-          config: input.components?.config ?? true,
-          secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
-        },
-        exportMode: input.exportMode ?? null,
-        exportPassphrase: input.exportPassphrase ?? null,
+    const orchInput = {
+      clientId: input.clientId,
+      initiator: input.initiator,
+      systemTrigger: input.systemTrigger ?? null,
+      label: input.label ?? null,
+      description: input.description ?? null,
+      retentionDays,
+      targetConfigId: input.targetConfigId ?? null,
+      targetUri,
+      components: {
+        files: input.components?.files ?? true,
+        mailboxes: input.components?.mailboxes ?? true,
+        config: input.components?.config ?? true,
+        secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
       },
-    );
+      exportMode: input.exportMode ?? null,
+      exportPassphrase: input.exportPassphrase ?? null,
+    };
+    const orchDeps = { db: app.db, k8s, store, platformVersion, secretsKeyHex, platformApiUrl };
 
+    if (input.async) {
+      // Async path: return as soon as the orchestrator has reserved
+      // the bundle (row inserted + off-site dir reserved). The frontend
+      // polls GET /:id every 2 s and renders per-component progress.
+      // Errors are surfaced via that detail endpoint
+      // (backup_components.last_error per row, backup_jobs.last_error
+      // for whole-bundle failures).
+      const reserved = new Promise<string>((resolve) => {
+        runBundle(orchDeps, { ...orchInput, onBundleReserved: (id) => resolve(id) }).catch((err) => {
+          // The orchestrator's per-component failure path already
+          // writes status='failed' + last_error to the row, so the
+          // operator sees the failure in the polling modal. Log here
+          // so we have an audit trail beyond the row.
+          app.log.error({ err: err instanceof Error ? err.message : String(err) }, 'tenant-bundles: async runBundle failed');
+        });
+      });
+      const bundleId = await reserved;
+      reply.status(202).send(success({ bundleId, status: 'running', meta: null, async: true }));
+      return;
+    }
+
+    const result = await runBundle(orchDeps, orchInput);
     reply.status(201).send(success({ bundleId: result.bundleId, status: result.status, meta: result.meta }));
   });
 

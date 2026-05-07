@@ -24,6 +24,7 @@ vi.mock('../hooks/use-backup-bundles', () => ({
   useVerifyBundle: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCreateBundle: vi.fn(() => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { bundleId: 'bkp-new', status: 'pending' } }), isPending: false })),
   useBundleCoverage: vi.fn(),
+  useBundleDetailLive: vi.fn(() => ({ data: undefined, isLoading: true, error: null })),
   useVerifyAllBundles: vi.fn(() => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { summary: { total: 0, passed: 0, failed: 0, skipped: 0 }, results: [] } }), isPending: false })),
   downloadDataExport: vi.fn(),
   downloadBundleExport: vi.fn(),
