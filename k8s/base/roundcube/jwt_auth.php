@@ -195,15 +195,28 @@ class jwt_auth extends rcube_plugin
     }
 
     /**
-     * After a JWT-driven login succeeds, rewrite the user's primary
-     * identity so the From: dropdown shows the clean mailbox address
-     * (rcmail::login() auto-creates an identity with email = the
-     * raw IMAP-auth username, which would otherwise leak the master
-     * suffix into outgoing mail).
+     * After a JWT-driven login succeeds, normalize ALL persisted
+     * references to the user — both the rcube_users.username row
+     * AND every rcube_identities row owned by that user — back to
+     * the clean mailbox form. Stalwart's master-auth syntax uses
+     * `<mailbox>%<master>` as the IMAP login, so rcmail::login()
+     * stamps that string into both tables. Two failure modes if we
+     * leave it:
+     *   1. Settings → Identities surfaces the master-form to the
+     *      operator (UI leak).
+     *   2. The SMTP MAIL FROM and From: header use the identity
+     *      email; Stalwart rejects the master-form sender with
+     *      "501 5.1.8 Bad sender's system address" → outbound mail
+     *      fails entirely.
      *
      * We do NOT overwrite $_SESSION['username'] here — see the
-     * comment in on_startup() above for why that breaks IMAP auth.
-     * The clean-form display is handled by on_template_object_username.
+     * comment in on_startup() above for why that breaks IMAP auth
+     * on subsequent requests.
+     *
+     * Idempotent: a row whose email/name/username is already in the
+     * clean form is left untouched. Iterates ALL identities (not
+     * just the primary) so a second-identity leak from a previous
+     * login also gets cleaned up.
      */
     function on_logged_in($args)
     {
@@ -211,34 +224,47 @@ class jwt_auth extends rcube_plugin
             return $args;
         }
         $clean = $_SESSION['jwt_auth::clean_user'];
+        $local = strpos($clean, '@') !== false ? substr($clean, 0, strpos($clean, '@')) : $clean;
         $rcmail = rcmail::get_instance();
         if (!$rcmail->user || !$rcmail->user->ID) {
             return $args;
         }
+
+        // Rewrite users.username if it still carries the master
+        // suffix. Roundcube's rcube_user object exposes save_prefs()
+        // for prefs but no direct setter for username, so we go
+        // through rcube_db.
+        if (!empty($rcmail->user->data['username']) && strpos($rcmail->user->data['username'], '%') !== false) {
+            $db = $rcmail->get_dbh();
+            $db->query(
+                'UPDATE ' . $db->table_name('users', true)
+                . ' SET username = ? WHERE user_id = ?',
+                $clean,
+                $rcmail->user->ID
+            );
+            // Mirror into the in-memory user object so the rest of
+            // this request sees the clean form.
+            $rcmail->user->data['username'] = $clean;
+        }
+
+        // Rewrite EVERY identity owned by this user that still has
+        // the master-form. Some users accumulated extra identities
+        // before the fix landed; this loop catches all of them.
         $identities = $rcmail->user->list_identities();
-        if (empty($identities)) {
-            return $args;
-        }
-        // Pick the standard (default) identity if there is one,
-        // otherwise the first.
-        $primary = null;
         foreach ($identities as $ident) {
-            if (!empty($ident['standard'])) {
-                $primary = $ident;
-                break;
+            $needs_email = !empty($ident['email']) && strpos($ident['email'], '%') !== false;
+            $needs_name  = empty($ident['name']) || strpos($ident['name'], '%') !== false;
+            if (!$needs_email && !$needs_name) {
+                continue;
             }
-        }
-        if ($primary === null) {
-            $primary = $identities[0];
-        }
-        // Idempotent: only update if the email field still carries
-        // the master suffix.
-        if (!empty($primary['email']) && strpos($primary['email'], '%') !== false) {
-            $local = strpos($clean, '@') !== false ? substr($clean, 0, strpos($clean, '@')) : $clean;
-            $rcmail->user->update_identity($primary['identity_id'], array(
-                'email' => $clean,
-                'name'  => $local,
-            ));
+            $update = array();
+            if ($needs_email) {
+                $update['email'] = $clean;
+            }
+            if ($needs_name) {
+                $update['name'] = $local;
+            }
+            $rcmail->user->update_identity($ident['identity_id'], $update);
         }
         return $args;
     }
