@@ -186,7 +186,12 @@ export function useVerifyAllBundles() {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-bundles'] }),
+    onSuccess: () => {
+      // Invalidate both list (status display) and any open detail
+      // panels so a verify-all run reflects in the UI immediately.
+      qc.invalidateQueries({ queryKey: ['backup-bundles'] });
+      qc.invalidateQueries({ queryKey: ['backup-bundle'] });
+    },
   });
 }
 

@@ -292,6 +292,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
   const [exportPromptId, setExportPromptId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [verifyAllResult, setVerifyAllResult] = useState<VerifyAllResult | null>(null);
+  const [verifyAllError, setVerifyAllError] = useState<string | null>(null);
   const verifyAll = useVerifyAllBundles();
 
   // useBundles wraps as { data: { data: [...], pagination } } —
@@ -431,8 +432,13 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           type="button"
           onClick={async () => {
             setVerifyAllResult(null);
-            const r = await verifyAll.mutateAsync();
-            setVerifyAllResult(r.data);
+            setVerifyAllError(null);
+            try {
+              const r = await verifyAll.mutateAsync();
+              setVerifyAllResult(r.data);
+            } catch (err) {
+              setVerifyAllError(err instanceof Error ? err.message : 'Verify-all failed');
+            }
           }}
           disabled={verifyAll.isPending || bundles.length === 0}
           className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
@@ -461,6 +467,14 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           <Plus size={14} /> New bundle
         </button>
       </div>
+
+      {verifyAllError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+          <AlertCircle className="mr-2 inline h-4 w-4" />
+          Verify-all failed: {verifyAllError}
+          <button type="button" className="ml-2 underline" onClick={() => setVerifyAllError(null)}>dismiss</button>
+        </div>
+      )}
 
       {verifyAllResult && (
         <div className={

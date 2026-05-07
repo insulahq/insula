@@ -393,7 +393,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
 
     const { streamEncryptedExport } = await import('./data-export.js');
-    const stream = streamEncryptedExport({ store, handle, passphrase, components: allArtifacts });
+    const stream = await streamEncryptedExport({ store, handle, passphrase, components: allArtifacts });
 
     reply.header('Content-Type', 'application/octet-stream');
     reply.header('Content-Disposition', `attachment; filename="bundle-${id}.tar.gz.enc"`);
@@ -417,7 +417,17 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // The clientId in meta.json from the source region is REPLACED by
   // the one in the multipart body — operators routinely import a
   // bundle to a different tenant in the new region.
+  // Note: registered AFTER /:id/export, but find-my-way v8 (Fastify
+  // 5) correctly prefers a literal `import` segment over the `:id`
+  // parametric one regardless of registration order. The same holds
+  // for verify-all below. The local convention (see comment near
+  // /coverage) was set on Fastify v1 trie semantics.
+  //
+  // 2 GiB per-route bodyLimit override — bundles can dwarf the global
+  // 50 MiB. Global stays low so a stray non-bundle endpoint doesn't
+  // accept arbitrary uploads.
   app.post('/admin/tenant-bundles/import', {
+    bodyLimit: 2 * 1024 * 1024 * 1024,
     schema: { tags: ['TenantBundles'], summary: 'Import a passphrase-encrypted bundle from another region', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     // Fastify multipart returns one part per file/field. Walk parts
@@ -455,10 +465,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // override clientId and capturedAt-vs-importedAt).
     const metaEntry = entries.find((e) => e.path === 'meta.json');
     if (!metaEntry) throw new ApiError('VALIDATION_ERROR', 'tarball missing meta.json', 400);
-    const sourceMeta = JSON.parse(metaEntry.buffer.toString('utf8')) as {
-      backupId?: string; label?: string; description?: string;
-      components?: Record<string, unknown>; retentionDays?: number;
-    };
+    let sourceMeta: { backupId?: string; label?: string; description?: string; components?: Record<string, unknown>; retentionDays?: number };
+    try {
+      sourceMeta = JSON.parse(metaEntry.buffer.toString('utf8'));
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `tarball meta.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
 
     // Allocate a fresh bundleId in this region.
     const newBundleId = `bkp-${randomUUID()}`;

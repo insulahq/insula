@@ -168,7 +168,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     const handle: BundleHandle = { backupId: 'bkp-src', clientId: 'src-tenant', root: 'mem://bkp-src' };
 
     // Stream export → buffer.
-    const stream = streamEncryptedExport({
+    const stream = await streamEncryptedExport({
       store,
       handle,
       passphrase,
@@ -199,8 +199,8 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: {} });
     const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
-    expect(() => streamEncryptedExport({ store, handle, passphrase: 'short', components: [] }))
-      .toThrow(/≥12 chars/);
+    await expect(streamEncryptedExport({ store, handle, passphrase: 'short', components: [] }))
+      .rejects.toThrow(/≥12 chars/);
   });
 
   it('rejects a wrong passphrase on import', async () => {
@@ -208,7 +208,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('x') } });
     const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
-    const stream = streamEncryptedExport({ store, handle, passphrase: 'right-passphrase-12345', components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const stream = await streamEncryptedExport({ store, handle, passphrase: 'right-passphrase-12345', components: [{ component: 'config', name: 'db-rows.json.gz' }] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
     const blob = Buffer.concat(chunks);

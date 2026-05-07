@@ -38,12 +38,17 @@
  * supplied at create time.
  */
 
-import { pbkdf2Sync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { pbkdf2 as pbkdf2Cb, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
 import { createGzip, createGunzip } from 'node:zlib';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pack as tarPack, extract as tarExtract } from 'tar-stream';
 import type { BackupStore, BundleHandle } from './bundle-store.js';
+
+// 100k-iter PBKDF2 takes 50–100 ms — too long to block the Node
+// event loop. The async variant runs the work on libuv's threadpool.
+const pbkdf2 = promisify(pbkdf2Cb);
 
 const PBKDF2_ITERATIONS = 100_000; // matches `openssl enc -iter 100000`
 const KEY_BYTES = 32;
@@ -79,8 +84,10 @@ export async function wrapBundleAsDataExport(args: WrapBundleArgs): Promise<Wrap
 
   // Derive AES key + IV from passphrase + random salt via PBKDF2.
   // Same KDF and parameters as `openssl enc -pbkdf2 -iter 100000`.
+  // Async (libuv threadpool) so 100k iterations don't stall the
+  // event loop while other HTTP requests are in flight.
   const salt = randomBytes(SALT_BYTES);
-  const derived = pbkdf2Sync(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
+  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
   const key = derived.subarray(0, KEY_BYTES);
   const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
 
@@ -195,14 +202,17 @@ export interface StreamExportArgs {
  * AES-256-CBC under a key derived from `passphrase`. Same wire
  * format as `wrapBundleAsDataExport`. Caller pipes the returned
  * stream to the HTTP reply.
+ *
+ * Async because PBKDF2 (100k iterations) runs on libuv's threadpool
+ * via the async pbkdf2() helper rather than blocking the event loop.
  */
-export function streamEncryptedExport(args: StreamExportArgs): Readable {
+export async function streamEncryptedExport(args: StreamExportArgs): Promise<Readable> {
   const { store, handle, passphrase, components } = args;
   if (!passphrase || passphrase.length < 12) {
     throw new Error('streamEncryptedExport: passphrase must be ≥12 chars');
   }
   const salt = randomBytes(SALT_BYTES);
-  const derived = pbkdf2Sync(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
+  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
   const key = derived.subarray(0, KEY_BYTES);
   const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
 
@@ -287,7 +297,7 @@ export async function decryptImportTarball(args: {
   const salt = cipherBlob.subarray(8, 16);
   const ciphertext = cipherBlob.subarray(16);
 
-  const derived = pbkdf2Sync(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
+  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
   const key = derived.subarray(0, KEY_BYTES);
   const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
 
