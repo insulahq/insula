@@ -206,26 +206,34 @@ class jwt_auth extends rcube_plugin
     /**
      * After a JWT-driven login succeeds, normalize ALL persisted
      * references to the user — both the rcube_users.username row
-     * AND every rcube_identities row owned by that user — back to
-     * the clean mailbox form. Stalwart's master-auth syntax uses
-     * `<mailbox>%<master>` as the IMAP login, so rcmail::login()
-     * stamps that string into both tables. Two failure modes if we
-     * leave it:
-     *   1. Settings → Identities surfaces the master-form to the
-     *      operator (UI leak).
-     *   2. The SMTP MAIL FROM and From: header use the identity
-     *      email; Stalwart rejects the master-form sender with
-     *      "501 5.1.8 Bad sender's system address" → outbound mail
-     *      fails entirely.
+     * back to the clean mailbox form. Stalwart's master-auth syntax
+     * uses `<mailbox>%<master>` as the IMAP login, so rcmail::login()
+     * stamps that string into both rcube_users.username AND
+     * rcube_identities.email/.name. Without this rewrite, the
+     * Settings → Identities page surfaces the master-form to the
+     * operator (UI leak), AND outbound mail fails because Stalwart
+     * rejects the master-form as a sender ("501 5.1.8 Bad sender's
+     * system address").
      *
-     * We do NOT overwrite $_SESSION['username'] here — see the
-     * comment in on_startup() above for why that breaks IMAP auth
-     * on subsequent requests.
+     * SCOPE: only `rcube_identities` rows are rewritten — NOT
+     * `rcube_users.username`. Roundcube's SMTP `%u` placeholder is
+     * resolved through `$rcmail->user->get_username()` which reads
+     * `users.username`; if we rewrite that to the clean form, SMTP
+     * AUTH against Stalwart fails with "535 5.7.8 Authentication
+     * credentials invalid" because Stalwart's master-auth requires
+     * the `<mailbox>%<master>` syntax. (Verified empirically
+     * 2026-05-07: an earlier version of this hook also rewrote
+     * users.username and broke send-mail for every SSO user — the
+     * 535 was the symptom.)
      *
-     * Idempotent: a row whose email/name/username is already in the
-     * clean form is left untouched. Iterates ALL identities (not
-     * just the primary) so a second-identity leak from a previous
-     * login also gets cleaned up.
+     * Same reasoning applies to $_SESSION['username'] — see the
+     * comment in on_startup() above. Both `users.username` and
+     * `$_SESSION['username']` MUST keep the master form so IMAP +
+     * SMTP credentials remain valid for Stalwart's master-auth.
+     *
+     * Idempotent: identity rows already in clean form are left
+     * untouched. Iterates ALL identities (not just the primary) so
+     * a second-identity leak from a pre-fix login also converges.
      */
     function on_logged_in($args)
     {
@@ -239,26 +247,11 @@ class jwt_auth extends rcube_plugin
             return $args;
         }
 
-        // Rewrite users.username if it still carries the master
-        // suffix. Roundcube's rcube_user object exposes save_prefs()
-        // for prefs but no direct setter for username, so we go
-        // through rcube_db.
-        if (!empty($rcmail->user->data['username']) && strpos($rcmail->user->data['username'], '%') !== false) {
-            $db = $rcmail->get_dbh();
-            $db->query(
-                'UPDATE ' . $db->table_name('users', true)
-                . ' SET username = ? WHERE user_id = ?',
-                $clean,
-                $rcmail->user->ID
-            );
-            // Mirror into the in-memory user object so the rest of
-            // this request sees the clean form.
-            $rcmail->user->data['username'] = $clean;
-        }
-
         // Rewrite EVERY identity owned by this user that still has
         // the master-form. Some users accumulated extra identities
         // before the fix landed; this loop catches all of them.
+        // Identity rows ONLY — see the docblock above for why
+        // users.username must stay master-form.
         $identities = $rcmail->user->list_identities();
         foreach ($identities as $ident) {
             $needs_email = !empty($ident['email']) && strpos($ident['email'], '%') !== false;
