@@ -301,17 +301,25 @@ export async function decryptImportTarball(args: {
   const key = derived.subarray(0, KEY_BYTES);
   const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
 
-  // Decrypt → gunzip → tar extract → buffer each entry.
+  // The cipher blob is already in memory, so do the decipher
+  // synchronously (no streaming needed). This avoids the
+  // unhandled-rejection class where decipher._flush fires a
+  // post-pipeline 'bad decrypt' error after the await has already
+  // rejected. Wrong passphrase reliably surfaces as the decipher
+  // throwing here.
   const decipher = createDecipheriv('aes-256-cbc', key, iv);
+  let plaintext: Buffer;
+  try {
+    plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch (err) {
+    throw new Error(`import-decrypt failed (wrong passphrase or corrupt blob): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Gunzip → tar extract → buffer each entry. These run on the
+  // decrypted plaintext so any error here is genuinely a malformed
+  // tarball — caller will see the wrapped error from below.
   const gunzip = createGunzip();
   const tarX = tarExtract();
-
-  // Silence "unhandled 'error' event" noise: the pipeline below
-  // already captures + rethrows any failure. We just need each
-  // stream to have an error listener so Node doesn't escalate.
-  // (The Promise<void> below ALSO attaches a tarX.on('error',…)
-  // — both listeners fire; that's fine.)
-  decipher.on('error', () => undefined);
   gunzip.on('error', () => undefined);
 
   const entries: ImportEntry[] = [];
@@ -330,17 +338,11 @@ export async function decryptImportTarball(args: {
     tarX.on('error', reject);
   });
 
-  // Drive the pipeline. Wrong passphrase manifests as a decipher
-  // error ("bad decrypt") OR garbage bytes that gunzip rejects.
-  // Both surface as the rejection of `pipeline`. We swallow the
-  // 'error' event bubble by attaching no-op listeners above so
-  // Node doesn't escalate; the final user-facing message comes
-  // from the rethrow here.
   try {
-    await pipeline(Readable.from(ciphertext), decipher, gunzip, tarX);
+    await pipeline(Readable.from(plaintext), gunzip, tarX);
     await collect;
   } catch (err) {
-    throw new Error(`import-decrypt failed (wrong passphrase or corrupt blob): ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`import-extract failed (corrupt tarball): ${err instanceof Error ? err.message : String(err)}`);
   }
   return entries;
 }
