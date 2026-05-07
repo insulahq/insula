@@ -139,3 +139,89 @@ describe('wrapBundleAsDataExport', () => {
     })).rejects.toThrow(/≥12 chars/);
   });
 });
+
+// ─── Multi-region export/import round-trip ───────────────────────
+
+describe('streamEncryptedExport + decryptImportTarball', () => {
+  it('round-trips a bundle through stream-export → import-decrypt', async () => {
+    const { streamEncryptedExport, decryptImportTarball } = await import('./data-export.js');
+    const passphrase = 'multi-region-test-pw-1234';
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1,
+      backupId: 'bkp-src',
+      clientId: 'src-tenant',
+      capturedAt: '2026-05-07T00:00:00.000Z',
+      platformVersion: '0.0.0',
+      initiator: 'admin',
+      systemTrigger: null,
+      retentionDays: 30,
+      label: 'pre-region-migration',
+      description: null,
+      components: {},
+    } as unknown as BackupMetaV1;
+    const artifacts = {
+      'files/archive.tar.gz': Buffer.from('FAKE-FILES-PAYLOAD'),
+      'config/db-rows.json.gz': Buffer.from('FAKE-CONFIG'),
+      'secrets/tls.json.gz.enc': Buffer.from('ALREADY-INNER-ENCRYPTED'),
+    };
+    const store = makeMockStore({ meta, artifacts });
+    const handle: BundleHandle = { backupId: 'bkp-src', clientId: 'src-tenant', root: 'mem://bkp-src' };
+
+    // Stream export → buffer.
+    const stream = streamEncryptedExport({
+      store,
+      handle,
+      passphrase,
+      components: [
+        { component: 'files', name: 'archive.tar.gz' },
+        { component: 'config', name: 'db-rows.json.gz' },
+        { component: 'secrets', name: 'tls.json.gz.enc' },
+      ],
+    });
+    const cipherChunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) cipherChunks.push(Buffer.from(c));
+    const cipherBlob = Buffer.concat(cipherChunks);
+    expect(cipherBlob.subarray(0, 8).toString('ascii')).toBe('Salted__');
+
+    // Import side: decrypt + extract.
+    const entries = await decryptImportTarball({ cipherBlob, passphrase });
+    const byPath = new Map(entries.map((e) => [e.path, e.buffer]));
+    expect(byPath.has('meta.json')).toBe(true);
+    expect(byPath.get('components/files/archive.tar.gz')?.toString()).toBe('FAKE-FILES-PAYLOAD');
+    expect(byPath.get('components/config/db-rows.json.gz')?.toString()).toBe('FAKE-CONFIG');
+    expect(byPath.get('components/secrets/tls.json.gz.enc')?.toString()).toBe('ALREADY-INNER-ENCRYPTED');
+    const importedMeta = JSON.parse(byPath.get('meta.json')!.toString());
+    expect(importedMeta.backupId).toBe('bkp-src');
+  });
+
+  it('rejects an export with a passphrase shorter than 12 chars', async () => {
+    const { streamEncryptedExport } = await import('./data-export.js');
+    const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
+    const store = makeMockStore({ meta, artifacts: {} });
+    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+    expect(() => streamEncryptedExport({ store, handle, passphrase: 'short', components: [] }))
+      .toThrow(/≥12 chars/);
+  });
+
+  it('rejects a wrong passphrase on import', async () => {
+    const { streamEncryptedExport, decryptImportTarball } = await import('./data-export.js');
+    const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
+    const store = makeMockStore({ meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('x') } });
+    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+    const stream = streamEncryptedExport({ store, handle, passphrase: 'right-passphrase-12345', components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+
+    await expect(decryptImportTarball({ cipherBlob: blob, passphrase: 'wrong-passphrase-67890' }))
+      .rejects.toThrow(/import-decrypt failed/);
+  });
+
+  it('rejects a tarball that is not a Salted__ envelope', async () => {
+    const { decryptImportTarball } = await import('./data-export.js');
+    await expect(decryptImportTarball({
+      cipherBlob: Buffer.from('NotAValidEnvelopeOfSufficientLength'),
+      passphrase: 'whatever-12-chars',
+    })).rejects.toThrow(/not an OpenSSL Salted__ envelope/);
+  });
+});
