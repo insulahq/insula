@@ -11,7 +11,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
     imapServiceHost: 'stalwart-mail.mail.svc.cluster.local',
     imapServicePort: 993,
-    stalwartMasterUser: 'master',
+    stalwartMasterUser: 'master@master.local',
     masterSecretName: 'roundcube-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
     mode: 'merge-skip-duplicates' as const,

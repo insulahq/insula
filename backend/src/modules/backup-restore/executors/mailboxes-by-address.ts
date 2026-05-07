@@ -54,7 +54,11 @@ interface Selector {
 const MAIL_NAMESPACE = 'mail';
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
-const MASTER_USER_DEFAULT = 'master';
+// Stalwart master-user proxy needs the FQ master account
+// (master@master.local). The short-form 'master' resolves to
+// master@localhost.local which doesn't exist → AUTHENTICATIONFAILED.
+// See tenant-bundles/components/mailboxes.ts for the rationale.
+const MASTER_USER_DEFAULT = 'master@master.local';
 const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
@@ -76,7 +80,9 @@ function isSafeImapHost(host: string): boolean {
 }
 
 function isSafeMasterUser(user: string): boolean {
-  return /^[A-Za-z0-9._\-]+$/.test(user);
+  // Stalwart needs `<local>@<domain>`; bare alphanumeric form is
+  // tolerated for legacy / non-Stalwart servers.
+  return /^[A-Za-z0-9._\-]+(@[A-Za-z0-9.\-]+)?$/.test(user);
 }
 
 export async function execMailboxesByAddressItem(args: {
