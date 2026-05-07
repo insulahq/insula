@@ -2904,7 +2904,7 @@ STALWART016_EOF
       --from-literal=STALWART_MASTER_USER="master@master.local" \
       --from-literal=STALWART_MASTER_PASSWORD="$rc_master_pw" \
       --from-literal=ROUNDCUBEMAIL_DES_KEY="$rc_des" \
-      --from-literal=ROUNDCUBEMAIL_DB_HOST="postgres-rw.platform.svc.cluster.local" \
+      --from-literal=ROUNDCUBEMAIL_DB_HOST="system-db-rw.platform.svc.cluster.local" \
       --from-literal=ROUNDCUBEMAIL_DB_PORT="5432" \
       --from-literal=ROUNDCUBEMAIL_DB_NAME="roundcube" \
       --from-literal=ROUNDCUBEMAIL_DB_USER="roundcube" \
