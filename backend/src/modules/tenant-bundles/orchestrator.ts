@@ -84,6 +84,14 @@ export interface RunBundleInput {
    */
   readonly exportMode?: 'data_export' | null;
   readonly exportPassphrase?: string | null;
+  /**
+   * Optional callback fired AFTER the `backup_jobs` row is inserted
+   * (status='pending') and the bundle is reserved on the off-site
+   * target. Async callers use this to return the bundleId to the
+   * client immediately while the rest of the orchestration runs in
+   * the background. Synchronous callers can ignore it.
+   */
+  readonly onBundleReserved?: (bundleId: string) => void | Promise<void>;
 }
 
 export interface RunBundleResult {
@@ -136,6 +144,13 @@ export async function runBundle(
     .update(backupJobs)
     .set({ status: 'running' })
     .where(eq(backupJobs.id, bundleId));
+
+  // The bundle now has a row + a reserved off-site directory. Async
+  // callers can early-return the bundleId here while the rest of the
+  // capture continues. Component progress is observable via
+  // GET /admin/tenant-bundles/:id (the row is updated as each
+  // component flips through pending → running → completed/failed).
+  if (input.onBundleReserved) await input.onBundleReserved(bundleId);
 
   const errors: string[] = [];
   const componentInfos: BackupMetaV1['components'] = {};
