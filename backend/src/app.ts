@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import fastifyCors from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
+import fastifyMultipart from '@fastify/multipart';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
 import websocket from '@fastify/websocket';
@@ -200,6 +201,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       : true; // Permissive in development/test
   await app.register(fastifyCors, { origin: allowedOrigins });
   await app.register(fastifyCompress, { global: true });
+  // @fastify/multipart powers the tenant-bundles import endpoint
+  // (encrypted tarball upload). Limits chosen to allow >1 GiB
+  // bundles — staging has bundles in the 200-800 MiB range and
+  // multi-region transfers in the field will hit larger.
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 5 * 1024 * 1024 * 1024, // 5 GiB hard ceiling
+      files: 1,
+      fields: 16,
+    },
+  });
   await app.register(websocket);
   await app.register(fastifyJwt, { secret: deps.config.JWT_SECRET });
 

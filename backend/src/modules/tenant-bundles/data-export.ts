@@ -38,12 +38,17 @@
  * supplied at create time.
  */
 
-import { pbkdf2Sync, createCipheriv, randomBytes } from 'node:crypto';
-import { createGzip } from 'node:zlib';
+import { pbkdf2 as pbkdf2Cb, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
+import { createGzip, createGunzip } from 'node:zlib';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { pack as tarPack } from 'tar-stream';
+import { pack as tarPack, extract as tarExtract } from 'tar-stream';
 import type { BackupStore, BundleHandle } from './bundle-store.js';
+
+// 100k-iter PBKDF2 takes 50–100 ms — too long to block the Node
+// event loop. The async variant runs the work on libuv's threadpool.
+const pbkdf2 = promisify(pbkdf2Cb);
 
 const PBKDF2_ITERATIONS = 100_000; // matches `openssl enc -iter 100000`
 const KEY_BYTES = 32;
@@ -79,8 +84,10 @@ export async function wrapBundleAsDataExport(args: WrapBundleArgs): Promise<Wrap
 
   // Derive AES key + IV from passphrase + random salt via PBKDF2.
   // Same KDF and parameters as `openssl enc -pbkdf2 -iter 100000`.
+  // Async (libuv threadpool) so 100k iterations don't stall the
+  // event loop while other HTTP requests are in flight.
   const salt = randomBytes(SALT_BYTES);
-  const derived = pbkdf2Sync(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
+  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
   const key = derived.subarray(0, KEY_BYTES);
   const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
 
@@ -165,4 +172,177 @@ export async function wrapBundleAsDataExport(args: WrapBundleArgs): Promise<Wrap
     artifactPath: `components/${synthComponent}/${artifactName}`,
     sizeBytes: ref.sizeBytes,
   };
+}
+
+// ─── Multi-region export / import ─────────────────────────────────
+//
+// The wrapper above WRITES the encrypted tarball back to the same
+// off-site target (used by the create-time `exportMode: 'data_export'`
+// flow). For multi-region export we want a different shape:
+//
+//   - Operator picks ANY existing bundle and clicks "Export".
+//   - Backend produces the same Salted__-envelope tarball but
+//     STREAMS it directly to the HTTP reply — no store.write.
+//   - Operator downloads, copies to another region, and uploads
+//     via the import endpoint.
+//
+// `streamEncryptedExport` is the shared inner stream builder.
+// `decryptImportTarball` is the inverse used by the import endpoint.
+
+export interface StreamExportArgs {
+  readonly store: BackupStore;
+  readonly handle: BundleHandle;
+  readonly passphrase: string;
+  readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
+}
+
+/**
+ * Build a Readable that yields the OpenSSL Salted__-envelope of
+ * gzip(tar(meta.json + every component artifact)) encrypted with
+ * AES-256-CBC under a key derived from `passphrase`. Same wire
+ * format as `wrapBundleAsDataExport`. Caller pipes the returned
+ * stream to the HTTP reply.
+ *
+ * Async because PBKDF2 (100k iterations) runs on libuv's threadpool
+ * via the async pbkdf2() helper rather than blocking the event loop.
+ */
+export async function streamEncryptedExport(args: StreamExportArgs): Promise<Readable> {
+  const { store, handle, passphrase, components } = args;
+  if (!passphrase || passphrase.length < 12) {
+    throw new Error('streamEncryptedExport: passphrase must be ≥12 chars');
+  }
+  const salt = randomBytes(SALT_BYTES);
+  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
+  const key = derived.subarray(0, KEY_BYTES);
+  const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
+
+  const tar = tarPack();
+
+  // Async feeder: meta.json + every component artifact in turn.
+  // tar-stream backpressures naturally via the entry stream.
+  (async () => {
+    try {
+      const meta = await store.getMeta(handle);
+      const metaBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf8');
+      tar.entry({ name: 'meta.json', size: metaBuf.length, mtime: new Date(meta.capturedAt) }, metaBuf);
+
+      for (const c of components) {
+        const stat = await store.stat(handle, c.component, c.name);
+        if (!stat) continue;
+        const body = await store.readComponent(handle, c.component, c.name);
+        const entry = tar.entry({
+          name: `components/${c.component}/${c.name}`,
+          size: stat.sizeBytes,
+          mtime: new Date(),
+        });
+        await pipeline(body, entry);
+      }
+      tar.finalize();
+    } catch (err) {
+      tar.destroy(err as Error);
+    }
+  })();
+
+  const cipher = createCipheriv('aes-256-cbc', key, iv);
+  const header = Buffer.concat([Buffer.from('Salted__', 'ascii'), salt]);
+  let headerEmitted = false;
+  const headerPrepender = new Transform({
+    transform(chunk, _enc, cb) {
+      if (!headerEmitted) { this.push(header); headerEmitted = true; }
+      cb(null, chunk);
+    },
+    flush(cb) {
+      if (!headerEmitted) { this.push(header); headerEmitted = true; }
+      cb();
+    },
+  });
+
+  const gzip = createGzip({ level: 6 });
+  return (tar as unknown as Readable).pipe(gzip).pipe(cipher).pipe(headerPrepender);
+}
+
+export interface ImportEntry {
+  /** `meta.json` or `components/<component>/<name>`. */
+  readonly path: string;
+  readonly buffer: Buffer;
+}
+
+/**
+ * Inverse of `streamEncryptedExport`: takes a buffered Salted__-
+ * envelope tarball + passphrase, returns each tar entry as
+ * (path, buffer). The caller then registers a new bundle row +
+ * uploads each entry to the local off-site target.
+ *
+ * Buffered (not streaming) on purpose:
+ *   - Bundles are typically <1 GB and the HTTP request body is
+ *     already buffered into memory by Fastify multipart.
+ *   - The import flow needs to write each artifact to a different
+ *     `store.writeComponent` call, which is awkward to interleave
+ *     with the inner tar-extract stream. Buffering each entry first
+ *     keeps the import code linear.
+ */
+export async function decryptImportTarball(args: {
+  readonly cipherBlob: Buffer;
+  readonly passphrase: string;
+}): Promise<ReadonlyArray<ImportEntry>> {
+  const { cipherBlob, passphrase } = args;
+  if (!passphrase || passphrase.length < 12) {
+    throw new Error('decryptImportTarball: passphrase must be ≥12 chars');
+  }
+
+  // Parse OpenSSL Salted__ header.
+  if (cipherBlob.length < 16 || cipherBlob.subarray(0, 8).toString('ascii') !== 'Salted__') {
+    throw new Error('decryptImportTarball: not an OpenSSL Salted__ envelope');
+  }
+  const salt = cipherBlob.subarray(8, 16);
+  const ciphertext = cipherBlob.subarray(16);
+
+  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
+  const key = derived.subarray(0, KEY_BYTES);
+  const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
+
+  // The cipher blob is already in memory, so do the decipher
+  // synchronously (no streaming needed). This avoids the
+  // unhandled-rejection class where decipher._flush fires a
+  // post-pipeline 'bad decrypt' error after the await has already
+  // rejected. Wrong passphrase reliably surfaces as the decipher
+  // throwing here.
+  const decipher = createDecipheriv('aes-256-cbc', key, iv);
+  let plaintext: Buffer;
+  try {
+    plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch (err) {
+    throw new Error(`import-decrypt failed (wrong passphrase or corrupt blob): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Gunzip → tar extract → buffer each entry. These run on the
+  // decrypted plaintext so any error here is genuinely a malformed
+  // tarball — caller will see the wrapped error from below.
+  const gunzip = createGunzip();
+  const tarX = tarExtract();
+  gunzip.on('error', () => undefined);
+
+  const entries: ImportEntry[] = [];
+  const collect = new Promise<void>((resolve, reject) => {
+    tarX.on('entry', (header, stream, next) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (c: Buffer) => chunks.push(c));
+      stream.on('end', () => {
+        entries.push({ path: header.name, buffer: Buffer.concat(chunks) });
+        next();
+      });
+      stream.on('error', reject);
+      stream.resume();
+    });
+    tarX.on('finish', () => resolve());
+    tarX.on('error', reject);
+  });
+
+  try {
+    await pipeline(Readable.from(plaintext), gunzip, tarX);
+    await collect;
+  } catch (err) {
+    throw new Error(`import-extract failed (corrupt tarball): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return entries;
 }
