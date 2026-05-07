@@ -42,16 +42,33 @@ RESULTS_TSV="${RESULTS_TSV:-/tmp/catalog-test-results.tsv}"
 TIER_FILTER=""
 ENTRY_FILTER=""
 KEEP_ON_FAIL=false
+RERUN_FAILURES=false
 while (( $# > 0 )); do
   case "$1" in
     --tier=*)    TIER_FILTER="${1#--tier=}"; shift ;;
     --entries=*) ENTRY_FILTER="${1#--entries=}"; shift ;;
     --keep)      KEEP_ON_FAIL=true; shift ;;
+    --rerun-failures) RERUN_FAILURES=true; shift ;;
     --help|-h)
       sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     *) echo "ERROR: unknown arg $1" >&2; exit 2 ;;
   esac
 done
+
+# --rerun-failures: replace the entry filter with the FAIL rows from
+# the previous run's TSV. Useful for iterative bug-fix loops.
+if [[ "$RERUN_FAILURES" == true ]]; then
+  if [[ ! -s "$RESULTS_TSV" ]]; then
+    echo "ERROR: --rerun-failures needs a prior run at ${RESULTS_TSV}" >&2
+    exit 2
+  fi
+  ENTRY_FILTER=$(awk -F'\t' '$3=="FAIL" {print $1}' "$RESULTS_TSV" | paste -sd, -)
+  if [[ -z "$ENTRY_FILTER" ]]; then
+    echo "All entries in ${RESULTS_TSV} passed — nothing to re-run."
+    exit 0
+  fi
+  echo "Re-running ${ENTRY_FILTER//,/ }"
+fi
 
 # shellcheck source=catalog-tests/lib/api.sh
 source "${LIB_DIR}/api.sh"
@@ -134,6 +151,19 @@ run_entry() {
 
   local started_at; started_at=$(date +%s)
   log "${BOLD}=== ${code} ===${RESET}"
+
+  # Re-login per-entry so the JWT never expires mid-test. Default access
+  # token TTL is 30 minutes; long tier runs (24+ entries × ~80s + slow
+  # cleanup) easily blow through that. Without this, late-tier entries
+  # silently 401 on every API call and the catalog lookup reports
+  # "not in catalog" — happened on the first run (12-24/24 all FAIL_lookup
+  # at the 30min mark). Cheap (~300ms) given test cost.
+  TOKEN=$(login_token)
+  if [[ -z "$TOKEN" ]]; then
+    fail "re-login failed for ${code}"
+    echo -e "${code}\t-\tFAIL\t0\trelogin\tToken refresh failed\t-" >> "$RESULTS_TSV"
+    return 1
+  fi
 
   # Resolve catalog entry id + type
   local entry_json

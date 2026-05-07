@@ -107,32 +107,41 @@ probe_db_protocol() {
     fail "DB component '${component}' has no pod"
     return 1
   fi
-  case "$engine" in
-    mariadb|mysql)
-      if kctl -n "$ns" exec "$pod" -- sh -c \
-         'mariadb-admin --protocol=tcp -h 127.0.0.1 -uroot -p"$MARIADB_ROOT_PASSWORD" ping 2>/dev/null \
-          || mysqladmin --protocol=tcp -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" ping 2>/dev/null' \
-         | grep -qi "alive\|mysqld is alive"; then
-        ok "${engine} responding (pod=${pod})"; return 0
-      fi
-      ;;
-    postgresql)
-      if kctl -n "$ns" exec "$pod" -- sh -c \
-         'pg_isready -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}"' >/dev/null 2>&1; then
-        ok "postgresql accepting connections (pod=${pod})"; return 0
-      fi
-      ;;
-    mongodb)
-      if kctl -n "$ns" exec "$pod" -- sh -c \
-         'mongosh --quiet --eval "db.runCommand({ ping: 1 }).ok" 2>/dev/null' \
-         | grep -q '^1$'; then
-        ok "mongodb responding (pod=${pod})"; return 0
-      fi
-      ;;
-    *)
-      fail "Unknown DB engine: ${engine}"; return 1 ;;
-  esac
-  fail "${engine} probe failed in ${pod}"
+  # Retry the protocol ping for up to 90s — kubectl wait Ready returns as
+  # soon as the container is alive, but the DB needs another 5-30s to
+  # initialize its data directory + bind to the network port on first run.
+  # A single-shot probe races that startup window.
+  local i=0
+  while (( i < 90 )); do
+    case "$engine" in
+      mariadb|mysql)
+        if kctl -n "$ns" exec "$pod" -c "$engine" -- sh -c \
+           'mariadb-admin --protocol=tcp -h 127.0.0.1 -uroot -p"$MARIADB_ROOT_PASSWORD" ping 2>/dev/null \
+            || mysqladmin --protocol=tcp -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" ping 2>/dev/null' \
+           2>/dev/null | grep -qi "alive\|mysqld is alive"; then
+          ok "${engine} responding (pod=${pod}, after ${i}s)"; return 0
+        fi
+        ;;
+      postgresql)
+        if kctl -n "$ns" exec "$pod" -c postgresql -- sh -c \
+           'pg_isready -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}"' >/dev/null 2>&1; then
+          ok "postgresql accepting connections (pod=${pod}, after ${i}s)"; return 0
+        fi
+        ;;
+      mongodb)
+        if kctl -n "$ns" exec "$pod" -c mongodb-7 -- sh -c \
+           'mongosh --quiet --eval "db.runCommand({ ping: 1 }).ok" 2>/dev/null' \
+           | grep -q '^1$'; then
+          ok "mongodb responding (pod=${pod}, after ${i}s)"; return 0
+        fi
+        ;;
+      *)
+        fail "Unknown DB engine: ${engine}"; return 1 ;;
+    esac
+    sleep 5
+    i=$((i + 5))
+  done
+  fail "${engine} probe failed in ${pod} after ${i}s"
   return 1
 }
 
