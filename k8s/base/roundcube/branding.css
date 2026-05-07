@@ -1,0 +1,119 @@
+/*
+ * Platform branding overrides for Roundcube's elastic skin.
+ *
+ * Loaded via the html_head hook registered in branding.inc.php (see
+ * configmap-branding.yaml). Targets elastic's CSS custom properties
+ * where they exist, and the fallback selectors for legacy elements
+ * that bake colors directly into the rules.
+ *
+ * Brand palette source: frontend/admin-panel/src/index.css @theme.
+ *   --color-brand-500: #0066cc   (primary)
+ *   --color-brand-600: #0052a3   (primary hover)
+ *   --color-brand-700: #003d7a   (primary active)
+ *   --color-accent-500: #00663d  (success / positive accent)
+ *
+ * Coverage: ~70% of the visible chrome. Some elastic surfaces (toolbar
+ * gradients, listing-row hover) still leak the upstream blue; full
+ * pixel-match would require forking the skin.
+ */
+
+:root,
+html.layout-desktop,
+html.layout-touch,
+html.layout-small,
+html.layout-phone {
+  /* Elastic exposes these — overriding here drives the majority of the
+     accent surfaces (links, focus rings, buttons, active tabs). */
+  --color-link: #0066cc;
+  --color-link-hover: #0052a3;
+  --color-link-active: #003d7a;
+
+  --color-main: #0066cc;
+  --color-main-dark: #0052a3;
+  --color-main-darkshade: #003d7a;
+
+  --color-second: #00663d;
+  --color-second-dark: #005232;
+
+  /* Toolbar + button accents. Elastic uses these in `.toolbar`,
+     `.btn-primary`, and the login form. */
+  --color-toolbar: #0066cc;
+  --color-toolbar-hover: #0052a3;
+  --color-btn-primary: #0066cc;
+  --color-btn-primary-hover: #0052a3;
+}
+
+/* Login form — elastic centers a Roundcube logo block above the form.
+   Replace the upstream image with a text wordmark in the platform's
+   primary color so the page reads as "K8s Hosting Platform Webmail"
+   even before a real logo asset lands. */
+#layout-login .box-inner > .header,
+.login-form > h1 {
+  color: #0066cc;
+}
+
+#layout-login .logo,
+.login-form .logo {
+  /* Hide the upstream raster logo and substitute a CSS wordmark. */
+  background-image: none !important;
+  height: auto !important;
+  text-indent: 0 !important;
+  white-space: normal !important;
+}
+#layout-login .logo::before,
+.login-form .logo::before {
+  content: "K8s Hosting Platform";
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #0066cc;
+  letter-spacing: -0.01em;
+}
+#layout-login .logo::after,
+.login-form .logo::after {
+  content: "Webmail";
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: #6b7280;
+  margin-top: 0.125rem;
+}
+
+/* Primary action buttons (Login, Send, Save) — bake the brand color
+   over elastic's blue-500 default so the call-to-action color matches
+   the admin/client panels. */
+.button.primary,
+.btn-primary,
+button.btn.primary,
+form button[type="submit"]:not(.btn-secondary):not(.btn-danger) {
+  background-color: #0066cc !important;
+  border-color: #0066cc !important;
+}
+.button.primary:hover,
+.btn-primary:hover,
+button.btn.primary:hover,
+form button[type="submit"]:not(.btn-secondary):not(.btn-danger):hover {
+  background-color: #0052a3 !important;
+  border-color: #0052a3 !important;
+}
+
+/* Active list rows + selected items — elastic uses a hard-coded
+   blue here. */
+.listing tbody > tr.selected,
+ul.listing > li.selected,
+.menu li.selected {
+  background-color: #0066cc !important;
+}
+
+/* Folder tree active state. */
+#mailboxlist li.selected > a {
+  background-color: #0066cc !important;
+  color: #ffffff !important;
+}
+
+/* Focus outline — match brand color for keyboard navigation. */
+:focus-visible {
+  outline-color: #0066cc !important;
+}
