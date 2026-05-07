@@ -22,7 +22,7 @@ import { mailboxes } from '../../db/schema.js';
 import { eq, sql } from 'drizzle-orm';
 
 const STALWART_MGMT_URL =
-  process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt-v016.mail.svc.cluster.local:8080';
+  process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 
 export interface MailStatsResponse {
   readonly stalwartReachable: boolean;

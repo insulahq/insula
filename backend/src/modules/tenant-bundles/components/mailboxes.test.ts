@@ -8,7 +8,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     clientId: 'abc',
     backupId: 'bkp-test',
     toolsImage: 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest',
-    imapServiceHost: 'stalwart-mail-v016.mail.svc.cluster.local',
+    imapServiceHost: 'stalwart-mail.mail.svc.cluster.local',
     imapServicePort: 993,
     stalwartMasterUser: 'master',
     masterSecretName: 'roundcube-secrets',
@@ -76,7 +76,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     };
     const env = spec.spec.template.spec.containers[0]!.env;
     const find = (n: string) => env.find((e) => e.name === n)?.value;
-    expect(find('IMAP_HOST')).toBe('stalwart-mail-v016.mail.svc.cluster.local');
+    expect(find('IMAP_HOST')).toBe('stalwart-mail.mail.svc.cluster.local');
     expect(find('IMAP_PORT')).toBe('993');
     expect(find('STALWART_MASTER_USER')).toBe('master');
   });

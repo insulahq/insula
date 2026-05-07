@@ -20,7 +20,7 @@
 #     mail-pg-app-credentials before Flux applies this overlay.
 #   - stalwart-admin-creds + platform-stalwart-creds (mirror) are
 #     operator-bootstrapped — see scripts/bootstrap.sh.
-#   - The bootstrap Job (stalwart-v016-bootstrap) is suspend:true in
+#   - The bootstrap Job (stalwart-bootstrap) is suspend:true in
 #     base; bootstrap.sh unsuspends it after rendering the plan.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -29,7 +29,7 @@ kind: Kustomization
 namespace: mail
 
 resources:
-  - ../../../base/stalwart-v016
+  - ../../../base/stalwart-mail
 
 patches:
   # Hardcode cert-issuer (no ${CLUSTER_ISSUER_NAME} substitution from
@@ -39,7 +39,7 @@ patches:
       apiVersion: networking.k8s.io/v1
       kind: Ingress
       metadata:
-        name: stalwart-v016-webadmin
+        name: stalwart-webadmin
         namespace: mail
         annotations:
           cert-manager.io/cluster-issuer: letsencrypt-prod-http01
@@ -51,7 +51,7 @@ patches:
             secretName: stalwart-webadmin-prod-tls
     target:
       kind: Ingress
-      name: stalwart-v016-webadmin
+      name: stalwart-webadmin
 
   # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
   # MUST list ALL three Secrets — strategic-merge replaces the
@@ -64,10 +64,10 @@ patches:
       apiVersion: apps/v1
       kind: Deployment
       metadata:
-        name: stalwart-mail-v016
+        name: stalwart-mail
         namespace: mail
         annotations:
           secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
     target:
       kind: Deployment
-      name: stalwart-mail-v016
+      name: stalwart-mail

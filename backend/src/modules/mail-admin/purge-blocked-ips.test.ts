@@ -2,7 +2,7 @@
  * Unit tests for purge-blocked-ips pure helpers.
  *
  * The Pod-spawning code path is covered by the staging E2E (via
- * scripts/integration-stalwart-v016-local.sh) — it requires a real
+ * scripts/integration-stalwart-local.sh) — it requires a real
  * apiserver + a healthy Stalwart pod and is too fragile to mock
  * meaningfully here. The pure helpers we DO test are:
  *

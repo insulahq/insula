@@ -507,8 +507,8 @@ The four-milestone cut landed on branch `main` via four atomic commits:
 |-----------|--------|--------|---------|
 | M11 | `8f089e3` | SHIPPED | JMAP-backed mailbox + domain CRUD, principals-sync reconciler, admin password rotation, migrations 0072+0073 |
 | M12 | `ec2638e` | SHIPPED | Platform-side DKIM rotation retired. `email_dkim_keys` renamed to `email_dkim_keys_legacy` (migration 0074). Read-only DKIM status endpoint (`GET /dkim-status`) reads Stalwart's `dnsZoneFile` via JMAP. Admin panel DKIM UI replaced with read-only status modal linking to `/__stalwart/`. |
-| M13 | `5f102b6` | SHIPPED | `email_dkim_keys_legacy` and `dkim_*` columns dropped (migration 0075). `k8s/base/stalwart` → `stalwart-v015-deprecated`. Dev overlay deleted (local DinD now uses `stalwart-v016`). `scripts/cutover-stalwart-v015-to-v016.sh` added for staging operator to run. 198/198 unit tests green; typecheck + build clean. |
-| M14 | (this doc) | SHIPPED | `scripts/integration-stalwart-v016-local.sh` finalised with 9 JMAP steps (healthz, session auth, domain create/list/delete, mailbox create/delete, DKIM cleanup). DinD run not reproducible from the agent context; script written to be self-contained via `DOCKER_HOST` detection. |
+| M13 | `5f102b6` | SHIPPED | `email_dkim_keys_legacy` and `dkim_*` columns dropped (migration 0075). `k8s/base/stalwart` → `stalwart-v015-deprecated`. Dev overlay deleted (local DinD now uses `stalwart-mail`). `scripts/cutover-stalwart-v015-to-v016.sh` added for staging operator to run. 198/198 unit tests green; typecheck + build clean. |
+| M14 | (this doc) | SHIPPED | `scripts/integration-stalwart-local.sh` finalised with 9 JMAP steps (healthz, session auth, domain create/list/delete, mailbox create/delete, DKIM cleanup). DinD run not reproducible from the agent context; script written to be self-contained via `DOCKER_HOST` detection. |
 
 ### What was removed vs kept
 

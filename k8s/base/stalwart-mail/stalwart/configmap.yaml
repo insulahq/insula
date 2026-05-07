@@ -24,10 +24,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: stalwart-config-v016
+  name: stalwart-config
   namespace: mail
   labels:
-    app: stalwart-mail-v016
+    app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
 data:

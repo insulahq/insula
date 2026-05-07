@@ -22,7 +22,7 @@ resources:
   # Cut 3 (2026-05-04): Stalwart 0.16 mail server. Cutover from v015
   # is operator-driven via scripts/cutover-stalwart-v015-to-v016.sh
   # — when production cuts over, leave this entry uncommented.
-  - stalwart-v016/
+  - stalwart-mail/
   # Roundcube webmail — always deployed alongside Stalwart on
   # staging+production. Operator-bootstrap step creates the
   # `roundcube-secrets` Secret + the `roundcube` PG database/role on

@@ -1,7 +1,7 @@
 # Dev overlay patch — pin platform CNPG cluster's storage class to
 # `local-path` because DinD k3s ships with no Longhorn (the base default).
 #
-# Mirrors the same override the stalwart-v016 dev overlay already does for
+# Mirrors the same override the stalwart-mail dev overlay already does for
 # `mail-pg`. Without this patch, the CNPG initdb Job's PVC stays Pending
 # forever and platform-api can't reach the DB.
 #

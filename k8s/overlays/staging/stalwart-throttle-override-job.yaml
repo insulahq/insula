@@ -80,7 +80,7 @@ spec:
           image: alpine:3.20
           env:
             - name: STALWART_URL
-              value: "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080"
+              value: "http://stalwart-mgmt.mail.svc.cluster.local:8080"
             - name: STALWART_USER
               value: "admin"
             - name: STALWART_PASSWORD
@@ -95,7 +95,7 @@ spec:
               apk add --no-cache wget tar xz >/dev/null
               cd /tmp
               # SHA256-pinned download — same version + checksum the
-              # bootstrap-job uses (k8s/base/stalwart-v016/stalwart/
+              # bootstrap-job uses (k8s/base/stalwart-mail/stalwart/
               # bootstrap-job.yaml). Keep these two pins in lock-step
               # when bumping CLI versions.
               CLI_VERSION="v1.0.4"

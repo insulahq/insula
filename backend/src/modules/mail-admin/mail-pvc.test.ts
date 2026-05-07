@@ -177,17 +177,17 @@ describe('mail-pvc.resizeMailPvc — happy path', () => {
     // Two patch calls: spec.resources.requests.storage + annotation
     expect(mockPatchPvc).toHaveBeenCalledTimes(2);
     expect(mockPatchPvc.mock.calls[0][0]).toMatchObject({
-      name: 'mail-pg-1',
+      name: 'mail-db-1',
       namespace: 'mail',
       body: { spec: { resources: { requests: { storage: '10Gi' } } } },
     });
     expect(mockPatchPvc.mock.calls[1][0]).toMatchObject({
-      name: 'mail-pg-1',
+      name: 'mail-db-1',
       namespace: 'mail',
       body: { metadata: { annotations: { 'platform.example.test/last-resized-at': expect.any(String) } } },
     });
 
-    expect(result.pvcName).toBe('mail-pg-1');
+    expect(result.pvcName).toBe('mail-db-1');
     expect(result.requestedBytes).toBe(10 * 1024 ** 3);
     expect(result.lastResizedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
@@ -236,7 +236,7 @@ describe('mail-pvc.getMailPvcStorage', () => {
   it('returns shape including expansionAllowed + lastResizedAt', async () => {
     const r = await getMailPvcStorage({ kubeconfigPath: undefined });
     expect(r).toMatchObject({
-      pvcName: 'mail-pg-1',
+      pvcName: 'mail-db-1',
       namespace: 'mail',
       requestedBytes: 5 * 1024 ** 3,
       capacityBytes: 5 * 1024 ** 3,

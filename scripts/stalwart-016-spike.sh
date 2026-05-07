@@ -6,7 +6,7 @@
 # Why direct Docker (not k8s manifests for the spike): faster iteration.
 # We're learning the shape, not deploying production. Once we know what
 # works we'll port the validated config to k8s manifests in
-# k8s/base/stalwart-v016/.
+# k8s/base/stalwart-mail/.
 #
 # IMPORTANT 0.16 bootstrap facts (differs from 0.15):
 #   - config.json stores ONLY the data-store backend (RocksDB or PG).

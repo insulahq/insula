@@ -30,10 +30,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: stalwart-v016-bootstrap
+  name: stalwart-bootstrap
   namespace: mail
   labels:
-    app: stalwart-mail-v016
+    app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-bootstrap
   annotations:
@@ -56,7 +56,7 @@ spec:
   template:
     metadata:
       labels:
-        app: stalwart-mail-v016
+        app: stalwart-mail
         app.kubernetes.io/component: mail-bootstrap
     spec:
       restartPolicy: Never
@@ -133,7 +133,7 @@ spec:
               HOME=/tmp \
               STALWART_PASSWORD="$${STALWART_RECOVERY_PASSWORD}" \
                 /shared/stalwart-cli \
-                  --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
+                  --url "http://stalwart-mgmt.mail.svc.cluster.local:8080" \
                   --user "admin" \
                   apply --file /plan/plan.json
 

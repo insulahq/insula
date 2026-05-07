@@ -25,7 +25,7 @@
 #
 # After running:
 #   - Roll the Stalwart pod (kubectl rollout restart deploy
-#     stalwart-mail-v016 -n mail) so the new NetworkListener:80 binds
+#     stalwart-mail -n mail) so the new NetworkListener:80 binds
 #     and Stalwart picks up requestTlsCertificate=true
 #   - Stalwart starts an ACME flow on the next tick; LE issues a cert
 #     within ~1min (HTTP-01 challenge over the new Ingress route)
@@ -53,10 +53,10 @@ err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[migrate-stalwart-tls] %s\n' "$*"; }
 
 # ── Sanity ──────────────────────────────────────────────────────────
-$KUBECTL -n "$NAMESPACE" get deploy stalwart-mail-v016 >/dev/null 2>&1 \
+$KUBECTL -n "$NAMESPACE" get deploy stalwart-mail >/dev/null 2>&1 \
   || err "Stalwart deployment not found in namespace $NAMESPACE"
 
-stalwart_pod=$($KUBECTL -n "$NAMESPACE" get pods -l app=stalwart-mail-v016 \
+stalwart_pod=$($KUBECTL -n "$NAMESPACE" get pods -l app=stalwart-mail \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) \
   || err "No Stalwart pod found"
 
@@ -125,7 +125,7 @@ echo "stalwart-cli ready"
 
 export HOME=/tmp
 export STALWART_PASSWORD="${STALWART_RECOVERY_PASSWORD}"
-URL="http://stalwart-mgmt-v016.mail.svc.cluster.local:8080"
+URL="http://stalwart-mgmt.mail.svc.cluster.local:8080"
 
 # Idempotency guard: query each object type. If any row exists with
 # the matching identifier shape, skip. Stalwart 0.16's `apply` `create`
@@ -196,7 +196,7 @@ echo "---"
 /tmp/cli --url "$URL" --user admin query NetworkListener 2>&1 | head -15
 echo
 echo "Migration complete. Roll the Stalwart pod for the new listener to bind:"
-echo "  kubectl -n mail rollout restart deploy stalwart-mail-v016"
+echo "  kubectl -n mail rollout restart deploy stalwart-mail"
 MIGRATE
 )
 
@@ -211,7 +211,7 @@ $KUBECTL run "$pod_name" -n "$NAMESPACE" --rm -i --restart=Never \
 
 log
 log "Migration complete. Next step:"
-log "  kubectl -n $NAMESPACE rollout restart deploy stalwart-mail-v016"
+log "  kubectl -n $NAMESPACE rollout restart deploy stalwart-mail"
 log
 log "Then verify TLS handshake:"
 log "  echo | openssl s_client -connect <NODE_IP>:993 \\"

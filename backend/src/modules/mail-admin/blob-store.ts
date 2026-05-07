@@ -46,7 +46,7 @@ import {
 
 const MAIL_NAMESPACE = 'mail';
 const SECRET_NAME = 'stalwart-blob-credentials';
-const STALWART_MGMT_URL = 'http://stalwart-mgmt-v016.mail.svc.cluster.local:8080';
+const STALWART_MGMT_URL = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 const ADMIN_SECRET_NAME = 'stalwart-admin-creds';
 const JOB_NAME_PREFIX = 'stalwart-blob-store-update-';
 const JOB_LABEL_KEY = 'app.kubernetes.io/component';

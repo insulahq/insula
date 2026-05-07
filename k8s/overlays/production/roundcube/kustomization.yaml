@@ -6,7 +6,7 @@
 # (`system-db`) are created by `scripts/bootstrap.sh` (see
 # generate_roundcube_secrets + create_roundcube_db).
 #
-# In-cluster IMAP/SMTP from Roundcube → stalwart-mail-v016 uses
+# In-cluster IMAP/SMTP from Roundcube → stalwart-mail uses
 # verify_peer=false because Stalwart's LE cert has SANs for the public
 # subdomains, NOT the in-cluster Service hostname. The browser →
 # ingress hop IS verified normally. See roundcube-config-extra-patch

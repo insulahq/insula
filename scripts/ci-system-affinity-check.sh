@@ -34,10 +34,10 @@ WORKLOADS=(
   "platform|Deployment|platform-suspended|0"
   "platform|Deployment|oauth2-proxy|0"
   "platform-system|Deployment|sftp-gateway|0"
-  # stalwart-mail-v016 + dex are overlay-specific — only in staging for now.
+  # stalwart-mail + dex are overlay-specific — only in staging for now.
   # Cut 3 (2026-05-04): the v015 StatefulSet `stalwart-mail` was retired;
-  # the v016 Deployment `stalwart-mail-v016` replaces it.
-  "mail|Deployment|stalwart-mail-v016|1"
+  # the v016 Deployment `stalwart-mail` replaces it.
+  "mail|Deployment|stalwart-mail|1"
   "platform|Deployment|dex|1"
 )
 # postgres is a CNPG Cluster (postgresql.cnpg.io/v1). Its spec.affinity
