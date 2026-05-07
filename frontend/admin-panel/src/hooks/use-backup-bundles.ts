@@ -92,6 +92,104 @@ export async function downloadDataExport(bundleId: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * Multi-region export download — POSTs the operator-supplied
+ * passphrase + streams the encrypted tarball to disk. Different from
+ * `downloadDataExport` (which downloads a pre-built artifact created
+ * at capture time): this works on ANY bundle, generates the envelope
+ * on-demand, and never requires the bundle to have been captured with
+ * exportMode='data_export'. The downloaded file is decryptable with
+ * stock openssl in the target region.
+ */
+export async function downloadBundleExport(bundleId: string, passphrase: string): Promise<void> {
+  const token = localStorage.getItem('auth_token');
+  const r = await fetch(`/api/v1/admin/tenant-bundles/${bundleId}/export`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ passphrase }),
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new Error(`export failed (${r.status}): ${detail.slice(0, 200)}`);
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `bundle-${bundleId}.tar.gz.enc`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export interface ImportBundleResult {
+  readonly bundleId: string;
+  readonly sizeBytes: number;
+  readonly componentCount: number;
+}
+
+/**
+ * Multi-region import — multipart POST with the encrypted tarball
+ * + passphrase + target clientId/targetConfigId. Server decrypts,
+ * uploads each component to the local off-site target, registers a
+ * fresh backup_jobs row.
+ */
+export async function importBundle(args: {
+  file: File;
+  passphrase: string;
+  clientId: string;
+  targetConfigId: string;
+}): Promise<ImportBundleResult> {
+  const fd = new FormData();
+  fd.append('bundle', args.file);
+  fd.append('passphrase', args.passphrase);
+  fd.append('clientId', args.clientId);
+  fd.append('targetConfigId', args.targetConfigId);
+  const token = localStorage.getItem('auth_token');
+  const r = await fetch('/api/v1/admin/tenant-bundles/import', {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new Error(`import failed (${r.status}): ${detail.slice(0, 300)}`);
+  }
+  const body = await r.json();
+  return body.data as ImportBundleResult;
+}
+
+export interface VerifyAllResult {
+  readonly summary: { readonly total: number; readonly passed: number; readonly failed: number; readonly skipped: number };
+  readonly results: ReadonlyArray<{
+    readonly bundleId: string;
+    readonly status: 'passed' | 'failed' | 'skipped';
+    readonly reason?: string;
+    readonly durationMs: number;
+  }>;
+}
+
+/**
+ * Batch-verify every bundle. Single-shot mutation; auto-invalidates
+ * the bundles list so the UI re-fetches.
+ */
+export function useVerifyAllBundles() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch<{ data: VerifyAllResult }>('/api/v1/admin/tenant-bundles/verify-all', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-bundles'] }),
+  });
+}
+
 interface CoverageEnvelope { readonly data: import('@k8s-hosting/api-contracts').BundleCoverageResponse }
 
 /**

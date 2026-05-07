@@ -20,9 +20,9 @@ import { decrypt } from '../oidc/crypto.js';
 import { decryptSecretsPayload } from './components/secrets.js';
 import { CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES } from './components/config.js';
 import { BUNDLE_COMPONENTS, ownerOfTable } from './component-registry.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gunzip } from 'node:zlib';
-import type { Readable } from 'node:stream';
+import { Readable } from 'node:stream';
 
 // Backups-v2 stores bundles OFF-CLUSTER only (S3 / SSH). The cluster's
 // disk is reserved for live tenant data — backups must never compete
@@ -339,6 +339,203 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     return reply.send(body);
   });
 
+  // ── POST /api/v1/admin/tenant-bundles/:id/export ──────────────────
+  //
+  // Multi-region export: stream a passphrase-encrypted tarball of
+  // EVERY component artifact + meta.json. Different from
+  // `/data-export`:
+  //
+  //   - Operator-supplied passphrase (no DB lookup; the bundle
+  //     doesn't need to have been created with exportMode='data_export').
+  //   - Streams directly to the response — no off-site write.
+  //   - Decryptable with stock openssl in the target region:
+  //
+  //       openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+  //         -in bundle-<id>.tar.gz.enc -out bundle.tar.gz \
+  //         -pass stdin <<< "$PASSPHRASE"
+  //
+  //   - The target region's import endpoint accepts the resulting
+  //     ciphertext + passphrase and registers a fresh bundle row.
+  //
+  // Wire format identical to wrapBundleAsDataExport: Salted__ +
+  // 8-byte salt + AES-256-CBC(gzip(tar)) with 100k-iter PBKDF2.
+  app.post('/admin/tenant-bundles/:id/export', {
+    schema: { tags: ['TenantBundles'], summary: 'Download a passphrase-encrypted bundle tarball for multi-region transfer', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { passphrase?: string } | null;
+    const passphrase = body?.passphrase;
+    if (!passphrase || typeof passphrase !== 'string' || passphrase.length < 12) {
+      throw new ApiError('VALIDATION_ERROR', 'passphrase must be a string ≥12 characters', 400);
+    }
+
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId; cannot read components', 400);
+
+    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const handle = await store.open(id);
+    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
+
+    // Enumerate every artifact across components. Skip components
+    // that weren't captured (orchestrator records `skipped` in meta).
+    const allArtifacts: Array<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }> = [];
+    for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
+      const refs = await store.listArtifacts(handle, component);
+      for (const r of refs) {
+        // Skip the data-export artifact itself — it'd be circular
+        // (and pointless: it's already encrypted with a different
+        // passphrase). The synthetic name lives in components/config/
+        // and starts with `data-export-`.
+        if (component === 'config' && r.name.startsWith('data-export-')) continue;
+        allArtifacts.push({ component, name: r.name });
+      }
+    }
+
+    const { streamEncryptedExport } = await import('./data-export.js');
+    const stream = streamEncryptedExport({ store, handle, passphrase, components: allArtifacts });
+
+    reply.header('Content-Type', 'application/octet-stream');
+    reply.header('Content-Disposition', `attachment; filename="bundle-${id}.tar.gz.enc"`);
+    reply.header('Cache-Control', 'no-store');
+    app.log.warn({ userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id }, 'tenant-bundles: export download initiated');
+    return reply.send(stream);
+  });
+
+  // ── POST /api/v1/admin/tenant-bundles/import ──────────────────────
+  //
+  // Multi-region import: accept a passphrase-encrypted bundle tarball
+  // (produced by the export endpoint), decrypt, upload every component
+  // artifact to the local off-site target, and register a fresh
+  // backup_jobs row pointing at it. The new bundle appears in the
+  // operator's list as a normal capture.
+  //
+  // Multipart upload: form fields are `passphrase`, `clientId`
+  // (target tenant in this region), `targetConfigId` (off-site), and
+  // a file `bundle` containing the ciphertext.
+  //
+  // The clientId in meta.json from the source region is REPLACED by
+  // the one in the multipart body — operators routinely import a
+  // bundle to a different tenant in the new region.
+  app.post('/admin/tenant-bundles/import', {
+    schema: { tags: ['TenantBundles'], summary: 'Import a passphrase-encrypted bundle from another region', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    // Fastify multipart returns one part per file/field. Walk parts
+    // until we have all four.
+    const req = request as unknown as {
+      isMultipart: () => boolean;
+      parts: () => AsyncIterable<{ type: 'field' | 'file'; fieldname: string; value?: string; toBuffer?: () => Promise<Buffer> }>;
+    };
+    if (!req.isMultipart()) {
+      throw new ApiError('VALIDATION_ERROR', 'request must be multipart/form-data', 400);
+    }
+    let passphrase: string | null = null;
+    let clientId: string | null = null;
+    let targetConfigId: string | null = null;
+    let blob: Buffer | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'field' && part.fieldname === 'passphrase') passphrase = part.value ?? null;
+      else if (part.type === 'field' && part.fieldname === 'clientId') clientId = part.value ?? null;
+      else if (part.type === 'field' && part.fieldname === 'targetConfigId') targetConfigId = part.value ?? null;
+      else if (part.type === 'file' && part.fieldname === 'bundle' && part.toBuffer) blob = await part.toBuffer();
+    }
+    if (!passphrase || passphrase.length < 12) throw new ApiError('VALIDATION_ERROR', 'passphrase ≥12 chars required', 400);
+    if (!clientId) throw new ApiError('VALIDATION_ERROR', 'clientId required', 400);
+    if (!targetConfigId) throw new ApiError('VALIDATION_ERROR', 'targetConfigId required', 400);
+    if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
+
+    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+    if (!client) throw new ApiError('NOT_FOUND', 'Target client not found in this region', 404);
+
+    // Decrypt + extract entries.
+    const { decryptImportTarball } = await import('./data-export.js');
+    const entries = await decryptImportTarball({ cipherBlob: blob, passphrase });
+
+    // Pull the source meta.json (kept for label/components info; we
+    // override clientId and capturedAt-vs-importedAt).
+    const metaEntry = entries.find((e) => e.path === 'meta.json');
+    if (!metaEntry) throw new ApiError('VALIDATION_ERROR', 'tarball missing meta.json', 400);
+    const sourceMeta = JSON.parse(metaEntry.buffer.toString('utf8')) as {
+      backupId?: string; label?: string; description?: string;
+      components?: Record<string, unknown>; retentionDays?: number;
+    };
+
+    // Allocate a fresh bundleId in this region.
+    const newBundleId = `bkp-${randomUUID()}`;
+    const store = await resolveStore(app, targetConfigId, { requireActive: false });
+    const handle = await store.reserveBundle({ backupId: newBundleId, clientId });
+
+    // Upload every non-meta entry under its original
+    // components/<component>/<name> path.
+    const componentSet = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
+    const componentInfo: Array<{ component: string; sizeBytes: number }> = [];
+    for (const e of entries) {
+      if (e.path === 'meta.json') continue;
+      const m = e.path.match(/^components\/(files|mailboxes|config|secrets)\/(.+)$/);
+      if (!m) {
+        app.log.warn({ path: e.path }, 'import: unexpected tar entry, skipping');
+        continue;
+      }
+      const component = m[1] as 'files' | 'mailboxes' | 'config' | 'secrets';
+      const name = m[2]!;
+      if (!componentSet.has(component)) continue;
+      const ref = await store.writeComponent(handle, component, name, Readable.from(e.buffer));
+      componentInfo.push({ component, sizeBytes: ref.sizeBytes });
+    }
+
+    // Write a fresh meta.json with this region's bundleId + clientId.
+    const importMeta = {
+      schemaVersion: 1 as const,
+      backupId: newBundleId,
+      clientId,
+      capturedAt: new Date().toISOString(),
+      platformVersion,
+      initiator: 'admin' as const,
+      systemTrigger: null,
+      label: `imported-from-${sourceMeta.backupId ?? 'unknown'}: ${sourceMeta.label ?? ''}`.slice(0, 255),
+      components: sourceMeta.components ?? {},
+      nodePlacement: null,
+      expiresAt: null,
+      retentionDays: sourceMeta.retentionDays ?? 30,
+      description: sourceMeta.description ?? null,
+    };
+    await store.putMeta(handle, importMeta);
+
+    // Persist the new backup_jobs row. We mirror what the orchestrator
+    // does for native captures — pull target attribution from the
+    // backup_configurations row (we don't surface targetKind/Uri on
+    // BundleHandle, that's an internal-only field).
+    const totalBytes = componentInfo.reduce((s, c) => s + c.sizeBytes, 0);
+    const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
+    const targetKind = (cfg?.storageType ?? 'ssh') as 'hostpath' | 's3' | 'ssh';
+    const targetUri = cfg?.storageType === 's3'
+      ? `s3://${cfg.s3Bucket ?? ''}/${cfg.s3Prefix ?? ''}`
+      : `ssh://${cfg?.sshUser ?? ''}@${cfg?.sshHost ?? ''}:${cfg?.sshPath ?? ''}`;
+    await app.db.insert(backupJobs).values({
+      id: newBundleId,
+      clientId,
+      initiator: 'admin',
+      systemTrigger: null,
+      status: 'completed',
+      targetKind,
+      targetUri,
+      targetConfigId,
+      label: importMeta.label,
+      description: importMeta.description,
+      sizeBytes: totalBytes,
+      retentionDays: importMeta.retentionDays,
+      expiresAt: null,
+      exportMode: null,
+      exportArtifact: null,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      lastError: null,
+    });
+
+    app.log.warn({ userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: newBundleId, sourceBundleId: sourceMeta.backupId, clientId, totalBytes }, 'tenant-bundles: import succeeded');
+    reply.status(201).send({ data: { bundleId: newBundleId, sizeBytes: totalBytes, componentCount: componentInfo.length } });
+  });
+
   // ── POST /api/v1/admin/tenant-bundles/:id/verify ──────────────────
   //
   // Read every component artifact back from the off-site target,
@@ -440,6 +637,88 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       },
       components,
     });
+  });
+
+  // ── POST /api/v1/admin/tenant-bundles/verify-all ──────────────────
+  //
+  // Batch verify every bundle that has a targetConfigId (the legacy
+  // pre-D rows without one are skipped). Returns a per-bundle summary:
+  //
+  //   [{ bundleId, status: 'passed' | 'failed' | 'skipped',
+  //      reason?: string, durationMs }]
+  //
+  // No deep per-component detail — operators wanting that drill into
+  // /:id/verify. Synchronous: caller pays the wall-clock cost.
+  // Bounded at 200 bundles to keep the response under the 60-s ALB
+  // timeout; if the cluster has more, the operator filters by client.
+  app.post('/admin/tenant-bundles/verify-all', {
+    schema: { tags: ['TenantBundles'], summary: 'Verify integrity of every bundle (round-trip read)', security: [{ bearerAuth: [] }] },
+  }, async () => {
+    const rows = await app.db
+      .select()
+      .from(backupJobs)
+      .orderBy(desc(backupJobs.createdAt))
+      .limit(200);
+
+    const results: Array<{
+      bundleId: string;
+      status: 'passed' | 'failed' | 'skipped';
+      reason?: string;
+      durationMs: number;
+    }> = [];
+
+    for (const row of rows) {
+      const start = Date.now();
+      if (!row.targetConfigId) {
+        results.push({ bundleId: row.id, status: 'skipped', reason: 'no target_config_id', durationMs: 0 });
+        continue;
+      }
+      try {
+        const store = await resolveStore(app, row.targetConfigId, { requireActive: false });
+        const handle = await store.open(row.id);
+        if (!handle) {
+          results.push({ bundleId: row.id, status: 'failed', reason: 'bundle artefacts not found on remote target', durationMs: Date.now() - start });
+          continue;
+        }
+        // Cheap integrity probe: meta.json must parse + at least one
+        // declared component must be readable. We skip the deep
+        // SHA-256 compute (too slow for batch); the per-bundle Verify
+        // button does that.
+        const meta = await store.getMeta(handle);
+        let componentChecked = false;
+        for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
+          const declared = meta.components[component];
+          if (!declared) continue;
+          const refs = await store.listArtifacts(handle, component);
+          if (refs.length === 0) {
+            results.push({ bundleId: row.id, status: 'failed', reason: `meta declares ${component} but no artifacts on store`, durationMs: Date.now() - start });
+            componentChecked = true;
+            break;
+          }
+          componentChecked = true;
+        }
+        if (componentChecked && results.at(-1)?.bundleId !== row.id) {
+          results.push({ bundleId: row.id, status: 'passed', durationMs: Date.now() - start });
+        } else if (!componentChecked) {
+          results.push({ bundleId: row.id, status: 'failed', reason: 'meta declares no components', durationMs: Date.now() - start });
+        }
+      } catch (err) {
+        results.push({
+          bundleId: row.id,
+          status: 'failed',
+          reason: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - start,
+        });
+      }
+    }
+
+    const summary = {
+      total: results.length,
+      passed: results.filter((r) => r.status === 'passed').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+      skipped: results.filter((r) => r.status === 'skipped').length,
+    };
+    return success({ summary, results });
   });
 
   // ── DELETE /api/v1/admin/tenant-bundles/:id ───────────────────────
