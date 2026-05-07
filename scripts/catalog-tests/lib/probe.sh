@@ -39,21 +39,27 @@ probe_http_ingress() {
     fail "no pods Ready in ${ns} after ${timeout}s"
     return 1
   fi
-  # Discover the ingress-target Service: take the first non-file-manager
-  # Service in the namespace and use its first declared port. The deployer
-  # provisions one Service per ingress component plus a `file-manager`
-  # Service that we never want to probe.
+  # Discover the ingress-target Service. The deployer creates one Service
+  # per component, including DB/cache/object-store sidecars (mariadb,
+  # postgresql, redis, mongodb, minio) which we never want to probe via
+  # HTTP — their ports trip the probe with "no response".
+  #
+  # Heuristic: skip `file-manager` (always present) AND any Service whose
+  # only declared port is a known DB/cache/storage backend port. Among
+  # the rest, take the first.
   local svc port
   svc=$(kctl -n "$ns" get svc -o json \
     | python3 -c "
 import json, sys
+DB_PORTS = {3306, 5432, 27017, 6379, 11211, 5984, 9092, 25, 53, 9001}
 d = json.load(sys.stdin)
 for s in d.get('items', []):
     n = s['metadata']['name']
     if n == 'file-manager': continue
     ports = s.get('spec', {}).get('ports', [])
-    if ports:
-        print(n, ports[0]['port']); break
+    if not ports: continue
+    if all(p.get('port') in DB_PORTS for p in ports): continue
+    print(n, ports[0]['port']); break
 " 2>/dev/null)
   if [[ -z "$svc" ]]; then
     fail "no service found in ${ns}"
@@ -130,8 +136,16 @@ probe_db_protocol() {
         fi
         ;;
       mongodb)
-        if kctl -n "$ns" exec "$pod" -c mongodb-7 -- sh -c \
-           'mongosh --quiet --eval "db.runCommand({ ping: 1 }).ok" 2>/dev/null' \
+        # mongosh inside kubectl exec has hung the harness for 25 min on a
+        # prior run — wrap in `timeout` (inside the pod since `kctl` is a
+        # shell function and `timeout` only runs binaries) and authenticate
+        # explicitly with the seeded root creds.
+        if kctl -n "$ns" exec "$pod" -c mongodb-7 --request-timeout=20s -- sh -c \
+           'timeout 10 mongosh --host 127.0.0.1 --port 27017 \
+              --username "$MONGO_INITDB_ROOT_USERNAME" \
+              --password "$MONGO_INITDB_ROOT_PASSWORD" \
+              --authenticationDatabase admin \
+              --quiet --eval "db.runCommand({ ping: 1 }).ok" 2>/dev/null' \
            | grep -q '^1$'; then
           ok "mongodb responding (pod=${pod}, after ${i}s)"; return 0
         fi
