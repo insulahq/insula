@@ -359,13 +359,20 @@ scenario_reprovision() {
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null || true)
   [[ -n "$cid" ]] || { fail "lifecycle scenario must run first"; return 1; }
 
+  # The DELETE handler returns HTTP 200 with `{ data: { transitionId } }`
+  # so the admin UI can open the lifecycle progress modal immediately.
+  # (It used to return 204; the body was added when the lifecycle hook
+  # registry shipped — see clients/routes.ts.) Accept either: 200 is
+  # the current contract; 204 stays accepted in case an older cluster
+  # is being tested.
   local del; del=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
-  echo "$del" | tail -1 | grep -q "204" || { fail "client delete failed"; return 1; }
-  ok "client deleted"
+  local del_code; del_code=$(echo "$del" | tail -1 | awk '{print $NF}')
+  [[ "$del_code" == "200" || "$del_code" == "204" ]] || { fail "client delete failed (HTTP $del_code) — body: $(echo "$del" | sed '$d' | head -c 300)"; return 1; }
+  ok "client deleted (HTTP $del_code)"
   rm -f /tmp/integration.cid
 
   # Wait up to 90s for the cascade cleanup to drain orphan PVs.
-  # The cascade runs in the background after DELETE returns 204
+  # The cascade runs in the background after DELETE returns
   # (polls up to 60s for PVCs to release). Adding a 30s margin.
   local i=0 stranded=999
   while (( i < 90 )); do
@@ -2015,37 +2022,42 @@ except Exception:
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-  log "── scenario system_backup: pg_dump platform/postgres ──"
+  # CNPG cluster names changed 2026-05-07: postgres → system-db,
+  # mail-pg → mail-db (drop version baggage). The pg_dump sub-script
+  # defaults to system-db now; we still pass the names explicitly for
+  # readability + so the harness label matches the scenario.
+  log "── scenario system_backup: pg_dump platform/system-db ──"
   if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
      TARGET_CONFIG_ID="$target_id" \
+     SOURCE_NS=platform SOURCE_CLUSTER=system-db SOURCE_DB=hosting_platform \
      bash "$script_dir/integration-system-backup-pg-dump.sh"; then
-    ok "system_backup: platform/postgres pg_dump"
+    ok "system_backup: platform/system-db pg_dump"
   else
-    fail "system_backup: platform/postgres pg_dump"
+    fail "system_backup: platform/system-db pg_dump"
   fi
 
-  log "── scenario system_backup: pg_dump mail/mail-pg ──"
+  log "── scenario system_backup: pg_dump mail/mail-db ──"
   if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
      TARGET_CONFIG_ID="$target_id" \
-     SOURCE_NS=mail SOURCE_CLUSTER=mail-pg SOURCE_DB=stalwart_app \
+     SOURCE_NS=mail SOURCE_CLUSTER=mail-db SOURCE_DB=stalwart_app \
      bash "$script_dir/integration-system-backup-pg-dump.sh"; then
-    ok "system_backup: mail/mail-pg pg_dump"
+    ok "system_backup: mail/mail-db pg_dump"
   else
-    fail "system_backup: mail/mail-pg pg_dump"
+    fail "system_backup: mail/mail-db pg_dump"
   fi
 
   # Phase 4 WAL archive — long-running (waits ≤6 min for CNPG to push
   # a WAL). Skip in `all` runs unless RUN_WAL_HARNESS=1 is set; the
   # wait dominates suite duration.
   if [[ "${RUN_WAL_HARNESS:-0}" = "1" ]]; then
-    log "── scenario system_backup: WAL archive platform/postgres ──"
+    log "── scenario system_backup: WAL archive platform/system-db ──"
     if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
        TARGET_CONFIG_ID="$target_id" \
-       CLUSTER_NS=platform CLUSTER_NAME=postgres \
+       CLUSTER_NS=platform CLUSTER_NAME=system-db \
        bash "$script_dir/integration-system-wal-archive.sh"; then
-      ok "system_backup: platform/postgres WAL archive"
+      ok "system_backup: platform/system-db WAL archive"
     else
-      fail "system_backup: platform/postgres WAL archive"
+      fail "system_backup: platform/system-db WAL archive"
     fi
   fi
 }
