@@ -182,7 +182,7 @@ describe('K8s Provisioner Service', () => {
       const [call] = mockK8s.core.createNamespacedPersistentVolumeClaim.mock.calls;
       const labels = call[0].body.metadata.labels;
       expect(labels['platform/role']).toBe('client-storage');
-      expect(labels['platform/owner']).toBe('client:abc12345');
+      expect(labels['platform/owner']).toBe('client-abc12345');
       expect(labels['platform/canonical-name']).toBe('client-acme-abc12345-storage');
       expect(labels['platform/managed-by']).toBe('platform-api');
     });

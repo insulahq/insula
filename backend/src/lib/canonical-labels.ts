@@ -23,7 +23,10 @@
  * Labels
  * ──────
  * - platform/role           required — what kind of PVC this is
- * - platform/owner          required — who owns it (system | client:<id8> | mail)
+ * - platform/owner          required — who owns it (system | client-<id8> | mail).
+ *                           NB: `:` is invalid in K8s label values — separator
+ *                           is `-`, not `:`. The string still parses two-fold
+ *                           (`client-` prefix + 8-hex id) for filtering.
  * - platform/canonical-name optional — the PVC name for self-describing
  *                           filters; omit for CNPG-instance PVCs that
  *                           inherit one set of labels but have per-instance
@@ -49,7 +52,7 @@ export type PvcRole =
 
 export interface CanonicalLabelInput {
   readonly role: PvcRole;
-  /** 'system' | 'mail' | `client:${shortId}` */
+  /** 'system' | 'mail' | `client-${shortId}` */
   readonly owner: string;
   /** Omit for CNPG-instance PVCs (system-db-1/2/3 share one label set). */
   readonly canonicalName?: string;
@@ -70,12 +73,15 @@ export function buildCanonicalLabels(
 }
 
 /**
- * `client:abc12345` — first 8 hex chars of the client UUID. Stable per
+ * `client-abc12345` — first 8 hex chars of the client UUID. Stable per
  * client; matches the convention `<namespace>-storage` uses for the
  * tenant namespace name (`client-<slug>-<8chars>`).
+ *
+ * NB: separator is `-` not `:` because K8s rejects `:` in label values
+ * with HTTP 422 (regex `^([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$`).
  */
 export function clientOwnerLabel(clientUuid: string): string {
-  return `client:${clientUuid.replace(/-/g, '').slice(0, 8)}`;
+  return `client-${clientUuid.replace(/-/g, '').slice(0, 8)}`;
 }
 
 /**
@@ -107,7 +113,7 @@ export function clientStoragePvcLabelsFromNamespace(
   const shortId = match ? match[1] : 'unknown';
   return buildCanonicalLabels({
     role: 'client-storage',
-    owner: `client:${shortId}`,
+    owner: `client-${shortId}`,
     canonicalName: `${namespace}-storage`,
   });
 }

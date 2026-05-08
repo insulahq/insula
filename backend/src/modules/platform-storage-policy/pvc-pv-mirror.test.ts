@@ -9,7 +9,7 @@ describe('desiredMirrorLabels', () => {
   it('returns only the four canonical keys', () => {
     const desired = desiredMirrorLabels({
       'platform/role': 'client-storage',
-      'platform/owner': 'client:abc12345',
+      'platform/owner': 'client-abc12345',
       'platform/canonical-name': 'client-acme-abc12345-storage',
       'platform/managed-by': 'platform-api',
       'app.kubernetes.io/part-of': 'hosting-platform',
@@ -17,7 +17,7 @@ describe('desiredMirrorLabels', () => {
     });
     expect(desired).toEqual({
       'platform/role': 'client-storage',
-      'platform/owner': 'client:abc12345',
+      'platform/owner': 'client-abc12345',
       'platform/canonical-name': 'client-acme-abc12345-storage',
       'platform/managed-by': 'platform-api',
     });
@@ -182,7 +182,7 @@ describe('mirrorPvcLabelsToPvs', () => {
         {
           name: 'pending-pvc',
           volumeName: undefined, // not bound
-          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client:abc12345', 'platform/managed-by': 'platform-api' },
+          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client-abc12345', 'platform/managed-by': 'platform-api' },
         },
       ],
     });
@@ -218,7 +218,7 @@ describe('mirrorPvcLabelsToPvs', () => {
         {
           name: 'gone',
           volumeName: 'pvc-gone',
-          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client:11112222', 'platform/managed-by': 'platform-api' },
+          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client-11112222', 'platform/managed-by': 'platform-api' },
         },
       ],
       pvReadStatusFor: new Map([['pvc-gone', 404]]),
@@ -234,12 +234,12 @@ describe('mirrorPvcLabelsToPvs', () => {
         {
           name: 'good',
           volumeName: 'pvc-good',
-          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client:aaaa1111', 'platform/managed-by': 'platform-api' },
+          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client-aaaa1111', 'platform/managed-by': 'platform-api' },
         },
         {
           name: 'bad',
           volumeName: 'pvc-bad',
-          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client:bbbb2222', 'platform/managed-by': 'platform-api' },
+          labels: { 'platform/role': 'client-storage', 'platform/owner': 'client-bbbb2222', 'platform/managed-by': 'platform-api' },
         },
       ],
       pvPatchShouldFailFor: new Set(['pvc-bad']),
