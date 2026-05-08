@@ -200,10 +200,11 @@ probe_service_protocol() {
       fi
       ;;
     minio)
-      # MinIO ships /minio/health/ready on port 9000.
-      if kctl -n "$ns" exec "$pod" -- sh -c \
-         'wget -q -O /dev/null --spider http://127.0.0.1:9000/minio/health/ready' >/dev/null 2>&1; then
-        ok "minio /minio/health/ready 200 (pod=${pod})"; return 0
+      # minio image (RELEASE.*) has no wget/curl/nc. Use bash /dev/tcp.
+      if kctl -n "$ns" exec "$pod" -c minio --request-timeout=15s -- bash -c \
+         'timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/9000" 2>/dev/null && echo OK' \
+         | grep -q '^OK$'; then
+        ok "minio listening on 9000 (pod=${pod})"; return 0
       fi
       ;;
     *)
