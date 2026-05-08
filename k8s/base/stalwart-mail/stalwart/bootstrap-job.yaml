@@ -37,9 +37,17 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-bootstrap
   annotations:
-    # Prevent Flux from reconciling this Job's spec.suspend field back
-    # to true after bootstrap.sh patches it to false. Once the Job runs
-    # and completes, Flux will see the completed state and leave it alone.
+    # Skip Flux reconciliation after first create. Required because k8s
+    # auto-adds batch.kubernetes.io/controller-uid + job-name labels to
+    # .spec.template.metadata.labels, and Job spec.template is immutable
+    # — Flux dry-run-fails on every subsequent reconcile regardless of
+    # SSA mode. ssa:merge alone was insufficient (caught on testing
+    # .example.test 2026-05-08; whole platform Kustomization stuck
+    # Ready=False). The Job is suspended at create time and unsuspended
+    # once by bootstrap.sh after the plan is rendered; no further
+    # reconciliation needed. The reconcile:disabled annotation only
+    # disables ongoing reconcile — Flux still creates it on first apply.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Suspended by default — bootstrap.sh patches suspend=false when ready.
