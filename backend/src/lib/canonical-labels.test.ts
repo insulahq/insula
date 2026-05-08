@@ -12,13 +12,13 @@ describe('buildCanonicalLabels', () => {
   it('emits the four canonical keys when canonicalName is supplied', () => {
     const labels = buildCanonicalLabels({
       role: 'client-storage',
-      owner: 'client:abc12345',
+      owner: 'client-abc12345',
       canonicalName: 'client-acme-abc12345-storage',
     });
 
     expect(labels).toEqual({
       [CANONICAL_LABEL_KEYS.role]: 'client-storage',
-      [CANONICAL_LABEL_KEYS.owner]: 'client:abc12345',
+      [CANONICAL_LABEL_KEYS.owner]: 'client-abc12345',
       [CANONICAL_LABEL_KEYS.canonicalName]: 'client-acme-abc12345-storage',
       [CANONICAL_LABEL_KEYS.managedBy]: PLATFORM_API_MANAGER,
     });
@@ -57,13 +57,13 @@ describe('buildCanonicalLabels', () => {
 describe('clientOwnerLabel', () => {
   it('strips dashes and takes the first 8 hex chars', () => {
     expect(clientOwnerLabel('abc12345-678a-9bcd-ef01-23456789abcd')).toBe(
-      'client:abc12345',
+      'client-abc12345',
     );
   });
 
   it('handles a UUID with no dashes idempotently', () => {
     expect(clientOwnerLabel('abc123456789abcdefghijklmnop')).toBe(
-      'client:abc12345',
+      'client-abc12345',
     );
   });
 });
@@ -77,7 +77,7 @@ describe('clientStoragePvcLabels', () => {
 
     expect(labels).toEqual({
       [CANONICAL_LABEL_KEYS.role]: 'client-storage',
-      [CANONICAL_LABEL_KEYS.owner]: 'client:abc12345',
+      [CANONICAL_LABEL_KEYS.owner]: 'client-abc12345',
       [CANONICAL_LABEL_KEYS.canonicalName]: 'client-acme-abc12345-storage',
       [CANONICAL_LABEL_KEYS.managedBy]: PLATFORM_API_MANAGER,
     });
@@ -87,15 +87,15 @@ describe('clientStoragePvcLabels', () => {
 describe('clientStoragePvcLabelsFromNamespace', () => {
   it('extracts the 8-hex owner short-id from the canonical namespace form', () => {
     const labels = clientStoragePvcLabelsFromNamespace('client-acme-abc12345');
-    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client:abc12345');
+    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client-abc12345');
     expect(labels[CANONICAL_LABEL_KEYS.canonicalName]).toBe(
       'client-acme-abc12345-storage',
     );
   });
 
-  it('falls back to client:unknown when namespace does not match the canonical form', () => {
+  it('falls back to client-unknown when namespace does not match the canonical form', () => {
     const labels = clientStoragePvcLabelsFromNamespace('garbage-ns');
-    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client:unknown');
+    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client-unknown');
   });
 
   it('handles slugs that themselves contain 8-hex-looking groups (anchors at end)', () => {
@@ -104,6 +104,6 @@ describe('clientStoragePvcLabelsFromNamespace', () => {
     const labels = clientStoragePvcLabelsFromNamespace(
       'client-abc12345-deadbeef',
     );
-    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client:deadbeef');
+    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client-deadbeef');
   });
 });
