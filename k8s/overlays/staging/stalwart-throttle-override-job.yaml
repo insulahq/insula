@@ -47,14 +47,16 @@ metadata:
     app.kubernetes.io/component: stalwart-throttle-override
     app.kubernetes.io/part-of: hosting-platform
   annotations:
-    # Use SSA merge strategy so Flux's reconcile doesn't fight with
-    # k8s's auto-added Job labels (controller-uid, batch.kubernetes.io
-    # /job-name) on .spec.template.metadata.labels. Without this, every
-    # Flux reconcile after first-create dry-run-fails with "spec.template:
-    # field is immutable" and the entire `platform` Kustomization status
-    # sticks Ready=False — caught on testing.phoenix-host.net 2026-05-08.
-    # The sister Job stalwart-bootstrap already has this annotation;
-    # this one was missing it.
+    # Skip Flux reconciliation after first create. Required because k8s
+    # auto-adds batch.kubernetes.io/controller-uid + job-name labels to
+    # .spec.template.metadata.labels, and Job spec.template is immutable
+    # — Flux dry-run-fails on every reconcile regardless of SSA mode.
+    # The Job is idempotent and one-shot — re-running serves no purpose
+    # and re-creation on each Flux reconcile would download stalwart-
+    # cli + restart Stalwart at the configured interval. Flux still
+    # creates it on first apply (this annotation only stops ongoing
+    # reconcile). Caught on testing.phoenix-host.net 2026-05-08.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
   # No `kustomize.toolkit.fluxcd.io/force: enabled` annotation — that
   # would re-create the Job on EVERY Flux reconcile (10 min on staging),
