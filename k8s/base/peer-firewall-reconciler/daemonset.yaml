@@ -1,15 +1,21 @@
 # peer-firewall-reconciler DaemonSet — always-on set-mode firewall.
 #
-# scripts/bootstrap.sh declares six nft sets on every node:
+# scripts/bootstrap.sh declares four nft sets on every node:
 #   cluster_peers_v4 / cluster_peers_v6   — control-plane ports trust
+#                                            (kube-API node InternalIPs
+#                                            + pending-peer IPs union)
 #   trusted_ranges_v4 / trusted_ranges_v6 — full TCP/UDP trust
-#   pending_peers_v4 / pending_peers_v6   — bootstrap-window pre-auth
+#                                            (ClusterTrustedRange CRs
+#                                            + bootstrap-time
+#                                            --allow-source seed)
 #
-# This DaemonSet converges all six sets against three kube-API sources:
+# This DaemonSet converges the four sets against three kube-API sources:
 #   Nodes                  → cluster_peers_v{4,6}     (read InternalIPs)
+#   ClusterPendingPeer     → cluster_peers_v{4,6}     (read .spec.ip,
+#                                                      union with Nodes,
+#                                                      enforce TTL,
+#                                                      claim on match)
 #   ClusterTrustedRange    → trusted_ranges_v{4,6}    (read .spec.cidr)
-#   ClusterPendingPeer     → pending_peers_v{4,6}     (read .spec.ip,
-#                                                      enforce TTL)
 #
 # Same manifest ships everywhere — operator manages cluster-network
 # trust via Settings → Cluster Networking, never via per-cluster YAML.

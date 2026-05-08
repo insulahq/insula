@@ -16,7 +16,8 @@ metadata:
 #   ClusterTrustedRange    write    — status subresource (normalizedCidr,
 #   /status                          family, lastSyncedAt, conditions).
 #   ClusterPendingPeer     read     — spec.ip converges into
-#                                     pending_peers_v{4,6} nft sets.
+#                                     cluster_peers_v{4,6} nft sets
+#                                     (union with Node InternalIPs).
 #   ClusterPendingPeer     write    — status subresource (claimedAt,
 #   /status                          family, expiresAt, conditions).
 #   ClusterPendingPeer     delete   — TTL cleanup + post-claim cleanup.
