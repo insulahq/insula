@@ -1,0 +1,72 @@
+{
+  "$comment": "Per-entry readiness contract for the local catalog test harness. The harness reads `type_defaults` keyed by catalog_entry.type, then applies per-entry overrides on top. See scripts/catalog-tests/README.md for the kind vocabulary.",
+  "type_defaults": {
+    "runtime": {
+      "kind": "pod_ready_only",
+      "timeout_seconds": 300,
+      "$comment": "Runtimes ship no application — they're a base image waiting for client code. Asserting HTTP behavior would either 403 (no index) or 5xx; pod Ready is the meaningful signal."
+    },
+    "static": {
+      "kind": "http_ingress",
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 499,
+      "timeout_seconds": 300,
+      "$comment": "Empty htdocs/document-root may serve a Welcome page (200), an autoindex (200), 403 Forbidden, or 404 Not Found. All four prove the static server is up. Strict /health probe is fragile across nginx/apache versions."
+    },
+    "database": {
+      "kind": "db_protocol",
+      "timeout_seconds": 300,
+      "$comment": "engine-specific ping via kubectl exec into the deployed DB pod"
+    },
+    "service": {
+      "kind": "service_protocol",
+      "timeout_seconds": 300
+    },
+    "application": {
+      "kind": "http_ingress",
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 499,
+      "timeout_seconds": 600,
+      "$comment": "Apps almost-always 200 the landing page or 30x → /login; some serve 401/403 unauthenticated which is also a positive signal that the app is up. 5xx (or wget failing entirely) is the unambiguous failure."
+    }
+  },
+  "overrides": {
+    "wordpress": { "path": "/wp-login.php" },
+    "nextcloud": { "path": "/login" },
+    "moodle-bitnami": { "path": "/login/index.php" },
+    "prestashop": { "path": "/install/" },
+    "matomo": { "path": "/index.php" },
+    "bookstack": { "path": "/login", "timeout_seconds": 900, "$comment": "Bookstack runs APP_KEY:generate + db:migrate at first boot — slow on starter plan" },
+    "n8n": { "path": "/setup", "$comment": "n8n redirects / to /setup on first run" },
+    "discourse": {
+      "path": "/srv/status",
+      "expect_code_max": 299,
+      "timeout_seconds": 900,
+      "$comment": "Discourse boots slow on cold start — Sidekiq + Ruby workers"
+    },
+    "plausible": { "path": "/login" },
+    "immich": {
+      "path": "/api/server/ping",
+      "expect_code_max": 299,
+      "timeout_seconds": 900
+    },
+    "strapi": { "path": "/admin" },
+    "directus": { "path": "/admin" },
+    "paperless-ngx": { "path": "/accounts/login/" },
+    "invoiceninja": { "path": "/setup" },
+    "dolibarr": { "path": "/install/" },
+    "coturn": {
+      "kind": "stun_probe",
+      "ports_tcp": [3478],
+      "ports_udp": [3478],
+      "timeout_seconds": 300,
+      "$comment": "STUN/TURN — no ingress component. Probe the host-port directly."
+    },
+    "jitsi": {
+      "ingress_component": "web",
+      "$comment": "jitsi has 5 components; `web` is the ingress target. Without this override the probe falls through to coturn (skipped via DB_PORTS) or jicofo."
+    }
+  }
+}

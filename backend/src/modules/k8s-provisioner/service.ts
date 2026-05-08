@@ -8,6 +8,7 @@ import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
+import { clientStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 
 /**
  * Render a raw provisioning error into either a JSON-stringified
@@ -431,6 +432,11 @@ export async function applyPVC(
             'recurring-job-group.longhorn.io/default': 'enabled',
             'app.kubernetes.io/part-of': 'hosting-platform',
             'app.kubernetes.io/component': 'tenant-storage',
+            // Canonical labels — mirrored to the bound PV by the
+            // storage-policy reconciler so `kubectl get pv` and the
+            // Longhorn UI can show meaningful names alongside the
+            // CSI-generated PV UUID.
+            ...clientStoragePvcLabelsFromNamespace(namespace),
           },
         },
         spec: {
@@ -692,7 +698,14 @@ export async function runProvisionNamespace(
   // snapshot+restore migration to change tier. We now use ONE SC and
   // patch Volume.spec.numberOfReplicas live (1 for Local, 2 for HA)
   // after the PVC binds. Tier change is also live (applyTenantTier).
-  const storageClass = 'longhorn-tenant';
+  //
+  // TENANT_STORAGE_CLASS env override exists so non-Longhorn environments
+  // (local DinD k3s, ad-hoc clusters running on RKE/EKS without Longhorn)
+  // can swap in `local-path` or another in-cluster SC. The replica-patching
+  // code below is Longhorn-specific and silently no-ops on other SCs (the
+  // patch() call fails — we treat that as "non-Longhorn cluster, skip"
+  // so the deployer doesn't crash on plain SCs).
+  const storageClass = process.env.TENANT_STORAGE_CLASS || 'longhorn-tenant';
 
   // Auto-pick worker for Local tier when the operator chose "Auto"
   // (workerNodeName=null). Local tier MUST run on a specific node
