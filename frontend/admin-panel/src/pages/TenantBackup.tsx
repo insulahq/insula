@@ -604,20 +604,18 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
-  // Password is OPTIONAL. When empty the archive is plaintext.
-  // When supplied it must be ≥12 chars (matches both backend
-  // validators — tar uses PBKDF2-SHA256@100k, zip uses
-  // WinZip AE-2 PBKDF2-SHA1@1000 which is weaker, so the same
-  // 12-char floor applies to both).
+  // Password is offered ONLY for the Tar format. When supplied it
+  // must be ≥12 chars and match its confirmation; empty = plaintext
+  // tar.gz. ZIP is always plaintext — see the rationale next to the
+  // "Password not available for ZIP" notice.
   const minLen = 12;
-  const wantsEncryption = password.length > 0;
+  const passwordAllowed = format === 'tar';
+  const wantsEncryption = passwordAllowed && password.length > 0;
   const valid = !wantsEncryption || (password.length >= minLen && password === confirm);
 
   const handleExport = async () => {
     if (!valid) {
-      setError(wantsEncryption
-        ? `Passwords must match and be at least ${minLen} characters.`
-        : 'Form is invalid.');
+      setError(`Passwords must match and be at least ${minLen} characters.`);
       return;
     }
     setError(null);
@@ -664,47 +662,57 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
                 <span>
                   <span className="font-medium">Zip (.zip)</span>
                   <span className="block text-xs text-gray-500 dark:text-gray-400">
-                    Optional WinZip AES-256 per-entry encryption. Any OS unzips with the password; filenames remain visible.
+                    Plaintext only. Any OS unzips without extra tools. Use Tar if you need a password.
                   </span>
                 </span>
               </label>
             </div>
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-              Password <span className="text-gray-400">(optional, leave blank for unencrypted)</span>
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={`≥${minLen} chars when set`}
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-              autoComplete="new-password"
-            />
-          </div>
-          {wantsEncryption && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm password</label>
-              <input
-                type="password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-                autoComplete="new-password"
-              />
-            </div>
+          {passwordAllowed && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+                  Password <span className="text-gray-400">(optional, leave blank for unencrypted)</span>
+                </label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={`≥${minLen} chars when set`}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                  autoComplete="new-password"
+                />
+              </div>
+              {wantsEncryption && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm password</label>
+                  <input
+                    type="password"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                    autoComplete="new-password"
+                  />
+                </div>
+              )}
+            </>
           )}
-          {wantsEncryption && (
+          {!passwordAllowed && (
+            <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+              ZIP archives are unencrypted by design — the only practical Node ZIP-encryption library has weak key-stretching and crashes on multi-hundred-MB bundles. Switch to <strong>Tar</strong> if you need a password.
+            </p>
+          )}
+          {passwordAllowed && wantsEncryption && (
             <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
               <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
               The platform never stores this password. If you lose it the export is unrecoverable.
               The secrets component remains encrypted with the source region's <code className="font-mono">OIDC_ENCRYPTION_KEY</code> — for full cross-region restore the target region needs the same KEK or the bundle will surface a decrypt error on the secrets component only.
             </p>
           )}
-          {!wantsEncryption && (
+          {passwordAllowed && !wantsEncryption && (
             <p className="rounded-md bg-blue-50 p-2 text-xs text-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
-              No password set — the archive will download unencrypted. Anyone with the file can read every component.
+              No password set — the tar archive will download unencrypted. Anyone with the file can read every component.
             </p>
           )}
           {error && (
