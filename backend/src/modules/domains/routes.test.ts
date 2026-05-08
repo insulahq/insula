@@ -50,6 +50,10 @@ vi.mock('../tasks/service.js', () => ({
   tracked: vi.fn(async <T,>(_db: unknown, _args: unknown, fn: (taskId: string) => Promise<T>) => {
     return fn('task-test');
   }),
+  start: vi.fn().mockResolvedValue({ id: 'task-test' }),
+  finish: vi.fn().mockResolvedValue(undefined),
+  finishByRef: vi.fn().mockResolvedValue(undefined),
+  progress: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { getDomainById } from './service.js';
