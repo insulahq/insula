@@ -1285,6 +1285,39 @@ pin_system_components_to_servers() {
     || true
   done
 
+  # 2026-05-08 efficiency audit: bump under-provisioned memory requests
+  # to 128Mi on system daemons whose default install values don't reflect
+  # actual usage. This is scheduler-accuracy correction — actual memory
+  # use is unchanged, but the scheduler will now refuse to over-pack a
+  # node based on ground-truth needs, eliminating the 0/0/0 OOM-kill
+  # surprise pattern observed pre-audit. Helm-installed daemons (ingress-
+  # nginx + Longhorn + CNPG) get their bumps in their respective
+  # `--set` flags above; Flux + Tigera ship fixed manifests, so we
+  # patch them post-install here.
+  bump_request_memory() {
+    local ns="$1" name="$2" container="$3" cpu="$4" mem="$5"
+    local patch
+    patch='{"spec":{"template":{"spec":{"containers":[{"name":"'"$container"'","resources":{"requests":{"cpu":"'"$cpu"'","memory":"'"$mem"'"}}}]}}}}'
+    kubectl patch deployment "$name" -n "$ns" --type=strategic --patch="$patch" 2>/dev/null \
+      || kubectl patch daemonset "$name" -n "$ns" --type=strategic --patch="$patch" 2>/dev/null \
+      || true
+  }
+
+  # Flux controllers — manifests ship without resource requests, every
+  # pod schedules with 0 requests until k8s OOMs. 128Mi covers steady-
+  # state observation 2026-05-08: 90-110 Mi resident across all four.
+  bump_request_memory flux-system source-controller manager 50m 128Mi
+  bump_request_memory flux-system kustomize-controller manager 50m 128Mi
+  bump_request_memory flux-system helm-controller manager 50m 128Mi
+  bump_request_memory flux-system notification-controller manager 50m 128Mi
+  # image-* controllers exist on staging only (see install_flux); the
+  # bump call is a no-op when the deployments don't exist (`|| true`).
+  bump_request_memory flux-system image-reflector-controller manager 50m 128Mi
+  bump_request_memory flux-system image-automation-controller manager 50m 128Mi
+
+  # Tigera operator — sole calico-operator pod, ships with no requests.
+  bump_request_memory tigera-operator tigera-operator tigera-operator 50m 128Mi
+
   # M12: scale CoreDNS to 2 replicas + spread across servers.
   # k3s ships CoreDNS=1 by default; on a 3-server cluster that's a
   # single point of DNS failure. Bump to 2 and topology-spread so
@@ -2150,6 +2183,9 @@ install_nginx_ingress() {
     --set controller.config.enable-brotli=true \
     --set controller.config.brotli-level=6 \
     --set controller.config.brotli-min-length=256 \
+    --set controller.resources.requests.cpu=50m \
+    --set controller.resources.requests.memory=128Mi \
+    --set controller.resources.limits.memory=512Mi \
     --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=platform.example.test/ingress-mode' \
     --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=NotIn' \
     --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]=none' \
@@ -2326,6 +2362,12 @@ install_longhorn() {
     --set defaultSettings.guaranteedInstanceManagerCPU=8 \
     --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
     --set longhornUI.replicaCount=1 \
+    --set 'longhornManager.resources.requests.cpu=50m' \
+    --set 'longhornManager.resources.requests.memory=128Mi' \
+    --set 'longhornDriver.resources.requests.cpu=50m' \
+    --set 'longhornDriver.resources.requests.memory=128Mi' \
+    --set 'longhornUI.resources.requests.cpu=10m' \
+    --set 'longhornUI.resources.requests.memory=64Mi' \
     --wait \
     --timeout 600s
 
@@ -2426,11 +2468,16 @@ install_cnpg() {
     log "Installing CloudNative-PG operator (passive — no Cluster CR applied)..."
   fi
 
+  # maxConcurrentReconciles=3 (default 10): we never run more than
+  # ~5 Cluster CRs (system-db + mail-db + future per-tenant); 3
+  # workers is plenty and saves ~50 Mi resident in the operator pod.
+  # See cnpg/cloudnative-pg chart values.yaml for full list.
   helm_cmd upgrade --install cnpg cnpg/cloudnative-pg \
     --namespace cnpg-system \
     --create-namespace \
     --version "${CNPG_CHART_VERSION}" \
     --set monitoring.podMonitorEnabled=false \
+    --set maxConcurrentReconciles=3 \
     --wait \
     --timeout 600s
 
