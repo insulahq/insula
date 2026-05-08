@@ -1,15 +1,18 @@
-# peer-firewall-reconciler DaemonSet — set-mode firewall (Persona C).
+# peer-firewall-reconciler DaemonSet — always-on set-mode firewall.
 #
-# When CLUSTER_NETWORK_CIDR is unset and no NetBird/Tailscale mesh
-# interface is detected, scripts/bootstrap.sh declares nft sets
-# `cluster_peers_v4` and `cluster_peers_v6` and scopes cluster-internal
-# control-plane ports (6443, 8443, 10250, 5473, 2379-2380) to those
-# sets. This DaemonSet keeps the sets in sync with kube-API node
-# InternalIPs.
+# scripts/bootstrap.sh declares six nft sets on every node:
+#   cluster_peers_v4 / cluster_peers_v6   — control-plane ports trust
+#   trusted_ranges_v4 / trusted_ranges_v6 — full TCP/UDP trust
+#   pending_peers_v4 / pending_peers_v6   — bootstrap-window pre-auth
 #
-# In cidr or single mode, the sets do not exist; the reconciler detects
-# this at startup and idles. Same manifest ships everywhere — no
-# per-cluster configuration drift.
+# This DaemonSet converges all six sets against three kube-API sources:
+#   Nodes                  → cluster_peers_v{4,6}     (read InternalIPs)
+#   ClusterTrustedRange    → trusted_ranges_v{4,6}    (read .spec.cidr)
+#   ClusterPendingPeer     → pending_peers_v{4,6}     (read .spec.ip,
+#                                                      enforce TTL)
+#
+# Same manifest ships everywhere — operator manages cluster-network
+# trust via Settings → Cluster Networking, never via per-cluster YAML.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
