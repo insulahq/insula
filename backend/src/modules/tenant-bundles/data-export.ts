@@ -375,99 +375,73 @@ export async function decryptImportTarball(args: {
   return entries;
 }
 
-// ─── ZIP export (optional WinZip AES-256 / AE-2) ─────────────────────
+// ─── ZIP export (always plaintext) ───────────────────────────────────
 //
-// Symmetric to `streamEncryptedExport` but produces a ZIP archive
-// instead of `tar.gz` (+ optional Salted__ envelope). Streams
-// end-to-end:
+// Symmetric to `streamEncryptedExport` but produces a `.zip` instead
+// of `tar.gz`. Streams end-to-end:
 //
 //   for each artifact in bundle:
 //     S3 GetObject (Readable) → archiver.append(stream, { name, store: true })
 //   archiver.finalize() → reply
 //
-// When `password` is supplied, archiver-zip-encrypted registers
-// "WinZip AES-256" (AE-2) as the entry encryption format. Modern
-// `unzip`, 7-Zip, and Windows Explorer all decrypt with the
-// supplied password. Per-entry encryption is fully streamable —
-// archiver writes each entry's local file header + AES-encrypted
-// content as bytes flow through, then a central directory at the end.
+// **Why no password option on the ZIP path** (revisited 2026-05-08
+// after a 524 MB E2E ran the platform-api pod OOM):
 //
-// Tradeoff vs tar.gz.enc: ZIP encrypts entry CONTENTS but leaves
-// filenames + sizes visible in the central directory. If the
-// operator needs metadata confidentiality, use the tar.gz.enc
-// variant (which encrypts the entire tarball including filenames).
+//   The only practical Node ZIP-encryption library
+//   (`archiver-zip-encrypted`) implements WinZip AE-1 with three
+//   crippling weaknesses for our use case:
+//     1. PBKDF2-HMAC-SHA1 @ **1000 iterations** — ~100× weaker
+//        key-stretching than the tar.gz.enc path's 100k iterations.
+//     2. Pure-JS AES (`aes-js`) — runs at ~10-50 MB/s instead of
+//        node:crypto's ~1 GB/s, AND has unbounded-buffer issues at
+//        scale (a 524 MB bundle reliably crashed platform-api).
+//     3. ZIP central directory still leaks filenames + per-entry
+//        sizes regardless of encryption — same metadata leak as a
+//        plain ZIP.
+//
+//   Operators who want password-protected exports should use the
+//   tar.gz.enc variant (`POST /admin/tenant-bundles/:id/export`
+//   with a passphrase) — it uses node:crypto's hardware-accelerated
+//   AES-256-CBC, 100k PBKDF2 iterations, and encrypts filenames
+//   along with content. The ZIP path's value is cross-platform
+//   plaintext extraction (Windows Explorer / macOS Archive Utility
+//   / `unzip` work without extra tools or a password).
+//
+// If we ever genuinely need password-protected ZIP we can implement
+// a native WinZip AE-2 encoder against node:crypto (~100 lines) —
+// out of scope for this commit.
 
 export interface StreamZipExportArgs {
   readonly store: BackupStore;
   readonly handle: BundleHandle;
-  /**
-   * Optional password. When supplied (≥8 chars) every ZIP entry is
-   * encrypted with WinZip AES-256 (AE-2). When omitted, the ZIP is
-   * plaintext.
-   */
-  readonly password?: string;
   readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
 }
 
-/** Minimum password length when encrypting.
- *
- * IMPORTANT — WinZip AE-2 derives the AES key with PBKDF2-HMAC-SHA1
- * at **1000 iterations** (per the WinZip 9 spec). That's ~100x weaker
- * key-stretching than the tar.gz.enc path's PBKDF2-HMAC-SHA256 at
- * 100k iterations. We raise the ZIP minimum to 12 chars to match the
- * tar path so the lower KDF cost doesn't translate into trivially
- * brute-forceable archives. Documented in the route summary too.
- */
-const ZIP_PASSWORD_MIN_LENGTH = 12;
-
 /**
- * Build a Readable that yields a ZIP archive of meta.json + every
- * component artifact. Optional WinZip AES-256 encryption when
- * `password` is supplied.
+ * Build a Readable that yields a plaintext ZIP archive of meta.json
+ * + every component artifact. The ZIP itself is unencrypted; the
+ * `secrets` component artifact stays inner-encrypted with the source
+ * region's OIDC_ENCRYPTION_KEY (AES-256-GCM) regardless.
  *
- * Async because we lazy-import `archiver` + `archiver-zip-encrypted`
- * (heavyweight modules; not loaded on cold paths that don't export).
+ * Async because we lazy-import `archiver` (heavyweight; not loaded
+ * on cold paths that don't export).
  */
 export async function streamZipExport(args: StreamZipExportArgs): Promise<Readable> {
-  const { store, handle, password, components } = args;
-  const encrypt = typeof password === 'string' && password.length > 0;
-  if (encrypt && password!.length < ZIP_PASSWORD_MIN_LENGTH) {
-    throw new Error(`streamZipExport: password must be ≥${ZIP_PASSWORD_MIN_LENGTH} chars (or omit it for an unencrypted zip)`);
-  }
+  const { store, handle, components } = args;
 
-  // Lazy-imported. Both packages are CommonJS; tsconfig
-  // esModuleInterop is on, so the default-export form works.
+  // archiver is CommonJS; tsconfig esModuleInterop is on, so the
+  // default-export form works.
   const { default: archiverFactory } = await import('archiver');
-  if (encrypt) {
-    const { default: archiverZipEncrypted } = await import('archiver-zip-encrypted');
-    // The registry guards against double-registration when a hot
-    // path imports this twice in the same process — the library
-    // throws on duplicate format names, so suppress it.
-    try {
-      (archiverFactory as unknown as { registerFormat: (name: string, fn: unknown) => void })
-        .registerFormat('zip-encrypted', archiverZipEncrypted);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('already registered')) throw err;
-    }
-  }
 
-  // archiver in plain or encrypted mode. Per-entry `store: true`
-  // (compression method 0, no zlib framing) is what actually skips
-  // recompression — every component artifact we ship is already
-  // gzip-compressed. The format-level `zlib` option is unused once
-  // every entry passes `store: true`; we omit it here.
-  const zipFormat = encrypt ? 'zip-encrypted' : 'zip';
-  const zipOptions: Record<string, unknown> = encrypt
-    ? { encryptionMethod: 'aes256', password: password! }
-    : {};
-  const archiveRaw = (archiverFactory as unknown as (format: string, opts: Record<string, unknown>) => unknown)(zipFormat, zipOptions);
+  // Per-entry `store: true` (compression method 0, no zlib framing)
+  // skips recompression — every component artifact we ship is already
+  // gzip-compressed.
+  const archiveRaw = (archiverFactory as unknown as (format: string, opts: Record<string, unknown>) => unknown)('zip', {});
 
-  // Defensive runtime guard: archiver-zip-encrypted is a third-party
-  // plugin with no upstream typings. If a future version returned an
-  // object that wasn't a Readable, Fastify's `reply.send` would
-  // happily forward it and the download would corrupt silently.
-  // Verify the contract at runtime once.
+  // Defensive runtime guard against an unexpected archiver return
+  // shape; if a future version stops being a Readable, Fastify's
+  // `reply.send` would happily forward it and the download would
+  // corrupt silently.
   if (
     !archiveRaw
     || typeof (archiveRaw as { append?: unknown }).append !== 'function'
@@ -484,9 +458,6 @@ export async function streamZipExport(args: StreamZipExportArgs): Promise<Readab
     destroy: (err?: Error) => void;
   };
 
-  // Bubble archiver-internal errors so the route's try/catch can
-  // surface them. Without this listener, an error would tear down
-  // the underlying stream silently.
   archive.on('error', (err) => {
     archive.destroy(err);
   });
