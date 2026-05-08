@@ -182,7 +182,7 @@ describe('detectOrphans', () => {
           name: 'pvc-stamped-orphan',
           labels: {
             'platform/role': 'client-storage',
-            'platform/owner': 'client:abc12345',
+            'platform/owner': 'client-abc12345',
             'platform/canonical-name': 'client-acme-abc12345-storage',
             'platform/managed-by': 'platform-api',
           },
@@ -201,7 +201,7 @@ describe('detectOrphans', () => {
       pvName: 'pvc-stamped-orphan',
       reason: 'namespace_deleted',
       canonicalRole: 'client-storage',
-      canonicalOwner: 'client:abc12345',
+      canonicalOwner: 'client-abc12345',
     });
   });
 
