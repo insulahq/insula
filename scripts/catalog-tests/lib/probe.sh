@@ -36,7 +36,7 @@ probe_pod_ready_only() {
 # k8sResourceName in the deployer); we discover it by label selector
 # `platform.io/managed=true=<deplname>` so we don't hard-code the name.
 probe_http_ingress() {
-  local ns="$1" path="$2" min_code="$3" max_code="$4" timeout="$5" code="${6:-}"
+  local ns="$1" path="$2" min_code="$3" max_code="$4" timeout="$5" code="${6:-}" ing_comp="${7:-}"
   # Wait for any pod in the namespace to be Ready first — without this,
   # a fresh tenant has Service-with-no-endpoints which curl reads as 000.
   if ! kctl -n "$ns" wait --for=condition=Ready pod \
@@ -50,6 +50,9 @@ probe_http_ingress() {
   # HTTP on the port the catalog declares as the ingress target.
   #
   # Selection priority:
+  #   0) ING_COMP override (readiness.json `ingress_component`) — for apps
+  #      where the ingress component is named something other than the
+  #      entry code (jitsi → web, etc.)
   #   1) Service labelled `component=<entry_code>` (exact — primary for
   #      most multi-component apps)
   #   2) Service labelled `component=<entry_code>-server` or starting with
@@ -58,15 +61,21 @@ probe_http_ingress() {
   #      the known DB/cache backend allowlist
   local svc port
   svc=$(kctl -n "$ns" get svc -o json \
-    | CODE="$code" python3 -c "
+    | CODE="$code" ING_COMP="$ing_comp" python3 -c "
 import json, os, sys
 code = os.environ.get('CODE') or ''
-DB_PORTS = {3306, 5432, 27017, 6379, 11211, 5984, 9092, 9980, 25, 53, 9001}
+ing_comp = os.environ.get('ING_COMP') or ''
+DB_PORTS = {3306, 5432, 27017, 6379, 11211, 5984, 9092, 9980, 25, 53, 9001, 3478}
 items = json.load(sys.stdin).get('items', [])
 def get_comp(s): return s.get('metadata', {}).get('labels', {}).get('component') or ''
 def first_port(s):
     ports = s.get('spec', {}).get('ports', [])
     return ports[0]['port'] if ports else None
+# pass 0: explicit ingress_component override
+if ing_comp:
+    for s in items:
+        if get_comp(s) == ing_comp and first_port(s):
+            print(s['metadata']['name'], first_port(s)); sys.exit(0)
 # pass 1: exact component=<code>
 if code:
     for s in items:

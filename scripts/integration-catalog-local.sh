@@ -284,7 +284,9 @@ print(plans[0].get('id', '') if plans else '')
       path=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('path','/'))")
       min_code=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('expect_code_min',200))")
       max_code=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('expect_code_max',399))")
-      probe_http_ingress "$ns" "$path" "$min_code" "$max_code" "$timeout" "$code" || probe_ok=$?
+      local ing_comp
+      ing_comp=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('ingress_component',''))")
+      probe_http_ingress "$ns" "$path" "$min_code" "$max_code" "$timeout" "$code" "$ing_comp" || probe_ok=$?
       ;;
     db_protocol)
       # Engine derived from the deployment's primary DB component.
