@@ -689,8 +689,16 @@ async function captureDeploymentsSummary(
     })
     .from(deployments)
     .where(eq(deployments.clientId, clientId));
+  // Type predicate so the post-filter type narrows from
+  // `name: string | null` to `name: string` (Array.prototype.filter
+  // does not narrow without an explicit predicate). Belt-and-braces:
+  // the column is currently non-null at the schema level, but if it
+  // is ever made nullable a silent null-leak into the meta would be
+  // a data-corruption bug — caught here at compile time.
+  const isComplete = (r: typeof rows[number]): r is typeof r & { name: string; catalogEntryId: string } =>
+    Boolean(r.name && r.catalogEntryId);
   return rows
-    .filter((r) => r.name && r.catalogEntryId)
+    .filter(isComplete)
     .map((r) => ({
       name: r.name,
       catalogEntryId: r.catalogEntryId,

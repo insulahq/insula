@@ -189,7 +189,20 @@ export function verifyExportToken(
   } catch {
     return { ok: false, error: { code: 'MALFORMED', detail: 'payload not json' } };
   }
+  // Structural validation: the MAC has been verified, so the contents
+  // are authentic, but the JSON shape is still untyped at this point.
+  // Reject anything that doesn't match the expected schema before
+  // handing it to downstream code.
   if (payload.v !== VERSION) return { ok: false, error: { code: 'BAD_VERSION' } };
+  if (typeof payload.b !== 'string' || payload.b.length === 0) {
+    return { ok: false, error: { code: 'MALFORMED', detail: 'b not string' } };
+  }
+  if (payload.f !== 'tar' && payload.f !== 'zip') {
+    return { ok: false, error: { code: 'MALFORMED', detail: 'f not in {tar,zip}' } };
+  }
+  if (typeof payload.e !== 'number' || !Number.isFinite(payload.e)) {
+    return { ok: false, error: { code: 'MALFORMED', detail: 'e not finite number' } };
+  }
   if (payload.b !== expectedBundleId) return { ok: false, error: { code: 'BAD_BUNDLE' } };
   if (payload.e < now) return { ok: false, error: { code: 'EXPIRED' } };
   let password: string | null = null;

@@ -43,6 +43,15 @@ vi.mock('./verification.js', () => ({
   verifyDomain: vi.fn().mockResolvedValue({ verified: true, checks: [{ type: 'cname_to_ingress', status: 'pass', detail: 'ok' }] }),
 }));
 
+// The verify route wraps work in `tracked(...)` from tasks/service.js — the
+// underlying `start`/`finish` writes to the DB, which the lightweight mock
+// `app.db` here does not implement. Stub `tracked` to just run the callback.
+vi.mock('../tasks/service.js', () => ({
+  tracked: vi.fn(async <T,>(_db: unknown, _args: unknown, fn: (taskId: string) => Promise<T>) => {
+    return fn('task-test');
+  }),
+}));
+
 import { getDomainById } from './service.js';
 import { verifyDomain as verifyDomainFn } from './verification.js';
 const mockGetDomainById = vi.mocked(getDomainById);
