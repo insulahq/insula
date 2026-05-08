@@ -119,22 +119,22 @@ export async function downloadDataExport(bundleId: string): Promise<void> {
 }
 
 /**
- * Streaming bundle download — POSTs an optional passphrase/password
- * and streams the archive to disk. Two formats:
+ * Streaming bundle download — two formats:
  *
- *   - 'tar'  → `tar.gz` (plain) or `tar.gz.enc` (OpenSSL Salted__
- *              AES-256-CBC envelope, decryptable with stock
- *              `openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000`).
- *   - 'zip'  → `.zip` with optional WinZip AES-256 (AE-2) per-entry
- *              encryption — every modern unzip tool decrypts with the
- *              supplied password.
+ *   - 'tar' → `tar.gz` (plain) or `tar.gz.enc` (OpenSSL Salted__
+ *             AES-256-CBC envelope, 100k-iter PBKDF2-SHA256;
+ *             decryptable with stock `openssl enc -d -aes-256-cbc
+ *             -pbkdf2 -iter 100000`). Password is optional; empty
+ *             → plaintext.
+ *   - 'zip' → plaintext `.zip` only. Password protection is NOT
+ *             offered on the ZIP path because the only practical
+ *             Node ZIP-encryption library has weak key-stretching
+ *             (1000 iterations vs 100k for tar) and an unstable
+ *             pure-JS AES implementation that crashed on multi-
+ *             hundred-MB bundles in testing. Operators who want a
+ *             password use the tar.gz.enc variant.
  *
- * Either format works on ANY bundle (no need for the bundle to have
- * been captured with exportMode='data_export'). Password is optional;
- * empty/undefined → unencrypted archive.
- *
- * Min lengths: tar passphrase ≥12 chars, zip password ≥8 chars,
- * matching the backend validators.
+ * Tar passphrase minimum: 12 chars. ZIP ignores any password arg.
  */
 export async function downloadBundleExport(
   bundleId: string,
@@ -143,9 +143,11 @@ export async function downloadBundleExport(
 ): Promise<void> {
   const token = localStorage.getItem('auth_token');
   const path = format === 'zip' ? 'zip' : 'export';
-  const passwordKey = format === 'zip' ? 'password' : 'passphrase';
   const body: Record<string, string> = {};
-  if (password && password.length > 0) body[passwordKey] = password;
+  // Only the tar path consumes a password; ZIP ignores it.
+  if (format === 'tar' && password && password.length > 0) {
+    body.passphrase = password;
+  }
   const r = await fetch(`/api/v1/admin/tenant-bundles/${bundleId}/${path}`, {
     method: 'POST',
     headers: {
@@ -163,9 +165,6 @@ export async function downloadBundleExport(
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  // Filename: tar plain, tar encrypted, or zip (whether encrypted or
-  // not — the file extension stays `.zip` either way; readers
-  // discover encryption from the entry headers).
   if (format === 'zip') {
     a.download = `bundle-${bundleId}.zip`;
   } else if (password && password.length > 0) {

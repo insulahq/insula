@@ -496,35 +496,22 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
   // ── POST /api/v1/admin/tenant-bundles/:id/zip ─────────────────────
   //
-  // ZIP variant of the export endpoint. Same per-artifact streaming
-  // pipeline (S3 → archiver → reply), no server-side staging. When
-  // `password` is supplied the entries are encrypted with WinZip
-  // AES-256 (AE-2) — every modern unzip tool decrypts with the
-  // password. When absent the ZIP is plaintext.
+  // ZIP variant of the export endpoint — always plaintext. Same
+  // per-artifact streaming pipeline (S3 → archiver → reply), no
+  // server-side staging.
   //
-  // Tradeoff vs the tar.gz.enc variant: ZIP encrypts entry CONTENTS
-  // but leaves filenames + sizes visible in the central directory
-  // (it's a structural property of the ZIP format). Use tar.gz.enc
-  // if metadata confidentiality matters; use ZIP for cross-platform
-  // ergonomics (Windows Explorer / macOS Archive Utility / 7-Zip
-  // unzip with no extra tools).
+  // Why no password option: WinZip AE-2 (the only practical Node
+  // ZIP-encryption format) uses 1000-iter PBKDF2-SHA1 (vs 100k SHA256
+  // for the tar.gz.enc path) and the only available Node implementation
+  // is pure-JS `aes-js` which OOM-crashes on multi-hundred-MB bundles.
+  // Operators who want password-protected exports use the tar.gz.enc
+  // variant via `POST /:id/export`. The ZIP path's value is
+  // cross-platform plaintext extraction (Windows / macOS / `unzip`
+  // without extra tools).
   app.post('/admin/tenant-bundles/:id/zip', {
-    schema: { tags: ['TenantBundles'], summary: 'Download a bundle as ZIP (optionally AES-256 password-encrypted)', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Download a bundle as plaintext ZIP', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { password?: string } | null;
-    const password = body?.password;
-    // password is OPTIONAL. When supplied, must be ≥12 chars —
-    // matching the tar.gz.enc minimum, because WinZip AE-2 uses a
-    // weaker PBKDF2 (1000 iterations vs 100k for tar). A shorter
-    // password against the lower KDF cost would be trivially
-    // brute-forced. Caught by security-reviewer 2026-05-08.
-    if (password !== undefined && password !== null && password !== '') {
-      if (typeof password !== 'string' || password.length < 12) {
-        throw new ApiError('VALIDATION_ERROR', 'password must be a string ≥12 characters (or omit it for an unencrypted zip)', 400);
-      }
-    }
-    const encrypt = typeof password === 'string' && password.length >= 12;
 
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
@@ -545,15 +532,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
 
     const { streamZipExport } = await import('./data-export.js');
-    const stream = await streamZipExport({ store, handle, password: encrypt ? password : undefined, components: allArtifacts });
+    const stream = await streamZipExport({ store, handle, components: allArtifacts });
 
     stream.on('error', (err) => {
       app.log.error({
         bundleId: id,
         errMessage: err instanceof Error ? err.message : String(err),
         errName: err instanceof Error ? err.name : 'unknown',
-        errStack: err instanceof Error ? err.stack?.slice(0, 1500) : undefined,
-        errKeys: err && typeof err === 'object' ? Object.keys(err) : [],
       }, 'tenant-bundles: zip export stream error');
     });
 
@@ -561,7 +546,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.header('Content-Disposition', `attachment; filename="bundle-${id}.zip"`);
     reply.header('Cache-Control', 'no-store');
     app.log.warn(
-      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, clientId: job.clientId, encrypted: encrypt, format: 'zip' },
+      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, clientId: job.clientId, format: 'zip' },
       'tenant-bundles: export download initiated',
     );
     return reply.send(stream);
