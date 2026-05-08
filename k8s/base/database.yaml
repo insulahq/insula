@@ -109,13 +109,15 @@ spec:
         - "ALTER USER platform WITH SUPERUSER"
 
   storage:
-    # 5Gi covers a fresh hosting_platform DB + headroom (was 10Gi pre-
-    # 2026-05-08 efficiency audit; live observation: 16 MB of actual
-    # data). Operators can grow online via Settings → System DB Storage
-    # or the SystemPvcResize endpoint when the DB grows. Shrink is NOT
-    # supported by k8s in-place — requires snapshot+recreate, same as
-    # mail-db.
-    size: 5Gi
+    # 10Gi base for fresh installs. The Phase-1 efficiency audit
+    # proposed 5Gi (live observation: 16 MB of actual data) but
+    # CNPG's webhook rejects any spec.storage decrease, which makes
+    # the smaller value un-applyable on existing 10Gi staging
+    # clusters via Flux. Operators can still right-size via Settings
+    # → System DB Storage or the SystemPvcResize endpoint at any
+    # time after install. A future overlay-only smaller-fresh-install
+    # default can revisit this.
+    size: 10Gi
     # System PVCs MUST use longhorn-system-local (or -ha when policy
     # is HA — operator flip via Apply Tier patches both numberOfReplicas
     # and nodeSelector on the live volume). The bare `longhorn` class
