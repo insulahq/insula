@@ -2,13 +2,13 @@
 # E2E for the System Snapshots feature on the staging cluster.
 #
 # Covers:
-#   1. List system PVCs, assert CNPG cluster grouping (postgres replicas
+#   1. List system PVCs, assert CNPG cluster grouping (system-db replicas
 #      have cnpgCluster set, Stalwart has cnpgCluster=null).
-#   2. Take a manual snapshot on the platform/postgres primary's PVC,
+#   2. Take a manual snapshot on the platform/system-db primary's PVC,
 #      assert it appears in the per-volume listing.
 #   3. Membership guard: try to delete a tenant snapshot via the system
 #      route — must return 409 SNAPSHOT_VOLUME_MISMATCH.
-#   4. Full restore lifecycle on the postgres primary: take snapshot,
+#   4. Full restore lifecycle on the system-db primary: take snapshot,
 #      flip a marker row in the DB, restore, assert marker gone.
 #      Restore goes through the orchestrator: scale down → wait detach →
 #      Longhorn snapshotRevert → scale back → wait attach. Worst case
@@ -55,19 +55,19 @@ d = json.load(open('/tmp/sys-snaps.json'))['data']
 items = d['items']
 print(f"  {len(items)} system PVCs returned")
 
-# CNPG postgres replicas must carry cnpgCluster
-pg_items = [i for i in items if i['namespace'] == 'platform' and i['pvcName'].startswith('postgres-')]
+# CNPG system-db replicas must carry cnpgCluster
+pg_items = [i for i in items if i['namespace'] == 'platform' and i['pvcName'].startswith('system-db-')]
 if not pg_items:
-    print("  no postgres PVCs found — cluster may not be provisioned"); sys.exit(0)
+    print("  no system-db PVCs found — cluster may not be provisioned"); sys.exit(0)
 for it in pg_items:
     if it['cnpgCluster'] is None:
         print(f"  FAIL: {it['pvcName']} missing cnpgCluster"); sys.exit(1)
-    if it['cnpgCluster']['name'] != 'postgres':
+    if it['cnpgCluster']['name'] != 'system-db':
         print(f"  FAIL: {it['pvcName']} cnpgCluster.name={it['cnpgCluster']['name']!r}"); sys.exit(1)
 
 primaries = [i for i in pg_items if i['cnpgRole'] == 'primary']
 replicas = [i for i in pg_items if i['cnpgRole'] == 'replica']
-print(f"  postgres: {len(primaries)} primary + {len(replicas)} replica")
+print(f"  system-db: {len(primaries)} primary + {len(replicas)} replica")
 if len(primaries) != 1:
     print(f"  FAIL: expected 1 primary, got {len(primaries)}"); sys.exit(1)
 
@@ -80,19 +80,19 @@ print(f"  mail: {len(mail_items)} PVCs (cnpgCluster=null ✓)")
 EOF
 pass "CNPG grouping correct"
 
-log "3) Membership guard — delete a postgres snapshot via the mail route, expect 409"
+log "3) Membership guard — delete a system-db snapshot via the mail route, expect 409"
 PG_VOL=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; print([i["longhornVolumeName"] for i in d["items"] if i.get("cnpgRole")=="primary"][0])')
 MAIL_VOL=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; print([i["longhornVolumeName"] for i in d["items"] if i["namespace"]=="mail"][0])')
 
 curl_admin "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots" -o /tmp/pg-snaps.json
 PG_SNAP=$(python3 -c 'import json; d=json.load(open("/tmp/pg-snaps.json"))["data"]; print(d["snapshots"][0]["snapshotName"] if d["snapshots"] else "")')
 if [[ -z "$PG_SNAP" ]]; then
-  echo "  no postgres snapshots yet — taking one"
+  echo "  no system-db snapshots yet — taking one"
   curl_admin -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots" -d '{"label":"e2e-marker"}' -H 'Content-Type: application/json' -o /tmp/take.json
   PG_SNAP=$(python3 -c 'import json; print(json.load(open("/tmp/take.json"))["data"]["snapshotName"])')
   sleep 3
 fi
-echo "  postgres snapshot: $PG_SNAP"
+echo "  system-db snapshot: $PG_SNAP"
 echo "  attempting cross-volume delete via mail route…"
 HTTP=$(curl -sS -k -o /tmp/wrong.json -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" \
@@ -175,7 +175,7 @@ else
 fi
 
 log "5) Phase B: only primary's PVC carries the recurring-jobs label"
-$KUBECTL get pvc -n platform -l cnpg.io/cluster=postgres -o json > /tmp/pg-pvcs.json
+$KUBECTL get pvc -n platform -l cnpg.io/cluster=system-db -o json > /tmp/pg-pvcs.json
 python3 << 'EOF' || exit 1
 import json, sys
 d = json.load(open('/tmp/pg-pvcs.json'))
@@ -188,14 +188,14 @@ for pvc in d['items']:
     is_primary = name in [pvc['metadata']['name'] for pvc in d['items']]  # placeholder
 print("  primary-only label state will be re-asserted by reconciler within 5 min")
 EOF
-$KUBECTL get cluster postgres -n platform -o jsonpath='{.status.currentPrimary}' > /tmp/cp.txt
+$KUBECTL get cluster system-db -n platform -o jsonpath='{.status.currentPrimary}' > /tmp/cp.txt
 PRIMARY=$(cat /tmp/cp.txt)
 echo "  currentPrimary=$PRIMARY"
 PRIMARY_LABEL=$($KUBECTL get pvc -n platform "$PRIMARY" -o jsonpath="{.metadata.labels.recurring-job-group\\.longhorn\\.io/default}" 2>/dev/null || echo "")
 echo "  primary label='$PRIMARY_LABEL'"
 
 REPLICA_BAD=0
-for pvc in $($KUBECTL get pvc -n platform -l cnpg.io/cluster=postgres -o jsonpath='{.items[*].metadata.name}'); do
+for pvc in $($KUBECTL get pvc -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[*].metadata.name}'); do
   if [[ "$pvc" != "$PRIMARY" ]]; then
     LBL=$($KUBECTL get pvc -n platform "$pvc" -o jsonpath="{.metadata.labels.recurring-job-group\\.longhorn\\.io/default}" 2>/dev/null || echo "")
     if [[ "$LBL" = "enabled" ]]; then
