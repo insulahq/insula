@@ -1025,7 +1025,10 @@ function InstalledTab() {
     try {
       if (bulkAction === 'start') await bulkStart.mutateAsync(selectedIds);
       else if (bulkAction === 'stop') await bulkStop.mutateAsync(selectedIds);
-      else if (bulkAction === 'restart') await bulkRestart.mutateAsync(undefined);
+      // Pass selectedIds as readonly string[] so the backend bypasses the
+      // running-only filter — otherwise per-row Restart on a stuck deployment
+      // is silently dropped (`status === 'running'` filter zero-matches it).
+      else if (bulkAction === 'restart') await bulkRestart.mutateAsync(selectedIds);
       else if (bulkAction === 'delete') await bulkDelete.mutateAsync(selectedIds);
       setSelected(new Set());
       setSelectAll(false);
@@ -1236,6 +1239,12 @@ function InstalledTab() {
                   {sorted.map((d) => {
                     const isRunning = d.status === 'running';
                     const isStopped = d.status === 'stopped' || d.status === 'failed';
+                    // 'pending' / 'deploying' = stuck states. The status-reconciler
+                    // escalates pending → failed after 60min, but until then the
+                    // row needs an escape hatch — otherwise operators cannot
+                    // recover a stuck deployment from the UI.
+                    const isStuck = d.status === 'pending' || d.status === 'deploying';
+                    const isDeleted = d.status === 'deleted';
                     return (
                       <tr key={d.id} className={clsx('hover:bg-gray-50 dark:hover:bg-gray-800/50', selected.has(d.id) && 'bg-brand-50/50 dark:bg-brand-900/10')}>
                         <td className="px-3 py-3">
@@ -1296,26 +1305,37 @@ function InstalledTab() {
                                 <Play size={14} />
                               </button>
                             )}
-                            {isRunning && (
+                            {(isRunning || isStuck) && (
                               <button
                                 type="button"
                                 onClick={() => { setSelected(new Set([d.id])); setBulkAction('stop'); }}
-                                className="rounded-md p-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                                title="Stop"
+                                className="rounded-md p-1.5 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+                                title={isStuck ? 'Stop stuck deployment (preferred over delete — keeps data + config)' : 'Stop'}
                                 data-testid={`stop-btn-${d.id}`}
                               >
                                 <Square size={14} />
                               </button>
                             )}
-                            {isRunning && (
+                            {(isRunning || isStuck) && (
                               <button
                                 type="button"
                                 onClick={() => { setSelected(new Set([d.id])); setBulkAction('restart'); }}
                                 className="rounded-md p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
-                                title="Pull &amp; Restart"
+                                title={isStuck ? 'Force restart (recover from stuck state)' : 'Pull & Restart'}
                                 data-testid={`restart-btn-${d.id}`}
                               >
                                 <RefreshCw size={14} />
+                              </button>
+                            )}
+                            {!isDeleted && (
+                              <button
+                                type="button"
+                                onClick={() => { setSelected(new Set([d.id])); setBulkAction('delete'); }}
+                                className="rounded-md p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                                title={isStuck ? 'Cancel + delete stuck deployment' : 'Delete'}
+                                data-testid={`delete-btn-${d.id}`}
+                              >
+                                <Trash2 size={14} />
                               </button>
                             )}
                           </div>

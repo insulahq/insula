@@ -114,14 +114,25 @@ export function useRestartDeployment(clientId: string | undefined) {
   });
 }
 
+// Two modes:
+//   string                 — fleet-wide filter by catalog_entry_id (running only)
+//   readonly string[]      — explicit deployment_ids, force-restart any state
+//   undefined              — fleet-wide all running deployments
 export function useBulkRestartDeployments() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (catalogEntryId?: string) =>
-      apiFetch('/api/v1/admin/deployments/bulk-restart', {
+    mutationFn: (input?: string | readonly string[]) => {
+      let body: Record<string, unknown> = {};
+      if (Array.isArray(input)) {
+        body = { deployment_ids: input };
+      } else if (typeof input === 'string') {
+        body = { catalog_entry_id: input };
+      }
+      return apiFetch('/api/v1/admin/deployments/bulk-restart', {
         method: 'POST',
-        body: JSON.stringify(catalogEntryId ? { catalog_entry_id: catalogEntryId } : {}),
-      }),
+        body: JSON.stringify(body),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments'] });
     },

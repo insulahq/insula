@@ -1,7 +1,7 @@
 import { Fragment, useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Square, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -13,7 +13,7 @@ import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useDeployments, useRestartDeployment, useBulkRestartDeployments } from '@/hooks/use-deployments';
+import { useDeployments, useRestartDeployment, useBulkRestartDeployments, useDeleteDeployment, useUpdateDeployment } from '@/hooks/use-deployments';
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
@@ -1255,6 +1255,8 @@ function ImapSyncStatusBadge({ status }: { readonly status: ImapSyncJob['status'
 
 function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<Deployment> & { readonly clientId: string | undefined }) {
   const restartDeployment = useRestartDeployment(clientId);
+  const deleteDeployment = useDeleteDeployment(clientId);
+  const updateDeployment = useUpdateDeployment(clientId);
 
   const items = (data?.data ?? []) as readonly Deployment[];
   const search = useTableSearch(items, ['name', 'type', 'status', 'currentNodeName'] as ReadonlyArray<keyof Deployment>);
@@ -1325,23 +1327,66 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
                 <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
                 <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
                 <td className="py-2 text-right">
-                  {d.status === 'running' && (
-                    <button
-                      type="button"
-                      onClick={() => restartDeployment.mutate(d.id)}
-                      disabled={restartDeployment.isPending}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Pull latest image and restart"
-                      data-testid={`restart-deployment-${d.id}`}
-                    >
-                      {restartDeployment.isPending ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <RefreshCw size={12} />
-                      )}
-                      Restart
-                    </button>
-                  )}
+                  <div className="inline-flex items-center gap-1.5">
+                    {d.status !== 'deleted' && d.status !== 'stopped' && (
+                      <button
+                        type="button"
+                        onClick={() => updateDeployment.mutate({ deploymentId: d.id, status: 'stopped' })}
+                        disabled={updateDeployment.isPending}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={d.status === 'pending' || d.status === 'deploying'
+                          ? 'Stop a stuck deployment — scales replicas to 0, preserves data and config'
+                          : 'Stop deployment — scales replicas to 0, preserves data and config'}
+                        data-testid={`stop-deployment-${d.id}`}
+                      >
+                        {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
+                        Stop
+                      </button>
+                    )}
+                    {d.status === 'stopped' && (
+                      <button
+                        type="button"
+                        onClick={() => updateDeployment.mutate({ deploymentId: d.id, status: 'running' })}
+                        disabled={updateDeployment.isPending}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 px-2.5 py-1.5 text-xs font-medium text-green-700 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Start deployment"
+                        data-testid={`start-deployment-${d.id}`}
+                      >
+                        {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                        Start
+                      </button>
+                    )}
+                    {d.status !== 'deleted' && (
+                      <button
+                        type="button"
+                        onClick={() => restartDeployment.mutate(d.id)}
+                        disabled={restartDeployment.isPending}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={d.status === 'running' ? 'Pull latest image and restart' : 'Force restart (recover from stuck state)'}
+                        data-testid={`restart-deployment-${d.id}`}
+                      >
+                        {restartDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        {d.status === 'running' ? 'Restart' : 'Force Restart'}
+                      </button>
+                    )}
+                    {d.status !== 'deleted' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Delete deployment "${d.name}"? This will scale all components to 0 and soft-delete the row. Use Restore to bring it back. Prefer Stop if you only want to pause it.`)) {
+                            deleteDeployment.mutate(d.id);
+                          }
+                        }}
+                        disabled={deleteDeployment.isPending}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Soft-delete deployment (use Stop instead to keep it recoverable)"
+                        data-testid={`delete-deployment-${d.id}`}
+                      >
+                        {deleteDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
               {envelope && (
