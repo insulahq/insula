@@ -63,6 +63,10 @@
       "ports_udp": [3478],
       "timeout_seconds": 300,
       "$comment": "STUN/TURN — no ingress component. Probe the host-port directly."
+    },
+    "jitsi": {
+      "ingress_component": "web",
+      "$comment": "jitsi has 5 components; `web` is the ingress target. Without this override the probe falls through to coturn (skipped via DB_PORTS) or jicofo."
     }
   }
 }
