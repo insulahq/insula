@@ -1,19 +1,21 @@
 # ClusterPendingPeer — pre-authorise a node that's about to join the
 # cluster. Created via Settings → Cluster Networking → Pre-Enroll Node
-# (admin panel, Phase 4-5). The reconciler propagates the IP into every
-# existing node's nft `pending_peers_v{4,6}` set, so the new node can
-# reach :6443 to register before kube-API knows about it.
+# (admin panel, Phase 4-5). The reconciler unions spec.ip with Node
+# InternalIPs into the same nft `cluster_peers_v{4,6}` set, so the new
+# node can reach :6443 to register before kube-API knows about it.
 #
 # Once the new node joins and its InternalIP appears in the kube-API
 # Node list, the reconciler:
-#   1. Adds the IP to cluster_peers_v{4,6} (the long-term trust set).
-#   2. Sets status.claimedAt on the matching ClusterPendingPeer CR.
-#   3. (Optionally) deletes the CR — the platform-api also runs a
-#      sweeper that cleans up claimed CRs and TTL-expired ones.
+#   1. Sets status.claimedAt on the matching ClusterPendingPeer CR
+#      (the IP is already in cluster_peers_v{4,6} via the Node path —
+#      no nft change needed).
+#   2. Deletes the CR after a short grace period; the platform-api
+#      sweeper also cleans up claimed CRs and TTL-expired ones.
 #
 # TTL: spec.ttlSeconds (default 1800 = 30 min). After this window the
-# reconciler removes the IP from pending_peers and deletes the CR. The
-# operator can extend by editing the CR or recreating it.
+# reconciler removes the IP from cluster_peers (assuming it isn't also
+# present via Node InternalIP) and deletes the CR. The operator can
+# extend by editing the CR or recreating it.
 #
 # Auth/safety:
 #   - Cluster-scoped → only super_admin should create these via the
@@ -93,7 +95,7 @@ spec:
               properties:
                 normalizedIp:
                   type: string
-                  description: '/32 or /128 form added to nft pending_peers set; reconciler-written.'
+                  description: '/32 or /128 form added to the nft cluster_peers set (union with Node InternalIPs); reconciler-written.'
                   maxLength: 64
                 family:
                   type: string
