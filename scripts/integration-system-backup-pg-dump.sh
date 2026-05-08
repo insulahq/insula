@@ -25,7 +25,10 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 TARGET_CONFIG_ID="${TARGET_CONFIG_ID:-}"
 SOURCE_NS="${SOURCE_NS:-platform}"
-SOURCE_CLUSTER="${SOURCE_CLUSTER:-postgres}"
+# Renamed from `postgres` 2026-05-07 (CNPG cluster rename — drop
+# version baggage; system-db / mail-db). Override via SOURCE_CLUSTER
+# when testing legacy clusters.
+SOURCE_CLUSTER="${SOURCE_CLUSTER:-system-db}"
 SOURCE_DB="${SOURCE_DB:-hosting_platform}"
 
 [[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD required" >&2; exit 2; }

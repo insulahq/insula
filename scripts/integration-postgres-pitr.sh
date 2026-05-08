@@ -26,7 +26,7 @@
 #   auto-promote path actually works — they cover opposite concerns.
 #
 # SAFETY:
-#   This script intentionally deletes and recreates the platform/postgres
+#   This script intentionally deletes and recreates the platform/system-db
 #   cluster. The sentinel row is in a throwaway table created/dropped by
 #   this script. Real platform data (users, clients, deployments) lives
 #   in the same database — the snapshot is a real backup of that data,
@@ -70,7 +70,7 @@ psql_pg() {
   # stdin (-- < EOF) to sidestep all quoting issues across the
   # local-shell → ssh → remote-shell → kubectl exec → bash hops.
   local primary sql="$1"
-  primary=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.currentPrimary}' 2>/dev/null)
+  primary=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}' 2>/dev/null)
   [[ -n "$primary" ]] || { echo "psql_pg: no primary found" >&2; return 1; }
   $SSH "kubectl exec -n platform '$primary' -c postgres -i -- psql -tA -d hosting_platform" <<EOF
 $sql
@@ -84,10 +84,10 @@ TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["data"]["token"])')
 [[ -n "$TOKEN" ]] && pass "logged in" || fail "login failed"
 
-log "2) Pre-flight: confirm CNPG cluster postgres is healthy"
-PHASE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}')
-PRIMARY_BEFORE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.currentPrimary}')
-INSTANCES_BEFORE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.spec.instances}')
+log "2) Pre-flight: confirm CNPG cluster system-db is healthy"
+PHASE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}')
+PRIMARY_BEFORE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}')
+INSTANCES_BEFORE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.instances}')
 echo "  phase=$PHASE primary=$PRIMARY_BEFORE instances=$INSTANCES_BEFORE"
 [[ "$PHASE" = "Cluster in healthy state" ]] || fail "cluster not healthy: $PHASE"
 
@@ -101,7 +101,7 @@ echo "  pre-snapshot rows: $PRE_COUNT"
 # Force a checkpoint so the row is durable in the snapshot
 psql_pg "CHECKPOINT;" >/dev/null
 
-log "4) Take a Longhorn snapshot of postgres primary's PVC via system-snapshots API"
+log "4) Take a Longhorn snapshot of system-db primary's PVC via system-snapshots API"
 PRIMARY_PVC="$PRIMARY_BEFORE"
 LONGHORN_VOL=$($KUBECTL get pvc -n platform "$PRIMARY_PVC" -o jsonpath='{.spec.volumeName}')
 echo "  primary pvc=$PRIMARY_PVC volume=$LONGHORN_VOL"
@@ -136,7 +136,7 @@ HTTP=$(curl -sS -k -o /tmp/pitr.json -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST "$ADMIN_HOST/api/v1/admin/postgres-restore" \
   --max-time 30 \
-  -d "{\"clusterNamespace\":\"platform\",\"clusterName\":\"postgres\",\"snapshotName\":\"$SNAP\"}")
+  -d "{\"clusterNamespace\":\"platform\",\"clusterName\":\"system-db\",\"snapshotName\":\"$SNAP\"}")
 ELAPSED=$(( $(date +%s) - START ))
 echo "  HTTP=$HTTP in ${ELAPSED}s"
 cat /tmp/pitr.json | python3 -m json.tool 2>/dev/null | head -20 || cat /tmp/pitr.json
@@ -155,7 +155,7 @@ START_POLL=$(date +%s)
 LAST_PHASE=""
 for _ in {1..180}; do
   IN_PROGRESS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])' 2>/dev/null || echo "unreachable")
-  CLUSTER_PHASE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
+  CLUSTER_PHASE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
   if [[ "$CLUSTER_PHASE" != "$LAST_PHASE" ]]; then
     echo "  [$(( $(date +%s) - START_POLL ))s] inProgress=$IN_PROGRESS  cluster.phase=$CLUSTER_PHASE"
     LAST_PHASE="$CLUSTER_PHASE"
@@ -171,7 +171,7 @@ TOTAL_ELAPSED=$(( $(date +%s) - START ))
 ELAPSED=$TOTAL_ELAPSED  # for final log line
 
 log "8) Confirm source healthy (already verified by status poll above)"
-PHASE_AFTER=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
+PHASE_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
 [[ "$PHASE_AFTER" = "Cluster in healthy state" ]] && pass "source healthy: $PHASE_AFTER" || fail "source not healthy: $PHASE_AFTER"
 
 log "9) Round-trip assertion: post-snapshot row MUST be gone, pre-snapshot row MUST remain"
@@ -184,7 +184,7 @@ echo "  post-snapshot row count: $ROW_POST (expect 0)"
 pass "round-trip verified: only pre-snapshot data present"
 
 log "10) Cluster identity: instance count preserved"
-INSTANCES_AFTER=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.spec.instances}')
+INSTANCES_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.instances}')
 [[ "$INSTANCES_AFTER" = "$INSTANCES_BEFORE" ]] && pass "instances=$INSTANCES_AFTER (preserved)" || warn "instances changed: $INSTANCES_BEFORE → $INSTANCES_AFTER"
 
 # Discover temp clusters by label rather than by name (the HTTP
