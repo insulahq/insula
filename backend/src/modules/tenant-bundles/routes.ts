@@ -548,7 +548,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const stream = await streamZipExport({ store, handle, password: encrypt ? password : undefined, components: allArtifacts });
 
     stream.on('error', (err) => {
-      app.log.error({ err: err instanceof Error ? err.message : String(err), bundleId: id }, 'tenant-bundles: zip export stream error');
+      app.log.error({
+        bundleId: id,
+        errMessage: err instanceof Error ? err.message : String(err),
+        errName: err instanceof Error ? err.name : 'unknown',
+        errStack: err instanceof Error ? err.stack?.slice(0, 1500) : undefined,
+        errKeys: err && typeof err === 'object' ? Object.keys(err) : [],
+      }, 'tenant-bundles: zip export stream error');
     });
 
     reply.header('Content-Type', 'application/zip');
