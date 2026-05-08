@@ -71,6 +71,8 @@ function wrapper({ children, initialEntries = ['/tenant-backup'] }: { children: 
 const BUNDLE: BundleSummary = {
   id: 'bkp-aaaaaaaa-1111-2222-3333-444444444444',
   clientId: 'c1',
+  clientStatus: 'active',
+  clientName: 'Test Co',
   initiator: 'admin',
   systemTrigger: null,
   status: 'completed',
