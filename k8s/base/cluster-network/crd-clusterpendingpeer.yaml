@@ -1,0 +1,151 @@
+# ClusterPendingPeer — pre-authorise a node that's about to join the
+# cluster. Created via Settings → Cluster Networking → Pre-Enroll Node
+# (admin panel, Phase 4-5). The reconciler propagates the IP into every
+# existing node's nft `pending_peers_v{4,6}` set, so the new node can
+# reach :6443 to register before kube-API knows about it.
+#
+# Once the new node joins and its InternalIP appears in the kube-API
+# Node list, the reconciler:
+#   1. Adds the IP to cluster_peers_v{4,6} (the long-term trust set).
+#   2. Sets status.claimedAt on the matching ClusterPendingPeer CR.
+#   3. (Optionally) deletes the CR — the platform-api also runs a
+#      sweeper that cleans up claimed CRs and TTL-expired ones.
+#
+# TTL: spec.ttlSeconds (default 1800 = 30 min). After this window the
+# reconciler removes the IP from pending_peers and deletes the CR. The
+# operator can extend by editing the CR or recreating it.
+#
+# Auth/safety:
+#   - Cluster-scoped → only super_admin should create these via the
+#     admin API. RBAC enforced at the platform-api layer; CRD itself
+#     is not webhook-validated in v1alpha1.
+#   - The reconciler does NOT trust spec.role for any firewall decision —
+#     role is purely a UI hint for which `--join-as` flag to suggest in
+#     the bootstrap command shown to the operator.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterpendingpeers.networking.platform.example.test
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: cluster-network
+spec:
+  group: networking.platform.example.test
+  scope: Cluster
+  names:
+    plural: clusterpendingpeers
+    singular: clusterpendingpeer
+    kind: ClusterPendingPeer
+    shortNames:
+      - cpp
+      - pendingpeer
+    categories:
+      - hosting-platform
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - ip
+                - role
+              properties:
+                ip:
+                  type: string
+                  description: 'Bare IPv4 or IPv6 address of the node about to bootstrap. The reconciler implies /32 or /128 when adding to nft.'
+                  pattern: '^(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-fA-F:]+)$'
+                  maxLength: 64
+                hostname:
+                  type: string
+                  description: 'Operator-supplied label. Not used by the reconciler — the actual k8s node name is determined by k3s at join time.'
+                  maxLength: 253
+                role:
+                  type: string
+                  enum:
+                    - server
+                    - worker
+                  description: 'UI hint for the bootstrap.sh --join-as flag. Not used by the reconciler.'
+                ttlSeconds:
+                  type: integer
+                  description: 'Auto-cleanup TTL in seconds since creationTimestamp. Reconciler removes from nft and deletes CR after expiry.'
+                  default: 1800
+                  minimum: 60
+                  maximum: 86400
+                addedBy:
+                  type: string
+                  maxLength: 200
+            status:
+              type: object
+              properties:
+                normalizedIp:
+                  type: string
+                  description: '/32 or /128 form added to nft pending_peers set; reconciler-written.'
+                  maxLength: 64
+                family:
+                  type: string
+                  enum:
+                    - v4
+                    - v6
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: 'creationTimestamp + ttlSeconds. Reconciler enforces.'
+                claimedAt:
+                  type: string
+                  format: date-time
+                  description: 'Set by reconciler when the matching kube-API Node InternalIP appears. Once set, the CR is safe to delete.'
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                        maxLength: 64
+                      status:
+                        type: string
+                        enum:
+                          - 'True'
+                          - 'False'
+                          - Unknown
+                      reason:
+                        type: string
+                        maxLength: 128
+                      message:
+                        type: string
+                        maxLength: 1024
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+      additionalPrinterColumns:
+        - name: IP
+          type: string
+          jsonPath: .spec.ip
+        - name: Role
+          type: string
+          jsonPath: .spec.role
+        - name: TTL
+          type: integer
+          jsonPath: .spec.ttlSeconds
+          priority: 1
+        - name: Expires
+          type: string
+          jsonPath: .status.expiresAt
+        - name: Claimed
+          type: string
+          jsonPath: .status.claimedAt
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
