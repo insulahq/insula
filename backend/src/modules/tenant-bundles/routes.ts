@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { eq, desc, sql, inArray } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
@@ -66,6 +67,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     app.log.error('tenant-bundles: OIDC_ENCRYPTION_KEY is not set in production — using zero-key fallback. Secrets-component bundles encrypted today are trivially decryptable. Set OIDC_ENCRYPTION_KEY now.');
   } else if (!configuredKey) {
     app.log.warn('tenant-bundles: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
+  }
+  // Validate the key is the right shape (32 bytes hex) at registration
+  // time so a misconfigured operator gets a clear failure now instead
+  // of a confusing "key must be 32 bytes" thrown from inside an
+  // export-token request 10 minutes later.
+  if (Buffer.from(secretsKeyHex, 'hex').length !== 32) {
+    throw new Error(`tenant-bundles: OIDC_ENCRYPTION_KEY must be 32 bytes hex (got ${secretsKeyHex.length} chars / ${Buffer.from(secretsKeyHex, 'hex').length} bytes)`);
   }
 
   // ── Legacy path redirects (one cycle) ────────────────────────────
@@ -603,24 +611,25 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['TenantBundles'], summary: 'Mint a single-purpose download URL for a bundle', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { format?: string; password?: string } | null;
-    const format = body?.format;
-    if (format !== 'tar' && format !== 'zip') {
-      throw new ApiError('VALIDATION_ERROR', "format must be 'tar' or 'zip'", 400);
+    const bodySchema = z.object({
+      format: z.enum(['tar', 'zip']),
+      password: z.string().optional(),
+    });
+    const parsed = bodySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', `invalid body: ${parsed.error.issues[0]?.message ?? 'unknown'}`, 400);
     }
+    const { format } = parsed.data;
+    // Password rule: only carries through on tar. zip discards it
+    // even if supplied — keeps the token small and prevents confusion.
+    const password = format === 'tar' ? parsed.data.password : undefined;
+
     // Validate the bundle exists + is reachable before minting a
     // token. Otherwise the operator clicks Download, the URL goes
     // through, and only then the server returns 404 — confusing UX.
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
     if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId', 400);
-
-    // Password rule: only carries through on tar. zip discards it
-    // even if supplied — keep the token small and prevent confusion.
-    const password = format === 'tar' ? body?.password : undefined;
-    if (password !== undefined && password !== null && password !== '' && typeof password !== 'string') {
-      throw new ApiError('VALIDATION_ERROR', 'password must be a string', 400);
-    }
 
     const { signExportToken } = await import('./export-token.js');
     const token = signExportToken({ bundleId: id, format, password: password || undefined }, secretsKeyHex);
@@ -661,6 +670,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       // against itself. This is fine because the HMAC catches a token
       // whose `b` was tampered (any change to the payload breaks the
       // MAC). In other words: trust the .b field iff the MAC is good.
+      // Probe the (still-untrusted) payload for its `b` field so we
+      // can pass it as `expectedBundleId` to verifyExportToken — the
+      // HMAC is then computed over the full payload, so any tampering
+      // with `.b` would break the MAC. Both the malformed-shape path
+      // and the bad-MAC path map to the SAME 401/INVALID_TOKEN
+      // response (no 400 vs 401 oracle for unauthenticated callers).
       const probeOnly = (() => {
         const dot = token.indexOf('.');
         if (dot < 1) return null;
@@ -669,13 +684,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
           return payload.b ?? null;
         } catch { return null; }
       })();
-      if (!probeOnly) throw new ApiError('VALIDATION_ERROR', 'malformed export token', 400);
+      if (!probeOnly) {
+        throw new ApiError('INVALID_TOKEN', 'export token rejected', 401);
+      }
 
       const { verifyExportToken } = await import('./export-token.js');
       const v = verifyExportToken(token, probeOnly, secretsKeyHex);
       if (!v.ok) {
         const code = v.error.code === 'EXPIRED' ? 'TOKEN_EXPIRED' : 'INVALID_TOKEN';
-        throw new ApiError(code, `export token rejected: ${v.error.code}`, 401);
+        throw new ApiError(code, 'export token rejected', 401);
       }
       const { bundleId, format, password } = v.value;
 
@@ -1379,7 +1396,7 @@ function toBundleSummary(
  * Convert clients.status (or null when the row was deleted) into the
  * BundleClientStatus enum the UI consumes.
  */
-function clientRowToBundleStatus(
+export function clientRowToBundleStatus(
   status: string | null | undefined,
 ): import('@k8s-hosting/api-contracts').BundleClientStatus {
   if (!status) return 'missing';
