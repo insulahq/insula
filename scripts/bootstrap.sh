@@ -89,6 +89,18 @@ CLUSTER_NETWORK_CIDR_V6=""
 # Calico's WG endpoint is announced as the underlay (eth0) IP, not the
 # mesh IP, so scoping would block legitimate handshakes.
 CALICO_WG_PUBLIC="true"
+# Calico pod-network MTU. Empty = auto-detect at install time:
+# pick the underlay interface (mesh first via wt0/tailscale0/wg0,
+# else default-route iface) and subtract 110 bytes for Calico's
+# overhead (WireGuard 60 + VXLAN 50). Operators with mixed
+# underlays should pin --calico-mtu to the smallest expected
+# underlay − 110 to avoid frag-on-the-mesh-side pain.
+# Examples:
+#   public-only Ethernet:           1500 − 110 = 1390 (we'll round to 1380 for headroom)
+#   on a NetBird mesh (wt0=1420):   1420 − 110 = 1310
+#   on Tailscale (tailscale0=1280): 1280 − 110 = 1170
+# Floor: 1280 (IPv6 minimum). Ceiling: 8990 (jumbo-frame headroom).
+CALICO_MTU=""
 # DRY_RUN: when true, bootstrap exits cleanly after Phase 1 package
 # install. Used by scripts/test-bootstrap-os-matrix.sh to validate the
 # OS-family detection + package availability across distros in
@@ -278,6 +290,17 @@ FIREWALL TRUST (always-on set mode):
                          public-key auth makes exposure safe AND mesh
                          underlays can't carry Calico's WG endpoint
                          reliably. Set false to scope to trusted_ranges.
+  --calico-mtu <bytes>   Pin Calico's pod-network MTU. Default: auto-
+                         detect — picks the smallest of the local
+                         node's viable underlays (mesh first via
+                         wt0/tailscale0/wg0, else default-route iface)
+                         and subtracts 110 (Calico WG 60 + VXLAN 50).
+                         Override on mixed-underlay clusters where
+                         the smallest expected underlay is on a node
+                         that hasn't joined yet. Range: [1280, 8990].
+                         Examples: 1380 (1500-byte Ethernet underlay),
+                         1310 (NetBird wt0 at 1420), 1170 (Tailscale
+                         at 1280).
 
 PRE-REQUISITES (sysadmin, BEFORE running this script):
   Bootstrap does NOT install or enrol VPN/mesh CLIENTS (NetBird,
@@ -428,6 +451,7 @@ parse_args() {
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
+      --calico-mtu)      CALICO_MTU="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
       --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
       --skip-flux)       SKIP_FLUX=true; shift ;;
@@ -524,6 +548,19 @@ parse_args() {
   # Validate CALICO_WG_PUBLIC.
   if [[ "$CALICO_WG_PUBLIC" != "true" && "$CALICO_WG_PUBLIC" != "false" ]]; then
     error "Invalid --calico-wg-public: '${CALICO_WG_PUBLIC}'. Must be 'true' or 'false'."
+  fi
+
+  # Validate CALICO_MTU when provided. Empty = auto-detect at install
+  # time (see detect_calico_mtu). Non-empty must be an integer in
+  # [1280, 8990] — IPv6 minimum link MTU at the low end, jumbo-frame
+  # underlay headroom at the high end.
+  if [[ -n "$CALICO_MTU" ]]; then
+    if ! [[ "$CALICO_MTU" =~ ^[0-9]+$ ]]; then
+      error "Invalid --calico-mtu: '${CALICO_MTU}'. Must be a positive integer."
+    fi
+    if (( CALICO_MTU < 1280 || CALICO_MTU > 8990 )); then
+      error "Invalid --calico-mtu: ${CALICO_MTU}. Must be in [1280, 8990] (IPv6 min link MTU through jumbo-frame headroom)."
+    fi
   fi
 
   # CONVENIENCE: when --cluster-network-cidr{,-v6} is set explicitly,
@@ -2092,6 +2129,78 @@ install_k3s_worker() {
   error "k3s agent did not start within 60 seconds."
 }
 
+# detect_calico_mtu — pick the right Calico pod-network MTU.
+#
+# When the operator passes --calico-mtu N, that wins and we just
+# echo N (validated upstream in parse_args / install_calico). When
+# unset, we walk a priority list of mesh interfaces (wt0 = NetBird,
+# tailscale0, wg0) and use the first one that's UP. Mesh-first
+# matters because operators with both a mesh and a public NIC almost
+# always intend pod traffic to traverse the mesh, and the mesh's
+# MTU is the smaller of the two — pinning to public would fragment.
+# If no mesh iface, fall back to the default-route iface (typically
+# eth0).
+#
+# Subtracts 110 bytes for Calico's encapsulation overhead:
+#   60 bytes — Calico-managed WireGuard (UDP/51821)
+#   50 bytes — VXLAN (the IPPool encapsulation setting)
+# Even when WireGuard is enabled and replaces VXLAN as the actual
+# wire format for pod-to-pod traffic, Calico still installs a
+# wireguard.cali interface whose MTU = pod-MTU − 60. Subtracting
+# the full 110 leaves headroom for both encapsulation paths and
+# any future kernel-overhead bumps.
+#
+# Floor: 1280 (IPv6 minimum). Ceiling: 8990 (jumbo-frame headroom).
+# Echoes the chosen MTU to stdout; logs the derivation to stderr.
+detect_calico_mtu() {
+  if [[ -n "$CALICO_MTU" ]]; then
+    echo "$CALICO_MTU"
+    return 0
+  fi
+
+  local underlay_iface=""
+  local underlay_mtu=""
+  for iface in wt0 wt1 tailscale0 wg0; do
+    if ip link show "$iface" up >/dev/null 2>&1; then
+      underlay_iface=$iface
+      break
+    fi
+  done
+
+  if [[ -z "$underlay_iface" ]]; then
+    underlay_iface=$(ip -4 route show default 2>/dev/null \
+      | awk '/default/ {print $5; exit}')
+  fi
+
+  if [[ -z "$underlay_iface" ]]; then
+    warn "Could not detect underlay interface — defaulting Calico MTU to 1380 (assumes 1500-byte Ethernet)"
+    echo "1380"
+    return 0
+  fi
+
+  underlay_mtu=$(cat "/sys/class/net/${underlay_iface}/mtu" 2>/dev/null || echo "")
+  if [[ -z "$underlay_mtu" ]] || ! [[ "$underlay_mtu" =~ ^[0-9]+$ ]]; then
+    warn "Could not read MTU on ${underlay_iface} — defaulting Calico MTU to 1380"
+    echo "1380"
+    return 0
+  fi
+
+  local mtu=$((underlay_mtu - 110))
+  # Clamp to reasonable bounds. RFC 8200 sets the IPv6 minimum link
+  # MTU at 1280; going below that breaks dual-stack pods. Ceiling
+  # accommodates jumbo-frame underlays (typical 9000) − 110 = 8890.
+  if (( mtu < 1280 )); then
+    warn "Detected Calico MTU ${mtu} (underlay ${underlay_iface}=${underlay_mtu}) is below the IPv6 minimum 1280 — clamping. Pod traffic on this cluster may have issues; consider increasing the underlay MTU."
+    mtu=1280
+  fi
+  if (( mtu > 8990 )); then
+    mtu=8990
+  fi
+
+  log "Calico MTU auto-detect: underlay iface=${underlay_iface} mtu=${underlay_mtu} → calico mtu=${mtu}" >&2
+  echo "$mtu"
+}
+
 install_calico() {
   export KUBECONFIG
 
@@ -2136,9 +2245,13 @@ install_calico() {
   #   * wireguard.port: 51821 — non-standard port to avoid collisions
   #     with NetBird (51820) on the same hosts.
   #   * bgp: Disabled — no BIRD process, one less failure surface.
-  #   * mtu: 1380 — 1500 underlay − 60 WireGuard overhead − 50 VXLAN
-  #     overhead − some headroom. Auto-discovery used in plain Calico
-  #     can pick wrong values; explicit pin avoids the Felix MTU loop.
+  #   * mtu: detect_calico_mtu — picks the smallest of the local node's
+  #     viable underlays (mesh-first via wt0/tailscale0/wg0, else
+  #     default-route iface) and subtracts 110 for Calico's WG + VXLAN
+  #     overhead. Operator can override via --calico-mtu N. Pinning
+  #     here (instead of relying on Calico's auto-discovery) avoids
+  #     the Felix MTU loop and surfaces the chosen value in `bootstrap`
+  #     logs for post-mortem.
   #   * nodeAddressAutodetectionV4: when --cluster-network-cidr is set,
   #     pin to that CIDR explicitly. Otherwise inherit k3s' --node-ip
   #     choice via 'kubernetes: NodeInternalIP'. Calico's VXLAN/WG
@@ -2197,6 +2310,10 @@ install_calico() {
   # Installation CR's typhaDeployment.spec.replicas field is silently
   # dropped at admission. For small clusters where 2 typhas is excess,
   # there is no supported override.
+  local calico_mtu
+  calico_mtu=$(detect_calico_mtu)
+  log "Calico Installation will use mtu=${calico_mtu}"
+
   cat <<EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
@@ -2206,7 +2323,7 @@ spec:
   controlPlaneReplicas: 1
   calicoNetwork:
     bgp: Disabled
-    mtu: 1380
+    mtu: ${calico_mtu}
 ${autodetect_block}
     ipPools:
     - blockSize: 26
