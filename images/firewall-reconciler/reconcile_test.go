@@ -65,33 +65,41 @@ func fakeReconcilerSetup(
 
 	fa := &fakeApplier{}
 	r := &reconciler{
-		nodes:     staticLister{items: nodes},
-		ctrLister: mkLister(ctrs, ctrGVR),
-		cppLister: mkLister(cpps, cppGVR),
-		ctrClient: dynClient.Resource(ctrGVR),
-		cppClient: dynClient.Resource(cppGVR),
-		cppGrace:  defaultCppPostClaimGrace,
-		now:       func() time.Time { return now },
-		applier:   fa,
-		trigger:   make(chan struct{}, 1),
+		nodes:        staticLister{items: nodes},
+		ctrLister:    mkLister(ctrs, ctrGVR),
+		cppLister:    mkLister(cpps, cppGVR),
+		ctrClient:    dynClient.Resource(ctrGVR),
+		cppClient:    dynClient.Resource(cppGVR),
+		cppGrace:     defaultCppPostClaimGrace,
+		now:          func() time.Time { return now },
+		applier:      fa,
+		trigger:      make(chan struct{}, 1),
+		fingerprints: make(map[string]string, 2),
 	}
 	return r, fa, dynClient
 }
 
-// fakeApplier records every apply call. Replaces the byte-script
-// capture from the previous nft -f - approach. Tests assert on the
-// last nftSets passed instead of grep'ing the rendered script.
+// fakeApplier records every apply call. Tests assert on the recorded
+// peer / tenant-port set state. failNth/failErr applies to peerSet
+// calls only; tenantPortCalls is independent so error injection in
+// one loop doesn't perturb the other.
 type fakeApplier struct {
-	calls   []nftSets
-	failNth int   // 0 = never fail; N = fail on the Nth call (1-indexed)
-	failErr error // returned when failNth fires
+	calls           []peerNftSets
+	tenantPortCalls []tenantPortSets
+	failNth         int   // 0 = never fail; N = fail on the Nth peerSet call (1-indexed)
+	failErr         error // returned when failNth fires
 }
 
-func (f *fakeApplier) apply(s nftSets) error {
+func (f *fakeApplier) applyPeerSets(s peerNftSets) error {
 	f.calls = append(f.calls, s)
 	if f.failNth > 0 && len(f.calls) == f.failNth {
 		return f.failErr
 	}
+	return nil
+}
+
+func (f *fakeApplier) applyTenantPorts(s tenantPortSets) error {
+	f.tenantPortCalls = append(f.tenantPortCalls, s)
 	return nil
 }
 
