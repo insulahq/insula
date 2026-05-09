@@ -1,4 +1,8 @@
-# peer-firewall-reconciler — always-on set-mode firewall converger.
+# firewall-reconciler — always-on set-mode firewall converger.
+#
+# Consolidated from peer-firewall-reconciler (cluster_peers + trusted_ranges)
+# and worker-firewall-reconciler (tenant_ports) into one binary running
+# two independent reconcile goroutines against a shared libnftnl applier.
 #
 # As of 2026-05-09 the reconciler talks netlink directly via
 # github.com/google/nftables — NO `nft` binary in the container,
@@ -31,7 +35,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/reconciler ./...
 # Distroless static — no shell, no package manager, no `nft`. Just the
 # Go binary + ca-certs (for in-cluster apiserver TLS via service VIP).
 FROM gcr.io/distroless/static:latest
-COPY --from=build /out/reconciler /usr/local/bin/peer-firewall-reconciler
+COPY --from=build /out/reconciler /usr/local/bin/firewall-reconciler
 # Runs as root (UID 0) inside the container. DaemonSet drops all caps
 # except NET_ADMIN (the only one libnftnl needs for set writes via
 # netlink). We tried distroless:nonroot first but the netlink socket
@@ -41,4 +45,4 @@ COPY --from=build /out/reconciler /usr/local/bin/peer-firewall-reconciler
 # locked-down (drop:ALL, no privileged, readOnlyRootFilesystem,
 # RuntimeDefault seccomp) container is acceptable for a binary that
 # only uses NET_ADMIN.
-ENTRYPOINT ["/usr/local/bin/peer-firewall-reconciler"]
+ENTRYPOINT ["/usr/local/bin/firewall-reconciler"]

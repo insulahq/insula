@@ -39,29 +39,57 @@ type nodeLister interface {
 // cheaper than re-querying the kernel for the live state every tick,
 // and the netlink batch is idempotent so a duplicate apply is harmless
 // if the cache misses.
-func (r *reconciler) applyIfChanged(s nftSets) (changed bool, err error) {
+// fingerprintKey constants identify cache slots in r.fingerprints —
+// one per independent reconcile loop, so each loop's last-applied
+// fingerprint is isolated from the other.
+const (
+	fpPeers       = "peers"
+	fpTenantPorts = "tenant_ports"
+)
+
+func (r *reconciler) applyPeersIfChanged(s peerNftSets) (changed bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fingerprint := setFingerprint(s)
-	if fingerprint == r.lastFingerprint {
+	fingerprint := peerFingerprint(s)
+	if fingerprint == r.fingerprints[fpPeers] {
 		return false, nil
 	}
-	if err := r.applier.apply(s); err != nil {
+	if err := r.applier.applyPeerSets(s); err != nil {
 		return false, err
 	}
-	r.lastFingerprint = fingerprint
+	r.fingerprints[fpPeers] = fingerprint
 	return true, nil
 }
 
-// setFingerprint returns a stable string representation of the four
-// member slices. Used as the no-op short-circuit cache key. Order is
-// significant; callers MUST hand sorted slices.
-func setFingerprint(s nftSets) string {
+func (r *reconciler) applyTenantPortsIfChanged(s tenantPortSets) (changed bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fingerprint := tenantPortsFingerprint(s)
+	if fingerprint == r.fingerprints[fpTenantPorts] {
+		return false, nil
+	}
+	if err := r.applier.applyTenantPorts(s); err != nil {
+		return false, err
+	}
+	r.fingerprints[fpTenantPorts] = fingerprint
+	return true, nil
+}
+
+// peerFingerprint returns a stable string representation of the four
+// peer/trusted member slices. Used as the no-op short-circuit cache
+// key. Order is significant; callers MUST hand sorted slices.
+func peerFingerprint(s peerNftSets) string {
 	const sep = "|"
 	return strings.Join(s.PeersV4, ",") + sep +
 		strings.Join(s.PeersV6, ",") + sep +
 		strings.Join(s.TrustedV4, ",") + sep +
 		strings.Join(s.TrustedV6, ",")
+}
+
+// tenantPortsFingerprint mirrors peerFingerprint for the two inet_service
+// sets. Elements already canonicalised by the tenant-ports reconcile loop.
+func tenantPortsFingerprint(s tenantPortSets) string {
+	return strings.Join(s.TCP, ",") + "|" + strings.Join(s.UDP, ",")
 }
 
 // reconcileOnce gathers all three sources, computes the four nft
@@ -202,13 +230,13 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 
 	// 4. Apply via netlink (cached diff). No more `nft -f -` exec —
 	// the applier writes directly to the kernel netfilter via libnftnl.
-	desired := nftSets{
+	desired := peerNftSets{
 		PeersV4:   allPeerV4,
 		PeersV6:   allPeerV6,
 		TrustedV4: trustedV4,
 		TrustedV6: trustedV6,
 	}
-	scriptChanged, err := r.applyIfChanged(desired)
+	scriptChanged, err := r.applyPeersIfChanged(desired)
 	if err != nil {
 		return fmt.Errorf("apply nft: %w", err)
 	}
