@@ -237,7 +237,7 @@ FIREWALL TRUST (always-on set mode):
   Cluster firewall is always set-mode: cluster-internal control-plane
   ports (6443/8443/10250/5473/2379-2380) gate via the cluster_peers_v{4,6}
   nft sets, converged from kube-API node InternalIPs by the
-  peer-firewall-reconciler DaemonSet. Operator-trusted source ranges
+  firewall-reconciler DaemonSet. Operator-trusted source ranges
   (workstation IPs, private LANs, monitoring scrapers) gate via the
   trusted_ranges_v{4,6} nft sets. Day-2 management of trusted ranges
   is via the admin panel under Settings → Cluster Networking, which
@@ -955,13 +955,13 @@ configure_firewall() {
   #     via Settings → Cluster Networking; bootstrap seeds from
   #     --allow-source.
   local cluster_allow="    # Cluster peers (control-plane ports only) — converged from kube-API
-    # by peer-firewall-reconciler. Helpers /usr/local/bin/peer-firewall-
+    # by firewall-reconciler. Helpers /usr/local/bin/peer-firewall-
     # {add,remove} are break-glass for the bootstrap-time window.
     ip  saddr @cluster_peers_v4 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
     ip6 saddr @cluster_peers_v6 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
 
     # Trusted ranges (full TCP/UDP) — converged from ClusterTrustedRange
-    # CRDs by peer-firewall-reconciler. Bootstrap-time entries from
+    # CRDs by firewall-reconciler. Bootstrap-time entries from
     # --allow-source flag are seeded directly into the nft set.
     ip  saddr @trusted_ranges_v4 ip protocol tcp accept
     ip  saddr @trusted_ranges_v4 ip protocol udp accept
@@ -985,9 +985,9 @@ configure_firewall() {
   # rules referencing an empty set are no-ops, so single-node clusters
   # and freshly-bootstrapped first servers work without special-casing.
   #
-  #   cluster_peers_v{4,6}   — converged by peer-firewall-reconciler from
+  #   cluster_peers_v{4,6}   — converged by firewall-reconciler from
   #     kube-API node InternalIPs.
-  #   trusted_ranges_v{4,6}  — converged by peer-firewall-reconciler from
+  #   trusted_ranges_v{4,6}  — converged by firewall-reconciler from
   #     ClusterTrustedRange CRDs; bootstrap also seeds from --allow-source.
   #   tenant_ports_{tcp,udp} — runtime-managed by worker-firewall-
   #     reconciler from Pod hostPort + platform.io/firewall-{tcp,udp}-
@@ -1075,7 +1075,7 @@ ${calico_wg_rule}
     tcp dport 4190 accept    # ManageSieve
 
     # Runtime-managed tenant host ports — populated by
-    # worker-firewall-reconciler DaemonSet at runtime as Pods land
+    # firewall-reconciler DaemonSet at runtime as Pods land
     # with hostPort or the platform.io/firewall-{tcp,udp}-ports
     # annotations. Bootstrap leaves the sets empty; the reconciler
     # is the only writer. Same chain on server + worker nodes (server-
@@ -1194,7 +1194,7 @@ install_peer_firewall_helpers() {
 # peer-firewall-add — Break-glass: add a cluster peer to the local nft
 # set. The admin panel (Settings → Cluster Networking → Pre-Enroll Node)
 # is the preferred path. Use this helper only when the platform UI is
-# unreachable. The peer-firewall-reconciler DaemonSet converges
+# unreachable. The firewall-reconciler DaemonSet converges
 # membership from kube-API once the new node has registered.
 set -euo pipefail
 [[ $# -eq 1 ]] || { echo "usage: $0 <ip>" >&2; exit 2; }
@@ -1259,7 +1259,7 @@ HELPER
 seed_cluster_trusted_range_crs() {
   # Apply ClusterTrustedRange CRs from the operator's --allow-source
   # entries (and the auto-detected mesh CIDR) so the
-  # peer-firewall-reconciler converges them into trusted_ranges_v{4,6}
+  # firewall-reconciler converges them into trusted_ranges_v{4,6}
   # nft sets across all nodes — and so they survive reconciler ticks
   # (the reconciler's atomic flush+add would otherwise wipe the
   # bootstrap-time-only nft seed on first reconcile).

@@ -36,13 +36,13 @@ spec:
       annotations:
         platform.example.test/deploy-rev: "0.0.0-e42980e"
 ---
-# peer-firewall-reconciler — :latest-tagged DaemonSet that needs
+# firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
 # (imagePullPolicy: Always on the container).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: peer-firewall-reconciler
+  name: firewall-reconciler
   namespace: platform-system
 spec:
   template:
