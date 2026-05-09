@@ -98,50 +98,52 @@ func (r *realApplier) apply(s nftSets) error {
 		return errors.New("inet filter table not found — bootstrap.sh nftables config not loaded")
 	}
 
-	// Ensure each of the 4 sets exists. Idempotent: AddSet on an
-	// existing set is a no-op when the spec matches.
-	if err := r.ensureSet(conn, table, setPeersV4, false); err != nil {
-		return err
-	}
-	if err := r.ensureSet(conn, table, setPeersV6, true); err != nil {
-		return err
-	}
-	if err := r.ensureSet(conn, table, setTrustedV4, false); err != nil {
-		return err
-	}
-	if err := r.ensureSet(conn, table, setTrustedV6, true); err != nil {
-		return err
+	// Phase 1: ensure each of the 4 sets exists. Pre-commit any new
+	// sets BEFORE referencing them by *Set pointer in FlushSet /
+	// SetAddElements — the library's GetSetByName reads live kernel
+	// state, not the batched AddSet, so a freshly-AddSet'd set is
+	// invisible until conn.Flush() is called.
+	createdAny := false
+	created := func(c bool) { createdAny = createdAny || c }
+	pV4, c1, err := r.ensureSet(conn, table, setPeersV4, false)
+	if err != nil { return err }
+	created(c1)
+	pV6, c2, err := r.ensureSet(conn, table, setPeersV6, true)
+	if err != nil { return err }
+	created(c2)
+	tV4, c3, err := r.ensureSet(conn, table, setTrustedV4, false)
+	if err != nil { return err }
+	created(c3)
+	tV6, c4, err := r.ensureSet(conn, table, setTrustedV6, true)
+	if err != nil { return err }
+	created(c4)
+	if createdAny {
+		if err := conn.Flush(); err != nil {
+			return fmt.Errorf("commit set creations: %w", err)
+		}
 	}
 
-	// Flush+add per set. SetAddElements with prior FlushSet replaces
-	// the membership atomically within the batch.
-	if err := r.replaceMembers(conn, table, setPeersV4, ipsToElements(s.PeersV4, false)); err != nil {
-		return fmt.Errorf("%s: %w", setPeersV4, err)
-	}
-	if err := r.replaceMembers(conn, table, setPeersV6, ipsToElements(s.PeersV6, true)); err != nil {
-		return fmt.Errorf("%s: %w", setPeersV6, err)
-	}
-	if err := r.replaceMembers(conn, table, setTrustedV4, cidrsToElements(s.TrustedV4, false)); err != nil {
-		return fmt.Errorf("%s: %w", setTrustedV4, err)
-	}
-	if err := r.replaceMembers(conn, table, setTrustedV6, cidrsToElements(s.TrustedV6, true)); err != nil {
-		return fmt.Errorf("%s: %w", setTrustedV6, err)
-	}
+	// Phase 2: flush+add per set in a single batch. The *Set pointers
+	// from Phase 1 are valid handles into the kernel state.
+	r.flushAndAddElements(conn, pV4, ipsToElements(s.PeersV4, false))
+	r.flushAndAddElements(conn, pV6, ipsToElements(s.PeersV6, true))
+	r.flushAndAddElements(conn, tV4, cidrsToElements(s.TrustedV4, false))
+	r.flushAndAddElements(conn, tV6, cidrsToElements(s.TrustedV6, true))
 
 	if err := conn.Flush(); err != nil {
-		return fmt.Errorf("commit batch: %w", err)
+		return fmt.Errorf("commit member updates: %w", err)
 	}
 	return nil
 }
 
-// ensureSet creates the set if absent. The kernel data type for both
-// the v4 and v6 sets is the appropriate ipv?_addr; flags=interval
-// matches the bootstrap.sh declaration so range-style elements (CIDRs)
-// are valid members.
-func (r *realApplier) ensureSet(conn *nftables.Conn, table *nftables.Table, name string, isV6 bool) error {
-	existing, err := conn.GetSetByName(table, name)
-	if err == nil && existing != nil {
-		return nil
+// ensureSet returns the *Set handle for `name`, creating + committing
+// it if absent. The bool return indicates whether a new set was added
+// to the batch (the caller flushes once after Phase 1 if any was
+// created; the kernel has to know about the set before Phase 2's
+// element writes can reference it).
+func (r *realApplier) ensureSet(conn *nftables.Conn, table *nftables.Table, name string, isV6 bool) (*nftables.Set, bool, error) {
+	if existing, err := conn.GetSetByName(table, name); err == nil && existing != nil {
+		return existing, false, nil
 	}
 	keyType := nftables.TypeIPAddr
 	if isV6 {
@@ -154,27 +156,19 @@ func (r *realApplier) ensureSet(conn *nftables.Conn, table *nftables.Table, name
 		Interval: true,
 	}
 	if err := conn.AddSet(set, nil); err != nil {
-		return fmt.Errorf("add set %s: %w", name, err)
+		return nil, false, fmt.Errorf("add set %s: %w", name, err)
 	}
-	return nil
+	return set, true, nil
 }
 
-// replaceMembers flushes the set then re-adds the supplied elements.
-// Both ops are queued in the connection's batch and applied atomically
-// on conn.Flush() at the end of apply().
-func (r *realApplier) replaceMembers(conn *nftables.Conn, table *nftables.Table, name string, elems []nftables.SetElement) error {
-	set, err := conn.GetSetByName(table, name)
-	if err != nil {
-		return fmt.Errorf("lookup %s: %w", name, err)
-	}
+// flushAndAddElements queues a flush + element-add for the given set.
+// Errors from SetAddElements are non-fatal at the queue stage —
+// conn.Flush() returns the actual kernel error.
+func (r *realApplier) flushAndAddElements(conn *nftables.Conn, set *nftables.Set, elems []nftables.SetElement) {
 	conn.FlushSet(set)
-	if len(elems) == 0 {
-		return nil
+	if len(elems) > 0 {
+		_ = conn.SetAddElements(set, elems)
 	}
-	if err := conn.SetAddElements(set, elems); err != nil {
-		return fmt.Errorf("add elements to %s: %w", name, err)
-	}
-	return nil
 }
 
 // ipsToElements converts bare IPs (e.g. "10.0.0.5") to nftables
