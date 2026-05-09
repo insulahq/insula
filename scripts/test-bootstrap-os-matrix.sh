@@ -148,7 +148,7 @@ echo "════════════════════════�
 echo "  reconciler image: no userspace nft binary (regression guard)"
 echo "════════════════════════════════════════════════"
 # Contract (effective 2026-05-09 after the libnftnl rewrite):
-# the peer-firewall-reconciler image MUST NOT contain any userspace
+# the firewall-reconciler image MUST NOT contain any userspace
 # `nft` binary. The Go reconciler talks netlink directly via
 # github.com/google/nftables — no fork+exec, no nft serialisation,
 # no version skew with the host. Reintroducing `nft` in the image
@@ -164,7 +164,7 @@ echo "════════════════════════�
 # fails if anything matching "nft" or "nftables" is found in the
 # usual binary search paths.
 
-DOCKERFILE=$REPO/images/peer-firewall-reconciler/Dockerfile
+DOCKERFILE=$REPO/images/firewall-reconciler/Dockerfile
 echo "  Dockerfile path: $DOCKERFILE"
 if grep -qE "(apt-get|apk add|dnf).*\bnftables\b" "$DOCKERFILE"; then
   echo "  ✗ Dockerfile installs the nftables package — REGRESSION; the reconciler is supposed to use libnftnl netlink directly with no userspace nft binary"
@@ -176,7 +176,7 @@ fi
 
 # Pull + inspect the locally-tagged image if it exists. CI builds the
 # image just before this script in its workflow; locally the operator
-# can prime the image with `docker build images/peer-firewall-reconciler`.
+# can prime the image with `docker build images/firewall-reconciler`.
 LOCAL_IMG="${PFWR_IMAGE:-pfwr-libnftnl:local}"
 if docker image inspect "$LOCAL_IMG" >/dev/null 2>&1; then
   echo "  inspecting image: $LOCAL_IMG"
@@ -197,7 +197,7 @@ if docker image inspect "$LOCAL_IMG" >/dev/null 2>&1; then
   fi
 else
   echo "  ⊘ $LOCAL_IMG not built locally — skipping image FS scan"
-  echo "    To enable: docker build -t $LOCAL_IMG images/peer-firewall-reconciler/"
+  echo "    To enable: docker build -t $LOCAL_IMG images/firewall-reconciler/"
 fi
 
 echo
