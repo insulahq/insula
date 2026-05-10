@@ -35,21 +35,26 @@
   "overrides": {
     "wordpress": { "path": "/wp-login.php" },
     "rocketchat": {
-      "kind": "skip",
-      "$comment": "DECISION NEEDED: rocketchat boots and connects to MongoDB (URL-encoded password works) but hits two issues that need bigger fixes: (1) needs MongoDB --replSet rs0 + rs.initiate() for change-streams (catalog mongo component runs standalone), (2) Node.js OOM at 500MB — needs 2-4Gi memory (manifest minimum=512Mi, but rocketchat:8 v6+ needs more). Verify on real staging with appropriate resources + replica-set mongo, OR add MongoDB replSet support to the catalog."
+      "path": "/api/info",
+      "expect_code_max": 299,
+      "timeout_seconds": 900,
+      "$comment": "Mongo runs --replSet rs0 with auto rs.initiate. NODE_OPTIONS caps heap below 1Gi container limit. Boot is slow (rocketchat:8 large bundle)."
     },
     "nextcloud": { "path": "/login" },
     "moodle-bitnami": {
-      "kind": "skip",
-      "$comment": "DECISION NEEDED: bitnami/moodle retired late 2025; the catalog manifest still references bitnami:5.0 which 404s. Replacement options: (a) build a custom Dockerfile from moodlehq/moodle-php-apache:8.1 + moodle source download + config.php template, (b) drop the bitnami flavor and add a moodlehq-based variant, (c) skip from catalog. Skip until decided."
+      "path": "/login/index.php",
+      "timeout_seconds": 1200,
+      "$comment": "erseco/alpine-moodle on first boot: extract /var/www/html, run admin/cli/install.php (db schema + initial data + admin user). Slow on cold start; /login/index.php is the post-install target."
     },
     "prestashop": { "path": "/install/" },
     "matomo": { "path": "/index.php" },
     "bookstack": { "path": "/login", "timeout_seconds": 900, "$comment": "Bookstack runs APP_KEY:generate + db:migrate at first boot — slow on starter plan" },
     "n8n": { "path": "/setup", "$comment": "n8n redirects / to /setup on first run" },
     "discourse": {
-      "kind": "skip",
-      "$comment": "DECISION NEEDED: bitnami/discourse retired late 2025; discourse/discourse:latest is the discourse_docker base meant for the launcher tool, doesn't run standalone. Building a runnable Dockerfile from discourse_docker source is 2-4h of work. Alternatives: (a) build catalog-side Dockerfile, (b) drop from catalog. Skip until decided."
+      "path": "/srv/status",
+      "expect_code_max": 299,
+      "timeout_seconds": 1500,
+      "$comment": "bitnamilegacy/discourse:3.5.0. First-boot bootstrap is slow (postgres init + db schema + Sidekiq + Ruby workers); /srv/status returns 200 once Passenger is up."
     },
     "plausible": { "path": "/login" },
     "immich": {
@@ -64,8 +69,10 @@
     "directus": { "path": "/admin" },
     "paperless-ngx": { "path": "/accounts/login/" },
     "invoiceninja": {
-      "kind": "skip",
-      "$comment": "DECISION NEEDED: invoiceninja-debian:5 is FPM-only (port 9000) — no nginx bundled. App boots correctly (db seed, queue workers, scheduler all up) but doesn't serve HTTP on port 80. Needs an nginx sidecar component proxying to FPM:9000 (upstream's docker-compose example), OR a different image. Manifest's mount paths + IN_USER_EMAIL/IN_PASSWORD env are correct as-is and will be reused when nginx is added."
+      "path": "/setup",
+      "ingress_component": "nginx",
+      "timeout_seconds": 900,
+      "$comment": "Multi-component: invoiceninja(FPM:9000), nginx(80, ingress), mariadb. Probe nginx; first-boot seeds db (BanksSeeder, etc) — slow."
     },
     "dolibarr": { "path": "/install/" },
     "coturn": {
