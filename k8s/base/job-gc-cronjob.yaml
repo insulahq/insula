@@ -118,7 +118,11 @@ spec:
               args:
                 - |
                   set -euo pipefail
-                  CUTOFF=$(date -u -d "${JOB_GC_MAX_AGE_DAYS} days ago" +%s)
+                  # POSIX arithmetic — alpine ships busybox `date` which
+                  # does not support GNU's `-d "N days ago"`. Using
+                  # epoch + N*86400 works everywhere.
+                  NOW=$(date -u +%s)
+                  CUTOFF=$((NOW - JOB_GC_MAX_AGE_DAYS * 86400))
                   DRY="${JOB_GC_DRY_RUN:-false}"
                   EXCLUDE="${JOB_GC_EXCLUDE_NS_REGEX:-^$}"
                   echo "[job-gc] cutoff=${CUTOFF} (${JOB_GC_MAX_AGE_DAYS}d) dryRun=${DRY} excludeNs=${EXCLUDE}"
