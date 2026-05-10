@@ -45,7 +45,13 @@ FROM node:22-alpine
 # /api/v1/internal/bundles/.../restic-stream is piped straight into
 # `restic backup --stdin` running on this platform-api pod. Hard
 # dependency for any incremental tenant bundle.
-RUN apk add --no-cache openssl age postgresql18-client restic
+#
+# openssh-client is required because restic's `sftp:` backend invokes
+# `ssh` (not its own SFTP client) to reach the storage box. Without
+# this, SFTP-target backups fail with "exec: ssh: executable not
+# found in $PATH". S3-target backups don't need it. Caught from
+# staging 2026-05-10.
+RUN apk add --no-cache openssl age postgresql18-client restic openssh-client
 
 WORKDIR /app
 
