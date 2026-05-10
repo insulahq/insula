@@ -43,6 +43,8 @@
 import { hkdfSync, randomBytes } from 'node:crypto';
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
+import { Writable as WritableCtor } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { writeFile, unlink, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -504,32 +506,62 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
 
     const child = spawnRestic(cliArgs, env);
 
-    // Pipe the source stream into restic stdin. Critical fix: the
-    // child stdin can emit 'error' (EPIPE) when restic exits before
-    // the input stream finishes. Without an error listener Node
-    // throws an unhandled 'error' event and crashes the whole
-    // platform-api pod. Caught from staging: 2026-05-10 PUT crash.
-    const stdinPromise = new Promise<void>((resolveWrite, rejectWrite) => {
-      args.stdin.on('error', rejectWrite);
-      args.stdin.on('end', resolveWrite);
-      // Listen for child-stdin errors (EPIPE if restic dies early).
-      // We don't reject here — the exit code from restic is the real
-      // signal; an EPIPE during shutdown is benign.
-      child.stdin.on('error', (err) => {
-        // Best-effort log; the exitPromise will surface the underlying
-        // restic failure with stderr.
-        // eslint-disable-next-line no-console
-        console.warn(`[restic-driver] child stdin error (likely EPIPE; restic exited early): ${(err as Error).message}`);
-      });
-      args.stdin.on('data', (chunk: Buffer | string) => {
-        try {
-          // child.stdin.write returns false on backpressure; either
-          // way an EPIPE here lands in the catch and rejects.
-          child.stdin.write(chunk as never);
-        } catch (err) {
-          rejectWrite(err);
+    // Phase 1 piece #7 OOM fix: pipe with proper backpressure.
+    // The previous data-event listener didn't respect child.stdin's
+    // returned-false from write() — chunks piled up in the writable
+    // buffer faster than restic could consume them, growing memory
+    // until pod OOM-killed (exit 137 on staging 2026-05-10).
+    //
+    // node:stream/promises pipeline() handles backpressure end-to-end:
+    // the source pauses when the destination signals it's full,
+    // resumes on 'drain'. Memory stays bounded to the highWaterMark
+    // (default 16 KiB).
+    //
+    // EPIPE: pipeline() forwards errors from either side; we wrap
+    // restic's stdin in a Writable that swallows post-close EPIPE
+    // (benign — restic's exit code is the real signal).
+    const ericChildStdin = child.stdin as Writable;
+    const safeRestStdin = new WritableCtor({
+      highWaterMark: 64 * 1024,
+      write(chunk, _enc, cb) {
+        if (!ericChildStdin.writable) {
+          // restic exited; drop the chunk. The exit watcher will
+          // surface the underlying restic failure shortly.
+          cb();
+          return;
         }
-      });
+        ericChildStdin.write(chunk, (err) => {
+          if (err && (err as NodeJS.ErrnoException).code === 'EPIPE') {
+            // benign — restic closed its end. Don't propagate.
+            cb();
+          } else {
+            cb(err ?? undefined);
+          }
+        });
+      },
+      final(cb) {
+        try {
+          ericChildStdin.end();
+        } catch {
+          /* ignore */
+        }
+        cb();
+      },
+    });
+    // Belt-and-braces: a direct EPIPE on child.stdin (e.g. between
+    // the readable check and the write callback) still needs a
+    // listener or Node throws unhandled.
+    ericChildStdin.on('error', (err) => {
+      if ((err as NodeJS.ErrnoException).code !== 'EPIPE') {
+        // eslint-disable-next-line no-console
+        console.warn(`[restic-driver] child stdin error: ${(err as Error).message}`);
+      }
+    });
+    const stdinPromise: Promise<void> = pipeline(args.stdin, safeRestStdin).catch((err) => {
+      // EPIPE through pipeline: treat as benign so the exit watcher
+      // can surface restic's true exit code/stderr instead.
+      if ((err as NodeJS.ErrnoException).code === 'EPIPE') return;
+      throw err;
     });
 
     let stdoutBuf = '';
