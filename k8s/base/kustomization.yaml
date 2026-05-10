@@ -59,6 +59,11 @@ resources:
   - reloader/
   - update-checker-rbac.yaml
   - update-checker-cronjob.yaml
+  # Daily cluster-wide sweep of completed Jobs older than 7d.
+  # Defensive layer behind ttlSecondsAfterFinished (enforced at create
+  # time by ci-job-ttl-check); catches Jobs we don't control directly
+  # — Longhorn snapshot jobs, third-party operators, ad-hoc kubectl.
+  - job-gc-cronjob.yaml
   # CronJob that mirrors live Node ExternalIPs into ingress-nginx
   # Service.spec.externalIPs every 5 min. Without it the Service has
   # no externalIPs and tenant traffic only works against whichever IP

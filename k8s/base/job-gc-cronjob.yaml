@@ -1,0 +1,177 @@
+# Job garbage collector — daily sweep that deletes completed Jobs older
+# than ${JOB_GC_MAX_AGE_DAYS} days, cluster-wide. Defensive layer behind
+# `ttlSecondsAfterFinished` (enforced at create time by ci-job-ttl-check):
+# this only catches Jobs we don't control directly — Longhorn snapshot
+# jobs, third-party operator jobs, ad-hoc test jobs that operators run
+# by hand. Day-to-day platform Jobs already self-expire via their TTL
+# and never see this sweeper.
+#
+# Resource cost: ~1 pod for ~10 seconds per day. The CronJob's own
+# successfulJobsHistoryLimit + ttlSecondsAfterFinished mean it leaves
+# zero leftovers between runs.
+#
+# RBAC: list jobs cluster-wide (read), delete jobs cluster-wide. Nothing
+# else. Pods owned by deleted Jobs are removed by their owner reference.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: job-gc
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: cluster-maintenance
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: job-gc
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: job-gc
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: job-gc
+subjects:
+  - kind: ServiceAccount
+    name: job-gc
+    namespace: platform
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: job-gc
+  namespace: platform
+  labels:
+    app: job-gc
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: cluster-maintenance
+spec:
+  # 03:13 UTC — after etcd-snapshot (02:00) and pg-dump (02:30) and
+  # cluster-state (03:00) so the four don't share a CPU spike window.
+  schedule: "13 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      # The cleaner cleans itself. 1 h is plenty for the operator to
+      # `kubectl logs` if a run looks suspicious.
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: job-gc
+            app.kubernetes.io/part-of: hosting-platform
+        spec:
+          serviceAccountName: job-gc
+          restartPolicy: OnFailure
+          # No PVCs, no secrets, no network policy bypass required.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534    # nobody
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: gc
+              image: alpine/k8s:1.33.3
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: JOB_GC_MAX_AGE_DAYS
+                  value: "7"
+                - name: JOB_GC_DRY_RUN
+                  # Flip to "true" via an overlay patch to preview deletions
+                  # without applying them. Default is enforce. NOT a security
+                  # boundary — anyone with patch on this CronJob can toggle it;
+                  # the real boundary is RBAC on the CronJob/ServiceAccount.
+                  value: "false"
+                - name: JOB_GC_EXCLUDE_NS_REGEX
+                  # Defense-in-depth: never sweep core platform namespaces
+                  # even if they contain stale Jobs. kube-system / kube-public
+                  # are operator-owned; their owning controllers should manage
+                  # retention themselves.
+                  value: "^(kube-system|kube-public)$"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              command: [/bin/bash, -c]
+              args:
+                - |
+                  set -euo pipefail
+                  CUTOFF=$(date -u -d "${JOB_GC_MAX_AGE_DAYS} days ago" +%s)
+                  DRY="${JOB_GC_DRY_RUN:-false}"
+                  EXCLUDE="${JOB_GC_EXCLUDE_NS_REGEX:-^$}"
+                  echo "[job-gc] cutoff=${CUTOFF} (${JOB_GC_MAX_AGE_DAYS}d) dryRun=${DRY} excludeNs=${EXCLUDE}"
+                  # Select Jobs that are completed OR failed AND whose
+                  # terminal condition is older than the cutoff. A Job
+                  # without a completionTime but with a failed condition
+                  # in lastTransitionTime is also handled. Namespaces
+                  # matching JOB_GC_EXCLUDE_NS_REGEX are skipped.
+                  TARGETS=$(
+                    kubectl get jobs -A -o json |
+                    jq -r --argjson cutoff "$CUTOFF" --arg exclude "$EXCLUDE" '
+                      .items[]
+                      | . as $j
+                      | select(($j.metadata.namespace | test($exclude)) | not)
+                      | (
+                          ($j.status.completionTime // null) as $done
+                          | ($j.status.conditions // []
+                             | map(select(.type=="Failed" and .status=="True"))
+                             | .[0].lastTransitionTime // null) as $failed
+                          | ($done // $failed) as $t
+                          | select($t != null)
+                          | select(($t | fromdateiso8601) < $cutoff)
+                          | "\($j.metadata.namespace)\t\($j.metadata.name)\t\($t)"
+                        )
+                    '
+                  )
+                  if [ -z "$TARGETS" ]; then
+                    echo "[job-gc] no completed Jobs older than ${JOB_GC_MAX_AGE_DAYS}d"
+                  else
+                    COUNT=0
+                    # Process substitution (not pipe) so $COUNT survives — a
+                    # pipeline puts the while in a subshell and increments
+                    # are discarded.
+                    while IFS=$'\t' read -r ns name done_at; do
+                      [ -z "$ns" ] && continue
+                      if [ "$DRY" = "true" ]; then
+                        echo "[job-gc] would delete: ${ns}/${name} (terminal at ${done_at})"
+                      else
+                        echo "[job-gc] deleting: ${ns}/${name} (terminal at ${done_at})"
+                        # --wait=false so a stuck finalizer doesn't pin
+                        # the GC pod; the apiserver schedules the delete.
+                        kubectl -n "$ns" delete job "$name" --wait=false || \
+                          echo "[job-gc] warn: delete failed for ${ns}/${name}"
+                      fi
+                      COUNT=$((COUNT+1))
+                    done < <(printf '%s\n' "$TARGETS")
+                    echo "[job-gc] processed ${COUNT} Jobs"
+                  fi
+                  echo "[job-gc] done"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
