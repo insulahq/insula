@@ -41,8 +41,14 @@ export function parseJsonField<T>(value: unknown): T | null {
 }
 
 export function generateSecurePassword(length: number): string {
-  // Avoid $, `, \, ', " — these get mangled by shell/env var expansion in K8s
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^&*_-+=';
+  // Charset chosen to be safe across every embedding:
+  //  - URL components (no `@:/?&=#`)
+  //  - Shell variables / heredocs (no `$ \` ' "`)
+  //  - YAML/JSON values (no `& : { } [ ]`)
+  //  - bitnami-style discourse.conf and similar templates (no `# &`)
+  // 64 chars from [a-zA-Z0-9_-] gives ~6 bits/char → 64-char password = ~384
+  // bits of entropy (well above the 256-bit NIST recommendation).
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
   const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, b => chars[b % chars.length]).join('');
