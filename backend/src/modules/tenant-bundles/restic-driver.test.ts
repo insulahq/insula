@@ -246,8 +246,15 @@ describe('runResticBackup', () => {
       stdin,
     });
 
-    expect(calls).toHaveLength(1);
-    const c = calls[0]!;
+    // Phase 1 piece #7 staging fix: runResticBackup now calls
+    // ensureResticRepoInitialised first → 2 spawns: 1 init + 1 backup.
+    // Filter for the backup call to assert its arg shape.
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const initCall = calls.find((x) => x.args.includes('init'));
+    const c = calls.find((x) => x.args.includes('backup'));
+    expect(initCall, 'expected an init call before backup').toBeTruthy();
+    expect(c, 'expected a backup call').toBeTruthy();
+    if (!c) throw new Error('unreachable');
     expect(c.bin).toBe('restic');
     expect(c.args).toContain('backup');
     expect(c.args).toContain('--stdin');
