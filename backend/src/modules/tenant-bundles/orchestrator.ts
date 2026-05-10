@@ -228,14 +228,16 @@ export async function runBundle(
           throw new Error('files component requires platformApiUrl on OrchestratorDeps (Phase 3 HTTP-upload pattern)');
         }
         const pvcName = await resolveTenantPvc(deps.db, input.clientId);
+        // Phase 1 (ADR-036): captureFilesComponent no longer needs store/handle —
+        // platform-api owns the restic write side via the internal restic-stream
+        // endpoint. Phase 1 piece #6 (orchestrator wiring) will add pre-dump,
+        // tenant_restic_repo_state persistence, and meta.json v3 here.
         filesResult = await captureFilesComponent({
           k8s: deps.k8s,
           namespace,
           pvcName,
           clientId: input.clientId,
           backupId: bundleId,
-          store: deps.store,
-          handle,
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
         });
