@@ -489,14 +489,42 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
       cliArgs.push('--tag', tag);
     }
 
+    // Phase 1 piece #7 staging fix: ensure repo is initialised before
+    // first backup. `restic backup` exits non-zero if the repo doesn't
+    // exist; that exit kills the spawned subprocess; the next stdin
+    // write then emits EPIPE on a Socket with no listener and Node
+    // crashes the entire platform-api process. Initialising up-front
+    // is idempotent (restic init returns "config file already exists"
+    // when present) and quick (~5s on first call, instant after).
+    await ensureResticRepoInitialised({
+      target: args.target,
+      passwordHex: args.passwordHex,
+      repoUri,
+    });
+
     const child = spawnRestic(cliArgs, env);
 
-    // Pipe the source stream into restic stdin.
+    // Pipe the source stream into restic stdin. Critical fix: the
+    // child stdin can emit 'error' (EPIPE) when restic exits before
+    // the input stream finishes. Without an error listener Node
+    // throws an unhandled 'error' event and crashes the whole
+    // platform-api pod. Caught from staging: 2026-05-10 PUT crash.
     const stdinPromise = new Promise<void>((resolveWrite, rejectWrite) => {
       args.stdin.on('error', rejectWrite);
       args.stdin.on('end', resolveWrite);
+      // Listen for child-stdin errors (EPIPE if restic dies early).
+      // We don't reject here — the exit code from restic is the real
+      // signal; an EPIPE during shutdown is benign.
+      child.stdin.on('error', (err) => {
+        // Best-effort log; the exitPromise will surface the underlying
+        // restic failure with stderr.
+        // eslint-disable-next-line no-console
+        console.warn(`[restic-driver] child stdin error (likely EPIPE; restic exited early): ${(err as Error).message}`);
+      });
       args.stdin.on('data', (chunk: Buffer | string) => {
         try {
+          // child.stdin.write returns false on backpressure; either
+          // way an EPIPE here lands in the catch and rejects.
           child.stdin.write(chunk as never);
         } catch (err) {
           rejectWrite(err);
@@ -900,6 +928,74 @@ export async function addResticKey(args: AddResticKeyArgs): Promise<void> {
   } finally {
     if (sftpCleanup) await sftpCleanup();
     release();
+  }
+}
+
+// ─── Repo initialisation (Phase 1 piece #7) ─────────────────────────────────
+
+/**
+ * Run `restic init` if the repo doesn't exist yet. Idempotent:
+ * restic returns exit 0 with "config file already exists" when the
+ * repo is already present, and we treat any "already exists" stderr
+ * as success regardless of exit code (defence against future restic
+ * exit-code changes).
+ *
+ * Required because `restic backup --stdin` against an uninitialised
+ * repo exits immediately with non-zero. The early exit then closes
+ * the subprocess's stdin, which makes our pipe write throw EPIPE on
+ * a Socket with no error listener — and Node's default behaviour is
+ * to crash the entire process.
+ */
+async function ensureResticRepoInitialised(args: {
+  target: BackupTarget;
+  passwordHex: string;
+  repoUri: string;
+}): Promise<void> {
+  const env = {
+    ...buildResticEnv(args.target),
+    RESTIC_PASSWORD: args.passwordHex,
+  };
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push('init');
+
+    const child = spawnRestic(cliArgs, env);
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    child.stdout.on('data', (c: Buffer) => {
+      stdoutBuf += c.toString('utf8');
+    });
+    child.stderr.on('data', (c: Buffer) => {
+      stderrBuf += c.toString('utf8');
+    });
+    // Unused stdin — close it immediately so restic doesn't wait.
+    try {
+      child.stdin.on('error', () => undefined);
+      child.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code === 0) return;
+    // Idempotent paths: "config file already exists" / "repository already initialized"
+    const combined = (stderrBuf + stdoutBuf).toLowerCase();
+    if (combined.includes('already') && (combined.includes('exists') || combined.includes('initialized'))) {
+      return;
+    }
+    throw new Error(`restic init exited ${code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
   }
 }
 
