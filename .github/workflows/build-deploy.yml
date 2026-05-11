@@ -19,6 +19,17 @@ on:
       # staging.
       - 'k8s/**'
       - 'scripts/**'
+      # Exclude the files that update-staging-version itself rewrites.
+      # Without these `!` patterns the auto-pin commit (which only
+      # touches these three files) would re-trigger build-deploy →
+      # rebuild → new auto-pin → infinite loop. Previously prevented by
+      # `[skip ci]` in the auto-pin commit message, but that also skipped
+      # sync-staging, leaving the pin stranded on main. With these path
+      # exclusions, the auto-pin commit no longer fires build-deploy and
+      # we can drop `[skip ci]`, so sync-staging propagates the pin.
+      - '!k8s/overlays/staging/kustomization.yaml'
+      - '!k8s/overlays/staging/platform-version-patch.yaml'
+      - '!k8s/overlays/staging/deploy-rev-patch.yaml'
   workflow_dispatch:
 
 permissions:
@@ -203,9 +214,13 @@ jobs:
   # the staging overlay, so the backend's /api/v1/admin/platform/version
   # endpoint returns the real running version instead of "unknown".
   #
-  # Runs after images are pushed, only on main. Uses the
-  # github-actions[bot] author with [skip ci] in the commit message to
-  # avoid triggering another build loop.
+  # Runs after images are pushed, only on main. Loop prevention is now
+  # the responsibility of the negative-path filter on the workflow's
+  # `on.push.paths` (the auto-pin commit only modifies the three
+  # staging-overlay files, which are excluded). `[skip ci]` was removed
+  # from the commit message so sync-staging propagates the pin onto
+  # the staging branch — otherwise Flux keeps reconciling the previous
+  # image tag.
   update-staging-version:
     name: Update staging platform-version
     runs-on: ubuntu-latest
@@ -375,7 +390,11 @@ jobs:
             k8s/overlays/staging/platform-version-patch.yaml \
             k8s/overlays/staging/deploy-rev-patch.yaml \
             k8s/overlays/staging/kustomization.yaml
-          git commit -m "chore(staging): pin platform-version to ${VERSION} [skip ci]"
+          # No [skip ci] — loop prevention is on the workflow's path
+          # filter (the auto-pin commit only touches the three excluded
+          # files). Dropping [skip ci] lets sync-staging fire and
+          # propagate the pin to the staging branch.
+          git commit -m "chore(staging): pin platform-version to ${VERSION}"
           git push origin HEAD:main
           # main → staging propagation is owned by sync-staging.yml.
           # That workflow does a real merge (not fast-forward) and fails

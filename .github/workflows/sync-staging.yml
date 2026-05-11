@@ -31,11 +31,35 @@ name: Sync main → staging
 #     while we're processing.
 
 on:
+  # Primary trigger — fires on every main push, including the
+  # `chore(staging): pin platform-version` auto-pin commit. (The auto-pin
+  # commit used to carry `[skip ci]` which stranded the pin on main; the
+  # marker was dropped after build-deploy started excluding its own
+  # auto-pin files via `!`-path patterns, so its own loop prevention no
+  # longer relies on suppressing this workflow.)
   push:
     branches: [main]
 
-# Don't trigger on the auto-pin commits the build-deploy workflow makes
-# (they're tagged [skip ci] in the message).
+  # Belt-and-suspenders: also fire when Build Images finishes on main.
+  # Catches:
+  #   - A future case where build-deploy modifies a file under main but
+  #     the auto-pin push somehow doesn't reach the push trigger (e.g.,
+  #     a temporarily failing pre-push hook gets retried by a bot).
+  #   - The general "main has moved since this workflow started"
+  #     scenario — sync-staging always fetches the latest origin/main
+  #     and the merge step is a no-op when already up to date, so a
+  #     duplicate run under the concurrency group is cheap.
+  workflow_run:
+    workflows: ['Build Images']
+    types: [completed]
+    branches: [main]
+
+  # Manual lever for operators. Use during incidents when an auto-pin
+  # commit got stranded on main and Flux on staging is reconciling a
+  # stale image tag — click "Run workflow" on the Actions page to
+  # force-propagate without crafting a manual merge.
+  workflow_dispatch:
+
 permissions:
   contents: write
 
@@ -47,11 +71,18 @@ jobs:
   sync:
     name: Merge main → staging
     runs-on: ubuntu-latest
-    # Marker is intentionally non-prose so documenting the feature in a
-    # commit message can't accidentally trigger the skip (the original
-    # `[skip staging-sync]` was a phrase, so the very commit that added
-    # this workflow self-skipped because the description used those words).
-    if: ${{ !contains(github.event.head_commit.message, '[ci-skip-staging-sync]') }}
+    # Skip when:
+    #   - Marker `[ci-skip-staging-sync]` is set in the commit message
+    #     (kept as a non-prose token so documenting the feature in a
+    #     message can't accidentally self-skip).
+    #   - workflow_run fired but the upstream Build Images workflow
+    #     failed; we don't want to propagate broken code/pins.
+    #     (workflow_run also fires on failure, hence the explicit
+    #     conclusion guard.)
+    if: |
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.conclusion == 'success') &&
+      !contains(github.event.head_commit.message, '[ci-skip-staging-sync]')
     steps:
       - name: Checkout staging
         uses: actions/checkout@v4
