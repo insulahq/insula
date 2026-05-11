@@ -649,7 +649,7 @@ export async function updateDeployment(
       const [entry] = await db
         .select()
         .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId));
+        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
       if (entry) {
         const components = resolveComponents(entry, null);
@@ -692,7 +692,7 @@ export async function deleteDeployment(
       const [entry] = await db
         .select()
         .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId));
+        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
       if (entry) {
         const components = resolveComponents(entry, null);
@@ -741,7 +741,7 @@ export async function deleteDeployment(
         const [entry] = await db
           .select()
           .from(catalogEntries)
-          .where(eq(catalogEntries.id, deployment.catalogEntryId));
+          .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
         if (!entry) return;
         const components = resolveComponents(entry, null);
         const images = [...new Set(components.map(c => c.image).filter(Boolean))];
@@ -787,7 +787,7 @@ export async function restoreDeployment(
       const [entry] = await db
         .select()
         .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId));
+        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
       if (entry) {
         const components = resolveComponents(entry, null);
@@ -825,7 +825,7 @@ export async function hardDeleteDeployment(
       const [entry] = await db
         .select()
         .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId));
+        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
       if (entry) {
         const components = resolveComponents(entry, null);
@@ -920,7 +920,7 @@ export async function getResourceAvailability(
   }
 
   // Get min from catalog entry
-  const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+  const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
   const resources = parseJsonField<{ minimum?: { cpu?: string; memory?: string }; recommended?: { cpu?: string; memory?: string } }>(entry?.resources);
 
   const minCpu = resources?.minimum?.cpu ?? '0.1';
@@ -1007,7 +1007,7 @@ export async function updateDeploymentResources(
     const [entry] = await db
       .select()
       .from(catalogEntries)
-      .where(eq(catalogEntries.id, deployment.catalogEntryId));
+      .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
     if (entry && namespace) {
       // Use version-aware resolver — respects per-version volume/env overrides
@@ -1096,7 +1096,7 @@ export async function getDeploymentWithVolumePaths(
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
   const volumePaths = entry ? computeVolumePaths(deployment, entry) : [];
 
@@ -1109,12 +1109,23 @@ export async function resolveDeploymentComponents(
   db: Database,
   deployment: typeof deployments.$inferSelect,
 ): Promise<DeployComponentInput[]> {
+  // Catalog-only flow. Custom deployments (ADR-036) render their
+  // PodSpec from `customSpec` via the custom-deployments module in
+  // PR-2 — calling this on a custom row would throw a misleading
+  // `CATALOG_ENTRY_NOT_FOUND` 404. Reject early with a clear code.
+  if (deployment.source === 'custom') {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_CUSTOM',
+      'Catalog component resolution is not applicable to custom deployments.',
+      400,
+    );
+  }
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
-  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
   return resolveComponents(entry, null);
 }
 
@@ -1130,7 +1141,7 @@ export async function redeployWithCurrentConfig(
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
   if (!entry) return;
 
@@ -1239,12 +1250,23 @@ export async function getDeploymentCredentials(
 ) {
   const deployment = await getDeploymentById(db, clientId, deploymentId);
 
+  // Catalog-only. Custom deployments expose their own credentials
+  // model via the custom-deployments module (PR-2). Without this
+  // guard the operator sees a confusing 404 "catalog entry not found".
+  if (deployment.source === 'custom') {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_CUSTOM',
+      'Catalog credential view is not applicable to custom deployments.',
+      400,
+    );
+  }
+
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
-  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
   const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
   const generatedKeys = envVarsData?.generated ?? [];
@@ -1278,12 +1300,21 @@ export async function regenerateDeploymentCredentials(
 ) {
   const deployment = await getDeploymentById(db, clientId, deploymentId);
 
+  // Catalog-only (and the route is 410'd anyway — defense in depth).
+  if (deployment.source === 'custom') {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_CUSTOM',
+      'Credential regeneration is not applicable to custom deployments.',
+      400,
+    );
+  }
+
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
-  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
   const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
   const generatedKeys = envVarsData?.generated ?? [];

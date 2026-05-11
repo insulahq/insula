@@ -120,12 +120,20 @@ export async function reconcileDeploymentStatuses(
     }
   }
 
-  // Pre-fetch all catalog entries needed
-  const catalogEntryIds = [...new Set(activeDeployments.map(d => d.catalogEntryId))];
-  const entryRows = await db
-    .select()
-    .from(catalogEntries)
-    .where(inArray(catalogEntries.id, catalogEntryIds));
+  // Pre-fetch all catalog entries needed. Custom deployments have
+  // catalogEntryId=null (ADR-036); filter them out of the lookup —
+  // PR-2 introduces a custom-deployment-specific reconciler path.
+  const catalogEntryIds = [...new Set(
+    activeDeployments
+      .map(d => d.catalogEntryId)
+      .filter((id): id is string => id !== null),
+  )];
+  const entryRows = catalogEntryIds.length > 0
+    ? await db
+      .select()
+      .from(catalogEntries)
+      .where(inArray(catalogEntries.id, catalogEntryIds))
+    : [];
 
   const entryMap = new Map<string, typeof catalogEntries.$inferSelect>();
   for (const e of entryRows) {
@@ -136,6 +144,10 @@ export async function reconcileDeploymentStatuses(
     const namespace = namespaceMap.get(deployment.clientId);
     if (!namespace) continue;
 
+    // Skip custom deployments — they're reconciled by their own path
+    // in PR-2. Until then they hold a `pending`/`deploying` row that
+    // does nothing.
+    if (deployment.catalogEntryId === null) continue;
     const entry = entryMap.get(deployment.catalogEntryId);
     if (!entry) continue;
 

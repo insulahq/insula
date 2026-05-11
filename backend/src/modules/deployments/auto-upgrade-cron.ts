@@ -68,7 +68,12 @@ export async function runAutoUpgradePass(
       const [entry] = await db
         .select()
         .from(catalogEntries)
-        .where(eq(catalogEntries.id, dep.catalogEntryId));
+        // Custom deployments (source='custom') skip the catalog
+        // auto-upgrade flow entirely — they're upgraded via the
+        // separate /upgrade-tag endpoint (PR-2). For now their
+        // null catalog_entry_id makes this lookup miss, and the
+        // !entry branch below skips them.
+        .where(eq(catalogEntries.id, dep.catalogEntryId ?? ''));
       if (!entry) {
         skipped++;
         continue;

@@ -72,6 +72,15 @@ export const catalogRepoStatusEnum = pgEnum('catalog_repo_status', ['active', 'e
 export const catalogEntryTypeEnum = pgEnum('catalog_entry_type', ['application', 'runtime', 'database', 'service', 'static']);
 export const catalogEntryStatusEnum = pgEnum('catalog_entry_status', ['available', 'beta', 'deprecated']);
 export const deploymentStatusEnum = pgEnum('deployment_status', ['deploying', 'running', 'stopped', 'failed', 'deleting', 'upgrading', 'pending', 'deleted']);
+// ADR-036 (custom deployments). Discriminates a row's origin.
+//   - 'catalog' : the row was created from a workload (ADR-025) or
+//                 application (ADR-026) catalog entry; `catalog_entry_id`
+//                 is NOT NULL and the components/volumes/env are
+//                 resolved by joining catalog_entries.
+//   - 'custom'  : tenant-supplied container or compose stack;
+//                 `catalog_entry_id` is NULL and the spec lives
+//                 entirely in the new `custom_spec` jsonb column.
+export const deploymentSourceEnum = pgEnum('deployment_source', ['catalog', 'custom']);
 
 // Migration 0076 — private_workers + polymorphic ingress_routes target.
 export const privateWorkerStatusEnum = pgEnum('private_worker_status', [
@@ -458,7 +467,22 @@ export const deployments = pgTable('deployments', {
   clientId: varchar('client_id', { length: 36 })
     .notNull()
     .references(() => clients.id, { onDelete: 'cascade' }),
-  catalogEntryId: varchar('catalog_entry_id', { length: 36 }).notNull(),
+  // ADR-036: nullable when `source = 'custom'`. The XOR is enforced
+  // by the CHECK constraint in migration 0098_custom_deployments.sql.
+  catalogEntryId: varchar('catalog_entry_id', { length: 36 }),
+  /**
+   * ADR-036 source discriminator. Defaults to 'catalog' for backward
+   * compatibility — all pre-existing rows are catalog-sourced.
+   */
+  source: deploymentSourceEnum().notNull().default('catalog'),
+  /**
+   * ADR-036 normalized custom-deployment spec. Null when source='catalog'.
+   * Shape is `customDeploymentSpecSchema` from
+   * @k8s-hosting/api-contracts/custom-deployments. The `specVersion`
+   * field inside lets us migrate older shapes forward without a table
+   * migration.
+   */
+  customSpec: jsonb('custom_spec').$type<Record<string, unknown> | null>(),
   name: varchar('name', { length: 63 }).notNull(),
   domainName: varchar('domain_name', { length: 255 }),
   replicaCount: integer('replica_count').notNull().default(1),
@@ -503,6 +527,114 @@ export const deployments = pgTable('deployments', {
   index('deployments_client_idx').on(table.clientId),
   index('deployments_catalog_entry_idx').on(table.catalogEntryId),
   index('deployments_status_idx').on(table.status),
+  index('deployments_source_idx').on(table.source),
+]);
+
+// ─── Custom Deployments (ADR-036) ───
+//
+// Three sibling tables hang off a deployments row when source='custom':
+//
+//  custom_deployment_image_credentials — encrypted PAT per deployment.
+//    Materialized as a kubernetes.io/dockerconfigjson Secret in the
+//    tenant namespace named `image-pull-{deployment_id}` at deploy
+//    time. Cleartext is NEVER returned by the API — only `token_last_four`.
+//
+//  custom_deployment_image_audit — forensic trail of every image+digest
+//    a deployment has pulled. Populated by the status reconciler from
+//    Pod.containerStatuses[].imageID once the kubelet has finished
+//    pulling. Gated by system_settings.custom_deployments_image_pull_audit.
+//
+//  custom_deployment_image_check_cache — 60-minute cache of the
+//    Docker Registry V2 update checker. Keyed on
+//    (image_reference, registry_host, current_tag); the client panel's
+//    lazy-load "Updates available?" pill reads this. Stale rows are
+//    served immediately and a background refresh fires.
+
+export const customDeploymentImageCredentials = pgTable('custom_deployment_image_credentials', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .notNull()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  // Registry host without scheme or path. Validated by api-contracts
+  // submitPullCredentialSchema. Examples: 'ghcr.io', 'docker.io',
+  // 'registry.example.com:5000'.
+  registryHost: varchar('registry_host', { length: 253 }).notNull(),
+  username: varchar('username', { length: 255 }).notNull(),
+  // Envelope-encrypted token (same OIDC_ENCRYPTION_KEY + 'kid:' prefix
+  // shape as oidc_settings + mtls_providers). The cleartext PAT is
+  // NEVER returned by the API; only the last 4 chars (token_last_four)
+  // are surfaced for operator recognition.
+  tokenCipher: text('token_cipher').notNull(),
+  tokenLastFour: varchar('token_last_four', { length: 4 }).notNull(),
+  // timestamptz — NOW() returns timezone-aware values; storing as
+  // timestamp would silently truncate the offset across CNPG replicas
+  // running in different zones. See migration 0098 header.
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // Updated on token rotation (PUT /pull-credentials).
+  rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+}, (table) => [
+  // One credential per deployment in Phase 1. Phase 2 introduces a
+  // client-scoped shared-credential table; this row is overridden by
+  // a per-deployment one when present.
+  uniqueIndex('custom_deployment_image_credentials_deployment_unique')
+    .on(table.deploymentId),
+]);
+
+export const customDeploymentImageAudit = pgTable('custom_deployment_image_audit', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .notNull()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  // Reference exactly as the tenant declared it (e.g. 'nginx:1.27',
+  // 'ghcr.io/owner/app@sha256:...'). Kept verbatim for audit.
+  image: varchar('image', { length: 500 }).notNull(),
+  // Captured from containerStatuses[].imageID once the kubelet has
+  // finished pulling. Format: <name>@sha256:<hex>. Null while still
+  // pulling — the reconciler fills this on first observation.
+  resolvedDigest: varchar('resolved_digest', { length: 256 }),
+  // timestamptz so the forensic audit trail is unambiguous across
+  // operator locales. See migration 0098 header.
+  pulledAt: timestamp('pulled_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  // Fast lookup for the audit list view + dedupe-by-digest in the
+  // image-audit module.
+  index('custom_deployment_image_audit_deployment_idx').on(table.deploymentId),
+  index('custom_deployment_image_audit_pulled_idx').on(table.pulledAt),
+  // Unique (deployment, digest). Migration 0098 declares this index
+  // with `NULLS NOT DISTINCT` (PG15+), which guarantees AT MOST ONE
+  // NULL-digest sentinel row per deployment. Drizzle does not expose
+  // .nullsNotDistinct() on uniqueIndex() in the version pinned here,
+  // so the migration's raw SQL wins at the DB layer; this declaration
+  // is for ORM column-shape awareness only.
+  uniqueIndex('custom_deployment_image_audit_deployment_digest_unique')
+    .on(table.deploymentId, table.resolvedDigest),
+]);
+
+export const customDeploymentImageCheckCache = pgTable('custom_deployment_image_check_cache', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  // Image reference without the tag — e.g. 'docker.io/library/nginx',
+  // 'ghcr.io/owner/app'. Normalised by the update-checker so bare
+  // 'nginx' resolves to 'docker.io/library/nginx' first.
+  imageReference: varchar('image_reference', { length: 500 }).notNull(),
+  registryHost: varchar('registry_host', { length: 253 }).notNull(),
+  currentTag: varchar('current_tag', { length: 128 }).notNull(),
+  // Latest tag found that is `>= current_tag` by semver ordering, or
+  // NULL when no newer tag exists / the registry doesn't ship semver
+  // tags / detection failed.
+  latestTag: varchar('latest_tag', { length: 128 }),
+  // 'no-update' | 'patch' | 'minor' | 'major' | 'unknown'. Stored as
+  // text so future severities don't need a migration.
+  severity: varchar('severity', { length: 16 }).notNull(),
+  // Why 'unknown' — for the UI tooltip.
+  reason: text('reason'),
+  // timestamptz so the 60-min TTL comparison
+  // `checked_at > now() - interval '60 minutes'` does not break under
+  // a non-UTC session TimeZone GUC. See migration 0098 header.
+  checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('custom_deployment_image_check_cache_key_unique')
+    .on(table.imageReference, table.registryHost, table.currentTag),
+  index('custom_deployment_image_check_cache_checked_idx').on(table.checkedAt),
 ]);
 
 // ─── Notifications ───
@@ -1821,6 +1953,39 @@ export const systemSettings = pgTable('system_settings', {
   // win — this only fills in the gap when bootstrap.sh ran with the
   // default flag and no explicit operator decision.
   newServerHostsClientWorkloads: boolean('new_server_hosts_client_workloads').notNull().default(true),
+  // ADR-036 custom-deployments toggles (migration 0099). All default
+  // to permissive (enabled / on) so the feature ships usable out of
+  // the box; operators tighten by flipping.
+  //
+  //   customDeploymentsEnabled — master kill switch. When false, the
+  //     API rejects new custom deployments with 403 (existing ones
+  //     keep running). Tenant UI hides the Custom Containers tab.
+  //
+  //   customDeploymentsAllowCompose — disable the compose editor
+  //     specifically (simple-form still works). Use during a
+  //     compose-parser incident.
+  //
+  //   customDeploymentsAllowPrivateRegistries — disable PAT submission
+  //     (existing PATs keep working). Use when private-registry pulls
+  //     are causing trouble.
+  //
+  //   customDeploymentsImagePullAudit — populate the
+  //     custom_deployment_image_audit table. Default ON for forensic
+  //     value; cheap to keep.
+  //
+  //   customDeploymentsScanOnPull — reserved for Phase 2 Trivy.
+  //     Column exists in Phase 1 as a no-op so flipping it on later
+  //     is a code-only change.
+  //
+  //   customDeploymentsWarnUnpinnedTags — UI advisory badge on
+  //     `:latest` / missing tag. Default ON; operator can suppress
+  //     the noise.
+  customDeploymentsEnabled: boolean('custom_deployments_enabled').notNull().default(true),
+  customDeploymentsAllowCompose: boolean('custom_deployments_allow_compose').notNull().default(true),
+  customDeploymentsAllowPrivateRegistries: boolean('custom_deployments_allow_private_registries').notNull().default(true),
+  customDeploymentsImagePullAudit: boolean('custom_deployments_image_pull_audit').notNull().default(true),
+  customDeploymentsScanOnPull: boolean('custom_deployments_scan_on_pull').notNull().default(false),
+  customDeploymentsWarnUnpinnedTags: boolean('custom_deployments_warn_unpinned_tags').notNull().default(true),
   // Kubelet image-GC thresholds (migration 0065). Shipped as k3s
   // --kubelet-arg flags by bootstrap.sh; surfaced in the admin panel.
   // Reconciliation to running kubelets is handled by the kubelet-gc

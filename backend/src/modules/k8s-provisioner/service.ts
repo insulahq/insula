@@ -7,7 +7,7 @@ import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { getFileManagerImage } from '../file-manager/image.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
-import { JSON_PATCH } from '../../shared/k8s-patch.js';
+import { JSON_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
 import { clientStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 
@@ -165,15 +165,73 @@ export const TENANT_OVERHEAD_PRIORITY_CLASS = 'platform-tenant-overhead';
 
 // ─── K8s Resource Creators ───────────────────────────────────────────────────
 
+/**
+ * Pod Security Standards labels applied to every tenant namespace.
+ *
+ * Added in ADR-036 to harden the third deployment path (custom
+ * container / compose). The labels apply to ALL pods in the
+ * namespace, including catalog deployments, so the level was chosen
+ * to avoid breaking existing catalog manifests:
+ *
+ *   - `enforce: baseline` — blocks the most-egregious escapes
+ *     (hostNetwork, hostPID, hostIPC, privileged, hostPath volumes,
+ *     hostPort, dangerous capability adds). Catalog images don't
+ *     use any of these; tenant custom images cannot.
+ *
+ *   - `warn: restricted` — surfaces the stricter PSS profile in
+ *     `kubectl` warnings (visible in CI/dev), so operators can see
+ *     where workloads sit relative to the higher bar without
+ *     enforcement. Restricted rejects e.g. `runAsNonRoot:false`
+ *     and `allowPrivilegeEscalation:true`, both of which some legit
+ *     catalog images still need.
+ *
+ *   - `audit: restricted` — writes a Kubernetes audit event for any
+ *     pod that would violate restricted. Lets operators discover
+ *     drift candidates over time without breaking workloads.
+ *
+ * Idempotent: `applyNamespace` runs this patch on every provisioning
+ * call so newly added clusters / namespaces converge. There is no
+ * separate backfill code path — re-running provisioning on every
+ * tenant (e.g. `scripts/backfill-tenant-namespace-pss.sh` calling the
+ * platform API) is the backfill.
+ */
+const TENANT_NAMESPACE_LABELS = {
+  platform: 'k8s-hosting',
+  // PSS enforce / warn / audit. The version pin `latest` tracks the
+  // running cluster's k8s version (recommended in the PSS docs).
+  'pod-security.kubernetes.io/enforce': 'baseline',
+  'pod-security.kubernetes.io/enforce-version': 'latest',
+  'pod-security.kubernetes.io/warn': 'restricted',
+  'pod-security.kubernetes.io/warn-version': 'latest',
+  'pod-security.kubernetes.io/audit': 'restricted',
+  'pod-security.kubernetes.io/audit-version': 'latest',
+} as const;
+
 export async function applyNamespace(
   k8s: K8sClients,
   namespace: string,
   clientId: string,
 ): Promise<void> {
-  // Check if namespace already exists
+  const labels = { ...TENANT_NAMESPACE_LABELS, client: clientId };
+
+  // Check if namespace already exists. Either path (exists or 404)
+  // must end with the PSS labels in place — this function is the
+  // single source of truth for tenant-namespace labelling, and we
+  // rely on it to backfill PSS labels onto pre-ADR-036 namespaces
+  // on the next provisioning touch.
   try {
     await k8s.core.readNamespace({ name: namespace });
-    return; // Already exists, skip
+    // Already exists — patch labels so PSS coverage stays current.
+    // strategic-merge-patch handles label maps by union, so this
+    // never strips operator-set labels.
+    await k8s.core.patchNamespace(
+      {
+        name: namespace,
+        body: { metadata: { labels } },
+      } as unknown as Parameters<typeof k8s.core.patchNamespace>[0],
+      STRATEGIC_MERGE_PATCH,
+    );
+    return;
   } catch (err: unknown) {
     // @kubernetes/client-node v1.4 throws HttpException with "HTTP-Code: 404" in message
     const isNotFound = isK8s404(err);
@@ -184,10 +242,7 @@ export async function applyNamespace(
     body: {
       metadata: {
         name: namespace,
-        labels: {
-          platform: 'k8s-hosting',
-          client: clientId,
-        },
+        labels,
       },
     },
   });

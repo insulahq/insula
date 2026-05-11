@@ -177,7 +177,10 @@ export async function createRoute(
     if (!dep) {
       throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
     }
-    const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, dep.catalogEntryId));
+    // Custom deployments have catalogEntryId=null; the existing
+    // `if (entry)` branch below skips them. PR-2 wires custom
+    // deployments to ingress routes through a non-catalog-entry path.
+    const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, dep.catalogEntryId ?? ''));
     if (entry) {
       try {
         resolveIngressBackend(entry, dep.name);

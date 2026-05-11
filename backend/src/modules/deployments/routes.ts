@@ -443,7 +443,11 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const [entry] = await app.db
       .select()
       .from(catalogEntries)
-      .where(eq(catalogEntries.id, deployment.catalogEntryId));
+      // catalogEntryId is null on custom deployments (ADR-036).
+      // '' here is a safe sentinel: no row matches, the existing
+      // !entry branch handles it. PR-2 wires custom routes through
+      // a different code path that never reaches this lookup.
+      .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
     if (!entry) {
       throw new ApiError('CATALOG_ENTRY_NOT_FOUND', 'Catalog entry not found', 404);
@@ -1047,7 +1051,15 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = (request.body ?? {}) as { catalog_entry_id?: string; deployment_ids?: string[] };
-    const conditions = [ne(deployments.status, 'deleted')];
+    const conditions = [
+      ne(deployments.status, 'deleted'),
+      // ADR-036: this endpoint resolves PodSpec via the catalog component
+      // pipeline, which custom deployments do not participate in. Filtering
+      // them out here means an operator who passes `deployment_ids`
+      // including a custom row gets that row silently skipped rather than
+      // a misleading 404 in the per-row error list.
+      eq(deployments.source, 'catalog'),
+    ];
     // Explicit ids override the running-only filter — operator chose them
     // deliberately, often to recover a stuck row that the fleet-wide filter
     // would skip silently.
