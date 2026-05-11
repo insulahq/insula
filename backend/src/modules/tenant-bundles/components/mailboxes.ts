@@ -326,7 +326,14 @@ export function buildMailboxesComponentJobSpec(input: {
           containers: [{
             name: 'mailboxes',
             image: input.toolsImage,
-            imagePullPolicy: 'IfNotPresent',
+            // Always pull: the mail-backup-tools image is published
+            // with `:latest` floating to the newest build, but worker
+            // nodes cache by tag. Without Always, a cached older
+            // image (e.g. pre-Phase 2, no jmap-sync.py) silently runs
+            // and the Job fails with `jmap-sync.py: not found`
+            // (caught 2026-05-11 mid-deploy). Image is small (<120 MiB)
+            // so the pull cost is minor.
+            imagePullPolicy: 'Always',
             command: ['sh', '-c', script],
             env: [
               masterPasswordEnv,
