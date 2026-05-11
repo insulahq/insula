@@ -20,7 +20,12 @@
 #   - restic            — Phase 1.5+ cross-region restore inside tenant ns
 #                         (server-side restic runs on platform-api;
 #                         this image is for restore-side pulls)
-#   - python3-minimal   — Phase 2 jmap-sync.py + existing restore-mailbox.py
+#   - python3           — Phase 2 jmap-sync.py + existing restore-mailbox.py.
+#                         NOT python3-minimal: that variant strips `shutil`
+#                         which `urllib.error` transitively imports via
+#                         tempfile → shutil. Caught on staging 2026-05-11:
+#                         `ModuleNotFoundError: No module named 'shutil'`
+#                         crashed jmap-sync.py at line 1.
 #   - curl              — upload + download artifacts, HMAC tokens
 #   - tar + gzip        — files-component pipeline
 #   - coreutils         — sha256sum + standard tools (debian default)
@@ -38,7 +43,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       restic \
       isync \
-      python3-minimal \
+      python3 \
       curl \
       tar \
       gzip \
