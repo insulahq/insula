@@ -28,6 +28,24 @@ import {
   resolveVersionAwareDeploymentConfig,
 } from './service.js';
 
+/**
+ * Guard: every function in this module is catalog-only by design.
+ * Custom-source deployments (ADR-036) use the separate `/upgrade-tag`
+ * endpoint (PR-2) which does not involve catalog entries, versioning,
+ * or auto-upgrade. Calling any of these functions on a custom row
+ * would either misfire with `CATALOG_ENTRY_GONE` or apply nonsense
+ * version math; reject early with a useful error code.
+ */
+function assertCatalogSourced(deployment: { source: string }): void {
+  if (deployment.source !== 'catalog') {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_CUSTOM',
+      'Catalog upgrade flow is not applicable to custom deployments — use the /upgrade-tag endpoint instead.',
+      400,
+    );
+  }
+}
+
 // ─── Version comparator ─────────────────────────────────────────────────────
 
 /**
@@ -117,11 +135,12 @@ export async function getAvailableUpgrades(
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
+  assertCatalogSourced(deployment);
 
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
   if (!entry) {
     throw new ApiError('CATALOG_ENTRY_GONE', `Catalog entry ${deployment.catalogEntryId} no longer exists`, 410);
   }
@@ -262,11 +281,12 @@ export async function upgradeDeploymentVersion(
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
+  assertCatalogSourced(deployment);
 
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
   if (!entry) {
     throw new ApiError('CATALOG_ENTRY_GONE', 'Catalog entry no longer exists', 410);
   }
@@ -483,6 +503,10 @@ export async function getAdminUpgradesOverview(db: Database): Promise<readonly A
     })
     .from(deployments)
     .innerJoin(clients, eq(clients.id, deployments.clientId))
+    // ADR-036: the inner join on catalogEntries naturally excludes
+    // `source='custom'` rows (their catalogEntryId is NULL). Custom
+    // deployments have their own update model (/upgrade-tag) which
+    // surfaces in a separate admin view; not on this page.
     .innerJoin(catalogEntries, eq(catalogEntries.id, deployments.catalogEntryId));
 
   // Active = anything not soft-deleted. Failed deployments are still shown
@@ -599,11 +623,12 @@ export async function setAutoUpgrade(
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
+  assertCatalogSourced(deployment);
   if (enabled) {
     const [entry] = await db
       .select()
       .from(catalogEntries)
-      .where(eq(catalogEntries.id, deployment.catalogEntryId));
+      .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
     const lockMode = (entry?.versionLockMode ?? 'advisory') as 'strict' | 'advisory' | 'open';
     if (lockMode === 'strict') {
       throw new ApiError(
@@ -640,6 +665,7 @@ export async function rollbackDeploymentVersion(
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
+  assertCatalogSourced(deployment);
   if (!deployment.previousVersion) {
     throw new ApiError(
       'ROLLBACK_NOT_AVAILABLE',
@@ -654,7 +680,7 @@ export async function rollbackDeploymentVersion(
   const [entry] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
   if (!entry) {
     throw new ApiError('CATALOG_ENTRY_GONE', 'Catalog entry no longer exists', 410);
   }
