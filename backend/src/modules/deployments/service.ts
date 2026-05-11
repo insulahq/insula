@@ -41,8 +41,14 @@ export function parseJsonField<T>(value: unknown): T | null {
 }
 
 export function generateSecurePassword(length: number): string {
-  // Avoid $, `, \, ', " — these get mangled by shell/env var expansion in K8s
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^&*_-+=';
+  // Charset chosen to be safe across every embedding:
+  //  - URL components (no `@:/?&=#`)
+  //  - Shell variables / heredocs (no `$ \` ' "`)
+  //  - YAML/JSON values (no `& : { } [ ]`)
+  //  - bitnami-style discourse.conf and similar templates (no `# &`)
+  // 64 chars from [a-zA-Z0-9_-] gives ~6 bits/char → 64-char password = ~384
+  // bits of entropy (well above the 256-bit NIST recommendation).
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
   const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, b => chars[b % chars.length]).join('');
@@ -371,10 +377,14 @@ export async function createDeployment(
   const catalogCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
   const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
 
-  // Generate secrets for env_vars.generated entries
+  // Generate secrets for env_vars.generated entries.
+  // Phoenix/Elixir apps (Plausible, others) require SECRET_KEY_BASE >= 64
+  // bytes — Plug.Session.COOKIE.validate_secret_key_base errors below that.
+  // Use 64 chars for any key matching that convention; 32 for everything else.
   const generatedSecrets: Record<string, string> = {};
   for (const key of generatedEnvKeys) {
-    generatedSecrets[key] = generateSecurePassword(32);
+    const length = /KEY_BASE$/i.test(key) ? 64 : 32;
+    generatedSecrets[key] = generateSecurePassword(length);
   }
 
   // Merge: fixed env vars + user config + generated secrets (generated cannot be overridden by user)
