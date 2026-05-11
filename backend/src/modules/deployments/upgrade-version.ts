@@ -134,13 +134,19 @@ export async function getAvailableUpgrades(
   const installed = deployment.installedVersion;
   const lockMode = (entry.versionLockMode ?? 'advisory') as 'strict' | 'advisory' | 'open';
 
-  // Build the candidate list, excluding the currently installed version.
+  // Build the candidate list. Two filters:
+  //   1. Version must be NEWER than installed (compareVersions > 0). Without
+  //      this, advisory + open apps surface every other version including
+  //      historical ones, which would be a downgrade not an upgrade.
+  //   2. Strict/advisory require the current version to be in upgradeFrom —
+  //      except when no version is installed (first-time deploy), in which
+  //      case any version is fair game.
   const candidates: AvailableUpgrade[] = allVersions
     .filter((v) => v.version !== installed)
     .filter((v) => {
-      // Open apps surface every version. Strict/advisory require the current
-      // version to be in upgradeFrom — except when no version is installed
-      // (first-time deploys), in which case any version is fair game.
+      // Newer-only filter. Skipped when nothing is installed (fresh deploy
+      // can pick any version including the oldest LTS).
+      if (installed && compareVersions(v.version, installed) <= 0) return false;
       if (lockMode === 'open' || !installed) return true;
       const from = parseJsonField<string[]>(v.upgradeFrom) ?? [];
       return from.includes(installed);
@@ -504,19 +510,23 @@ export async function getAdminUpgradesOverview(db: Database): Promise<readonly A
     const deploymentInfos = entryRows.map((r) => {
       const installed = r.deployment.installedVersion;
 
-      // Direct upgrades: versions whose upgradeFrom contains the current installed.
-      // For installedVersion=NULL (legacy rows that pre-date version tracking),
-      // every version is reachable.
+      // Direct upgrades: versions NEWER than installed AND (for strict/advisory
+      // apps) whose upgradeFrom contains the current installed. Without the
+      // newer-than filter, older versions get classified as "upgrades" and the
+      // UI keeps the Upgrade button visible even after a successful upgrade.
+      // For installedVersion=NULL (legacy rows pre-version-tracking), every
+      // version is reachable.
       const direct = versions
         .filter((v) => v.version !== installed)
         .filter((v) => {
+          if (installed && compareVersions(v.version, installed) <= 0) return false;
           if (lockMode === 'open' || !installed) return true;
           const from = parseJsonField<string[]>(v.upgradeFrom) ?? [];
           return from.includes(installed);
         });
 
       const latestReachable = direct.length > 0
-        ? direct.slice().sort((a, b) => (b.version > a.version ? 1 : -1))[0].version
+        ? direct.slice().sort((a, b) => compareVersions(b.version, a.version))[0].version
         : null;
 
       // Preview URL — prefer the deployment's own domain name (catalog apps
