@@ -102,6 +102,19 @@ jobs:
       - name: Verify every patch call has an explicit middleware shim
         run: ./scripts/ci-k8s-patch-check.sh
 
+  job-ttl-check:
+    name: Job ttlSecondsAfterFinished guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify every Job spec declares ttlSecondsAfterFinished
+        # Completed Jobs (and their Pods) stay forever without
+        # ttlSecondsAfterFinished, accumulating etcd objects and Pod
+        # log inodes. The job-gc CronJob is a defensive backup for
+        # Jobs from sources we don't control (Longhorn, operators);
+        # this guard ensures everything we *do* control self-expires.
+        run: ./scripts/ci-job-ttl-check.sh
+
   task-helper-coverage:
     name: Task Tracker helper coverage
     runs-on: ubuntu-latest
