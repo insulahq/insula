@@ -448,42 +448,74 @@ if ids:
 PY
 REMOTE
 
-  # Copy the maildir.tar into the probe pod, EXTRACT, and the restore script
-  # operates over the Maildir tree. The restore-mailbox.py expects argv:
-  #   imap_host imap_port username password mode maildir
-  # Stalwart's IMAP service is stalwart-mail.mail.svc.cluster.local:993.
+  # Copy the maildir.tar into the probe pod, EXTRACT, and invoke
+  # jmap-restore.py (Phase 2 of ADR-036). The script:
+  #   1. opens a JMAP session as RESTORE_ADDR via master-user proxy
+  #   2. lists the target's mailboxes; matches snapshot folder names
+  #      case-insensitively; auto-creates missing folders
+  #   3. parallel Blob/upload (workers=16, capped by Stalwart's
+  #      maxConcurrentUploads=32) + Email/import batches up to 100
+  #   4. emits a JSON summary on stdout
+  #
+  # The Maildir tree on disk (matching jmap-sync.py's output) is layered
+  # as <source-addr>/<mailbox>/cur/<filename>. We rename TEST_ADDR →
+  # RESTORE_ADDR at the top level so jmap-restore.py's
+  # `<root>/<source-address>/...` walk finds it under the restore-side
+  # name without needing a separate --source-address argv (it expects
+  # source=target by default).
   echo "  copying maildir.tar into probe pod…"
-  kubectl_local_cp() {
-    # tar over stdin to avoid a separate kubectl cp (which needs tar inside the target)
-    ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec -i stalwart-probe -- sh -c 'mkdir -p /tmp/restore && cat > /tmp/restore/maildir.tar'" < "$TAR_FILE"
-  }
-  kubectl_local_cp
+  ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec -i stalwart-probe -- sh -c 'mkdir -p /tmp/restore && cat > /tmp/restore/maildir.tar'" < "$TAR_FILE"
   ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec stalwart-probe -- sh -c 'mkdir -p /tmp/restore/extracted && cd /tmp/restore/extracted && tar xf /tmp/restore/maildir.tar && ls'" 2>&1 | tail -5
 
   T0=$(date +%s)
-  # restore-mailbox.py expects MAILDIR pointing at the per-mailbox tree.
-  # Our Maildir is layered as <addr>/<mailbox>/cur/. The script wants
-  # the <addr>/INBOX root. Locate the INBOX inside the seeded mailbox
-  # tree we just extracted.
   RESULT=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec stalwart-probe -- sh -c '
-INBOX=\$(find /tmp/restore/extracted -type d -name cur -ipath \"*$TEST_ADDR/inbox/cur*\" | head -1 | sed s,/cur,,)
-[ -n \"\$INBOX\" ] || { echo no-inbox; exit 1; }
-# Reroot under <RESTORE_ADDR>: the restore script uses argv[username]
-# to authenticate; we mount the maildir tree as <restore-addr>/INBOX/.
-mkdir -p /tmp/restore/target/INBOX
-cp -r \$INBOX/cur /tmp/restore/target/INBOX/
-mkdir -p /tmp/restore/target/INBOX/new /tmp/restore/target/INBOX/tmp
-/usr/local/bin/restore-mailbox.py \
-  stalwart-mail.mail.svc.cluster.local 993 \
-  $RESTORE_ADDR%master@master.local \"\$STALWART_MASTER_PASSWORD\" \
-  merge-skip-duplicates /tmp/restore/target 2>&1 | tail -20
+set -e
+# Maildir source tree from the snapshot:
+#   /tmp/restore/extracted/<TEST_ADDR>/<mailbox>/{cur,new}/*
+# jmap-restore.py walks <maildir-root>/<source-address>/<mailbox>/...,
+# so just point --maildir-root at /tmp/restore/extracted and pass
+# --source-address $TEST_ADDR, --target-address $RESTORE_ADDR.
+/usr/local/bin/jmap-restore.py \
+  --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 \
+  --target-address $RESTORE_ADDR \
+  --source-address $TEST_ADDR \
+  --master-user master@master.local \
+  --auth-pass-env STALWART_MASTER_PASSWORD \
+  --maildir-root /tmp/restore/extracted \
+  --mode merge-skip-duplicates \
+  --workers 16
 '")
   T1=$(date +%s)
   echo "$RESULT"
-  if echo "$RESULT" | grep -q 'RESULT.*OK\|appended'; then
-    green "  ✓ restore completed in $((T1-T0))s"
+  # Summary line is JSON; pull imported/elapsed for assertion.
+  IMPORTED=$(echo \"$RESULT\" | python3 -c '
+import json, sys, re
+for line in sys.stdin.read().split(chr(10)):
+    t = line.strip().strip(chr(34))
+    if t.startswith(chr(123)) and t.endswith(chr(125)):
+        try:
+            d = json.loads(t)
+        except Exception:
+            continue
+        if isinstance(d, dict) and "imported" in d:
+            print(d["imported"])
+            sys.exit(0)
+print(0)
+')
+  ELAPSED=$((T1 - T0))
+  echo "  imported=$IMPORTED elapsedSec=$ELAPSED"
+  if [ "$IMPORTED" -ge "$(( EFFECTIVE_COUNT * 95 / 100 ))" ]; then
+    # Performance bound: 1000 messages must complete in <120s with
+    # JMAP restore (vs. ~900s for IMAP). 16 workers × 30 msg/s ≈ 60s
+    # is the realistic target; double that gives slack for staging
+    # network/SSD jitter.
+    if [ "$ELAPSED" -gt 120 ]; then
+      yellow "  ⚠ restore slower than 120s target ($ELAPSED s) — investigate parallelism"
+    fi
+    green "  ✓ restore completed in ${ELAPSED}s — $IMPORTED imported"
   else
-    yellow "  restore returned unexpected output (see above)"
+    red "  ✗ restore imported=$IMPORTED expected≈$EFFECTIVE_COUNT"
+    exit 1
   fi
 fi
 
