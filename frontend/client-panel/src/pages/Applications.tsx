@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
 import { API_BASE } from '@/lib/api-client';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, ArrowUpCircle } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -1083,13 +1083,37 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                         <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                           {deployment.name}
                         </h3>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <p className="text-xs text-gray-500 dark:text-gray-400">
                             {getCatalogEntryName(deployment.catalogEntryId)}
                           </p>
                           <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
                             {deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown'}
                           </span>
+                          {/* "Update available" — surfaced when the deployment's installed
+                              version differs from the catalog entry's latest version.
+                              Chain-precision is handled in the modal; this is a "you
+                              should click in to see what's available" indicator. */}
+                          {(() => {
+                            const entry = deployment.catalogEntryId
+                              ? catalogMap.get(deployment.catalogEntryId)
+                              : null;
+                            const installed = deployment.installedVersion;
+                            const latest = entry?.latestVersion;
+                            if (entry && installed && latest && installed !== latest) {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-0.5 rounded-full bg-amber-50 dark:bg-amber-900/30 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                                  title={`Latest: v${latest} (you have v${installed})`}
+                                  data-testid={`update-available-${deployment.id}`}
+                                >
+                                  <ArrowUpCircle size={10} />
+                                  Update available
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       </div>
                     </div>
