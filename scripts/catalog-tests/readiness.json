@@ -62,10 +62,6 @@
       "expect_code_max": 299,
       "timeout_seconds": 900
     },
-    "strapi": {
-      "kind": "skip",
-      "$comment": "DECISION NEEDED: naskio/strapi:5.30.1 fails with MODULE_NOT_FOUND on staticFiles.js — yarn-global install is broken in the image. Alternatives: (a) build a catalog-side Dockerfile from node:22-alpine + npx create-strapi-app + healthcheck, (b) use strapi/strapi:latest official (scaffold pattern), (c) drop from catalog. Skip until decided."
-    },
     "directus": { "path": "/admin" },
     "paperless-ngx": { "path": "/accounts/login/" },
     "invoiceninja": {
