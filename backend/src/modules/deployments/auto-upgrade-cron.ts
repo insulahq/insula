@@ -91,9 +91,13 @@ export async function runAutoUpgradePass(
         .from(catalogEntryVersions)
         .where(eq(catalogEntryVersions.catalogEntryId, entry.id));
       const installed = dep.installedVersion;
+      // Newer-only + upgradeFrom check (strict/advisory). Without the version
+      // comparator, an open-mode app with installed=2.0 and catalog versions
+      // [1.0, 2.0, 3.0] would have the cron "upgrade" it to 1.0 first.
       const directlyReachable = versions
         .filter((v) => v.version !== installed)
         .filter((v) => {
+          if (installed && compareVersions(v.version, installed) <= 0) return false;
           if (lockMode === 'open' || !installed) return true;
           const from = parseJsonField<string[]>(v.upgradeFrom) ?? [];
           return from.includes(installed);
