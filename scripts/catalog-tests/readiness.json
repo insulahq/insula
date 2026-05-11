@@ -34,8 +34,18 @@
   },
   "overrides": {
     "wordpress": { "path": "/wp-login.php" },
+    "rocketchat": {
+      "path": "/api/info",
+      "expect_code_max": 299,
+      "timeout_seconds": 900,
+      "$comment": "Mongo runs --replSet rs0 with auto rs.initiate. NODE_OPTIONS caps heap below 1Gi container limit. Boot is slow (rocketchat:8 large bundle)."
+    },
     "nextcloud": { "path": "/login" },
-    "moodle-bitnami": { "path": "/login/index.php" },
+    "moodle-bitnami": {
+      "path": "/login/index.php",
+      "timeout_seconds": 1200,
+      "$comment": "erseco/alpine-moodle on first boot: extract /var/www/html, run admin/cli/install.php (db schema + initial data + admin user). Slow on cold start; /login/index.php is the post-install target."
+    },
     "prestashop": { "path": "/install/" },
     "matomo": { "path": "/index.php" },
     "bookstack": { "path": "/login", "timeout_seconds": 900, "$comment": "Bookstack runs APP_KEY:generate + db:migrate at first boot — slow on starter plan" },
@@ -43,8 +53,8 @@
     "discourse": {
       "path": "/srv/status",
       "expect_code_max": 299,
-      "timeout_seconds": 900,
-      "$comment": "Discourse boots slow on cold start — Sidekiq + Ruby workers"
+      "timeout_seconds": 1500,
+      "$comment": "bitnamilegacy/discourse:3.5.0. First-boot bootstrap is slow (postgres init + db schema + Sidekiq + Ruby workers); /srv/status returns 200 once Passenger is up."
     },
     "plausible": { "path": "/login" },
     "immich": {
@@ -52,17 +62,18 @@
       "expect_code_max": 299,
       "timeout_seconds": 900
     },
-    "strapi": { "path": "/admin" },
     "directus": { "path": "/admin" },
     "paperless-ngx": { "path": "/accounts/login/" },
-    "invoiceninja": { "path": "/setup" },
+    "invoiceninja": {
+      "path": "/setup",
+      "ingress_component": "nginx",
+      "timeout_seconds": 900,
+      "$comment": "Multi-component: invoiceninja(FPM:9000), nginx(80, ingress), mariadb. Probe nginx; first-boot seeds db (BanksSeeder, etc) — slow."
+    },
     "dolibarr": { "path": "/install/" },
     "coturn": {
-      "kind": "stun_probe",
-      "ports_tcp": [3478],
-      "ports_udp": [3478],
-      "timeout_seconds": 300,
-      "$comment": "STUN/TURN — no ingress component. Probe the host-port directly."
+      "kind": "skip",
+      "$comment": "DinD docker-compose.local.yml does not publish hostPort 3478. The pod boots fine in-cluster but external STUN probe is unreachable. Verify in real staging via integration-staging.sh, not local DinD."
     },
     "jitsi": {
       "ingress_component": "web",
