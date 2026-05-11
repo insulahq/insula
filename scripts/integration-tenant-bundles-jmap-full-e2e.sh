@@ -466,7 +466,7 @@ REMOTE
   # the <addr>/INBOX root. Locate the INBOX inside the seeded mailbox
   # tree we just extracted.
   RESULT=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec stalwart-probe -- sh -c '
-INBOX=\$(find /tmp/restore/extracted -type d -name cur -path \"*$TEST_ADDR/INBOX/cur*\" | head -1 | sed s,/cur,,)
+INBOX=\$(find /tmp/restore/extracted -type d -name cur -ipath \"*$TEST_ADDR/inbox/cur*\" | head -1 | sed s,/cur,,)
 [ -n \"\$INBOX\" ] || { echo no-inbox; exit 1; }
 # Reroot under <RESTORE_ADDR>: the restore script uses argv[username]
 # to authenticate; we mount the maildir tree as <restore-addr>/INBOX/.
@@ -476,7 +476,7 @@ mkdir -p /tmp/restore/target/INBOX/new /tmp/restore/target/INBOX/tmp
 /usr/local/bin/restore-mailbox.py \
   stalwart-mail.mail.svc.cluster.local 993 \
   $RESTORE_ADDR%master@master.local \"\$STALWART_MASTER_PASSWORD\" \
-  merge-skip /tmp/restore/target 2>&1 | tail -20
+  merge-skip-duplicates /tmp/restore/target 2>&1 | tail -20
 '")
   T1=$(date +%s)
   echo "$RESULT"
