@@ -120,10 +120,10 @@ spec:
                   set -euo pipefail
                   # IMPORTANT: this file is rendered by Flux Kustomization
                   # with `postBuild.substituteFrom` enabled, which expands
-                  # every `${VAR}` against `platform-cluster-config`. Bash
+                  # every `${VAR}` against `platform-cluster-config`. Bash    # ci-flux-escape: ignore
                   # variable references therefore MUST be written as
-                  # `$${VAR}` here so a single `${VAR}` survives Flux into
-                  # the running pod. Bare `$VAR` (no braces) is safe.
+                  # `$${VAR}` here so a single `${VAR}` survives Flux into  # ci-flux-escape: ignore
+                  # the running pod. Bare `$VAR` (no braces) is safe.       # ci-flux-escape: ignore
                   #
                   # Busybox `date` (alpine/k8s) does not understand GNU's
                   # `-d "N days ago"`, so we use POSIX arithmetic.

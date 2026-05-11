@@ -115,6 +115,20 @@ jobs:
         # this guard ensures everything we *do* control self-expires.
         run: ./scripts/ci-job-ttl-check.sh
 
+  flux-escape-check:
+    name: Flux postBuild ${VAR} escape guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify CronJob/Job inline shell escapes ${VAR} as $${VAR}
+        # Flux postBuild.substituteFrom expands every ${VAR} against
+        # platform-cluster-config before kubectl apply. Bash locals
+        # and pod-env vars get stripped to empty strings, silently
+        # breaking the inline script. The 2026-05-10 job-gc E2E
+        # caught one live instance; the same class affected 7 other
+        # CronJobs across k8s/base/. This guard prevents regression.
+        run: ./scripts/ci-flux-escape-check.sh
+
   task-helper-coverage:
     name: Task Tracker helper coverage
     runs-on: ubuntu-latest
