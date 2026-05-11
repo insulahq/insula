@@ -335,9 +335,10 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     // No subPath — entire PVC mounted at container_path
     expect(mount.subPath).toBeUndefined();
     expect(mount.mountPath).toBe('/var/www/html');
-    // init-dirs runs a no-op since there are no subdirs to create
+    // init-dirs chmods the PVC root so non-root runtime users (www-data,
+    // postgres, etc.) can write to it on first boot.
     const initCmd = body.spec.template.spec.initContainers[0].command[2];
-    expect(initCmd).toBe('true');
+    expect(initCmd).toBe('chmod 777 /data');
   });
 
   it('local_path "." with null local_path also mounts PVC root', async () => {

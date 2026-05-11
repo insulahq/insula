@@ -273,12 +273,31 @@ function buildVolumeMountSpec(
     return { name: 'client-storage', mountPath: v.container_path, subPath };
   });
 
-  // init-dirs only needs to mkdir for sub-path mounts; root mounts rely on
-  // the PVC being pre-formatted by storage provisioning.
+  // init-dirs needs to ensure every mount target is writable by the
+  // application container's runtime user. Two cases:
+  //   - sub-path mount: mkdir the subdir + chmod 777 (existing behaviour)
+  //   - PVC-root mount: chmod 777 the PVC root itself
+  // Without this the runtime fails: serversideup/php runs as www-data
+  // (UID 33), postgres as UID 999, etc. The PVC is provisioned root:root
+  // 0755 by local-path/Longhorn, so non-root users can't write.
+  //
+  // 0777 is acceptable here because each tenant has its own PVC — there's
+  // nothing for other tenants to read. fsGroup at the pod level would be
+  // tidier but doesn't cover every image's UID/GID convention (bitnami
+  // uses 1001, postgres uses 999, alpine images vary).
   const subPathMounts = mounts.filter(m => m.subPath !== undefined);
-  const mkdirCmd = subPathMounts.length > 0
-    ? subPathMounts.map(m => `mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`).join(' && ')
-    : 'true'; // no-op when all mounts are PVC-root
+  const hasRootMount = mounts.some(m => m.subPath === undefined);
+  const mkdirParts: string[] = [];
+  if (hasRootMount) {
+    // PVC root is mounted directly into the container. Make it world-
+    // writable so the non-root runtime user can write to its docroot/data
+    // dir on first boot.
+    mkdirParts.push('chmod 777 /data');
+  }
+  for (const m of subPathMounts) {
+    mkdirParts.push(`mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`);
+  }
+  const mkdirCmd = mkdirParts.length > 0 ? mkdirParts.join(' && ') : 'true';
 
   const initDirsContainer = {
     name: 'init-dirs',
