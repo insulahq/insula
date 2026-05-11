@@ -45,10 +45,12 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 # JMAP method-call namespace
@@ -420,23 +422,54 @@ def run(args: argparse.Namespace) -> int:
 
     fetched = 0
     skipped = 0
-    for msg in messages:
-        try:
-            blob_id = msg.get("blobId")
-            if not blob_id:
-                sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} has no blobId; skipping\n")
+    # Parallel Blob/get pipeline. JmapClient methods are stateless beyond
+    # the constant auth header + URL templates set during session() — and
+    # urllib.request opens a fresh connection per call — so the same
+    # client instance is safe to share across worker threads.
+    # `workers=1` falls back to the serial path (useful for debugging or
+    # if Stalwart's maxConcurrentRequests is < 4).
+    write_lock = threading.Lock()  # _write_message hits the filesystem;
+                                    # `os.makedirs(exist_ok=True)` is
+                                    # technically race-safe but rename
+                                    # over the same name isn't.
+
+    def _fetch_one(msg: Dict[str, Any]) -> Optional[str]:
+        blob_id = msg.get("blobId")
+        if not blob_id:
+            sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} has no blobId; skipping\n")
+            return None
+        blob = client.download_blob(
+            blob_id,
+            blob_type="message/rfc822",
+            filename=msg.get("id", "msg"),
+        )
+        with write_lock:
+            return _write_message(args.output_dir, args.account_address, msg, mailbox_names, blob)
+
+    workers = max(1, args.workers)
+    if workers == 1 or len(messages) <= 1:
+        for msg in messages:
+            try:
+                if _fetch_one(msg):
+                    fetched += 1
+                else:
+                    skipped += 1
+            except (JmapError, OSError) as e:
+                sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} fetch failed: {e}\n")
                 skipped += 1
-                continue
-            blob = client.download_blob(
-                blob_id,
-                blob_type="message/rfc822",
-                filename=msg.get("id", "msg"),
-            )
-            _write_message(args.output_dir, args.account_address, msg, mailbox_names, blob)
-            fetched += 1
-        except (JmapError, OSError) as e:
-            sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} fetch failed: {e}\n")
-            skipped += 1
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="jmap-fetch") as pool:
+            futures = {pool.submit(_fetch_one, m): m for m in messages}
+            for f in as_completed(futures):
+                m = futures[f]
+                try:
+                    if f.result():
+                        fetched += 1
+                    else:
+                        skipped += 1
+                except (JmapError, OSError) as e:
+                    sys.stderr.write(f"jmap-sync: message {m.get('id')!r} fetch failed: {e}\n")
+                    skipped += 1
 
     # Write new state
     if args.state_out:
@@ -468,6 +501,12 @@ def main() -> int:
     p.add_argument("--output-dir", required=True, help="Root of the Maildir output tree")
     p.add_argument("--state-in", help="Path to read prior JMAP state from (JSON {state: ...})")
     p.add_argument("--state-out", help="Path to write new JMAP state to (JSON {state: ...})")
+    p.add_argument("--workers", type=int,
+                   default=int(os.environ.get("JMAP_DOWNLOAD_WORKERS", "8")),
+                   help="Parallel Blob/get worker pool size (env JMAP_DOWNLOAD_WORKERS, default 8). "
+                        "Stalwart's maxConcurrentRequests caps the effective parallelism — "
+                        "Stalwart defaults to 4 and our bootstrap-plan bumps it to 32. "
+                        "Set to 1 to force serial downloads (debugging).")
     args = p.parse_args()
     return run(args)
 
