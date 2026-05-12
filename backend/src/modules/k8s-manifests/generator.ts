@@ -68,6 +68,12 @@ export async function generateClientManifests(
   const manifests: ManifestFile[] = [];
 
   // 1. Namespace
+  //    Labels mirror what `applyNamespace()` in k8s-provisioner sets at
+  //    runtime, including the PSS `enforce/warn/audit` triplet
+  //    introduced by ADR-036. The downloadable manifest bundle MUST
+  //    keep these in lock-step — an operator who re-applies the
+  //    generated YAML to restore a namespace would otherwise drop the
+  //    PSS enforcement labels and silently weaken tenant isolation.
   manifests.push(buildManifest('namespace.yaml', {
     apiVersion: 'v1',
     kind: 'Namespace',
@@ -76,6 +82,12 @@ export async function generateClientManifests(
       labels: {
         platform: 'k8s-hosting',
         client: clientId,
+        'pod-security.kubernetes.io/enforce': 'baseline',
+        'pod-security.kubernetes.io/enforce-version': 'latest',
+        'pod-security.kubernetes.io/warn': 'restricted',
+        'pod-security.kubernetes.io/warn-version': 'latest',
+        'pod-security.kubernetes.io/audit': 'restricted',
+        'pod-security.kubernetes.io/audit-version': 'latest',
       },
     },
   }));
@@ -174,6 +186,9 @@ export async function generateClientManifests(
 
   // 5. Deployments + Services (one per deployment)
   for (const deployment of clientDeployments) {
+    // Custom deployments (ADR-036) render via the custom-deployments
+    // module in PR-2, not the catalog-manifests path. Skip them here.
+    if (deployment.catalogEntryId === null) continue;
     const entry = entryMap.get(deployment.catalogEntryId);
 
     // Resolve container image from catalog entry components or fallback

@@ -8,6 +8,7 @@ function createMockK8sClients(): K8sClients {
     core: {
       createNamespace: vi.fn().mockResolvedValue({}),
       readNamespace: vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 })),
+      patchNamespace: vi.fn().mockResolvedValue({}),
       createNamespacedResourceQuota: vi.fn().mockResolvedValue({}),
       // Phase F+G fix: applyPVC now reads-then-creates to dodge the
       // ResourceQuota admission firing 403 before the existence check.
@@ -72,7 +73,7 @@ describe('K8s Provisioner Service', () => {
       expect(PROVISION_STEPS.length).toBeGreaterThanOrEqual(4);
     });
 
-    it('should create namespace with correct labels', async () => {
+    it('should create namespace with platform + client labels', async () => {
       const { applyNamespace } = await import('./service.js');
       await applyNamespace(mockK8s, 'client-test-ns', 'client-123');
       expect(mockK8s.core.createNamespace).toHaveBeenCalledWith(
@@ -90,11 +91,47 @@ describe('K8s Provisioner Service', () => {
       );
     });
 
-    it('should skip namespace creation if it already exists', async () => {
+    // ADR-036: PSS labels on every tenant namespace.
+    it('should set Pod Security Standards labels at creation', async () => {
+      const { applyNamespace } = await import('./service.js');
+      await applyNamespace(mockK8s, 'client-test-ns', 'client-123');
+      const callBody = (mockK8s.core.createNamespace as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        body: { metadata: { labels: Record<string, string> } };
+      };
+      expect(callBody.body.metadata.labels).toMatchObject({
+        'pod-security.kubernetes.io/enforce': 'baseline',
+        'pod-security.kubernetes.io/enforce-version': 'latest',
+        'pod-security.kubernetes.io/warn': 'restricted',
+        'pod-security.kubernetes.io/audit': 'restricted',
+      });
+    });
+
+    // ADR-036 backfill behavior: when a namespace already exists, we
+    // patch labels (strategic-merge) rather than skipping — that's
+    // what makes the platform converge PSS coverage onto pre-ADR-036
+    // tenants on the next provisioning touch.
+    it('should patch PSS labels onto an existing namespace (backfill path)', async () => {
       (mockK8s.core.readNamespace as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { applyNamespace } = await import('./service.js');
       await applyNamespace(mockK8s, 'existing-ns', 'client-123');
       expect(mockK8s.core.createNamespace).not.toHaveBeenCalled();
+      expect(mockK8s.core.patchNamespace).toHaveBeenCalledTimes(1);
+      const patchCall = (mockK8s.core.patchNamespace as ReturnType<typeof vi.fn>).mock.calls[0];
+      const patchBody = patchCall[0] as {
+        name: string;
+        body: { metadata: { labels: Record<string, string> } };
+      };
+      expect(patchBody.name).toBe('existing-ns');
+      expect(patchBody.body.metadata.labels).toMatchObject({
+        platform: 'k8s-hosting',
+        client: 'client-123',
+        'pod-security.kubernetes.io/enforce': 'baseline',
+        'pod-security.kubernetes.io/warn': 'restricted',
+        'pod-security.kubernetes.io/audit': 'restricted',
+      });
+      // Patch must be strategic-merge so label maps union, not replace.
+      const override = patchCall[1] as { _expectedContentType?: string };
+      expect(override?._expectedContentType).toBe('application/strategic-merge-patch+json');
     });
 
     it('should create TWO ResourceQuotas: a Pod-scoped one (CPU/memory) + an unscoped storage one', async () => {

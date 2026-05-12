@@ -234,7 +234,12 @@ export async function reconcileIngress(
   // catches the hardcoded 8080 bug — each catalog entry declares its own
   // ingress port via components[*].ports[*].ingress = true.
   const clientDeployments = await db.select().from(deployments).where(eq(deployments.clientId, clientId));
-  const entryIds = [...new Set(clientDeployments.map(d => d.catalogEntryId))];
+  // Custom deployments (ADR-036) carry no catalog entry; PR-2 wires
+  // their ingress backends via a separate path. Drop them here so the
+  // catalog inArray lookup is well-typed.
+  const entryIds = [...new Set(
+    clientDeployments.map(d => d.catalogEntryId).filter((id): id is string => id !== null),
+  )];
   const entryRows = entryIds.length > 0
     ? await db.select().from(catalogEntries).where(inArray(catalogEntries.id, entryIds))
     : [];
@@ -242,6 +247,7 @@ export async function reconcileIngress(
 
   const backendMap = new Map<string, { serviceName: string; port: number }>();
   for (const d of clientDeployments) {
+    if (d.catalogEntryId === null) continue;
     const entry = entryMap.get(d.catalogEntryId);
     if (!entry) continue;
     try {
