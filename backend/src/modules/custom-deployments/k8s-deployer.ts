@@ -712,13 +712,15 @@ function buildContainerSecurityContext(
   service: CustomDeploymentService,
   _spec: CustomDeploymentSpec,
 ): Record<string, unknown> {
-  // PSS-baseline requires `allowPrivilegeEscalation: false` and
-  // `capabilities.drop: [ALL]`. We set both unconditionally — any
-  // tenant image that needs them will fail at admission with a
-  // crisp error (which the validator's deny-list already prevents).
+  // PSS baseline does NOT require `capabilities.drop:[ALL]` — that is a
+  // PSS *restricted* requirement. Dropping ALL breaks many stock images
+  // (nginx needs CHOWN during startup, etc.). We keep
+  // `allowPrivilegeEscalation:false` (safe for nearly all images) but
+  // leave capability management to the image's own USER/capabilities
+  // declarations. The namespace PSS-baseline admission controller handles
+  // actually dangerous capabilities (NET_RAW, SYS_ADMIN, …).
   const ctx: Record<string, unknown> = {
     allowPrivilegeEscalation: false,
-    capabilities: { drop: ['ALL'] },
     readOnlyRootFilesystem: service.readOnlyRootFilesystem,
   };
   // PSS baseline does NOT forbid root by itself; PSS restricted does.
