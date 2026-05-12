@@ -443,12 +443,14 @@ function buildVolumeMounts(
       mounts.push({
         name: configMapVolumeName(input.deploymentId, vm.name),
         mountPath: vm.containerPath,
+        subPath: 'content',
         ...(vm.readOnly ? { readOnly: true } : {}),
       });
     } else if (mountKind === 'secret') {
       mounts.push({
         name: secretVolumeName(input.deploymentId, vm.name),
         mountPath: vm.containerPath,
+        subPath: 'content',
         readOnly: true,
       });
     } else {
