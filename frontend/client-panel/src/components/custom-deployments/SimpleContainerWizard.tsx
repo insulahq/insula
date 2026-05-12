@@ -218,7 +218,7 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
                   Service <Tooltip text="Creates a ClusterIP Service for this port, making it reachable by other pods and the ingress controller within the cluster." />
                 </span>
                 <span className="col-span-2 flex items-center gap-0.5">
-                  Ingress <Tooltip text="Marks this port as eligible to be used as the backend when creating a domain route. Only one port per deployment needs this enabled." />
+                  Ingress <Tooltip text="Allow this port to be connected to an ingress route/domain for external reachability." />
                 </span>
               </div>
             )}
