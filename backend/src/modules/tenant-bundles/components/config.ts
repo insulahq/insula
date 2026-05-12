@@ -76,6 +76,7 @@ export const CONFIG_DUMP_TABLES = [
   'clientMtlsProviders',
   'clientZitiProviders',
   'clientZrokAccounts',
+  'clientCertificates',
 ] as const;
 
 /**
@@ -271,6 +272,10 @@ async function selectClientRows(
     }
     case 'clientZrokAccounts': {
       const r = await rawDb.execute(sql`SELECT * FROM client_zrok_accounts WHERE client_id = ${clientId}`);
+      return r.rows;
+    }
+    case 'clientCertificates': {
+      const r = await rawDb.execute(sql`SELECT * FROM client_certificates WHERE client_id = ${clientId}`);
       return r.rows;
     }
   }

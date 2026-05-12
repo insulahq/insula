@@ -47,7 +47,7 @@ WORKLOADS=(
 # has its own schema (no .spec.template.spec.* path) so it is verified
 # separately below. redis was removed in M14.
 CNPG_CLUSTERS=(
-  "platform|postgres|0"
+  "platform|system-db|0"
 )
 
 OVERLAYS=(staging production)
