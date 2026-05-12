@@ -31,8 +31,6 @@ SSH_HOST="${SSH_HOST:-}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -q}"
 KUBECTL="${KUBECTL:-kubectl}"
 
-# Minimum commit that carries all 5 PRs. Update when hotfixes land.
-MIN_COMMIT_PREFIX="a2c23eb5"
 
 if [[ -z "$ADMIN_PASSWORD" ]]; then
   echo "ERROR: ADMIN_PASSWORD must be set" >&2
