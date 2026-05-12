@@ -112,12 +112,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const body = parsed.data as {
-      hostname: string;
-      path?: string;
-      deployment_id?: string | null;
-      private_worker_id?: string | null;
-    };
+    const body = parsed.data;
     const route = await createRoute(
       app.db,
       domainId,
@@ -126,6 +121,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       body.deployment_id,
       body.path ?? '/',
       body.private_worker_id,
+      body.service_port,
     );
     await triggerReconcile(clientId);
 
@@ -171,6 +167,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       privateWorkerId: parsed.data.private_worker_id,
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
+      servicePort: parsed.data.service_port,
     }, clientId);
     await triggerReconcile(clientId);
     return success(updated);

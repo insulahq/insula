@@ -1,15 +1,19 @@
 // "Custom Containers" tab content inside Applications.tsx.
 //
 // Lists every custom-source deployment for the current client with
-// a lazy-loaded "Updates available?" pill, an action menu (Restart /
-// Upgrade tag / Manage PAT / Delete), and two top-right "New …"
+// a lazy-loaded "Updates available?" pill, an action menu (Edit /
+// Restart / Upgrade tag / Manage PAT / Delete), and two top-right "New …"
 // buttons that open the simple-form wizard or the compose editor.
 //
 // The check-updates-batch query fires once on mount (per render of
 // this tab) and the result lives in TanStack Query's cache; the
 // backend already serves stale results from its 60-min cache row.
+//
+// Overflow menu is rendered via createPortal(document.body) to escape
+// the overflow-x-auto table clip region.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertCircle, ArrowUpCircle, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -36,7 +40,9 @@ type ActiveModal =
   | { kind: 'simple-wizard' }
   | { kind: 'compose-editor' }
   | { kind: 'pat'; row: CustomDeploymentRow }
-  | { kind: 'upgrade'; row: CustomDeploymentRow };
+  | { kind: 'upgrade'; row: CustomDeploymentRow }
+  | { kind: 'edit-simple'; row: CustomDeploymentRow }
+  | { kind: 'edit-compose'; row: CustomDeploymentRow };
 
 export function CustomContainersTab({ clientId, canManage }: CustomContainersTabProps) {
   const [activeModal, setActiveModal] = useState<ActiveModal>({ kind: 'none' });
@@ -45,9 +51,6 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
   const { data, isLoading, error, refetch } = useCustomDeployments(clientId);
   const rows = useMemo(() => data?.data ?? [], [data]);
 
-  // Lazy: fire the batch check once on mount, scoped to currently-
-  // visible deployments. Cache TTL is 30 min in the hook, matching
-  // the backend's 60-min server cache.
   const deploymentIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const updatesQuery = useCheckUpdatesBatch(clientId, deploymentIds);
 
@@ -66,6 +69,27 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
     }
     deleteMutation.mutate(row.id);
   };
+
+  const onEdit = (row: CustomDeploymentRow) => {
+    setActionMenuOpen(null);
+    if (row.customSpec?.sourceMode === 'compose') {
+      setActiveModal({ kind: 'edit-compose', row });
+    } else {
+      setActiveModal({ kind: 'edit-simple', row });
+    }
+  };
+
+  // Close action menu on outside click
+  useEffect(() => {
+    if (!actionMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!(e.target as Element).closest('[data-action-menu]')) {
+        setActionMenuOpen(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [actionMenuOpen]);
 
   return (
     <div className="space-y-4">
@@ -130,7 +154,14 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
                 const firstImage = Object.values(row.customSpec?.services ?? {})[0]?.image;
                 const updates = updatesQuery.data?.data.results?.[row.id];
                 return (
-                  <tr key={row.id} data-testid={`custom-row-${row.id}`}>
+                  <tr
+                    key={row.id}
+                    data-testid={`custom-row-${row.id}`}
+                    className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                    onClick={() => {
+                      if (canManage) onEdit(row);
+                    }}
+                  >
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{row.name}</td>
                     <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.customSpec?.sourceMode ?? '—'}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-700 dark:text-gray-300">
@@ -154,52 +185,18 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
                         onUpgrade={() => setActiveModal({ kind: 'upgrade', row })}
                       />
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       {canManage && (
-                        <div className="relative inline-block">
-                          <button
-                            type="button"
-                            onClick={() => setActionMenuOpen(actionMenuOpen === row.id ? null : row.id)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-                            data-testid={`custom-actions-${row.id}`}
-                          >
-                            <MoreVertical size={16} />
-                          </button>
-                          {actionMenuOpen === row.id && (
-                            <div className="absolute right-0 z-10 mt-1 w-48 rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg dark:border-gray-600 dark:bg-gray-800">
-                              <button
-                                type="button"
-                                onClick={() => onRestart(row)}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-                              >
-                                <RefreshCw size={14} /> Restart
-                              </button>
-                              {row.customSpec?.sourceMode === 'simple' && (
-                                <button
-                                  type="button"
-                                  onClick={() => { setActionMenuOpen(null); setActiveModal({ kind: 'upgrade', row }); }}
-                                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-                                >
-                                  <ArrowUpCircle size={14} /> Upgrade tag
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => { setActionMenuOpen(null); setActiveModal({ kind: 'pat', row }); }}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-                              >
-                                <Pencil size={14} /> Manage PAT
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onDelete(row)}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
-                              >
-                                <Trash2 size={14} /> Delete
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                        <ActionMenu
+                          row={row}
+                          open={actionMenuOpen === row.id}
+                          onToggle={() => setActionMenuOpen(actionMenuOpen === row.id ? null : row.id)}
+                          onEdit={() => onEdit(row)}
+                          onRestart={() => onRestart(row)}
+                          onUpgrade={() => { setActionMenuOpen(null); setActiveModal({ kind: 'upgrade', row }); }}
+                          onPat={() => { setActionMenuOpen(null); setActiveModal({ kind: 'pat', row }); }}
+                          onDelete={() => onDelete(row)}
+                        />
                       )}
                     </td>
                   </tr>
@@ -218,10 +215,28 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
           onCreated={() => { setActiveModal({ kind: 'none' }); refetch(); }}
         />
       )}
+      {activeModal.kind === 'edit-simple' && (
+        <SimpleContainerWizard
+          clientId={clientId}
+          existingNames={rows.map((r) => r.name)}
+          existingDeployment={activeModal.row}
+          onClose={() => setActiveModal({ kind: 'none' })}
+          onCreated={() => { setActiveModal({ kind: 'none' }); refetch(); }}
+        />
+      )}
       {activeModal.kind === 'compose-editor' && (
         <ComposeEditor
           clientId={clientId}
           existingNames={rows.map((r) => r.name)}
+          onClose={() => setActiveModal({ kind: 'none' })}
+          onCreated={() => { setActiveModal({ kind: 'none' }); refetch(); }}
+        />
+      )}
+      {activeModal.kind === 'edit-compose' && (
+        <ComposeEditor
+          clientId={clientId}
+          existingNames={rows.map((r) => r.name)}
+          existingDeployment={activeModal.row}
           onClose={() => setActiveModal({ kind: 'none' })}
           onCreated={() => { setActiveModal({ kind: 'none' }); refetch(); }}
         />
@@ -243,7 +258,6 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
               const s = Object.values(activeModal.row.customSpec?.services ?? {})[0];
               const updates = updatesQuery.data?.data.results?.[activeModal.row.id];
               if (s && updates?.latest && updates.status !== 'unknown' && updates.status !== 'no-update') {
-                // Replace the tag in `image:1.0.0` with the new tag.
                 const idx = s.image.lastIndexOf(':');
                 return idx > 0 && !s.image.includes('@') ? `${s.image.slice(0, idx)}:${updates.latest}` : s.image;
               }
@@ -252,6 +266,94 @@ export function CustomContainersTab({ clientId, canManage }: CustomContainersTab
           }
           onClose={() => setActiveModal({ kind: 'none' })}
         />
+      )}
+    </div>
+  );
+}
+
+// ─── Portal-based action menu ────────────────────────────────────────────────
+
+interface ActionMenuProps {
+  row: CustomDeploymentRow;
+  open: boolean;
+  onToggle: () => void;
+  onEdit: () => void;
+  onRestart: () => void;
+  onUpgrade: () => void;
+  onPat: () => void;
+  onDelete: () => void;
+}
+
+function ActionMenu({ row, open, onToggle, onEdit, onRestart, onUpgrade, onPat, onDelete }: ActionMenuProps) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+
+  useEffect(() => {
+    if (open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setMenuPos({
+        top: rect.bottom + window.scrollY + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+  }, [open]);
+
+  return (
+    <div className="relative inline-block" data-action-menu>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={onToggle}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+        data-testid={`custom-actions-${row.id}`}
+      >
+        <MoreVertical size={16} />
+      </button>
+      {open && menuPos && createPortal(
+        <div
+          data-action-menu
+          style={{ position: 'absolute', top: menuPos.top, right: menuPos.right, zIndex: 9999 }}
+          className="w-48 rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg dark:border-gray-600 dark:bg-gray-800"
+        >
+          <button
+            type="button"
+            onClick={onEdit}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <Pencil size={14} /> Edit
+          </button>
+          <button
+            type="button"
+            onClick={onRestart}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <RefreshCw size={14} /> Restart
+          </button>
+          {row.customSpec?.sourceMode === 'simple' && (
+            <button
+              type="button"
+              onClick={onUpgrade}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              <ArrowUpCircle size={14} /> Upgrade tag
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onPat}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <Pencil size={14} /> Manage PAT
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+          >
+            <Trash2 size={14} /> Delete
+          </button>
+        </div>,
+        document.body,
       )}
     </div>
   );

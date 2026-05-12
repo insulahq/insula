@@ -37,7 +37,7 @@ export function useUpdateIngressRoute(clientId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ routeId, ...input }: { routeId: string; deployment_id?: string | null }) =>
+    mutationFn: ({ routeId, ...input }: { routeId: string; deployment_id?: string | null; service_port?: number | null }) =>
       apiFetch<{ data: IngressRouteResponse }>(
         `/api/v1/clients/${clientId}/domains/${domainId}/routes/${routeId}`,
         { method: 'PATCH', body: JSON.stringify(input) },

@@ -115,6 +115,7 @@ export async function createRoute(
   deploymentId?: string | null,
   path?: string,
   privateWorkerId?: string | null,
+  servicePort?: number | null,
 ) {
   // Polymorphic target validation (migration 0076 + 0085).
   //
@@ -258,6 +259,7 @@ export async function createRoute(
     isApex: apex ? 1 : 0,
     tlsMode: 'auto',
     status: 'active',
+    servicePort: servicePort ?? null,
   });
 
   // Auto-create DNS records for PRIMARY domains
@@ -314,6 +316,7 @@ export async function updateRoute(
     privateWorkerId?: string | null;
     tlsMode?: string;
     nodeHostname?: string | null;
+    servicePort?: number | null;
   },
   // Required when privateWorkerId is being set — we re-verify the worker
   // belongs to this client to defend against route-id enumeration that
@@ -385,6 +388,7 @@ export async function updateRoute(
   }
   if (input.tlsMode !== undefined) updateValues.tlsMode = input.tlsMode;
   if (input.nodeHostname !== undefined) updateValues.nodeHostname = input.nodeHostname;
+  if (input.servicePort !== undefined) updateValues.servicePort = input.servicePort;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));

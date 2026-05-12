@@ -518,11 +518,22 @@ export async function syncProtectedDirIngresses(
 
   // 3. Resolve deployment service name + port
   let serviceName = 'default';
-  const servicePort = 8080;
+  let servicePort = route.servicePort ?? 8080;
   if (route.deploymentId) {
     const [dep] = await db.select().from(deployments).where(eq(deployments.id, route.deploymentId));
     if (dep) {
       serviceName = dep.name;
+      // For custom deployments, pick port from customSpec when no explicit override.
+      if (!route.servicePort && dep.catalogEntryId === null && dep.customSpec) {
+        const spec = dep.customSpec as {
+          services?: Record<string, {
+            ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
+          }>;
+        };
+        const firstSvc = Object.values(spec.services ?? {})[0];
+        const ingressPort = firstSvc?.ports?.find(p => p.ingressEligible && p.exposeAsService);
+        if (ingressPort) servicePort = ingressPort.containerPort;
+      }
     }
   }
 

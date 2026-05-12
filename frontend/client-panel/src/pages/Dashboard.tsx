@@ -240,7 +240,7 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-3">
                 {activeDeployments.map((d) => {
-                  const entry = catalogMap.get(d.catalogEntryId);
+                  const entry = d.catalogEntryId ? catalogMap.get(d.catalogEntryId) : undefined;
                   return (
                     <div key={d.id} className="flex items-center justify-between">
                       <div className="min-w-0 flex-1">

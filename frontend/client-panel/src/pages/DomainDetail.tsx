@@ -10,6 +10,7 @@ import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
+import { useCustomDeployments } from '@/hooks/use-custom-deployments';
 import { useCatalog } from '@/hooks/use-catalog';
 import {
   useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord,
@@ -614,6 +615,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const navigate = useNavigate();
   const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
   const { data: deploymentsData } = useDeployments(clientId);
+  const { data: customDeploymentsData } = useCustomDeployments(clientId);
   const { data: catalogData } = useCatalog();
   const { data: ingressBaseData } = useIngressBaseDomain();
   const ingressBaseDomain = ingressBaseData?.data?.ingressBaseDomain ?? '';
@@ -629,9 +631,11 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   // "Confirm" state and a second click performs the delete.
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
+  const [assigningPort, setAssigningPort] = useState<Record<string, number | null>>({});
 
   const routes = routesData?.data ?? [];
   const allDeployments = deploymentsData?.data ?? [];
+  const customDeployments = customDeploymentsData?.data ?? [];
   const catalogEntries = catalogData?.data ?? [];
 
   // Only show deployments whose catalog entry has ingress-capable ports
@@ -640,7 +644,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   // types never serve HTTP traffic).
   const catalogMap = new Map(catalogEntries.map((e) => [e.id, e]));
   const deployments = allDeployments.filter((d) => {
-    const entry = catalogMap.get(d.catalogEntryId);
+    if (d.source === 'custom') return false; // handled separately via customDeployments
+    const entry = d.catalogEntryId ? catalogMap.get(d.catalogEntryId) : undefined;
     if (!entry) return true; // If catalog not loaded yet, show all to avoid hiding valid options
     // Check for explicit ingress ports in components
     const hasIngressPort = entry.components?.some((c) =>
@@ -649,6 +654,12 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     if (hasIngressPort) return true;
     // Fall back to type-based check: runtimes, statics, and applications serve HTTP
     return entry.type === 'runtime' || entry.type === 'static' || entry.type === 'application';
+  });
+
+  // Custom deployments that have at least one ingressEligible port.
+  const ingressableCustom = customDeployments.filter((cd) => {
+    const services = Object.values(cd.customSpec?.services ?? {});
+    return services.some(svc => (svc.ports ?? []).some(p => p.ingressEligible && p.exposeAsService));
   });
 
   /** Validate a single DNS label (subdomain part). */
@@ -679,10 +690,17 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     });
   };
 
-  const handleAssignDeployment = async (routeId: string, deploymentId: string | null) => {
+  const handleAssignDeployment = async (routeId: string, value: string | null) => {
     setAssigningRouteId(routeId);
     try {
-      await updateRoute.mutateAsync({ routeId, deployment_id: deploymentId });
+      if (!value) {
+        await updateRoute.mutateAsync({ routeId, deployment_id: null, service_port: null });
+        return;
+      }
+      // Value may be `deploymentId` (catalog) or `deploymentId:port` (custom multi-port).
+      const [deploymentId, portStr] = value.split(':');
+      const service_port = portStr ? parseInt(portStr, 10) : null;
+      await updateRoute.mutateAsync({ routeId, deployment_id: deploymentId, service_port });
     } finally {
       setAssigningRouteId(null);
     }
@@ -761,7 +779,11 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">
                       <select
-                        value={route.deploymentId ?? ''}
+                        value={(() => {
+                          if (!route.deploymentId) return '';
+                          const isCustom = ingressableCustom.some(cd => cd.id === route.deploymentId);
+                          return isCustom && route.servicePort ? `${route.deploymentId}:${route.servicePort}` : route.deploymentId;
+                        })()}
                         onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
                         disabled={assigningRouteId === route.id}
                         className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
@@ -770,6 +792,22 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                         {deployments.map((d) => (
                           <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
                         ))}
+                        {ingressableCustom.map((cd) => {
+                          const services = Object.values(cd.customSpec?.services ?? {});
+                          const allPorts = services.flatMap(svc =>
+                            (svc.ports ?? []).filter(p => p.ingressEligible && p.exposeAsService),
+                          );
+                          if (allPorts.length === 1) {
+                            return (
+                              <option key={cd.id} value={cd.id}>{cd.name} (custom, :{allPorts[0].containerPort})</option>
+                            );
+                          }
+                          return allPorts.map(p => (
+                            <option key={`${cd.id}:${p.containerPort}`} value={`${cd.id}:${p.containerPort}`}>
+                              {cd.name} (custom, :{p.containerPort}{p.name ? ` – ${p.name}` : ''})
+                            </option>
+                          ));
+                        })}
                       </select>
                       {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
                     </div>

@@ -247,7 +247,15 @@ export async function reconcileIngress(
 
   const backendMap = new Map<string, { serviceName: string; port: number }>();
   for (const d of clientDeployments) {
-    if (d.catalogEntryId === null) continue;
+    if (d.catalogEntryId === null) {
+      // Custom deployment (ADR-036): no catalog entry. The ingressEligible
+      // port is resolved from the customSpec on a per-route basis below,
+      // using route.servicePort when set, else the first ingressEligible port.
+      // Register a placeholder so the route loop can distinguish "custom" from
+      // "missing/broken catalog" — the actual per-route resolution happens when
+      // we iterate routes below using the customSpec on the deployment row.
+      continue;
+    }
     const entry = entryMap.get(d.catalogEntryId);
     if (!entry) continue;
     try {
@@ -267,6 +275,11 @@ export async function reconcileIngress(
       }
     }
   }
+
+  // Build custom-deployment lookup by id for fast per-route resolution.
+  const customDeploymentMap = new Map(
+    clientDeployments.filter(d => d.catalogEntryId === null).map(d => [d.id, d]),
+  );
 
   // Build private-worker → (service, port) lookup. Each active worker has a
   // per-worker ClusterIP Service `pw-<id>` in the client's namespace
@@ -312,11 +325,38 @@ export async function reconcileIngress(
     // set. Both-null is allowed for "draft" routes — the `if (!backend)
     // continue` below skips them so they don't generate Ingress rules
     // until the operator binds a target via PATCH.
-    const backend = route.privateWorkerId
-      ? privateWorkerBackends.get(route.privateWorkerId)
-      : route.deploymentId
-        ? backendMap.get(route.deploymentId)
-        : undefined;
+    let backend: { serviceName: string; port: number } | undefined;
+    if (route.privateWorkerId) {
+      backend = privateWorkerBackends.get(route.privateWorkerId);
+    } else if (route.deploymentId) {
+      const catalogBackend = backendMap.get(route.deploymentId);
+      if (catalogBackend) {
+        backend = catalogBackend;
+      } else {
+        // Custom deployment: resolve from customSpec.
+        const dep = customDeploymentMap.get(route.deploymentId);
+        if (dep?.customSpec) {
+          const spec = dep.customSpec as {
+            services?: Record<string, {
+              ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
+            }>;
+          };
+          const services = Object.entries(spec.services ?? {});
+          if (services.length > 0) {
+            const [svcName, svc] = services[0];
+            const ingressPorts = (svc.ports ?? []).filter(p => p.ingressEligible && p.exposeAsService);
+            const selectedPort = route.servicePort
+              ? (svc.ports ?? []).find(p => p.containerPort === route.servicePort)
+              : ingressPorts[0];
+            if (selectedPort) {
+              const svcCount = services.length;
+              const k8sSvcName = svcCount <= 1 ? dep.name : `${dep.name}-${svcName}`;
+              backend = { serviceName: k8sSvcName, port: selectedPort.containerPort };
+            }
+          }
+        }
+      }
+    }
     if (!backend) continue; // Not ingressable / target missing — skip.
 
     const primaryRule = {

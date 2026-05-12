@@ -44,6 +44,8 @@ export const ingressRouteResponseSchema = z.object({
   customErrorCodes: z.string().nullable(),
   customErrorPath: z.string().nullable(),
   additionalHeaders: z.record(z.string(), z.string()).nullable(),
+  // Custom-deployment routing — null for catalog deployments
+  servicePort: z.number().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -61,6 +63,7 @@ export const createIngressRouteSchema = z
     path: z.string().min(1).max(255).optional(),
     deployment_id: uuidField.nullable().optional(),
     private_worker_id: uuidField.nullable().optional(),
+    service_port: z.number().int().min(1).max(65535).nullable().optional(),
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),
@@ -73,6 +76,7 @@ export const updateIngressRouteSchema = z
     private_worker_id: uuidField.nullable().optional(),
     tls_mode: z.enum(['auto', 'custom', 'none']).optional(),
     node_hostname: z.string().max(255).nullable().optional(),
+    service_port: z.number().int().min(1).max(65535).nullable().optional(),
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),
