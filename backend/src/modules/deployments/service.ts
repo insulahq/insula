@@ -813,6 +813,7 @@ export async function hardDeleteDeployment(
   clientId: string,
   deploymentId: string,
   k8s?: K8sClients,
+  deleteData?: boolean,
 ) {
   const deployment = await getDeploymentById(db, clientId, deploymentId);
 
@@ -834,6 +835,21 @@ export async function hardDeleteDeployment(
           await deleteDeploymentResources(k8s, namespace, deployment.name, components);
         } catch {
           // K8s cleanup failed — still delete DB record
+        }
+      }
+
+      if (deleteData && deployment.storagePath) {
+        try {
+          const { fileManagerRequest } = await import('../file-manager/service.js');
+          const { getFileManagerImage } = await import('../file-manager/image.js');
+          const kubeconfigPath = undefined;
+          await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
+            method: 'POST',
+            body: JSON.stringify({ path: `/${deployment.storagePath}` }),
+            contentType: 'application/json',
+          });
+        } catch {
+          // Storage path removal failed — still delete DB record
         }
       }
     }

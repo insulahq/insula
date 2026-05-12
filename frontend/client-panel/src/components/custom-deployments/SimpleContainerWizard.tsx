@@ -375,9 +375,9 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
             disabled={!image || validateMutation.isPending}
             className={clsx(
               'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50',
-              validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-600 dark:bg-green-900/20 dark:text-green-300',
-              validateState === 'warning' && 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-300',
-              validateState === 'error' && 'border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-600 dark:bg-red-900/20 dark:text-red-300',
+              validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-500 dark:bg-green-900/40 dark:text-green-200 dark:hover:bg-green-900/60',
+              validateState === 'warning' && 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60',
+              validateState === 'error' && 'border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-500 dark:bg-red-900/40 dark:text-red-200 dark:hover:bg-red-900/60',
               validateState === 'idle' && 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
             )}
           >

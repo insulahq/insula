@@ -55,21 +55,42 @@ interface Props {
   readonly existingDeployment?: CustomDeploymentRow;
 }
 
-const DEFAULT_COMPOSE = `# Compose 3.7-3.9 subset. Documentation: docs/03-features/CUSTOM_CONTAINERS_USER_GUIDE.md
+const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/03-features/CUSTOM_CONTAINERS_USER_GUIDE.md
+#
+# All declared ports become cluster-internal ClusterIP Services.
+# To expose a port externally, add an Ingress Route in the Routes tab after deploying.
+#
+# Services in the same stack reach each other by service name:
+#   http://api:3000  •  redis://cache:6379
 services:
   web:
-    image: nginx:1.27
+    image: traefik/whoami:latest
     ports:
-      - "80"
-    depends_on:
-      - api
-  api:
-    image: ghcr.io/owner/api:v1
-    ports:
-      - "3000"
+      - "80"                 # exposed externally via an Ingress Route
     environment:
-      DATABASE_URL: postgres://db:5432/app
-volumes: {}
+      WHOAMI_PORT_NUMBER: "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      cache:
+        condition: service_healthy
+
+  cache:
+    image: redis:7-alpine
+    # no ports: — not exposed; reachable cluster-internally as redis://cache:6379
+    volumes:
+      - cache-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  cache-data: {}    # stored as a subPath on your tenant PVC
 `;
 
 type RightTab = 'issues' | 'spec';
@@ -301,9 +322,9 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
             disabled={validateMutation.isPending}
             className={clsx(
               'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50',
-              validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-600 dark:bg-green-900/20 dark:text-green-300',
-              validateState === 'warning' && 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-300',
-              validateState === 'error' && 'border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-600 dark:bg-red-900/20 dark:text-red-300',
+              validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-500 dark:bg-green-900/40 dark:text-green-200 dark:hover:bg-green-900/60',
+              validateState === 'warning' && 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60',
+              validateState === 'error' && 'border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-500 dark:bg-red-900/40 dark:text-red-200 dark:hover:bg-red-900/60',
               validateState === 'idle' && 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
             )}
           >

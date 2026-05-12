@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { uuidField, paginatedResponseSchema } from './shared.js';
+import { customDeploymentSpecSchema } from './custom-deployments.js';
 
 // ─── Catalog Repository ──────────────────────────────────────────────────────
 
@@ -195,6 +196,8 @@ export const deploymentResponseSchema = z.object({
   deletedAt: z.string().nullable(),
   status: z.string(),
   volumePaths: z.array(volumePathSchema).nullable().optional(),
+  /** Populated for source='custom' (ADR-036); null for catalog deployments. */
+  customSpec: customDeploymentSpecSchema.nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

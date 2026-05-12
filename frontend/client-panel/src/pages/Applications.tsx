@@ -1087,13 +1087,20 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       <div>
                         <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                           {deployment.name}
+                          {deployment.source === 'custom' && deployment.customSpec?.sourceMode === 'compose' && (
+                            <span className="ml-1.5 text-xs font-normal text-gray-400 dark:text-gray-500">
+                              {Object.keys(deployment.customSpec.services).join(' · ')}
+                            </span>
+                          )}
                         </h3>
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <p className="text-xs text-gray-500 dark:text-gray-400">
                             {getCatalogEntryName(deployment.catalogEntryId, deployment.source)}
                           </p>
                           <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
-                            {deployment.source === 'custom' ? 'Docker' : (deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown')}
+                            {deployment.source === 'custom'
+                              ? (deployment.customSpec?.sourceMode === 'compose' ? 'Compose' : 'Docker')
+                              : (deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown')}
                           </span>
                           {/* "Update available" — surfaced when the deployment's installed
                               version differs from the catalog entry's latest version.
@@ -1374,32 +1381,21 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                 <span>Loading affected routes...</span>
               </div>
             )}
-            {deletePreview.data?.data && (
+            {deletePreview.data?.data && deletePreview.data.data.affectedRoutes.length > 0 && (
               <div className="mb-4 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
-                {deletePreview.data.data.affectedRoutes.length > 0 ? (
-                  <>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
-                      <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-                        Deleting this deployment will unlink the following ingress routes:
-                      </span>
-                    </div>
-                    <ul className="space-y-1 ml-5">
-                      {deletePreview.data.data.affectedRoutes.map((route) => (
-                        <li key={route.id} className="text-sm text-amber-700 dark:text-amber-300">
-                          <code className="rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-mono">{route.hostname}{route.path}</code>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
-                    <span className="text-sm text-amber-700 dark:text-amber-300">
-                      No ingress routes are linked to this deployment.
-                    </span>
-                  </div>
-                )}
+                <div className="flex items-center gap-1.5 mb-2">
+                  <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                    Deleting this deployment will unlink the following ingress routes:
+                  </span>
+                </div>
+                <ul className="space-y-1 ml-5">
+                  {deletePreview.data.data.affectedRoutes.map((route) => (
+                    <li key={route.id} className="text-sm text-amber-700 dark:text-amber-300">
+                      <code className="rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-mono">{route.hostname}{route.path}</code>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
