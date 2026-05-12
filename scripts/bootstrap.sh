@@ -3918,11 +3918,19 @@ provision_stalwart_master_user() {
     return 0
   fi
 
-  # Run the cli sequence inside an alpine pod that downloads stalwart-cli
-  # v1.0.4 once and chains create/update calls. Idempotent: cli `create`
-  # on an existing object errors with non-zero exit, which we tolerate.
+  # Provision via direct JMAP calls (no stalwart-cli download required).
+  # Idempotent: queries existing domain/account by name and creates only
+  # if missing; credentials + role are always updated so rotations converge.
   local job_name="stalwart-master-provision-$(date +%s)"
+  local params_secret="stalwart-master-params-$(date +%s)"
   kctl delete pod -n mail "$job_name" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+
+  # Write MASTER_PW to a Secret so it never appears in pod spec env.
+  kctl create secret generic "${params_secret}" \
+    --namespace=mail \
+    --from-literal=MASTER_PW="${master_pw}" \
+    --dry-run=client -o yaml | kctl apply -n mail -f - >/dev/null
+
   cat <<EOF | kctl apply -n mail -f - >/dev/null
 apiVersion: v1
 kind: Pod
@@ -3935,63 +3943,83 @@ spec:
   containers:
   - name: provision
     image: alpine:3.20
-    env:
-    - { name: STALWART_URL,      value: "http://stalwart-mgmt.mail.svc.cluster.local:8080" }
-    - { name: STALWART_USER,     value: "admin" }
-    - { name: STALWART_PASSWORD, value: "${recovery_pw}" }
-    - { name: MASTER_PW,         value: "${master_pw}" }
+    envFrom:
+      - secretRef:
+          name: stalwart-admin-creds
+      - secretRef:
+          name: ${params_secret}
     command: ["sh","-c"]
     args:
     - |
       set -e
-      apk add --no-cache wget tar xz jq >/dev/null
-      cd /tmp
-      wget -q -O cli.tar.xz "https://github.com/stalwartlabs/cli/releases/download/v1.0.4/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
-      echo "9683c1cf45e5d0e91ca7fb036a98d2b5e21b91ff0b27a6d82cf2c0f23ef0b1e6  cli.tar.xz" | sha256sum -c - 2>&1 || echo "sha256 advisory only — proceeding"
-      tar -xJf cli.tar.xz
-      CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli
-      chmod +x "\$CLI"
+      apk add -q --no-cache curl jq >/dev/null
 
-      # Step 1: ensure master.local Domain exists.
-      DOMAIN_ID=\$("\$CLI" query Domain 2>/dev/null | awk 'NR>1 && \$2=="master.local" {print \$1}' | head -1)
-      if [ -z "\$DOMAIN_ID" ]; then
-        "\$CLI" create Domain --field "name=master.local" 2>&1 | tee /tmp/d.out
-        DOMAIN_ID=\$(grep -oE 'Created Domain [a-z0-9]+' /tmp/d.out | awk '{print \$NF}')
-      fi
-      [ -n "\$DOMAIN_ID" ] || { echo "ERROR: no master.local domain id"; exit 1; }
-      echo "domain id=\$DOMAIN_ID"
-
-      # Step 2: ensure master@master.local Account exists.
-      # Description (re-applied on every run so wording tweaks propagate
-      # without an operator step) clearly flags the account as critical
-      # platform infrastructure — Roundcube SSO + tenant IMAP/SMTP
-      # master-auth proxy depend on it.
+      MGMT="http://stalwart-mgmt.mail.svc.cluster.local:8080"
+      AUTH="admin:\${recoveryPassword}"
       MASTER_DESC='Hosting Platform master user — DO NOT DELETE. Used by webmail SSO + IMAP/SMTP master-auth proxy. Removing this account breaks Roundcube auto-login and tenant mailbox proxying.'
-      ACCOUNT_ID=\$("\$CLI" query Account 2>/dev/null | awk 'NR>1 && \$2=="master@master.local" {print \$1}' | head -1)
-      if [ -z "\$ACCOUNT_ID" ]; then
-        "\$CLI" create Account/User \
-          --field "name=master" \
-          --field "domainId=\$DOMAIN_ID" \
-          --field "description=\$MASTER_DESC" 2>&1 | tee /tmp/a.out
-        ACCOUNT_ID=\$(grep -oE 'Created Account [a-z0-9]+' /tmp/a.out | awk '{print \$NF}')
+
+      SESSION=\$(curl -sf -u "\${AUTH}" --max-time 10 "\${MGMT}/jmap/session") || {
+        echo "ERROR: cannot reach \${MGMT}/jmap/session" >&2; exit 1
+      }
+      ACCT=\$(echo "\${SESSION}" | jq -r \
+        '(.primaryAccounts // {}) | to_entries[] | select(.key == "urn:stalwart:jmap") | .value // "d333333"')
+
+      jmap_call() {
+        curl -sf -u "\${AUTH}" -X POST "\${MGMT}/jmap/" \
+          -H 'Content-Type: application/json' --max-time 30 -d "\$1"
+      }
+
+      # Step 1: ensure master.local Domain exists
+      DOM_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+        '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+          methodCalls:[["x:Domain/get",{accountId:\$a,ids:null},"c0"]]}')")
+      DOMAIN_ID=\$(echo "\$DOM_RESP" | jq -r \
+        '.methodResponses[0][1].list[] | select(.name == "master.local") | .id' | head -1)
+      if [ -z "\$DOMAIN_ID" ]; then
+        CREATE_DOM=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+          '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+            methodCalls:[["x:Domain/set",
+              {accountId:\$a,create:{"ml":{"name":"master.local"}}},
+              "c0"]]}')")
+        DOMAIN_ID=\$(echo "\$CREATE_DOM" | jq -r \
+          '.methodResponses[0][1].created["ml"].id // empty' | head -1)
       fi
-      [ -n "\$ACCOUNT_ID" ] || { echo "ERROR: no master account id"; exit 1; }
-      echo "account id=\$ACCOUNT_ID"
+      [ -n "\$DOMAIN_ID" ] || { echo "ERROR: no master.local domain id" >&2; exit 1; }
+      echo "domain id=\${DOMAIN_ID}"
 
-      # Step 3: set credentials. Always update so password rotations converge.
-      "\$CLI" update Account "\$ACCOUNT_ID" \
-        --field "credentials={\"0\":{\"@type\":\"Password\",\"secret\":\"\${MASTER_PW}\"}}"
+      # Step 2: ensure master@master.local Account exists
+      ACCT_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+        '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+          methodCalls:[["x:Account/get",{accountId:\$a,ids:null},"c0"]]}')")
+      ACCOUNT_ID=\$(echo "\$ACCT_RESP" | jq -r \
+        '.methodResponses[0][1].list[] | select(.name == "master") | .id' | head -1)
+      if [ -z "\$ACCOUNT_ID" ]; then
+        CREATE_ACCT=\$(jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\$DOMAIN_ID" --arg desc "\$MASTER_DESC" \
+          '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+            methodCalls:[["x:Account/set",
+              {accountId:\$a,create:{"ma":{"@type":"User","name":"master","domainId":\$d,"description":\$desc}}},
+              "c0"]]}')")
+        ACCOUNT_ID=\$(echo "\$CREATE_ACCT" | jq -r \
+          '.methodResponses[0][1].created["ma"].id // empty' | head -1)
+      fi
+      [ -n "\$ACCOUNT_ID" ] || { echo "ERROR: no master account id" >&2; exit 1; }
+      echo "account id=\${ACCOUNT_ID}"
 
-      # Step 4: assign Admin role (includes impersonate). Always update so
-      # role changes converge.
-      "\$CLI" update Account "\$ACCOUNT_ID" --field 'roles={"@type":"Admin"}'
+      # Step 3: credentials + role + description (always update — idempotent)
+      jmap_call "\$(jq -n --arg a "\$ACCT" --arg id "\$ACCOUNT_ID" \
+          --arg p "\${MASTER_PW}" --arg desc "\$MASTER_DESC" \
+        '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+          methodCalls:[["x:Account/set",
+            {accountId:\$a,update:{
+              (\$id): {
+                "credentials":{"0":{"@type":"Password","secret":\$p}},
+                "roles":{"@type":"Admin"},
+                "description":\$desc
+              }
+            }},
+            "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
 
-      # Step 5: ensure the description is current — covers accounts that
-      # pre-date the description field being added by bootstrap, and
-      # propagates wording tweaks across upgrades.
-      "\$CLI" update Account "\$ACCOUNT_ID" --field "description=\$MASTER_DESC"
-
-      echo "provision-ok account=\$ACCOUNT_ID"
+      echo "provision-ok account=\${ACCOUNT_ID}"
 EOF
 
   # Wait for the pod to complete.
@@ -4008,7 +4036,8 @@ EOF
     warn "  Master-user provision Pod did not complete cleanly. Logs:"
     kctl logs -n mail "$job_name" 2>&1 | tail -20 | sed 's/^/    /' || true
   fi
-  kctl delete pod -n mail "$job_name" --ignore-not-found >/dev/null 2>&1 || true
+  kctl delete pod    -n mail "$job_name"       --ignore-not-found >/dev/null 2>&1 || true
+  kctl delete secret -n mail "${params_secret}" --ignore-not-found >/dev/null 2>&1 || true
 }
 
 # ─── Stalwart 0.16 first-install bootstrap ───────────────────────────────────
@@ -4027,226 +4056,290 @@ EOF
 # includes it, or via a separate `kubectl apply -k`) before calling this
 # function. For env=production this happens in apply_platform_manifests;
 # for local dev use `./scripts/local.sh mail16-up` instead.
-# reconcile_stalwart_listeners — idempotent retrofit for clusters that
-# bootstrapped before NetworkListener for 587 (SMTP submission/STARTTLS)
-# and 143 (IMAP/STARTTLS) was added to the bootstrap plan.
+# configure_stalwart_full — post-bootstrap JMAP configuration.
 #
-# Stalwart 0.16's bootstrap-mode auto-creates listeners ONLY for the
-# initial set: 25, 465, 993, 995, 4190, 8080, 443. Operators relying on
-# legacy submission (587) and plaintext+STARTTLS IMAP (143) had no
-# server-side listener and got TCP RST.
+# Called by bootstrap_stalwart_v016() after the bootstrap Job + Deployment
+# restart (or on re-runs when Stalwart is already past bootstrap mode).
+# Applies all remaining configuration via direct JMAP calls — no
+# stalwart-cli required. Fully idempotent: queries existing objects first
+# and skips creates for already-present entries.
 #
-# This function:
-#   1. Queries existing listener names via stalwart-cli inside a
-#      one-shot Pod (no need to bake stalwart-cli into platform-api).
-#   2. Issues a `create` for each missing listener.
-#   3. Triggers a Deployment roll so Stalwart re-binds at process start
-#      (ReloadSettings does NOT re-bind sockets).
+# Handles: SystemSettings (defaultHostname + actual RocksDB domain ID),
+#   Jmap upload limits, DkimSignature, AcmeProvider, AllowedIp,
+#   NetworkListeners (http-acme/80, submission/587, imap/143),
+#   admin credentials (permanent adminPassword replaces recovery password).
 #
-# Idempotent: skips creates when the listener name already exists.
-# Safe to run on every bootstrap.sh invocation — no state mutation when
-# already correct.
-reconcile_stalwart_listeners() {
-  local stalwart_pod="$1"
-  # Note: $admin_pw is unused here; the password is sourced via envFrom
-  # Secret reference inside the spawned pod (see CRITICAL fix below).
-  # Kept in the signature for backwards-compatibility with the call site.
-  local _unused_admin_pw="$2"
-  : "${_unused_admin_pw:=}"  # silence shellcheck SC2034 about unused var
-  local stalwart_pod_ip
-  stalwart_pod_ip=$(kctl get pod -n mail "$stalwart_pod" \
-    -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
-  if [[ -z "$stalwart_pod_ip" ]]; then
-    warn "  reconcile_stalwart_listeners: no pod IP for $stalwart_pod"
+# RocksDB domain ID note: unlike PostgreSQL (where IDs were slug strings
+# like "example-com"), RocksDB assigns short hashes (e.g., "b"). The
+# domain ID can only be discovered post-bootstrap via x:Domain/get — it
+# cannot be inferred from the domain name at plan-render time.
+configure_stalwart_full() {
+  local stalwart_hostname="$1"
+  local stalwart_domain="$2"
+
+  log "  Configuring Stalwart via JMAP (SystemSettings, Jmap, DKIM, listeners, admin creds)..."
+
+  local admin_pw
+  admin_pw=$(kctl get secret -n mail stalwart-admin-creds \
+    -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d || echo "")
+  if [[ -z "$admin_pw" ]]; then
+    warn "  adminPassword missing from stalwart-admin-creds — re-run generate_platform_secrets"
     return 1
   fi
 
-  # CRITICAL fix (code-reviewer 2026-05-05): the admin password MUST NOT
-  # appear in the spawned pod's spec.containers[].env field, because
-  # `kubectl get pod -o yaml` and the apiserver audit log surface env
-  # values to anyone with `get pods` RBAC. Use an EnvFrom secretRef
-  # against the existing `stalwart-admin-creds` Secret instead, which
-  # keeps the cleartext entirely inside the Secret object.
-  #
-  # `kubectl run` does not have a flag for envFrom, so we render a Pod
-  # manifest via heredoc and `kubectl apply -f -`. Lifecycle is managed
-  # by `restartPolicy: Never` + an explicit final `kubectl delete pod`.
+  # Get or generate Ed25519 DKIM private key. Persisted in stalwart-admin-creds
+  # so re-runs don't regenerate (which would invalidate the published DNS TXT).
+  local dkim_pem
+  dkim_pem=$(kctl get secret -n mail stalwart-admin-creds \
+    -o jsonpath='{.data.dkimPrivateKeyPem}' 2>/dev/null | base64 -d || echo "")
+  if [[ -z "$dkim_pem" ]]; then
+    log "  Generating Ed25519 DKIM key (first run)..."
+    dkim_pem=$(openssl genpkey -algorithm ed25519 2>/dev/null)
+    local dkim_b64
+    dkim_b64=$(printf '%s' "$dkim_pem" | base64 | tr -d '\n')
+    kctl patch secret stalwart-admin-creds -n mail --type=json \
+      -p "[{\"op\":\"add\",\"path\":\"/data/dkimPrivateKeyPem\",\"value\":\"${dkim_b64}\"}]" \
+      2>/dev/null || true
+  fi
 
-  # Unique pod-name suffix — `$$ + $RANDOM + $(date +%s%N)` so concurrent
-  # invocations from two operators don't collide on the K8s name.
-  # HIGH fix from code review.
+  # Unique suffix for ephemeral pod + Secret names.
   local suffix
-  suffix="$$-${RANDOM}-$(date +%s%N 2>/dev/null || date +%s)"
-  local probe_pod="listener-probe-${suffix}"
-  local apply_pod="listener-apply-${suffix}"
+  suffix="${BASHPID:-$$}-$(date +%s)"
+  local params_secret="stalwart-cfg-${suffix}"
+  local pod_name="stalwart-configure-${suffix}"
 
-  # Shared boot script run inside the spawned pods. Downloads stalwart-cli
-  # v1.0.4 with a FATAL sha256 check (HIGH fix). Reads $STALWART_PASSWORD
-  # from envFrom Secret. The script body is identical between probe and
-  # apply except for the final cli verb.
-  local cli_url='https://github.com/stalwartlabs/cli/releases/download/v1.0.4/stalwart-cli-x86_64-unknown-linux-musl.tar.xz'
-  local cli_sha256='01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa'
-
-  # ─── Step 1: probe existing NetworkListener names ─────────────────────
-  cat <<POD_YAML | kctl apply -f - >/dev/null
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${probe_pod}
-  namespace: mail
-  labels:
-    app.kubernetes.io/component: stalwart-listener-reconcile
-spec:
-  restartPolicy: Never
-  containers:
-    - name: cli
-      image: alpine:3.20
-      env:
-        - name: STALWART_URL
-          value: http://${stalwart_pod_ip}:8080
-        - name: STALWART_USER
-          value: admin
-      envFrom:
-        - secretRef:
-            name: stalwart-admin-creds
-      command: ["sh", "-c"]
-      args:
-        - |
-          set -eu
-          # CRITICAL: the Secret key for the recovery cred is
-          # 'recoveryPassword'; envFrom maps that to env-var
-          # \$recoveryPassword. The cli reads STALWART_PASSWORD,
-          # so re-export.
-          export STALWART_PASSWORD="\$recoveryPassword"
-          apk add --no-cache wget tar xz >/dev/null 2>&1
-          cd /tmp
-          wget -q -O cli.tar.xz "${cli_url}"
-          actual=\$(sha256sum cli.tar.xz | awk '{print \$1}')
-          if [ "\$actual" != "${cli_sha256}" ]; then
-            echo "FATAL: stalwart-cli sha256 mismatch (expected ${cli_sha256}, actual \$actual)" >&2
-            exit 1
-          fi
-          tar -xJf cli.tar.xz
-          /tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli query NetworkListener --json 2>/dev/null \
-            | grep -oE '"name":"[^"]+"' | cut -d'"' -f4 | tr '\n' ',' ; echo ""
-POD_YAML
-
-  # Wait for terminal phase — succeed-or-fail; tail logs.
-  if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
-       -n mail "pod/${probe_pod}" --timeout=120s 2>/dev/null; then
-    warn "  listener probe pod did not Succeed within 120s — aborting reconcile."
-    kctl logs -n mail "${probe_pod}" 2>&1 | tail -20 | sed 's/^/      /' || true
-    kctl delete pod -n mail "${probe_pod}" --grace-period=10 --wait=false 2>/dev/null || true
-    return 1
-  fi
-
-  local existing
-  existing=$(kctl logs -n mail "${probe_pod}" 2>/dev/null | tail -1 | tr -d '[:space:]')
-  kctl delete pod -n mail "${probe_pod}" --grace-period=10 --wait=false 2>/dev/null || true
-
-  # HIGH fix: fail-closed on probe failure. An empty result IS NOT the
-  # same as "no listeners exist" — the probe pod always emits a trailing
-  # `,` even when zero are present. Empty string here means the cli
-  # exited non-zero or the regex matched nothing AT ALL, both of which
-  # are bugs we should refuse to paper over with duplicate-create errors.
-  if [[ -z "$existing" ]]; then
-    warn "  listener probe returned empty output — refusing to reconcile (cli failure or schema drift)."
-    return 1
-  fi
-  log "  Existing NetworkListener names: ${existing}"
-
-  local plan_lines=""
-  if ! echo ",${existing}," | grep -q ',submission,'; then
-    plan_lines+='{"@type":"create","object":"NetworkListener","value":{"submission":{"name":"submission","bind":{"[::]:587":true},"protocol":"smtp","tlsImplicit":false}}}'$'\n'
-    log "  Will add: submission listener (587/smtp/STARTTLS)"
-  fi
-  if ! echo ",${existing}," | grep -q ',imap,'; then
-    plan_lines+='{"@type":"create","object":"NetworkListener","value":{"imap":{"name":"imap","bind":{"[::]:143":true},"protocol":"imap","tlsImplicit":false}}}'$'\n'
-    log "  Will add: imap listener (143/imap/STARTTLS)"
-  fi
-
-  if [[ -z "$plan_lines" ]]; then
-    log "  All NetworkListeners already present — nothing to do."
-    return 0
-  fi
-
-  # ─── Step 2: write rendered plan into a Secret + spawn apply pod ─────
-  # Plan is hardcoded so no shell-injection risk, but keeping the whole
-  # thing out of pod argv keeps it consistent with the credentials path.
-  kctl create secret generic "${apply_pod}-plan" \
+  # Write configure-params Secret. adminPassword and recoveryPassword come
+  # from stalwart-admin-creds via a second envFrom secretRef in the pod.
+  kctl create secret generic "${params_secret}" \
     --namespace=mail \
-    --from-literal=plan.json="${plan_lines}" \
+    --from-literal=STALWART_HOSTNAME="${stalwart_hostname}" \
+    --from-literal=STALWART_DOMAIN="${stalwart_domain}" \
+    --from-literal=STALWART_DKIM_PEM="${dkim_pem}" \
     --dry-run=client -o yaml | kctl apply -f - >/dev/null
 
-  log "  Applying listener-reconcile plan..."
+  log "  Spawning configure pod ${pod_name}..."
   cat <<POD_YAML | kctl apply -f - >/dev/null
 apiVersion: v1
 kind: Pod
 metadata:
-  name: ${apply_pod}
+  name: ${pod_name}
   namespace: mail
   labels:
-    app.kubernetes.io/component: stalwart-listener-reconcile
+    app.kubernetes.io/component: stalwart-configure
 spec:
   restartPolicy: Never
   containers:
-    - name: cli
+    - name: configure
       image: alpine:3.20
-      env:
-        - name: STALWART_URL
-          value: http://${stalwart_pod_ip}:8080
-        - name: STALWART_USER
-          value: admin
       envFrom:
         - secretRef:
             name: stalwart-admin-creds
+        - secretRef:
+            name: ${params_secret}
       command: ["sh", "-c"]
       args:
         - |
           set -eu
-          export STALWART_PASSWORD="\$recoveryPassword"
-          apk add --no-cache wget tar xz >/dev/null 2>&1
-          cd /tmp
-          wget -q -O cli.tar.xz "${cli_url}"
-          actual=\$(sha256sum cli.tar.xz | awk '{print \$1}')
-          if [ "\$actual" != "${cli_sha256}" ]; then
-            echo "FATAL: stalwart-cli sha256 mismatch" >&2
-            exit 1
+          apk add -q --no-cache curl jq
+
+          MGMT="http://stalwart-mgmt.mail.svc.cluster.local:8080"
+          AUTH="admin:\${recoveryPassword}"
+
+          SESSION=\$(curl -sf -u "\${AUTH}" --max-time 10 "\${MGMT}/jmap/session") || {
+            echo "ERROR: cannot reach \${MGMT}/jmap/session" >&2; exit 1
+          }
+          ACCT=\$(echo "\${SESSION}" | jq -r \
+            '(.primaryAccounts // {}) | to_entries[] | select(.key == "urn:stalwart:jmap") | .value // "d333333"')
+          echo "accountId=\${ACCT}"
+
+          jmap_call() {
+            curl -sf -u "\${AUTH}" -X POST "\${MGMT}/jmap/" \
+              -H 'Content-Type: application/json' --max-time 30 -d "\$1"
+          }
+
+          # 1. Resolve RocksDB domain hash ID (cannot be inferred from name)
+          DOM_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Domain/get",{accountId:\$a,ids:null},"c0"]]}')")
+          DOMAIN_ID=\$(echo "\$DOM_RESP" | jq -r --arg d "\${STALWART_DOMAIN}" \
+            '.methodResponses[0][1].list[] | select(.name == \$d) | .id' 2>/dev/null | head -1)
+          [ -n "\$DOMAIN_ID" ] || {
+            echo "ERROR: domain \${STALWART_DOMAIN} not found in Stalwart DB" >&2; exit 1
+          }
+          echo "domain id=\${DOMAIN_ID}"
+
+          # 2. SystemSettings — always update (idempotent)
+          jmap_call "\$(jq -n --arg a "\$ACCT" --arg h "\${STALWART_HOSTNAME}" --arg d "\$DOMAIN_ID" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:SystemSettings/set",
+                {accountId:\$a,update:{singleton:{defaultHostname:\$h,defaultDomainId:\$d}}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "SystemSettings OK"
+
+          # 3. Jmap limits — always update (idempotent)
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Jmap/set",
+                {accountId:\$a,update:{singleton:{
+                  maxUploadCount:1000000,
+                  uploadQuota:10737418240,
+                  maxUploadSize:104857600,
+                  maxConcurrentUploads:128,
+                  maxConcurrentRequests:128,
+                  maxMethodCalls:256
+                }}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Jmap limits OK"
+
+          # 4. DkimSignature — create if missing
+          EXISTING_DKIM=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:DkimSignature/get",{accountId:\$a,ids:null},"c0"]]}')" | \
+            jq -r '.methodResponses[0][1].list[].id // empty' 2>/dev/null | tr '\n' ',')
+          if echo ",\${EXISTING_DKIM}," | grep -q ',dkim-default,'; then
+            echo "DkimSignature dkim-default already exists — skipping"
+          else
+            jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\$DOMAIN_ID" --arg k "\${STALWART_DKIM_PEM}" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:DkimSignature/set",
+                  {accountId:\$a,create:{"dkim-default":{
+                    "@type":"Dkim1Ed25519Sha256",
+                    domainId:\$d,selector:"default",
+                    canonicalization:"relaxed/relaxed",
+                    headers:{"From":true,"To":true,"Date":true,"Subject":true,"Message-ID":true},
+                    privateKey:{"@type":"Text",secret:\$k},
+                    report:false,stage:"active",
+                    thirdParty:null,thirdPartyHash:null,auid:null,expire:null,
+                    memberTenantId:null,nextTransitionAt:null
+                  }}},
+                  "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+            echo "DkimSignature created"
           fi
-          tar -xJf cli.tar.xz
-          /tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli apply --file /plan/plan.json
-      volumeMounts:
-        - name: plan
-          mountPath: /plan
-          readOnly: true
-  volumes:
-    - name: plan
-      secret:
-        secretName: ${apply_pod}-plan
-        items:
-          - key: plan.json
-            path: plan.json
+
+          # 5. AcmeProvider — create if missing
+          EXISTING_ACME=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:AcmeProvider/get",{accountId:\$a,ids:null},"c0"]]}')" | \
+            jq -r '.methodResponses[0][1].list[].id // empty' 2>/dev/null | tr '\n' ',')
+          if echo ",\${EXISTING_ACME}," | grep -q ',letsencrypt,'; then
+            echo "AcmeProvider letsencrypt already exists — skipping"
+          else
+            jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\${STALWART_DOMAIN}" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:AcmeProvider/set",
+                  {accountId:\$a,create:{letsencrypt:{
+                    directory:"https://acme-v02.api.letsencrypt.org/directory",
+                    challengeType:"Http01",
+                    contact:{("hostmaster@" + \$d): true}
+                  }}},
+                  "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+            echo "AcmeProvider created"
+          fi
+
+          # 6. AllowedIp — create missing entries
+          EXISTING_IPS=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:AllowedIp/get",{accountId:\$a,ids:null},"c0"]]}')" | \
+            jq -r '.methodResponses[0][1].list[].id // empty' 2>/dev/null | tr '\n' ',')
+          CREATE_IPS='{}'
+          echo ",\${EXISTING_IPS}," | grep -q ',cluster-pod,' || \
+            CREATE_IPS=\$(echo "\$CREATE_IPS" | jq \
+              '."cluster-pod" = {"address":"10.42.0.0/16","reason":"k8s pod CIDR (kubelet probes + intra-cluster)"}')
+          echo ",\${EXISTING_IPS}," | grep -q ',cluster-svc,' || \
+            CREATE_IPS=\$(echo "\$CREATE_IPS" | jq \
+              '."cluster-svc" = {"address":"10.43.0.0/16","reason":"k8s service CIDR"}')
+          if [ "\$CREATE_IPS" != '{}' ]; then
+            jmap_call "\$(jq -n --arg a "\$ACCT" --argjson c "\$CREATE_IPS" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:AllowedIp/set",{accountId:\$a,create:\$c},"c0"]]}')" | \
+              jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+            echo "AllowedIp created"
+          else
+            echo "AllowedIp already present — skipping"
+          fi
+
+          # 7. NetworkListeners — create missing
+          EXISTING_NL=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:NetworkListener/get",{accountId:\$a,ids:null},"c0"]]}')" | \
+            jq -r '.methodResponses[0][1].list[].name // empty' 2>/dev/null | tr '\n' ',')
+          echo "Existing listeners: \${EXISTING_NL}"
+          CREATE_NL='{}'
+          echo ",\${EXISTING_NL}," | grep -q ',http-acme,' || \
+            CREATE_NL=\$(echo "\$CREATE_NL" | jq \
+              '."http-acme" = {"name":"http-acme","bind":{"[::]:80":true},"protocol":"http","tlsImplicit":false,"useTls":false}')
+          echo ",\${EXISTING_NL}," | grep -q ',submission,' || \
+            CREATE_NL=\$(echo "\$CREATE_NL" | jq \
+              '."submission" = {"name":"submission","bind":{"[::]:587":true},"protocol":"smtp","tlsImplicit":false}')
+          echo ",\${EXISTING_NL}," | grep -q ',imap,' || \
+            CREATE_NL=\$(echo "\$CREATE_NL" | jq \
+              '."imap" = {"name":"imap","bind":{"[::]:143":true},"protocol":"imap","tlsImplicit":false}')
+          LISTENERS_CREATED=false
+          if [ "\$CREATE_NL" != '{}' ]; then
+            jmap_call "\$(jq -n --arg a "\$ACCT" --argjson c "\$CREATE_NL" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:NetworkListener/set",{accountId:\$a,create:\$c},"c0"]]}')" | \
+              jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+            echo "NetworkListeners created"
+            LISTENERS_CREATED=true
+          else
+            echo "All listeners already present — skipping"
+          fi
+
+          # 8. Admin credentials — always update (idempotent)
+          # Find built-in admin account by name; fall back to Superuser/Admin role.
+          ACCT_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Account/get",{accountId:\$a,ids:null},"c0"]]}')")
+          ADMIN_ID=\$(echo "\$ACCT_RESP" | jq -r \
+            '.methodResponses[0][1].list[] | select(.name == "admin") | .id' 2>/dev/null | head -1)
+          if [ -z "\$ADMIN_ID" ]; then
+            ADMIN_ID=\$(echo "\$ACCT_RESP" | jq -r \
+              '.methodResponses[0][1].list[] | select(.roles != null) |
+               select(.roles["@type"] == "Superuser" or .roles["@type"] == "Admin") | .id' \
+              2>/dev/null | head -1)
+          fi
+          [ -n "\$ADMIN_ID" ] || {
+            echo "ERROR: could not resolve admin account ID" >&2; exit 1
+          }
+          echo "admin account id=\${ADMIN_ID}"
+          jmap_call "\$(jq -n --arg a "\$ACCT" --arg id "\$ADMIN_ID" --arg p "\${adminPassword}" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Account/set",
+                {accountId:\$a,update:{
+                  (\$id): {"credentials":{"0":{"@type":"Password","secret":\$p,"allowedIps":{},"expiresAt":null}}}
+                }},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Admin credentials OK"
+
+          echo ""
+          echo "configure-ok listeners_created=\${LISTENERS_CREATED}"
 POD_YAML
 
   if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
-       -n mail "pod/${apply_pod}" --timeout=120s 2>/dev/null; then
-    warn "  listener apply pod did not Succeed within 120s."
-    kctl logs -n mail "${apply_pod}" 2>&1 | tail -30 | sed 's/^/      /' || true
-    kctl delete pod    -n mail "${apply_pod}"        --grace-period=10 --wait=false 2>/dev/null || true
-    kctl delete secret -n mail "${apply_pod}-plan"   --wait=false 2>/dev/null || true
+       -n mail "pod/${pod_name}" --timeout=180s 2>/dev/null; then
+    warn "  configure pod did not Succeed within 180s."
+    kctl logs -n mail "${pod_name}" 2>&1 | tail -40 | sed 's/^/      /' || true
+    kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
+    kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
     return 1
   fi
-  kctl logs -n mail "${apply_pod}" 2>&1 | sed 's/^/    /'
-  kctl delete pod    -n mail "${apply_pod}"        --grace-period=10 --wait=false 2>/dev/null || true
-  kctl delete secret -n mail "${apply_pod}-plan"   --wait=false 2>/dev/null || true
 
-  # Listeners take effect at process restart only. Roll the Deployment.
-  log "  Rolling Stalwart Deployment so new listeners bind..."
-  kctl rollout restart deployment -n mail stalwart-mail 2>&1 | sed 's/^/    /'
-  kctl rollout status deployment -n mail stalwart-mail --timeout=180s 2>&1 | sed 's/^/    /' || \
-    warn "  Stalwart rollout did not complete in 180s — verify manually."
+  local last_line
+  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | tail -1)
+  kctl logs -n mail "${pod_name}" 2>&1 | sed 's/^/    /' || true
+  kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
+  kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
 
-  log "  NetworkListener reconcile complete."
+  # Roll Deployment if new listeners were created (re-bind sockets at process start).
+  if echo "$last_line" | grep -q 'listeners_created=true'; then
+    log "  Rolling Stalwart Deployment so new listeners bind..."
+    kctl rollout restart -n mail deploy/stalwart-mail
+    kctl rollout status  -n mail deploy/stalwart-mail --timeout=180s || \
+      warn "  Stalwart rollout did not complete in 180s — verify manually."
+  fi
+
+  log "  Stalwart full configuration complete."
 }
 
 bootstrap_stalwart_v016() {
@@ -4269,117 +4362,100 @@ bootstrap_stalwart_v016() {
     warn "  stalwart-mail rollout did not complete — bootstrap may fail."
   fi
 
-  # ── Step 3: Detect mode (bootstrap vs full) ───────────────────────────
-  # Port-forward mgmt port to localhost for the health probe.
-  local stalwart_pod
-  stalwart_pod=$(kctl get pod -n mail -l app=stalwart-mail \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [[ -z "$stalwart_pod" ]]; then
-    warn "  No stalwart-mail pod found — cannot probe for bootstrap mode."
-    return 0
-  fi
-
-  # ── Step 3: Detect whether bootstrap plan has already been applied ────────
-  # With RocksDB, Stalwart starts in "full mode" (JMAP /session → 200)
-  # even when the DataStore is empty. We detect bootstrap state by
-  # attempting authenticated access with the permanent adminPassword:
-  #   - 200  → admin account exists in DB → fully bootstrapped → skip.
-  #   - 401  → admin account not yet in DB → need to apply bootstrap plan.
-  # stalwart-admin-creds is created by generate_platform_secrets() before
-  # this function is called, so the Secret is always present here.
-  local stalwart_admin_pw
+  # ── Step 3: Detect bootstrap state via dual auth probe ───────────────
+  # Three-state detection (all via the JMAP mgmt Service ClusterIP):
+  #   adminPassword 200  → fully configured (both Job + configure ran)
+  #   recoveryPassword 200, adminPassword 401 → Job ran but configure pending
+  #   both 401           → fresh empty DB, need full bootstrap
+  # Any other code (5xx, 000) → indeterminate, refuse to proceed.
+  local stalwart_admin_pw stalwart_recovery_pw
   stalwart_admin_pw=$(kctl get secret -n mail stalwart-admin-creds \
     -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d || echo "")
-  if [[ -z "$stalwart_admin_pw" ]]; then
-    warn "  stalwart-admin-creds missing or empty — cannot detect bootstrap state."
+  stalwart_recovery_pw=$(kctl get secret -n mail stalwart-admin-creds \
+    -o jsonpath='{.data.recoveryPassword}' 2>/dev/null | base64 -d || echo "")
+  if [[ -z "$stalwart_admin_pw" || -z "$stalwart_recovery_pw" ]]; then
+    warn "  stalwart-admin-creds missing adminPassword or recoveryPassword."
     warn "  Re-run generate_platform_secrets first."
     return 0
   fi
 
-  # Stalwart 0.16's image (docker.io/stalwartlabs/stalwart:v0.16.3) does
-  # NOT include wget. Earlier code used wget inside the Stalwart pod and
-  # silently returned empty output (caught during 2026-05-06 staging
-  # rebuild). Switch to curl from a pod that has it: the platform/admin-
-  # panel pod is always present once Flux applies the platform overlay,
-  # has curl, and reaches the Stalwart pod via cluster pod-IP.
-  local auth_code
-  local probe_pod stalwart_pod_ip
+  local stalwart_hostname="mail.${PLATFORM_DOMAIN}"
+  local stalwart_domain="${PLATFORM_DOMAIN}"
+
+  # Use the JMAP mgmt Service (always reachable from within cluster).
+  local mgmt_url="http://stalwart-mgmt.mail.svc.cluster.local:8080"
+  local probe_pod
   probe_pod=$(kctl get pod -n platform -l app=admin-panel \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  stalwart_pod_ip=$(kctl get pod -n mail "$stalwart_pod" \
-    -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
-  if [[ -z "$probe_pod" || -z "$stalwart_pod_ip" ]]; then
-    warn "  cannot resolve probe pod or stalwart pod IP — skipping auth probe."
+  if [[ -z "$probe_pod" ]]; then
+    warn "  No admin-panel pod found — cannot probe Stalwart auth state."
     return 0
   fi
-  auth_code=$(kctl exec -n platform "$probe_pod" -- \
-    curl -s -o /dev/null -w '%{http_code}' \
-    -u "admin:${stalwart_admin_pw}" \
-    --max-time 5 \
-    "http://${stalwart_pod_ip}:8080/jmap/session" 2>/dev/null || echo "000")
 
-  # HIGH fix (code review 2026-05-03): be strict about probe codes.
-  # Treat ONLY 200 as bootstrapped and 401 as needs-bootstrap. Any other
-  # code (5xx, 000, 502, 503) means the pod is in an indeterminate state —
-  # if we proceed in that case we may re-bootstrap a live, already-
-  # bootstrapped Stalwart and overwrite the admin account / DKIM keys.
-  case "$auth_code" in
+  local admin_code recovery_code
+  admin_code=$(kctl exec -n platform "$probe_pod" -- \
+    curl -s -o /dev/null -w '%{http_code}' \
+    -u "admin:${stalwart_admin_pw}" --max-time 5 \
+    "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+  recovery_code=$(kctl exec -n platform "$probe_pod" -- \
+    curl -s -o /dev/null -w '%{http_code}' \
+    -u "admin:${stalwart_recovery_pw}" --max-time 5 \
+    "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+
+  log "  Auth probe: adminPassword=${admin_code} recoveryPassword=${recovery_code}"
+
+  case "$admin_code" in
     200)
-      log "  Stalwart 0.16 fully bootstrapped (admin auth 200)."
-      log "  Reconciling NetworkListener config (idempotent — adds 587/143 if missing)..."
-      reconcile_stalwart_listeners "$stalwart_pod" "$stalwart_admin_pw" || true
+      log "  Stalwart fully configured (adminPassword auth 200) — skipping bootstrap."
       return 0
       ;;
     401)
-      log "  Stalwart 0.16 needs bootstrap (admin auth returned 401)."
+      case "$recovery_code" in
+        200)
+          log "  Bootstrap Job ran but full configuration pending — running configure_stalwart_full()."
+          configure_stalwart_full "$stalwart_hostname" "$stalwart_domain" || \
+            warn "  configure_stalwart_full returned non-zero — check logs above."
+          return 0
+          ;;
+        401)
+          log "  Fresh DB — proceeding with bootstrap Job."
+          ;;
+        *)
+          warn "  recoveryPassword probe returned unexpected ${recovery_code} — refusing to bootstrap."
+          return 1
+          ;;
+      esac
       ;;
     *)
-      warn "  Stalwart 0.16 probe returned unexpected ${auth_code:-empty} — refusing to bootstrap."
-      warn "  Inspect the pod state manually before retrying."
+      warn "  adminPassword probe returned unexpected ${admin_code} — refusing to bootstrap."
+      warn "  Inspect pod state manually before retrying."
       return 1
       ;;
   esac
 
-  # ── Step 4: stalwart-admin-creds already created by generate_platform_secrets ──
-  # No-op — just confirm the password is readable.
+  # ── Step 4: stalwart-admin-creds already present (generate_platform_secrets) ──
 
   # ── Step 5: Render bootstrap plan and write to stalwart-bootstrap-plan Secret ──
+  # Bootstrap plan is now a simple JSON object with only hostname + domain.
+  # All other config (SystemSettings, Jmap, DKIM, listeners, admin creds)
+  # is applied post-restart by configure_stalwart_full() via JMAP.
   log "  Rendering bootstrap plan..."
-  local stalwart_hostname="mail.${PLATFORM_DOMAIN}"
-  local stalwart_domain="${PLATFORM_DOMAIN}"
-  local stalwart_domain_id
-  # Convert domain to a DB-safe identifier (dots → hyphens, lowercase).
-  stalwart_domain_id=$(echo "$stalwart_domain" | tr '.' '-' | tr '[:upper:]' '[:lower:]')
-  # Generate Ed25519 DKIM key pair.
-  local dkim_key_file="/tmp/stalwart-dkim-ed25519.pem"
-  openssl genpkey -algorithm ed25519 -out "$dkim_key_file" 2>/dev/null
-  local dkim_private_pem
-  dkim_private_pem=$(cat "$dkim_key_file")
-  rm -f "$dkim_key_file"
-
-  # Render the bootstrap plan by substituting all variables.
   local plan_rendered
   plan_rendered=$(STALWART_HOSTNAME="$stalwart_hostname" \
     STALWART_DOMAIN="$stalwart_domain" \
-    STALWART_DOMAIN_ID="$stalwart_domain_id" \
-    STALWART_ADMIN_ID="admin" \
-    STALWART_ADMIN_PASSWORD="$stalwart_admin_pw" \
-    STALWART_DKIM_PRIVATE_KEY_PEM="$dkim_private_pem" \
     envsubst < <(kctl get configmap -n mail stalwart-bootstrap-plan \
       -o jsonpath='{.data.bootstrap-plan\.json}' 2>/dev/null))
 
   if [[ -z "$plan_rendered" ]]; then
-    warn "  Failed to read stalwart-bootstrap-plan ConfigMap — bootstrap plan not applied."
-    warn "  Ensure the stalwart-mail overlay has been applied first."
+    warn "  Failed to read stalwart-bootstrap-plan ConfigMap — ensure mail overlay is applied."
     return 0
   fi
 
-  # Write the rendered plan to a Secret (bootstrap-job reads from here).
   kctl create secret generic stalwart-bootstrap-plan \
     --namespace=mail \
     --from-literal=plan.json="$plan_rendered" \
     --dry-run=client -o yaml | kctl apply -f -
-  log "  stalwart-bootstrap-plan Secret written (rendered, env-substituted)."
+  log "  stalwart-bootstrap-plan Secret written."
 
   # ── Step 6: Unsuspend bootstrap Job and wait ─────────────────────────
   log "  Unsuspending stalwart-bootstrap Job..."
@@ -4402,36 +4478,27 @@ bootstrap_stalwart_v016() {
   # ── Step 7: Restart Deployment to exit bootstrap mode ────────────────
   log "  Rolling Stalwart Deployment to exit bootstrap mode..."
   kctl rollout restart -n mail deploy/stalwart-mail
-  kctl rollout status -n mail deploy/stalwart-mail --timeout=180s || true
+  kctl rollout status  -n mail deploy/stalwart-mail --timeout=180s || true
 
-  # ── Step 8: Verify full mode ──────────────────────────────────────────
+  # ── Step 8: Full JMAP configuration ──────────────────────────────────
+  log "  Running post-bootstrap JMAP configuration..."
+  configure_stalwart_full "$stalwart_hostname" "$stalwart_domain" || \
+    warn "  configure_stalwart_full returned non-zero — check logs above."
+
+  # ── Step 9: Verify full mode ──────────────────────────────────────────
   log "  Verifying Stalwart 0.16 full mode..."
-  local new_pod
-  new_pod=$(kctl get pod -n mail -l app=stalwart-mail \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [[ -z "$new_pod" ]]; then
+  local new_pod_ip verify_code
+  new_pod_ip=$(kctl get pod -n mail -l app=stalwart-mail \
+    -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || echo "")
+  if [[ -z "$new_pod_ip" ]]; then
     warn "  No pod found after rollout — verification skipped."
     return 0
   fi
-
-  # Stalwart 0.16 image has no wget; probe via curl from admin-panel pod.
-  local verify_code verify_probe_pod new_pod_ip
-  verify_probe_pod=$(kctl get pod -n platform -l app=admin-panel \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  new_pod_ip=$(kctl get pod -n mail "$new_pod" \
-    -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
-  if [[ -z "$verify_probe_pod" || -z "$new_pod_ip" ]]; then
-    warn "  cannot resolve verify probe — skipping post-bootstrap verification."
-    return 0
-  fi
-  verify_code=$(kctl exec -n platform "$verify_probe_pod" -- \
+  verify_code=$(kctl exec -n platform "$probe_pod" -- \
     curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     "http://${new_pod_ip}:8080/jmap/session" 2>/dev/null || echo "000")
 
   if [[ "$verify_code" == "200" || "$verify_code" == "401" ]]; then
-    # 401 here is a positive signal: the JMAP endpoint is reachable but
-    # requires auth (which the unauthenticated curl above intentionally
-    # doesn't provide). Either way Stalwart is up.
     log "  Stalwart 0.16 is in full mode (/jmap/session → ${verify_code}). Bootstrap complete."
   else
     warn "  /jmap/session returned ${verify_code} after rollout — Stalwart may need more time."
