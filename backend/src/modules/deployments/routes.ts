@@ -744,7 +744,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const force = query.force === 'true' || query.force === '1';
 
     if (force) {
-      await service.hardDeleteDeployment(app.db, clientId, id, getK8s());
+      const deleteData = query.deleteData === 'true' || query.deleteData === '1';
+      await service.hardDeleteDeployment(app.db, clientId, id, getK8s(), deleteData);
       reply.status(204).send();
     } else {
       const preview = await service.getDeletePreview(app.db, clientId, id);
