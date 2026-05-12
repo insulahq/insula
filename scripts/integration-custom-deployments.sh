@@ -28,7 +28,7 @@
 # PREREQ
 #   - integration-staging.sh's preflight (admin login, DNS) must pass.
 #   - At least one tenant client exists (CUSTOM_DEPLOY_CLIENT_ID env,
-#     else picked from /admin/clients).
+#     else picked from /clients).
 #   - The platform-api Pod has OIDC_ENCRYPTION_KEY set (PAT scenario).
 #
 # DESIGN NOTES
@@ -134,7 +134,7 @@ info "Admin login OK"
 # deployments under that client.
 CLIENT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
 if [[ -z "$CLIENT_ID" ]]; then
-  CLIENT_ID=$(api GET "/admin/clients?limit=20" | python3 -c "
+  CLIENT_ID=$(api GET "/clients?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:
