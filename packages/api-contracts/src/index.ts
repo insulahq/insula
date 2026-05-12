@@ -83,3 +83,5 @@ export * from './postgres-restore.js';
 export * from './system-backup.js';
 export * from './system-wal-archive.js';
 export * from './task-center.js';
+export * from './custom-deployments.js';
+export * from './compose.js';
