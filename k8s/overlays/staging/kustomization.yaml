@@ -127,4 +127,4 @@ images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
     newTag: "20260512170410-44f2a5d" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/phoenixtechnam/hosting-platform/client-panel
-    newTag: "20260512181247-d48bf67" # {"$imagepolicy": "flux-system:client-panel:tag"}
+    newTag: "20260512183407-e78dd66" # {"$imagepolicy": "flux-system:client-panel:tag"}
