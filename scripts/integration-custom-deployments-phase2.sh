@@ -246,7 +246,7 @@ print(json.dumps({
   'name': '$name',
   'image': 'busybox:1.37-musl',
   'command': ['sh', '-c', 'echo started > /data/marker && sleep 3600'],
-  'volumes': [{'name': 'data', 'mountPath': '/data'}],
+  'volumes': [{'name': 'data', 'containerPath': '/data'}],
 }))
 ")
   local id
@@ -265,13 +265,14 @@ print(json.dumps({
     return
   fi
 
-  # Write a unique marker into the volume.
+  # Write a unique marker into the volume to a file the container startup
+  # command (/data/marker) doesn't touch, so restart can't overwrite it.
   local marker="e2e-persist-$STAMP"
   remote_kubectl exec -n "$TENANT_NS" \
     "$(remote_kubectl get pod -n "$TENANT_NS" -l "app=$name" \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)" \
-    -- sh -c "echo '$marker' > /data/marker" 2>/dev/null || {
-    fail "T5: exec write to /data/marker failed"
+    -- sh -c "echo '$marker' > /data/e2e-marker" 2>/dev/null || {
+    fail "T5: exec write to /data/e2e-marker failed"
     return
   }
   pass "T5: wrote marker to volume"
@@ -295,7 +296,7 @@ print(json.dumps({
   read_back=$(remote_kubectl exec -n "$TENANT_NS" \
     "$(remote_kubectl get pod -n "$TENANT_NS" -l "app=$name" \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)" \
-    -- cat /data/marker 2>/dev/null | tr -d '\r\n' || true)
+    -- cat /data/e2e-marker 2>/dev/null | tr -d '\r\n' || true)
   if [[ "$read_back" == "$marker" ]]; then
     pass "T5: marker '$marker' survives pod restart ✓"
   else
@@ -404,7 +405,7 @@ print(json.dumps({
   'mode': 'simple',
   'name': '$name',
   'image': 'nginx:1.27-alpine',
-  'ports': [{'containerPort': 80, 'name': 'http', 'protocol': 'TCP', 'exposeAsService': true}],
+  'ports': [{'containerPort': 80, 'name': 'http', 'protocol': 'TCP', 'exposeAsService': True}],
 }))
 ")
   local id
