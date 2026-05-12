@@ -1072,6 +1072,64 @@ export async function getDeploymentStatus(
   };
 }
 
+/**
+ * Parses a Kubernetes "exceeded quota" event message into a human-readable
+ * form that names the exhausted resource.
+ *
+ * K8s format (may contain multiple resources separated by commas):
+ *   exceeded quota: <quota-name>, requested: limits.cpu=500m, used: limits.cpu=500m, limited: limits.cpu=500m
+ *
+ * Output example:
+ *   Quota exceeded — CPU limit: requested 500m, using 500m of 500m.
+ *   Free up resources or upgrade the plan.
+ */
+function formatQuotaExceededMessage(raw: string): string {
+  const LABEL_MAP: Record<string, string> = {
+    'limits.cpu': 'CPU limit',
+    'limits.memory': 'memory limit',
+    'requests.cpu': 'CPU request',
+    'requests.memory': 'memory request',
+    'requests.storage': 'storage request',
+    'count/pods': 'pod count',
+    'count/services': 'service count',
+    'persistentvolumeclaims': 'PVC count',
+  };
+
+  // Extract key=value pairs from a "requested: …" / "used: …" / "limited: …" section.
+  const parseSection = (label: string): Record<string, string> => {
+    const m = raw.match(new RegExp(`${label}:\\s*([^,]+(?:,[^,]+(?:=)[^,]+)*)`));
+    if (!m) return {};
+    const out: Record<string, string> = {};
+    for (const pair of m[1].split(/,\s*/)) {
+      const [k, v] = pair.split('=');
+      if (k && v) out[k.trim()] = v.trim();
+    }
+    return out;
+  };
+
+  const requested = parseSection('requested');
+  const used = parseSection('used');
+  const limited = parseSection('limited');
+
+  const parts: string[] = [];
+  for (const key of Object.keys(requested)) {
+    const label = LABEL_MAP[key] ?? key;
+    const req = requested[key];
+    const cur = used[key];
+    const lim = limited[key];
+    if (req && cur && lim) {
+      parts.push(`${label}: requesting ${req}, already using ${cur} of ${lim} limit`);
+    } else if (req && lim) {
+      parts.push(`${label}: requesting ${req}, limit is ${lim}`);
+    } else {
+      parts.push(`${label}: ${req}`);
+    }
+  }
+
+  const detail = parts.length > 0 ? parts.join('; ') : raw;
+  return `Quota exceeded — ${detail}. Free up resources or upgrade the plan.`;
+}
+
 async function getK8sDeploymentStatus(
   k8s: K8sClients,
   namespace: string,
@@ -1197,7 +1255,7 @@ async function getK8sDeploymentStatus(
         const msg = failedEvent.message;
         if (msg.includes('exceeded quota')) {
           return { name: componentName, type: 'deployment', phase: 'failed', ready: false,
-            message: 'Insufficient resources: the client quota has been exceeded. Free up resources or upgrade the plan.' };
+            message: formatQuotaExceededMessage(msg) };
         }
         return { name: componentName, type: 'deployment', phase: 'failed', ready: false, message: msg };
       }

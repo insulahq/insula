@@ -161,12 +161,15 @@ export async function ensureFileManagerRunning(
                   },
                 ],
                 securityContext: {
-                  // SYS_ADMIN: SFTP chroot jail bind mount
                   // DAC_OVERRIDE: read/write/delete files owned by any UID
                   // FOWNER: chmod files owned by any UID
                   // CHOWN: chown files to any UID/GID
+                  // SYS_ADMIN was removed: the SFTP jail moved to an emptyDir
+                  // (/jail volume), so no bind mount is performed and SYS_ADMIN
+                  // is no longer needed — it also violates PSS baseline which
+                  // is enforced on all tenant namespaces.
                   allowPrivilegeEscalation: false,
-                  capabilities: { drop: ['ALL'], add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] },
+                  capabilities: { drop: ['ALL'], add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN'] },
                 },
                 resources: {
                   // Requests stay tight (FM is mostly idle); limits raised
