@@ -19,6 +19,7 @@ import { registerIngressHooks } from './k8s-ingress.js';
 import { registerDnsZoneCleanupHook } from './dns-zone-cleanup.js';
 import { registerTenantBundlesBundleCleanupHook } from './tenant-bundles-cleanup.js';
 import { registerClusterScopedRefsCleanupHook } from './cluster-scoped-refs.js';
+import { registerCustomDeploymentsScaleHook } from './k8s-custom-deployments.js';
 
 export function registerAllLifecycleHooks(): void {
   // Phase 2: PV/Longhorn cleanup on delete.
@@ -46,4 +47,8 @@ export function registerAllLifecycleHooks(): void {
   registerDnsZoneCleanupHook();
   registerTenantBundlesBundleCleanupHook();
   registerClusterScopedRefsCleanupHook();
+
+  // ADR-036: custom deployments — scale K8s Deployments to 0/1 on
+  // client suspend/restore so tenant workloads stop consuming resources.
+  registerCustomDeploymentsScaleHook();
 }

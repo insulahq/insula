@@ -293,7 +293,7 @@ scenario_compose() {
   api:
     image: nginx:1.27-alpine
     ports:
-      - "8080"
+      - "80"
 '
   # JSON-escape via python so multi-line + quotes are safe.
   local body

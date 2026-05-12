@@ -136,7 +136,7 @@ export async function createSimpleDeployment(
     );
   }
 
-  const namespace = await loadClientNamespace(db, clientId);
+  const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
 
   // Build + validate the normalized spec.
   const spec = buildSpecFromSimple(input);
@@ -188,7 +188,7 @@ export async function createSimpleDeployment(
     status: 'deploying',
   });
 
-  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, spec);
+  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, spec, workerNodeName, storageTier);
 
   return getCustomDeployment(db, clientId, id);
 }
@@ -260,7 +260,7 @@ export async function createComposeDeployment(
     );
   }
 
-  const namespace = await loadClientNamespace(db, clientId);
+  const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
 
   // Phase 1: parse → validate → reject if errors.
   const parsed = parseCompose({ composeYaml: input.compose_yaml, envFiles: input.env_files });
@@ -329,7 +329,7 @@ export async function createComposeDeployment(
     status: 'deploying',
   });
 
-  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, finalSpec);
+  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, finalSpec, workerNodeName, storageTier);
   return getCustomDeployment(db, clientId, id);
 }
 
@@ -459,8 +459,8 @@ export async function updateCustomDeployment(
     })
     .where(eq(deployments.id, id));
 
-  const namespace = await loadClientNamespace(db, clientId);
-  await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom/${current.name}`, nextSpec);
+  const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
+  await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom/${current.name}`, nextSpec, workerNodeName, storageTier);
 
   return getCustomDeployment(db, clientId, id);
 }
@@ -580,6 +580,8 @@ async function deployToCluster(
   deploymentName: string,
   storageSubPath: string,
   spec: CustomDeploymentSpec,
+  workerNodeName?: string | null,
+  storageTier?: 'local' | 'ha' | null,
 ): Promise<void> {
   const hasPullCredential = await getPullCredential(db, deploymentId);
   if (hasPullCredential) {
@@ -621,6 +623,8 @@ async function deployToCluster(
       storageSubPath,
       spec,
       hasPullCredential: !!hasPullCredential,
+      workerNodeName: workerNodeName ?? undefined,
+      storageTier: storageTier ?? undefined,
     });
     // Optimistic: status flips to running on the next reconciler tick
     // when k8s reports ready replicas. Until then it stays 'deploying'.
@@ -647,6 +651,31 @@ async function loadClientNamespace(db: Database, clientId: string): Promise<stri
     throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
   }
   return client.kubernetesNamespace;
+}
+
+interface ClientContext {
+  readonly namespace: string;
+  readonly workerNodeName: string | null;
+  readonly storageTier: 'local' | 'ha';
+}
+
+async function loadClientContext(db: Database, clientId: string): Promise<ClientContext> {
+  const [client] = await db
+    .select({
+      kubernetesNamespace: clients.kubernetesNamespace,
+      workerNodeName: clients.workerNodeName,
+      storageTier: clients.storageTier,
+    })
+    .from(clients)
+    .where(eq(clients.id, clientId));
+  if (!client) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+  }
+  return {
+    namespace: client.kubernetesNamespace,
+    workerNodeName: client.workerNodeName ?? null,
+    storageTier: (client.storageTier ?? 'local') as 'local' | 'ha',
+  };
 }
 
 function buildSpecFromSimple(input: CreateCustomDeploymentSimpleInput): CustomDeploymentSpec {
