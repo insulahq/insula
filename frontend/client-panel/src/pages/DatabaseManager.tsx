@@ -219,7 +219,7 @@ export default function DatabaseManager() {
         .map((entry) => entry.id),
     );
     return allDeployments.filter(
-      (d) => dbCatalogIds.has(d.catalogEntryId) && !d.deletedAt,
+      (d) => Boolean(d.catalogEntryId && dbCatalogIds.has(d.catalogEntryId)) && !d.deletedAt,
     );
   }, [allDeployments, catalogEntries]);
 

@@ -969,14 +969,14 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
     return map;
   }, [catalogData]);
 
-  const getCatalogEntryName = (catalogEntryId: string | null) => {
-    if (!catalogEntryId) return 'Unknown';
+  const getCatalogEntryName = (catalogEntryId: string | null, source?: string | null) => {
+    if (!catalogEntryId) return source === 'custom' ? 'Custom Application' : 'Unknown';
     const entry = catalogMap.get(catalogEntryId);
     return entry?.name ?? 'Unknown';
   };
 
   const selectedDeployment = allDeployments.find(d => d.id === selectedDeploymentId) ?? null;
-  const selectedCatalogEntry = selectedDeployment
+  const selectedCatalogEntry = selectedDeployment?.catalogEntryId
     ? catalogMap.get(selectedDeployment.catalogEntryId) ?? null
     : null;
 
@@ -1090,10 +1090,10 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                         </h3>
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {getCatalogEntryName(deployment.catalogEntryId)}
+                            {getCatalogEntryName(deployment.catalogEntryId, deployment.source)}
                           </p>
                           <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
-                            {deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown'}
+                            {deployment.source === 'custom' ? 'Docker' : (deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown')}
                           </span>
                           {/* "Update available" — surfaced when the deployment's installed
                               version differs from the catalog entry's latest version.

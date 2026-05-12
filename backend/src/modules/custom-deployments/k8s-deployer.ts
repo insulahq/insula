@@ -201,6 +201,10 @@ async function applyDeployment(
   const name = serviceResourceName(input.deploymentName, serviceName, serviceCount);
   const labels = {
     app: name,
+    // Required by container-console/service.ts:fetchPods label selector.
+    'platform.io/managed': 'true',
+    // Required by listDeploymentComponents to identify the component name.
+    component: serviceName,
     // Stack-level label so all Pods of all services in this
     // deployment share a discriminator — used by image-audit's
     // pod-listing label selector and by the delete-by-label sweep.

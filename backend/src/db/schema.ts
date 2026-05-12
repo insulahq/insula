@@ -961,6 +961,8 @@ export const ingressRoutes = pgTable('ingress_routes', {
   customErrorCodes: varchar('custom_error_codes', { length: 255 }),
   customErrorPath: varchar('custom_error_path', { length: 255 }),
   additionalHeaders: jsonb('additional_headers').$type<Record<string, string>>(),
+  // ── Custom-deployment routing ──
+  servicePort: integer('service_port'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

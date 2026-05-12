@@ -169,7 +169,10 @@ export const volumePathSchema = z.object({
 export const deploymentResponseSchema = z.object({
   id: uuidField,
   clientId: z.string(),
-  catalogEntryId: z.string(),
+  /** Null for custom deployments (source='custom', ADR-036). */
+  catalogEntryId: z.string().nullable(),
+  /** 'catalog' for standard workloads/apps; 'custom' for ADR-036 bring-your-own containers. */
+  source: z.enum(['catalog', 'custom']).default('catalog'),
   name: z.string(),
   domainName: z.string().nullable(),
   replicaCount: z.number(),

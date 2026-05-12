@@ -432,6 +432,8 @@ export const updateCustomDeploymentSchema = z.object({
   /** Mutate env (full replace, not patch). */
   env: z.array(customEnvSchema).max(200).optional(),
   resources: customResourcesSchema.optional(),
+  /** Replace port declarations (simple-mode only). Full replace, not patch. */
+  ports: z.array(customPortSchema).max(20).optional(),
   /** Set/clear the imagePullSecret. */
   pull_credential_id: uuidField.nullable().optional(),
 });

@@ -6,34 +6,66 @@
 import { useState } from 'react';
 import { AlertTriangle, Plus, Trash2, X } from 'lucide-react';
 import clsx from 'clsx';
-import { useCreateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
-import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue } from '@k8s-hosting/api-contracts';
+import { useCreateCustomDeployment, useUpdateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
+import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
+import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 
 interface Props {
   readonly clientId: string;
   readonly existingNames: readonly string[];
   readonly onClose: () => void;
   readonly onCreated: () => void;
+  /** When set, the wizard enters edit mode — pre-populated from this row. */
+  readonly existingDeployment?: CustomDeploymentRow;
 }
 
 interface PortRow { containerPort: number; name: string; protocol: 'TCP' | 'UDP' | 'SCTP'; exposeAsService: boolean; ingressEligible: boolean }
 interface VolumeRow { kind: 'volume'; name: string; containerPath: string; readOnly: boolean }
 interface EnvRow { name: string; value: string }
 
-export function SimpleContainerWizard({ clientId, existingNames, onClose, onCreated }: Props) {
-  const [name, setName] = useState('');
-  const [image, setImage] = useState('');
-  const [ports, setPorts] = useState<PortRow[]>([{ containerPort: 80, name: 'http', protocol: 'TCP', exposeAsService: true, ingressEligible: true }]);
-  const [volumes, setVolumes] = useState<VolumeRow[]>([]);
-  const [env, setEnv] = useState<EnvRow[]>([]);
-  const [cpuRequest, setCpuRequest] = useState('100m');
-  const [memoryRequest, setMemoryRequest] = useState('128Mi');
+function specToState(spec: CustomDeploymentSpec, depName: string) {
+  const svc = spec.services[depName] ?? Object.values(spec.services)[0];
+  return {
+    image: svc?.image ?? '',
+    ports: (svc?.ports ?? []).map(p => ({
+      containerPort: p.containerPort,
+      name: p.name ?? '',
+      protocol: (p.protocol ?? 'TCP') as 'TCP' | 'UDP' | 'SCTP',
+      exposeAsService: p.exposeAsService ?? true,
+      ingressEligible: p.ingressEligible ?? false,
+    })),
+    volumes: (svc?.volumeMounts ?? []).filter(v => v.kind === 'volume').map(v => ({
+      kind: 'volume' as const,
+      name: v.name,
+      containerPath: v.containerPath,
+      readOnly: v.readOnly ?? false,
+    })),
+    env: (svc?.env ?? []).map(e => ({ name: e.name, value: e.value ?? '' })),
+    cpuRequest: svc?.resources?.cpuRequest ?? '100m',
+    memoryRequest: svc?.resources?.memoryRequest ?? '128Mi',
+  };
+}
+
+export function SimpleContainerWizard({ clientId, existingNames, onClose, onCreated, existingDeployment }: Props) {
+  const isEdit = Boolean(existingDeployment);
+  const initState = existingDeployment
+    ? specToState(existingDeployment.customSpec, existingDeployment.name)
+    : { image: '', ports: [{ containerPort: 80, name: 'http', protocol: 'TCP' as const, exposeAsService: true, ingressEligible: true }], volumes: [], env: [], cpuRequest: '100m', memoryRequest: '128Mi' };
+
+  const [name, setName] = useState(existingDeployment?.name ?? '');
+  const [image, setImage] = useState(initState.image);
+  const [ports, setPorts] = useState<PortRow[]>(initState.ports);
+  const [volumes, setVolumes] = useState<VolumeRow[]>(initState.volumes);
+  const [env, setEnv] = useState<EnvRow[]>(initState.env);
+  const [cpuRequest, setCpuRequest] = useState(initState.cpuRequest);
+  const [memoryRequest, setMemoryRequest] = useState(initState.memoryRequest);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const validateMutation = useValidateCustomDeployment(clientId);
   const createMutation = useCreateCustomDeployment(clientId);
+  const updateMutation = useUpdateCustomDeployment(clientId);
 
   const buildInput = (): CreateCustomDeploymentSimpleInput => ({
     mode: 'simple',
@@ -48,11 +80,12 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
   const nameError = (() => {
     if (!name) return null;
     if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return 'lowercase letters, digits, hyphens; start/end alphanumeric';
-    if (existingNames.includes(name)) return 'name already in use';
+    if (!isEdit && existingNames.includes(name)) return 'name already in use';
     return null;
   })();
 
-  const canSubmit = Boolean(name && image && !nameError && !createMutation.isPending);
+  const isPending = isEdit ? updateMutation.isPending : createMutation.isPending;
+  const canSubmit = Boolean(name && image && !nameError && !isPending);
 
   const runValidate = async () => {
     setSubmitError(null);
@@ -68,10 +101,20 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
     setSubmitError(null);
     setIssues([]);
     try {
-      await createMutation.mutateAsync(buildInput());
+      if (isEdit && existingDeployment) {
+        await updateMutation.mutateAsync({
+          id: existingDeployment.id,
+          image,
+          env: env.filter(e => e.name).map(e => ({ name: e.name, value: e.value })),
+          ports: ports.filter(p => p.name && p.containerPort > 0),
+          resources: { cpuRequest, memoryRequest },
+        });
+      } else {
+        await createMutation.mutateAsync(buildInput());
+      }
       onCreated();
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : 'create failed');
+      setSubmitError(e instanceof Error ? e.message : isEdit ? 'update failed' : 'create failed');
     }
   };
 
@@ -83,7 +126,9 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
       <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-white shadow-xl dark:bg-gray-900">
         <header className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Deploy a custom container</h2>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {isEdit ? `Edit — ${existingDeployment?.name}` : 'Deploy a custom container'}
+            </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Single image, declared ports + named volumes. For multi-service stacks use the compose editor.
             </p>
@@ -101,8 +146,9 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
                 type="text"
                 className={inputCls(Boolean(nameError))}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { if (!isEdit) setName(e.target.value); }}
                 placeholder="my-app"
+                readOnly={isEdit}
                 data-testid="custom-simple-name"
               />
               {nameError && <FieldError>{nameError}</FieldError>}
@@ -241,7 +287,7 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
             {validateMutation.isPending ? 'Validating…' : 'Validate'}
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit} className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="custom-simple-submit">
-            {createMutation.isPending ? 'Creating…' : 'Create'}
+            {isPending ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save changes' : 'Create')}
           </button>
         </footer>
       </div>

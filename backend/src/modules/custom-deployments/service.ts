@@ -172,7 +172,7 @@ export async function createSimpleDeployment(
   // a deploy failure leaves a `failed` row the operator can see and
   // retry (matches the catalog path).
   const id = randomUUID();
-  const storagePath = `custom/${input.name}`;
+  const storagePath = `custom-deployment/${input.name}`;
   await db.insert(deployments).values({
     id,
     clientId,
@@ -313,7 +313,7 @@ export async function createComposeDeployment(
     : parsed.spec;
 
   const id = randomUUID();
-  const storagePath = `custom/${input.name}`;
+  const storagePath = `custom-deployment/${input.name}`;
   await db.insert(deployments).values({
     id,
     clientId,
@@ -399,6 +399,11 @@ export async function updateCustomDeployment(
     nextSpec = withServiceMutation(nextSpec, serviceName, (s) => ({ ...s, resources: { ...s.resources, ...patch.resources! } }));
     needsRedeploy = true;
   }
+  if (patch.ports !== undefined) {
+    if (isCompose) composeReject('ports');
+    nextSpec = withServiceMutation(nextSpec, serviceName, (s) => ({ ...s, ports: patch.ports! }));
+    needsRedeploy = true;
+  }
   if (patch.pull_credential_id !== undefined) {
     nextSpec = { ...nextSpec, pullCredentialId: patch.pull_credential_id ?? undefined };
     needsRedeploy = true;
@@ -460,7 +465,7 @@ export async function updateCustomDeployment(
     .where(eq(deployments.id, id));
 
   const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
-  await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom/${current.name}`, nextSpec, workerNodeName, storageTier);
+  await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom-deployment/${current.name}`, nextSpec, workerNodeName, storageTier);
 
   return getCustomDeployment(db, clientId, id);
 }

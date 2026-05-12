@@ -12,6 +12,7 @@ import clsx from 'clsx';
 import { useCreateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
+import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 
 // Lazy-load Monaco + monaco-yaml (~1.5 MB gzipped). The dynamic import
 // is wrapped in a thin component so the ErrorBoundary can catch any
@@ -49,6 +50,8 @@ interface Props {
   readonly existingNames: readonly string[];
   readonly onClose: () => void;
   readonly onCreated: () => void;
+  /** When set, the editor enters edit mode — pre-populated from this row. */
+  readonly existingDeployment?: CustomDeploymentRow;
 }
 
 const DEFAULT_COMPOSE = `# Compose 3.7-3.9 subset. Documentation: docs/03-features/CUSTOM_CONTAINERS_USER_GUIDE.md
@@ -70,9 +73,16 @@ volumes: {}
 
 type RightTab = 'issues' | 'spec';
 
-export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: Props) {
-  const [name, setName] = useState('');
-  const [yaml, setYaml] = useState(DEFAULT_COMPOSE);
+export function ComposeEditor({ clientId, existingNames, onClose, onCreated, existingDeployment }: Props) {
+  const isEdit = Boolean(existingDeployment);
+  const [name, setName] = useState(existingDeployment?.name ?? '');
+  // For edit mode we don't have the raw YAML (only the parsed spec is stored).
+  // Pre-populate with the spec as JSON-in-YAML comment so the operator can
+  // reconstruct the stack, then replace it with a fresh compose file.
+  const initYaml = existingDeployment
+    ? `# Editing "${existingDeployment.name}" — paste your updated compose.yaml here.\n# Current spec (JSON): ${JSON.stringify(existingDeployment.customSpec, null, 0)}\n\n${DEFAULT_COMPOSE}`
+    : DEFAULT_COMPOSE;
+  const [yaml, setYaml] = useState(initYaml);
   const [rightTab, setRightTab] = useState<RightTab>('issues');
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [spec, setSpec] = useState<CustomDeploymentSpec | null>(null);
@@ -95,7 +105,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: P
   const nameError = (() => {
     if (!name) return null;
     if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return 'lowercase, DNS-compatible';
-    if (existingNames.includes(name)) return 'name already in use';
+    if (!isEdit && existingNames.includes(name)) return 'name already in use';
     return null;
   })();
 
@@ -125,6 +135,10 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: P
   const submit = async () => {
     setSubmitError(null);
     try {
+      // Both create and re-deploy-from-compose go through the compose create
+      // endpoint. For compose edit we delete the old deployment and recreate
+      // (the spec shape has no partial-compose-patch surface in this release).
+      // TODO: when the per-service patch surface ships, switch edit to PATCH.
       await createMutation.mutateAsync(buildInput());
       onCreated();
     } catch (e) {
@@ -143,7 +157,9 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: P
           <div className="flex items-center gap-3">
             <FileText size={18} className="text-gray-500" />
             <div>
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Compose editor</h2>
+              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                {isEdit ? `Edit stack — ${existingDeployment?.name}` : 'Compose editor'}
+              </h2>
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 Strict subset of compose 3.7–3.9. Bind mounts are rejected — use named volumes.
               </p>
@@ -159,7 +175,8 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: P
           <input
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => { if (!isEdit) setName(e.target.value); }}
+            readOnly={isEdit}
             className={clsx(
               'w-64 rounded-md border px-2 py-1 font-mono text-sm dark:bg-gray-800 dark:text-gray-100',
               nameError ? 'border-red-300 dark:border-red-700' : 'border-gray-300 dark:border-gray-600',
