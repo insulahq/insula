@@ -65,34 +65,18 @@ spec:
       ports:
         - protocol: TCP
           port: 80
-    # Management HTTP — cluster-internal: same namespace + platform namespace
-    # (platform-api JMAP proxy + bootstrap job) + ingress-controller pods.
-    # ingress-nginx runs hostNetwork=true on this cluster, so its packets
-    # source from the node IP (or, more precisely, get re-sourced by Linux
-    # to the Calico VXLAN tunnel IP which falls inside the cluster pod
-    # CIDR — see docs/03-cluster-networking/CALICO_VXLAN.md). A pure
-    # namespace+podSelector match for ingress-nginx fails for this case
-    # because the source is not a recognised pod IP. The ipBlock below
-    # allows the entire cluster pod CIDR — strictly looser than the prior
-    # podSelector for *intra-pod* sources, but ingress is already gated
-    # by auth_request → /api/v1/auth/verify-admin-session at the nginx
-    # layer, so the JMAP port is not actually exposed publicly.
-    # See `project_calico_netpol_ipblock_fix.md` for the canonical write-up.
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: mail
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: platform
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: ingress-nginx
-        - ipBlock:
-            cidr: 10.42.0.0/16
+    # Management HTTP — open to all sources (from: []).
+    # Rationale: the kubelet connects from the node's primary public IP
+    # (e.g. 89.167.3.56) — NOT from the pod CIDR (10.42.0.0/16). A
+    # namespace+podSelector or pod-CIDR ipBlock rule would silently block
+    # startup/liveness/readiness probes, preventing the pod from ever
+    # becoming Ready. Allowing 0.0.0.0/0 is safe because port 8080 is the
+    # Stalwart management API which requires HTTP Basic auth for every
+    # request; there is no unauthenticated surface on this port.
+    # ingress-nginx still gates the admin Ingress with auth_request, so the
+    # port is not directly routable from the internet anyway (no hostPort,
+    # no externalIPs). See `project_calico_netpol_ipblock_fix.md`.
+    - from: []
       ports:
         - protocol: TCP
           port: 8080

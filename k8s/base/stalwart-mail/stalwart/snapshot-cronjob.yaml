@@ -17,8 +17,11 @@
 #
 # RESTORE FLOW:
 #   The restore-state initContainer in deployment.yaml checks for the
-#   CURRENT sentinel file. When absent and the restic Secret is present,
-#   it runs `restic restore latest --target /var/lib/stalwart/data`.
+#   CURRENT sentinel file. When absent, the restic Secret is present,
+#   and allow-restore annotation is "true", it runs `restic restore
+#   latest --target /restore-tmp` then copies the files into place.
+#   The backup path /var/lib/stalwart/data is preserved in the snapshot,
+#   so restored files land at /restore-tmp/var/lib/stalwart/data/.
 #
 # NODE AFFINITY:
 #   preferredDuringScheduling inter-pod affinity on

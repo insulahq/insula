@@ -15,8 +15,8 @@
 #   On first deploy the RocksDB data directory is empty. The restore-state
 #   initContainer checks for /var/lib/stalwart/data/CURRENT (RocksDB
 #   sentinel). If absent AND stalwart-snapshot-restic-repo is configured,
-#   it downloads the latest snapshot via restic and imports it with
-#   `stalwart -i`. Otherwise Stalwart starts with an empty DataStore.
+#   it downloads the latest snapshot via restic restore and copies the
+#   raw RocksDB files into place. Otherwise Stalwart starts with an empty DataStore.
 #   STALWART_RECOVERY_ADMIN env var provides a temporary HTTP-Basic
 #   credential so stalwart-cli can POST the bootstrap plan before any
 #   permanent admin exists.
@@ -154,11 +154,18 @@ spec:
                 exit 0
               fi
               echo "restore-state: empty DataStore + repo configured + allow-restore=true — restoring latest snapshot"
-              mkdir -p /var/lib/stalwart/data
+              mkdir -p /var/lib/stalwart/data /restore-tmp
               restic restore latest --target /restore-tmp 2>&1 || { echo "restore-state: restic restore failed — fresh start"; exit 0; }
-              # stalwart -i imports a snapshot directory
-              stalwart -c /etc/stalwart/config.json -i /restore-tmp/snapshot/snap 2>&1 || { echo "restore-state: stalwart import failed — fresh start"; exit 0; }
-              echo "restore-state: restore complete"
+              # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
+              # The CronJob backs up /var/lib/stalwart/data, so files land at
+              # /restore-tmp/var/lib/stalwart/data/ — copy them into place.
+              RESTORED_DATA=/restore-tmp/var/lib/stalwart/data
+              if [ ! -d "$$RESTORED_DATA" ]; then
+                echo "restore-state: unexpected restore layout (no $${RESTORED_DATA}) — fresh start"
+                exit 0
+              fi
+              cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1 || { echo "restore-state: copy to data dir failed — fresh start"; exit 0; }
+              echo "restore-state: restore complete ($(ls /var/lib/stalwart/data | wc -l) files)"
           envFrom:
             - secretRef:
                 name: stalwart-snapshot-restic-repo
@@ -256,9 +263,13 @@ spec:
               cpu: 1000m
               memory: 512Mi
           startupProbe:
-            httpGet:
-              path: /healthz/live
-              port: mgmt-http
+            # exec probe: Stalwart 0.16 management API restricts remote
+            # connections by default. httpGet from the kubelet comes from
+            # the node's public IP (e.g. 89.167.3.56) which Stalwart
+            # rejects with FIN/RST. exec runs inside the pod (127.0.0.1),
+            # which Stalwart always accepts.
+            exec:
+              command: ["sh", "-c", "curl -sf http://127.0.0.1:8080/healthz/live"]
             # RocksDB startup is much faster than PG schema migration.
             # Keep 60*5s=300s grace for large DataStore replay on slow
             # nodes; in practice RocksDB opens in <5s.
@@ -266,17 +277,15 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 5
           livenessProbe:
-            httpGet:
-              path: /healthz/live
-              port: mgmt-http
+            exec:
+              command: ["sh", "-c", "curl -sf http://127.0.0.1:8080/healthz/live"]
             initialDelaySeconds: 30
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /healthz/live
-              port: mgmt-http
+            exec:
+              command: ["sh", "-c", "curl -sf http://127.0.0.1:8080/healthz/live"]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
