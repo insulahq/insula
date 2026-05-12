@@ -172,7 +172,7 @@ else
   # the table columns are present; if it returns 500 it's not migrated.
   CLIENT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
   if [[ -z "$CLIENT_ID" ]]; then
-    CLIENT_ID=$(api GET "/admin/clients?limit=20" | python3 -c "
+    CLIENT_ID=$(api GET "/clients?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:
