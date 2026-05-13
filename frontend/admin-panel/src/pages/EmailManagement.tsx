@@ -20,6 +20,7 @@ import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
 import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
+import MailArchiveCard from '@/components/MailArchiveCard';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -96,6 +97,7 @@ export default function EmailManagement() {
           Backup
         </h2>
         <MailSnapshotHealthCard />
+        <MailArchiveCard />
       </div>
     </div>
   );
