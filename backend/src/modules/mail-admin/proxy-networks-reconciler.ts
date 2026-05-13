@@ -207,15 +207,29 @@ export async function listServerNodeIps(
       conditions?: Array<{ type: string; status: string }>;
     };
   };
-  const list = (await core.listNode({})) as { items?: NodeShape[] };
+  // Push-down: ask the API server for server-role nodes only. This avoids
+  // pulling worker nodes (and any future role labels) into the response,
+  // which would over-fetch on larger clusters. We still re-check the label
+  // client-side below as a defense in depth.
+  const list = (await core.listNode({
+    labelSelector: `${SERVER_ROLE_LABEL_KEY}=${SERVER_ROLE_LABEL_VALUE}`,
+  })) as { items?: NodeShape[] };
   const out: Array<{ hostname: string; ip: string }> = [];
+  const seenHostnames = new Set<string>();
   for (const n of list.items ?? []) {
     if (n.metadata?.labels?.[SERVER_ROLE_LABEL_KEY] !== SERVER_ROLE_LABEL_VALUE) continue;
     const hostname =
       n.metadata?.labels?.['kubernetes.io/hostname'] ?? n.metadata?.name ?? '';
     if (!hostname) continue;
+    // Reject duplicates rather than silently overwriting (would shrink the
+    // trust list and bypass the never-push-empty guard on the next tick).
+    if (seenHostnames.has(hostname)) continue;
     const internal = n.status?.addresses?.find((a) => a.type === 'InternalIP')?.address;
     if (!internal) continue;
+    // Reject obviously bogus addresses that would be unsafe in proxyNetworks
+    // (loopback can never be a haproxy source IP on a real cluster).
+    if (internal === '127.0.0.1' || internal === '0.0.0.0' || internal === '::1') continue;
+    seenHostnames.add(hostname);
     out.push({ hostname, ip: internal });
   }
   // Deterministic order helps log diffs and tests.
@@ -305,7 +319,7 @@ async function reconcileListenerProxyNetworks(
   }
   if (Object.keys(update).length === 0) return;
 
-  await jmapPost(baseUrl, auth, {
+  const setRes = await jmapPost(baseUrl, auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
@@ -315,12 +329,60 @@ async function reconcileListenerProxyNetworks(
       ],
     ],
   });
+  assertJmapSetSucceeded(setRes, 'x:NetworkListener/set');
 
   log.info(
     `Updated proxyNetworks on ${Object.keys(update).length} listener(s): ` +
       `${mailListeners.filter((l) => update[l.id]).map((l) => l.name).join(', ')} → ` +
       `${Object.keys(expected).join(', ')}`,
   );
+}
+
+/**
+ * Validate a JMAP `/set` response: rejects method-level error envelopes and
+ * surfaces `notCreated` / `notUpdated` / `notDestroyed` maps as a thrown
+ * error. Without this check, Stalwart can silently reject individual
+ * writes (auth scope, schema mismatch, read-only state) while the HTTP
+ * layer returns 200 — the reconciler would loop forever logging
+ * "Updated ..." without actually changing the on-wire state. That drift
+ * is security-relevant because proxyNetworks is the defense against
+ * PROXY-v2 source-IP spoofing.
+ */
+function assertJmapSetSucceeded(
+  res: JmapInvocationResponse,
+  expectedMethod: string,
+): void {
+  const first = res.methodResponses[0];
+  if (!first) {
+    throw new Error(`${expectedMethod}: empty methodResponses`);
+  }
+  const [method, args] = first;
+  if (method === 'error') {
+    const errType = (args as { type?: unknown }).type;
+    const errDesc = (args as { description?: unknown }).description;
+    throw new Error(
+      `${expectedMethod} returned method-level error: type=${String(errType)} desc=${String(errDesc)}`,
+    );
+  }
+  if (method !== expectedMethod) {
+    throw new Error(`${expectedMethod}: unexpected response method '${method}'`);
+  }
+  const notCreated = (args as { notCreated?: Record<string, unknown> | null }).notCreated;
+  const notUpdated = (args as { notUpdated?: Record<string, unknown> | null }).notUpdated;
+  const notDestroyed = (args as { notDestroyed?: Record<string, unknown> | null }).notDestroyed;
+  const reasons: string[] = [];
+  if (notCreated && Object.keys(notCreated).length > 0) {
+    reasons.push(`notCreated=${JSON.stringify(notCreated).slice(0, 200)}`);
+  }
+  if (notUpdated && Object.keys(notUpdated).length > 0) {
+    reasons.push(`notUpdated=${JSON.stringify(notUpdated).slice(0, 200)}`);
+  }
+  if (notDestroyed && Object.keys(notDestroyed).length > 0) {
+    reasons.push(`notDestroyed=${JSON.stringify(notDestroyed).slice(0, 200)}`);
+  }
+  if (reasons.length > 0) {
+    throw new Error(`${expectedMethod} partial failure: ${reasons.join('; ')}`);
+  }
 }
 
 /**
@@ -435,7 +497,7 @@ async function reconcileAllowedIps(
     return;
   }
 
-  await jmapPost(baseUrl, auth, {
+  const setRes = await jmapPost(baseUrl, auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
@@ -450,6 +512,7 @@ async function reconcileAllowedIps(
       ],
     ],
   });
+  assertJmapSetSucceeded(setRes, 'x:AllowedIp/set');
 
   log.info(
     `AllowedIp synced — created=${Object.keys(create).length}, ` +

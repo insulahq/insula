@@ -107,14 +107,25 @@ if [[ -z "$ADMIN_PW" ]]; then
 fi
 
 # jmap_get <method> <args-json>
+#
+# Credentials are written to a tmpfs file inside the pod and read via curl
+# --netrc-file so they never appear in the pod's process arg list (which
+# would be readable from /proc by other in-pod processes and captured in
+# the kubelet audit log). The file lives under /tmp (which is tmpfs in
+# the Stalwart pod) and is removed immediately after use.
 jmap_get() {
   local method="$1" args="$2"
-  kctl exec -n "$STALWART_NS" "$POD" -- curl -sf \
-    -u "admin:${ADMIN_PW}" \
-    -X POST -H 'Content-Type: application/json' --max-time 15 \
-    -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],
-         \"methodCalls\":[[\"${method}\",${args},\"c0\"]]}" \
-    "http://localhost:8080/jmap/" 2>/dev/null || echo ''
+  local netrc_path="/tmp/.acme-check-netrc-$$"
+  kctl exec -i -n "$STALWART_NS" "$POD" -- sh -c "
+    umask 077
+    cat > '${netrc_path}'
+    curl -sf --netrc-file '${netrc_path}' \
+      -X POST -H 'Content-Type: application/json' --max-time 15 \
+      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],
+           \"methodCalls\":[[\"${method}\",${args},\"c0\"]]}' \
+      http://localhost:8080/jmap/
+    rm -f '${netrc_path}'
+  " <<<"machine localhost login admin password ${ADMIN_PW}" 2>/dev/null || echo ''
 }
 
 # ── Check 1: x:AcmeProvider row ────────────────────────────────────────
@@ -232,17 +243,17 @@ else
       note_warn "port ${port}: unrecognized issuer — ${ISSUER}"
     fi
 
-    # Validity remaining (in days).
+    # Validity remaining (in days). Use openssl's own -checkend instead of
+    # `date -d` which is GNU-only — this script may be run from macOS
+    # operator workstations as well as Linux staging hosts.
     if [[ -n "$NOT_AFTER" ]]; then
-      NOT_AFTER_EPOCH="$(date -d "$NOT_AFTER" +%s 2>/dev/null || echo 0)"
-      NOW_EPOCH="$(date +%s)"
-      DAYS_LEFT=$(( (NOT_AFTER_EPOCH - NOW_EPOCH) / 86400 ))
-      if (( DAYS_LEFT >= MIN_VALIDITY_DAYS )); then
-        note_pass "port ${port}: LE cert OK — ${DAYS_LEFT} days remaining (subject=${SUBJECT#subject=})"
-      elif (( DAYS_LEFT > 0 )); then
-        note_warn "port ${port}: LE cert valid but only ${DAYS_LEFT} days remaining (< ${MIN_VALIDITY_DAYS}) — renewal due"
+      MIN_SECONDS=$(( MIN_VALIDITY_DAYS * 86400 ))
+      if echo "$CERT_PEM" | openssl x509 -noout -checkend "$MIN_SECONDS" >/dev/null 2>&1; then
+        note_pass "port ${port}: LE cert OK — ≥${MIN_VALIDITY_DAYS}d validity (notAfter=${NOT_AFTER}, subject=${SUBJECT#subject=})"
+      elif echo "$CERT_PEM" | openssl x509 -noout -checkend 0 >/dev/null 2>&1; then
+        note_warn "port ${port}: LE cert valid but <${MIN_VALIDITY_DAYS}d remaining (notAfter=${NOT_AFTER}) — renewal due"
       else
-        note_fail "port ${port}: LE cert EXPIRED ($((-DAYS_LEFT)) days ago)"
+        note_fail "port ${port}: LE cert EXPIRED (notAfter=${NOT_AFTER})"
       fi
     fi
   done
