@@ -20,13 +20,16 @@ import type { BlobStoreType } from '@k8s-hosting/api-contracts';
  * Lets a super_admin switch the Stalwart 0.16 BlobStore singleton
  * between three operator-meaningful backends:
  *
- *   - Default: stored in the configured DataStore (mail-pg PG by
- *     default). The shipped default. Blows up at scale because PG
- *     row sizes get unwieldy.
- *   - S3: external S3-compatible bucket. Required for HA stateless
- *     because each replica's emptyDir would split blobs otherwise.
+ *   - Default: stored inline in the active DataStore (RocksDB on the
+ *     local-path PVC since M14). Fine for low volume; bloats the
+ *     DataStore on disk past ~5 GiB of attachments.
+ *   - S3: external S3-compatible bucket. Lets blobs grow without
+ *     bloating the DataStore PVC; also the right choice for any future
+ *     multi-replica Stalwart so blobs don't fragment across pods.
  *   - FileSystem: per-replica local disk. INCOMPATIBLE with multi-
  *     replica Stalwart — each replica only sees its own blobs.
+ *   - CIFS: SMB/CIFS network share (e.g. Hetzner Storage Box). Pins
+ *     Stalwart to a specific node where the share is mounted.
  *
  * Switching is online but DOES NOT migrate existing blobs. New mail
  * lands in the new store; old mail may be unreachable. The confirm
@@ -114,8 +117,8 @@ export default function StalwartBlobStoreCard() {
         </div>
 
         <RadioOption
-          label="Default (mail-pg / PostgreSQL)"
-          description="Single-tenant default. Works without external infra. Blobs stored in the mail-pg database — blows up on disk at scale (>~5 GiB)."
+          label="Default (RocksDB DataStore)"
+          description="Single-tenant default. Works without external infra. Blobs stored inside the same RocksDB data dir as mail metadata. Fine for low volume; for >~5 GiB of attachments switch to S3 or CIFS to keep the DataStore lean."
           value="Default"
           checked={draft.type === 'Default'}
           onChange={() => setDraft({ type: 'Default' })}

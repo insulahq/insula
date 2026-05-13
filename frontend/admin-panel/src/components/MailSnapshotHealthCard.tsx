@@ -27,20 +27,27 @@ import {
 import type { MailSnapshotJobStatusResponse } from '@k8s-hosting/api-contracts';
 
 /**
- * Email Management → Mail Snapshot Health card.
+ * Email Management → Mail Backup Health card.
  *
- * Surfaces visibility into Stalwart state-export (`stalwart -e`) snapshot
- * health so operators notice when the periodic CronJob has stalled WITHOUT
- * having to run kubectl.
+ * Surfaces visibility into the restic backup of the Stalwart RocksDB data dir
+ * so operators notice when the periodic CronJob has stalled WITHOUT having to
+ * run kubectl.
+ *
+ * Vocabulary note (intentional): the UI says "backup" everywhere to avoid
+ * confusion with K8s `VolumeSnapshot` CRDs. The mail PVC is on `local-path`
+ * which has no CSI snapshot capability — these are file-level restic backups,
+ * not block-level volume snapshots. Internal symbol names (hooks, types,
+ * function names) keep the "snapshot" word because they pre-date the rename
+ * and DB columns / route paths aren't changing.
  *
  * States:
- *   - healthy   — green: last snapshot < 5 min ago (or within schedule window)
- *   - stale     — amber: last snapshot is old — likely CronJob issue
- *   - no_snapshots — neutral: CronJob is configured but has never fired
- *   - disabled  — neutral: no CronJob found in cluster
+ *   - healthy        — green: last backup < 5 min ago (or within schedule window)
+ *   - stale          — amber: last backup is old — likely CronJob issue
+ *   - no backups yet — neutral: CronJob is configured but has never fired
+ *   - disabled       — neutral: no CronJob found in cluster
  *
- * A "Trigger Snapshot Now" button fires a one-shot Job and shows a live
- * log panel (same pattern as StalwartBlobStoreCard) until the Job is done.
+ * A "Run Backup Now" button fires a one-shot Job and shows a live log panel
+ * (same pattern as StalwartBlobStoreCard) until the Job is done.
  */
 export default function MailSnapshotHealthCard() {
   const status = useMailSnapshotStatus();
@@ -61,7 +68,7 @@ export default function MailSnapshotHealthCard() {
     return (
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5">
         <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-          <Loader2 size={14} className="animate-spin" /> Loading snapshot health…
+          <Loader2 size={14} className="animate-spin" /> Loading backup health…
         </div>
       </div>
     );
@@ -73,7 +80,7 @@ export default function MailSnapshotHealthCard() {
         <div className="flex items-start gap-2.5">
           <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-600" />
           <div className="text-sm text-red-700 dark:text-red-300">
-            Could not read snapshot status.{' '}
+            Could not read backup status.{' '}
             {status.error instanceof Error ? status.error.message : 'See server logs.'}
           </div>
         </div>
@@ -103,7 +110,7 @@ export default function MailSnapshotHealthCard() {
           className="text-lg font-semibold text-gray-900 dark:text-gray-100"
           data-testid="mail-snapshot-health-heading"
         >
-          Mail Snapshot Health
+          Mail Backup Health
         </h2>
         <span className={`ml-auto rounded px-2 py-0.5 text-xs font-medium ${palette.badge}`} data-testid="mail-snapshot-badge">
           {palette.label}
@@ -111,10 +118,14 @@ export default function MailSnapshotHealthCard() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Stalwart state-export (<code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code>)
-        snapshots are used as HA DR recovery: if the mail pod reschedules to a node without
-        DataStore state, the restore-state initContainer downloads the latest snapshot and
-        runs <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -i</code>.
+        File-level restic backup of <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">/var/lib/stalwart/data</code>
+        (the RocksDB data directory). Used as the HA DR recovery path: if the mail pod
+        reschedules to a node without DataStore state, the restore-state initContainer
+        downloads the latest backup and writes it into the empty PVC, then RocksDB's WAL
+        replay handles partial-write state on next start.
+        <br />
+        <span className="text-xs">Not a K8s <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">VolumeSnapshot</code> — the mail PVC uses
+        the <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">local-path</code> storage class which has no CSI snapshot capability.</span>
       </p>
 
       {/* ── status banner ── */}
@@ -182,12 +193,12 @@ export default function MailSnapshotHealthCard() {
           </div>
 
           <KvRow
-            label="Stored snapshots"
+            label="Stored backups"
             value={String(data.snapshotCount)}
             testId="mail-snapshot-count"
           />
           <KvRow
-            label="Last snapshot"
+            label="Last backup"
             value={
               data.lastSnapshotAt
                 ? new Date(data.lastSnapshotAt).toLocaleString()
@@ -214,7 +225,7 @@ export default function MailSnapshotHealthCard() {
             testId="mail-snapshot-total-size"
           />
           <KvRow
-            label="Last export size"
+            label="Last backup size"
             value={
               data.lastSnapshotSizeBytes != null
                 ? formatBytes(data.lastSnapshotSizeBytes)
@@ -255,7 +266,7 @@ export default function MailSnapshotHealthCard() {
             </p>
           ) : (
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              No offsite backup configured — snapshots exist only as local k8s Jobs.
+              No offsite backup configured — backups run only as local k8s Jobs.
             </p>
           )}
         </div>
@@ -306,7 +317,7 @@ export default function MailSnapshotHealthCard() {
           ) : (
             <Play size={14} />
           )}
-          {trigger.isPending ? 'Triggering…' : 'Trigger Snapshot Now'}
+          {trigger.isPending ? 'Triggering…' : 'Run Backup Now'}
         </button>
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Runs an immediate one-shot Job — does not affect the schedule.
@@ -339,7 +350,7 @@ function paletteForSnapshot(
       badge: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
       label: 'Disabled',
       icon: <Archive size={14} className="mt-0.5 shrink-0 text-gray-500" />,
-      message: () => 'Snapshots are not enabled (no CronJob found).',
+      message: () => 'Backups are not enabled (no CronJob found).',
     };
   }
   if (!lastSnapshotAt) {
@@ -347,10 +358,10 @@ function paletteForSnapshot(
       border: 'border-gray-200 dark:border-gray-700',
       bg: 'bg-gray-50 dark:bg-gray-900/20',
       badge: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
-      label: 'No snapshots yet',
+      label: 'No backups yet',
       icon: <Archive size={14} className="mt-0.5 shrink-0 text-gray-500" />,
       message: (d) =>
-        `No snapshots recorded yet. The CronJob runs on schedule: ${d.scheduleExpression || '*/2 * * * *'}.`,
+        `No backups recorded yet. The CronJob runs on schedule: ${d.scheduleExpression || '*/2 * * * *'}.`,
     };
   }
   if (healthy) {
@@ -362,16 +373,16 @@ function paletteForSnapshot(
       icon: <Check size={14} className="mt-0.5 shrink-0 text-green-600 dark:text-green-400" />,
       message: (d) => {
         const age = d.secondsSinceLastSnapshot != null
-          ? ` Last snapshot: ${formatAge(d.secondsSinceLastSnapshot)} ago`
+          ? ` Last backup: ${formatAge(d.secondsSinceLastSnapshot)} ago`
           : '';
         const size = d.lastSnapshotSizeBytes != null
           ? ` (${formatBytes(d.lastSnapshotSizeBytes)})`
           : '';
-        return `Mail snapshots are running.${age}${size}.`;
+        return `Mail backups are running.${age}${size}.`;
       },
     };
   }
-  // Stale: enabled, has a snapshot, but not healthy
+  // Stale: enabled, has a backup, but not healthy
   return {
     border: 'border-amber-300 dark:border-amber-700',
     bg: 'bg-amber-50 dark:bg-amber-900/20',
@@ -382,7 +393,7 @@ function paletteForSnapshot(
       const age = d.secondsSinceLastSnapshot != null
         ? `${formatAge(d.secondsSinceLastSnapshot)} ago`
         : 'unknown';
-      return `Last snapshot was ${age} — check the snapshot CronJob.`;
+      return `Last backup was ${age} — check the backup CronJob.`;
     },
   };
 }
@@ -434,7 +445,7 @@ function SnapshotJobStatusPanel({ status, onClose }: SnapshotJobStatusPanelProps
           <Loader2 size={14} className="animate-spin" />
         ) : null}
         <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-          Snapshot Job: <code>{status.jobName}</code>
+          Backup Job: <code>{status.jobName}</code>
         </h3>
         <span
           data-testid="mail-snapshot-job-status"
