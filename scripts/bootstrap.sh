@@ -4157,15 +4157,30 @@ spec:
               -H 'Content-Type: application/json' --max-time 30 -d "\$1"
           }
 
-          # 1. Resolve RocksDB domain hash ID (cannot be inferred from name)
+          # 1. Resolve RocksDB domain hash ID (cannot be inferred from name).
+          # If the domain is absent (Stalwart auto-seeded without x:Bootstrap/set
+          # after a DB wipe), create it first — x:Domain/set works in full mode.
           DOM_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:Domain/get",{accountId:\$a,ids:null},"c0"]]}')")
           DOMAIN_ID=\$(echo "\$DOM_RESP" | jq -r --arg d "\${STALWART_DOMAIN}" \
             '.methodResponses[0][1].list[] | select(.name == \$d) | .id' 2>/dev/null | head -1)
-          [ -n "\$DOMAIN_ID" ] || {
-            echo "ERROR: domain \${STALWART_DOMAIN} not found in Stalwart DB" >&2; exit 1
-          }
+          if [ -z "\$DOMAIN_ID" ]; then
+            echo "Domain \${STALWART_DOMAIN} not found — creating via x:Domain/set..."
+            CREATE_KEY=\$(echo "\${STALWART_DOMAIN}" | tr '.' '-')
+            jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\${STALWART_DOMAIN}" --arg k "\${CREATE_KEY}" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:Domain/set",{accountId:\$a,create:{(\$k):{name:\$d}}},"c0"]]}')" | \
+              jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+            DOM_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:Domain/get",{accountId:\$a,ids:null},"c0"]]}')")
+            DOMAIN_ID=\$(echo "\$DOM_RESP" | jq -r --arg d "\${STALWART_DOMAIN}" \
+              '.methodResponses[0][1].list[] | select(.name == \$d) | .id' 2>/dev/null | head -1)
+            [ -n "\$DOMAIN_ID" ] || {
+              echo "ERROR: domain create failed — \${DOM_RESP}" >&2; exit 1
+            }
+          fi
           echo "domain id=\${DOMAIN_ID}"
 
           # 2. SystemSettings — always update (idempotent)
@@ -4286,8 +4301,13 @@ spec:
             echo "All listeners already present — skipping"
           fi
 
-          # 8. Admin credentials — always update (idempotent)
-          # Find built-in admin account by name; fall back to Superuser/Admin role.
+          # 8. Admin credentials — update the admin JMAP account created by
+          # x:Bootstrap/set. After a normal bootstrap, the admin account IS a
+          # JMAP principal and appears in x:Account/get. After a DB-wipe + auto-
+          # seed (no x:Bootstrap/set), only the built-in superuser exists and
+          # x:Account/get returns empty — in that case, skip gracefully (the
+          # built-in superuser password is the recoveryPassword from the Secret
+          # and cannot be changed via JMAP x:Account/set).
           ACCT_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:Account/get",{accountId:\$a,ids:null},"c0"]]}')")
@@ -4299,18 +4319,20 @@ spec:
                select(.roles["@type"] == "Superuser" or .roles["@type"] == "Admin") | .id' \
               2>/dev/null | head -1)
           fi
-          [ -n "\$ADMIN_ID" ] || {
-            echo "ERROR: could not resolve admin account ID" >&2; exit 1
-          }
-          echo "admin account id=\${ADMIN_ID}"
-          jmap_call "\$(jq -n --arg a "\$ACCT" --arg id "\$ADMIN_ID" --arg p "\${adminPassword}" \
-            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
-              methodCalls:[["x:Account/set",
-                {accountId:\$a,update:{
-                  (\$id): {"credentials":{"0":{"@type":"Password","secret":\$p,"allowedIps":{},"expiresAt":null}}}
-                }},
-                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
-          echo "Admin credentials OK"
+          if [ -z "\$ADMIN_ID" ]; then
+            echo "No JMAP admin account found (built-in superuser only) — skipping credential update."
+            echo "Admin authenticates via recoveryPassword from stalwart-admin-creds."
+          else
+            echo "admin account id=\${ADMIN_ID}"
+            jmap_call "\$(jq -n --arg a "\$ACCT" --arg id "\$ADMIN_ID" --arg p "\${adminPassword}" \
+              '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+                methodCalls:[["x:Account/set",
+                  {accountId:\$a,update:{
+                    (\$id): {"credentials":{"0":{"@type":"Password","secret":\$p,"allowedIps":{},"expiresAt":null}}}
+                  }},
+                  "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+            echo "Admin credentials OK"
+          fi
 
           echo ""
           echo "configure-ok listeners_created=\${LISTENERS_CREATED}"
