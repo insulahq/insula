@@ -1,9 +1,7 @@
 #
-# Dev overlay for Stalwart 0.16 (mail-pg CNPG + Stalwart Deployment).
+# Dev overlay for Stalwart 0.16 (RocksDB DataStore — no CNPG).
 #
-# Standalone kustomization — deployed separately from the main dev overlay
-# to avoid Flux SSA conflicts while 0.15 is still active in the staging
-# overlay. Deploy with:
+# Standalone kustomization. Deploy with:
 #
 #   kubectl apply -k k8s/overlays/dev/stalwart-mail/
 #
@@ -13,12 +11,11 @@
 # Differences from the base:
 #   1. stalwart-mail Service: LoadBalancer → NodePort (DinD has no LB)
 #   2. NetworkPolicy deleted (DinD k3s has no NetworkPolicy enforcer)
-#   3. mail-pg CNPG Cluster storage class: longhorn → local-path
-#   4. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
+#   3. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
 #
-# 0.15 overlay (k8s/overlays/dev/stalwart/) remains active in dev;
-# this overlay deploys alongside it. Port node ports are offset by
-# +1 from 0.15 to avoid collision during parallel-running transition.
+# 2026-05-13 (Phase 5 of mail-arch re-audit): removed the stale mail-db
+# CNPG Cluster patch — Stalwart 0.16 uses embedded RocksDB; there is no
+# CNPG cluster to patch.
 #
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -93,25 +90,9 @@ patches:
       kind: NetworkPolicy
       name: stalwart-mail
 
-  # mail-pg CNPG Cluster: pin storage class to local-path (DinD has no Longhorn).
-  # Also clear the node affinity — DinD has a single unlabelled node.
-  # CNPG affinity must be completely replaced (strategic-merge won't null
-  # nodeSelector keys); use a full spec.affinity replacement patch.
-  - patch: |
-      apiVersion: postgresql.cnpg.io/v1
-      kind: Cluster
-      metadata:
-        name: mail-db
-        namespace: mail
-      spec:
-        storage:
-          storageClass: local-path
-        affinity:
-          podAntiAffinityType: preferred
-          topologyKey: kubernetes.io/hostname
-    target:
-      kind: Cluster
-      name: mail-db
+  # NOTE: the mail-db CNPG Cluster patch that lived here was deleted on
+  # 2026-05-13 — Stalwart 0.16 uses embedded RocksDB on the
+  # `stalwart-rocksdb-data` local-path PVC. There is no CNPG cluster.
 
   # Ingress: dev TLS cert + relaxed SSL settings
   - patch: |
