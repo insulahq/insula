@@ -96,6 +96,19 @@ RUN chmod 755 /usr/local/bin/jmap-restore.py
 COPY snapshot-upload.sh /usr/local/bin/snapshot-upload.sh
 RUN chmod 755 /usr/local/bin/snapshot-upload.sh
 
+# 2026-05-13: Stalwart-native, app-level archive uploader/downloader.
+# Two modes, dispatched on ARCHIVE_MODE env:
+#   export  — reads /export/export.lz4 (written by the initContainer
+#             that ran `stalwart -e`), uploads via restic --tag mail-archive,
+#             prints `archive-result: {...}` JSON line for the orchestrator
+#             to parse the resulting restic snapshot id.
+#   restore — restic restores --target /export, hands off to the initContainer
+#             (which runs `stalwart -i`).
+# Reuses the stalwart-snapshot-restic-repo Secret so operators configure
+# one repo for both continuous backup AND archive.
+COPY archive-export.sh /usr/local/bin/archive-export.sh
+RUN chmod 755 /usr/local/bin/archive-export.sh
+
 # Default to a no-op so `docker run …` doesn't error; the orchestrator
 # always overrides command/args.
 CMD ["sh", "-c", "echo tenant-backup-tools image ready; sleep 1"]
