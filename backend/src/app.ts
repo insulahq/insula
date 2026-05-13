@@ -814,7 +814,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => proxyNetworksStop());
       } catch (err) {
-        app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
+        // Catch covers the entire mail-related scheduler block above
+        // (mail-imapsync, mail-stats, cnpg-backup-health, dr-watcher,
+        // proxy-networks-reconciler). One unavailable k8s client takes
+        // them all down together — that's the trade-off for sharing
+        // k8sForImapsync. The "schedulers not started" wording avoids
+        // misattributing a failure to mail-imapsync specifically.
+        app.log.warn(
+          { err },
+          'mail schedulers not started (imapsync, dr-watcher, proxy-networks reconciler) — k8s client unavailable',
+        );
       }
 
       // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff

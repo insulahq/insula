@@ -172,6 +172,55 @@ describe('listServerNodeIps', () => {
     ]);
     expect(await listServerNodeIps(core)).toEqual([]);
   });
+
+  it('rejects bogus loopback/unspecified InternalIPs (defense vs misconfigured kubelet)', async () => {
+    const core = makeCore(
+      ['127.0.0.1', '0.0.0.0', '::1'].map((ip, i) => ({
+        metadata: {
+          name: `n${i}`,
+          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': `n${i}` },
+        },
+        status: { addresses: [{ type: 'InternalIP', address: ip }] },
+      })),
+    );
+    expect(await listServerNodeIps(core)).toEqual([]);
+  });
+
+  it('drops duplicate hostnames rather than silently overwriting', async () => {
+    const core = makeCore([
+      {
+        metadata: {
+          name: 'duplicate',
+          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 'dup' },
+        },
+        status: { addresses: [{ type: 'InternalIP', address: '10.0.0.5' }] },
+      },
+      {
+        metadata: {
+          name: 'duplicate2',
+          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 'dup' },
+        },
+        status: { addresses: [{ type: 'InternalIP', address: '10.0.0.6' }] },
+      },
+    ]);
+    const out = await listServerNodeIps(core);
+    expect(out).toHaveLength(1);
+    expect(out[0].ip).toBe('10.0.0.5');
+  });
+
+  it('passes server-role labelSelector to the k8s API (push-down filter)', async () => {
+    let receivedOpts: unknown = null;
+    const core = {
+      listNode: async (opts: unknown) => {
+        receivedOpts = opts;
+        return { items: [] };
+      },
+    } as unknown as Parameters<typeof listServerNodeIps>[0];
+    await listServerNodeIps(core);
+    expect((receivedOpts as { labelSelector?: string }).labelSelector).toBe(
+      'platform.phoenix-host.net/node-role=server',
+    );
+  });
 });
 
 describe('runProxyNetworksReconcilerTick', () => {
@@ -498,6 +547,134 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     expect(fetchCalled).toBe(false);
+  });
+
+  it('surfaces method-level JMAP errors on NetworkListener/set (no silent drift)', async () => {
+    const warns: unknown[] = [];
+    mockFetch((req) => {
+      const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
+      if (method === 'x:NetworkListener/get') {
+        return {
+          methodResponses: [
+            [
+              'x:NetworkListener/get',
+              {
+                list: [
+                  {
+                    id: 'L1',
+                    name: 'submission',
+                    bind: { '[::]:587': true },
+                    proxyNetworks: {}, // forces an update
+                  },
+                ],
+              },
+              'c0',
+            ],
+          ],
+        };
+      }
+      if (method === 'x:NetworkListener/set') {
+        // Method-level error: Stalwart rejected the call (e.g. invalid auth scope).
+        return {
+          methodResponses: [['error', { type: 'forbidden', description: 'auth scope' }, 'c0']],
+        };
+      }
+      return { methodResponses: [[method as string, { list: [] }, 'c0']] };
+    });
+
+    await runProxyNetworksReconcilerTick({
+      core: makeCore([
+        {
+          metadata: {
+            name: 's1',
+            labels: {
+              'platform.phoenix-host.net/node-role': 'server',
+              'kubernetes.io/hostname': 's1',
+            },
+          },
+          status: { addresses: [{ type: 'InternalIP', address: '10.0.0.1' }] },
+        },
+      ]),
+      env,
+      logger: {
+        warn: (...a: unknown[]) => warns.push(a),
+        info: () => undefined,
+      },
+    });
+
+    // The warning should propagate out so the operator can see the failure
+    // — the reconciler must NOT silently log "Updated N listener(s)".
+    // Error objects don't serialize via JSON, so check the message directly.
+    const errStrings = warns.map((w) =>
+      (w as unknown[]).map((arg) => arg instanceof Error ? arg.message : JSON.stringify(arg)).join(' '),
+    );
+    const joined = errStrings.join('\n');
+    expect(joined).toMatch(/NetworkListener reconcile failed/);
+    expect(joined).toMatch(/forbidden|auth scope/);
+  });
+
+  it('surfaces partial-failure (notUpdated) on NetworkListener/set', async () => {
+    const warns: unknown[] = [];
+    mockFetch((req) => {
+      const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
+      if (method === 'x:NetworkListener/get') {
+        return {
+          methodResponses: [
+            [
+              'x:NetworkListener/get',
+              {
+                list: [
+                  {
+                    id: 'L1',
+                    name: 'submission',
+                    bind: { '[::]:587': true },
+                    proxyNetworks: {},
+                  },
+                ],
+              },
+              'c0',
+            ],
+          ],
+        };
+      }
+      if (method === 'x:NetworkListener/set') {
+        return {
+          methodResponses: [
+            [
+              'x:NetworkListener/set',
+              { notUpdated: { L1: { type: 'invalidProperties', description: 'bad shape' } } },
+              'c0',
+            ],
+          ],
+        };
+      }
+      return { methodResponses: [[method as string, { list: [] }, 'c0']] };
+    });
+
+    await runProxyNetworksReconcilerTick({
+      core: makeCore([
+        {
+          metadata: {
+            name: 's1',
+            labels: {
+              'platform.phoenix-host.net/node-role': 'server',
+              'kubernetes.io/hostname': 's1',
+            },
+          },
+          status: { addresses: [{ type: 'InternalIP', address: '10.0.0.1' }] },
+        },
+      ]),
+      env,
+      logger: {
+        warn: (...a: unknown[]) => warns.push(a),
+        info: () => undefined,
+      },
+    });
+
+    const joined = warns
+      .map((w) => (w as unknown[]).map((arg) => arg instanceof Error ? arg.message : JSON.stringify(arg)).join(' '))
+      .join('\n');
+    expect(joined).toMatch(/notUpdated/);
   });
 
   it('logs and continues when listNode rejects (transient API error)', async () => {
