@@ -75,7 +75,7 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
   const test = useTestIngressAuth(clientId, routeId);
   const { data: providers } = useOidcProviders(clientId);
 
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
   const [providerMode, setProviderMode] = useState<'existing' | 'new'>('new');
   const [selectedProviderId, setSelectedProviderId] = useState<string>('');
 
@@ -218,20 +218,18 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
         className="flex w-full items-center justify-between px-5 py-4 text-left"
       >
         <div className="flex items-center gap-2">
+          {isOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
           <Lock size={18} className="text-gray-700 dark:text-gray-300" />
           <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">OIDC Authentication</h3>
         </div>
-        <div className="flex items-center gap-2">
-          <span className={clsx(
-            'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
-            enabled
-              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-              : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
-          )}>
-            {enabled ? 'Enabled' : 'Disabled'}
-          </span>
-          {isOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
-        </div>
+        <span className={clsx(
+          'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
+          enabled
+            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+        )}>
+          {enabled ? 'Enabled' : 'Disabled'}
+        </span>
       </button>
 
       {isOpen && (

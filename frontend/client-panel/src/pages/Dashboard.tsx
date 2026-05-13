@@ -158,19 +158,16 @@ export default function Dashboard() {
       {/* Two-column grid for detail sections */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Subscription Details */}
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="subscription-card">
+        <Link to="/settings" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="subscription-card">
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
             <div className="flex items-center gap-2">
               <CreditCard size={16} className="text-indigo-500 dark:text-indigo-400" />
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Subscription</h2>
             </div>
-            <Link
-              to="/settings"
-              className="inline-flex items-center gap-1 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300"
-            >
+            <span className="inline-flex items-center gap-1 text-sm font-medium text-indigo-600 dark:text-indigo-400">
               Manage
               <ArrowRight size={14} />
-            </Link>
+            </span>
           </div>
           <div className="px-5 py-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -218,22 +215,19 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-        </div>
+        </Link>
 
         {/* Deployed Applications */}
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="deployments-card">
+        <Link to="/applications" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="deployments-card">
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
             <div className="flex items-center gap-2">
               <AppWindow size={16} className="text-green-500 dark:text-green-400" />
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Deployed Applications</h2>
             </div>
-            <Link
-              to="/applications"
-              className="inline-flex items-center gap-1 text-sm font-medium text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300"
-            >
+            <span className="inline-flex items-center gap-1 text-sm font-medium text-green-600 dark:text-green-400">
               View All
               <ArrowRight size={14} />
-            </Link>
+            </span>
           </div>
           <div className="px-5 py-4">
             {activeDeployments.length === 0 ? (
@@ -262,22 +256,19 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-        </div>
+        </Link>
 
         {/* Resource Usage */}
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="resource-usage-card">
+        <Link to="/resource-usage" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="resource-usage-card">
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
             <div className="flex items-center gap-2">
               <Cpu size={16} className="text-purple-500 dark:text-purple-400" />
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Resource Usage</h2>
             </div>
-            <Link
-              to="/resource-usage"
-              className="inline-flex items-center gap-1 text-sm font-medium text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300"
-            >
+            <span className="inline-flex items-center gap-1 text-sm font-medium text-purple-600 dark:text-purple-400">
               Details
               <ArrowRight size={14} />
-            </Link>
+            </span>
           </div>
           <div className="px-5 py-4 space-y-4">
             {resources ? (
@@ -311,22 +302,19 @@ export default function Dashboard() {
               <p className="text-sm text-gray-500 dark:text-gray-400">Loading resource data...</p>
             )}
           </div>
-        </div>
+        </Link>
 
         {/* Notifications */}
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="notifications-card">
+        <Link to="/notifications" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="notifications-card">
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
             <div className="flex items-center gap-2">
               <Bell size={16} className="text-rose-500 dark:text-rose-400" />
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Notifications</h2>
             </div>
-            <Link
-              to="/notifications"
-              className="inline-flex items-center gap-1 text-sm font-medium text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300"
-            >
+            <span className="inline-flex items-center gap-1 text-sm font-medium text-rose-600 dark:text-rose-400">
               View All
               <ArrowRight size={14} />
-            </Link>
+            </span>
           </div>
           <div className="px-5 py-4">
             {notifications.length === 0 ? (
@@ -351,7 +339,7 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-        </div>
+        </Link>
       </div>
     </div>
   );

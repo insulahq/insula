@@ -719,7 +719,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     <div className="space-y-6" data-testid="routing-tab">
       <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
         {isCname ? (
-          <p>Create an ingress route for your domain and assign it to workload.</p>
+          <p>Create ingress routes for your domain and assign it to workloads to expose your apps.</p>
         ) : dnsMode === 'primary' ? (
           <p>Create Ingress Routes to expose your apps to a domain name (FQDN) and allow public traffic flow.</p>
         ) : (
@@ -918,34 +918,32 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
               </button>
             </div>
             <form onSubmit={handleAddRoute} className="space-y-4" data-testid="add-route-form">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Hostname</label>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="text"
-                      value={subdomain}
-                      onChange={(e) => handleSubdomainChange(e.target.value)}
-                      placeholder="(root)"
-                      className={clsx(INPUT_CLASS, 'flex-1', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
-                      data-testid="new-subdomain-input"
-                    />
-                    <span className="text-sm font-mono text-gray-400 dark:text-gray-500 shrink-0">.{domainName}</span>
-                  </div>
-                  {subdomainError && (
-                    <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
-                  )}
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Enter subdomain (e.g., &apos;my-app&apos;) or leave empty to use the root domain. DNS records will be created automatically.
-                  </p>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Hostname</label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={subdomain}
+                    onChange={(e) => handleSubdomainChange(e.target.value)}
+                    placeholder="(root)"
+                    className={clsx(INPUT_CLASS, 'flex-1', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
+                    data-testid="new-subdomain-input"
+                  />
+                  <span className="text-sm font-mono text-gray-400 dark:text-gray-500 shrink-0">.{domainName}</span>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Path Prefix</label>
-                  <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    URL path for this route, e.g. &quot;/api/&quot; or leave empty to route all requests.
-                  </p>
-                </div>
+                {subdomainError && (
+                  <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
+                )}
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Enter subdomain (e.g., &apos;my-app&apos;) or leave empty to use the root domain. DNS records will be created automatically.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Path Prefix</label>
+                <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  URL path for this route, e.g. &quot;/api/&quot; or leave empty to route all requests.
+                </p>
               </div>
               {createRoute.error && (
                 <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
