@@ -1,0 +1,50 @@
+# Stalwart-specific affinity patch.
+#
+# Stalwart is unique among system workloads: operators may legitimately
+# want to pin the mail pod to a worker node — e.g. when a tenant
+# customer's CIFS Storage Box is mounted on a specific worker, or when
+# a worker has more local SSD for the RocksDB DataStore.
+#
+# Allowing both `server` and `worker` roles in the affinity means
+# the placement API (backend/src/modules/mail-admin/placement.ts) can
+# present both roles as candidates, and the node-selector reconciler
+# (backend/src/modules/mail-admin/node-selector.ts) can pin via
+# `kubernetes.io/hostname` to any eligible node without fighting the
+# Flux-managed base affinity.
+#
+# Public-facing mail ports continue to work on a worker-pinned
+# Stalwart through one of two paths:
+#   • thisNodeOnly mode — Stalwart binds hostPorts directly on the
+#     worker node. DNS / firewall must allow mail traffic to that
+#     worker's IP.
+#   • allServerNodes mode — haproxy DaemonSet stays on server-role
+#     nodes (the public-facing entrypoints) and forwards to the
+#     ClusterIP `stalwart-mail.mail.svc.cluster.local` via PROXY-v2.
+#     Stalwart receives the connection on the worker node;
+#     SystemSettings.proxyTrustedNetworks (server-role node IPs)
+#     authorises the PROXY-v2 header and surfaces the real client IP.
+#
+# The toleration set is identical to the shared affinity-patch — the
+# `platform.phoenix-host.net/server-only:NoSchedule` taint exists only
+# on server nodes. Workers don't carry that taint, so the toleration
+# is a no-op there but harmless.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: _ignored  # targeted by kustomization.yaml
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: platform.phoenix-host.net/node-role
+                    operator: In
+                    values: [server, worker]
+      tolerations:
+        - key: platform.phoenix-host.net/server-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
