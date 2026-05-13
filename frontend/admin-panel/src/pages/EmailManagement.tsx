@@ -93,7 +93,7 @@ export default function EmailManagement() {
       {/* ─── Backup & Snapshots section ───────────────────────────── */}
       <div className="space-y-4">
         <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
-          Backup &amp; Snapshots
+          Backup
         </h2>
         <MailSnapshotHealthCard />
       </div>
