@@ -794,8 +794,36 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           },
         });
         app.addHook('onClose', () => drWatcherStop());
+
+        // Proxy-networks reconciler: keeps Stalwart's `proxyNetworks` on every
+        // mail NetworkListener in sync with the cluster's server-role node IPs.
+        // Required for haproxy DaemonSet (allServerNodes mode) to forward
+        // connections with PROXY-v2 — Stalwart only honors PROXY-v2 frames
+        // whose source IP is in proxyNetworks. Empty node sets are NEVER
+        // pushed; see proxy-networks-reconciler.ts header for the security
+        // rationale (defends against 0.0.0.0/0 IP-spoofing vulnerability).
+        const { startProxyNetworksReconciler } = await import(
+          './modules/mail-admin/proxy-networks-reconciler.js'
+        );
+        const proxyNetworksStop = startProxyNetworksReconciler({
+          core: k8sForImapsync.core,
+          logger: {
+            warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+            info: (...args: unknown[]) => app.log.info(args.join(' ')),
+          },
+        });
+        app.addHook('onClose', () => proxyNetworksStop());
       } catch (err) {
-        app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
+        // Catch covers the entire mail-related scheduler block above
+        // (mail-imapsync, mail-stats, cnpg-backup-health, dr-watcher,
+        // proxy-networks-reconciler). One unavailable k8s client takes
+        // them all down together — that's the trade-off for sharing
+        // k8sForImapsync. The "schedulers not started" wording avoids
+        // misattributing a failure to mail-imapsync specifically.
+        app.log.warn(
+          { err },
+          'mail schedulers not started (imapsync, dr-watcher, proxy-networks reconciler) — k8s client unavailable',
+        );
       }
 
       // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff
