@@ -876,17 +876,36 @@ async function createArchiveJobNoDowntime(
 
   const initContainers = [
     {
-      // Tiny prep step: emptyDir starts empty, but the distroless
-      // rocksdb-secondary-checkpoint binary cannot mkdir its own
-      // secondary directory (no shell, no /bin/mkdir). The next
-      // container needs /scratch/secondary to exist as a writable dir.
-      // mail-backup-tools is the smallest of our images with sh+mkdir.
+      // Tiny prep step doing two things:
+      //
+      //   1. mkdir /scratch/secondary + /scratch/alt-cfg — emptyDir
+      //      starts empty, but the distroless
+      //      rocksdb-secondary-checkpoint binary cannot mkdir its own
+      //      secondary directory (no shell). The next containers need
+      //      these to exist as writable dirs.
+      //
+      //   2. Sweep ANY pre-existing /data/.checkpoint-tmp-* dirs left
+      //      behind by prior failed runs (the stalwart-export's own
+      //      cleanup runs as the non-root stalwart user and CAN'T rm
+      //      root-owned files inside a checkpoint dir; without this
+      //      sweep, orphans accumulate forever on the live PVC). Run
+      //      as root via the mail-backup-tools image's default uid.
       name: 'scratch-prep',
       image: toolsImage,
       imagePullPolicy: 'IfNotPresent',
       command: ['sh', '-c'],
-      args: ['mkdir -p /scratch/secondary /scratch/alt-cfg'],
-      volumeMounts: [scratchVolumeMount],
+      args: [
+        'set -eu; ' +
+          'mkdir -p /scratch/secondary /scratch/alt-cfg; ' +
+          // Orphan sweep — wildcard expansion silently no-ops when
+          // there are no matches. Older than 0s (i.e. any age) — these
+          // dirs only exist while a Job is mid-flight, and we already
+          // hold the singleton archive lock (rejectIfAnotherRunActive)
+          // by the time scratch-prep runs.
+          'rm -rf /data/.checkpoint-tmp-* 2>/dev/null || true; ' +
+          'echo "scratch-prep ok"',
+      ],
+      volumeMounts: [scratchVolumeMount, dataVolumeMount],
     },
     {
       name: 'rocksdb-checkpoint',
@@ -927,6 +946,7 @@ async function createArchiveJobNoDowntime(
         // and crash the lexer.
         'set -eu; ' +
           'mkdir -p /scratch/alt-cfg; ' +
+          // Build the alt-config first.
           'python3 -c \'\n' +
           'import json, sys\n' +
           'cfg = json.load(open("/etc/stalwart/config.json"))\n' +
@@ -939,9 +959,19 @@ async function createArchiveJobNoDowntime(
           'json.dump(cfg, open("/scratch/alt-cfg/config.json", "w"))\n' +
           '\' "' + checkpointDirOnPvc + '"; ' +
           'echo "alt config written (path → ' + checkpointDirOnPvc + '):"; ' +
-          'cat /scratch/alt-cfg/config.json',
+          'cat /scratch/alt-cfg/config.json; ' +
+          // CHMOD the checkpoint dir + its files so the next container
+          // (stalwart-export, runs as the non-root stalwart user) can
+          // write its LOG/MANIFEST. The rocksdb-secondary-checkpoint
+          // binary runs as root in distroless/cc; without this chmod
+          // the next step hits "Permission denied" opening the
+          // RocksDB LOG file. 777 is fine — checkpoint dir is
+          // transient and removed at the end of this Job (or by
+          // scratch-prep's orphan sweep on the next run).
+          'chmod -R a+rwX "' + checkpointDirOnPvc + '"; ' +
+          'echo "chmod -R a+rwX ' + checkpointDirOnPvc + ' done"',
       ],
-      volumeMounts: [configVolumeMount, scratchVolumeMount],
+      volumeMounts: [configVolumeMount, scratchVolumeMount, dataVolumeMount],
     },
     {
       name: 'stalwart-export',
