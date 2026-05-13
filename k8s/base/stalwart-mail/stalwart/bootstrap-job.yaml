@@ -59,7 +59,6 @@ spec:
   template:
     metadata:
       labels:
-        app: stalwart-mail
         app.kubernetes.io/component: mail-bootstrap
     spec:
       restartPolicy: Never
@@ -90,7 +89,7 @@ spec:
 
               # Get JMAP session to resolve management accountId.
               SESSION=$(curl -sf \
-                -u "admin:$${STALWART_RECOVERY_PASSWORD}" \
+                -u "admin:${STALWART_RECOVERY_PASSWORD}" \
                 --max-time 10 \
                 "${MGMT}/jmap/session") || {
                 echo "ERROR: could not reach ${MGMT}/jmap/session" >&2
@@ -120,7 +119,7 @@ spec:
                     "c0"]]}')
 
               RESP=$(curl -sf \
-                -u "admin:$${STALWART_RECOVERY_PASSWORD}" \
+                -u "admin:${STALWART_RECOVERY_PASSWORD}" \
                 -X POST "${MGMT}/jmap/" \
                 -H 'Content-Type: application/json' \
                 --max-time 30 \
