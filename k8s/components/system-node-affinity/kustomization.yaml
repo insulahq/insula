@@ -60,8 +60,12 @@ patches:
     path: affinity-patch.yaml
   # Cut 3 (2026-05-04): v015 StatefulSet `stalwart-mail` retired;
   # v016 ships as a Deployment named `stalwart-mail`.
+  #
+  # 2026-05-13: Stalwart uses a wider affinity than the shared patch
+  # — both `server` and `worker` roles are eligible candidates. See
+  # affinity-patch-stalwart.yaml for the rationale.
   - target: { kind: Deployment, name: stalwart-mail, namespace: mail }
-    path: affinity-patch.yaml
+    path: affinity-patch-stalwart.yaml
 
   # ── redis-system namespace ────────────────────────────────────────
   # Valkey/Sentinel coordinator cache shipped 2026-05-07. Without this

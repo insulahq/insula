@@ -2,7 +2,20 @@
  * Mail placement policy — primary/secondary/tertiary node assignment + DR state.
  *
  * Stores the operator's preferred node assignments in system_settings and
- * provides a candidate-node listing from the cluster (server-role nodes only).
+ * provides a candidate-node listing from the cluster.
+ *
+ * **Node-role policy:** any node with role `server` OR `worker` is a valid
+ * candidate. Stalwart can run on either:
+ *   - server-role nodes: typically the case (haproxy DS also runs here for
+ *     allServerNodes mode, so all mail traffic stays on the same set of
+ *     publicly-reachable hosts).
+ *   - worker-role nodes: also supported. Stalwart pod lands on the worker;
+ *     in thisNodeOnly mode the worker's hostPorts serve mail directly;
+ *     in allServerNodes mode haproxy on the 3 server nodes forwards via
+ *     ClusterIP+PROXY-v2 to the Stalwart pod on the worker. The PROXY-v2
+ *     trust list (SystemSettings.proxyTrustedNetworks) is maintained by
+ *     the proxy-networks reconciler from server-role node IPs — so the
+ *     same trust set works regardless of where Stalwart lives.
  *
  * The DR state machine (failing-over / failed-over / failing-back) is
  * advanced by Phase 5's failover scheduler; this module is read/write only
@@ -24,7 +37,8 @@ import {
 
 const SETTINGS_ID = 'system';
 const MAIL_NAMESPACE = 'mail';
-const SERVER_ROLE_LABEL = 'platform.example.test/node-role=server';
+const NODE_ROLE_LABEL_KEY = 'platform.example.test/node-role';
+const ELIGIBLE_NODE_ROLES = new Set(['server', 'worker']);
 
 export interface PlacementOptions {
   readonly kubeconfigPath: string | undefined;
@@ -86,20 +100,23 @@ export async function getMailPlacement(
   try {
     const nodeList = await core.listNode({}) as { items?: NodeShape[] };
     candidates = (nodeList.items ?? [])
-      .filter((n) => n.metadata?.labels?.['platform.example.test/node-role'] === 'server')
       .map((n) => {
+        const role = n.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
+        if (!ELIGIBLE_NODE_ROLES.has(role)) return null;
         const hostname =
           n.metadata?.labels?.['kubernetes.io/hostname'] ??
           n.metadata?.name ??
           '';
+        if (!hostname) return null;
         const readyCondition = n.status?.conditions?.find((c) => c.type === 'Ready');
         const ready = readyCondition?.status === 'True';
         const memStr = n.status?.allocatable?.['memory'] ?? '0';
         const freeMemoryBytes = parseMemQuantity(memStr);
         // Live disk space is not available from the node API — report 0.
         // Phase 5 can enhance this with a per-node df Job or metrics.
-        return { hostname, freeMemoryBytes, freeDiskBytes: 0, role: 'server', ready };
-      });
+        return { hostname, freeMemoryBytes, freeDiskBytes: 0, role, ready };
+      })
+      .filter((c): c is NodeCandidate => c !== null);
   } catch {
     // Best-effort — a missing or unreachable k8s API just returns
     // an empty candidate list. The operator still sees the stored policy.

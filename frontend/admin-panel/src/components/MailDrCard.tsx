@@ -513,7 +513,7 @@ function NodeDropdown({ label, description, value, candidates, disabledValues, o
               value={c.hostname}
               disabled={disabledValues.includes(c.hostname)}
             >
-              {c.hostname} — {c.ready ? 'Ready' : 'NotReady'} — {bytesToGiB(c.freeDiskBytes)} GiB free
+              {c.hostname} — {c.role} — {c.ready ? 'Ready' : 'NotReady'} — {bytesToGiB(c.freeDiskBytes)} GiB free
             </option>
           ))}
         </select>
@@ -531,6 +531,9 @@ function CandidateRow({ candidate, active }: { readonly candidate: NodeCandidate
         {candidate.hostname}
         {active && <span className="ml-1.5 text-brand-600 dark:text-brand-400">(active)</span>}
       </code>
+      <span className="rounded bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:text-gray-300">
+        {candidate.role}
+      </span>
       <span className="text-gray-500 dark:text-gray-400">
         {bytesToGiB(candidate.freeDiskBytes)} GiB disk
       </span>
