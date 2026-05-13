@@ -352,9 +352,9 @@ function SecurityTab({ clientId, routeId, route }: {
   const [rateSaving, setRateSaving] = useState(false);
 
   /* ── Collapsible section state ── */
-  const [wafOpen, setWafOpen] = useState(true);
-  const [ipOpen, setIpOpen] = useState(true);
-  const [rateOpen, setRateOpen] = useState(true);
+  const [wafOpen, setWafOpen] = useState(false);
+  const [ipOpen, setIpOpen] = useState(false);
+  const [rateOpen, setRateOpen] = useState(false);
 
   const handleSaveWaf = async (e: FormEvent) => {
     e.preventDefault();
@@ -423,13 +423,13 @@ function SecurityTab({ clientId, routeId, route }: {
           className="flex w-full items-center justify-between px-5 py-4 text-left"
           data-testid="waf-section"
         >
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">WAF (Web Application Firewall)</h3>
           <div className="flex items-center gap-2">
-            <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', wafEnabled ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400')}>
-              {wafEnabled ? 'Enabled' : 'Disabled'}
-            </span>
             {wafOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">WAF (Web Application Firewall)</h3>
           </div>
+          <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', wafEnabled ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400')}>
+            {wafEnabled ? 'Enabled' : 'Disabled'}
+          </span>
         </button>
         {wafOpen && (
         <form
@@ -579,15 +579,15 @@ function SecurityTab({ clientId, routeId, route }: {
           className="flex w-full items-center justify-between px-5 py-4 text-left"
           data-testid="ip-allowlist-section"
         >
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">IP Allowlist</h3>
           <div className="flex items-center gap-2">
-            {ipAllowlist.trim() && (
-              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-                Configured
-              </span>
-            )}
             {ipOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">IP Allowlist</h3>
           </div>
+          {ipAllowlist.trim() && (
+            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+              Configured
+            </span>
+          )}
         </button>
         {ipOpen && (
         <form
@@ -639,15 +639,15 @@ function SecurityTab({ clientId, routeId, route }: {
           className="flex w-full items-center justify-between px-5 py-4 text-left"
           data-testid="rate-limiting-section"
         >
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Rate Limiting</h3>
           <div className="flex items-center gap-2">
-            {(rateLimitRps || rateLimitConnections || rateLimitBurst) && (
-              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-                Active
-              </span>
-            )}
             {rateOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Rate Limiting</h3>
           </div>
+          {(rateLimitRps || rateLimitConnections || rateLimitBurst) && (
+            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+              Active
+            </span>
+          )}
         </button>
         {rateOpen && (
         <form
@@ -764,7 +764,7 @@ function ProtectedDirsSection({ clientId, routeId }: {
   const createDir = useCreateProtectedDir(clientId, routeId);
   const deleteDir = useDeleteProtectedDir(clientId, routeId);
 
-  const [sectionOpen, setSectionOpen] = useState(true);
+  const [sectionOpen, setSectionOpen] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newPath, setNewPath] = useState('');
   const [newRealm, setNewRealm] = useState('Restricted');
@@ -805,18 +805,18 @@ function ProtectedDirsSection({ clientId, routeId }: {
         onClick={() => setSectionOpen(!sectionOpen)}
         className="flex w-full items-center justify-between px-5 py-4 text-left"
       >
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-          <FolderLock size={16} />
-          Password-Protected Directories
-        </h3>
         <div className="flex items-center gap-2">
-          {dirs.length > 0 && (
-            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-              {dirs.length} director{dirs.length === 1 ? 'y' : 'ies'}
-            </span>
-          )}
           {sectionOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+            <FolderLock size={16} />
+            Password-Protected Directories
+          </h3>
         </div>
+        {dirs.length > 0 && (
+          <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+            {dirs.length} director{dirs.length === 1 ? 'y' : 'ies'}
+          </span>
+        )}
       </button>
       {sectionOpen && (
       <div className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-4">
@@ -1305,8 +1305,8 @@ function AdvancedTab({ clientId, routeId, route }: {
   const markHeadersDirty = () => setHeadersDirty(true);
 
   /* ── Collapsible section state ── */
-  const [errorPagesOpen, setErrorPagesOpen] = useState(true);
-  const [responseHeadersOpen, setResponseHeadersOpen] = useState(true);
+  const [errorPagesOpen, setErrorPagesOpen] = useState(false);
+  const [responseHeadersOpen, setResponseHeadersOpen] = useState(false);
 
   const handleAddHeader = () => {
     if (headers.length >= 50) return;
@@ -1387,13 +1387,13 @@ function AdvancedTab({ clientId, routeId, route }: {
           className="flex w-full items-center justify-between px-5 py-4 text-left"
           data-testid="custom-error-pages-section"
         >
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Custom Error Pages</h3>
           <div className="flex items-center gap-2">
-            {customErrorCodes.trim() && (
-              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">Configured</span>
-            )}
             {errorPagesOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Custom Error Pages</h3>
           </div>
+          {customErrorCodes.trim() && (
+            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">Configured</span>
+          )}
         </button>
         {errorPagesOpen && (
         <form
@@ -1471,13 +1471,13 @@ function AdvancedTab({ clientId, routeId, route }: {
           className="flex w-full items-center justify-between px-5 py-4 text-left"
           data-testid="proxy-headers-section"
         >
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Response Headers</h3>
           <div className="flex items-center gap-2">
-            {headers.length > 0 && (
-              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{headers.length} header{headers.length !== 1 ? 's' : ''}</span>
-            )}
             {responseHeadersOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Response Headers</h3>
           </div>
+          {headers.length > 0 && (
+            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{headers.length} header{headers.length !== 1 ? 's' : ''}</span>
+          )}
         </button>
         {responseHeadersOpen && (
         <form
