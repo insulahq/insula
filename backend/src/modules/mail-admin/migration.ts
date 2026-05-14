@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { STRATEGIC_MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
+import { waitForStalwartReplicaCount } from './rollout-wait.js';
 
 // Field-manager attribution for migration's Deployment patches. Code
 // review found that the original bare STRATEGIC_MERGE_PATCH lets the
@@ -135,6 +136,18 @@ export async function startMailMigration(
   const sourceNode = row?.mailActiveNode ?? row?.mailPrimaryNode ?? null;
   if (!sourceNode) {
     throw new ApiError('MAIL_NO_ACTIVE_NODE', 'No active mail node is configured in system_settings', 409);
+  }
+  // Defense-in-depth: the Zod schema (`kubernetesNodeNameSchema`)
+  // enforces RFC 1123 on inbound API payloads, but `sourceNode` is
+  // read from `system_settings.mailActiveNode` and that column may
+  // have been written by a pre-validation code path. Re-validate
+  // before the value flows into the rsync Job's shell args.
+  if (!/^[a-z0-9]([a-z0-9-.]{0,251}[a-z0-9])?$/.test(sourceNode)) {
+    throw new ApiError(
+      'MAIL_INVALID_SOURCE_NODE',
+      `Active mail node '${sourceNode}' is not a valid RFC 1123 hostname — refusing to migrate. Fix system_settings.mailActiveNode manually.`,
+      500,
+    );
   }
   if (sourceNode === targetNode) {
     throw new ApiError('MAIL_MIGRATION_SAME_NODE', 'Source and target nodes are the same', 400);
@@ -541,24 +554,11 @@ async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promi
 }
 
 async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSeconds: number): Promise<void> {
-  const deadline = Date.now() + timeoutSeconds * 1000;
-  while (Date.now() < deadline) {
-    const dep = await apps.readNamespacedDeployment({
-      name: DEPLOYMENT_NAME,
-      namespace: MAIL_NAMESPACE,
-    }) as { status?: { readyReplicas?: number; unavailableReplicas?: number } };
-    const status = dep.status;
-    const ready = status?.readyReplicas ?? 0;
-    const unavailable = status?.unavailableReplicas ?? 0;
-    if (target === 0 && ready === 0 && unavailable === 0) return;
-    if (target > 0 && ready >= target) return;
-    await sleep(3000);
-  }
-  throw new ApiError(
-    'MAIL_MIGRATION_SCALE_TIMEOUT',
-    `Deployment did not reach ${target} replicas within ${timeoutSeconds}s`,
-    500,
-  );
+  // Consolidation: delegate to the shared replica-count waiter in
+  // rollout-wait.ts. Migration's narrower "I want N replicas Ready"
+  // check intentionally skips the generation/template-update tracking
+  // that port-exposure needs — see waitForStalwartReplicaCount JSDoc.
+  await waitForStalwartReplicaCount(apps, target, { timeoutSeconds });
 }
 
 async function waitForJobCompletion(batch: BatchV1Api, jobName: string, timeoutSeconds: number): Promise<void> {
@@ -687,52 +687,65 @@ async function spawnRsyncJob(
             image: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
             imagePullPolicy: 'Always',
             command: ['sh', '-c'],
+            // SECURITY: every operator-supplied or DB-derived value
+            // (SOURCE_NODE, TARGET_NODE, TARGET_PVC) is passed via
+            // env vars and read inside the shell with double-quoted
+            // expansion. We never interpolate node names directly
+            // into the script string. Combined with the
+            // `kubernetesNodeNameSchema` (RFC 1123) and the DB-side
+            // re-validation in startMailMigration, this closes the
+            // command-injection vector that earlier versions had.
             args: [
-              `set -e
-echo "=== Stalwart RocksDB migration: ${sourceNode} -> ${targetNode} ==="
+              `set -eu
+echo "=== Stalwart RocksDB migration: $SOURCE_NODE -> $TARGET_NODE ==="
 echo "Source PVC mounted at /source-data"
-echo "Target PVC name: ${targetPvcName}"
+echo "Target PVC name: $TARGET_PVC"
 KUBE_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 KUBE_CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 TARGET_PV=$(curl -sk --cacert "$KUBE_CA" \\
   -H "Authorization: Bearer $KUBE_TOKEN" \\
-  "https://kubernetes.default.svc/api/v1/namespaces/${MAIL_NAMESPACE}/persistentvolumeclaims/${targetPvcName}" \\
+  "https://kubernetes.default.svc/api/v1/namespaces/$MAIL_NAMESPACE/persistentvolumeclaims/$TARGET_PVC" \\
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['spec']['volumeName'])")
 if [ -z "$TARGET_PV" ]; then
-  echo "ERROR: could not determine target PV name from PVC ${targetPvcName}"
+  echo "ERROR: could not determine target PV name from PVC $TARGET_PVC"
   exit 1
 fi
 TARGET_PATH="/var/lib/rancher/k3s/storage/$TARGET_PV"
-echo "Target path on ${targetNode}: $TARGET_PATH"
+echo "Target path on $TARGET_NODE: $TARGET_PATH"
 # SSH host-key verification: prefer pinned known_hosts (mounted from
-# stalwart-migration-known-hosts ConfigMap when operator has wired
-# it). Falls back to StrictHostKeyChecking=accept-new — only on the
-# FIRST connection to an unknown node, NOT 'no' (which silently
-# trusts any host every time). With hostNetwork:true the job pod
-# shares the node's network, so an attacker who already controls
-# DNS/ARP on the source node could MITM. The pinned ConfigMap is the
-# real fix; this fallback narrows the window while operators set it up.
-# SECURITY follow-up: provide a known_hosts ConfigMap on every node
-# and switch to StrictHostKeyChecking=yes.
+# stalwart-migration-known-hosts ConfigMap). Falls back to
+# StrictHostKeyChecking=accept-new — only on the FIRST connection to
+# an unknown node, NOT 'no' (which silently trusts any host every
+# time). With hostNetwork:true the job pod shares the node's network,
+# so an attacker who already controls DNS/ARP on the source node
+# could MITM. The pinned ConfigMap (k8s/base/stalwart-mail/migration/
+# known-hosts-cm.yaml) is the real fix; this fallback narrows the
+# window while operators populate it.
 SSH_OPTS="-o StrictHostKeyChecking=accept-new -i /etc/migration-ssh/id_rsa"
-if [ -f /etc/migration-ssh/known_hosts ]; then
-  SSH_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/migration-ssh/known_hosts -i /etc/migration-ssh/id_rsa"
+if [ -s /etc/migration-known-hosts/known_hosts ]; then
+  SSH_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/migration-known-hosts/known_hosts -i /etc/migration-ssh/id_rsa"
   echo "Using pinned known_hosts (StrictHostKeyChecking=yes)"
 else
-  echo "WARN: no /etc/migration-ssh/known_hosts; using StrictHostKeyChecking=accept-new — MITM possible on first connect"
+  echo "WARN: /etc/migration-known-hosts/known_hosts is missing or empty; using StrictHostKeyChecking=accept-new — MITM possible on first connect"
 fi
 rsync -avz --delete --numeric-ids --timeout=60 \\
   -e "ssh $SSH_OPTS" \\
   /source-data/ \\
-  "root@${targetNode}:$TARGET_PATH/"
+  "root@$TARGET_NODE:$TARGET_PATH/"
 echo "=== rsync complete ==="`,
             ],
             env: [
               { name: 'MAIL_NAMESPACE', value: MAIL_NAMESPACE },
+              { name: 'SOURCE_NODE', value: sourceNode },
+              { name: 'TARGET_NODE', value: targetNode },
+              { name: 'TARGET_PVC', value: targetPvcName },
             ],
             volumeMounts: [
               { name: 'source-data', mountPath: '/source-data', readOnly: true },
               { name: 'migration-ssh', mountPath: '/etc/migration-ssh', readOnly: true },
+              // Optional ConfigMap mount for pinned SSH known_hosts.
+              // Falls back to accept-new if absent (see shell above).
+              { name: 'migration-known-hosts', mountPath: '/etc/migration-known-hosts', readOnly: true },
             ],
             resources: {
               requests: { cpu: '100m', memory: '128Mi' },
@@ -753,6 +766,18 @@ echo "=== rsync complete ==="`,
                 secretName: 'stalwart-migration-ssh-key',
                 optional: true,
                 defaultMode: 256, // 0o400
+              },
+            },
+            {
+              // Optional pinned-known_hosts ConfigMap. When populated
+              // by the operator (via runbook), enables strict host-key
+              // verification on the rsync SSH connection. Empty by
+              // default — the shell script falls back to accept-new.
+              name: 'migration-known-hosts',
+              configMap: {
+                name: 'stalwart-migration-known-hosts',
+                optional: true,
+                defaultMode: 292, // 0o444
               },
             },
           ],

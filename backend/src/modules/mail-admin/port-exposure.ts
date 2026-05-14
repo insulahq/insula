@@ -40,6 +40,7 @@ import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { applyPatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { waitForStalwartRollout } from './rollout-wait.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -301,7 +302,7 @@ async function replaceStalwartContainerPorts(
   //     the response)
   // 90s budget: a typical Stalwart pod restart is ~25s; 90s covers
   // local-path PVC re-attach + restore-state initContainer.
-  await waitForDeploymentRollout(apps, 90_000);
+  await waitForStalwartRollout(apps);
 }
 
 async function removeHostPortsFromDeployment(
@@ -314,101 +315,6 @@ async function addHostPortsToDeployment(
   apps: import('@kubernetes/client-node').AppsV1Api,
 ): Promise<void> {
   await replaceStalwartContainerPorts(apps, /* withHostPorts= */ true);
-}
-
-/**
- * Poll the Stalwart Deployment until its rollout completes (or
- * `timeoutMs` elapses).
- *
- * "Rollout complete" means the apiserver has observed the latest
- * generation AND all replicas reflect the new template AND no
- * unavailable replicas remain. K8s expresses this in
- * `Deployment.status` fields:
- *   - observedGeneration == spec.generation  (apiserver caught up)
- *   - updatedReplicas    == spec.replicas    (rollout finished)
- *   - readyReplicas      == spec.replicas    (new pods are ready)
- *   - unavailableReplicas absent or 0
- *
- * This mirrors what `kubectl rollout status deployment/stalwart-mail`
- * checks. On timeout we throw MAIL_DEPLOYMENT_ROLLOUT_TIMEOUT — the
- * port-exposure mode flip cannot safely proceed if the old pod is
- * still binding its hostPorts.
- */
-async function waitForDeploymentRollout(
-  apps: import('@kubernetes/client-node').AppsV1Api,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastObservedGen = -1;
-  let lastUpdatedReplicas = -1;
-  let lastUnavailable = -1;
-  // Poll every 2s — Deployment status updates aren't faster than
-  // kubelet's pod-status refresh (typically ~1s) so faster polling
-  // just adds apiserver load.
-  while (Date.now() < deadline) {
-    let dep: DeploymentRolloutShape;
-    try {
-      dep = await apps.readNamespacedDeployment({
-        namespace: MAIL_NS,
-        name: DEPLOYMENT_NAME,
-      }) as DeploymentRolloutShape;
-    } catch (err) {
-      throw new ApiError(
-        'MAIL_DEPLOYMENT_ROLLOUT_READ_FAILED',
-        `Could not read Stalwart Deployment during rollout wait: ${(err as Error).message ?? String(err)}`,
-        500,
-      );
-    }
-    const generation = dep.metadata?.generation ?? 0;
-    const observedGeneration = dep.status?.observedGeneration ?? -1;
-    const replicas = dep.spec?.replicas ?? 0;
-    const updatedReplicas = dep.status?.updatedReplicas ?? 0;
-    const readyReplicas = dep.status?.readyReplicas ?? 0;
-    const unavailableReplicas = dep.status?.unavailableReplicas ?? 0;
-    lastObservedGen = observedGeneration;
-    lastUpdatedReplicas = updatedReplicas;
-    lastUnavailable = unavailableReplicas;
-    // Guard against replicas=0: an archive downtime run (archive.ts
-    // patchDeploymentReplicas(0)) or a DR scale-down can leave the
-    // Deployment at 0 replicas. A naive `updatedReplicas==replicas`
-    // check is then trivially satisfied (0==0), so the rollout waiter
-    // would return immediately and let the caller proceed before the
-    // old pod is actually gone. Refuse to flip in that state — the
-    // operator must wait for the concurrent op to finish, then retry.
-    if (replicas === 0) {
-      throw new ApiError(
-        'MAIL_DEPLOYMENT_SCALED_TO_ZERO',
-        'Stalwart Deployment has replicas=0 — another operation (archive downtime / DR failover) is in progress. Wait for it to complete before flipping port-exposure mode.',
-        409,
-      );
-    }
-    if (
-      observedGeneration >= generation
-      && updatedReplicas === replicas
-      && readyReplicas === replicas
-      && unavailableReplicas === 0
-    ) {
-      return;
-    }
-    await sleepMs(2_000);
-  }
-  throw new ApiError(
-    'MAIL_DEPLOYMENT_ROLLOUT_TIMEOUT',
-    `Stalwart Deployment rollout did not complete within ${Math.floor(timeoutMs / 1000)}s `
-    + `(observedGen=${lastObservedGen}, updatedReplicas=${lastUpdatedReplicas}, unavailable=${lastUnavailable})`,
-    504,
-  );
-}
-
-interface DeploymentRolloutShape {
-  metadata?: { generation?: number };
-  spec?: { replicas?: number };
-  status?: {
-    observedGeneration?: number;
-    updatedReplicas?: number;
-    readyReplicas?: number;
-    unavailableReplicas?: number;
-  };
 }
 
 function sleepMs(ms: number): Promise<void> {

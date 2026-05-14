@@ -72,44 +72,60 @@ export default function MailHealthBanner() {
   }
 
   const r = data.data;
+  // Avoid nested-<button> DOM (invalid HTML — keyboard nav stops at
+  // the inner button, screen readers announce "button button"). The
+  // disclosure trigger is a `<button>` covering only the label area;
+  // the Re-check button is a sibling, not a child.
   return (
     <div className={`rounded-xl border ${r.healthy ? 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800' : 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20'} shadow-sm`}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
-        data-testid="mail-health-banner"
-      >
-        {r.healthy
-          ? <CheckCircle2 size={18} className="text-emerald-500 shrink-0" />
-          : <AlertTriangle size={18} className="text-red-500 shrink-0" />
-        }
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-            {r.healthy ? 'Mail server: OK' : 'Mail server: DEGRADED'}
-          </div>
-          <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {summaryLine(r)}
-          </div>
-        </div>
+      <div className="w-full flex items-center gap-3 px-4 py-3">
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); refresh.mutate(); }}
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-controls="mail-health-banner-details"
+          className="flex items-center gap-3 flex-1 min-w-0 text-left"
+          data-testid="mail-health-banner"
+        >
+          {r.healthy
+            ? <CheckCircle2 size={18} className="text-emerald-500 shrink-0" />
+            : <AlertTriangle size={18} className="text-red-500 shrink-0" />
+          }
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {r.healthy ? 'Mail server: OK' : 'Mail server: DEGRADED'}
+            </div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+              {summaryLine(r)}
+            </div>
+          </div>
+          {open
+            ? <ChevronDown size={14} className="text-gray-400 shrink-0" />
+            : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => refresh.mutate()}
           disabled={refresh.isPending}
-          className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 shrink-0"
           data-testid="mail-health-refresh"
           title="Bypass 30s cache and probe again"
         >
           <RefreshCw size={11} className={refresh.isPending ? 'animate-spin inline mr-1' : 'inline mr-1'} />
           Re-check
         </button>
-        {open
-          ? <ChevronDown size={14} className="text-gray-400" />
-          : <ChevronRight size={14} className="text-gray-400" />}
-      </button>
+      </div>
 
-      {open && (
-        <div className="border-t border-gray-100 dark:border-gray-700 px-4 py-3 space-y-2 text-sm">
+      {/* Always render the details panel so the `aria-controls` id on
+          the disclosure trigger above resolves to a real element. The
+          `hidden` attribute removes it from layout + the accessibility
+          tree when closed, which is what WCAG 4.1.2 actually wants
+          (orphaned aria-controls is an authoring error). */}
+      <div
+        id="mail-health-banner-details"
+        hidden={!open}
+        className="border-t border-gray-100 dark:border-gray-700 px-4 py-3 space-y-2 text-sm"
+      >
           <PodRow data={r.components.pod} />
           <JmapRow data={r.components.jmap} />
           <RocksdbRow data={r.components.rocksdb} />
@@ -118,8 +134,7 @@ export default function MailHealthBanner() {
           <div className="pt-2 text-xs text-gray-500 dark:text-gray-400">
             Checked {timeAgo(r.checkedAt)} • Cached for {r.cachedFor}s • Use Re-check to bypass.
           </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
