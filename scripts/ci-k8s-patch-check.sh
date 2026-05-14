@@ -26,6 +26,12 @@ set -euo pipefail
 #   • MERGE_PATCH            — application/merge-patch+json (RFC 7396)
 #   • STRATEGIC_MERGE_PATCH  — application/strategic-merge-patch+json
 #   • JSON_PATCH             — application/json-patch+json (RFC 6902)
+#   • applyPatch(fieldManager, …)  — application/apply-patch+yaml (SSA);
+#                              callers usually module-scope the result
+#                              as a const NAMED *_APPLY_PATCH that is
+#                              passed to the patch call. The guard
+#                              matches the apply-patch source OR
+#                              identifiers ending in `_APPLY_PATCH`.
 #
 # All three are exported from `backend/src/shared/k8s-patch.ts`.
 #
@@ -74,7 +80,10 @@ for hit in "${HITS[@]}"; do
   END=$((LINE + LOOKAHEAD))
   # Look at LOOKAHEAD lines starting from the call site for one of the shims.
   WINDOW=$(sed -n "${LINE},${END}p" "$FILE")
-  if echo "$WINDOW" | grep -qE '\b(MERGE_PATCH|STRATEGIC_MERGE_PATCH|JSON_PATCH)\b'; then
+  # Match the legacy 3 constants OR the new apply-patch convention
+  # (any identifier ending in _APPLY_PATCH passed as the 2nd arg, or
+  # an inline applyPatch(…) call result).
+  if echo "$WINDOW" | grep -qE '\b(MERGE_PATCH|STRATEGIC_MERGE_PATCH|JSON_PATCH|[A-Z_]+_APPLY_PATCH|applyPatch\()\b'; then
     continue
   fi
   FAIL=1
@@ -90,7 +99,7 @@ if [ $FAIL -ne 0 ]; then
     sed -n "${s##*:}p" "${s%%:*}" | sed 's|^|        |'
   done
   echo
-  echo "  Fix: import one of MERGE_PATCH | STRATEGIC_MERGE_PATCH | JSON_PATCH from"
+  echo "  Fix: import one of MERGE_PATCH | STRATEGIC_MERGE_PATCH | JSON_PATCH | applyPatch() from"
   echo "       'backend/src/shared/k8s-patch.ts' and pass it as the second"
   echo "       positional argument to the patch call."
   echo
