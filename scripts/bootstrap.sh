@@ -29,14 +29,108 @@ if [[ -n "$REMOTE_HOST" ]]; then
   # Build SSH options as an array so spaces or special chars in the
   # --ssh-key path don't split into separate words. Unquoted expansion
   # of a single string would break on `id_rsa with spaces`.
-  SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+  #
+  # ServerAliveInterval keeps the tail-SSH alive during long quiet
+  # phases (e.g. waiting on slow Stalwart rollout). Phase-1 design
+  # observed 2026-05-14: bootstrap silently waits ~5 min for a
+  # Deployment rollout; without keepalives, the SSH session times
+  # out, the remote shell gets SIGHUP, bootstrap.sh dies mid-run.
+  SSH_OPTS=(
+    -o StrictHostKeyChecking=accept-new
+    -o ConnectTimeout=10
+    -o ServerAliveInterval=30
+    -o ServerAliveCountMax=120
+  )
   [[ -n "$SSH_KEY" ]] && SSH_OPTS+=(-i "$SSH_KEY")
+
+  REMOTE_LOG="/var/log/hosting-platform-bootstrap.log"
+  REMOTE_RUNDIR="/run/hosting-platform-bootstrap"
 
   echo "Copying bootstrap script to $REMOTE_HOST..."
   scp "${SSH_OPTS[@]}" "$0" "${SSH_USER}@${REMOTE_HOST}:/tmp/bootstrap.sh"
 
-  echo "Executing bootstrap on $REMOTE_HOST..."
-  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "chmod +x /tmp/bootstrap.sh && /tmp/bootstrap.sh $*"
+  # Pass the original args via a base64-encoded blob so spaces, quotes,
+  # and shell metacharacters survive the SSH round-trip intact without
+  # any quoting boundary games. The remote decoder re-tokenises via
+  # bash's printf+read, preserving every arg as a separate word.
+  #
+  # Why not printf '%q' + interpolation: the resulting tokens land
+  # inside a nested bash -c context and any `'` in a value (e.g.
+  # `--label='foo bar'`) breaks the outer single-quote boundary.
+  # Base64 sidesteps that entirely — only an alphanumeric blob crosses
+  # the shell quoting boundary.
+  remote_args_b64=$(printf '%s\0' "$@" | base64 | tr -d '\n')
+
+  echo "Launching bootstrap on $REMOTE_HOST (detached + tail)..."
+  # Phase 1: launch bootstrap detached on remote. nohup + redirect
+  # stdin/out/err so the process is fully detached from the launch
+  # SSH session — closing the launch SSH does NOT propagate
+  # SIGHUP/SIGTERM. `disown` removes it from this shell's job table
+  # so the SSH connection can close cleanly.
+  #
+  # PID capture: we run the bootstrap directly under `nohup bash -c`
+  # so `$!` is the launcher-bash PID (the parent of bootstrap.sh).
+  # Using `setsid` here would fork a new session leader and exit
+  # immediately, making $! refer to a defunct PID — Phase 2's
+  # `kill -0` would always fail (caught in code review 2026-05-14).
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "
+    set -euo pipefail
+    mkdir -p ${REMOTE_RUNDIR}
+    rm -f ${REMOTE_RUNDIR}/exit
+    chmod +x /tmp/bootstrap.sh
+    # Truncate prior log so we tail only this run.
+    : > ${REMOTE_LOG}
+    # Decode args once at launch; the array survives until bootstrap
+    # exits. mapfile -d '' reads NUL-delimited base64-decoded stream.
+    mapfile -d '' BOOTSTRAP_ARGS < <(printf '%s' '${remote_args_b64}' | base64 -d)
+    # Run bootstrap.sh as a child of bash -c so we can capture its
+    # exit code (note: NOT exec, which would replace the bash and
+    # never run the echo). \"\$@\" inside bash -c expands to the
+    # positional params we pass after the script-name slot.
+    nohup bash -c '/tmp/bootstrap.sh \"\$@\"; rc=\$?; echo \$rc > ${REMOTE_RUNDIR}/exit; exit \$rc' \
+      bootstrap-remote \"\${BOOTSTRAP_ARGS[@]}\" </dev/null >>${REMOTE_LOG} 2>&1 &
+    PID=\$!
+    disown || true
+    echo \$PID > ${REMOTE_RUNDIR}/pid
+    echo \"remote bootstrap pid=\$PID\"
+  " || { echo "ERROR: remote launch failed" >&2; exit 1; }
+
+  # Phase 2: stream-tail the log until the bootstrap process exits.
+  # If THIS SSH drops, the bootstrap continues running on the remote;
+  # the operator can reconnect and tail manually.
+  echo "Streaming ${REMOTE_LOG} (Ctrl-C aborts tail only; bootstrap keeps running on remote)..."
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "
+    # tail-F follows the file even if rotated. Background it so we
+    # can poll the exit marker; kill it once bootstrap exits.
+    tail -F -n+1 ${REMOTE_LOG} 2>/dev/null &
+    TAIL=\$!
+    # Loop until the exit file appears (bootstrap finished writing rc).
+    while [ ! -f ${REMOTE_RUNDIR}/exit ]; do
+      # Belt-and-braces: if the bootstrap PID is dead AND the exit
+      # marker still missing after a grace period, something killed
+      # the process mid-run without writing rc. Bail with a clear
+      # message so the operator knows what happened.
+      if ! kill -0 \"\$(cat ${REMOTE_RUNDIR}/pid 2>/dev/null)\" 2>/dev/null; then
+        sleep 3
+        if [ ! -f ${REMOTE_RUNDIR}/exit ]; then
+          kill \$TAIL 2>/dev/null || true
+          echo \"\"
+          echo \"ERROR: remote bootstrap process disappeared without writing exit code\" >&2
+          echo \"  inspect ${REMOTE_LOG} on ${REMOTE_HOST}\" >&2
+          exit 130
+        fi
+      fi
+      sleep 2
+    done
+    # Drain tail by giving it a beat to flush, then kill it cleanly.
+    sleep 1
+    kill \$TAIL 2>/dev/null || true
+    wait \$TAIL 2>/dev/null || true
+    rc=\$(cat ${REMOTE_RUNDIR}/exit)
+    echo \"\"
+    echo \"remote bootstrap exited rc=\${rc}\"
+    exit \"\${rc}\"
+  "
   exit $?
 fi
 
@@ -3299,16 +3393,21 @@ generate_platform_secrets() {
     # Persist alongside admin-credentials so the operator can recover
     # them without scraping the Secret.
     install -m 600 -d /etc/platform 2>/dev/null || true
+    # NOTE: heredoc terminator is UNQUOTED so ${stalwart_admin_pw} and
+    # ${stalwart_master_pw} expand. Backticks inside the body would
+    # trigger command substitution and emit "command not found"
+    # warnings — comment text uses single quotes around literal strings
+    # instead of backticks for that reason.
     cat > /etc/platform/stalwart-credentials <<STALWART_EOF
 # Generated by bootstrap.sh — do not commit. Chmod 600. Rotate via the
 # admin panel before going to production.
 STALWART_ADMIN_USER=admin
 STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # Stalwart 0.16 IMAP master-auth requires the FQDN form
-# (verified empirically 2026-05-07: short `master` returns
-# AUTHENTICATIONFAILED; `master@master.local` succeeds). The master
+# (verified empirically 2026-05-07: short 'master' returns
+# AUTHENTICATIONFAILED; 'master@master.local' succeeds). The master
 # Account is provisioned by provision_stalwart_master_user() in the
-# `master.local` synthetic Domain.
+# 'master.local' synthetic Domain.
 STALWART_MASTER_USER=master@master.local
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
@@ -3824,9 +3923,12 @@ create_roundcube_db() {
     return 0
   fi
 
-  log "  Waiting for platform postgres Cluster (up to 300s)..."
-  if ! kctl wait --for=condition=Ready cluster/postgres -n platform --timeout=300s 2>/dev/null; then
-    warn "  platform postgres Cluster not Ready after 300s — skipping."
+  # CNPG cluster was renamed postgres → system-db (2026-05-07 PG18 migration);
+  # prior versions of this function timed out waiting for cluster/postgres,
+  # silently returning 0 and leaving Roundcube unable to connect.
+  log "  Waiting for platform system-db Cluster (up to 300s)..."
+  if ! kctl wait --for=condition=Ready cluster/system-db -n platform --timeout=300s 2>/dev/null; then
+    warn "  platform system-db Cluster not Ready after 300s — skipping."
     return 0
   fi
 
@@ -3839,10 +3941,10 @@ create_roundcube_db() {
   fi
 
   local pg_pod
-  pg_pod=$(kctl get pod -n platform -l cnpg.io/cluster=postgres,role=primary \
+  pg_pod=$(kctl get pod -n platform -l cnpg.io/cluster=system-db,role=primary \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   if [[ -z "$pg_pod" ]]; then
-    warn "  No platform postgres primary pod found — skipping."
+    warn "  No platform system-db primary pod found — skipping."
     return 0
   fi
 
@@ -3958,9 +4060,20 @@ spec:
       AUTH="admin:\${recoveryPassword}"
       MASTER_DESC='Hosting Platform master user — DO NOT DELETE. Used by webmail SSO + IMAP/SMTP master-auth proxy. Removing this account breaks Roundcube auto-login and tenant mailbox proxying.'
 
-      SESSION=\$(curl -sf -u "\${AUTH}" --max-time 10 "\${MGMT}/jmap/session") || {
-        echo "ERROR: cannot reach \${MGMT}/jmap/session" >&2; exit 1
-      }
+      # Wait up to 60s for stalwart-mgmt to be reachable (see comment
+      # in configure_stalwart_full — same retry pattern).
+      SESSION=""
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+        if SESSION=\$(curl -sf -u "\${AUTH}" --max-time 5 "\${MGMT}/jmap/session" 2>/dev/null); then
+          echo "stalwart-mgmt reachable after \${i} probe(s)"
+          break
+        fi
+        sleep 2
+      done
+      if [ -z "\${SESSION}" ]; then
+        echo "ERROR: cannot reach \${MGMT}/jmap/session after 60s of retries" >&2
+        exit 1
+      fi
       ACCT=\$(echo "\${SESSION}" | jq -r \
         '(.primaryAccounts // {}) | to_entries[] | select(.key == "urn:stalwart:jmap") | .value // "d333333"')
 
@@ -4145,9 +4258,23 @@ spec:
           MGMT="http://stalwart-mgmt.mail.svc.cluster.local:8080"
           AUTH="admin:\${recoveryPassword}"
 
-          SESSION=\$(curl -sf -u "\${AUTH}" --max-time 10 "\${MGMT}/jmap/session") || {
-            echo "ERROR: cannot reach \${MGMT}/jmap/session" >&2; exit 1
-          }
+          # Wait up to 60s for stalwart-mgmt to be reachable. The
+          # configure pod may start before a Stalwart rolling restart
+          # finishes (no endpoints yet) or DNS hasn't propagated.
+          # Without the retry, a single bad probe fails the entire
+          # configure step (observed 2026-05-14 retest).
+          SESSION=""
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+            if SESSION=\$(curl -sf -u "\${AUTH}" --max-time 5 "\${MGMT}/jmap/session" 2>/dev/null); then
+              echo "stalwart-mgmt reachable after \${i} probe(s)"
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "\${SESSION}" ]; then
+            echo "ERROR: cannot reach \${MGMT}/jmap/session after 60s of retries" >&2
+            exit 1
+          fi
           ACCT=\$(echo "\${SESSION}" | jq -r \
             '(.primaryAccounts // {}) | to_entries[] | select(.key == "urn:stalwart:jmap") | .value // "d333333"')
           echo "accountId=\${ACCT}"
@@ -4428,8 +4555,55 @@ bootstrap_stalwart_v016() {
 
   case "$admin_code" in
     200)
-      log "  Stalwart fully configured (adminPassword auth 200) — skipping bootstrap."
-      return 0
+      # adminPassword 200 means Stalwart's own DB-stored admin row is
+      # set, but that can be true even when configure_stalwart_full
+      # never ran — Stalwart auto-bootstraps adminPassword from
+      # STALWART_RECOVERY_ADMIN env on first start. The listeners
+      # for ports 587 (submission), 143 (imap), and 80 (http-acme)
+      # are ONLY created by configure_stalwart_full's JMAP calls.
+      # So a 200 is necessary but not sufficient evidence — also
+      # probe for the submission listener before declaring done.
+      #
+      # Resolve the real accountId from /jmap/session first. Hardcoding
+      # "a" was rejected in past Stalwart releases (see memory
+      # project_stalwart_jmap_schema_gotchas.md) and would cause a
+      # false "listener missing" → unnecessary re-run of configure on
+      # every bootstrap re-invocation.
+      local session_json acct listener_resp
+      session_json=$(kctl exec -n platform "$probe_pod" -- \
+        curl -sf -u "admin:${stalwart_admin_pw}" --max-time 5 \
+        "${mgmt_url}/jmap/session" 2>/dev/null || echo "")
+      acct=$(printf '%s' "$session_json" \
+        | python3 -c 'import sys,json
+try:
+  d=json.load(sys.stdin)
+  pa=d.get("primaryAccounts",{})
+  print(pa.get("urn:stalwart:jmap","") or next(iter(pa.values()),""))
+except Exception:
+  pass' 2>/dev/null)
+      if [[ -z "$acct" ]]; then
+        warn "  could not resolve accountId from /jmap/session — running configure_stalwart_full() defensively."
+        configure_stalwart_full "$stalwart_hostname" "$stalwart_domain" || \
+          warn "  configure_stalwart_full returned non-zero — check logs above."
+        return 0
+      fi
+      listener_resp=$(kctl exec -n platform "$probe_pod" -- \
+        curl -s -u "admin:${stalwart_admin_pw}" \
+        -X POST "${mgmt_url}/jmap/" \
+        -H 'Content-Type: application/json' \
+        --max-time 10 \
+        -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:NetworkListener/get\",{\"accountId\":\"${acct}\",\"ids\":null},\"c0\"]]}" \
+        2>/dev/null || echo "")
+      if echo "$listener_resp" | grep -q '"name":"submission"' && \
+         echo "$listener_resp" | grep -q '"name":"imap"'; then
+        log "  Stalwart fully configured (adminPassword + submission/imap listeners present) — skipping bootstrap."
+        return 0
+      else
+        log "  adminPassword set but submission/imap listeners missing — running configure_stalwart_full()."
+        configure_stalwart_full "$stalwart_hostname" "$stalwart_domain" || \
+          warn "  configure_stalwart_full returned non-zero — check logs above."
+        return 0
+      fi
       ;;
     401)
       case "$recovery_code" in
