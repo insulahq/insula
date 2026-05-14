@@ -1,0 +1,151 @@
+# CrowdSec local-API (LAPI) Deployment.
+#
+# A single-replica CrowdSec agent that hosts the Local API (LAPI) at
+# :8080 and exposes the bouncer endpoint at :8080/v1/decisions. The
+# Traefik bouncer plugin (loaded into the Traefik DaemonSet via
+# scripts/bootstrap.sh) queries this Service on each request to check
+# IP reputation.
+#
+# Architecture choice — LAPI-only, no log acquisition:
+#   * We are NOT scraping logs from Traefik / web servers here. Log
+#     parsing would require Calico-style sidecars on every pod and is
+#     a much bigger commitment. Instead, we rely entirely on the
+#     CrowdSec community blocklist (free tier) which already covers
+#     ~6M known-bad IPs (DDoS sources, scanners, brute-forcers).
+#   * The bouncer in Traefik queries this LAPI for decisions; the
+#     community blocklist is pulled on a 1-hour interval by CrowdSec
+#     itself (no operator action required).
+#
+# Persistence:
+#   * SQLite DB at /var/lib/crowdsec/data/crowdsec.db backed by a 1GiB
+#     PVC. Survives pod restarts so the bouncer key + cached
+#     decisions don't have to be re-issued.
+#   * NB: production-scale operators can swap to Postgres by setting
+#     DB_TYPE=postgres + DB_HOST=... env vars and using a
+#     CNPG Cluster — out of scope for this baseline.
+#
+# Single replica is correct here — CrowdSec LAPI is a single-writer
+# system (the bouncer key registration + decision cache update both
+# need consistent state). Operators needing HA can run the
+# crowdsec-engine in a separate Deployment and point LAPI at a shared
+# Postgres.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crowdsec
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/name: crowdsec
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  replicas: 1
+  strategy:
+    # Recreate so the SQLite file isn't opened by two pods simultaneously.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crowdsec
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: waf
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: crowdsec
+          image: docker.io/crowdsecurity/crowdsec:v1.7.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DISABLE_AGENT
+              # No log acquisition needed — we rely on the community
+              # blocklist. Setting this skips the parsing loop so the
+              # container uses ~30MB instead of ~150MB.
+              value: "true"
+            - name: LOCAL_API_URL
+              value: "http://127.0.0.1:8080"
+            - name: BOUNCER_KEY_traefik
+              # The bouncer key is mounted from a Secret + referenced
+              # by env so CrowdSec auto-registers the bouncer on
+              # startup. Same key value lives in the Traefik plugin
+              # config (Middleware spec.plugin.crowdsec.crowdsecLapiKey)
+              # — see bootstrap.sh generate_crowdsec_bouncer_key().
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-bouncer-key
+                  key: traefik-bouncer-key
+          ports:
+            - name: lapi
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: lapi
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: lapi
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/crowdsec/data
+            - name: config
+              mountPath: /etc/crowdsec
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: crowdsec-data
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crowdsec-data
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crowdsec
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: crowdsec
+  ports:
+    - name: lapi
+      port: 8080
+      targetPort: lapi
+      protocol: TCP

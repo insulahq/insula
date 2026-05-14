@@ -1,0 +1,22 @@
+# CrowdSec local-API Deployment — platform-wide IP-reputation gate.
+#
+# Consumed by the Traefik bouncer plugin
+# (github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin) loaded into
+# the Traefik DaemonSet via scripts/bootstrap.sh's install_traefik
+# helm flags. The `crowdsec@traefik` Middleware (k8s/base/traefik/
+# middlewares-crowdsec.yaml) is referenced by every panel + tenant
+# IngressRoute the platform emits.
+#
+# Bouncer key Secret (`crowdsec-bouncer-key`) is generated imperatively
+# by scripts/bootstrap.sh — it's a per-cluster secret, not committed
+# anywhere in git. The Deployment env reads BOUNCER_KEY_traefik from
+# that Secret so CrowdSec auto-registers the bouncer at first start.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: crowdsec
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - networkpolicy.yaml

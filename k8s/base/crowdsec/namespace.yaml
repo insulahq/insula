@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crowdsec
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+    # Pod Security Standards: baseline is enough — CrowdSec runs as
+    # non-root and doesn't need privileged capabilities for our use
+    # (we don't run the log-acquisition modules).
+    pod-security.kubernetes.io/enforce: baseline
