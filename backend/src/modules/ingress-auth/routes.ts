@@ -96,7 +96,23 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
     }
     const cfg = await upsertAuthConfig(app.db, { encryptionKey }, rid, parsed.data);
     if (k8s) {
-      // 1) Provision/update the per-client oauth2-proxy + claim-validator
+      // 1) Re-write Ingress annotations FIRST, before mutating the
+      //    per-client oauth2-proxy resources. The auth-url annotation
+      //    flips between :4180 (no claim-validator sidecar) and :4181
+      //    (sidecar present) based on the DB state we just wrote.
+      //    Running this first makes the transition window fail-closed
+      //    when rules are being ADDED (annotation points at :4181 but
+      //    sidecar isn't deployed yet → 502 until reconcileClient
+      //    completes, NEVER a silent bypass). When rules are REMOVED,
+      //    the still-running sidecar transparently forwards traffic
+      //    via the new :4180 annotation path until it's rolled away.
+      try {
+        await reconcileIngress(app.db, k8s, cid, namespace);
+      } catch (err) {
+        request.log.warn({ err, cid, rid }, 'Auth saved, but Ingress annotation sync failed (next reconcile tick will retry)');
+      }
+      // 2) Provision/update the per-client oauth2-proxy (+/- the
+      //    claim-validator sidecar) to match the new state.
       const outcome = await reconcileClient(
         { db: app.db, k8s, encryptionKey },
         cid,
@@ -108,12 +124,6 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
           502,
         );
       }
-      // 2) Re-write the Ingress so the auth-url annotations land
-      try {
-        await reconcileIngress(app.db, k8s, cid, namespace);
-      } catch (err) {
-        request.log.warn({ err, cid, rid }, 'Auth saved + proxy provisioned, but Ingress annotation sync failed');
-      }
     }
     return success(cfg);
   });
@@ -124,13 +134,15 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
     const { namespace } = await assertRouteBelongsToClient(app, cid, rid);
     await deleteAuthConfig(app.db, rid);
     if (k8s) {
-      await reconcileClient({ db: app.db, k8s, encryptionKey }, cid);
-      // Re-sync Ingress to drop the auth-* annotations.
+      // Annotations first — drops auth-* annotations from the route
+      // so NGINX stops gating before resources are torn down (avoids
+      // 502s when the proxy goes away).
       try {
         await reconcileIngress(app.db, k8s, cid, namespace);
       } catch (err) {
-        request.log.warn({ err, cid, rid }, 'Auth deleted + proxy torn down, but Ingress annotation sync failed');
+        request.log.warn({ err, cid, rid }, 'Auth deleted, but Ingress annotation sync failed (next reconcile tick will retry)');
       }
+      await reconcileClient({ db: app.db, k8s, encryptionKey }, cid);
     }
     return success({ deleted: true });
   });

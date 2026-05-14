@@ -401,3 +401,120 @@ describe('reconcileClient — teardown path', () => {
     expect(m.calls.delete).toEqual([]);
   });
 });
+
+describe('reconcileClient — claim-validator sidecar is conditional on claim rules', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const NO_RULES_ROW = {
+    ...ENABLED_ROW,
+    cfg: { ...ENABLED_ROW.cfg, claimRules: null },
+  };
+
+  it('omits the sidecar container when no enabled config has claim rules', async () => {
+    const m = makeMocks({
+      enabled: [NO_RULES_ROW],
+      proxyState: { provisioned: false },
+      deploymentExists: false,
+      serviceExists: false,
+    });
+    await reconcileClient(
+      { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
+      CLIENT_ID,
+    );
+    const deployCreate = (
+      m.calls.create as Array<{
+        kind: string;
+        args: { body: { spec: { template: { spec: { containers: Array<{ name: string }> } } } } };
+      }>
+    ).find((c) => c.kind === 'deployment')!;
+    const containerNames = deployCreate.args.body.spec.template.spec.containers.map((c) => c.name);
+    expect(containerNames).toEqual(['oauth2-proxy']);
+    expect(containerNames).not.toContain('claim-validator');
+  });
+
+  it('omits the validator port from the Service when no rules are configured', async () => {
+    const m = makeMocks({
+      enabled: [NO_RULES_ROW],
+      proxyState: { provisioned: false },
+      deploymentExists: false,
+      serviceExists: false,
+    });
+    await reconcileClient(
+      { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
+      CLIENT_ID,
+    );
+    const svcCreate = (
+      m.calls.create as Array<{
+        kind: string;
+        args: { body: { spec: { ports: Array<{ name: string; port: number }> } } };
+      }>
+    ).find((c) => c.kind === 'service')!;
+    const portNames = svcCreate.args.body.spec.ports.map((p) => p.name);
+    expect(portNames).toEqual(['proxy']);
+  });
+
+  it('omits rules.json from the ConfigMap when no rules are configured', async () => {
+    const m = makeMocks({
+      enabled: [NO_RULES_ROW],
+      proxyState: { provisioned: false },
+      deploymentExists: false,
+      serviceExists: false,
+    });
+    await reconcileClient(
+      { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
+      CLIENT_ID,
+    );
+    const cm = (
+      m.calls.create as Array<{ kind: string; args: { body: { data: Record<string, string> } } }>
+    ).find((c) => c.kind === 'configmap')!;
+    expect(cm.args.body.data['oauth2_proxy.cfg']).toBeDefined();
+    expect(cm.args.body.data['rules.json']).toBeUndefined();
+  });
+
+  it('includes sidecar + validator port + rules.json when at least one row has rules', async () => {
+    // Mixed set: one row with rules, one without — sidecar still required.
+    const mixed = [
+      ENABLED_ROW,
+      {
+        ...NO_RULES_ROW,
+        cfg: { ...NO_RULES_ROW.cfg, id: 'cfg-2', ingressRouteId: 'ir-2' },
+        hostname: 'no-rules.example.com',
+      },
+    ];
+    const m = makeMocks({
+      enabled: mixed,
+      proxyState: { provisioned: false },
+      deploymentExists: false,
+      serviceExists: false,
+    });
+    await reconcileClient(
+      { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
+      CLIENT_ID,
+    );
+    const deployCreate = (
+      m.calls.create as Array<{
+        kind: string;
+        args: { body: { spec: { template: { spec: { containers: Array<{ name: string }> } } } } };
+      }>
+    ).find((c) => c.kind === 'deployment')!;
+    const containerNames = deployCreate.args.body.spec.template.spec.containers.map((c) => c.name);
+    expect(containerNames).toEqual(['oauth2-proxy', 'claim-validator']);
+
+    const svcCreate = (
+      m.calls.create as Array<{
+        kind: string;
+        args: { body: { spec: { ports: Array<{ name: string }> } } };
+      }>
+    ).find((c) => c.kind === 'service')!;
+    expect(svcCreate.args.body.spec.ports.map((p) => p.name)).toEqual(['proxy', 'validator']);
+
+    const cm = (
+      m.calls.create as Array<{ kind: string; args: { body: { data: Record<string, string> } } }>
+    ).find((c) => c.kind === 'configmap')!;
+    // rules.json only carries the ruled config (cfg-1), not the empty one.
+    expect(cm.args.body.data['rules.json']).toContain('"membership"');
+    expect(cm.args.body.data['rules.json']).not.toContain('"cfg-2"');
+  });
+});
