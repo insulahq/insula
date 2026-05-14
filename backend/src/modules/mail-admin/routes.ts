@@ -31,7 +31,7 @@ import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
-import { getMailPvcStorage, resizeMailPvc } from './mail-pvc.js';
+import { getMailPvcStorage } from './mail-pvc.js';
 import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-store.js';
 import {
   startMailArchive,
@@ -49,7 +49,6 @@ import {
   getMailArchiveSchedule,
   updateMailArchiveSchedule,
 } from './archive-schedule.js';
-import { getMailNodeSelector, updateMailNodeSelector } from './node-selector.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import {
   getMailSnapshotSchedule,
@@ -62,15 +61,11 @@ import {
 import { getMailPlacement, updateMailPlacement } from './placement.js';
 import {
   startMailMigration,
-  startFailoverMigration,
-  startFailbackMigration,
   getMailMigrationStatus,
 } from './migration.js';
 import { getMailPortExposure, updateMailPortExposure } from './port-exposure.js';
 import {
-  mailPvcResizeRequestSchema,
   blobStoreUpdateRequestSchema,
-  mailNodeSelectorUpdateSchema,
   mailSnapshotScheduleUpdateSchema,
   mailSnapshotBackupTargetUpdateSchema,
   mailPlacementUpdateRequestSchema,
@@ -308,38 +303,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       }
     },
   );
-  app.patch(
-    '/admin/mail/pvc/storage',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const userId = req.user?.sub ?? 'unknown';
-      const parsed = mailPvcResizeRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
-          400,
-        );
-      }
-      app.log.warn({ userId, newGiB: parsed.data.newGiB }, 'mail-admin: pvc resize requested');
-      try {
-        const result = await resizeMailPvc(parsed.data.newGiB, {
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        app.log.warn({ userId, newGiB: parsed.data.newGiB }, 'mail-admin: pvc resize patched');
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: pvc resize failed');
-        throw new ApiError(
-          'MAIL_PVC_RESIZE_FAILED',
-          'mail-pg-1 PVC resize failed — see server logs',
-          500,
-        );
-      }
-    },
-  );
+  // PATCH /admin/mail/pvc/storage was the online-grow endpoint from
+  // the pre-RocksDB CNPG era. local-path (post-migration) does not
+  // quota; `requests.storage` is informational only after creation,
+  // so the resize endpoint was deleted in the 2026-05-14 streamline.
+  // ci-no-longhorn: ignore
 
   // ─── Stalwart BlobStore (singleton) ──────────────────────────────
   // GET reads the current backend type via short-lived Pod running
@@ -461,72 +429,6 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       );
     }
   });
-
-  // ─── Stalwart node selector ───────────────────────────────────────
-  // GET reads the current nodeAffinity from the Stalwart Deployment
-  // plus the live pod's scheduled node.
-  // PATCH sets the nodeAffinity (any / preferred / required) on the
-  // Deployment; validates the target node exists before patching.
-  app.get(
-    '/admin/mail/node-selector',
-    { preHandler: requireRole('super_admin') },
-    async () => {
-      const cfg = app.config as Record<string, unknown>;
-      try {
-        const result = await getMailNodeSelector({
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.warn({ err }, 'mail-admin: node-selector read failed');
-        throw new ApiError(
-          'MAIL_NODE_SELECTOR_READ_FAILED',
-          'Could not read Stalwart node selector — see server logs',
-          503,
-        );
-      }
-    },
-  );
-
-  app.patch(
-    '/admin/mail/node-selector',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const userId = req.user?.sub ?? 'unknown';
-      const parsed = mailNodeSelectorUpdateSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${String(i.path.join('.'))}: ${i.message}`).join(', '),
-          400,
-        );
-      }
-      app.log.warn(
-        { userId, mode: parsed.data.mode, nodeName: parsed.data.nodeName },
-        'mail-admin: node-selector update requested',
-      );
-      try {
-        const result = await updateMailNodeSelector(parsed.data, {
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        app.log.warn(
-          { userId, mode: parsed.data.mode, nodeName: parsed.data.nodeName },
-          'mail-admin: node-selector updated',
-        );
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: node-selector update failed');
-        throw new ApiError(
-          'MAIL_NODE_SELECTOR_PATCH_FAILED',
-          'Stalwart node selector update failed — see server logs',
-          500,
-        );
-      }
-    },
-  );
 
   // ─── Stalwart DataStore snapshot ─────────────────────────────────
   // GET  /admin/mail/snapshot-status     — CronJob state + last snapshot time
@@ -1102,19 +1004,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
-        // If targetNode is explicitly provided, use it; otherwise pick secondary/tertiary.
-        let result: { runId: string };
-        if (parsed.data.targetNode) {
-          result = await startMailMigration(
-            { targetNode: parsed.data.targetNode, triggeredBy: 'manual-failover' },
-            { ...k8s, db: app.db, kubeconfigPath },
-          );
-        } else {
-          result = await startFailoverMigration(
-            { confirm: true },
-            { ...k8s, db: app.db, kubeconfigPath },
-          );
-        }
+        // Operator may pin a specific target; otherwise resolve from placement policy.
+        const intent = parsed.data.targetNode
+          ? ({ kind: 'explicit', targetNode: parsed.data.targetNode } as const)
+          : ({ kind: 'failover' } as const);
+        const result = await startMailMigration(intent, { ...k8s, db: app.db, kubeconfigPath });
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: failover migration started');
         return success(result);
       } catch (err) {
@@ -1144,8 +1038,8 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
-        const result = await startFailbackMigration(
-          { confirm: true },
+        const result = await startMailMigration(
+          { kind: 'failback' },
           { ...k8s, db: app.db, kubeconfigPath },
         );
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: failback migration started');
@@ -1178,7 +1072,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
         const result = await startMailMigration(
-          { targetNode: parsed.data.targetNode, triggeredBy: 'operator', newGiB: parsed.data.newGiB },
+          { kind: 'explicit', targetNode: parsed.data.targetNode, newGiB: parsed.data.newGiB },
           { ...k8s, db: app.db, kubeconfigPath },
         );
         app.log.warn({ userId, runId: result.runId, targetNode: parsed.data.targetNode }, 'mail-admin: migration started');
