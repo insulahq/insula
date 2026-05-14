@@ -4,7 +4,11 @@ kind: Kustomization
 resources:
   - middlewares-global.yaml
   - middlewares-admin-auth.yaml
-  - middlewares-waf.yaml
+  - middlewares-crowdsec.yaml
+  - middlewares-modsecurity.yaml
+  # middlewares-waf.yaml is DEAD CODE — Coraza scaffolding kept in tree
+  # for when upstream stabilises. See the file's header comment.
+  # - middlewares-waf.yaml
 
 labels:
   - pairs:

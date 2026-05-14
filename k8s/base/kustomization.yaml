@@ -72,9 +72,21 @@ resources:
   # Traefik v3 controller — IngressRoute + Middleware CRDs.
   # Installed imperatively by bootstrap.sh (helm upgrade --install traefik).
   # This directory holds the Kustomize-managed companion resources:
-  # global Middleware CRs (compress, etc.) that IngressRoutes in any
-  # namespace can reference via allowCrossNamespace.
+  # global Middleware CRs (compress, admin-auth, crowdsec, modsecurity-crs)
+  # that IngressRoutes in any namespace reference via allowCrossNamespace.
   - traefik/
+  # CrowdSec local-API — platform-wide IP-reputation gate. The
+  # `crowdsec@traefik` Middleware (above) queries this Service's LAPI
+  # on every request via the maxlerebourg/crowdsec-bouncer-traefik-plugin
+  # Yaegi plugin loaded in bootstrap.sh's install_traefik.
+  - crowdsec/
+  # OWASP ModSecurity-CRS — tenant-opt-in WAF backend. The
+  # `modsecurity-crs@traefik` Middleware (above) proxies request bodies
+  # to this Deployment's Service for verdict via the
+  # madebymode/traefik-modsecurity-plugin Yaegi plugin. Lives in the
+  # `traefik` namespace alongside the controller (matching the
+  # Middleware's `modSecurityUrl` constant).
+  - modsecurity-crs/
   # CronJob that mirrors live Node ExternalIPs into the Traefik
   # Service.spec.externalIPs every 5 min. Without it the Service has
   # no externalIPs and tenant traffic only works against whichever IP

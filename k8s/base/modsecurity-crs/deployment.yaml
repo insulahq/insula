@@ -1,0 +1,129 @@
+# OWASP ModSecurity-CRS sidecar Deployment.
+#
+# Fronted by the madebymode/traefik-modsecurity-plugin Yaegi plugin
+# loaded into the Traefik DaemonSet (see scripts/bootstrap.sh's
+# install_traefik helm flags + k8s/base/traefik/
+# middlewares-modsecurity.yaml). When a tenant route opts into WAF
+# (wafEnabled=1), annotation-sync emits a reference to the shared
+# `modsecurity-crs@traefik` Middleware; the plugin proxies the request
+# body to this Service for verdict.
+#
+# This is the canonical OWASP image — nginx + libmodsecurity + the
+# CRS rules pre-loaded. Listens on :80, takes any HTTP request, returns
+# the matching status from the CRS evaluation. The plugin in Traefik
+# enforces the verdict (200 = allow, 403 = block).
+#
+# Resource sizing:
+#   * 2 replicas for HA (single replica would block all WAF-enabled
+#     routes on a pod restart). The image starts in ~3s.
+#   * Default per-replica: ~150MB memory, ~50m cpu. CRS evaluation
+#     is mostly regex matching against request body — scales with
+#     body size and CRS rule depth.
+#
+# The plugin sets BACKEND=http://echo to a dummy upstream the OWASP
+# image expects; the plugin discards the proxied response and only
+# reads the status code. Setting BACKEND to any always-200 endpoint
+# is fine — we point at `crowdsec` LAPI's /health for convenience
+# (always returns 200 OK).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modsec-crs
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: modsec-crs
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: modsec-crs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: modsec-crs
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: waf
+    spec:
+      securityContext:
+        runAsNonRoot: false  # OWASP image starts nginx as root then drops
+        fsGroup: 0
+      containers:
+        - name: modsec
+          # OWASP CRS pre-loaded nginx + libmodsecurity image. The
+          # `-alpine` variant is tiny (~150MB final image). Pinned;
+          # bump via PR after running the live block-test smoke.
+          image: docker.io/owasp/modsecurity-crs:4.7.0-nginx-alpine-202507142308
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BACKEND
+              # The OWASP image expects a backend to proxy past the WAF
+              # check. The Traefik plugin discards the upstream
+              # response — it only inspects the status code. We point
+              # at the CrowdSec LAPI's /health which always returns 200
+              # so the plugin sees the WAF verdict (not the upstream
+              # error). Inter-namespace ClusterIP DNS.
+              value: "http://crowdsec.crowdsec.svc.cluster.local:8080/health"
+            - name: PARANOIA
+              # CRS paranoia level 1 — broad coverage with manageable
+              # false-positive rate. Operators wanting stricter checks
+              # can patch this in their overlay (2/3/4 progressively
+              # stricter).
+              value: "1"
+            - name: ANOMALY_INBOUND
+              # Anomaly score threshold for blocking. CRS sums rule
+              # scores per request; if total >= threshold, block. 5 is
+              # the OWASP recommended balanced value.
+              value: "5"
+            - name: ANOMALY_OUTBOUND
+              value: "4"
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      affinity:
+        # Spread the 2 replicas across nodes so a single-node failure
+        # doesn't take both WAF instances down.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: modsec-crs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: modsec-crs
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: modsec-crs
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

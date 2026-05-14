@@ -1,4 +1,34 @@
-# Coraza WAF Middlewares.
+# Coraza WAF Middlewares — DOCUMENTED DEAD CODE (do NOT include in
+# kustomization).
+#
+# 2026-05-14 smoke test established that no working in-process Coraza
+# plugin exists for Traefik today:
+#   * Yaegi-interpreted vendored plugin (hatsat32/coraza-traefik) fails
+#     to load — Coraza imports `unsafe` which Yaegi does not implement.
+#   * WASM plugin (corazawaf/coraza-http-wasm v0.2.2 + v0.3.0) loads
+#     successfully but Traefik panics on startup with
+#     `runtime: split stack overflow` (wazero × Coraza incompatibility).
+# See docker/traefik-plugin-coraza/README.md for the full trace.
+#
+# The production WAF path now runs through:
+#   * k8s/base/modsecurity-crs/        — OWASP ModSecurity-CRS sidecar
+#   * k8s/base/traefik/middlewares-modsecurity.yaml — madebymode plugin
+#     fronting the sidecar
+# annotation-sync.ts emits `modsecurity-crs@traefik` for wafEnabled
+# routes; the per-route Coraza emitter is gone.
+#
+# This file remains in tree as documented dead code: when upstream
+# Coraza-on-Traefik stabilises (the WASM crash is fixed, OR a Yaegi-
+# compatible Coraza fork lands), the migration path is:
+#   1. Re-add middlewares-waf.yaml to kustomization.yaml resources.
+#   2. Flip annotation-sync's WAF branch back to option-C hybrid
+#      (per-route Middlewares + shared coraza-base).
+#   3. Flip the platform WAF middleware ref from `modsecurity-crs` back
+#      to `coraza-platform` in ingress-reconciler.ts.
+# No schema / DB / API contract change needed.
+#
+# ORIGINAL HEADER (preserved for context — IGNORE the directives, they
+# don't load at runtime today):
 #
 # Coraza is the open-source ModSecurity-compatible WAF engine; we run
 # it inside Traefik via the Coraza HTTP WASM Traefik plugin (enabled in

@@ -274,26 +274,27 @@ DRY_RUN=false
 # Latest-stable checks done against GitHub releases for each project.
 LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 TRAEFIK_CHART_VERSION="40.2.0"           # app v3.7.1 "Langres"; verify: helm search repo traefik/traefik
-# WAF plugin slug + version. Empty by default — install_traefik() omits
-# the `--set experimental.plugins.*` flags when this is unset, leaving
-# the controller WAF-free. annotation-sync still emits the WAF Middleware
-# refs (coraza-base@traefik / coraza-platform@traefik / r-<id>-waf),
-# but those Middlewares fail at request time with a "plugin not found"
-# error from Traefik until the plugin is wired here.
+# Traefik plugin catalog refs. install_traefik wires these into the
+# `experimental.plugins.<name>.{moduleName,version}` helm values so the
+# controller fetches the Yaegi-interpreted plugin source from
+# plugins.traefik.io at startup.
 #
-# Smoke test 2026-05-14 found that `github.com/jcchavezs/coraza-http-
-# wasm-traefik` v0.4.4 (initial pin) is NOT published in the Traefik
-# plugin catalog — the catalog 500s on the download. Realistic options:
-#   1. `github.com/madebymode/traefik-modsecurity-plugin` v1.6.0 — works
-#      out of the box but proxies request bodies to an EXTERNAL
-#      ModSecurity service (an extra OWASP/ModSecurity Deployment).
-#      Doesn't support per-route directives — the per-route Middleware
-#      design in annotation-sync.ts collapses to "WAF on/off only".
-#   2. Vendor a Coraza plugin as a Traefik *local plugin* (a `/plugins-
-#      local/src/.../plugin.yml` source tree mounted on the DaemonSet).
-#      Lets us keep per-route directives but adds operational cost
-#      (build + ship plugin source).
-# Operator decision pending; until then ship WITHOUT a WAF plugin.
+# CrowdSec bouncer — platform-wide IP-reputation gate, default-on for
+# every panel + tenant IngressRoute (the `crowdsec@traefik` Middleware
+# in k8s/base/traefik/middlewares-crowdsec.yaml).
+CROWDSEC_PLUGIN_MODULE="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+CROWDSEC_PLUGIN_VERSION="v1.4.4"
+# ModSecurity-CRS proxy — tenant-opt-in WAF (the `modsecurity-crs@
+# traefik` Middleware). Proxies request bodies to the modsec-crs
+# Deployment in k8s/base/modsecurity-crs/ for OWASP CRS verdict.
+MODSECURITY_PLUGIN_MODULE="github.com/madebymode/traefik-modsecurity-plugin"
+MODSECURITY_PLUGIN_VERSION="v1.6.0"
+# Coraza in-process WAF — DEAD CODE. The 2026-05-14 smoke test
+# established neither the Yaegi vendored path nor the WASM build is
+# usable today (see docker/traefik-plugin-coraza/README.md). Empty
+# strings here skip the helm flag emission. When upstream stabilises,
+# bump these + flip the WAF Middleware ref in annotation-sync.ts /
+# ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
 CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
@@ -2774,8 +2775,15 @@ install_traefik() {
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
     --set providers.kubernetesIngress.enabled=false \
+    --set "experimental.plugins.crowdsec.moduleName=${CROWDSEC_PLUGIN_MODULE}" \
+    --set "experimental.plugins.crowdsec.version=${CROWDSEC_PLUGIN_VERSION}" \
+    --set "experimental.plugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE}" \
+    --set "experimental.plugins.modsecurity.version=${MODSECURITY_PLUGIN_VERSION}" \
     ${CORAZA_PLUGIN_MODULE:+--set "experimental.plugins.coraza.moduleName=${CORAZA_PLUGIN_MODULE}"} \
     ${CORAZA_PLUGIN_VERSION:+--set "experimental.plugins.coraza.version=${CORAZA_PLUGIN_VERSION}"} \
+    --set 'volumes[0].name=crowdsec-bouncer-key' \
+    --set 'volumes[0].mountPath=/var/run/secrets/crowdsec' \
+    --set 'volumes[0].type=secret' \
     --set resources.requests.cpu=50m \
     --set resources.requests.memory=128Mi \
     --set resources.limits.memory=512Mi \
@@ -2789,6 +2797,49 @@ install_traefik() {
     --timeout 300s
 
   log "Traefik v3 Ingress Controller installed."
+}
+
+# Generate / load the per-cluster CrowdSec bouncer key and ensure it
+# exists as a K8s Secret in BOTH the crowdsec namespace (consumed by
+# the CrowdSec Deployment via BOUNCER_KEY_traefik env) AND the traefik
+# namespace (mounted into the Traefik pod at /var/run/secrets/crowdsec/
+# for the bouncer plugin's crowdsecLapiKeyFile).
+#
+# Idempotent: if the Secret already exists in either namespace, the
+# existing value is preserved. Re-running bootstrap doesn't rotate the
+# key. Operators rotating the key should delete both Secrets and
+# re-run; the CrowdSec Deployment will re-register the bouncer on
+# next pod start.
+generate_crowdsec_bouncer_key() {
+  local secret_name="crowdsec-bouncer-key"
+  local key_value
+  # Reuse existing key from either namespace if present.
+  if kctl get secret -n crowdsec "${secret_name}" >/dev/null 2>&1; then
+    log "CrowdSec bouncer key already exists in crowdsec namespace, reusing."
+    key_value=$(kctl get secret -n crowdsec "${secret_name}" -o jsonpath='{.data.traefik-bouncer-key}' | base64 -d)
+  elif kctl get secret -n traefik "${secret_name}" >/dev/null 2>&1; then
+    log "CrowdSec bouncer key found in traefik namespace, copying to crowdsec."
+    key_value=$(kctl get secret -n traefik "${secret_name}" -o jsonpath='{.data.traefik-bouncer-key}' | base64 -d)
+  else
+    log "Generating new CrowdSec bouncer key..."
+    # 32-byte URL-safe random — same shape CrowdSec's `cscli bouncers
+    # add` uses internally. Operators can rotate by deleting both
+    # secrets + re-running.
+    key_value=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
+  fi
+
+  # Materialise in both namespaces. Wait until each namespace exists
+  # (crowdsec/ kustomization may not have applied yet).
+  for ns in crowdsec traefik; do
+    if ! kctl get ns "${ns}" >/dev/null 2>&1; then
+      kctl create namespace "${ns}" >/dev/null
+    fi
+    kctl create secret generic "${secret_name}" \
+      --namespace "${ns}" \
+      --from-literal=traefik-bouncer-key="${key_value}" \
+      --dry-run=client -o yaml | kctl apply -f -
+  done
+  log "CrowdSec bouncer key Secret applied to crowdsec + traefik namespaces."
 }
 
 install_cert_manager() {
@@ -5548,6 +5599,11 @@ main() {
     log "── Phase 3: Platform Components ──"
     install_helm
     install_flux_cli
+    # CrowdSec bouncer key Secret must exist BEFORE install_traefik so
+    # the Traefik DaemonSet's volume mount (--set volumes[0].type=secret
+    # crowdsec-bouncer-key) finds the Secret on first start; otherwise
+    # the pod stays Pending with FailedMount until the Secret lands.
+    generate_crowdsec_bouncer_key
     install_traefik
     install_cert_manager
     install_sealed_secrets
