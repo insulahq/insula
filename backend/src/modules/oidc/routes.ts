@@ -290,10 +290,20 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
+      // Resolve adminHost from system_settings.adminPanelUrl so the
+      // break-glass IngressRoute can build `Host(\`admin.example.com\`)`
+      // match expressions. The platform-ingress reconciler already does
+      // the same extraction; the duplication keeps proxy-manager
+      // independent of cross-module reconciler state.
+      const { getSettings } = await import('../system-settings/service.js');
+      const { reconcileIngressHosts, extractHost } = await import('../system-settings/ingress-reconciler.js');
+      const sysSettings = await getSettings(app.db);
+      const adminHost = extractHost(sysSettings.adminPanelUrl);
       await syncProxyIngressAnnotations(app.db, k8s, {
         protectAdminViaProxy: settings.protectAdminViaProxy,
         protectClientViaProxy: settings.protectClientViaProxy,
         breakGlassPath: settings.breakGlassPath,
+        adminHost,
       });
 
       // Sync cookie secret to K8s Secret if proxy is enabled
@@ -304,15 +314,11 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      // Also reconcile spec.rules so the /oauth2 path rule is added/removed
-      // on each protected panel host. syncProxyIngressAnnotations only
-      // touches metadata.annotations — without this call, enabling
-      // protection 302s the browser to /oauth2/start which nginx-ingress
-      // has no path rule for, falling through to the panel backend and
-      // producing a 404.
-      const { getSettings } = await import('../system-settings/service.js');
-      const { reconcileIngressHosts } = await import('../system-settings/ingress-reconciler.js');
-      const sysSettings = await getSettings(app.db);
+      // Re-reconcile the platform-ingress so the /oauth2 priority route
+      // + ForwardAuth Middleware reference are added/removed on each
+      // protected panel host. Without this call, enabling protection
+      // would create the ForwardAuth Middleware (above) but no route
+      // would reference it — producing a still-unprotected admin panel.
       const cfg = app.config as Record<string, unknown>;
       const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
       const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
@@ -346,10 +352,15 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
       const settings = await service.getGlobalSettings(app.db);
+      const { getSettings } = await import('../system-settings/service.js');
+      const { extractHost } = await import('../system-settings/ingress-reconciler.js');
+      const sysSettings = await getSettings(app.db);
+      const adminHost = extractHost(sysSettings.adminPanelUrl);
       await syncProxyIngressAnnotations(app.db, k8s, {
         protectAdminViaProxy: settings.protectAdminViaProxy,
         protectClientViaProxy: settings.protectClientViaProxy,
         breakGlassPath: newPath,
+        adminHost,
       });
     } catch (err) {
       app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations after break-glass regeneration');
