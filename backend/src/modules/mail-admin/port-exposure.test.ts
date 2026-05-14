@@ -118,14 +118,21 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
         ports: Array<{ $patch?: string; containerPort?: number; hostPort?: number }>;
       }> } } } };
     };
-    const containers = patchArg.body.spec.template.spec.containers;
+    const containers = patchArg.body.spec.template.spec.containers as Array<{
+      name: string;
+      ports: Array<{ $retainKeys?: string[]; containerPort?: number; hostPort?: number }>;
+    }>;
     expect(containers[0].name).toBe('stalwart');
-    expect(containers[0].ports[0]).toEqual({ $patch: 'replace' });
-    // Mail ports must follow WITHOUT hostPort.
-    const portsAfterDirective = containers[0].ports.slice(1);
-    for (const p of portsAfterDirective) {
+    // Each port entry must carry $retainKeys so the apiserver drops
+    // unlisted fields (including hostPort when we omit it).
+    for (const p of containers[0].ports) {
+      expect(p.$retainKeys).toBeDefined();
+      expect(Array.isArray(p.$retainKeys)).toBe(true);
+      // Mail ports we patched must NOT include hostPort in retainKeys
+      // when flipping to allServerNodes — that's how the field gets dropped.
       if (p.containerPort === 25 || p.containerPort === 587) {
         expect(p.hostPort).toBeUndefined();
+        expect(p.$retainKeys).not.toContain('hostPort');
       }
     }
   });

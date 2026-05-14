@@ -282,8 +282,26 @@ async function replaceStalwartContainerPorts(
   });
 
   // Strategic-Merge Patch body. The container is merged by `name`
-  // (mergeKey); the ports list is replaced wholesale via the
-  // `{$patch: 'replace'}` directive at index 0.
+  // (mergeKey); each port entry uses `$retainKeys` to specify EXACTLY
+  // which keys the apiserver should keep — anything else (including
+  // a previously-set hostPort) gets dropped.
+  //
+  // Why $retainKeys per-port instead of `$patch: replace` on the list:
+  // Live E2E found that `{$patch: 'replace'}` as a list element on a
+  // *nested* merge-list (containers[].ports) doesn't take effect —
+  // the apiserver accepted the patch but kept the existing hostPort
+  // sub-field on every mail port entry. $retainKeys at the per-port
+  // level is the documented mechanism (k8s strategic-merge-patch
+  // spec, "$retainKeys directive") and acts on each port's map
+  // directly, regardless of outer-list semantics.
+  const portsForPatch = newPorts.map((p) => ({
+    ...p,
+    // List EXACTLY the fields we're keeping. Sorted for deterministic
+    // diffs in tests. hostPort is intentionally absent from the
+    // mail-port entries so the apiserver drops it.
+    $retainKeys: Object.keys(p).sort(),
+  }));
+
   const body = {
     spec: {
       template: {
@@ -291,10 +309,7 @@ async function replaceStalwartContainerPorts(
           containers: [
             {
               name: 'stalwart',
-              ports: [
-                { $patch: 'replace' },
-                ...newPorts,
-              ],
+              ports: portsForPatch,
             },
           ],
         },
