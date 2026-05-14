@@ -236,6 +236,19 @@ function buildClaimRulesJson(
   return JSON.stringify(out, null, 2);
 }
 
+/**
+ * True when at least one enabled auth config under the client has a
+ * non-empty claimRules array. Drives whether the claim-validator
+ * sidecar is deployed: when false, the sidecar is omitted from the
+ * Deployment and the auth-url annotation bypasses it (points at
+ * oauth2-proxy:4180/oauth2/auth directly). See annotation-sync.ts.
+ */
+export function clientNeedsClaimValidator(
+  configs: ReadonlyArray<EnabledIngressAuthRow>,
+): boolean {
+  return configs.some(({ cfg }) => cfg.claimRules && cfg.claimRules.length > 0);
+}
+
 async function ensureClientProxy(
   deps: ReconcileDeps,
   clientId: string,
@@ -250,14 +263,18 @@ async function ensureClientProxy(
   const primary = enabled[0]!;
   const clientSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
   const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, clientSecret);
+  const needsValidator = clientNeedsClaimValidator(enabled);
   const claimRulesJson = buildClaimRulesJson(enabled);
 
-  // ConfigMap — stores both oauth2_proxy.cfg AND claim rules. Single
-  // ConfigMap simplifies volume mounting (one volume → two subPaths).
-  await upsertConfigMap(deps.k8s.core, namespace, {
-    'oauth2_proxy.cfg': oauth2ProxyCfg,
-    'rules.json': claimRulesJson,
-  });
+  // ConfigMap — always carries oauth2_proxy.cfg. rules.json is only
+  // included when the claim-validator sidecar is deployed; when no
+  // route has claim rules we skip both the sidecar AND the rules.json
+  // key so the ConfigMap reflects what's actually mounted.
+  const configMapData: Record<string, string> = { 'oauth2_proxy.cfg': oauth2ProxyCfg };
+  if (needsValidator) {
+    configMapData['rules.json'] = claimRulesJson;
+  }
+  await upsertConfigMap(deps.k8s.core, namespace, configMapData);
 
   // Secret — currently empty (config inlines secrets via ConfigMap
   // for v1). When we add Secret-volume mounting in v2 we'll move
@@ -267,11 +284,13 @@ async function ensureClientProxy(
   // NetworkPolicy — limit oauth2-proxy egress to OIDC issuer host +
   // intra-namespace upstreams. Permissive in v1 (no policy); add in v2.
 
-  // Service — exposes :4180 (oauth2-proxy) AND :4181 (validator).
-  await upsertService(deps.k8s.core, namespace);
+  // Service — exposes :4180 (oauth2-proxy) always; :4181 (validator)
+  // only when the claim-validator sidecar is present.
+  await upsertService(deps.k8s.core, namespace, needsValidator);
 
-  // Deployment — main container oauth2-proxy + sidecar claim-validator.
-  const wasNew = await upsertDeployment(deps.k8s.apps, namespace);
+  // Deployment — main container oauth2-proxy; claim-validator sidecar
+  // is added only when at least one route has claim rules.
+  const wasNew = await upsertDeployment(deps.k8s.apps, namespace, needsValidator);
 
   // Passthrough Ingress — exposes /oauth2/* on every protected host
   // without the auth_request gate, breaking the redirect loop where
@@ -409,7 +428,17 @@ async function upsertSecret(core: k8s.CoreV1Api, namespace: string): Promise<voi
   }
 }
 
-async function upsertService(core: k8s.CoreV1Api, namespace: string): Promise<void> {
+async function upsertService(
+  core: k8s.CoreV1Api,
+  namespace: string,
+  withValidatorPort: boolean,
+): Promise<void> {
+  const ports: k8s.V1ServicePort[] = [
+    { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT, protocol: 'TCP' },
+  ];
+  if (withValidatorPort) {
+    ports.push({ name: 'validator', port: VALIDATOR_PORT, targetPort: VALIDATOR_PORT, protocol: 'TCP' });
+  }
   const body: k8s.V1Service = {
     apiVersion: 'v1',
     kind: 'Service',
@@ -420,10 +449,7 @@ async function upsertService(core: k8s.CoreV1Api, namespace: string): Promise<vo
     },
     spec: {
       selector: { 'app.kubernetes.io/name': 'oauth2-proxy' },
-      ports: [
-        { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT, protocol: 'TCP' },
-        { name: 'validator', port: VALIDATOR_PORT, targetPort: VALIDATOR_PORT, protocol: 'TCP' },
-      ],
+      ports,
     },
   };
   try {
@@ -439,7 +465,59 @@ async function upsertService(core: k8s.CoreV1Api, namespace: string): Promise<vo
   }
 }
 
-async function upsertDeployment(apps: k8s.AppsV1Api, namespace: string): Promise<boolean> {
+async function upsertDeployment(
+  apps: k8s.AppsV1Api,
+  namespace: string,
+  withClaimValidator: boolean,
+): Promise<boolean> {
+  const oauth2ProxyContainer: k8s.V1Container = {
+    name: 'oauth2-proxy',
+    image: OAUTH2_PROXY_IMAGE,
+    args: ['--config=/etc/oauth2-proxy/oauth2_proxy.cfg', `--http-address=0.0.0.0:${PROXY_PORT}`],
+    ports: [{ containerPort: PROXY_PORT, name: 'proxy' }],
+    volumeMounts: [
+      {
+        name: 'config',
+        mountPath: '/etc/oauth2-proxy/oauth2_proxy.cfg',
+        subPath: 'oauth2_proxy.cfg',
+        readOnly: true,
+      },
+    ],
+    resources: {
+      requests: { cpu: '10m', memory: '32Mi' },
+      limits: { cpu: '100m', memory: '128Mi' },
+    },
+    livenessProbe: { httpGet: { path: '/ping', port: PROXY_PORT } },
+    readinessProbe: { httpGet: { path: '/ping', port: PROXY_PORT } },
+  };
+  const claimValidatorContainer: k8s.V1Container = {
+    name: 'claim-validator',
+    image: CLAIM_VALIDATOR_IMAGE,
+    env: [
+      { name: 'PORT', value: String(VALIDATOR_PORT) },
+      { name: 'OAUTH2_PROXY_HOST', value: '127.0.0.1' },
+      { name: 'OAUTH2_PROXY_PORT', value: String(PROXY_PORT) },
+      { name: 'RULES_PATH', value: '/etc/claim-rules/rules.json' },
+    ],
+    ports: [{ containerPort: VALIDATOR_PORT, name: 'validator' }],
+    volumeMounts: [
+      {
+        name: 'config',
+        mountPath: '/etc/claim-rules/rules.json',
+        subPath: 'rules.json',
+        readOnly: true,
+      },
+    ],
+    resources: {
+      requests: { cpu: '5m', memory: '16Mi' },
+      limits: { cpu: '50m', memory: '64Mi' },
+    },
+    livenessProbe: { httpGet: { path: '/ping', port: VALIDATOR_PORT } },
+    readinessProbe: { httpGet: { path: '/ping', port: VALIDATOR_PORT } },
+  };
+  const containers: k8s.V1Container[] = withClaimValidator
+    ? [oauth2ProxyContainer, claimValidatorContainer]
+    : [oauth2ProxyContainer];
   const body: k8s.V1Deployment = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -454,61 +532,16 @@ async function upsertDeployment(apps: k8s.AppsV1Api, namespace: string): Promise
       template: {
         metadata: { labels: { 'app.kubernetes.io/name': 'oauth2-proxy' } },
         spec: {
-          // Point oauth2-proxy at its config file, claim-validator at
-          // the same ConfigMap (different subPath).
+          // oauth2-proxy mounts the ConfigMap's `oauth2_proxy.cfg`
+          // subPath; the claim-validator sidecar (when present) mounts
+          // `rules.json` from the same ConfigMap.
           volumes: [
             {
               name: 'config',
               configMap: { name: CONFIGMAP_NAME },
             },
           ],
-          containers: [
-            {
-              name: 'oauth2-proxy',
-              image: OAUTH2_PROXY_IMAGE,
-              args: ['--config=/etc/oauth2-proxy/oauth2_proxy.cfg', `--http-address=0.0.0.0:${PROXY_PORT}`],
-              ports: [{ containerPort: PROXY_PORT, name: 'proxy' }],
-              volumeMounts: [
-                {
-                  name: 'config',
-                  mountPath: '/etc/oauth2-proxy/oauth2_proxy.cfg',
-                  subPath: 'oauth2_proxy.cfg',
-                  readOnly: true,
-                },
-              ],
-              resources: {
-                requests: { cpu: '10m', memory: '32Mi' },
-                limits: { cpu: '100m', memory: '128Mi' },
-              },
-              livenessProbe: { httpGet: { path: '/ping', port: PROXY_PORT } },
-              readinessProbe: { httpGet: { path: '/ping', port: PROXY_PORT } },
-            },
-            {
-              name: 'claim-validator',
-              image: CLAIM_VALIDATOR_IMAGE,
-              env: [
-                { name: 'PORT', value: String(VALIDATOR_PORT) },
-                { name: 'OAUTH2_PROXY_HOST', value: '127.0.0.1' },
-                { name: 'OAUTH2_PROXY_PORT', value: String(PROXY_PORT) },
-                { name: 'RULES_PATH', value: '/etc/claim-rules/rules.json' },
-              ],
-              ports: [{ containerPort: VALIDATOR_PORT, name: 'validator' }],
-              volumeMounts: [
-                {
-                  name: 'config',
-                  mountPath: '/etc/claim-rules/rules.json',
-                  subPath: 'rules.json',
-                  readOnly: true,
-                },
-              ],
-              resources: {
-                requests: { cpu: '5m', memory: '16Mi' },
-                limits: { cpu: '50m', memory: '64Mi' },
-              },
-              livenessProbe: { httpGet: { path: '/ping', port: VALIDATOR_PORT } },
-              readinessProbe: { httpGet: { path: '/ping', port: VALIDATOR_PORT } },
-            },
-          ],
+          containers,
         },
       },
     },

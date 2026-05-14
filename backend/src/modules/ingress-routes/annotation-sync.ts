@@ -10,7 +10,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, routeProtectedDirs, routeAuthUsers, deployments, domains, clients } from '../../db/schema.js';
+import { ingressRoutes, routeProtectedDirs, routeAuthUsers, deployments, domains, clients, ingressAuthConfigs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
@@ -409,6 +409,48 @@ export async function syncRouteAnnotations(
 }
 
 /**
+ * True when at least one enabled auth config under the same client as
+ * `routeId` has a non-empty claim_rules array. Mirrors the per-client
+ * decision in ingress-auth/reconciler.ts (clientNeedsClaimValidator)
+ * so the auth-url annotation matches the actual Deployment shape:
+ *
+ *   - sidecar deployed   → auth-url at :4181/auth (claim-validator)
+ *   - sidecar omitted    → auth-url at :4180/oauth2/auth (direct)
+ *
+ * Walks ingressRoutes → domains.clientId to find sibling auth configs.
+ * Exported for tests.
+ */
+export async function clientHasActiveClaimRules(
+  db: Database,
+  routeId: string,
+): Promise<boolean> {
+  // Two-step lookup avoids self-join alias collisions: first resolve
+  // the route's clientId, then enumerate sibling auth configs for
+  // the same client.
+  const [routeRow] = await db
+    .select({ clientId: domains.clientId })
+    .from(ingressRoutes)
+    .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
+    .where(eq(ingressRoutes.id, routeId));
+  if (!routeRow) return false;
+
+  const rows = await db
+    .select({ claimRules: ingressAuthConfigs.claimRules })
+    .from(ingressAuthConfigs)
+    .innerJoin(ingressRoutes, eq(ingressAuthConfigs.ingressRouteId, ingressRoutes.id))
+    .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
+    .where(
+      and(
+        eq(ingressAuthConfigs.enabled, true),
+        eq(domains.clientId, routeRow.clientId),
+      ),
+    );
+  return rows.some(
+    (r) => Array.isArray(r.claimRules) && r.claimRules.length > 0,
+  );
+}
+
+/**
  * Returns the auth_request-related annotations when the ingress has
  * an enabled auth config; empty object otherwise. Exported for tests.
  */
@@ -418,17 +460,31 @@ export async function buildIngressAuthAnnotations(
   routeId: string,
   hostname: string,
 ): Promise<Record<string, string>> {
-  const { ingressAuthConfigs } = await import('../../db/schema.js');
   const [cfg] = await db
     .select()
     .from(ingressAuthConfigs)
     .where(eq(ingressAuthConfigs.ingressRouteId, routeId));
   if (!cfg || !cfg.enabled) return {};
 
-  // The claim-validator service exposes :4181 inside the client
-  // namespace. We point auth-url at it; oauth2-proxy's /oauth2/auth
-  // is reached transitively (the validator forwards to it).
-  const validatorBase = `http://oauth2-proxy.${namespace}.svc.cluster.local:4181`;
+  // Pick the auth-url target based on whether the claim-validator
+  // sidecar is actually running. The reconciler only deploys the
+  // sidecar when at least one enabled config in the client has
+  // non-empty claim_rules. When absent, point NGINX directly at
+  // oauth2-proxy:4180/oauth2/auth — oauth2-proxy ignores unknown
+  // query parameters so we keep the same URL shape sans ?route=.
+  //
+  // Race-safety: callers must update annotations BEFORE rolling
+  // resources (see routes.ts). Adding rules → annotation flips to
+  // :4181 first, fails-closed (502) until sidecar is ready, never
+  // bypasses. Removing rules → annotation flips to :4180 first,
+  // oauth2-proxy continues to serve via the same pod (sidecar still
+  // running in the to-be-rolled pod), no 502 spike, rules removal
+  // is intended so no bypass concern.
+  const sidecarPresent = await clientHasActiveClaimRules(db, routeId);
+  const proxyHost = `oauth2-proxy.${namespace}.svc.cluster.local`;
+  const authUrl = sidecarPresent
+    ? `http://${proxyHost}:4181/auth?route=${routeId}`
+    : `http://${proxyHost}:4180/oauth2/auth`;
   // /oauth2/start is served directly by oauth2-proxy on :4180 — it
   // returns the redirect to the IdP. The browser follows that
   // redirect, so it must hit the public-facing host. We expose
@@ -458,7 +514,7 @@ export async function buildIngressAuthAnnotations(
   if (cfg.passAuthorizationHeader) responseHeaders.push('Authorization');
 
   return {
-    'nginx.ingress.kubernetes.io/auth-url': `${validatorBase}/auth?route=${routeId}`,
+    'nginx.ingress.kubernetes.io/auth-url': authUrl,
     'nginx.ingress.kubernetes.io/auth-signin': signinUrl,
     'nginx.ingress.kubernetes.io/auth-response-headers': responseHeaders.join(','),
   };
