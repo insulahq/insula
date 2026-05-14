@@ -1,181 +1,199 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { syncProxyIngressAnnotations } from './ingress-proxy-manager.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  syncProxyIngressAnnotations,
+  OAUTH2_PROXY_MIDDLEWARE_NAME,
+} from './ingress-proxy-manager.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeK8s(overrides: Partial<{
-  readIngress: unknown;
-  patchIngress: unknown;
-  replaceIngress: unknown;
-  createIngress: unknown;
-  deleteIngress: unknown;
-}> = {}): K8sClients {
-  return {
-    networking: {
-      readNamespacedIngress: overrides.readIngress ?? vi.fn().mockResolvedValue(makeIngress()),
-      patchNamespacedIngress: overrides.patchIngress ?? vi.fn().mockResolvedValue({}),
-      replaceNamespacedIngress: overrides.replaceIngress ?? vi.fn().mockResolvedValue({}),
-      createNamespacedIngress: overrides.createIngress ?? vi.fn().mockResolvedValue({}),
-      deleteNamespacedIngress: overrides.deleteIngress ?? vi.fn().mockResolvedValue({}),
-    },
-    core: { patchNamespacedSecret: vi.fn(), createNamespacedSecret: vi.fn() },
-  } as unknown as K8sClients;
+interface CustomObjectsApiCalls {
+  getNamespacedCustomObject: ReturnType<typeof vi.fn>;
+  replaceNamespacedCustomObject: ReturnType<typeof vi.fn>;
+  createNamespacedCustomObject: ReturnType<typeof vi.fn>;
+  deleteNamespacedCustomObject: ReturnType<typeof vi.fn>;
+  listNamespacedCustomObject: ReturnType<typeof vi.fn>;
 }
 
-function makeIngress(adminHost = 'admin.example.com', clientHost = 'client.example.com') {
+function makeK8s(existing: Record<string, Record<string, unknown>> = {}): K8sClients & {
+  custom: CustomObjectsApiCalls;
+} {
+  // Mock CustomObjectsApi. Each Get returns a stored resource or 404.
+  const get = vi.fn(async (args: { plural: string; namespace: string; name: string }) => {
+    const key = `${args.namespace}/${args.plural}/${args.name}`;
+    if (key in existing) return existing[key];
+    const err: Error & { statusCode?: number } = Object.assign(new Error('not found'), { statusCode: 404 });
+    throw err;
+  });
+  const create = vi.fn(async (args: { plural: string; namespace: string; body: Record<string, unknown> }) => {
+    const meta = (args.body as { metadata?: { name?: string } }).metadata;
+    const name = meta?.name ?? 'unknown';
+    existing[`${args.namespace}/${args.plural}/${name}`] = args.body;
+    return args.body;
+  });
+  const replace = vi.fn(async (args: { plural: string; namespace: string; name: string; body: Record<string, unknown> }) => {
+    existing[`${args.namespace}/${args.plural}/${args.name}`] = args.body;
+    return args.body;
+  });
+  const del = vi.fn(async (args: { plural: string; namespace: string; name: string }) => {
+    const key = `${args.namespace}/${args.plural}/${args.name}`;
+    if (!(key in existing)) {
+      const err: Error & { statusCode?: number } = Object.assign(new Error('not found'), { statusCode: 404 });
+      throw err;
+    }
+    delete existing[key];
+    return {};
+  });
+  const list = vi.fn(async (_args: { plural: string; namespace: string }) => ({ items: [] }));
   return {
-    metadata: { name: 'platform-ingress', namespace: 'platform', annotations: {} },
-    spec: {
-      rules: [
-        {
-          host: adminHost,
-          http: { paths: [{ backend: { service: { name: 'admin-panel' } } }] },
-        },
-        {
-          host: clientHost,
-          http: { paths: [{ backend: { service: { name: 'client-panel' } } }] },
-        },
-      ],
+    custom: {
+      getNamespacedCustomObject: get,
+      replaceNamespacedCustomObject: replace,
+      createNamespacedCustomObject: create,
+      deleteNamespacedCustomObject: del,
+      listNamespacedCustomObject: list,
     },
-  };
+    core: {
+      patchNamespacedSecret: vi.fn(),
+      createNamespacedSecret: vi.fn(),
+    },
+  } as unknown as K8sClients & { custom: CustomObjectsApiCalls };
 }
 
 const db = {} as never;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe('syncProxyIngressAnnotations — break-glass ingress path', () => {
-  it('uses named PCRE captures (CVE-2026-42945 mitigation)', async () => {
-    const createIngress = vi.fn().mockResolvedValue({});
-    const k8s = makeK8s({ createIngress });
-
-    await syncProxyIngressAnnotations(db, k8s, {
-      protectAdminViaProxy: true,
-      protectClientViaProxy: false,
-      breakGlassPath: 'emergency-admin',
-    });
-
-    expect(createIngress).toHaveBeenCalledOnce();
-    const body = createIngress.mock.calls[0][0].body;
-    const path: string = body.spec.rules[0].http.paths[0].path;
-    const rewriteTarget: string = body.metadata.annotations['nginx.ingress.kubernetes.io/rewrite-target'];
-
-    // Must use the specific named capture (?<rest>...) — not positional $1/$2 (CVE-2026-42945)
-    expect(path).toContain('(?<rest>');
-    expect(path).not.toMatch(/\(\?P</);  // avoid Python-only syntax; use JS/PCRE (?<name>)
-
-    // rewrite-target must reference a named capture, not $1 or $2
-    expect(rewriteTarget).not.toMatch(/\$[12]/);
-    expect(rewriteTarget).toBe('/$rest');
-
-    // Path must still correctly strip the break-glass prefix
-    expect(path).toContain('emergency-admin');
-    expect(path).toContain('(?<rest>.*)');
-  });
-
-  it('path regex matches and strips the break-glass prefix', () => {
-    // Validate the named-capture pattern with Node's native RegExp —
-    // (?<name>) is valid in both PCRE (nginx) and JS (Node 10+).
-    const breakGlassPath = 'emergency-admin';
-    const pattern = new RegExp(`^/${breakGlassPath}(?<sep>/|$)(?<rest>.*)`);
-
-    const cases: Array<[string, string]> = [
-      [`/${breakGlassPath}`, ''],
-      [`/${breakGlassPath}/`, ''],
-      [`/${breakGlassPath}/some/deep/path`, 'some/deep/path'],
-      [`/${breakGlassPath}/page?q=1`, 'page?q=1'],
-    ];
-
-    for (const [input, expectedRest] of cases) {
-      const m = pattern.exec(input);
-      expect(m).not.toBeNull();
-      expect(m!.groups!['rest']).toBe(expectedRest);
-    }
-  });
-
-  it('does not create break-glass ingress when protectAdminViaProxy is false', async () => {
-    const createIngress = vi.fn().mockResolvedValue({});
-    const deleteIngress = vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
-    const k8s = makeK8s({ createIngress, deleteIngress });
-
-    await syncProxyIngressAnnotations(db, k8s, {
-      protectAdminViaProxy: false,
-      protectClientViaProxy: false,
-      breakGlassPath: 'emergency-admin',
-    });
-
-    expect(createIngress).not.toHaveBeenCalled();
-  });
-
-  it('does not create break-glass ingress when breakGlassPath is null', async () => {
-    const createIngress = vi.fn().mockResolvedValue({});
-    const deleteIngress = vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
-    const k8s = makeK8s({ createIngress, deleteIngress });
-
+describe('syncProxyIngressAnnotations — ForwardAuth Middleware', () => {
+  it('creates the platform-oauth2-proxy-auth Middleware when protect is on', async () => {
+    const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: true,
       protectClientViaProxy: false,
       breakGlassPath: null,
+      adminHost: 'admin.example.com',
     });
+    // Middleware should have been created in platform namespace.
+    expect(k8s.custom.createNamespacedCustomObject).toHaveBeenCalled();
+    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
+    const middlewareCall = calls.find((c) =>
+      c[0].plural === 'middlewares'
+      && (c[0].body as { metadata: { name: string } }).metadata.name === OAUTH2_PROXY_MIDDLEWARE_NAME,
+    );
+    expect(middlewareCall).toBeDefined();
+    const body = middlewareCall![0].body as { spec: { forwardAuth?: { address: string } } };
+    expect(body.spec.forwardAuth?.address).toBe('http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth');
+  });
 
-    expect(createIngress).not.toHaveBeenCalled();
+  it('deletes the Middleware when both protect flags are off', async () => {
+    // Seed an existing Middleware so delete has something to remove.
+    const initial: Record<string, Record<string, unknown>> = {};
+    initial[`platform/middlewares/${OAUTH2_PROXY_MIDDLEWARE_NAME}`] = {
+      apiVersion: 'traefik.io/v1alpha1',
+      kind: 'Middleware',
+      metadata: { name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' },
+      spec: { forwardAuth: { address: 'http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth' } },
+    };
+    const k8s = makeK8s(initial);
+    await syncProxyIngressAnnotations(db, k8s, {
+      protectAdminViaProxy: false,
+      protectClientViaProxy: false,
+      breakGlassPath: null,
+      adminHost: 'admin.example.com',
+    });
+    expect(k8s.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ plural: 'middlewares', name: OAUTH2_PROXY_MIDDLEWARE_NAME }),
+    );
   });
 });
 
-describe('syncProxyIngressAnnotations — auth annotations', () => {
-  it('adds auth annotations when proxy is enabled', async () => {
-    const patchIngress = vi.fn().mockResolvedValue({});
-    const k8s = makeK8s({ patchIngress });
+describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
+  it('creates the break-glass IngressRoute with stripPrefix Middleware when configured', async () => {
+    const k8s = makeK8s();
+    await syncProxyIngressAnnotations(db, k8s, {
+      protectAdminViaProxy: true,
+      protectClientViaProxy: false,
+      breakGlassPath: 'emergency-admin',
+      adminHost: 'admin.example.com',
+    });
+    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
+    const breakGlassCall = calls.find((c) =>
+      c[0].plural === 'ingressroutes'
+      && (c[0].body as { metadata: { name: string } }).metadata.name === 'platform-break-glass-ingress',
+    );
+    expect(breakGlassCall).toBeDefined();
+    const body = breakGlassCall![0].body as {
+      spec: {
+        routes: Array<{
+          match: string;
+          priority?: number;
+          middlewares?: Array<{ name: string }>;
+          services: Array<{ name: string; port: number }>;
+        }>;
+      };
+    };
+    expect(body.spec.routes).toHaveLength(1);
+    expect(body.spec.routes[0].match).toContain('admin.example.com');
+    expect(body.spec.routes[0].match).toContain('/emergency-admin');
+    expect(body.spec.routes[0].priority).toBe(100);
+    expect(body.spec.routes[0].services[0]).toEqual({ name: 'admin-panel', port: 80 });
+    // Strip-prefix Middleware reference present.
+    expect(body.spec.routes[0].middlewares?.[0].name).toMatch(/strip$/);
+    // Strip Middleware itself was applied (one of the create calls).
+    const stripCall = calls.find((c) =>
+      c[0].plural === 'middlewares'
+      && (c[0].body as { metadata: { name: string } }).metadata.name.endsWith('-strip'),
+    );
+    expect(stripCall).toBeDefined();
+    const stripBody = stripCall![0].body as { spec: { stripPrefix?: { prefixes: string[] } } };
+    expect(stripBody.spec.stripPrefix?.prefixes).toEqual(['/emergency-admin']);
+  });
 
+  it('does not create break-glass IngressRoute when protectAdminViaProxy is false', async () => {
+    const k8s = makeK8s();
+    await syncProxyIngressAnnotations(db, k8s, {
+      protectAdminViaProxy: false,
+      protectClientViaProxy: false,
+      breakGlassPath: 'emergency-admin',
+      adminHost: 'admin.example.com',
+    });
+    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
+    const breakGlassCall = calls.find((c) =>
+      c[0].plural === 'ingressroutes'
+      && (c[0].body as { metadata: { name: string } }).metadata.name === 'platform-break-glass-ingress',
+    );
+    expect(breakGlassCall).toBeUndefined();
+  });
+
+  it('does not create break-glass when breakGlassPath is null', async () => {
+    const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: true,
       protectClientViaProxy: false,
       breakGlassPath: null,
+      adminHost: 'admin.example.com',
     });
-
-    expect(patchIngress).toHaveBeenCalledOnce();
-    const annotations = patchIngress.mock.calls[0][0].body.metadata.annotations;
-    expect(annotations['nginx.ingress.kubernetes.io/auth-url']).toBeTruthy();
-    expect(annotations['nginx.ingress.kubernetes.io/auth-signin']).toContain('admin.example.com');
+    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
+    const breakGlassCall = calls.find((c) =>
+      c[0].plural === 'ingressroutes'
+      && (c[0].body as { metadata: { name: string } }).metadata.name === 'platform-break-glass-ingress',
+    );
+    expect(breakGlassCall).toBeUndefined();
   });
 
-  it('removes auth annotations when proxy is disabled', async () => {
-    const existingAnnotations = {
-      'nginx.ingress.kubernetes.io/auth-url': 'http://oauth2-proxy/oauth2/auth',
-      'nginx.ingress.kubernetes.io/auth-signin': 'https://admin.example.com/oauth2/start',
-      'nginx.ingress.kubernetes.io/auth-response-headers': 'X-Auth-Request-User',
-      'hosting-platform/oauth2-proxy-managed': 'true',
-    };
-    const readIngress = vi.fn().mockResolvedValue({
-      ...makeIngress(),
-      metadata: { ...makeIngress().metadata, annotations: existingAnnotations },
-    });
-    const patchIngress = vi.fn().mockResolvedValue({});
-    const deleteIngress = vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
-    const k8s = makeK8s({ readIngress, patchIngress, deleteIngress });
-
+  it('skips break-glass IngressRoute creation when adminHost is null', async () => {
+    const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
-      protectAdminViaProxy: false,
+      protectAdminViaProxy: true,
       protectClientViaProxy: false,
-      breakGlassPath: null,
+      breakGlassPath: 'emergency-admin',
+      adminHost: null,
     });
-
-    const annotations = patchIngress.mock.calls[0][0].body.metadata.annotations;
-    expect(annotations['nginx.ingress.kubernetes.io/auth-url']).toBeUndefined();
-    expect(annotations['nginx.ingress.kubernetes.io/auth-signin']).toBeUndefined();
-  });
-
-  it('returns early if platform ingress does not exist', async () => {
-    const notFound = Object.assign(new Error('not found'), { statusCode: 404 });
-    const k8s = makeK8s({ readIngress: vi.fn().mockRejectedValue(notFound) });
-
-    await expect(
-      syncProxyIngressAnnotations(db, k8s, {
-        protectAdminViaProxy: true,
-        protectClientViaProxy: false,
-        breakGlassPath: null,
-      }),
-    ).resolves.toBeUndefined();
+    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
+    const breakGlassCall = calls.find((c) =>
+      c[0].plural === 'ingressroutes'
+      && (c[0].body as { metadata: { name: string } }).metadata.name === 'platform-break-glass-ingress',
+    );
+    expect(breakGlassCall).toBeUndefined();
   });
 });

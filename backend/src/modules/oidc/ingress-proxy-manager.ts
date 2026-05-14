@@ -1,33 +1,61 @@
 /**
- * Ingress annotation manager for OAuth2 Proxy protection.
+ * OAuth2 Proxy admin-panel gating via Traefik ForwardAuth Middleware.
  *
- * When proxy protection is enabled for a panel (admin/client), this module
- * adds nginx auth annotations to the platform Ingress rules so that
- * oauth2-proxy gates access. A separate break-glass Ingress provides an
- * unauthenticated path for emergency admin access.
+ * When proxy protection is enabled for a panel (admin/client), this
+ * module:
+ *   1. Creates / updates a ForwardAuth Middleware named
+ *      `platform-oauth2-proxy-auth` in the `platform` namespace. The
+ *      Middleware calls oauth2-proxy's /oauth2/auth endpoint and
+ *      injects the X-Auth-Request-* headers it returns.
+ *   2. Maintains a separate break-glass IngressRoute that exposes a
+ *      hidden URL prefix on the admin host, stripping the prefix
+ *      before routing to admin-panel WITHOUT the ForwardAuth
+ *      Middleware. This is the emergency-only escape hatch the
+ *      operator uses if Dex/IdP is unreachable.
+ *
+ * The platform-ingress IngressRoute itself is owned by
+ * system-settings/ingress-reconciler.ts — that reconciler reads the
+ * `protectAdminViaProxy` / `protectClientViaProxy` flags from
+ * system_settings and attaches the Middleware reference to the panel
+ * routes by name. So we only need to ensure the Middleware EXISTS
+ * here; the reconciler owns the spec.routes[].middlewares wiring.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
-import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import {
+  buildMiddleware,
+  buildIngressRoute,
+  hostAndPathMatch,
+  stripPrefixSpec,
+  forwardAuthSpec,
+  middlewareName,
+} from '../ingress-routes/traefik-types.js';
+import {
+  applyMiddleware,
+  deleteMiddleware,
+  applyIngressRoute,
+  deleteIngressRoute,
+} from '../ingress-routes/traefik-apply.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const PLATFORM_NAMESPACE = process.env.PLATFORM_NAMESPACE ?? 'platform';
-const PLATFORM_INGRESS_NAME = 'platform-ingress';
 const BREAK_GLASS_INGRESS_NAME = 'platform-break-glass-ingress';
 const ADMIN_PANEL_SERVICE = 'admin-panel';
 const ADMIN_PANEL_PORT = 80;
 
-const OAUTH2_PROXY_AUTH_URL = 'http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth';
-const OAUTH2_PROXY_RESPONSE_HEADERS = 'X-Auth-Request-User,X-Auth-Request-Email,X-Auth-Request-Access-Token';
+const OAUTH2_PROXY_HOST = 'oauth2-proxy.platform.svc.cluster.local';
+const OAUTH2_PROXY_PORT = 4180;
 
-// Annotation keys managed by this module
-const AUTH_URL_ANNOTATION = 'nginx.ingress.kubernetes.io/auth-url';
-const AUTH_SIGNIN_ANNOTATION = 'nginx.ingress.kubernetes.io/auth-signin';
-const AUTH_RESPONSE_HEADERS_ANNOTATION = 'nginx.ingress.kubernetes.io/auth-response-headers';
-const PROXY_MANAGED_ANNOTATION = 'hosting-platform/oauth2-proxy-managed';
+/**
+ * Stable Middleware name the platform-ingress reconciler references
+ * when `protectAdminViaProxy` / `protectClientViaProxy` is true.
+ * Kept here so both modules share one literal.
+ */
+export const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -37,212 +65,128 @@ function isK8s404(err: unknown): boolean {
   return false;
 }
 
-function isK8s409(err: unknown): boolean {
-  if (err instanceof Error && err.message.includes('HTTP-Code: 409')) return true;
-  if ((err as { statusCode?: number }).statusCode === 409) return true;
-  return false;
-}
-
-function buildSigninUrl(host: string): string {
-  return `https://${host}/oauth2/start?rd=$scheme://$host$escaped_request_uri`;
-}
-
-function buildProxyAnnotations(host: string): Record<string, string> {
-  return {
-    [AUTH_URL_ANNOTATION]: OAUTH2_PROXY_AUTH_URL,
-    [AUTH_SIGNIN_ANNOTATION]: buildSigninUrl(host),
-    [AUTH_RESPONSE_HEADERS_ANNOTATION]: OAUTH2_PROXY_RESPONSE_HEADERS,
-    [PROXY_MANAGED_ANNOTATION]: 'true',
-  };
-}
-
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export interface ProxySettings {
   readonly protectAdminViaProxy: boolean;
   readonly protectClientViaProxy: boolean;
   readonly breakGlassPath: string | null;
+  readonly adminHost?: string | null;
 }
 
 /**
- * Reconcile the platform Ingress annotations based on proxy settings.
+ * Reconcile the OAuth2 Proxy Middleware + break-glass IngressRoute.
  *
- * For each panel (admin, client):
- * - If proxy enabled: add auth-url, auth-signin, auth-response-headers annotations
- *   to the corresponding Ingress rule
- * - If proxy disabled: remove those annotations
- *
- * For break-glass: create/update a separate Ingress that routes
- * /{breakGlassPath} to the admin panel WITHOUT auth annotations.
+ * - When `anyProtected` is true: ensure the ForwardAuth Middleware
+ *   exists. The platform-ingress reconciler attaches it to the panel
+ *   routes by name.
+ * - When `anyProtected` is false: delete the Middleware (the reconciler
+ *   stops referencing it, but a dangling Middleware CR is harmless;
+ *   delete anyway for cleanliness).
+ * - Break-glass: when `protectAdminViaProxy` AND `breakGlassPath` set,
+ *   create a high-priority IngressRoute that strips the secret prefix
+ *   and forwards to admin-panel without the auth Middleware. Otherwise
+ *   delete the IngressRoute + its companion stripPrefix Middleware.
  */
 export async function syncProxyIngressAnnotations(
   _db: Database,
   k8s: K8sClients,
   settings: ProxySettings,
 ): Promise<void> {
-  // Read the current platform Ingress
-  let currentIngress: Record<string, unknown>;
-  try {
-    currentIngress = await k8s.networking.readNamespacedIngress({
-      name: PLATFORM_INGRESS_NAME,
-      namespace: PLATFORM_NAMESPACE,
-    }) as unknown as Record<string, unknown>;
-  } catch (err: unknown) {
-    if (isK8s404(err)) {
-      // Ingress doesn't exist yet — nothing to annotate
-      return;
-    }
-    throw err;
-  }
-
-  const metadata = (currentIngress as { metadata?: Record<string, unknown> }).metadata ?? {};
-  const annotations = { ...(metadata.annotations ?? {}) } as Record<string, string>;
-  const spec = (currentIngress as { spec?: Record<string, unknown> }).spec ?? {};
-  const rules = (spec.rules ?? []) as Array<{ host?: string }>;
-
-  // Determine hosts for each panel from the existing Ingress rules
-  const adminHost = findHostForService(rules, spec, 'admin-panel');
-  const clientHost = findHostForService(rules, spec, 'client-panel');
-
-  // Decide whether ANY rule needs proxy annotations on the shared Ingress.
-  // The platform Ingress is a single resource with multiple host rules.
-  // NGINX Ingress annotations apply to the entire Ingress, so we use
-  // snippet annotations or, when both panels share one Ingress, we set
-  // annotations when at least one panel needs protection.
-  //
-  // Strategy: if either panel is protected, add the auth annotations.
-  // The oauth2-proxy itself is responsible for allowing/denying based
-  // on the request host. This keeps the Ingress simple.
   const anyProtected = settings.protectAdminViaProxy || settings.protectClientViaProxy;
 
   if (anyProtected) {
-    // Use the admin host for the signin URL (primary), fall back to client
-    const signinHost = adminHost ?? clientHost ?? 'localhost';
-    const proxyAnnotations = buildProxyAnnotations(signinHost);
-    for (const [key, value] of Object.entries(proxyAnnotations)) {
-      annotations[key] = value;
-    }
-  } else {
-    // Remove proxy annotations
-    delete annotations[AUTH_URL_ANNOTATION];
-    delete annotations[AUTH_SIGNIN_ANNOTATION];
-    delete annotations[AUTH_RESPONSE_HEADERS_ANNOTATION];
-    delete annotations[PROXY_MANAGED_ANNOTATION];
-  }
-
-  // Patch annotations on the existing Ingress
-  const patchBody = {
-    metadata: {
-      name: PLATFORM_INGRESS_NAME,
+    // Create / update the ForwardAuth Middleware. The platform-ingress
+    // reconciler is responsible for attaching the reference to the
+    // panel routes when protect* settings are true; we just ensure the
+    // Middleware CR exists.
+    const middleware = buildMiddleware({
+      name: OAUTH2_PROXY_MIDDLEWARE_NAME,
       namespace: PLATFORM_NAMESPACE,
-      annotations,
-    },
-  };
-
-  try {
-    await k8s.networking.patchNamespacedIngress({
-      name: PLATFORM_INGRESS_NAME,
-      namespace: PLATFORM_NAMESPACE,
-      body: patchBody,
-    }, STRATEGIC_MERGE_PATCH);
-  } catch {
-    // Fall back to full replace if strategic merge patch fails
-    const fullBody = { ...currentIngress, metadata: { ...metadata, annotations } };
-    await k8s.networking.replaceNamespacedIngress({
-      name: PLATFORM_INGRESS_NAME,
-      namespace: PLATFORM_NAMESPACE,
-      body: fullBody,
+      spec: forwardAuthSpec({
+        address: `http://${OAUTH2_PROXY_HOST}:${OAUTH2_PROXY_PORT}/oauth2/auth`,
+        trustForwardHeader: true,
+        authResponseHeaders: [
+          'X-Auth-Request-User',
+          'X-Auth-Request-Email',
+          'X-Auth-Request-Access-Token',
+        ],
+      }),
+      labels: {
+        'app.kubernetes.io/component': 'oauth2-proxy-auth',
+      },
     });
+    await applyMiddleware(k8s.custom, middleware);
+  } else {
+    // No panel is protected — clean up the Middleware CR. Reference
+    // removal is the platform-ingress reconciler's job; we just stop
+    // shipping the resource.
+    await deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, OAUTH2_PROXY_MIDDLEWARE_NAME);
   }
 
-  // Manage break-glass Ingress
-  await syncBreakGlassIngress(k8s, settings, adminHost);
+  await syncBreakGlassIngressRoute(k8s, settings);
 }
 
-// ─── Break-Glass Ingress ────────────────────────────────────────────────────
+// ─── Break-Glass IngressRoute ───────────────────────────────────────────────
 
-async function syncBreakGlassIngress(
+async function syncBreakGlassIngressRoute(
   k8s: K8sClients,
   settings: ProxySettings,
-  adminHost: string | null,
 ): Promise<void> {
-  const shouldExist = settings.protectAdminViaProxy && settings.breakGlassPath;
+  const shouldExist =
+    settings.protectAdminViaProxy &&
+    !!settings.breakGlassPath &&
+    !!settings.adminHost;
+
+  const stripPrefixName = middlewareName(BREAK_GLASS_INGRESS_NAME, 'strip');
 
   if (!shouldExist) {
-    // Delete the break-glass Ingress if it exists
-    try {
-      await k8s.networking.deleteNamespacedIngress({
-        name: BREAK_GLASS_INGRESS_NAME,
-        namespace: PLATFORM_NAMESPACE,
-      });
-    } catch (err: unknown) {
-      if (!isK8s404(err)) throw err;
-    }
+    await Promise.all([
+      deleteIngressRoute(k8s.custom, PLATFORM_NAMESPACE, BREAK_GLASS_INGRESS_NAME),
+      deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, stripPrefixName),
+    ]);
     return;
   }
 
-  if (!adminHost) return;
-
   const breakGlassPath = settings.breakGlassPath!;
+  const adminHost = settings.adminHost!;
 
-  const ingressBody = {
-    metadata: {
-      name: BREAK_GLASS_INGRESS_NAME,
-      namespace: PLATFORM_NAMESPACE,
-      labels: {
-        'app.kubernetes.io/part-of': 'hosting-platform',
-        'app.kubernetes.io/component': 'break-glass',
+  // Path-stripping Middleware: requests to /<breakGlassPath>/<rest> get
+  // rewritten to /<rest> before hitting admin-panel. This matches the
+  // nginx rewrite-target shape (/(?<rest>.*) → /$rest) but expressed
+  // declaratively via stripPrefix.
+  const stripMiddleware = buildMiddleware({
+    name: stripPrefixName,
+    namespace: PLATFORM_NAMESPACE,
+    spec: stripPrefixSpec([`/${breakGlassPath}`]),
+    labels: {
+      'app.kubernetes.io/component': 'break-glass',
+    },
+  });
+  await applyMiddleware(k8s.custom, stripMiddleware);
+
+  // Higher-priority IngressRoute for the admin host break-glass path.
+  // Priority must exceed any catch-all route on the same host (the
+  // platform-ingress panel route uses default priority, which is the
+  // match-rule length — our match is longer due to PathPrefix, so we
+  // win naturally; the explicit priority=100 documents the intent).
+  const ingressRoute = buildIngressRoute({
+    name: BREAK_GLASS_INGRESS_NAME,
+    namespace: PLATFORM_NAMESPACE,
+    routes: [
+      {
+        match: hostAndPathMatch(adminHost, `/${breakGlassPath}`),
+        kind: 'Rule',
+        priority: 100,
+        middlewares: [{ name: stripPrefixName, namespace: PLATFORM_NAMESPACE }],
+        services: [{ name: ADMIN_PANEL_SERVICE, port: ADMIN_PANEL_PORT }],
       },
-      annotations: {
-        // Named capture avoids the CVE-2026-42945 trigger condition:
-        // unnamed $N captures in rewrite-target with a '?' in the
-        // replacement string can cause a heap overflow in nginx ≤1.30.0.
-        // Using (?<rest>.*) + /$rest is semantically identical but safe.
-        'nginx.ingress.kubernetes.io/rewrite-target': '/$rest',
-        'nginx.ingress.kubernetes.io/proxy-body-size': '64m',
-        // Explicitly NO auth annotations — this is the emergency path
-      } as Record<string, string>,
+    ],
+    labels: {
+      'app.kubernetes.io/component': 'break-glass',
     },
-    spec: {
-      ingressClassName: 'nginx',
-      rules: [
-        {
-          host: adminHost,
-          http: {
-            paths: [
-              {
-                path: `/${breakGlassPath}(?<sep>/|$)(?<rest>.*)`,
-                pathType: 'ImplementationSpecific' as const,
-                backend: {
-                  service: {
-                    name: ADMIN_PANEL_SERVICE,
-                    port: { number: ADMIN_PANEL_PORT },
-                  },
-                },
-              },
-            ],
-          },
-        },
-      ],
-    },
-  };
-
-  try {
-    await k8s.networking.createNamespacedIngress({
-      namespace: PLATFORM_NAMESPACE,
-      body: ingressBody,
-    });
-  } catch (err: unknown) {
-    if (isK8s409(err)) {
-      await k8s.networking.replaceNamespacedIngress({
-        name: BREAK_GLASS_INGRESS_NAME,
-        namespace: PLATFORM_NAMESPACE,
-        body: ingressBody,
-      });
-    } else {
-      throw err;
-    }
-  }
+  });
+  await applyIngressRoute(k8s.custom, ingressRoute);
 }
 
 // ─── OAuth2 Proxy K8s Secret ─────────────────────────────────────────────────
@@ -281,36 +225,4 @@ export async function syncOAuth2ProxySecret(k8s: K8sClients, cookieSecret: strin
       throw err;
     }
   }
-}
-
-// ─── Utilities ──────────────────────────────────────────────────────────────
-
-/**
- * Find the host that routes to a given service name in the Ingress rules.
- */
-function findHostForService(
-  rules: Array<{ host?: string }>,
-  spec: Record<string, unknown>,
-  serviceName: string,
-): string | null {
-  const fullRules = (spec.rules ?? rules) as Array<{
-    host?: string;
-    http?: {
-      paths?: Array<{
-        backend?: {
-          service?: { name?: string };
-        };
-      }>;
-    };
-  }>;
-
-  for (const rule of fullRules) {
-    const paths = rule.http?.paths ?? [];
-    for (const p of paths) {
-      if (p.backend?.service?.name === serviceName) {
-        return rule.host ?? null;
-      }
-    }
-  }
-  return null;
 }

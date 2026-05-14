@@ -88,6 +88,17 @@ const PANEL_SERVICES: Record<'admin' | 'client', string> = {
 const OAUTH2_PROXY_SERVICE = 'oauth2-proxy';
 const OAUTH2_PROXY_PORT = 4180;
 
+/**
+ * Name of the ForwardAuth Middleware managed by oidc/ingress-proxy-manager.ts.
+ * Duplicated as a constant here (rather than imported) to avoid a circular
+ * module dependency — both files are loaded at startup and the reconciler
+ * doesn't need the rest of the proxy-manager.
+ *
+ * The Middleware lives in the `platform` namespace; admin-ingress routes
+ * reference it as `platform-oauth2-proxy-auth@platform` when protect* is on.
+ */
+const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
+
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
 /**
@@ -164,10 +175,16 @@ export function buildIngressRouteBody(
   opts: { namespace: string; name: string; tlsSecretName: string },
 ): Record<string, unknown> {
   // One route per host. The /oauth2 prefix gets a higher priority so it
-  // wins over `/` matching against the same hostname.
+  // wins over `/` matching against the same hostname. When protect* is
+  // on, the panel route ALSO gets a ForwardAuth Middleware reference
+  // so every non-/oauth2 request is gated by oauth2-proxy's /oauth2/auth
+  // endpoint (the actual ForwardAuth Middleware CR is owned by
+  // oidc/ingress-proxy-manager.ts).
   const traefikRoutes: Array<Record<string, unknown>> = [];
   for (const r of routes) {
     if (r.oauth2) {
+      // /oauth2/* passes through to oauth2-proxy itself — no auth
+      // Middleware here, because oauth2-proxy IS the auth endpoint.
       traefikRoutes.push({
         match: `Host(\`${r.host}\`) && PathPrefix(\`/oauth2\`)`,
         kind: 'Rule',
@@ -175,11 +192,17 @@ export function buildIngressRouteBody(
         services: [{ name: OAUTH2_PROXY_SERVICE, port: OAUTH2_PROXY_PORT }],
       });
     }
-    traefikRoutes.push({
+    const panelRoute: Record<string, unknown> = {
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
       services: [{ name: r.serviceName, port: 80 }],
-    });
+    };
+    if (r.oauth2) {
+      panelRoute.middlewares = [
+        { name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' },
+      ];
+    }
+    traefikRoutes.push(panelRoute);
   }
 
   return {
