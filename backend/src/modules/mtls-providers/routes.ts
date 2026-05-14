@@ -49,7 +49,9 @@ import {
 } from './service.js';
 import { ingressMtlsConfigs } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { syncRouteAnnotations } from '../ingress-routes/annotation-sync.js';
+import { reconcileIngress } from '../domains/k8s-ingress.js';
+import { domains as domainsTable } from '../../db/schema.js';
+import { clients } from '../../db/schema.js';
 import type { ZodError } from 'zod';
 
 function zodMessage(err: ZodError): string {
@@ -201,17 +203,28 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
+      // In the Traefik model the CRL is baked into the mTLS CA Secret
+      // referenced by the per-route TLSOption + passTLSClientCert
+      // Middleware. Every reconcileIngress() rebuilds that Secret from
+      // the live DB row, so a single namespace-level reconcile is enough
+      // to push the new CRL to every consuming route. (Iterating routes
+      // would just duplicate work.)
       const consumers = await app.db
         .select({ routeId: ingressMtlsConfigs.ingressRouteId })
         .from(ingressMtlsConfigs)
         .where(eq(ingressMtlsConfigs.providerId, providerId));
-      for (const c of consumers) {
-        try {
-          await syncRouteAnnotations(app.db, k8s, c.routeId, clientId);
-        } catch (err) {
-          app.log.warn({ err, routeId: c.routeId, providerId, action }, `mtls-${action}: failed to push CRL to route`);
-        }
+      if (consumers.length === 0) return;
+      const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
+      if (!client?.kubernetesNamespace) return;
+      try {
+        await reconcileIngress(app.db, k8s, clientId, client.kubernetesNamespace);
+      } catch (err) {
+        app.log.warn({ err, providerId, action }, `mtls-${action}: failed to push CRL via reconcile`);
       }
+      // Touch the domains table reference to avoid unused-import churn
+      // — keeps the explicit join schema available if the audit path
+      // ever wants to log per-route results.
+      void domainsTable;
     } catch (err) {
       // K8s client unavailable (no kubeconfig in tests / local dev).
       app.log.debug({ err, action }, `mtls-${action}: K8s reconcile skipped`);
