@@ -30,9 +30,13 @@ services:
       - --node-name=k8s-local
       - --kubelet-arg=max-pods=50
     ports:
-      # ─── Ingress (NGINX) ───────────────────────────────────────────
-      - "${PORT_INGRESS_HTTP:-2010}:80"       # NGINX Ingress HTTP
-      - "${PORT_INGRESS_HTTPS:-2011}:443"     # NGINX Ingress HTTPS
+      # ─── Ingress (Traefik v3) ──────────────────────────────────────
+      # Same host ports as the legacy nginx-ingress (2010/2011) so
+      # operator muscle memory + DNS records keep working. Traefik
+      # binds via hostPort on the DaemonSet (NOT hostNetwork) and the
+      # kube-proxy DNAT routes :80/:443 → traefik pod via the Service.
+      - "${PORT_INGRESS_HTTP:-2010}:80"       # Traefik web entrypoint
+      - "${PORT_INGRESS_HTTPS:-2011}:443"     # Traefik websecure entrypoint
       # ─── Platform services ─────────────────────────────────────────
       # Backend API is NOT exposed — admin/client panels reverse-proxy /api/*
       # internally to platform-api.platform.svc.cluster.local:3000.
@@ -68,7 +72,12 @@ services:
       retries: 10
       start_period: 30s
 
-  # Init job: install NGINX Ingress + cert-manager + namespaces
+  # Init job: install cert-manager + CNPG + namespaces. Traefik v3
+  # is NOT installed by this Job — scripts/local.sh runs the helm
+  # install on the workstation host (matching scripts/bootstrap.sh's
+  # install_traefik) because the rancher/k3s image lacks the helm
+  # binary and the plugin install needs the helm chart's full
+  # value-set wiring (initContainer mounts, plugin args, etc).
   k3s-init:
     image: rancher/k3s:v1.31.4-k3s1
     entrypoint: ["/bin/sh", "-c"]
@@ -93,38 +102,26 @@ services:
         echo "Checking StorageClass..."
         kubectl get storageclass
 
-        # Install NGINX Ingress + cert-manager + CNPG in parallel — all three
-        # are independent downloads + pod rollouts. Running them concurrently
-        # cuts the k3s infra phase from ~3min to ~90s on a cold start.
+        # Install cert-manager + CNPG in parallel — both are
+        # independent downloads + pod rollouts. Running them
+        # concurrently cuts the k3s infra phase from ~3min to ~90s on
+        # a cold start.
         #
-        # CNPG (CloudNative-PG operator) is REQUIRED — k8s/base/database.yaml
-        # declares a Cluster CR. Without the operator the CR is accepted by
-        # the API but never reconciled; Postgres pods/PVCs are never created
-        # and platform-api crashes (500) on every login because it can't reach
-        # the DB. This was the root cause of the 2026-05-07 broken-DinD
-        # incident — fixed here by installing the operator at infra time
-        # alongside ingress + cert-manager.
-        echo "Installing NGINX Ingress Controller + cert-manager + CNPG operator (parallel)..."
-        (
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml 2>/dev/null \
-            || echo "NGINX ingress already installed or network unavailable"
-          kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s 2>/dev/null \
-            || echo "ingress-nginx not ready — continuing"
-          kubectl patch configmap ingress-nginx-controller -n ingress-nginx \
-            --type=merge \
-            -p '{"data":{"allow-snippet-annotations":"true","annotations-risk-level":"Critical","enable-modsecurity":"true","enable-owasp-modsecurity-crs":"true","modsecurity-snippet":"SecRuleEngine On\nSecAuditEngine RelevantOnly\nSecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\nSecAuditLog /dev/stderr\nSecAuditLogType Serial\nSecAuditLogParts ABFHZ\n"}}' 2>/dev/null \
-            || echo "Failed to patch ingress-nginx-controller ConfigMap"
-          # Bump the controller's memory limit. The default deploy.yaml sets
-          # only a 90Mi request with no limit — multi-GB uploads buffering in
-          # /tmp + TLS work push the controller over the implicit cgroup cap
-          # and the pod gets OOMKilled mid-upload. 1 Gi leaves headroom for
-          # tenant workloads doing concurrent WP media uploads.
-          kubectl patch deploy ingress-nginx-controller -n ingress-nginx \
-            --type=json \
-            -p='[{"op":"add","path":"/spec/template/spec/containers/0/resources/limits","value":{"memory":"1Gi","cpu":"500m"}}]' 2>/dev/null \
-            || echo "Failed to patch ingress-nginx-controller resources"
-        ) &
-        NGINX_PID=$$!
+        # Traefik v3 is installed by scripts/local.sh AFTER this Job
+        # completes — see _install_traefik_local in local.sh. It runs
+        # the same helm command as scripts/bootstrap.sh install_traefik
+        # so the local DinD stack matches production end-to-end
+        # (Traefik DaemonSet + CrowdSec bouncer plugin + ModSecurity
+        # plugin + secret volume mount for the bouncer key).
+        #
+        # CNPG (CloudNative-PG operator) is REQUIRED — k8s/base/
+        # database.yaml declares a Cluster CR. Without the operator
+        # the CR is accepted by the API but never reconciled; Postgres
+        # pods/PVCs are never created and platform-api crashes on
+        # every login because it can't reach the DB. Root cause of
+        # the 2026-05-07 broken-DinD incident; the operator goes in
+        # at infra time so the platform pods come up cleanly.
+        echo "Installing cert-manager + CNPG operator (parallel)..."
         (
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml 2>/dev/null \
             || echo "cert-manager already installed or network unavailable"
@@ -143,7 +140,7 @@ services:
             || echo "CNPG operator not ready — continuing"
         ) &
         CNPG_PID=$$!
-        wait "$$NGINX_PID" "$$CERTMGR_PID" "$$CNPG_PID"
+        wait "$$CERTMGR_PID" "$$CNPG_PID"
 
         # Create self-signed CA for local development
         echo "Creating local CA issuer..."

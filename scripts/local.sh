@@ -316,14 +316,15 @@ _ensure_k3s_running() {
       fi
       sleep 2
     done
-    # Skip init if ingress-nginx + cert-manager + cnpg already installed
-    # (volumes preserved). Otherwise run the heavyweight init Job.
-    if k3s_exec kubectl get deploy ingress-nginx-controller -n ingress-nginx >/dev/null 2>&1 \
-       && k3s_exec kubectl get deploy cert-manager -n cert-manager >/dev/null 2>&1 \
+    # Skip init if cert-manager + cnpg already installed (volumes
+    # preserved). Otherwise run the heavyweight init Job. Note the
+    # check no longer includes ingress-nginx (Traefik replaced it) —
+    # the Traefik install is a separate phase below.
+    if k3s_exec kubectl get deploy cert-manager -n cert-manager >/dev/null 2>&1 \
        && k3s_exec kubectl get deploy cnpg-controller-manager -n cnpg-system >/dev/null 2>&1; then
       echo "k3s infra already installed — skipping init"
     else
-      echo "Running k3s init (ingress, cert-manager, cnpg, namespaces)..."
+      echo "Running k3s init (cert-manager, cnpg, namespaces)..."
       compose up k3s-init
     fi
   else
@@ -336,6 +337,103 @@ _ensure_k3s_running() {
   # forever and nothing comes up. Idempotent — kubectl label --overwrite.
   k3s_exec kubectl label node --all \
     platform.phoenix-host.net/node-role=server --overwrite >/dev/null 2>&1 || true
+
+  # Traefik v3 + CrowdSec bouncer + ModSec plugin — same helm install
+  # as scripts/bootstrap.sh's install_traefik so the local DinD stack
+  # mirrors production. Skip if Traefik DaemonSet already exists.
+  _install_traefik_local
+}
+
+# ─── Traefik install (mirrors scripts/bootstrap.sh install_traefik) ────────
+
+# Constants must match scripts/bootstrap.sh — bump in lockstep.
+TRAEFIK_CHART_VERSION_LOCAL="40.2.0"
+CROWDSEC_PLUGIN_MODULE_LOCAL="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+CROWDSEC_PLUGIN_VERSION_LOCAL="v1.4.4"
+MODSECURITY_PLUGIN_MODULE_LOCAL="github.com/madebymode/traefik-modsecurity-plugin"
+MODSECURITY_PLUGIN_VERSION_LOCAL="v1.6.0"
+
+# Generate / load the per-cluster CrowdSec bouncer key and ensure it
+# exists as a K8s Secret in BOTH `crowdsec` AND `traefik` namespaces.
+# Idempotent — reuses an existing key if one is already in either
+# namespace. Mirrors scripts/bootstrap.sh's generate_crowdsec_bouncer_key.
+_generate_crowdsec_bouncer_key_local() {
+  local secret_name="crowdsec-bouncer-key"
+  local key_value
+  if k3s_exec kubectl get secret -n crowdsec "$secret_name" >/dev/null 2>&1; then
+    key_value=$(k3s_exec kubectl get secret -n crowdsec "$secret_name" -o jsonpath='{.data.bouncer-key}' | base64 -d)
+  elif k3s_exec kubectl get secret -n traefik "$secret_name" >/dev/null 2>&1; then
+    key_value=$(k3s_exec kubectl get secret -n traefik "$secret_name" -o jsonpath='{.data.bouncer-key}' | base64 -d)
+  else
+    echo "Generating CrowdSec bouncer key..."
+    key_value=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
+  fi
+  for ns in crowdsec traefik; do
+    k3s_exec kubectl get ns "$ns" >/dev/null 2>&1 \
+      || k3s_exec kubectl create namespace "$ns" >/dev/null
+    k3s_exec sh -c "kubectl create secret generic '$secret_name' \
+      --namespace '$ns' \
+      --from-literal=bouncer-key='$key_value' \
+      --dry-run=client -o yaml | kubectl apply -f -" >/dev/null
+  done
+}
+
+# Render the Traefik helm install on the workstation host (where helm
+# is available — rancher/k3s container doesn't ship helm) and apply
+# the rendered YAML inside the k3s container. Same flag-set as
+# scripts/bootstrap.sh install_traefik so the local DinD WAF chain
+# matches production.
+_install_traefik_local() {
+  if k3s_exec kubectl get daemonset -n traefik traefik >/dev/null 2>&1; then
+    echo "Traefik already installed — skipping helm install."
+    return 0
+  fi
+
+  command -v helm >/dev/null 2>&1 \
+    || { echo "ERROR: helm not found on PATH — install helm to bring up the local Traefik stack." >&2; return 1; }
+
+  echo "Generating CrowdSec bouncer key Secret (crowdsec + traefik namespaces)..."
+  _generate_crowdsec_bouncer_key_local
+
+  echo "Installing Traefik v3 (helm template + kubectl apply)..."
+  helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
+  helm repo update >/dev/null 2>&1
+
+  local rendered
+  rendered=$(helm template traefik traefik/traefik \
+    --version "${TRAEFIK_CHART_VERSION_LOCAL}" \
+    --namespace traefik \
+    --set deployment.kind=DaemonSet \
+    --set 'ports.web.hostPort=80' \
+    --set 'ports.websecure.hostPort=443' \
+    --set service.type=ClusterIP \
+    --set providers.kubernetesCRD.enabled=true \
+    --set providers.kubernetesCRD.allowCrossNamespace=true \
+    --set providers.kubernetesCRD.allowExternalNameServices=true \
+    --set providers.kubernetesIngress.enabled=false \
+    --set "experimental.plugins.crowdsec.moduleName=${CROWDSEC_PLUGIN_MODULE_LOCAL}" \
+    --set "experimental.plugins.crowdsec.version=${CROWDSEC_PLUGIN_VERSION_LOCAL}" \
+    --set "experimental.plugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE_LOCAL}" \
+    --set "experimental.plugins.modsecurity.version=${MODSECURITY_PLUGIN_VERSION_LOCAL}" \
+    --set 'volumes[0].name=crowdsec-bouncer-key' \
+    --set 'volumes[0].mountPath=/var/run/secrets/crowdsec' \
+    --set 'volumes[0].type=secret' \
+    --set 'additionalArguments[0]=--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32' \
+    --set 'additionalArguments[1]=--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32' \
+    --set resources.requests.cpu=50m \
+    --set resources.requests.memory=128Mi \
+    --set resources.limits.memory=512Mi)
+
+  # Pipe via stdin so we don't have to copy the file into the container.
+  echo "$rendered" | docker exec -i "$K3S_CONTAINER" kubectl apply -f -
+
+  echo "Waiting for Traefik DaemonSet (timeout 120s)..."
+  k3s_exec kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=traefik -n traefik --timeout=120s >/dev/null
+
+  echo "Traefik installed. Plugins:"
+  k3s_exec kubectl logs -n traefik daemonset/traefik 2>&1 \
+    | grep -E "Loading plugins|Plugins loaded" | head -2 || true
 }
 
 _sync_manifests() {
