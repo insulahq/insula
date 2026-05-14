@@ -398,10 +398,30 @@ async function runMigrationStateMachine(
   const pvcSizeGiB = newGiB ?? Math.ceil((await getMailPvcRequestedBytes(core)) / (1024 ** 3));
   await ensureLocalPathPvc(core, newPvcName, targetNode, pvcSizeGiB);
 
+  // Step 4b: Resolve the target PVC's bound PV path. The local-path
+  // provisioner only assigns a PV (and hence a node-local directory)
+  // when something tries to consume the PVC; we kick this by reading
+  // it back until `spec.volumeName` is set. Doing this resolution
+  // HERE (in platform-api, which has full K8s RBAC) instead of inside
+  // the rsync Job pod avoids two pitfalls the first staging E2E hit:
+  //   1. hostNetwork=true Job pods don't get cluster DNS, so an
+  //      in-pod `curl kubernetes.default.svc` returned HTTP_STATUS=000.
+  //      Fixed separately via `dnsPolicy: ClusterFirstWithHostNet`,
+  //      but the API call is still unnecessary work.
+  //   2. The Job's `default` ServiceAccount has no `get
+  //      persistentvolumeclaims` permission and would 403 even with
+  //      DNS working. Granting it via a dedicated SA + Role works
+  //      but widens the migration-Job's attack surface for no real
+  //      gain — the platform-api process already knows the PVC name.
+  // Pass the resolved path to the Job via env var; the Job becomes a
+  // pure rsync-over-SSH shell with no K8s API dep.
+  const targetPvPath = await waitForLocalPathBinding(core, newPvcName);
+  log.info(`[migration] run ${runId}: target PVC ${newPvcName} bound to PV path ${targetPvPath}`);
+
   // Step 5: Rsync Jobs
   await setStep(db, runId, 'rsync');
   const rsyncJobName = `stalwart-mig-rsync-${runId.slice(0, 8)}`;
-  await spawnRsyncJob(batch, rsyncJobName, runId, sourceNode, targetNode, newPvcName);
+  await spawnRsyncJob(batch, rsyncJobName, runId, sourceNode, targetNode, newPvcName, targetPvPath);
 
   await db.execute(sql`
     UPDATE mail_migration_runs SET rsync_job_name = ${rsyncJobName} WHERE id = ${runId}
@@ -507,6 +527,63 @@ async function getMailPvcRequestedBytes(core: CoreV1Api): Promise<number> {
   }) as { spec?: { resources?: { requests?: { storage?: string } } } };
   const storageStr = pvc.spec?.resources?.requests?.storage ?? '20Gi';
   return parseQuantity(storageStr);
+}
+
+/**
+ * Wait until the local-path provisioner binds the named PVC to a PV
+ * and return the local node path the PV is mapped to.
+ *
+ * The local-path-provisioner annotates the bound PV's `spec.local.path`
+ * with the on-disk directory it created (under
+ * `/var/lib/rancher/k3s/storage/...` by default for k3s clusters,
+ * `/opt/local-path-provisioner/...` for vanilla installs). We read
+ * that field directly so the migration Job doesn't need K8s API
+ * access — see the comment at the call site.
+ *
+ * Polls every 2s up to 60s; the provisioner is typically <5s on idle
+ * nodes but can lag if the target node is under disk pressure.
+ *
+ * Throws MAIL_MIGRATION_PVC_BIND_TIMEOUT on timeout, or
+ * MAIL_MIGRATION_PVC_NO_PATH if the bound PV doesn't expose
+ * `spec.local.path` (would indicate a non-local-path storage class
+ * sneaked in — caller's `ensureLocalPathPvc` only requests `local-path`,
+ * but the cluster could have re-mapped the class).
+ */
+async function waitForLocalPathBinding(core: CoreV1Api, pvcName: string): Promise<string> {
+  const deadline = Date.now() + 60_000;
+  let lastVolumeName: string | null = null;
+  while (Date.now() < deadline) {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({
+      name: pvcName,
+      namespace: MAIL_NAMESPACE,
+    }) as { spec?: { volumeName?: string }; status?: { phase?: string } };
+    const volumeName = pvc.spec?.volumeName ?? '';
+    const phase = pvc.status?.phase ?? '';
+    if (volumeName && phase === 'Bound') {
+      lastVolumeName = volumeName;
+      break;
+    }
+    await sleep(2000);
+  }
+  if (!lastVolumeName) {
+    throw new ApiError(
+      'MAIL_MIGRATION_PVC_BIND_TIMEOUT',
+      `Target PVC ${pvcName} did not bind to a PV within 60s — check local-path provisioner on the target node.`,
+      500,
+    );
+  }
+  const pv = (await core.readPersistentVolume({ name: lastVolumeName })) as {
+    spec?: { local?: { path?: string } };
+  };
+  const path = pv.spec?.local?.path;
+  if (!path) {
+    throw new ApiError(
+      'MAIL_MIGRATION_PVC_NO_PATH',
+      `Bound PV ${lastVolumeName} has no spec.local.path — non-local-path storage class? Migration cannot rsync to a non-hostPath PV.`,
+      500,
+    );
+  }
+  return path;
 }
 
 async function ensureLocalPathPvc(core: CoreV1Api, name: string, nodeName: string, sizeGiB = 20): Promise<void> {
@@ -629,6 +706,7 @@ async function spawnRsyncJob(
   sourceNode: string,
   targetNode: string,
   targetPvcName: string,
+  targetPvPath: string,
 ): Promise<void> {
   // Strategy: run rsync Job on SOURCE node (since the local-path PVC is bound
   // there). The job copies from the source PVC to the target PVC via SSH.
@@ -680,7 +758,15 @@ async function spawnRsyncJob(
             },
           },
           // hostNetwork gives direct access to the node network for rsync-over-SSH.
+          // dnsPolicy=ClusterFirstWithHostNet keeps cluster DNS reachable: without
+          // it, hostNetwork pods inherit the node's /etc/resolv.conf and can't
+          // resolve `kubernetes.default.svc`. The Job shell calls the K8s API to
+          // look up the target PVC's volumeName, so DNS to the apiserver is
+          // mandatory. Caught 2026-05-14 — first real migration on staging
+          // failed at the `python3 -c json.load` step because curl returned an
+          // empty body (HTTP_STATUS=000, DNS miss).
           hostNetwork: true,
+          dnsPolicy: 'ClusterFirstWithHostNet',
           containers: [{
             name: 'rsync',
             // Use the mail-backup-tools image (carries rsync + openssh-client).
@@ -699,19 +785,12 @@ async function spawnRsyncJob(
               `set -eu
 echo "=== Stalwart RocksDB migration: $SOURCE_NODE -> $TARGET_NODE ==="
 echo "Source PVC mounted at /source-data"
-echo "Target PVC name: $TARGET_PVC"
-KUBE_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-KUBE_CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-TARGET_PV=$(curl -sk --cacert "$KUBE_CA" \\
-  -H "Authorization: Bearer $KUBE_TOKEN" \\
-  "https://kubernetes.default.svc/api/v1/namespaces/$MAIL_NAMESPACE/persistentvolumeclaims/$TARGET_PVC" \\
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['spec']['volumeName'])")
-if [ -z "$TARGET_PV" ]; then
-  echo "ERROR: could not determine target PV name from PVC $TARGET_PVC"
-  exit 1
-fi
-TARGET_PATH="/var/lib/rancher/k3s/storage/$TARGET_PV"
+echo "Target PVC: $TARGET_PVC"
 echo "Target path on $TARGET_NODE: $TARGET_PATH"
+# Platform-api resolved $TARGET_PATH from the bound PV before launching
+# this Job (see waitForLocalPathBinding in migration.ts). We no longer
+# need an in-pod kube-API call; that removes the hostNetwork-DNS issue
+# AND the RBAC requirement.
 # SSH host-key verification: prefer pinned known_hosts (mounted from
 # stalwart-migration-known-hosts ConfigMap). Falls back to
 # StrictHostKeyChecking=accept-new — only on the FIRST connection to
@@ -739,6 +818,7 @@ echo "=== rsync complete ==="`,
               { name: 'SOURCE_NODE', value: sourceNode },
               { name: 'TARGET_NODE', value: targetNode },
               { name: 'TARGET_PVC', value: targetPvcName },
+              { name: 'TARGET_PATH', value: targetPvPath },
             ],
             volumeMounts: [
               { name: 'source-data', mountPath: '/source-data', readOnly: true },
