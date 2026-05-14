@@ -20,6 +20,7 @@ import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
+import MailHealthBanner from '@/components/MailHealthBanner';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -27,9 +28,11 @@ import SortableHeader from '@/components/ui/SortableHeader';
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 type Tab = 'domains' | 'relays';
+type BackupTab = 'snapshot' | 'archive';
 
 export default function EmailManagement() {
   const [tab, setTab] = useState<Tab>('domains');
+  const [backupTab, setBackupTab] = useState<BackupTab>('snapshot');
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
 
@@ -49,6 +52,11 @@ export default function EmailManagement() {
         <StatCard title="DKIM Configured" value={domainsLoading ? '...' : `${dkimOk}/${domains.length}`} icon={Shield} accent="amber" />
         <StatCard title="Mail Server" value="Stalwart" icon={Server} accent="green" />
       </div>
+
+      {/* Live mail-server health banner — replaces the cosmetic
+          MailServerStatusTile. Drills down into pod + JMAP + (future)
+          RocksDB / cert / TCP probes. See MailHealthBanner.tsx. */}
+      <MailHealthBanner />
 
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
         {[
@@ -93,8 +101,30 @@ export default function EmailManagement() {
         <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
           Backup
         </h2>
-        <MailSnapshotHealthCard />
-        <MailArchiveCard />
+        {/* Sub-tabs added 2026-05-14 streamline. Snapshot (restic) and
+            Archive (stalwart -e export) are separate backup pipelines
+            with independent schedules + targets — see
+            project_mail_architecture_streamline_2026_05_14.md. */}
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+          {[
+            { key: 'snapshot' as BackupTab, label: 'Snapshot (restic)' },
+            { key: 'archive' as BackupTab, label: 'Archive (stalwart -e)' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setBackupTab(t.key)}
+              className={`border-b-2 px-4 py-2 text-sm font-medium ${backupTab === t.key
+                ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              data-testid={`backup-tab-${t.key}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {backupTab === 'snapshot' && <MailSnapshotHealthCard />}
+        {backupTab === 'archive' && <MailArchiveCard />}
       </div>
     </div>
   );
