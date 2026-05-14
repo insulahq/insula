@@ -128,7 +128,9 @@ apiVersion: v1
 kind: LimitRange
 metadata:
   name: system-limit-range
-  namespace: ingress-nginx
+  # Phase 0 of Traefik migration: target namespace flipped from
+  # `ingress-nginx` (legacy controller) to `traefik`.
+  namespace: traefik
   labels:
     app.kubernetes.io/part-of: hosting-platform
 spec:
