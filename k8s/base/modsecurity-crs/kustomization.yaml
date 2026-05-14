@@ -1,0 +1,15 @@
+# OWASP ModSecurity-CRS Deployment in the `traefik` namespace —
+# tenant-opt-in WAF backend.
+#
+# Lives in the `traefik` namespace (not its own) so the
+# madebymode/traefik-modsecurity-plugin Yaegi plugin can reference it
+# without cross-namespace ExternalName plumbing. Consumed by the
+# `modsecurity-crs@traefik` Middleware
+# (k8s/base/traefik/middlewares-modsecurity.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: traefik
+
+resources:
+  - deployment.yaml
