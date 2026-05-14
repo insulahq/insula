@@ -146,12 +146,14 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
 
 async function isNodeReady(core: CoreV1Api, nodeName: string): Promise<boolean> {
   try {
-    const node = await (core as unknown as {
-      readNode: (name: string) => Promise<{
-        body?: { status?: { conditions?: Array<{ type: string; status: string }> } };
-        status?: { conditions?: Array<{ type: string; status: string }> };
-      }>
-    }).readNode(nodeName);
+    // SDK v1 takes object args — v0's positional readNode(string)
+    // throws silently on v1, which made the .catch return false
+    // and incorrectly treat the node as "not ready". Same bug
+    // shape as migration.ts:readNode.
+    const node = await core.readNode({ name: nodeName }) as {
+      body?: { status?: { conditions?: Array<{ type: string; status: string }> } };
+      status?: { conditions?: Array<{ type: string; status: string }> };
+    };
     const nodeObj = (node as { body?: unknown }).body ?? node;
     const conditions = (nodeObj as {
       status?: { conditions?: Array<{ type: string; status: string }> }

@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerMailSnapshot } from './snapshot.js';
@@ -81,11 +82,27 @@ export async function startMailMigration(
     throw new ApiError('MAIL_MIGRATION_ALREADY_RUNNING', 'A migration is already in progress', 409);
   }
 
-  // Validate target node exists
+  // Validate target node exists.
+  //
+  // The SDK v1 requires the object-args form `readNode({ name })` —
+  // v0's positional `readNode(name)` silently throws "name is not a
+  // valid string" and the bare catch translated it to MAIL_NODE_NOT_FOUND
+  // even for nodes that exist (real failure mode on 2026-05-14:
+  // "Node 'staging1' not found" reported by operator while staging1
+  // was healthy). Now we distinguish a real 404 (node truly absent)
+  // from other errors (which surface as 500 instead of a misleading
+  // 404).
   try {
-    await (core as unknown as { readNode: (name: string) => Promise<unknown> }).readNode(targetNode);
-  } catch {
-    throw new ApiError('MAIL_NODE_NOT_FOUND', `Node '${targetNode}' not found in the cluster`, 404);
+    await core.readNode({ name: targetNode });
+  } catch (err) {
+    if (isNotFound(err)) {
+      throw new ApiError('MAIL_NODE_NOT_FOUND', `Node '${targetNode}' not found in the cluster`, 404);
+    }
+    throw new ApiError(
+      'MAIL_NODE_READ_FAILED',
+      `Could not read node '${targetNode}': ${(err as Error).message ?? String(err)}`,
+      500,
+    );
   }
 
   const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
@@ -498,9 +515,12 @@ async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promi
 async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSeconds: number): Promise<void> {
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
-    const dep = await (apps as unknown as {
-      readNamespacedDeployment: (name: string, ns: string) => Promise<{ body?: unknown }>
-    }).readNamespacedDeployment(DEPLOYMENT_NAME, MAIL_NAMESPACE);
+    // v1 SDK takes object args. v0 positional silently breaks here
+    // and the .body fallback was masking it.
+    const dep = await apps.readNamespacedDeployment({
+      name: DEPLOYMENT_NAME,
+      namespace: MAIL_NAMESPACE,
+    } as Parameters<typeof apps.readNamespacedDeployment>[0]) as { body?: unknown };
     const depObj = (dep as { body?: unknown }).body ?? dep;
     const status = (depObj as { status?: { readyReplicas?: number; unavailableReplicas?: number } }).status;
     const ready = status?.readyReplicas ?? 0;
