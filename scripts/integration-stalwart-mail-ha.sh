@@ -1199,20 +1199,45 @@ except Exception:
     fi
   fi
 
-  # G3. /failback with no primary configured returns MAIL_PLACEMENT_NO_CANDIDATE,
-  #     OR same-node when primary == current. Either is acceptable proof the
-  #     resolver wired up. (We intentionally don't dry-run /failover because
-  #     it would succeed and start an actual migration.)
-  local resp_fb
-  resp_fb="$(curl -sk --max-time 15 -X POST \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d '{"confirm":true}' \
-    "${PLATFORM_API_URL%/}/api/v1/admin/mail/failback" 2>/dev/null || echo '')"
-  if echo "$resp_fb" | grep -qE 'MAIL_PLACEMENT_NO_CANDIDATE|MAIL_MIGRATION_SAME_NODE'; then
-    note_pass "G3. /admin/mail/failback resolves placement and returns a coherent error"
+  # G3. /failback — DANGEROUS to call unconditionally. The API
+  # resolves target=primaryNode; source=activeNode (or primaryNode
+  # fallback). If primary != active (e.g., placement self-heal moved
+  # activeNode to a non-primary node), /failback STARTS A REAL
+  # MIGRATION instead of rejecting. Live staging caught this twice:
+  # harness run-2 + run-4 both triggered destructive migrations.
+  #
+  # Safe G3: only call /failback when we can predict it'll reject:
+  #   - primaryNode is null     → MAIL_PLACEMENT_NO_CANDIDATE expected
+  #   - primaryNode == activeNode → MAIL_MIGRATION_SAME_NODE expected
+  # In any other state (primary != active != null), SKIP with a warn
+  # — testing this requires either a dry-run flag on the API or
+  # mocking placement, neither of which we have.
+  local g3_primary g3_active
+  g3_primary="$(echo "$placement_g2" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data'].get('primaryNode') or '')
+except: print('')" 2>/dev/null || echo '')"
+  g3_active="$(echo "$placement_g2" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data'].get('activeNode') or '')
+except: print('')" 2>/dev/null || echo '')"
+  if [[ -z "$g3_primary" ]] || [[ "$g3_primary" == "$g3_active" ]]; then
+    local resp_fb
+    resp_fb="$(curl -sk --max-time 15 -X POST \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d '{"confirm":true}' \
+      "${PLATFORM_API_URL%/}/api/v1/admin/mail/failback" 2>/dev/null || echo '')"
+    if echo "$resp_fb" | grep -qE 'MAIL_PLACEMENT_NO_CANDIDATE|MAIL_MIGRATION_SAME_NODE'; then
+      note_pass "G3. /admin/mail/failback rejects expected (primary='${g3_primary}', active='${g3_active}')"
+    elif echo "$resp_fb" | grep -q 'runId'; then
+      # SHOULD have rejected but DIDN'T — real bug or stale state.
+      note_fail "G3. /admin/mail/failback ACCEPTED a migration that should have been rejected: ${resp_fb:0:200}"
+    else
+      note_fail "G3. unexpected /failback response: ${resp_fb:0:200}"
+    fi
   else
-    note_fail "G3. unexpected /failback response: ${resp_fb:0:200}"
+    note_warn "G3. SKIP — primary='${g3_primary}' != active='${g3_active}'; /failback would start a real migration"
   fi
 
   # G4. Live pod node lookup matches placement.activeNode (the field
