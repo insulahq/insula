@@ -12,7 +12,9 @@ import type {
   MailHealthResponse,
   MailHealthPodComponent,
   MailHealthJmapComponent,
-  MailHealthOptionalComponent,
+  MailHealthRocksdbComponent,
+  MailHealthCertComponent,
+  MailHealthTcpComponent,
 } from '@k8s-hosting/api-contracts';
 
 /**
@@ -110,9 +112,9 @@ export default function MailHealthBanner() {
         <div className="border-t border-gray-100 dark:border-gray-700 px-4 py-3 space-y-2 text-sm">
           <PodRow data={r.components.pod} />
           <JmapRow data={r.components.jmap} />
-          <OptionalRow label="RocksDB" data={r.components.rocksdb} />
-          <OptionalRow label="TLS certs" data={r.components.cert} />
-          <OptionalRow label="TCP reach" data={r.components.tcp} />
+          <RocksdbRow data={r.components.rocksdb} />
+          <CertRow data={r.components.cert} />
+          <TcpRow data={r.components.tcp} />
           <div className="pt-2 text-xs text-gray-500 dark:text-gray-400">
             Checked {timeAgo(r.checkedAt)} • Cached for {r.cachedFor}s • Use Re-check to bypass.
           </div>
@@ -172,17 +174,74 @@ function JmapRow({ data: d }: { readonly data: MailHealthJmapComponent }) {
   );
 }
 
-function OptionalRow({ label, data: d }: { readonly label: string; readonly data: MailHealthOptionalComponent }) {
+function RocksdbRow({ data: d }: { readonly data: MailHealthRocksdbComponent }) {
   if (d.status === 'not_implemented') {
     return (
-      <Row label={label} healthy={null} error={null}>
+      <Row label="RocksDB" healthy={null} error={null}>
         <span className="text-gray-400 italic">probe not implemented yet</span>
       </Row>
     );
   }
+  const parts: string[] = [];
+  if (d.currentFile === true) parts.push('CURRENT ✓');
+  else if (d.currentFile === false) parts.push('CURRENT ✗');
+  if (d.lockFile === true) parts.push('LOCK ✓');
+  else if (d.lockFile === false) parts.push('LOCK ✗');
   return (
-    <Row label={label} healthy={d.healthy} error={d.error}>
-      {d.healthy ? 'ok' : 'failing'}
+    <Row label="RocksDB" healthy={d.healthy} error={d.error}>
+      {parts.length > 0 ? parts.join(' • ') : (d.healthy ? 'ok' : 'failing')}
+    </Row>
+  );
+}
+
+function CertRow({ data: d }: { readonly data: MailHealthCertComponent }) {
+  if (d.status === 'not_implemented') {
+    return (
+      <Row label="TLS certs" healthy={null} error={null}>
+        <span className="text-gray-400 italic">no mail hostname configured</span>
+      </Row>
+    );
+  }
+  const minDays = d.ports.reduce<number | null>((acc, p) => {
+    if (p.daysUntilExpiry === null) return acc;
+    if (acc === null) return p.daysUntilExpiry;
+    return Math.min(acc, p.daysUntilExpiry);
+  }, null);
+  return (
+    <Row label="TLS certs" healthy={d.healthy} error={d.error}>
+      {d.ports.length > 0
+        ? <>
+          {d.ports.map((p) => p.port).join(', ')}
+          {minDays !== null && <> • expires in {minDays}d</>}
+          {d.ports[0]?.issuer && <> • {d.ports[0].issuer}</>}
+        </>
+        : (d.healthy ? 'ok' : 'failing')}
+    </Row>
+  );
+}
+
+function TcpRow({ data: d }: { readonly data: MailHealthTcpComponent }) {
+  if (d.status === 'not_implemented') {
+    return (
+      <Row label="TCP reach" healthy={null} error={null}>
+        <span className="text-gray-400 italic">probe not implemented yet</span>
+      </Row>
+    );
+  }
+  const reachable = d.ports.filter((p) => p.reachable);
+  const unreachable = d.ports.filter((p) => !p.reachable);
+  const avgLatency = reachable.length > 0
+    ? Math.round(
+        reachable.reduce((s, p) => s + (p.latencyMs ?? 0), 0) / reachable.length,
+      )
+    : null;
+  return (
+    <Row label="TCP reach" healthy={d.healthy} error={d.error}>
+      {reachable.length}/{d.ports.length} ports reachable
+      {avgLatency !== null && <> • avg {avgLatency}ms</>}
+      {unreachable.length > 0 && (
+        <> • blocked: {unreachable.map((p) => p.port).join(', ')}</>
+      )}
     </Row>
   );
 }

@@ -103,9 +103,20 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       } catch {
         creds = null;
       }
+      // Mail hostname for TLS SNI on cert probes. Resolved from
+      // webmail_settings (operator-editable); falls back to null which
+      // makes the cert probe report not_implemented.
+      let mailHostname: string | null = null;
+      try {
+        const { getWebmailSettings } = await import('../webmail-settings/service.js');
+        const s = await getWebmailSettings(app.db);
+        mailHostname = s.mailServerHostname ?? null;
+      } catch {
+        mailHostname = null;
+      }
       const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
       const result = await getMailHealth(
-        { k8s, jmapBaseUrl, jmapAdminCredentials: creds },
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath },
         { refresh },
       );
       return success(result);
