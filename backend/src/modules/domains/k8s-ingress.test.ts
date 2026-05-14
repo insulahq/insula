@@ -1,20 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
-import { resolveIngressBackend, NotIngressableError, tenantIngressDefaultAnnotations } from './k8s-ingress.js';
+import { resolveIngressBackend, NotIngressableError } from './k8s-ingress.js';
 
-describe('tenantIngressDefaultAnnotations', () => {
-  it('disables the body-size cap so uploads are bounded by the PVC, not nginx', () => {
-    const a = tenantIngressDefaultAnnotations();
-    expect(a['nginx.ingress.kubernetes.io/proxy-body-size']).toBe('0');
-  });
-
-  it('streams requests (no buffering to controller disk) and extends timeouts', () => {
-    const a = tenantIngressDefaultAnnotations();
-    expect(a['nginx.ingress.kubernetes.io/proxy-request-buffering']).toBe('off');
-    expect(a['nginx.ingress.kubernetes.io/proxy-read-timeout']).toBe('600');
-    expect(a['nginx.ingress.kubernetes.io/proxy-send-timeout']).toBe('600');
-  });
-});
+// NOTE: `tenantIngressDefaultAnnotations` was removed in the Traefik
+// migration. Streaming-upload + extended-timeout behaviour is now
+// configured at the Traefik EntryPoint / ServersTransport level via the
+// Helm chart values; no per-IngressRoute annotation overrides needed.
 
 describe('resolveIngressBackend', () => {
   // Minimal shape matching catalogEntries jsonb types. Using `as never` casts

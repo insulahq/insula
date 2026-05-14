@@ -1,19 +1,26 @@
 /**
- * Ingress reconciler.
+ * Tenant IngressRoute reconciler.
  *
- * Builds Ingress resources from ingress_routes table.
- * Each route with an assigned deployment becomes an Ingress rule.
+ * Builds Traefik IngressRoute + Middleware resources from
+ * ingress_routes table. Each row with an assigned target (deployment
+ * OR private_worker) becomes one route inside the per-namespace
+ * IngressRoute, plus a small set of companion Middleware CRDs
+ * (per-route rate-limit, ip-allowlist, OIDC auth, mTLS forwarding, etc.)
+ * built by annotation-sync.buildAllRouteSpecs.
  *
- * Phase 2c: TLS secret names are resolved via the central certificates
- * module (ensureRouteCertificate), which:
+ * TLS secret names are resolved via the central certificates module
+ * (ensureRouteCertificate), which:
  *   - Creates/updates a cert-manager Certificate CR per domain (or
  *     per hostname for non-wildcard cases)
- *   - Returns the correct secret name to put in the Ingress TLS section
+ *   - Returns the correct secret name to put in the IngressRoute's
+ *     `tls.secretName`
  *   - Handles wildcard cert reuse when dnsMode=primary + PowerDNS
  *
- * This replaces the old "cert-manager.io/cluster-issuer" Ingress
- * annotation approach, which was ambiguous (the annotation triggered
- * implicit Certificate creation that conflicted with explicit ones).
+ * Replaces the prior nginx-annotation model. There is no per-Ingress
+ * default-annotation block in Traefik — the equivalent (no proxy body
+ * cap, streaming uploads, long timeouts) is configured at the Traefik
+ * EntryPoint / ServersTransport level in the Helm chart and applies to
+ * all IngressRoutes uniformly.
  */
 
 import { eq, inArray } from 'drizzle-orm';
@@ -21,38 +28,21 @@ import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } f
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
-import { syncAllRouteAnnotations } from '../ingress-routes/annotation-sync.js';
+import { buildAllRouteSpecs } from '../ingress-routes/annotation-sync.js';
+import {
+  buildIngressRoute,
+  hostMatch,
+} from '../ingress-routes/traefik-types.js';
+import type { TraefikRoute } from '../ingress-routes/traefik-types.js';
+import {
+  applyIngressRoute,
+  applyMiddleware,
+  deleteIngressRoute,
+  deleteMiddleware,
+  listMiddlewares,
+} from '../ingress-routes/traefik-apply.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
-import { isNotFound } from '../../shared/k8s-errors.js';
-
-// ─── Annotations ────────────────────────────────────────────────────────────
-
-/**
- * Per-tenant Ingress defaults. Routes the ingress-nginx controller with
- * sane-for-a-hosting-platform values:
- *
- * - `proxy-body-size: 0` — no upload cap. The tenant PVC quota (enforced
- *   at the filesystem layer via ENOSPC) is the real limit; without this,
- *   ingress-nginx's 1 MiB default would reject any WP media upload,
- *   Nextcloud file sync, or DB export bigger than a tweet.
- * - `proxy-request-buffering: off` — stream through instead of buffering
- *   multi-GB bodies to the ingress controller pod's disk.
- * - `proxy-{read,send}-timeout: 600` — a slow 5 GB upload on a 10 Mbit
- *   link needs more than 60 s per connection.
- *
- * Per-route annotations from the annotation sync (rate limits, basic
- * auth, WAF, etc.) override these defaults — the spread order at the
- * call site is `defaults → route-specific`.
- */
-export function tenantIngressDefaultAnnotations(): Record<string, string> {
-  return {
-    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
-    'nginx.ingress.kubernetes.io/proxy-request-buffering': 'off',
-    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
-    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
-  };
-}
 
 // ─── Ingress backend resolution ─────────────────────────────────────────────
 
@@ -136,20 +126,6 @@ export function resolveIngressBackend(
   );
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function isK8s404(err: unknown): boolean {
-  if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  if (isNotFound(err)) return true;
-  return false;
-}
-
-function isK8s409(err: unknown): boolean {
-  if (err instanceof Error && err.message.includes('HTTP-Code: 409')) return true;
-  if ((err as { statusCode?: number }).statusCode === 409) return true;
-  return false;
-}
-
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -170,11 +146,8 @@ export async function reconcileIngress(
   const ingressName = `${namespace}-ingress`;
 
   if (domainIds.length === 0) {
-    try {
-      await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
-    } catch (err: unknown) {
-      if (!isK8s404(err)) throw err;
-    }
+    await deleteIngressRoute(k8s.custom, namespace, ingressName);
+    await gcOrphanMiddlewares(k8s, namespace, new Set());
     return;
   }
 
@@ -221,11 +194,8 @@ export async function reconcileIngress(
   );
 
   if (updatedRoutes.length === 0) {
-    try {
-      await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
-    } catch (err: unknown) {
-      if (!isK8s404(err)) throw err;
-    }
+    await deleteIngressRoute(k8s.custom, namespace, ingressName);
+    await gcOrphanMiddlewares(k8s, namespace, new Set());
     return;
   }
 
@@ -300,207 +270,216 @@ export async function reconcileIngress(
     });
   }
 
-  // Build rules from ingress_routes (single source of truth), tracking
-  // each rule's (hostname, domainId) so we can resolve TLS secret names
-  // below via the certificates module.
-  interface RuleWithDomain {
-    rule: {
-      host: string;
-      http: {
-        paths: Array<{
-          path: string;
-          pathType: 'Prefix';
-          backend: { service: { name: string; port: { number: number } } };
-        }>;
-      };
-    };
-    domainId: string;
+  // Map every active route to its backend (deployment / custom / private
+  // worker). The result is keyed by route id so the route-spec builder
+  // can resolve service+port without re-reading the catalog.
+  interface RouteRowLike {
+    id: string;
+    deploymentId: string | null;
+    privateWorkerId: string | null;
+    servicePort: number | null;
     hostname: string;
+    path: string | null;
+    wwwRedirect: string;
+    domainId: string;
   }
 
-  const rulesWithDomain: RuleWithDomain[] = [];
-  for (const route of updatedRoutes) {
-    // Resolve the backend Service from whichever target the route declares.
-    // Migration 0076 introduced the CHECK constraint; migration 0085
-    // relaxed it so AT MOST ONE of (deploymentId, privateWorkerId) is
-    // set. Both-null is allowed for "draft" routes — the `if (!backend)
-    // continue` below skips them so they don't generate Ingress rules
-    // until the operator binds a target via PATCH.
-    let backend: { serviceName: string; port: number } | undefined;
+  const resolveBackend = (route: { deploymentId: string | null; privateWorkerId: string | null; servicePort: number | null }): { serviceName: string; port: number } | null => {
     if (route.privateWorkerId) {
-      backend = privateWorkerBackends.get(route.privateWorkerId);
-    } else if (route.deploymentId) {
+      return privateWorkerBackends.get(route.privateWorkerId) ?? null;
+    }
+    if (route.deploymentId) {
       const catalogBackend = backendMap.get(route.deploymentId);
-      if (catalogBackend) {
-        backend = catalogBackend;
-      } else {
-        // Custom deployment: resolve from customSpec.
-        const dep = customDeploymentMap.get(route.deploymentId);
-        if (dep?.customSpec) {
-          const spec = dep.customSpec as {
-            services?: Record<string, {
-              ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
-            }>;
-          };
-          const services = Object.entries(spec.services ?? {});
-          if (services.length > 0) {
-            let resolved: { svcName: string; port: number } | undefined;
-            if (route.servicePort) {
-              // Find the service that owns the requested port.
-              for (const [svcName, svc] of services) {
-                const p = (svc.ports ?? []).find(p => p.containerPort === route.servicePort);
-                if (p) { resolved = { svcName, port: p.containerPort }; break; }
-              }
-            } else {
-              // No port preference — pick the first ingress-eligible port.
-              for (const [svcName, svc] of services) {
-                const p = (svc.ports ?? []).find(p => p.ingressEligible && p.exposeAsService);
-                if (p) { resolved = { svcName, port: p.containerPort }; break; }
-              }
+      if (catalogBackend) return catalogBackend;
+      // Custom deployment: resolve from customSpec.
+      const dep = customDeploymentMap.get(route.deploymentId);
+      if (dep?.customSpec) {
+        const spec = dep.customSpec as {
+          services?: Record<string, {
+            ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
+          }>;
+        };
+        const services = Object.entries(spec.services ?? {});
+        if (services.length > 0) {
+          let resolved: { svcName: string; port: number } | undefined;
+          if (route.servicePort) {
+            for (const [svcName, svc] of services) {
+              const p = (svc.ports ?? []).find((p) => p.containerPort === route.servicePort);
+              if (p) { resolved = { svcName, port: p.containerPort }; break; }
             }
-            if (resolved) {
-              const k8sSvcName = services.length <= 1 ? dep.name : `${dep.name}-${resolved.svcName}`;
-              backend = { serviceName: k8sSvcName, port: resolved.port };
+          } else {
+            for (const [svcName, svc] of services) {
+              const p = (svc.ports ?? []).find((p) => p.ingressEligible && p.exposeAsService);
+              if (p) { resolved = { svcName, port: p.containerPort }; break; }
             }
+          }
+          if (resolved) {
+            const k8sSvcName = services.length <= 1 ? dep.name : `${dep.name}-${resolved.svcName}`;
+            return { serviceName: k8sSvcName, port: resolved.port };
           }
         }
       }
     }
-    if (!backend) continue; // Not ingressable / target missing — skip.
+    return null;
+  };
 
-    const primaryRule = {
-      host: route.hostname,
-      http: {
-        paths: [{
-          path: route.path || '/',
-          pathType: 'Prefix' as const,
-          backend: {
-            service: { name: backend.serviceName, port: { number: backend.port } },
-          },
-        }],
-      },
-    };
+  // Build per-route Middleware + child-route specs. Each RouteSpec
+  // carries the Middleware bodies to apply BEFORE the IngressRoute
+  // references them and the list of names attached to the route entry
+  // in spec.routes[].middlewares.
+  const routeSpecs = await buildAllRouteSpecs(db, k8s, clientId, domainIds, resolveBackend);
 
-    // For www redirect: only add the DESTINATION hostname as a rule.
-    // NGINX's from-to-www-redirect annotation auto-creates a redirect
-    // server block for the missing source hostname.
-    if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
-      // Replace primary hostname with www variant — NGINX redirects non-www automatically
-      rulesWithDomain.push({
-        rule: { host: `www.${route.hostname}`, http: primaryRule.http },
-        domainId: route.domainId,
-        hostname: `www.${route.hostname}`,
-      });
-    } else if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
-      // Replace www hostname with bare variant — NGINX redirects www automatically
-      const bareHostname = route.hostname.replace(/^www\./, '');
-      rulesWithDomain.push({
-        rule: { host: bareHostname, http: primaryRule.http },
-        domainId: route.domainId,
-        hostname: bareHostname,
-      });
-    } else {
-      // No www redirect — use the primary hostname as-is
-      rulesWithDomain.push({
-        rule: primaryRule,
-        domainId: route.domainId,
-        hostname: route.hostname,
-      });
+  // Apply every Middleware first. Track the names actually applied so we
+  // can GC orphans afterwards.
+  const expectedMiddlewareNames = new Set<string>();
+  for (const spec of routeSpecs.values()) {
+    for (const mw of spec.middlewares) {
+      await applyMiddleware(k8s.custom, mw);
+      expectedMiddlewareNames.add(mw.metadata.name);
     }
-
   }
 
-  if (rulesWithDomain.length === 0) {
-    try {
-      await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
-    } catch (err: unknown) {
-      if (!isK8s404(err)) throw err;
+  // Build the IngressRoute spec.routes[] from the merged set. Each
+  // ingress_routes row produces 1 primary route + 0..N child routes
+  // (protected directories) on the same hostname. We then dedupe per
+  // hostname so a single tenant IngressRoute carries every route.
+  const traefikRoutes: TraefikRoute[] = [];
+  const tlsHostnames = new Set<string>();
+  for (const route of updatedRoutes as RouteRowLike[]) {
+    const spec = routeSpecs.get(route.id);
+    if (!spec) continue;
+    const backend = resolveBackend(route);
+    if (!backend) continue;
+
+    // www redirect rewrite: the original code rewrote `route.hostname`
+    // to the canonical form (with or without www); the wwwredir
+    // Middleware (created in annotation-sync) handles the actual
+    // redirect for the non-canonical form. We keep the same canonical-
+    // hostname behaviour here so cert provisioning targets the right
+    // SAN.
+    let canonicalHost = route.hostname;
+    if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
+      canonicalHost = `www.${route.hostname}`;
+    } else if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
+      canonicalHost = route.hostname.replace(/^www\./, '');
     }
+    tlsHostnames.add(canonicalHost);
+
+    // Primary route: matches the canonical hostname (no path prefix
+    // unless explicitly set in route.path). Middlewares are attached in
+    // the order annotation-sync emitted them.
+    traefikRoutes.push({
+      match: route.path && route.path !== '/'
+        ? `${hostMatch(canonicalHost)} && PathPrefix(\`${route.path}\`)`
+        : hostMatch(canonicalHost),
+      kind: 'Rule',
+      ...(spec.middlewareRefs.length > 0 ? { middlewares: spec.middlewareRefs } : {}),
+      services: [{ name: backend.serviceName, port: backend.port }],
+    });
+    // Protected-directory child routes (higher priority — set by
+    // buildProtectedDirChildRoutes).
+    for (const child of spec.childRoutes) traefikRoutes.push(child);
+  }
+
+  if (traefikRoutes.length === 0) {
+    await deleteIngressRoute(k8s.custom, namespace, ingressName);
+    await gcOrphanMiddlewares(k8s, namespace, new Set());
     return;
   }
 
-  const rules = rulesWithDomain.map((r) => r.rule);
-
-  // Phase 2c: resolve TLS secret names via the certificates module.
-  // No more cert-manager.io/cluster-issuer annotation — the Certificate
-  // CRs are explicit and the Ingress just references the resulting
-  // secret names.
+  // Resolve TLS secret names via the certificates module. cert-manager
+  // owns the Certificate CR + Secret lifecycle; we just pick which
+  // Secret to reference. Traefik supports multiple Secrets via
+  // `tls.options` + TLSStore — but for the tenant ingress we use a
+  // single primary secretName (the first hostname's cert) and let
+  // Traefik fall back to the SNI-routed cert from
+  // `default` TLSStore for additional hostnames. Wildcard reuse
+  // collapses naturally because all hostnames covered by a wildcard
+  // resolve to the same Secret.
   const autoTls = await isAutoTlsEnabled(db);
-  const tlsEntries: Array<{ hosts: string[]; secretName: string }> = [];
+  let primaryTlsSecret: string | null = null;
   if (autoTls) {
-    // Deduplicate secrets so a wildcard cert shared by many hostnames
-    // only produces one TLS entry (with all covered hostnames listed).
-    const secretMap = new Map<string, Set<string>>();
-    for (const r of rulesWithDomain) {
+    for (const hostname of tlsHostnames) {
+      // Find the domain row matching this hostname so we can pass its
+      // id to ensureRouteCertificate (it looks up dns_provider settings
+      // by domainId).
+      const matchingDomain = clientDomains.find((d) =>
+        d.domainName === hostname || hostname.endsWith(`.${d.domainName}`),
+      );
+      if (!matchingDomain) continue;
       try {
-        const cert = await ensureRouteCertificate(db, k8s, r.domainId, r.hostname);
+        const cert = await ensureRouteCertificate(db, k8s, matchingDomain.id, hostname);
         if (cert.skipped) {
-          console.warn(`[ingress-reconcile] ${r.hostname}: cert skipped (${cert.reason ?? 'unknown'}) — no TLS will be attached`);
+          console.warn(`[ingress-reconcile] ${hostname}: cert skipped (${cert.reason ?? 'unknown'})`);
           continue;
         }
         if (!cert.secretName) {
-          console.warn(`[ingress-reconcile] ${r.hostname}: cert ready but no secretName returned — no TLS will be attached`);
+          console.warn(`[ingress-reconcile] ${hostname}: cert ready but no secretName returned`);
           continue;
         }
-        if (!secretMap.has(cert.secretName)) {
-          secretMap.set(cert.secretName, new Set());
-        }
-        secretMap.get(cert.secretName)!.add(r.hostname);
+        if (!primaryTlsSecret) primaryTlsSecret = cert.secretName;
       } catch (err) {
-        // Cert provisioning failure is non-blocking — the Ingress still
-        // exists without TLS for this hostname. Log so we can spot routes
-        // that silently lose their HTTPS.
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[ingress-reconcile] ${r.hostname}: ensureRouteCertificate threw: ${msg}`);
+        console.warn(`[ingress-reconcile] ${hostname}: ensureRouteCertificate threw: ${msg}`);
       }
     }
-    for (const [secretName, hosts] of secretMap) {
-      tlsEntries.push({ secretName, hosts: Array.from(hosts) });
-    }
   }
 
-  // Sync route-level annotations (redirect, security, WAF, advanced).
-  // This also creates/updates K8s Secrets (basic auth) and ConfigMaps
-  // (proxy headers) in the client namespace.
-  let routeAnnotations: Record<string, string> = {};
+  // Build + apply the tenant IngressRoute.
+  const ingressBody = buildIngressRoute({
+    name: ingressName,
+    namespace,
+    routes: traefikRoutes,
+    entryPoints: ['websecure'],
+    ...(primaryTlsSecret ? { tls: { secretName: primaryTlsSecret } } : {}),
+    labels: {
+      'hosting-platform/client-id': clientId,
+    },
+  });
+  await applyIngressRoute(k8s.custom, ingressBody);
+
+  // GC orphan Middlewares that this client's reconcile no longer
+  // produces. Limited to labels matching hosting-platform/route-id IN
+  // (current route ids) — anything else (cluster-shared admin-auth
+  // Middlewares, oauth2-proxy break-glass middleware, …) stays put.
+  await gcOrphanMiddlewares(k8s, namespace, expectedMiddlewareNames);
+}
+
+// ─── Middleware orphan cleanup ──────────────────────────────────────────────
+
+/**
+ * Delete every hosting-platform-owned Middleware in `namespace` whose
+ * name does NOT appear in `keepNames`. Limited by labelSelector so we
+ * only touch CRDs we created. Best-effort — failure to clean up an
+ * orphan does not abort the reconcile.
+ */
+async function gcOrphanMiddlewares(
+  k8s: K8sClients,
+  namespace: string,
+  keepNames: ReadonlySet<string>,
+): Promise<void> {
   try {
-    routeAnnotations = await syncAllRouteAnnotations(db, k8s, clientId, domainIds);
-  } catch {
-    // Non-blocking — annotation sync failure should not prevent
-    // the Ingress from being created/updated.
-  }
-
-  const ingressBody = {
-    metadata: {
-      name: ingressName,
+    const existing = await listMiddlewares(
+      k8s.custom,
       namespace,
-      annotations: {
-        ...tenantIngressDefaultAnnotations(),
-        ...routeAnnotations,
-      },
-    },
-    spec: {
-      ingressClassName: 'nginx',
-      rules,
-      ...(tlsEntries.length > 0 ? { tls: tlsEntries } : {}),
-    },
-  };
-
-  try {
-    await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
-  } catch (err: unknown) {
-    if (isK8s409(err)) {
-      await k8s.networking.replaceNamespacedIngress({ name: ingressName, namespace, body: ingressBody });
-    } else {
-      throw err;
+      'app.kubernetes.io/managed-by=platform-api',
+    );
+    for (const mw of existing) {
+      if (keepNames.has(mw.name)) continue;
+      // Don't sweep Middlewares we DON'T own — only orphans tied to a
+      // route-id (the buildMiddlewaresForRoute / mTLS / OIDC builders
+      // always stamp hosting-platform/route-id). suspend Middlewares
+      // managed by ingress-suspend get their own GC pass.
+      const isRouteOwned = 'hosting-platform/route-id' in mw.labels
+        || 'hosting-platform/dir-id' in mw.labels;
+      if (!isRouteOwned) continue;
+      try {
+        await deleteMiddleware(k8s.custom, namespace, mw.name);
+      } catch (err) {
+        console.warn(`[ingress-reconcile] GC of orphan Middleware ${namespace}/${mw.name} failed:`, err);
+      }
     }
+  } catch (err) {
+    console.warn(`[ingress-reconcile] failed to list Middlewares for GC in ${namespace}:`, err);
   }
-
-  // Sync protected directory child Ingresses for per-path auth
-  try {
-    const { syncProtectedDirIngresses } = await import('../ingress-routes/annotation-sync.js');
-    for (const route of updatedRoutes) {
-      await syncProtectedDirIngresses(db, k8s, route.id, clientId);
-    }
-  } catch { /* Non-blocking */ }
 }
