@@ -71,6 +71,22 @@
 #     H4. Top-level healthy=true implies all components healthy
 #         (catches Phase-3a-style "lying tile" bugs).
 #
+#   Phase G — migrate endpoint smoke (--migrate-smoke, ~5 sec, requires ADMIN_TOKEN)
+#     Non-destructive input-validation surface check on /admin/mail/migrate.
+#     G1. Unknown target node → MAIL_NODE_NOT_FOUND
+#     G2. Same-node target → MAIL_MIGRATION_SAME_NODE
+#     G3. /failback either resolves a target or returns
+#         MAIL_PLACEMENT_NO_CANDIDATE (proves the intent-discriminator wiring)
+#     G4. placement.currentNode == kubectl pod.spec.nodeName
+#
+#   Phase I — Flux-ownership post-flip (--flux-ownership, ~70 sec, requires --mode-flip)
+#     After mode-flip, sleep 60s and assert Flux's kustomize-controller
+#     did NOT re-claim the haproxy DS nodeSelector field that platform-api
+#     set via SSA force-claim. Catches the PR-#43→#45 regression where
+#     Flux fought platform-api on every reconcile.
+#     I1. platform-api.port-exposure owns nodeSelector after 60s of Flux loops
+#     I2. kustomize-controller does not also claim nodeSelector
+#
 # Exit code: 0 if everything passed (phases that ran). Non-zero with the
 # count of failures otherwise.
 #
@@ -133,6 +149,8 @@ RUN_NEGATIVE=false
 RUN_ARCHIVE=false
 RUN_ARCHIVE_DOWNTIME=false
 RUN_HEALTH_TRUTH=false
+RUN_MIGRATE_SMOKE=false
+RUN_FLUX_OWNERSHIP=false
 for arg in "$@"; do
   case "$arg" in
     --mode-flip)        RUN_MODE_FLIP=true ;;
@@ -140,6 +158,8 @@ for arg in "$@"; do
     --archive)          RUN_ARCHIVE=true ;;
     --archive-downtime) RUN_ARCHIVE_DOWNTIME=true ;;
     --health-truth)     RUN_HEALTH_TRUTH=true ;;
+    --migrate-smoke)    RUN_MIGRATE_SMOKE=true ;;
+    --flux-ownership)   RUN_FLUX_OWNERSHIP=true ;;
     --help|-h)
       sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# //' -e 's/^#$//' -e '/^set -euo/d'
       exit 0
@@ -1092,11 +1112,152 @@ print(hit['reachable'] if hit else 'missing')" 2>/dev/null || echo 'unknown')"
   echo ""
 }
 
+# ── Phase G — migration endpoint smoke (non-destructive) ───────────────
+# Validates the /admin/mail/migrate input-validation surface without
+# actually moving the pod. Three negative tests + one read-only state
+# check. The destructive "real migration" test is intentionally NOT in
+# the default harness — it requires multi-node coordination and a long
+# rsync window. Phase G is the smaller "did the endpoint hang up on
+# bad inputs correctly?" check.
+phase_g_migrate_smoke() {
+  echo "## Phase G — migrate endpoint input validation"
+
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "G. SKIP — ADMIN_TOKEN + PLATFORM_API_URL required"
+    echo ""
+    return
+  fi
+
+  # G1. Rejects a non-existent target node with MAIL_NODE_NOT_FOUND.
+  local resp_unknown
+  resp_unknown="$(curl -sk --max-time 15 -X POST \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"targetNode":"this-node-definitely-does-not-exist-xyz"}' \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
+  if echo "$resp_unknown" | grep -q 'MAIL_NODE_NOT_FOUND'; then
+    note_pass "G1. /admin/mail/migrate rejects unknown target with MAIL_NODE_NOT_FOUND"
+  else
+    note_fail "G1. expected MAIL_NODE_NOT_FOUND; got: ${resp_unknown:0:200}"
+  fi
+
+  # G2. Rejects same-node migration with MAIL_MIGRATION_SAME_NODE.
+  local current_node
+  current_node="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo '')"
+  if [[ -z "$current_node" ]]; then
+    note_warn "G2. SKIP — could not determine current node"
+  else
+    local resp_same
+    resp_same="$(curl -sk --max-time 15 -X POST \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d "{\"targetNode\":\"${current_node}\"}" \
+      "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
+    if echo "$resp_same" | grep -q 'MAIL_MIGRATION_SAME_NODE'; then
+      note_pass "G2. /admin/mail/migrate rejects same-node with MAIL_MIGRATION_SAME_NODE"
+    else
+      note_fail "G2. expected MAIL_MIGRATION_SAME_NODE for target=${current_node}; got: ${resp_same:0:200}"
+    fi
+  fi
+
+  # G3. /failback with no primary configured returns MAIL_PLACEMENT_NO_CANDIDATE,
+  #     OR same-node when primary == current. Either is acceptable proof the
+  #     resolver wired up. (We intentionally don't dry-run /failover because
+  #     it would succeed and start an actual migration.)
+  local resp_fb
+  resp_fb="$(curl -sk --max-time 15 -X POST \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"confirm":true}' \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/failback" 2>/dev/null || echo '')"
+  if echo "$resp_fb" | grep -qE 'MAIL_PLACEMENT_NO_CANDIDATE|MAIL_MIGRATION_SAME_NODE'; then
+    note_pass "G3. /admin/mail/failback resolves placement and returns a coherent error"
+  else
+    note_fail "G3. unexpected /failback response: ${resp_fb:0:200}"
+  fi
+
+  # G4. Live pod node lookup matches placement.placementState.currentNode.
+  local placement
+  placement="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null || echo '')"
+  local placement_current
+  placement_current="$(echo "$placement" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)['data']
+  print(d.get('currentNode') or d.get('placement', {}).get('currentNode') or '')
+except Exception:
+  print('')" 2>/dev/null || echo '')"
+  if [[ "$placement_current" == "$current_node" ]]; then
+    note_pass "G4. placement.currentNode == kubectl pod.spec.nodeName (${current_node})"
+  elif [[ -z "$placement_current" ]]; then
+    note_warn "G4. SKIP — placement response shape did not expose currentNode"
+  else
+    note_fail "G4. DRIFT — placement.currentNode=${placement_current}, kubectl=${current_node}"
+  fi
+  echo ""
+}
+
+# ── Phase I — Flux-ownership post-flip (depends on --mode-flip) ────────
+# After Phase C flips port-exposure, sleep 60s and assert Flux did NOT
+# re-claim the haproxy DS nodeSelector field that the platform-api set
+# via SSA force-claim. This catches the PR-#43→#45 regression where
+# Flux's kustomize-controller fought platform-api on every reconcile.
+# Requires --mode-flip to have run.
+phase_i_flux_ownership() {
+  echo "## Phase I — Flux ownership post-flip (sleeps 60s)"
+
+  if ! $RUN_MODE_FLIP; then
+    note_warn "I. SKIP — --flux-ownership requires --mode-flip to have run"
+    echo ""
+    return
+  fi
+
+  # The current haproxy nodeSelector right after Phase C should reflect
+  # the LAST mode we left the cluster in (Phase C flips, then flips back).
+  # Either way, the field-manager on nodeSelector MUST be the platform-api,
+  # not kustomize-controller — that's the invariant being checked.
+  echo "  Waiting 60s for Flux reconcile loops..."
+  sleep 60
+
+  local managers
+  managers=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
+    -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)
+  for entry in (d.get('metadata', {}).get('managedFields') or []):
+    f = entry.get('fieldsV1', {})
+    # Look for entries that claim spec.template.spec.nodeSelector
+    raw = json.dumps(f)
+    if 'nodeSelector' in raw:
+      print(entry.get('manager', ''))
+except Exception:
+  pass" 2>/dev/null || echo '')
+
+  if echo "$managers" | grep -q 'platform-api.port-exposure'; then
+    note_pass "I1. platform-api.port-exposure owns haproxy.nodeSelector after Flux loops"
+  else
+    note_fail "I1. platform-api.port-exposure NOT in managers of haproxy.nodeSelector — Flux may have re-claimed (managers: ${managers})"
+  fi
+
+  if echo "$managers" | grep -q 'kustomize-controller'; then
+    note_warn "I2. kustomize-controller also claims nodeSelector (likely harmless with ssa:merge)"
+  else
+    note_pass "I2. kustomize-controller does NOT claim haproxy.nodeSelector"
+  fi
+  echo ""
+}
+
 # ── Run phases ─────────────────────────────────────────────────────────
 phase_a_health
 phase_b_state
 if $RUN_HEALTH_TRUTH;     then phase_h_health_truth;          fi
+if $RUN_MIGRATE_SMOKE;    then phase_g_migrate_smoke;         fi
 if $RUN_MODE_FLIP;        then phase_c_mode_flip;            fi
+if $RUN_FLUX_OWNERSHIP;   then phase_i_flux_ownership;        fi
 if $RUN_NEGATIVE;         then phase_d_negative;             fi
 if $RUN_ARCHIVE;          then phase_e_archive_no_downtime;  fi
 if $RUN_ARCHIVE_DOWNTIME; then phase_f_archive_downtime;     fi
