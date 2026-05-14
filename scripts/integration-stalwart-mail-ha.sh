@@ -256,7 +256,13 @@ jmap_call() {
 }
 
 get_port_exposure_mode() {
-  kctl -n "$PLATFORM_NS" exec -i deploy/platform-api -c backend -- sh -c '
+  # Container name is `api` on staging/production (per platform-api
+  # Deployment); pre-streamline this script used `backend` which silent-
+  # failed (Error from server (BadRequest): container backend is not
+  # valid) and returned an empty string — Phase C then mis-detected
+  # start_mode and would re-PATCH the same mode (no-op or destructive
+  # depending on direction).
+  kctl -n "$PLATFORM_NS" exec -i deploy/platform-api -c api -- sh -c '
     psql "$DATABASE_URL" -At -c "select mail_port_exposure_mode from system_settings where id = '"'"'system'"'"';"
   ' 2>/dev/null | tr -d ' \n\r' || echo ""
 }
