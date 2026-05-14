@@ -63,6 +63,37 @@ async function loadK8sCoreClient(kubeconfigPath: string | undefined): Promise<K8
 }
 
 // Parse K8s memory quantity strings like "16296Mi", "2Gi", "1024Ki" to bytes.
+/**
+ * Process-local cache of the last self-heal write — module-scoped so
+ * concurrent GET /admin/mail/placement calls served by the same
+ * platform-api pod can short-circuit instead of writing the same
+ * value to the DB on every poll during a rollover window.
+ *
+ * Per-replica caches diverge across the 3 platform-api pods, which is
+ * fine: in the worst case 3 writes land in 10s instead of N×3, still
+ * a meaningful reduction vs the original "one write per request"
+ * behaviour.
+ */
+const SELF_HEAL_DEBOUNCE_MS = 10_000;
+let lastSelfHealNode: string | null = null;
+let lastSelfHealAt = 0;
+
+function shouldWriteActiveNode(liveActiveNode: string): boolean {
+  const now = Date.now();
+  if (liveActiveNode === lastSelfHealNode && (now - lastSelfHealAt) < SELF_HEAL_DEBOUNCE_MS) {
+    return false;
+  }
+  lastSelfHealNode = liveActiveNode;
+  lastSelfHealAt = now;
+  return true;
+}
+
+/** Visible for tests. */
+export function _resetPlacementSelfHealCache(): void {
+  lastSelfHealNode = null;
+  lastSelfHealAt = 0;
+}
+
 function parseMemQuantity(q: string): number {
   const m = q.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?$/);
   if (!m) return 0;
@@ -147,10 +178,19 @@ export async function getMailPlacement(
   }
   const persistedActiveNode = (row?.mailActiveNode ?? null) as string | null;
   if (liveActiveNode !== null && liveActiveNode !== persistedActiveNode) {
-    await db.update(systemSettings)
-      .set({ mailActiveNode: liveActiveNode })
-      .where(eq(systemSettings.id, SETTINGS_ID))
-      .catch(() => { /* best-effort lazy update */ });
+    // Debounce identical writes. During a Stalwart pod rollover the
+    // frontend polls /admin/mail/placement every ~5s × 3 platform-api
+    // replicas — without this gate every poll would write the same
+    // value, spamming slow-query logs. The cache is process-local
+    // (per platform-api replica); a 10s skip-window is enough to
+    // absorb a normal rollover burst while still catching real
+    // multi-minute drift.
+    if (shouldWriteActiveNode(liveActiveNode)) {
+      await db.update(systemSettings)
+        .set({ mailActiveNode: liveActiveNode })
+        .where(eq(systemSettings.id, SETTINGS_ID))
+        .catch(() => { /* best-effort lazy update */ });
+    }
   }
   const effectiveActiveNode = liveActiveNode ?? persistedActiveNode;
 
