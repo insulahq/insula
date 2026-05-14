@@ -91,7 +91,7 @@ describe('buildDesiredRoutes', () => {
 });
 
 describe('buildIngressRouteBody', () => {
-  it('emits a Host-matching rule for each route on websecure entryPoint', () => {
+  it('emits a Host-matching rule for each route on websecure entryPoint + Coraza platform WAF', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
@@ -106,22 +106,34 @@ describe('buildIngressRouteBody', () => {
     expect(routes[0].kind).toBe('Rule');
     const services = routes[0].services as Array<Record<string, unknown>>;
     expect(services[0]).toEqual({ name: 'admin-panel', port: 80 });
+    // Panel route always carries the Coraza platform WAF Middleware.
+    const middlewares = routes[0].middlewares as Array<{ name: string; namespace: string }>;
+    expect(middlewares).toEqual([
+      { name: 'coraza-platform', namespace: 'traefik' },
+    ]);
     expect(spec.tls).toEqual({ secretName: 'platform-tls' });
   });
-  it('adds a priority-100 /oauth2 prefix route on top of the panel route', () => {
+  it('adds a priority-100 /oauth2 prefix route + ForwardAuth + WAF on the panel route when oauth2 is enabled', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
     expect(routes).toHaveLength(2);
+    // /oauth2 priority route — no auth Middleware (oauth2-proxy IS the auth endpoint).
     expect(routes[0].match).toBe('Host(`admin.example.com`) && PathPrefix(`/oauth2`)');
     expect(routes[0].priority).toBe(100);
     expect((routes[0].services as Array<Record<string, unknown>>)[0]).toEqual({
       name: 'oauth2-proxy',
       port: 4180,
     });
+    // Panel route — ForwardAuth first, WAF second.
     expect(routes[1].match).toBe('Host(`admin.example.com`)');
+    const panelMiddlewares = routes[1].middlewares as Array<{ name: string; namespace: string }>;
+    expect(panelMiddlewares).toEqual([
+      { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
+      { name: 'coraza-platform', namespace: 'traefik' },
+    ]);
   });
 });
 
