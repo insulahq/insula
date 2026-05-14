@@ -928,10 +928,10 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         );
       }
       // Align with backup-config/routes.ts:29 — fall back to the
-      // zero-key when OIDC_ENCRYPTION_KEY isn't set, so dev + staging
+      // zero-key when PLATFORM_ENCRYPTION_KEY isn't set, so dev + staging
       // environments (where the env var was never wired) can still
       // exercise the backup-target setter. Production clusters set
-      // OIDC_ENCRYPTION_KEY at deploy time and the credentials are
+      // PLATFORM_ENCRYPTION_KEY at deploy time and the credentials are
       // round-trip encrypted with the same key here as everywhere
       // else; if the key is wrong, the decrypt step downstream
       // surfaces a clearer error than the gate did. The earlier
@@ -940,9 +940,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // Secret was already populated correctly — the setter never
       // got the chance to run.
       const encryptionKey =
-        (cfg.OIDC_ENCRYPTION_KEY as string | undefined)
-        ?? process.env.OIDC_ENCRYPTION_KEY
-        ?? '0'.repeat(64); /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */
+        (cfg.PLATFORM_ENCRYPTION_KEY as string | undefined)
+        ?? process.env.PLATFORM_ENCRYPTION_KEY
+        ?? '0'.repeat(64); /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */
       app.log.warn({ userId, backupStoreId: parsed.data.backupStoreId }, 'mail-admin: snapshot backup target update requested');
       try {
         const result = await updateMailSnapshotBackupTarget(parsed.data, app.db, {
