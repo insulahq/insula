@@ -99,6 +99,14 @@ const OAUTH2_PROXY_PORT = 4180;
  */
 const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
 
+/**
+ * Coraza WAF Middleware for the platform-ingress (admin / client panel).
+ * Lives in k8s/base/traefik/middlewares-waf.yaml. The platform variant
+ * bakes in the admin-API-specific CRS exclusions (911100 + 920420);
+ * tenant routes use `coraza-base@traefik` instead.
+ */
+const PLATFORM_WAF_MIDDLEWARE_NAME = 'coraza-platform';
+
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
 /**
@@ -192,16 +200,22 @@ export function buildIngressRouteBody(
         services: [{ name: OAUTH2_PROXY_SERVICE, port: OAUTH2_PROXY_PORT }],
       });
     }
+    // Panel route middlewares — in order of execution:
+    //   1. ForwardAuth (oauth2-proxy) when protect* is on.
+    //   2. Coraza WAF (`coraza-platform@traefik`) always — admin /
+    //      client panels are sensitive surfaces; the platform variant
+    //      ships with admin-API CRS exclusions baked in.
+    const panelMiddlewares: Array<{ name: string; namespace: string }> = [];
+    if (r.oauth2) {
+      panelMiddlewares.push({ name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' });
+    }
+    panelMiddlewares.push({ name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' });
     const panelRoute: Record<string, unknown> = {
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
+      middlewares: panelMiddlewares,
       services: [{ name: r.serviceName, port: 80 }],
     };
-    if (r.oauth2) {
-      panelRoute.middlewares = [
-        { name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' },
-      ];
-    }
     traefikRoutes.push(panelRoute);
   }
 

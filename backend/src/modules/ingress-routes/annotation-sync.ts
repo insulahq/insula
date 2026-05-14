@@ -44,6 +44,7 @@ import {
   basicAuthSpec,
   forwardAuthSpec,
   headersSpec,
+  corazaSpec,
 } from './traefik-types.js';
 import type {
   MiddlewareBody,
@@ -321,6 +322,56 @@ export function buildMiddlewaresForRoute(
       },
     }));
     refs.push({ name, namespace });
+  }
+
+  // ── WAF (Coraza) ────────────────────────────────────────────────────
+  // Three modes (option-C hybrid from project_traefik_migration_progress):
+  //   wafEnabled=0                         → no WAF Middleware (default).
+  //   wafEnabled=1 + no overrides           → reference shared
+  //                                            `coraza-base@traefik`.
+  //                                            One engine instance per
+  //                                            Traefik pod covers every
+  //                                            uncustomised route.
+  //   wafEnabled=1 + customisations         → emit per-route
+  //                                            `coraza-r-<id>` Middleware
+  //                                            with the route's
+  //                                            SecRuleRemoveById /
+  //                                            threshold overrides baked
+  //                                            in. Costs one extra Coraza
+  //                                            engine per customised route.
+  //
+  // "Customisations" means any of:
+  //   * wafExcludedRules non-empty
+  //   * wafAnomalyThreshold != 10
+  //   * wafOwaspCrs=0 (operator opted out of CRS — rare; needs a
+  //     dedicated Middleware with `SecRuleEngine On` but no Include of
+  //     the @owasp_crs bundle)
+  if (route.wafEnabled) {
+    const isDefault =
+      route.wafAnomalyThreshold === 10
+      && !route.wafExcludedRules
+      && route.wafOwaspCrs === 1;
+    if (isDefault) {
+      refs.push({ name: 'coraza-base', namespace: 'traefik' });
+    } else {
+      const name = middlewareName(routeId, 'waf');
+      middlewares.push(buildMiddleware({
+        name,
+        namespace,
+        spec: corazaSpec({
+          owaspCrs: route.wafOwaspCrs === 1,
+          anomalyThreshold: route.wafAnomalyThreshold,
+          excludedRules: route.wafExcludedRules
+            ? route.wafExcludedRules.split(',').map((s) => s.trim()).filter(Boolean)
+            : [],
+        }),
+        labels: {
+          'hosting-platform/route-id': routeId,
+          'hosting-platform/middleware-kind': 'waf',
+        },
+      }));
+      refs.push({ name, namespace });
+    }
   }
 
   // ── www redirect ────────────────────────────────────────────────────
