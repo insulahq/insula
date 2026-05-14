@@ -205,9 +205,9 @@ Backend unit tests:
 
 File-manager sidecar hide tests:
 
-    images/file-manager-sidecar/hide.test.mjs
+    images/file-manager/hide.test.mjs
 
-    cd images/file-manager-sidecar && node --test hide.test.mjs
+    cd images/file-manager && node --test hide.test.mjs
 
 End-to-end (local dev):
 

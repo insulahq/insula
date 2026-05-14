@@ -1,12 +1,12 @@
-name: File-Manager Sidecar CI
+name: File-Manager CI
 
 on:
   push:
     branches: [main]
-    paths: ['images/file-manager-sidecar/**', '.github/workflows/ci-file-manager-sidecar.yml']
+    paths: ['images/file-manager/**', '.github/workflows/ci-file-manager.yml']
   pull_request:
     branches: [main]
-    paths: ['images/file-manager-sidecar/**', '.github/workflows/ci-file-manager-sidecar.yml']
+    paths: ['images/file-manager/**', '.github/workflows/ci-file-manager.yml']
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/hosting-platform/file-manager-sidecar
+  IMAGE: ghcr.io/insulahq/hosting-platform/file-manager
 
 jobs:
   build:
@@ -46,7 +46,7 @@ jobs:
       - uses: docker/build-push-action@v6
         id: build
         with:
-          context: images/file-manager-sidecar
+          context: images/file-manager
           push: ${{ github.event_name != 'pull_request' }}
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -71,4 +71,4 @@ jobs:
         if: github.event_name != 'pull_request'
         with:
           sarif_file: trivy-results.sarif
-          category: file-manager-sidecar
+          category: file-manager

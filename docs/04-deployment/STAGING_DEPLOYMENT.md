@@ -319,7 +319,7 @@ Before the first deploy, confirm:
 - [x] `ci-api-contracts.yml` — build + typecheck
 - [x] `ci-infrastructure.yml` — **now builds all three overlays (base, dev, staging, production)** + shellcheck + catalog image builds
 - [x] `build-deploy.yml` — publishes backend, admin-panel, client-panel to GHCR with `<sha>`, `latest`, and `<timestamp>-<sha>` tags on `main`
-- [x] `ci-sftp-gateway.yml` + `ci-file-manager-sidecar.yml` — publish their own images with Trivy scans
+- [x] `ci-sftp-gateway.yml` + `ci-file-manager.yml` — publish their own images with Trivy scans
 - [x] `release.yml` — on `v*.*.*` tag: publishes semver-tagged images, creates GitHub Release, opens PR to `stable` branch
 
 Gaps to fix before production rollout (not blocking staging):

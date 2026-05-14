@@ -16,19 +16,19 @@ describe('getFileManagerImage', () => {
   });
 
   it('returns the env var when set to a registry-qualified path', () => {
-    process.env.FILE_MANAGER_IMAGE = 'ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest';
-    expect(getFileManagerImage()).toBe('ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest');
+    process.env.FILE_MANAGER_IMAGE = 'ghcr.io/insulahq/hosting-platform/file-manager:latest';
+    expect(getFileManagerImage()).toBe('ghcr.io/insulahq/hosting-platform/file-manager:latest');
   });
 
   it('returns the env var verbatim — does not validate the form (defense lives at deploy time)', () => {
     // This is the local-dev case: scripts/local.sh imports the bare-tagged
     // image into containerd, so the env var can be the bare name too.
-    process.env.FILE_MANAGER_IMAGE = 'file-manager-sidecar:dev-abc123';
-    expect(getFileManagerImage()).toBe('file-manager-sidecar:dev-abc123');
+    process.env.FILE_MANAGER_IMAGE = 'file-manager:dev-abc123';
+    expect(getFileManagerImage()).toBe('file-manager:dev-abc123');
   });
 
   it('falls back to the bare local-dev tag when env is unset', () => {
-    expect(getFileManagerImage()).toBe('file-manager-sidecar:latest');
+    expect(getFileManagerImage()).toBe('file-manager:latest');
   });
 
   it('falls back when env is explicitly empty string (?? semantics: only nullish triggers fallback)', () => {

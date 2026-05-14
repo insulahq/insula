@@ -41,8 +41,8 @@ describe('storage service', () => {
       expect(classifyImage('hosting-platform-backend:latest').protected).toBe(true);
       expect(classifyImage('hosting-platform-admin-panel:latest').protected).toBe(true);
       expect(classifyImage('hosting-platform-client-panel:latest').protected).toBe(true);
-      expect(classifyImage('file-manager-sidecar:latest').protected).toBe(true);
-      expect(classifyImage('docker.io/library/file-manager-sidecar:latest').protected).toBe(true);
+      expect(classifyImage('file-manager:latest').protected).toBe(true);
+      expect(classifyImage('docker.io/library/file-manager:latest').protected).toBe(true);
     });
 
     it('should classify k8s/k3s system images as protected when in use (default)', () => {
@@ -95,7 +95,7 @@ describe('storage service', () => {
           sizeBytes: 330_000_000,
         },
         {
-          names: ['docker.io/library/file-manager-sidecar:latest'],
+          names: ['docker.io/library/file-manager:latest'],
           sizeBytes: 175_000_000,
         },
       ];
@@ -105,7 +105,7 @@ describe('storage service', () => {
       expect(result).toHaveLength(2);
       expect(result[0].name).toBe('docker.io/library/mariadb:11');
       expect(result[0].sizeBytes).toBe(330_000_000);
-      expect(result[1].name).toBe('docker.io/library/file-manager-sidecar:latest');
+      expect(result[1].name).toBe('docker.io/library/file-manager:latest');
     });
 
     it('should skip entries with no names', () => {
@@ -190,7 +190,7 @@ describe('storage service', () => {
 
     it('should handle already-normalized names', () => {
       expect(formatImageName('mariadb:11')).toBe('mariadb:11');
-      expect(formatImageName('file-manager-sidecar:latest')).toBe('file-manager-sidecar:latest');
+      expect(formatImageName('file-manager:latest')).toBe('file-manager:latest');
     });
   });
 
@@ -207,7 +207,7 @@ describe('storage service', () => {
                 capacity: { 'ephemeral-storage': '100Gi' },
                 images: [
                   { names: ['docker.io/library/mariadb:11'], sizeBytes: 330_000_000 },
-                  { names: ['file-manager-sidecar:latest'], sizeBytes: 175_000_000 },
+                  { names: ['file-manager:latest'], sizeBytes: 175_000_000 },
                 ],
               },
             }],
@@ -267,7 +267,7 @@ describe('storage service', () => {
   describe('getImageInventory', () => {
     it('should classify images and identify in-use ones', async () => {
       // B0.3: protection is now (prefix matches) AND (image is in use).
-      // We include a pod referencing file-manager-sidecar to confirm that
+      // We include a pod referencing file-manager to confirm that
       // a currently-running system image is still protected.
       const k8s = {
         core: {
@@ -277,7 +277,7 @@ describe('storage service', () => {
                 images: [
                   { names: ['docker.io/library/mariadb:11'], sizeBytes: 100_000_000 },
                   { names: ['docker.io/library/mysql:9'], sizeBytes: 250_000_000 },
-                  { names: ['file-manager-sidecar:latest'], sizeBytes: 175_000_000 },
+                  { names: ['file-manager:latest'], sizeBytes: 175_000_000 },
                 ],
               },
             }],
@@ -285,8 +285,8 @@ describe('storage service', () => {
           listPodForAllNamespaces: vi.fn().mockResolvedValue({
             items: [
               { spec: { containers: [{ image: 'mariadb:11' }] } },
-              // Include file-manager-sidecar as running so it stays protected
-              { spec: { containers: [{ image: 'file-manager-sidecar:latest' }] } },
+              // Include file-manager as running so it stays protected
+              { spec: { containers: [{ image: 'file-manager:latest' }] } },
             ],
           }),
         },
@@ -302,7 +302,7 @@ describe('storage service', () => {
       expect(mysql?.inUse).toBe(false);
       expect(mysql?.protected).toBe(false);
       // B0.3: protected=true because it matches a system prefix AND is in use
-      const fm = result.images.find(i => i.name === 'file-manager-sidecar:latest');
+      const fm = result.images.find(i => i.name === 'file-manager:latest');
       expect(fm?.inUse).toBe(true);
       expect(fm?.protected).toBe(true);
       expect(result.purgeableCount).toBe(1); // only mysql:9
@@ -455,20 +455,20 @@ describe('storage service', () => {
 
     it('should return empty result in dry-run when no purgeable images', async () => {
       // B0.3: system images (prefix match) are protected ONLY when in use.
-      // Include a pod running file-manager-sidecar so the image is protected.
+      // Include a pod running file-manager so the image is protected.
       const k8s = {
         core: {
           listNode: vi.fn().mockResolvedValue({
             items: [{
               status: {
                 images: [
-                  { names: ['file-manager-sidecar:latest'], sizeBytes: 175_000_000 },
+                  { names: ['file-manager:latest'], sizeBytes: 175_000_000 },
                 ],
               },
             }],
           }),
           listPodForAllNamespaces: vi.fn().mockResolvedValue({
-            items: [{ spec: { containers: [{ image: 'file-manager-sidecar:latest' }] } }],
+            items: [{ spec: { containers: [{ image: 'file-manager:latest' }] } }],
           }),
         },
       };
@@ -481,7 +481,7 @@ describe('storage service', () => {
     });
 
     it('should not attempt purge when no purgeable images in non-dry-run mode', async () => {
-      // B0.3: include a pod running file-manager-sidecar so it stays protected.
+      // B0.3: include a pod running file-manager so it stays protected.
       const createNamespacedPod = vi.fn();
       const k8s = {
         core: {
@@ -489,13 +489,13 @@ describe('storage service', () => {
             items: [{
               status: {
                 images: [
-                  { names: ['file-manager-sidecar:latest'], sizeBytes: 175_000_000 },
+                  { names: ['file-manager:latest'], sizeBytes: 175_000_000 },
                 ],
               },
             }],
           }),
           listPodForAllNamespaces: vi.fn().mockResolvedValue({
-            items: [{ spec: { containers: [{ image: 'file-manager-sidecar:latest' }] } }],
+            items: [{ spec: { containers: [{ image: 'file-manager:latest' }] } }],
           }),
           createNamespacedPod,
         },

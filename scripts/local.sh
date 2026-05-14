@@ -173,8 +173,8 @@ _image_input_hash() {
            "${PROJECT_DIR}/.dockerignore" \
            -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
       ;;
-    file-manager-sidecar)
-      find "${PROJECT_DIR}/images/file-manager-sidecar" \
+    file-manager)
+      find "${PROJECT_DIR}/images/file-manager" \
            "${PROJECT_DIR}/.dockerignore" \
            -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
       ;;
@@ -273,26 +273,26 @@ _build_all_images() {
   # it by GHCR name, so on a real rebuild we also re-tag + re-import under
   # that name. The tag itself is idempotent and free; we only re-save+import
   # when the local image was actually rebuilt.
-  if [[ -d "${PROJECT_DIR}/images/file-manager-sidecar" ]]; then
-    _build_and_import "file-manager-sidecar" "images/file-manager-sidecar" "images/file-manager-sidecar/Dockerfile"
-    # Backend references this image as the bare `file-manager-sidecar:latest`
-    # (see FM_IMAGE constant in routes.ts / service.ts / k8s-provisioner).
+  if [[ -d "${PROJECT_DIR}/images/file-manager" ]]; then
+    _build_and_import "file-manager" "images/file-manager" "images/file-manager/Dockerfile"
+    # Backend references this image as the bare `file-manager:latest`
+    # (see getFileManagerImage() helper at backend/src/modules/file-manager/image.ts).
     # Also keep the GHCR-prefixed tag for production parity — both point at
     # the same image. Re-import when the build changed OR when the target
     # tag is missing from k3s containerd (e.g. after `down -v` wiped it).
     local sidecar_changed=false
-    if grep -q '^HP_IMAGE_CHANGED_file-manager-sidecar=' "${PROJECT_DIR}/.local.build-state" 2>/dev/null; then
+    if grep -q '^HP_IMAGE_CHANGED_file-manager=' "${PROJECT_DIR}/.local.build-state" 2>/dev/null; then
       sidecar_changed=true
     fi
-    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "file-manager-sidecar:latest"; then
-      docker tag "hosting-platform/file-manager-sidecar:local" "file-manager-sidecar:latest"
-      docker save "file-manager-sidecar:latest" \
+    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "file-manager:latest"; then
+      docker tag "hosting-platform/file-manager:local" "file-manager:latest"
+      docker save "file-manager:latest" \
         | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
     fi
-    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest"; then
-      docker tag "hosting-platform/file-manager-sidecar:local" \
-        "ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest"
-      docker save "ghcr.io/insulahq/hosting-platform/file-manager-sidecar:latest" \
+    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "ghcr.io/insulahq/hosting-platform/file-manager:latest"; then
+      docker tag "hosting-platform/file-manager:local" \
+        "ghcr.io/insulahq/hosting-platform/file-manager:latest"
+      docker save "ghcr.io/insulahq/hosting-platform/file-manager:latest" \
         | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
     fi
   fi

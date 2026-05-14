@@ -26,13 +26,13 @@ import type {
 const PROTECTED_PREFIXES: readonly string[] = [
   'hosting-platform-',
   'k8s-hosting-platform-',
-  'file-manager-sidecar',
+  'file-manager',
   'rancher/',
   'registry.k8s.io/',
   'ghcr.io/dexidp/',
   'docker.io/rancher/',
   'docker.io/library/busybox', // Used by init containers
-  'docker.io/library/file-manager-sidecar',
+  'docker.io/library/file-manager',
   // System-critical images added in B0.3 — protected only when in use
   'docker.io/longhornio/',
   'quay.io/calico/',
@@ -78,7 +78,7 @@ export function classifyImage(name: string, inUse = true): ClassifiedImage {
  *
  * The aggregator's display name has `docker.io/library/` stripped, which
  * causes prefix entries like `docker.io/library/busybox` and
- * `docker.io/library/file-manager-sidecar` to never match. Pass every name
+ * `docker.io/library/file-manager` to never match. Pass every name
  * the kubelet reports for the image; if any one matches a protected prefix
  * (and the image is in use), the image is protected.
  */
