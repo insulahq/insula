@@ -12,10 +12,15 @@
  * PVC on the target node and lets the restore-state initContainer repopulate
  * it from the latest restic snapshot.
  *
- * POST /admin/mail/migrate    → startMailMigration
+ * Single entry-point since the 2026-05-14 streamline: `startMailMigration`
+ * accepts an `intent` discriminator and resolves the target node from
+ * system_settings for failover/failback. The previous thin wrappers
+ * (`startFailoverMigration`, `startFailbackMigration`) were folded in.
+ *
+ * POST /admin/mail/migrate    → startMailMigration({intent:'explicit', targetNode})
+ * POST /admin/mail/failover   → startMailMigration({intent:'failover'})
+ * POST /admin/mail/failback   → startMailMigration({intent:'failback'})
  * GET  /admin/mail/migrate/:runId → getMailMigrationStatus
- * POST /admin/mail/failover   → startFailoverMigration (picks secondary node)
- * POST /admin/mail/failback   → startFailbackMigration (picks primary node)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -65,8 +70,25 @@ type MigrationRunRow = Record<string, unknown> & {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/**
+ * Migration intent discriminator. The `explicit` intent requires the
+ * caller to pass `targetNode`; `failover` and `failback` resolve the
+ * target node from `system_settings` (mailSecondaryNode|mailTertiaryNode
+ * for failover; mailPrimaryNode for failback).
+ */
+export type MigrationIntent =
+  | { readonly kind: 'explicit'; readonly targetNode: string; readonly newGiB?: number }
+  | { readonly kind: 'failover' }
+  | { readonly kind: 'failback' };
+
+const INTENT_TRIGGERED_BY: Record<MigrationIntent['kind'], string> = {
+  explicit: 'operator',
+  failover: 'manual-failover',
+  failback: 'manual-failback',
+};
+
 export async function startMailMigration(
-  { targetNode, triggeredBy = 'operator', newGiB }: { targetNode: string; triggeredBy?: string; newGiB?: number },
+  intent: MigrationIntent,
   deps: MigrationDeps,
 ): Promise<{ runId: string }> {
   const { db, core } = deps;
@@ -81,14 +103,20 @@ export async function startMailMigration(
     throw new ApiError('MAIL_MIGRATION_ALREADY_RUNNING', 'A migration is already in progress', 409);
   }
 
-  // Validate target node exists
+  // Resolve target node from intent. Failover/failback look up
+  // settings; explicit takes the caller-supplied targetNode verbatim.
+  const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+  const targetNode = resolveTargetNode(intent, row);
+  const newGiB = intent.kind === 'explicit' ? intent.newGiB : undefined;
+  const triggeredBy = INTENT_TRIGGERED_BY[intent.kind];
+
+  // Validate target node exists in the cluster
   try {
     await (core as unknown as { readNode: (name: string) => Promise<unknown> }).readNode(targetNode);
   } catch {
     throw new ApiError('MAIL_NODE_NOT_FOUND', `Node '${targetNode}' not found in the cluster`, 404);
   }
 
-  const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
   const sourceNode = row?.mailActiveNode ?? row?.mailPrimaryNode ?? null;
   if (!sourceNode) {
     throw new ApiError('MAIL_NO_ACTIVE_NODE', 'No active mail node is configured in system_settings', 409);
@@ -117,36 +145,39 @@ export async function startMailMigration(
   return { runId };
 }
 
-export async function startFailoverMigration(
-  _opts: { confirm: true },
-  deps: MigrationDeps,
-): Promise<{ runId: string }> {
-  const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-  const targetNode = row?.mailSecondaryNode ?? row?.mailTertiaryNode ?? null;
-  if (!targetNode) {
-    throw new ApiError(
-      'MAIL_PLACEMENT_NO_CANDIDATE',
-      'No secondary or tertiary node configured — set placement policy before triggering failover',
-      409,
-    );
-  }
-  return startMailMigration({ targetNode, triggeredBy: 'manual-failover' }, deps);
+interface PlacementRow {
+  readonly mailPrimaryNode?: string | null;
+  readonly mailSecondaryNode?: string | null;
+  readonly mailTertiaryNode?: string | null;
 }
 
-export async function startFailbackMigration(
-  _opts: { confirm: true },
-  deps: MigrationDeps,
-): Promise<{ runId: string }> {
-  const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-  const targetNode = row?.mailPrimaryNode ?? null;
-  if (!targetNode) {
-    throw new ApiError(
-      'MAIL_PLACEMENT_NO_CANDIDATE',
-      'No primary node configured — set placement policy before triggering failback',
-      409,
-    );
+function resolveTargetNode(intent: MigrationIntent, row: PlacementRow | undefined): string {
+  switch (intent.kind) {
+    case 'explicit':
+      return intent.targetNode;
+    case 'failover': {
+      const t = row?.mailSecondaryNode ?? row?.mailTertiaryNode ?? null;
+      if (!t) {
+        throw new ApiError(
+          'MAIL_PLACEMENT_NO_CANDIDATE',
+          'No secondary or tertiary node configured — set placement policy before triggering failover',
+          409,
+        );
+      }
+      return t;
+    }
+    case 'failback': {
+      const t = row?.mailPrimaryNode ?? null;
+      if (!t) {
+        throw new ApiError(
+          'MAIL_PLACEMENT_NO_CANDIDATE',
+          'No primary node configured — set placement policy before triggering failback',
+          409,
+        );
+      }
+      return t;
+    }
   }
-  return startMailMigration({ targetNode, triggeredBy: 'manual-failback' }, deps);
 }
 
 export async function getMailMigrationStatus(
