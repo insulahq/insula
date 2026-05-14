@@ -17,7 +17,7 @@ data:
   public-url: "https://admin.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
   # Per-client sidecar image — pull from GHCR on real clusters.
-  file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
+  file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager:latest"
   # Private Worker — clients dial in to this WSS host with their token.
   # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
   # ingress (set up at install time, no per-client DNS work needed).

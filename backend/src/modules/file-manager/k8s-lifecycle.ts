@@ -134,9 +134,9 @@ export async function ensureFileManagerRunning(
                 name: FM_NAME,
                 image,
                 // imagePullPolicy: Always — the sidecar image is pinned
-                // by tag (file-manager-sidecar:<branch> or :latest) and
+                // by tag (file-manager:<branch> or :latest) and
                 // the digest behind that tag changes whenever
-                // images/file-manager-sidecar/** ships. With Always the
+                // images/file-manager/** ships. With Always the
                 // kubelet checks the registry digest on each pod start;
                 // unchanged digests are a fast HEAD (no data transfer)
                 // so the only cost vs IfNotPresent is one HTTP HEAD per

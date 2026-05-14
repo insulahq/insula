@@ -31,7 +31,7 @@ data:
   # containerd with the bare names (matching this default). Staging
   # and production overlays swap to the GHCR paths so the pods can
   # pull from a real registry.
-  file-manager-image: "file-manager-sidecar:latest"
+  file-manager-image: "file-manager:latest"
 
   # Private Worker — per-client tunnel agent the client runs at home.
   # tunnel-base-url is the dial-in FQDN. Cluster-side frps image is the

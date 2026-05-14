@@ -8,6 +8,7 @@ import { sftpUsers, sftpAuditLog, sftpUserSshKeys, clients, sshKeys } from '../.
 import type { Database } from '../../db/index.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { recordFileManagerAccess } from '../file-manager/idle-cleanup.js';
+import { getFileManagerImage } from '../file-manager/image.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { success } from '../../shared/response.js';
 
@@ -345,7 +346,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const k8s = k8sClients ?? createK8sClients(process.env.KUBECONFIG);
-    const image = process.env.FILE_MANAGER_IMAGE ?? 'ghcr.io/phoenixtechnam/file-manager:latest';
+    const image = getFileManagerImage();
 
     await ensureFileManagerRunning(k8s, namespace, image);
     recordFileManagerAccess(namespace);

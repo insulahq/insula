@@ -38,7 +38,7 @@ describe('File Manager K8s Lifecycle', () => {
   describe('ensureFileManagerRunning', () => {
     it('should create deployment and service if not exists', async () => {
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
-      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
       expect(mockK8s.core.createNamespacedService).toHaveBeenCalled();
     });
@@ -47,12 +47,12 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 1, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
-          containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
-      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
       // Should not recreate since PVC is correct
       expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
@@ -64,12 +64,12 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 0, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
-          containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
-      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
       expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
       // Bug fix: must rescale from 0 → 1, otherwise /start is a no-op.
@@ -91,7 +91,7 @@ describe('File Manager K8s Lifecycle', () => {
         });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
-      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
       expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
     });

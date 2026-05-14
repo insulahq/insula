@@ -23,7 +23,7 @@
 #   STAGING_SSH_HOST        First IP from ~/k8s-staging/servers.txt, or
 #                             46.224.122.58 (staging1) as last fallback.
 #   SSH_KEY                 ~/hosting-platform.key
-#   AGENT_IMAGE             ghcr.io/phoenixtechnam/private-worker-agent:latest
+#   AGENT_IMAGE             ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest
 #   ECHO_IMAGE              hashicorp/http-echo:latest
 #                             Sample local service the agent tunnels.
 #   PLAN_NAME               Starter

@@ -29,7 +29,7 @@ const configSchema = z.object({
   // platform-dev-tls, prod: platform-tls).
   PLATFORM_TLS_SECRET_NAME: z.string().optional(),
   PLATFORM_NAMESPACE: z.string().default('platform'),
-  FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/file-manager:latest'),
+  FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/hosting-platform/file-manager:latest'),
   // Private Worker — overlay-supplied. TUNNEL_BASE_URL is the public WSS
   // dial-in (e.g. wss://tunnels.staging.phoenix-host.net). The agent token
   // blob's server_url field is built from this. The frps image is the
