@@ -96,42 +96,106 @@ if [[ -n "$REMOTE_HOST" ]]; then
   " || { echo "ERROR: remote launch failed" >&2; exit 1; }
 
   # Phase 2: stream-tail the log until the bootstrap process exits.
-  # If THIS SSH drops, the bootstrap continues running on the remote;
-  # the operator can reconnect and tail manually.
+  #
+  # The first thing bootstrap.sh does is harden SSH (Phase 1), which
+  # restarts sshd and resets any in-progress SSH session. Our tail-SSH
+  # will hit this window and get "Connection reset by peer" on KEX.
+  # sshd can also bounce later for other reasons (config reload,
+  # network blips). The bootstrap process itself keeps running
+  # detached on the remote regardless — we just need to reconnect.
+  #
+  # Outer reconnect loop: each iteration opens a fresh SSH that
+  # follows the log from a byte offset (tracked locally) and exits
+  # once the remote writes /run/.../exit. If the SSH dies before
+  # then, we reconnect with backoff. Max ~10 min of reconnect
+  # attempts (60 attempts × 10s) — enough for any plausible sshd
+  # restart, well short of a real failure.
   echo "Streaming ${REMOTE_LOG} (Ctrl-C aborts tail only; bootstrap keeps running on remote)..."
-  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "
-    # tail-F follows the file even if rotated. Background it so we
-    # can poll the exit marker; kill it once bootstrap exits.
-    tail -F -n+1 ${REMOTE_LOG} 2>/dev/null &
-    TAIL=\$!
-    # Loop until the exit file appears (bootstrap finished writing rc).
-    while [ ! -f ${REMOTE_RUNDIR}/exit ]; do
-      # Belt-and-braces: if the bootstrap PID is dead AND the exit
-      # marker still missing after a grace period, something killed
-      # the process mid-run without writing rc. Bail with a clear
-      # message so the operator knows what happened.
-      if ! kill -0 \"\$(cat ${REMOTE_RUNDIR}/pid 2>/dev/null)\" 2>/dev/null; then
-        sleep 3
-        if [ ! -f ${REMOTE_RUNDIR}/exit ]; then
-          kill \$TAIL 2>/dev/null || true
-          echo \"\"
-          echo \"ERROR: remote bootstrap process disappeared without writing exit code\" >&2
-          echo \"  inspect ${REMOTE_LOG} on ${REMOTE_HOST}\" >&2
-          exit 130
+  local_byte_offset=0
+  attempt=0
+  max_attempts=60
+  while [[ $attempt -lt $max_attempts ]]; do
+    attempt=$((attempt+1))
+
+    # Fast-path: check if bootstrap has already finished. Uses a
+    # short connect-timeout so a refusing sshd doesn't block long.
+    rc_line=$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 -o BatchMode=yes \
+      "${SSH_USER}@${REMOTE_HOST}" "cat ${REMOTE_RUNDIR}/exit 2>/dev/null" 2>/dev/null || true)
+    if [[ -n "$rc_line" ]]; then
+      # Bootstrap done — dump any unprinted tail and exit with rc.
+      ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" \
+        "tail -c +$((local_byte_offset+1)) ${REMOTE_LOG} 2>/dev/null || true" 2>/dev/null || true
+      echo ""
+      echo "remote bootstrap exited rc=${rc_line}"
+      exit "$rc_line"
+    fi
+
+    # Tail loop. The SSH command tails-from-offset, polls for the
+    # exit marker, and reports back via its own exit code:
+    #   0 = bootstrap finished cleanly (exit marker appeared)
+    #   1 = bootstrap PID disappeared without writing rc (real bug)
+    # Any other code (255, etc.) = SSH transport failure — reconnect.
+    #
+    # On the remote side, `tail -c +N` resumes from a byte offset
+    # (1-indexed) so reconnects don't re-print already-shown lines.
+    # We capture how many bytes the remote shipped this iteration
+    # and bump local_byte_offset to match.
+    bytes_file=$(mktemp)
+    set +e
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "
+      tail -c +$((local_byte_offset+1)) -F ${REMOTE_LOG} 2>/dev/null &
+      TAIL=\$!
+      while [ ! -f ${REMOTE_RUNDIR}/exit ]; do
+        if ! kill -0 \"\$(cat ${REMOTE_RUNDIR}/pid 2>/dev/null)\" 2>/dev/null; then
+          sleep 3
+          if [ ! -f ${REMOTE_RUNDIR}/exit ]; then
+            kill \$TAIL 2>/dev/null || true
+            wait \$TAIL 2>/dev/null || true
+            exit 1
+          fi
         fi
-      fi
-      sleep 2
-    done
-    # Drain tail by giving it a beat to flush, then kill it cleanly.
-    sleep 1
-    kill \$TAIL 2>/dev/null || true
-    wait \$TAIL 2>/dev/null || true
-    rc=\$(cat ${REMOTE_RUNDIR}/exit)
-    echo \"\"
-    echo \"remote bootstrap exited rc=\${rc}\"
-    exit \"\${rc}\"
-  "
-  exit $?
+        sleep 2
+      done
+      sleep 1
+      kill \$TAIL 2>/dev/null || true
+      wait \$TAIL 2>/dev/null || true
+    " | tee >(wc -c >"$bytes_file")
+    # PIPESTATUS[0] is ssh's rc; $? would be tee's (always 0).
+    ssh_rc=${PIPESTATUS[0]}
+    set -e
+    bytes_this_iter=$(cat "$bytes_file" 2>/dev/null | tr -d ' ')
+    rm -f "$bytes_file"
+    [[ -n "$bytes_this_iter" ]] && local_byte_offset=$((local_byte_offset + bytes_this_iter))
+
+    case $ssh_rc in
+      0)
+        # Bootstrap exit marker appeared mid-tail; fetch + exit.
+        rc_line=$(ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" \
+          "cat ${REMOTE_RUNDIR}/exit" 2>/dev/null || echo "1")
+        echo ""
+        echo "remote bootstrap exited rc=${rc_line}"
+        exit "$rc_line"
+        ;;
+      1)
+        echo "" >&2
+        echo "ERROR: remote bootstrap process disappeared without writing exit code" >&2
+        echo "  inspect ${REMOTE_LOG} on ${REMOTE_HOST}" >&2
+        exit 130
+        ;;
+      *)
+        # SSH transport error (255, network reset, etc.). Wait
+        # briefly for sshd to settle and reconnect. The bootstrap
+        # process on the remote is unaffected.
+        echo "" >&2
+        echo "  [tail-SSH attempt ${attempt}/${max_attempts} dropped (rc=${ssh_rc}) — reconnecting in 10s; bootstrap continues on remote]" >&2
+        sleep 10
+        ;;
+    esac
+  done
+
+  echo "ERROR: exceeded ${max_attempts} tail-reconnect attempts — bootstrap may still be running on remote" >&2
+  echo "  inspect ${REMOTE_LOG} on ${REMOTE_HOST} manually" >&2
+  exit 131
 fi
 
 # ─── Configuration ────────────────────────────────────────────────────────────
