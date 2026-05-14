@@ -60,6 +60,33 @@
 #         (Phase F validates the fallback path. If a no_downtime archive
 #         is running concurrently, Phase F refuses to start.)
 #
+#   Phase H — health-truth (--health-truth, ~10 sec, requires ADMIN_TOKEN)
+#     Catches the "banner says green but reality is broken" class of bug
+#     that motivated the Phase 3a/3b probe rewrite. Calls
+#     /admin/mail/health?refresh=1 and compares its claims against live
+#     kubectl/nc probes. Drift = fail.
+#     H1. banner.pod.healthy == kubectl.containerStatuses.ready
+#     H2. banner.rocksdb.currentFile/lockFile match live `test -f`
+#     H3. banner.tcp[port].reachable matches live nc on 25 + 993
+#     H4. Top-level healthy=true implies all components healthy
+#         (catches Phase-3a-style "lying tile" bugs).
+#
+#   Phase G — migrate endpoint smoke (--migrate-smoke, ~5 sec, requires ADMIN_TOKEN)
+#     Non-destructive input-validation surface check on /admin/mail/migrate.
+#     G1. Unknown target node → MAIL_NODE_NOT_FOUND
+#     G2. Same-node target → MAIL_MIGRATION_SAME_NODE
+#     G3. /failback either resolves a target or returns
+#         MAIL_PLACEMENT_NO_CANDIDATE (proves the intent-discriminator wiring)
+#     G4. placement.currentNode == kubectl pod.spec.nodeName
+#
+#   Phase I — Flux-ownership post-flip (--flux-ownership, ~70 sec, requires --mode-flip)
+#     After mode-flip, sleep 60s and assert Flux's kustomize-controller
+#     did NOT re-claim the haproxy DS nodeSelector field that platform-api
+#     set via SSA force-claim. Catches the PR-#43→#45 regression where
+#     Flux fought platform-api on every reconcile.
+#     I1. platform-api.port-exposure owns nodeSelector after 60s of Flux loops
+#     I2. kustomize-controller does not also claim nodeSelector
+#
 # Exit code: 0 if everything passed (phases that ran). Non-zero with the
 # count of failures otherwise.
 #
@@ -121,12 +148,18 @@ RUN_MODE_FLIP=false
 RUN_NEGATIVE=false
 RUN_ARCHIVE=false
 RUN_ARCHIVE_DOWNTIME=false
+RUN_HEALTH_TRUTH=false
+RUN_MIGRATE_SMOKE=false
+RUN_FLUX_OWNERSHIP=false
 for arg in "$@"; do
   case "$arg" in
     --mode-flip)        RUN_MODE_FLIP=true ;;
     --negative)         RUN_NEGATIVE=true ;;
     --archive)          RUN_ARCHIVE=true ;;
     --archive-downtime) RUN_ARCHIVE_DOWNTIME=true ;;
+    --health-truth)     RUN_HEALTH_TRUTH=true ;;
+    --migrate-smoke)    RUN_MIGRATE_SMOKE=true ;;
+    --flux-ownership)   RUN_FLUX_OWNERSHIP=true ;;
     --help|-h)
       sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# //' -e 's/^#$//' -e '/^set -euo/d'
       exit 0
@@ -976,10 +1009,287 @@ phase_f_archive_downtime() {
   echo ""
 }
 
+# ── Phase H — health-truth (/admin/mail/health vs live state) ──────────
+# Streamline 2026-05-14: catches the "banner says green but reality is
+# broken" class of bug that motivated the Phase 3a/3b probe rewrite. The
+# banner is supposed to AGREE with what kubectl/openssl/nc tell us
+# directly. When it doesn't, either the probe is lying (Phase-3 bug) or
+# the cache is stale beyond its TTL — both are fail-class.
+phase_h_health_truth() {
+  echo "## Phase H — health-truth (banner vs live)"
+
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "H. SKIP — ADMIN_TOKEN + PLATFORM_API_URL required to call /admin/mail/health"
+    echo ""
+    return
+  fi
+
+  local health
+  health="$(curl -sk --fail --max-time 30 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/health?refresh=1" 2>/dev/null || echo '')"
+  if [[ -z "$health" ]]; then
+    note_fail "H. /admin/mail/health request failed"
+    echo ""
+    return
+  fi
+
+  local banner_healthy banner_pod_healthy banner_jmap_healthy banner_rocksdb_healthy banner_tcp_healthy
+  banner_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_pod_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['pod']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_jmap_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['jmap']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_rocksdb_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['rocksdb']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_tcp_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['tcp']['healthy'])" 2>/dev/null || echo 'unknown')"
+
+  # H1. Pod-health agreement — banner.pod must match kubectl.containerStatuses.ready.
+  local kubectl_ready
+  kubectl_ready=$(kctl -n "$STALWART_NS" get pod "$POD" \
+    -o jsonpath='{.status.containerStatuses[?(@.name=="stalwart")].ready}' 2>/dev/null || echo '')
+  if [[ "$banner_pod_healthy" == "True" && "$kubectl_ready" == "true" ]]; then
+    note_pass "H1. banner.pod.healthy == kubectl.containerStatuses.ready (both green)"
+  elif [[ "$banner_pod_healthy" == "False" && "$kubectl_ready" != "true" ]]; then
+    note_pass "H1. banner.pod.healthy == kubectl.containerStatuses.ready (both red, consistent)"
+  else
+    note_fail "H1. DRIFT — banner.pod.healthy=${banner_pod_healthy}, kubectl.ready=${kubectl_ready}"
+  fi
+
+  # H2. RocksDB-truth — banner.rocksdb.currentFile must match a live test in the pod.
+  local pod_current pod_lock
+  pod_current=$(kctl -n "$STALWART_NS" exec "$POD" -c stalwart -- \
+    sh -c 'test -f /var/lib/stalwart/data/CURRENT && echo "yes" || echo "no"' 2>/dev/null || echo 'unknown')
+  pod_lock=$(kctl -n "$STALWART_NS" exec "$POD" -c stalwart -- \
+    sh -c 'test -f /var/lib/stalwart/data/LOCK && echo "yes" || echo "no"' 2>/dev/null || echo 'unknown')
+  local banner_current banner_lock
+  banner_current="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['rocksdb']['currentFile'])" 2>/dev/null || echo 'None')"
+  banner_lock="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['rocksdb']['lockFile'])" 2>/dev/null || echo 'None')"
+  local expect_current expect_lock
+  [[ "$pod_current" == "yes" ]] && expect_current="True" || expect_current="False"
+  [[ "$pod_lock"    == "yes" ]] && expect_lock="True"    || expect_lock="False"
+  if [[ "$banner_current" == "$expect_current" && "$banner_lock" == "$expect_lock" ]]; then
+    note_pass "H2. banner.rocksdb agrees with live RocksDB sentinels (CURRENT=${pod_current}, LOCK=${pod_lock})"
+  else
+    note_fail "H2. DRIFT — banner.rocksdb {current=${banner_current}, lock=${banner_lock}} vs live {current=${pod_current}, lock=${pod_lock}}"
+  fi
+
+  # H3. TCP-truth — banner.tcp.reachable must match nc from outside the pod
+  #     on at least the SMTP greeting port. We test 25 + 993 (smtps).
+  for port in 25 993; do
+    local banner_port_reachable
+    banner_port_reachable="$(echo "$health" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)['data']
+ports = d['components']['tcp']['ports']
+hit = next((p for p in ports if p['port'] == ${port}), None)
+print(hit['reachable'] if hit else 'missing')" 2>/dev/null || echo 'unknown')"
+
+    local live_reachable
+    if timeout 3 bash -c "</dev/tcp/${PROBE_HOST}/${port}" 2>/dev/null; then
+      live_reachable='True'
+    else
+      live_reachable='False'
+    fi
+
+    if [[ "$banner_port_reachable" == "$live_reachable" ]]; then
+      note_pass "H3/${port}. banner.tcp[${port}].reachable == live nc (${live_reachable})"
+    else
+      note_fail "H3/${port}. DRIFT — banner.reachable=${banner_port_reachable}, live=${live_reachable}"
+    fi
+  done
+
+  # H4. Top-level healthy must NOT be true if any per-component is false.
+  # This is the most important guardrail — Phase 3a's bug was that the
+  # cosmetic tile reported green despite real failures.
+  if [[ "$banner_healthy" == "True" ]]; then
+    if [[ "$banner_pod_healthy" != "True" || "$banner_jmap_healthy" != "True" \
+       || "$banner_rocksdb_healthy" != "True" || "$banner_tcp_healthy" != "True" ]]; then
+      note_fail "H4. INVARIANT VIOLATION — top-level healthy=true but at least one component is unhealthy"
+    else
+      note_pass "H4. Top-level healthy=true and all components agree"
+    fi
+  else
+    note_pass "H4. Top-level healthy=false (will not be considered green)"
+  fi
+  echo ""
+}
+
+# ── Phase G — migration endpoint smoke (non-destructive) ───────────────
+# Validates the /admin/mail/migrate input-validation surface without
+# actually moving the pod. Three negative tests + one read-only state
+# check. The destructive "real migration" test is intentionally NOT in
+# the default harness — it requires multi-node coordination and a long
+# rsync window. Phase G is the smaller "did the endpoint hang up on
+# bad inputs correctly?" check.
+phase_g_migrate_smoke() {
+  echo "## Phase G — migrate endpoint input validation"
+
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "G. SKIP — ADMIN_TOKEN + PLATFORM_API_URL required"
+    echo ""
+    return
+  fi
+
+  # G1. Rejects a non-existent target node with MAIL_NODE_NOT_FOUND.
+  local resp_unknown
+  resp_unknown="$(curl -sk --max-time 15 -X POST \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"targetNode":"this-node-definitely-does-not-exist-xyz"}' \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
+  if echo "$resp_unknown" | grep -q 'MAIL_NODE_NOT_FOUND'; then
+    note_pass "G1. /admin/mail/migrate rejects unknown target with MAIL_NODE_NOT_FOUND"
+  else
+    note_fail "G1. expected MAIL_NODE_NOT_FOUND; got: ${resp_unknown:0:200}"
+  fi
+
+  # G2. Rejects same-node migration with MAIL_MIGRATION_SAME_NODE.
+  local current_node
+  current_node="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo '')"
+  if [[ -z "$current_node" ]]; then
+    note_warn "G2. SKIP — could not determine current node"
+  else
+    local resp_same
+    resp_same="$(curl -sk --max-time 15 -X POST \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d "{\"targetNode\":\"${current_node}\"}" \
+      "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
+    if echo "$resp_same" | grep -q 'MAIL_MIGRATION_SAME_NODE'; then
+      note_pass "G2. /admin/mail/migrate rejects same-node with MAIL_MIGRATION_SAME_NODE"
+    else
+      note_fail "G2. expected MAIL_MIGRATION_SAME_NODE for target=${current_node}; got: ${resp_same:0:200}"
+    fi
+  fi
+
+  # G3. /failback with no primary configured returns MAIL_PLACEMENT_NO_CANDIDATE,
+  #     OR same-node when primary == current. Either is acceptable proof the
+  #     resolver wired up. (We intentionally don't dry-run /failover because
+  #     it would succeed and start an actual migration.)
+  local resp_fb
+  resp_fb="$(curl -sk --max-time 15 -X POST \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"confirm":true}' \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/failback" 2>/dev/null || echo '')"
+  if echo "$resp_fb" | grep -qE 'MAIL_PLACEMENT_NO_CANDIDATE|MAIL_MIGRATION_SAME_NODE'; then
+    note_pass "G3. /admin/mail/failback resolves placement and returns a coherent error"
+  else
+    note_fail "G3. unexpected /failback response: ${resp_fb:0:200}"
+  fi
+
+  # G4. Live pod node lookup matches placement.placementState.currentNode.
+  local placement
+  placement="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null || echo '')"
+  local placement_current
+  placement_current="$(echo "$placement" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)['data']
+  print(d.get('currentNode') or d.get('placement', {}).get('currentNode') or '')
+except Exception:
+  print('')" 2>/dev/null || echo '')"
+  if [[ "$placement_current" == "$current_node" ]]; then
+    note_pass "G4. placement.currentNode == kubectl pod.spec.nodeName (${current_node})"
+  elif [[ -z "$placement_current" ]]; then
+    note_warn "G4. SKIP — placement response shape did not expose currentNode"
+  else
+    note_fail "G4. DRIFT — placement.currentNode=${placement_current}, kubectl=${current_node}"
+  fi
+  echo ""
+}
+
+# ── Phase I — Flux-ownership post-flip (depends on --mode-flip) ────────
+# After Phase C flips port-exposure, sleep 60s and assert the haproxy
+# DaemonSet lifecycle matches the operator's intent:
+#   - mode=allServerNodes → DS exists, labelled managed-by=platform-api,
+#     Flux's kustomize-controller is NOT in its managedFields.
+#   - mode=thisNodeOnly   → DS does NOT exist (platform-api deleted it
+#     on the flip-back; Flux must not re-create it).
+# 2026-05-14 streamline: haproxy DS lifecycle is now wholly owned by
+# platform-api (k8s/base/stalwart-mail/haproxy/daemonset.yaml was
+# deleted; spec moved to haproxy-builder.ts). Pre-streamline, this
+# probe asserted SSA field-ownership on a Flux-owned DS — that
+# arrangement is gone.
+phase_i_flux_ownership() {
+  echo "## Phase I — Flux ownership post-flip (sleeps 60s)"
+
+  if ! $RUN_MODE_FLIP; then
+    note_warn "I. SKIP — --flux-ownership requires --mode-flip to have run"
+    echo ""
+    return
+  fi
+
+  echo "  Waiting 60s for Flux reconcile loops..."
+  sleep 60
+
+  local current_mode
+  current_mode="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/port-exposure" 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["mode"])' 2>/dev/null \
+    || echo 'unknown')"
+
+  local ds_present
+  if kctl -n "$STALWART_NS" get daemonset stalwart-haproxy >/dev/null 2>&1; then
+    ds_present=true
+  else
+    ds_present=false
+  fi
+
+  case "$current_mode" in
+    allServerNodes)
+      if $ds_present; then
+        note_pass "I1. mode=allServerNodes AND haproxy DS exists"
+      else
+        note_fail "I1. mode=allServerNodes but haproxy DS is MISSING (platform-api failed to create or Flux deleted)"
+      fi
+      ;;
+    thisNodeOnly)
+      if $ds_present; then
+        note_fail "I1. mode=thisNodeOnly but haproxy DS STILL EXISTS (platform-api failed to delete or Flux re-created)"
+      else
+        note_pass "I1. mode=thisNodeOnly AND haproxy DS absent"
+      fi
+      ;;
+    *)
+      note_warn "I1. unknown mode '${current_mode}' — could not verify DS lifecycle invariant"
+      ;;
+  esac
+
+  if $ds_present; then
+    # I2. DS carries the platform-api managed-by label.
+    local managed_by
+    managed_by=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
+      -o jsonpath='{.metadata.labels.platform\.phoenix-host\.net/managed-by}' 2>/dev/null || echo '')
+    if [[ "$managed_by" == "platform-api" ]]; then
+      note_pass "I2. haproxy DS labelled managed-by=platform-api"
+    else
+      note_fail "I2. haproxy DS missing managed-by=platform-api label (got: '${managed_by}')"
+    fi
+
+    # I3. kustomize-controller is NOT in managedFields. The DS spec was
+    # removed from k8s/base, so Flux should never claim ownership of
+    # this object after the streamline.
+    local managers
+    managers=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
+      -o jsonpath='{.metadata.managedFields[*].manager}' 2>/dev/null || echo '')
+    if echo "$managers" | grep -q 'kustomize-controller'; then
+      note_fail "I3. kustomize-controller is in managedFields — Flux is still trying to manage this DS (managers: ${managers})"
+    else
+      note_pass "I3. kustomize-controller absent from managedFields (managers: ${managers})"
+    fi
+  fi
+  echo ""
+}
+
 # ── Run phases ─────────────────────────────────────────────────────────
 phase_a_health
 phase_b_state
+if $RUN_HEALTH_TRUTH;     then phase_h_health_truth;          fi
+if $RUN_MIGRATE_SMOKE;    then phase_g_migrate_smoke;         fi
 if $RUN_MODE_FLIP;        then phase_c_mode_flip;            fi
+if $RUN_FLUX_OWNERSHIP;   then phase_i_flux_ownership;        fi
 if $RUN_NEGATIVE;         then phase_d_negative;             fi
 if $RUN_ARCHIVE;          then phase_e_archive_no_downtime;  fi
 if $RUN_ARCHIVE_DOWNTIME; then phase_f_archive_downtime;     fi
