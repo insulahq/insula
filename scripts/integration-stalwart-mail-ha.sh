@@ -448,36 +448,41 @@ print(' '.join(canon(e.get('address','')) for e in r))" 2>/dev/null || echo '')"
     note_fail "B3. Missing from x:AllowedIp: ${b3_missing[*]}"
   fi
 
-  # B4. haproxy DaemonSet exists, scale matches port-exposure mode
-  local ds_desired ds_ready mode server_node_count
+  # B4. haproxy DaemonSet lifecycle matches port-exposure mode.
+  # 2026-05-14 streamline (Phase 7): the haproxy DS lifecycle moved
+  # from Flux into platform-api. In thisNodeOnly mode the DS object
+  # does NOT exist (deleted by platform-api on mode flip). In
+  # allServerNodes mode the DS exists, scheduled on every server-role
+  # node. Pre-Phase-7 the DS was always present with a dummy
+  # nodeSelector flipped on/off.
+  local ds_desired ds_ready mode server_node_count ds_present
   ds_desired="$(kctl -n "$STALWART_NS" get ds stalwart-haproxy -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 'absent')"
   ds_ready="$(kctl -n "$STALWART_NS" get ds stalwart-haproxy -o jsonpath='{.status.numberReady}' 2>/dev/null || echo '0')"
-  if [[ "$ds_desired" == "absent" ]]; then
-    note_fail "B4. haproxy DaemonSet not present in namespace ${STALWART_NS}"
-  else
-    mode="$(get_port_exposure_mode)"
-    ORIGINAL_PORT_EXPOSURE_MODE="${mode:-thisNodeOnly}"
-    server_node_count="$(kctl get nodes -l "$SERVER_ROLE_LABEL" -o name 2>/dev/null | wc -l)"
-    case "${mode:-thisNodeOnly}" in
-      thisNodeOnly)
-        if [[ "$ds_desired" == "0" ]]; then
-          note_pass "B4. haproxy DS desired=0 (mode=thisNodeOnly)"
-        else
-          note_fail "B4. haproxy DS desired=${ds_desired} but mode=thisNodeOnly (should be 0)"
-        fi
-        ;;
-      allServerNodes)
-        if [[ "$ds_desired" == "$server_node_count" && "$ds_ready" == "$server_node_count" ]]; then
-          note_pass "B4. haproxy DS desired=ready=${ds_desired} matches ${server_node_count} server-role nodes"
-        else
-          note_fail "B4. haproxy DS desired=${ds_desired} ready=${ds_ready} but server nodes=${server_node_count}"
-        fi
-        ;;
-      *)
-        note_warn "B4. Unknown mode='${mode}' — cannot validate haproxy DS scale"
-        ;;
-    esac
-  fi
+  if [[ "$ds_desired" == "absent" ]]; then ds_present=false; else ds_present=true; fi
+  mode="$(get_port_exposure_mode)"
+  ORIGINAL_PORT_EXPOSURE_MODE="${mode:-thisNodeOnly}"
+  server_node_count="$(kctl get nodes -l "$SERVER_ROLE_LABEL" -o name 2>/dev/null | wc -l)"
+  case "${mode:-thisNodeOnly}" in
+    thisNodeOnly)
+      if ! $ds_present; then
+        note_pass "B4. haproxy DS absent (mode=thisNodeOnly, post-Phase-7 lifecycle)"
+      else
+        note_fail "B4. haproxy DS present with desired=${ds_desired} but mode=thisNodeOnly (Phase 7 expects platform-api to have deleted it)"
+      fi
+      ;;
+    allServerNodes)
+      if ! $ds_present; then
+        note_fail "B4. haproxy DS absent but mode=allServerNodes (platform-api should have created it)"
+      elif [[ "$ds_desired" == "$server_node_count" && "$ds_ready" == "$server_node_count" ]]; then
+        note_pass "B4. haproxy DS desired=ready=${ds_desired} matches ${server_node_count} server-role nodes"
+      else
+        note_fail "B4. haproxy DS desired=${ds_desired} ready=${ds_ready} but server nodes=${server_node_count}"
+      fi
+      ;;
+    *)
+      note_warn "B4. Unknown mode='${mode}' — cannot validate haproxy DS lifecycle"
+      ;;
+  esac
 
   # B5. Reconciler log silence.
   # `grep -c` always prints the count and exits 1 when count=0 — we don't
@@ -1129,11 +1134,13 @@ phase_g_migrate_smoke() {
   fi
 
   # G1. Rejects a non-existent target node with MAIL_NODE_NOT_FOUND.
+  # mailMigrationStartRequestSchema requires `confirm: true` to prevent
+  # accidental triggers from CLI typos / curl history.
   local resp_unknown
   resp_unknown="$(curl -sk --max-time 15 -X POST \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H 'Content-Type: application/json' \
-    -d '{"targetNode":"this-node-definitely-does-not-exist-xyz"}' \
+    -d '{"targetNode":"this-node-definitely-does-not-exist-xyz","confirm":true}' \
     "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
   if echo "$resp_unknown" | grep -q 'MAIL_NODE_NOT_FOUND'; then
     note_pass "G1. /admin/mail/migrate rejects unknown target with MAIL_NODE_NOT_FOUND"
@@ -1142,21 +1149,37 @@ phase_g_migrate_smoke() {
   fi
 
   # G2. Rejects same-node migration with MAIL_MIGRATION_SAME_NODE.
-  local current_node
-  current_node="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo '')"
-  if [[ -z "$current_node" ]]; then
-    note_warn "G2. SKIP — could not determine current node"
+  #
+  # CRITICAL: target node must match the API's internal source-node
+  # logic (activeNode → primaryNode fallback in migration.ts), NOT
+  # `kubectl pod.spec.nodeName`. If they differ (state drift), the
+  # API will accept the migration request and start an ACTUAL
+  # rsync — destructive on a live cluster. Query the placement
+  # endpoint to get exactly what the API considers the source.
+  local placement_g2 source_node
+  placement_g2="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null || echo '')"
+  source_node="$(echo "$placement_g2" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)['data']
+  print(d.get('activeNode') or d.get('primaryNode') or '')
+except Exception:
+  print('')" 2>/dev/null || echo '')"
+  if [[ -z "$source_node" ]]; then
+    note_warn "G2. SKIP — placement.activeNode/primaryNode not set; same-node test would be a destructive false-positive"
   else
     local resp_same
     resp_same="$(curl -sk --max-time 15 -X POST \
       -H "Authorization: Bearer $ADMIN_TOKEN" \
       -H 'Content-Type: application/json' \
-      -d "{\"targetNode\":\"${current_node}\"}" \
+      -d "{\"targetNode\":\"${source_node}\",\"confirm\":true}" \
       "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
     if echo "$resp_same" | grep -q 'MAIL_MIGRATION_SAME_NODE'; then
-      note_pass "G2. /admin/mail/migrate rejects same-node with MAIL_MIGRATION_SAME_NODE"
+      note_pass "G2. /admin/mail/migrate rejects same-node target='${source_node}' with MAIL_MIGRATION_SAME_NODE"
     else
-      note_fail "G2. expected MAIL_MIGRATION_SAME_NODE for target=${current_node}; got: ${resp_same:0:200}"
+      note_fail "G2. expected MAIL_MIGRATION_SAME_NODE for source-node target='${source_node}'; got: ${resp_same:0:200}"
     fi
   fi
 
@@ -1176,25 +1199,31 @@ phase_g_migrate_smoke() {
     note_fail "G3. unexpected /failback response: ${resp_fb:0:200}"
   fi
 
-  # G4. Live pod node lookup matches placement.placementState.currentNode.
-  local placement
-  placement="$(curl -sk --fail --max-time 15 \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null || echo '')"
-  local placement_current
-  placement_current="$(echo "$placement" | python3 -c "
+  # G4. Live pod node lookup matches placement.activeNode (the field
+  # the contract exposes; see mailPlacementResponseSchema).
+  # NOTE: when activeNode is null (which is allowed by the schema —
+  # null means "not yet set after a placement update"), we report a
+  # WARN rather than a pass/fail. Some clusters legitimately don't
+  # populate activeNode (depends on whether an operator has clicked
+  # through the placement-set wizard since pod schedule changed).
+  local placement_active live_pod_node
+  placement_active="$(echo "$placement_g2" | python3 -c "
 import sys, json
 try:
   d = json.load(sys.stdin)['data']
-  print(d.get('currentNode') or d.get('placement', {}).get('currentNode') or '')
+  v = d.get('activeNode')
+  print(v if v is not None else 'NULL')
 except Exception:
   print('')" 2>/dev/null || echo '')"
-  if [[ "$placement_current" == "$current_node" ]]; then
-    note_pass "G4. placement.currentNode == kubectl pod.spec.nodeName (${current_node})"
-  elif [[ -z "$placement_current" ]]; then
-    note_warn "G4. SKIP — placement response shape did not expose currentNode"
+  live_pod_node="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo '')"
+  if [[ "$placement_active" == "NULL" ]]; then
+    note_warn "G4. placement.activeNode is null (live pod on '${live_pod_node}') — placement state-drift; settings need to be refreshed"
+  elif [[ "$placement_active" == "$live_pod_node" ]]; then
+    note_pass "G4. placement.activeNode == kubectl pod.spec.nodeName (${live_pod_node})"
+  elif [[ -z "$placement_active" ]]; then
+    note_warn "G4. SKIP — placement response shape did not expose activeNode"
   else
-    note_fail "G4. DRIFT — placement.currentNode=${placement_current}, kubectl=${current_node}"
+    note_fail "G4. DRIFT — placement.activeNode=${placement_active}, kubectl=${live_pod_node}"
   fi
   echo ""
 }
