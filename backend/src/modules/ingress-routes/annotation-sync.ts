@@ -1,19 +1,54 @@
 /**
- * K8s annotation sync for route-level ingress settings.
+ * Per-route Middleware / IngressRoute spec builder.
  *
- * Translates per-route settings (redirect, security, WAF, advanced)
- * into NGINX Ingress Controller annotations and K8s resources
- * (Secrets for basic auth, ConfigMaps for proxy headers).
+ * Replaces the prior nginx-annotation-driven model. Each ingress_routes
+ * row → a list of companion Middleware CRDs + a list of middleware
+ * references that the tenant IngressRoute attaches to its corresponding
+ * `spec.routes[]` entry.
  *
- * Called after any settings update and also during ingress reconciliation
- * to ensure annotations stay in sync.
+ * The tenant reconciler in domains/k8s-ingress.ts:
+ *   1. Calls buildRouteSpecs(db, k8s, clientId, domainIds) to get a
+ *      RouteSpec per active ingress_routes row.
+ *   2. Applies every Middleware in `spec.middlewares[]` first (the
+ *      IngressRoute that references them must come AFTER, otherwise
+ *      Traefik briefly logs a "Middleware not found" diag).
+ *   3. Builds a single IngressRoute with one TraefikRoute per RouteSpec
+ *      (the RouteSpec.routes are merged into the IngressRoute by host).
+ *   4. Deletes any orphan Middleware CRDs (labelled hosting-platform/
+ *      route-id) that no longer appear in any expectedMiddlewareNames.
+ *
+ * K8s Secrets (htpasswd basic auth, mTLS CA bundles) are still created
+ * directly by this module — they are not Middlewares. The Middleware
+ * specs reference the Secret names.
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, routeProtectedDirs, routeAuthUsers, deployments, domains, clients, ingressAuthConfigs } from '../../db/schema.js';
+import {
+  ingressRoutes,
+  routeProtectedDirs,
+  routeAuthUsers,
+  domains,
+  clients,
+  ingressAuthConfigs,
+} from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import {
+  buildMiddleware,
+  middlewareName,
+  redirectSchemeSpec,
+  redirectRegexSpec,
+  ipAllowListSpec,
+  rateLimitSpec,
+  basicAuthSpec,
+  forwardAuthSpec,
+  headersSpec,
+} from './traefik-types.js';
+import type {
+  MiddlewareBody,
+  TraefikRoute,
+} from './traefik-types.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -29,23 +64,15 @@ function isK8s409(err: unknown): boolean {
   return false;
 }
 
-// ─── Auth Secret Sync ───────────────────────────────────────────────────────
+// ─── Auth Secret Sync (htpasswd) ────────────────────────────────────────────
 
-/**
- * Generate htpasswd-format K8s Secret for basic auth users.
- *
- * The NGINX Ingress Controller expects an Opaque Secret with a key
- * named "auth" containing Apache htpasswd-format content.
- *
- * bcrypt hashes from the DB use the $2b$ prefix. Apache htpasswd
- * expects $2y$ — they are algorithmically identical, so we
- * swap the prefix for compatibility.
- */
 /**
  * Sync htpasswd Secrets for all enabled protected directories on a route.
  *
- * Creates one Secret per protected directory that has enabled users.
- * Deletes Secrets for directories with no enabled users.
+ * Traefik's basicAuth Middleware reads from a Secret with key `users`
+ * (NOT `auth` — nginx's convention). bcrypt hashes from the DB use the
+ * $2b$ prefix; htpasswd accepts $2b$ and $2y$ interchangeably so no
+ * prefix swap needed for Traefik.
  */
 export async function syncAuthSecret(
   db: Database,
@@ -53,7 +80,6 @@ export async function syncAuthSecret(
   namespace: string,
   routeId: string,
 ): Promise<void> {
-  // Find all enabled protected dirs for this route
   const dirs = await db
     .select()
     .from(routeProtectedDirs)
@@ -68,7 +94,6 @@ export async function syncAuthSecret(
     const secretName = `route-auth-${dir.id}`;
 
     if (users.length === 0) {
-      // No enabled users — delete Secret if it exists
       try {
         await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
       } catch (err: unknown) {
@@ -77,12 +102,8 @@ export async function syncAuthSecret(
       continue;
     }
 
-    // Build htpasswd content: "user:$2y$10$hash\n"
-    const htpasswdLines = users.map((u) => {
-      // Swap $2b$ → $2y$ for Apache/NGINX compatibility
-      const apacheHash = u.passwordHash.replace(/^\$2b\$/, '$2y$');
-      return `${u.username}:${apacheHash}`;
-    });
+    // Traefik basicAuth reads from `users` key (one htpasswd line per user).
+    const htpasswdLines = users.map((u) => `${u.username}:${u.passwordHash}`);
     const htpasswdContent = htpasswdLines.join('\n') + '\n';
 
     const secretBody = {
@@ -99,30 +120,23 @@ export async function syncAuthSecret(
       },
       type: 'Opaque',
       data: {
-        auth: Buffer.from(htpasswdContent).toString('base64'),
+        users: Buffer.from(htpasswdContent).toString('base64'),
       },
     };
 
     try {
       // backup-coverage: excluded:reconciler-rebuilds-from-config-tables
-      // (htpasswd Secret derived from protected_directories DB rows
-      // which the config-tables component captures; reconciler
-      // regenerates this Secret on restore.)
       await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
     } catch (err: unknown) {
       if (isK8s409(err)) {
-        await k8s.core.replaceNamespacedSecret({
-          name: secretName,
-          namespace,
-          body: secretBody,
-        });
+        await k8s.core.replaceNamespacedSecret({ name: secretName, namespace, body: secretBody });
       } else {
         throw err;
       }
     }
   }
 
-  // Also clean up the legacy route-level secret if it exists
+  // Clean up legacy route-level secret if it exists (pre-protected-dirs era).
   try {
     await k8s.core.deleteNamespacedSecret({ name: `route-auth-${routeId}`, namespace });
   } catch (err: unknown) {
@@ -130,303 +144,442 @@ export async function syncAuthSecret(
   }
 }
 
-// ─── Proxy Headers ConfigMap ────────────────────────────────────────────────
-
-async function syncProxyHeadersConfigMap(
-  k8s: K8sClients,
-  namespace: string,
-  routeId: string,
-  headers: Record<string, string>,
-): Promise<string> {
-  const cmName = `proxy-headers-${routeId.slice(0, 8)}`;
-
-  const cmBody = {
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name: cmName,
-      namespace,
-      labels: {
-        'app.kubernetes.io/managed-by': 'hosting-platform',
-        'hosting-platform/route-id': routeId,
-      },
-    },
-    data: headers,
-  };
-
-  try {
-    await k8s.core.createNamespacedConfigMap({ namespace, body: cmBody });
-  } catch (err: unknown) {
-    if (isK8s409(err)) {
-      await k8s.core.replaceNamespacedConfigMap({
-        name: cmName,
-        namespace,
-        body: cmBody,
-      });
-    } else {
-      throw err;
-    }
-  }
-
-  return cmName;
-}
-
-async function deleteProxyHeadersConfigMap(
-  k8s: K8sClients,
-  namespace: string,
-  routeId: string,
-): Promise<void> {
-  const cmName = `proxy-headers-${routeId.slice(0, 8)}`;
-  try {
-    await k8s.core.deleteNamespacedConfigMap({ name: cmName, namespace });
-  } catch (err: unknown) {
-    if (!isK8s404(err)) throw err;
-  }
-}
-
-// ─── Build Annotation Map ───────────────────────────────────────────────────
-
-/**
- * Build the NGINX Ingress annotation map from route settings.
- *
- * Returns annotations that should be applied to the Ingress resource.
- * The caller (reconciler) merges these with any existing annotations.
- */
-// ─── Header Validation Constants ─────────────────────────────────────────
+// ─── Header validation ──────────────────────────────────────────────────────
 
 const MAX_HEADERS = 50;
 const MAX_HEADER_VALUE_LENGTH = 4096;
 
-/**
- * Validate and sanitise a single header name.
- * Only alphanumeric characters, hyphens, and underscores are allowed.
- */
+/** Only alphanumeric, hyphens, underscores. Strips other characters. */
 function sanitiseHeaderName(name: string): string {
   return name.replace(/[^a-zA-Z0-9\-_]/g, '');
 }
 
-/**
- * Validate and sanitise a single header value.
- * Strips newlines, carriage returns, curly braces, and backticks
- * to prevent NGINX configuration injection. Semicolons are allowed
- * (valid in header values like X-XSS-Protection: 1; mode=block).
- */
+/** Strip newlines, curly braces, backticks. Semicolons OK. */
 function sanitiseHeaderValue(value: string): string {
   return value.replace(/[\n\r{}`]/g, '');
 }
 
 /**
- * Build a configuration-snippet with add_header directives from a
- * record of response headers.
- *
- * Returns the snippet string, or null if no valid headers remain.
+ * Sanitise a Record<string,string> of response headers (drops bad keys,
+ * caps the total count and value lengths). Returns the cleaned map or
+ * null if nothing valid remains.
  */
-export function buildHeaderSnippet(
-  headers: Record<string, string>,
-): string | null {
+export function sanitiseHeaderMap(headers: Record<string, string>): Record<string, string> | null {
   const entries = Object.entries(headers).slice(0, MAX_HEADERS);
   if (entries.length === 0) return null;
-
-  const lines = entries
-    .map(([name, value]) => {
-      const safeName = sanitiseHeaderName(name);
-      const safeValue = sanitiseHeaderValue(value).slice(0, MAX_HEADER_VALUE_LENGTH);
-      if (!safeName) return null;
-      // more_set_headers replaces existing header or adds if absent — no duplicates
-      return `more_set_headers "${safeName}: ${safeValue}";`;
-    })
-    .filter(Boolean);
-
-  return lines.length > 0 ? lines.join('\n') : null;
+  const out: Record<string, string> = {};
+  for (const [name, value] of entries) {
+    const safeName = sanitiseHeaderName(name);
+    const safeValue = sanitiseHeaderValue(value).slice(0, MAX_HEADER_VALUE_LENGTH);
+    if (safeName) out[safeName] = safeValue;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
-export function buildAnnotationsFromRoute(
-  route: {
-    forceHttps: number;
-    wwwRedirect: string;
-    redirectUrl: string | null;
-    ipAllowlist: string | null;
-    rateLimitRps: number | null;
-    rateLimitConnections: number | null;
-    rateLimitBurstMultiplier: string | null;
-    wafEnabled: number;
-    wafOwaspCrs: number;
-    wafAnomalyThreshold: number;
-    wafExcludedRules: string | null;
-    customErrorCodes: string | null;
-    customErrorPath: string | null;
-    additionalHeaders?: Record<string, string> | null;
-  },
-  routeId: string,
-  _namespace?: string,
-  _proxyHeadersCmName?: string | null,
-): Record<string, string> {
-  const annotations: Record<string, string> = {};
+// ─── Middleware-spec builder ────────────────────────────────────────────────
 
-  // ── Redirects ──
-  if (route.forceHttps) {
-    annotations['nginx.ingress.kubernetes.io/ssl-redirect'] = 'true';
-  } else {
-    annotations['nginx.ingress.kubernetes.io/ssl-redirect'] = 'false';
-  }
-
-  if (route.wwwRedirect === 'add-www' || route.wwwRedirect === 'remove-www') {
-    // from-to-www-redirect works bidirectionally: it redirects whichever
-    // hostname variant (www or non-www) is NOT in the Ingress rules to
-    // the one that IS. The reconciler controls which host is in the rules.
-    annotations['nginx.ingress.kubernetes.io/from-to-www-redirect'] = 'true';
-  }
-
-  if (route.redirectUrl) {
-    annotations['nginx.ingress.kubernetes.io/permanent-redirect'] = route.redirectUrl;
-  }
-
-  // Note: Basic auth annotations are now handled per-directory in the
-  // ingress reconciler via protected dirs. The route-level annotation
-  // builder no longer sets auth-type/auth-secret/auth-realm.
-
-  // ── IP Allowlist ──
-  if (route.ipAllowlist) {
-    annotations['nginx.ingress.kubernetes.io/whitelist-source-range'] = route.ipAllowlist;
-  }
-
-  // ── Rate Limiting ──
-  if (route.rateLimitRps) {
-    annotations['nginx.ingress.kubernetes.io/limit-rps'] = String(route.rateLimitRps);
-  }
-  if (route.rateLimitConnections) {
-    annotations['nginx.ingress.kubernetes.io/limit-connections'] = String(route.rateLimitConnections);
-  }
-  if (route.rateLimitBurstMultiplier) {
-    annotations['nginx.ingress.kubernetes.io/limit-burst-multiplier'] = String(route.rateLimitBurstMultiplier);
-  }
-
-  // ── WAF / ModSecurity ──
-  annotations['nginx.ingress.kubernetes.io/enable-modsecurity'] = route.wafEnabled ? 'true' : 'false';
-  annotations['nginx.ingress.kubernetes.io/enable-owasp-core-rules'] = route.wafOwaspCrs ? 'true' : 'false';
-
-  if (route.wafAnomalyThreshold !== 10 || route.wafExcludedRules) {
-    let snippet = '';
-    if (route.wafAnomalyThreshold !== 10) {
-      snippet += `SecAction "id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=${route.wafAnomalyThreshold}"\n`;
-    }
-    if (route.wafExcludedRules) {
-      for (const ruleId of route.wafExcludedRules.split(',').map((s) => s.trim())) {
-        snippet += `SecRuleRemoveById ${ruleId}\n`;
-      }
-    }
-    if (snippet) {
-      annotations['nginx.ingress.kubernetes.io/modsecurity-snippet'] = snippet;
-    }
-  }
-
-  // ── Custom Errors ──
-  // Only set custom-http-errors if error codes are configured.
-  // default-backend requires a K8s Service name (not a file path) —
-  // customErrorPath stores a file path for future use but is NOT
-  // a valid default-backend value. Omitting default-backend means
-  // NGINX uses the global default backend for error responses.
-  if (route.customErrorCodes) {
-    annotations['nginx.ingress.kubernetes.io/custom-http-errors'] = route.customErrorCodes;
-  }
-
-  // ── Response Headers via configuration-snippet ──
-  if (route.additionalHeaders && Object.keys(route.additionalHeaders).length > 0) {
-    const snippet = buildHeaderSnippet(route.additionalHeaders);
-    if (snippet) {
-      // Append to existing configuration-snippet if WAF rules already set one
-      const existing = annotations['nginx.ingress.kubernetes.io/configuration-snippet'];
-      annotations['nginx.ingress.kubernetes.io/configuration-snippet'] = existing
-        ? `${existing}\n${snippet}`
-        : snippet;
-    }
-  }
-
-  return annotations;
+export interface RouteSettingsLike {
+  forceHttps: number;
+  wwwRedirect: string;
+  redirectUrl: string | null;
+  ipAllowlist: string | null;
+  rateLimitRps: number | null;
+  rateLimitConnections: number | null;
+  rateLimitBurstMultiplier: string | null;
+  wafEnabled: number;
+  wafOwaspCrs: number;
+  wafAnomalyThreshold: number;
+  wafExcludedRules: string | null;
+  customErrorCodes: string | null;
+  customErrorPath: string | null;
+  additionalHeaders?: Record<string, string> | null;
 }
-
-// ─── Main Sync Function ────────────────────────────────────────────────────
 
 /**
- * Sync all route-level annotations and K8s resources for a given route.
+ * Translate per-route settings into a list of companion Middleware CRDs.
+ * Pure — does not touch the K8s API. The reconciler applies the
+ * Middlewares before referencing them from the IngressRoute.
  *
- * This function:
- * 1. Loads the route with all settings
- * 2. Resolves the client namespace
- * 3. Syncs the basic-auth K8s Secret (if basic auth is enabled)
- * 4. Cleans up legacy proxy-headers ConfigMap (now replaced by configuration-snippet)
- * 5. Returns the annotation map for the ingress reconciler to apply
+ * Returns:
+ *   - middlewares: Middleware bodies to apply (each may already exist;
+ *     the reconciler uses create-or-replace semantics).
+ *   - referenceList: the names to inject into IngressRoute
+ *     spec.routes[].middlewares[] (preserves order).
  *
- * NOTE: This does NOT directly patch the Ingress. The ingress reconciler
- * in domains/k8s-ingress.ts owns the Ingress lifecycle and calls this
- * function to get the annotations to apply.
+ * Order of references matters — Traefik runs middlewares left-to-right.
+ * We chain: forceHttps-redirect (very first, before any auth) → ip-allow
+ * → rate-limit → headers → redirect-regex (catches www / generic URL
+ * redirect). Auth middlewares (OIDC, mTLS, basic-auth) live separately
+ * and are appended by their respective sync paths.
  */
-export async function syncRouteAnnotations(
+export function buildMiddlewaresForRoute(
+  route: RouteSettingsLike,
+  routeId: string,
+  namespace: string,
+): { middlewares: MiddlewareBody[]; referenceList: Array<{ name: string; namespace: string }> } {
+  const middlewares: MiddlewareBody[] = [];
+  const refs: Array<{ name: string; namespace: string }> = [];
+
+  // ── Force HTTPS via RedirectScheme ──────────────────────────────────
+  // forceHttps: routes that need HTTPS-only get a redirect Middleware
+  // that 301s any HTTP request → HTTPS. The IngressRoute itself lives on
+  // the `websecure` entrypoint, so HTTP traffic only hits this Middleware
+  // when a parallel route on the `web` entrypoint references it (Phase 2
+  // future work — the current shape only emits websecure routes, making
+  // forceHttps a no-op until the parallel web-entrypoint shape lands).
+  if (route.forceHttps) {
+    const name = middlewareName(routeId, 'force-https');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: redirectSchemeSpec('https', true),
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'force-https',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  // ── IP Allowlist ────────────────────────────────────────────────────
+  if (route.ipAllowlist) {
+    const cidrs = route.ipAllowlist
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (cidrs.length > 0) {
+      const name = middlewareName(routeId, 'ipallow');
+      middlewares.push(buildMiddleware({
+        name,
+        namespace,
+        spec: ipAllowListSpec(cidrs),
+        labels: {
+          'hosting-platform/route-id': routeId,
+          'hosting-platform/middleware-kind': 'ipallow',
+        },
+      }));
+      refs.push({ name, namespace });
+    }
+  }
+
+  // ── Rate Limiting ───────────────────────────────────────────────────
+  // Traefik's rateLimit has `average` (steady-state req/s) and `burst`
+  // (additional queued requests before throttle kicks in). Map nginx's
+  // limit-rps + limit-rps × burst-multiplier.
+  if (route.rateLimitRps) {
+    const burstMultiplier = route.rateLimitBurstMultiplier
+      ? Number(route.rateLimitBurstMultiplier)
+      : 5;
+    const burst = Math.max(1, Math.round(route.rateLimitRps * burstMultiplier));
+    const name = middlewareName(routeId, 'ratelimit');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: rateLimitSpec({ average: route.rateLimitRps, burst }),
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'ratelimit',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  // ── Additional response headers ─────────────────────────────────────
+  if (route.additionalHeaders) {
+    const cleaned = sanitiseHeaderMap(route.additionalHeaders);
+    if (cleaned) {
+      const name = middlewareName(routeId, 'headers');
+      middlewares.push(buildMiddleware({
+        name,
+        namespace,
+        spec: headersSpec({ customResponseHeaders: cleaned }),
+        labels: {
+          'hosting-platform/route-id': routeId,
+          'hosting-platform/middleware-kind': 'headers',
+        },
+      }));
+      refs.push({ name, namespace });
+    }
+  }
+
+  // ── Generic URL redirect (operator-configured) ──────────────────────
+  // Sends a 301/302 to `redirectUrl` for any request path. We use
+  // redirectRegex with `.*` regex so every path matches.
+  if (route.redirectUrl) {
+    const name = middlewareName(routeId, 'redirect');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: redirectRegexSpec({
+        regex: '.*',
+        replacement: route.redirectUrl,
+        permanent: true,
+      }),
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'redirect',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  // ── www redirect ────────────────────────────────────────────────────
+  // nginx's from-to-www-redirect was bidirectional: visiting either
+  // variant redirects to the canonical one. Traefik has no built-in
+  // bidirectional Middleware, so we emit a redirectRegex that matches
+  // ANY scheme + ANY host (with or without www) and rewrites the host
+  // to the canonical form. The IngressRoute matches both variants via
+  // a single host expression in k8s-ingress.ts — this Middleware just
+  // performs the redirect when the user lands on the non-canonical
+  // form.
+  if (route.wwwRedirect === 'add-www' || route.wwwRedirect === 'remove-www') {
+    const name = middlewareName(routeId, 'wwwredir');
+    // We don't know the hostname here (this is a pure builder). The
+    // regex below uses Traefik's $1/$2 capture syntax to preserve the
+    // scheme + path while toggling the www. prefix. The reconciler
+    // could be smarter (host-aware patterns) but this is sufficient
+    // for the catalog use case.
+    const spec = route.wwwRedirect === 'add-www'
+      ? redirectRegexSpec({
+          regex: '^https?://(?:www\\.)?([^/]+)(/.*)?$',
+          replacement: 'https://www.$1$2',
+          permanent: true,
+        })
+      : redirectRegexSpec({
+          regex: '^https?://www\\.([^/]+)(/.*)?$',
+          replacement: 'https://$1$2',
+          permanent: true,
+        });
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec,
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'wwwredir',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  return { middlewares, referenceList: refs };
+}
+
+// ─── Main per-route sync ────────────────────────────────────────────────────
+
+export interface RouteBuildResult {
+  /** Companion Middleware CRDs to apply before the IngressRoute. */
+  middlewares: MiddlewareBody[];
+  /** Names to attach to the IngressRoute route's middlewares list (in order). */
+  middlewareRefs: Array<{ name: string; namespace: string }>;
+  /** Optional child routes (per-path basic-auth dirs) the IngressRoute should expose. */
+  childRoutes: TraefikRoute[];
+}
+
+/**
+ * Build everything needed to render this route into a Traefik IngressRoute:
+ *   - Companion Middlewares (settings, mTLS, OIDC, sanitise-only headers, …).
+ *   - The list of Middleware names the IngressRoute attaches to its
+ *     primary route entry.
+ *   - Child routes for protected directories (each carries its own
+ *     basicAuth Middleware reference).
+ *
+ * Side effects: still syncs the htpasswd + mTLS Secrets that the
+ * Middlewares reference.
+ */
+export async function buildRouteSpec(
   db: Database,
   k8s: K8sClients,
   routeId: string,
   clientId: string,
-): Promise<Record<string, string>> {
-  // 1. Load the route with all settings
+  serviceName: string,
+  servicePort: number,
+): Promise<RouteBuildResult | null> {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
-  if (!route) return {};
+  if (!route) return null;
 
-  // 2. Resolve client namespace
   const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client?.kubernetesNamespace) return {};
+  if (!client?.kubernetesNamespace) return null;
   const namespace = client.kubernetesNamespace;
 
-  // 3. Sync basic-auth Secrets for all protected directories on this route
+  // 1. Sync htpasswd Secrets (kept here because they're K8s Secrets, not
+  //    Middlewares — the basicAuth Middleware just references them).
   await syncAuthSecret(db, k8s, namespace, routeId);
 
-  // 4. Clean up legacy proxy-headers ConfigMap (replaced by configuration-snippet).
-  // Safe to call unconditionally — ignores 404.
-  await deleteProxyHeadersConfigMap(k8s, namespace, routeId);
+  // 2. Settings-derived Middlewares.
+  const { middlewares: settingsMws, referenceList: settingsRefs } = buildMiddlewaresForRoute(
+    route,
+    routeId,
+    namespace,
+  );
 
-  // 5. Build and return the annotation map
-  const annotations = buildAnnotationsFromRoute(route, routeId);
+  // 3. mTLS Middleware (passTLSClientCert + the TLSOption — TLSOption
+  //    is referenced at the IngressRoute tls level, returned via the
+  //    out struct in a later phase. For now mTLS only emits the
+  //    forward-cert Middleware so upstream apps see the cert.)
+  const mtlsResult = await syncMtlsSecretAndBuildSpec(db, k8s, namespace, routeId);
 
-  // 6. Sync protected directory child Ingresses
-  await syncProtectedDirIngresses(db, k8s, routeId, clientId);
+  // 4. OIDC ForwardAuth Middleware (per-route, since the auth URL
+  //    encodes ?route=<id> for the claim-validator sidecar).
+  const oidcRefs = await buildOidcMiddleware(db, namespace, routeId, route.hostname);
 
-  // 7. OIDC / OAuth2 access control. When enabled, layer the
-  //    nginx auth_request annotations on top of the existing
-  //    annotation map. Pointing at the per-client claim-validator
-  //    Service (port 4181) chains "session check" + "claim policy"
-  //    behind a single auth-url. The ?route=<id> query parameter
-  //    selects the matching rule set inside the validator.
-  const authAnnotations = await buildIngressAuthAnnotations(db, namespace, routeId, route.hostname);
-  Object.assign(annotations, authAnnotations);
+  // 5. Protected-directory child routes — one TraefikRoute per
+  //    enabled dir with users. Each child route references its own
+  //    basicAuth Middleware (pointing at the route-auth-<dirId> Secret).
+  const childRoutes = await buildProtectedDirChildRoutes(
+    db,
+    routeId,
+    route.hostname,
+    namespace,
+    serviceName,
+    servicePort,
+    [...settingsRefs, ...mtlsResult.refs, ...oidcRefs.refs],
+  );
 
-  // 8. mTLS access control. Layered with OIDC — when both are
-  //    configured, NGINX runs auth_request AND requires a valid
-  //    client cert (defence in depth). The CA bundle is materialised
-  //    as a Secret in the client namespace by syncMtlsSecret.
-  const mtlsAnnotations = await syncMtlsSecretAndBuildAnnotations(db, k8s, namespace, routeId);
-  Object.assign(annotations, mtlsAnnotations);
-
-  return annotations;
+  return {
+    middlewares: [
+      ...settingsMws,
+      ...mtlsResult.middlewares,
+      ...oidcRefs.middlewares,
+      ...childRoutes.basicAuthMiddlewares,
+    ],
+    middlewareRefs: [
+      ...settingsRefs,
+      ...mtlsResult.refs,
+      ...oidcRefs.refs,
+    ],
+    childRoutes: childRoutes.routes,
+  };
 }
 
 /**
+ * Walk every active ingress_routes row for a client and build a RouteSpec
+ * per row. The reconciler in domains/k8s-ingress.ts iterates this to
+ * assemble the tenant IngressRoute.
+ */
+export async function buildAllRouteSpecs(
+  db: Database,
+  k8s: K8sClients,
+  clientId: string,
+  domainIds: string[],
+  backendResolver: (route: { id: string; deploymentId: string | null; privateWorkerId: string | null; servicePort: number | null }) => { serviceName: string; port: number } | null,
+): Promise<Map<string, RouteBuildResult>> {
+  const out = new Map<string, RouteBuildResult>();
+  const allRoutes = await db.select().from(ingressRoutes);
+  const clientRoutes = allRoutes.filter(
+    (r) => domainIds.includes(r.domainId)
+      && (r.deploymentId || r.privateWorkerId)
+      && r.status === 'active',
+  );
+  for (const route of clientRoutes) {
+    const backend = backendResolver(route);
+    if (!backend) continue;
+    const spec = await buildRouteSpec(
+      db,
+      k8s,
+      route.id,
+      clientId,
+      backend.serviceName,
+      backend.port,
+    );
+    if (spec) out.set(route.id, spec);
+  }
+  return out;
+}
+
+// ─── Protected-directory child routes ───────────────────────────────────────
+
+interface ProtectedDirChildResult {
+  basicAuthMiddlewares: MiddlewareBody[];
+  routes: TraefikRoute[];
+}
+
+async function buildProtectedDirChildRoutes(
+  db: Database,
+  routeId: string,
+  hostname: string,
+  namespace: string,
+  serviceName: string,
+  servicePort: number,
+  parentMiddlewareRefs: Array<{ name: string; namespace: string }>,
+): Promise<ProtectedDirChildResult> {
+  const dirs = await db.select().from(routeProtectedDirs).where(eq(routeProtectedDirs.routeId, routeId));
+  const basicAuthMiddlewares: MiddlewareBody[] = [];
+  const routes: TraefikRoute[] = [];
+
+  for (const dir of dirs) {
+    if (!dir.enabled) continue;
+    const users = await db.select().from(routeAuthUsers)
+      .where(and(eq(routeAuthUsers.dirId, dir.id), eq(routeAuthUsers.enabled, 1)));
+    if (users.length === 0) continue;
+
+    const mwName = `dir-${dir.id.slice(0, 8)}-auth`;
+    const secretName = `route-auth-${dir.id}`;
+    basicAuthMiddlewares.push(buildMiddleware({
+      name: mwName,
+      namespace,
+      spec: basicAuthSpec(secretName, dir.realm || 'Restricted'),
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/dir-id': dir.id,
+        'hosting-platform/middleware-kind': 'basicauth',
+      },
+    }));
+
+    // Child route: match the hostname AND the directory path. Higher
+    // priority than the parent route (`Host(...)`) so the basic-auth
+    // gate wins for paths under /dir.
+    routes.push({
+      match: `Host(\`${hostname}\`) && PathPrefix(\`${dir.path}\`)`,
+      kind: 'Rule',
+      priority: 100,
+      middlewares: [
+        ...parentMiddlewareRefs,
+        { name: mwName, namespace },
+      ],
+      services: [{ name: serviceName, port: servicePort }],
+    });
+  }
+  return { basicAuthMiddlewares, routes };
+}
+
+/**
+ * Delete the Secret + Middleware (if any) for a removed protected dir.
+ * Called from the routes API when an operator deletes a dir.
+ */
+export async function deleteProtectedDirIngress(
+  k8s: K8sClients,
+  namespace: string,
+  dirId: string,
+): Promise<void> {
+  const secretName = `route-auth-${dirId}`;
+  const mwName = `dir-${dirId.slice(0, 8)}-auth`;
+  try {
+    await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
+  } catch (e: unknown) {
+    if (!isK8s404(e)) throw e;
+  }
+  // Best-effort Middleware delete — if traefik-apply lazy-imports
+  // would create a cycle, do it inline here.
+  try {
+    const { deleteMiddleware } = await import('./traefik-apply.js');
+    await deleteMiddleware(k8s.custom, namespace, mwName);
+  } catch { /* non-fatal */ }
+}
+
+// ─── OIDC ForwardAuth Middleware ────────────────────────────────────────────
+
+/**
  * True when at least one enabled auth config under the same client as
- * `routeId` has a non-empty claim_rules array. Mirrors the per-client
- * decision in ingress-auth/reconciler.ts (clientNeedsClaimValidator)
- * so the auth-url annotation matches the actual Deployment shape:
- *
- *   - sidecar deployed   → auth-url at :4181/auth (claim-validator)
- *   - sidecar omitted    → auth-url at :4180/oauth2/auth (direct)
- *
- * Walks ingressRoutes → domains.clientId to find sibling auth configs.
- * Exported for tests.
+ * `routeId` has a non-empty claim_rules array. The claim-validator
+ * sidecar is deployed only when this is true; in that case the
+ * ForwardAuth address points at the sidecar (port 4181), otherwise
+ * directly at oauth2-proxy (port 4180).
  */
 export async function clientHasActiveClaimRules(
   db: Database,
   routeId: string,
 ): Promise<boolean> {
-  // Two-step lookup avoids self-join alias collisions: first resolve
-  // the route's clientId, then enumerate sibling auth configs for
-  // the same client.
   const [routeRow] = await db
     .select({ clientId: domains.clientId })
     .from(ingressRoutes)
@@ -445,345 +598,106 @@ export async function clientHasActiveClaimRules(
         eq(domains.clientId, routeRow.clientId),
       ),
     );
-  return rows.some(
-    (r) => Array.isArray(r.claimRules) && r.claimRules.length > 0,
-  );
+  return rows.some((r) => Array.isArray(r.claimRules) && r.claimRules.length > 0);
 }
 
-/**
- * Returns the auth_request-related annotations when the ingress has
- * an enabled auth config; empty object otherwise. Exported for tests.
- */
-export async function buildIngressAuthAnnotations(
+async function buildOidcMiddleware(
   db: Database,
   namespace: string,
   routeId: string,
-  hostname: string,
-): Promise<Record<string, string>> {
+  _hostname: string,
+): Promise<{ middlewares: MiddlewareBody[]; refs: Array<{ name: string; namespace: string }> }> {
   const [cfg] = await db
     .select()
     .from(ingressAuthConfigs)
     .where(eq(ingressAuthConfigs.ingressRouteId, routeId));
-  if (!cfg || !cfg.enabled) return {};
+  if (!cfg || !cfg.enabled) return { middlewares: [], refs: [] };
 
-  // Pick the auth-url target based on whether the claim-validator
-  // sidecar is actually running. The reconciler only deploys the
-  // sidecar when at least one enabled config in the client has
-  // non-empty claim_rules. When absent, point NGINX directly at
-  // oauth2-proxy:4180/oauth2/auth — oauth2-proxy ignores unknown
-  // query parameters so we keep the same URL shape sans ?route=.
-  //
-  // Race-safety: callers must update annotations BEFORE rolling
-  // resources (see routes.ts). Adding rules → annotation flips to
-  // :4181 first, fails-closed (502) until sidecar is ready, never
-  // bypasses. Removing rules → annotation flips to :4180 first,
-  // oauth2-proxy continues to serve via the same pod (sidecar still
-  // running in the to-be-rolled pod), no 502 spike, rules removal
-  // is intended so no bypass concern.
   const sidecarPresent = await clientHasActiveClaimRules(db, routeId);
   const proxyHost = `oauth2-proxy.${namespace}.svc.cluster.local`;
-  const authUrl = sidecarPresent
+  // When the sidecar is present, claim-validator at :4181/auth accepts
+  // ?route=<id> to select the matching rule set; otherwise we hit
+  // oauth2-proxy directly at :4180/oauth2/auth.
+  const address = sidecarPresent
     ? `http://${proxyHost}:4181/auth?route=${routeId}`
     : `http://${proxyHost}:4180/oauth2/auth`;
-  // /oauth2/start is served directly by oauth2-proxy on :4180 — it
-  // returns the redirect to the IdP. The browser follows that
-  // redirect, so it must hit the public-facing host. We expose
-  // /oauth2/* via a sibling Ingress rule (see ingress reconciler).
-  //
-  // post_login_redirect_url, when set, becomes a fixed rd= parameter
-  // — every successful login lands on this URL instead of the
-  // originally-requested URI. Useful for forwarding into an app's
-  // own OIDC callback or a static post-login landing page.
-  const rdParam = cfg.postLoginRedirectUrl
-    ? encodeURIComponent(cfg.postLoginRedirectUrl)
-    : '$escaped_request_uri';
-  const signinUrl = `https://${hostname}/oauth2/start?rd=${rdParam}`;
 
-  // Headers oauth2-proxy populates on a 200 auth-request response;
-  // nginx-ingress will copy these into the upstream request thanks
-  // to auth-response-headers.
+  // Headers oauth2-proxy populates on a successful auth_request — Traefik
+  // copies them into the upstream request via authResponseHeaders.
   const responseHeaders: string[] = [];
   if (cfg.passUserHeaders) {
     responseHeaders.push('X-Auth-Request-User', 'X-Auth-Request-Email', 'X-Auth-Request-Preferred-Username');
   }
-  if (cfg.setXauthrequest) {
-    responseHeaders.push('X-Auth-Request-Groups');
-  }
+  if (cfg.setXauthrequest) responseHeaders.push('X-Auth-Request-Groups');
   if (cfg.passAccessToken) responseHeaders.push('X-Auth-Request-Access-Token');
   if (cfg.passIdToken) responseHeaders.push('X-Auth-Request-Id-Token');
   if (cfg.passAuthorizationHeader) responseHeaders.push('Authorization');
 
-  return {
-    'nginx.ingress.kubernetes.io/auth-url': authUrl,
-    'nginx.ingress.kubernetes.io/auth-signin': signinUrl,
-    'nginx.ingress.kubernetes.io/auth-response-headers': responseHeaders.join(','),
-  };
+  const name = middlewareName(routeId, 'oidc');
+  const body = buildMiddleware({
+    name,
+    namespace,
+    spec: forwardAuthSpec({
+      address,
+      trustForwardHeader: true,
+      authResponseHeaders: responseHeaders.length > 0 ? responseHeaders : undefined,
+    }),
+    labels: {
+      'hosting-platform/route-id': routeId,
+      'hosting-platform/middleware-kind': 'oidc',
+    },
+  });
+
+  return { middlewares: [body], refs: [{ name, namespace }] };
 }
 
+// ─── mTLS Secret + Middleware ──────────────────────────────────────────────
+
 /**
- * Collect annotations for all active routes of a client.
+ * Sync the CA-bundle Secret for an mTLS-enabled route and emit the
+ * companion passTLSClientCert Middleware that forwards the client cert
+ * details to the upstream as a header.
  *
- * Used by the ingress reconciler to gather per-route annotations
- * when building the Ingress resource. Since NGINX Ingress Controller
- * applies annotations at the Ingress level (not per-rule), the
- * reconciler should create per-route Ingress resources when routes
- * have divergent settings. For now, we merge annotations from all
- * routes — the last-write-wins behavior is acceptable for Phase 1.
+ * mTLS REQUIRES a TLSOption CR (clientAuth.clientAuthType + secretNames
+ * pointing at the CA bundle Secret) — that piece is returned by a
+ * separate function consumed by the IngressRoute builder (which
+ * attaches it via spec.tls.options). For now, this function only emits
+ * the request-forwarding Middleware; the IngressRoute reconciler will
+ * pick up the TLSOption hook in a follow-up.
  */
-export async function syncAllRouteAnnotations(
-  db: Database,
-  k8s: K8sClients,
-  clientId: string,
-  domainIds: string[],
-): Promise<Record<string, string>> {
-  const allRoutes = await db.select().from(ingressRoutes);
-  const clientRoutes = allRoutes.filter(
-    (r) => domainIds.includes(r.domainId) && r.deploymentId && r.status === 'active',
-  );
-
-  const merged: Record<string, string> = {};
-
-  for (const route of clientRoutes) {
-    const routeAnnotations = await syncRouteAnnotations(db, k8s, route.id, clientId);
-    Object.assign(merged, routeAnnotations);
-  }
-
-  return merged;
-}
-
-// ─── Protected Directory Child Ingresses ────────────────────────────────────
-
-/**
- * Create/update/delete child Ingress resources for protected directories.
- * Each enabled directory with users gets its own Ingress with auth.
- * Directories without users or disabled directories have their Ingress deleted.
- */
-export async function syncProtectedDirIngresses(
-  db: Database,
-  k8s: K8sClients,
-  routeId: string,
-  clientId: string,
-): Promise<void> {
-  // 1. Load the parent route
-  const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
-  if (!route) return;
-
-  // 2. Resolve namespace
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client?.kubernetesNamespace) return;
-  const namespace = client.kubernetesNamespace;
-
-  // 3. Resolve deployment service name + port
-  let serviceName = 'default';
-  let servicePort = route.servicePort ?? 8080;
-  if (route.deploymentId) {
-    const [dep] = await db.select().from(deployments).where(eq(deployments.id, route.deploymentId));
-    if (dep) {
-      serviceName = dep.name;
-      // For custom deployments, resolve service name + port from customSpec.
-      if (dep.catalogEntryId === null && dep.customSpec) {
-        const spec = dep.customSpec as {
-          services?: Record<string, {
-            ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
-          }>;
-        };
-        const services = Object.entries(spec.services ?? {});
-        if (services.length > 0) {
-          let resolvedSvcName: string | undefined;
-          let resolvedPort: number | undefined;
-          if (route.servicePort) {
-            // Find the service that owns the explicitly-selected port.
-            for (const [svcName, svc] of services) {
-              const p = (svc.ports ?? []).find(p => p.containerPort === route.servicePort);
-              if (p) { resolvedSvcName = svcName; resolvedPort = p.containerPort; break; }
-            }
-          } else {
-            // No port preference — pick the first ingress-eligible port.
-            for (const [svcName, svc] of services) {
-              const p = (svc.ports ?? []).find(p => p.ingressEligible && p.exposeAsService);
-              if (p) { resolvedSvcName = svcName; resolvedPort = p.containerPort; break; }
-            }
-          }
-          if (resolvedSvcName && resolvedPort !== undefined) {
-            serviceName = services.length <= 1 ? dep.name : `${dep.name}-${resolvedSvcName}`;
-            servicePort = resolvedPort;
-          }
-        }
-      }
-    }
-  }
-
-  // 4. Build parent annotations (inherit everything)
-  const parentAnnotations = buildAnnotationsFromRoute(route, routeId);
-
-  // 5. Load all protected dirs for this route
-  const dirs = await db.select().from(routeProtectedDirs)
-    .where(eq(routeProtectedDirs.routeId, routeId));
-
-  // 6. Create/update/delete child Ingress per directory
-  for (const dir of dirs) {
-    const ingressName = `route-dir-${dir.id.slice(0, 8)}`;
-    const secretName = `route-auth-${dir.id}`;
-
-    const users = await db.select().from(routeAuthUsers)
-      .where(and(eq(routeAuthUsers.dirId, dir.id), eq(routeAuthUsers.enabled, 1)));
-
-    if (!dir.enabled || users.length === 0) {
-      // Delete child Ingress if disabled or no users
-      try {
-        await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
-      } catch (e: unknown) {
-        if (!isK8s404(e)) throw e;
-      }
-      continue;
-    }
-
-    // Build child annotations: parent annotations + auth overrides
-    const childAnnotations: Record<string, string> = {
-      ...parentAnnotations,
-      'nginx.ingress.kubernetes.io/auth-type': 'basic',
-      'nginx.ingress.kubernetes.io/auth-secret': secretName,
-      'nginx.ingress.kubernetes.io/auth-realm': dir.realm || 'Restricted',
-    };
-
-    const ingressBody = {
-      apiVersion: 'networking.k8s.io/v1' as const,
-      kind: 'Ingress' as const,
-      metadata: {
-        name: ingressName,
-        namespace,
-        annotations: childAnnotations,
-        labels: {
-          'app.kubernetes.io/managed-by': 'hosting-platform',
-          'hosting-platform/route-id': routeId,
-          'hosting-platform/dir-id': dir.id,
-        },
-      },
-      spec: {
-        ingressClassName: 'nginx',
-        rules: [{
-          host: route.hostname,
-          http: {
-            paths: [{
-              path: dir.path,
-              pathType: 'Prefix' as const,
-              backend: {
-                service: { name: serviceName, port: { number: servicePort } },
-              },
-            }],
-          },
-        }],
-      },
-    };
-
-    // Create or replace
-    try {
-      await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
-    } catch (err: unknown) {
-      if (isK8s409(err)) {
-        await k8s.networking.replaceNamespacedIngress({ name: ingressName, namespace, body: ingressBody });
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  // 7. Clean up orphaned child Ingresses (dirs that were deleted from DB)
-  try {
-    const allIngresses = await k8s.networking.listNamespacedIngress({ namespace });
-    const dirIds = new Set(dirs.map(d => d.id));
-    for (const ing of (allIngresses.items ?? [])) {
-      const dirLabel = ing.metadata?.labels?.['hosting-platform/dir-id'];
-      const routeLabel = ing.metadata?.labels?.['hosting-platform/route-id'];
-      if (routeLabel === routeId && dirLabel && !dirIds.has(dirLabel)) {
-        try {
-          await k8s.networking.deleteNamespacedIngress({ name: ing.metadata!.name!, namespace });
-        } catch { /* Non-fatal orphan cleanup */ }
-      }
-    }
-  } catch { /* Non-fatal — listing failure should not block sync */ }
-}
-
-/**
- * Delete a specific protected directory's child Ingress and Secret.
- */
-export async function deleteProtectedDirIngress(
-  k8s: K8sClients,
-  namespace: string,
-  dirId: string,
-): Promise<void> {
-  const ingressName = `route-dir-${dirId.slice(0, 8)}`;
-  const secretName = `route-auth-${dirId}`;
-  try {
-    await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
-  } catch (e: unknown) {
-    if (!isK8s404(e)) throw e;
-  }
-  try {
-    await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
-  } catch (e: unknown) {
-    if (!isK8s404(e)) throw e;
-  }
-}
-
-// ─── mTLS Secret Sync + Annotations ─────────────────────────────────
-
-/**
- * Sync the CA-bundle Secret for an mTLS-enabled ingress and return the
- * matching `auth-tls-*` annotations. When mTLS is disabled or the CA
- * bundle is missing, the Secret is best-effort deleted and an empty
- * annotation map is returned.
- *
- * The encryption key is read from app config / PLATFORM_ENCRYPTION_KEY
- * (reused for v1, see migration 0058).
- */
-async function syncMtlsSecretAndBuildAnnotations(
+async function syncMtlsSecretAndBuildSpec(
   db: Database,
   k8s: K8sClients,
   namespace: string,
   routeId: string,
-): Promise<Record<string, string>> {
+): Promise<{ middlewares: MiddlewareBody[]; refs: Array<{ name: string; namespace: string }> }> {
   const { loadEnabledForRoute } = await import('../ingress-mtls/service.js');
-  // PLATFORM_ENCRYPTION_KEY is required to decrypt the CA cert + key from
-  // the providers table. The legacy fallback to '0'.repeat(64) was a
-  // silent-failure footgun — DB-leak attackers could decrypt every CA
-  // private key. Fail closed: when the key is missing we return no
-  // annotations (mTLS effectively disabled for this route) so the
-  // reconciler keeps making progress on the rest of the Ingress while
-  // operators get a clear log line to act on.
   const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!encryptionKey || encryptionKey.length < 32) {
-    console.error('[annotation-sync] PLATFORM_ENCRYPTION_KEY missing — mTLS annotations skipped for route', routeId);
-    return {};
+    console.error('[annotation-sync] PLATFORM_ENCRYPTION_KEY missing — mTLS skipped for route', routeId);
+    return { middlewares: [], refs: [] };
   }
   const secretName = `route-mtls-${routeId.slice(0, 8)}`;
 
   const loaded = await loadEnabledForRoute(db, encryptionKey, routeId);
   if (!loaded) {
-    // Disabled / no CA — best-effort delete of any stale Secret.
     try {
       await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
     } catch (err: unknown) {
       if (!isK8s404(err)) throw err;
     }
-    return {};
+    return { middlewares: [], refs: [] };
   }
 
   const { config, caCertPem, crlPem } = loaded;
-  // ingress-nginx reads two keys from the auth-tls-secret:
-  //   * ca.crt — the trust anchor (required)
-  //   * ca.crl — optional X.509 CRL; when present, NGINX adds
-  //              `ssl_crl` to the server block and rejects any
-  //              client cert whose serial appears in the CRL.
-  //
-  // We only include ca.crl when the provider can sign one (i.e. a CA
-  // private key is on file). The legacy inline-CA path has no key →
-  // crlPem is null → revocation checking is disabled for that route.
+  // Traefik's TLSOption reads `tls.ca` (PEM) AND optionally `tls.crl`
+  // from the Secret. Format matches what cert-manager would emit, so
+  // we keep the key names matching Traefik's CRD convention.
   const data: Record<string, string> = {
-    'ca.crt': Buffer.from(caCertPem).toString('base64'),
+    'tls.ca': Buffer.from(caCertPem).toString('base64'),
   };
   if (crlPem) {
-    data['ca.crl'] = Buffer.from(crlPem).toString('base64');
+    data['tls.crl'] = Buffer.from(crlPem).toString('base64');
   }
   const secretBody = {
     apiVersion: 'v1',
@@ -802,8 +716,6 @@ async function syncMtlsSecretAndBuildAnnotations(
   };
   try {
     // backup-coverage: excluded:reconciler-rebuilds-from-config-tables
-    // (mTLS CA cert Secret rebuilt from ingress_route_mtls DB rows
-    // which the config-tables component captures.)
     await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
   } catch (err: unknown) {
     if (isK8s409(err)) {
@@ -813,18 +725,34 @@ async function syncMtlsSecretAndBuildAnnotations(
     }
   }
 
-  const annotations: Record<string, string> = {
-    'nginx.ingress.kubernetes.io/auth-tls-secret': `${namespace}/${secretName}`,
-    'nginx.ingress.kubernetes.io/auth-tls-verify-client': config.verifyMode,
-  };
+  // Forward the cert details to the upstream service if requested.
+  const middlewares: MiddlewareBody[] = [];
+  const refs: Array<{ name: string; namespace: string }> = [];
   if (config.passCertToUpstream) {
-    annotations['nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream'] = 'true';
+    const name = middlewareName(routeId, 'mtls-fwd');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: {
+        passTLSClientCert: {
+          pem: true,
+        },
+      },
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'mtls-fwd',
+      },
+    }));
+    refs.push({ name, namespace });
   }
-  // When the operator only wants the DN forwarded (and not the full
-  // cert), nginx-ingress already populates `ssl-client-subject-dn`
-  // upstream by default — no annotation toggle needed. We surface
-  // `passDnToUpstream` in the contract for future expansion (e.g.
-  // forwarding via a custom header name) but it currently has no
-  // effect on the rendered Ingress.
-  return annotations;
+
+  return { middlewares, refs };
 }
+
+/**
+ * Backwards-compatible export: the platform-mTLS reconciler caller from
+ * domains/k8s-ingress.ts used to read this via `syncRouteAnnotations`.
+ * We now expose only the spec shape; legacy callers should switch to
+ * `buildRouteSpec` / `buildAllRouteSpecs`.
+ */
+export { syncMtlsSecretAndBuildSpec };
