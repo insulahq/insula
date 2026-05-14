@@ -1200,11 +1200,17 @@ except Exception:
 }
 
 # ── Phase I — Flux-ownership post-flip (depends on --mode-flip) ────────
-# After Phase C flips port-exposure, sleep 60s and assert Flux did NOT
-# re-claim the haproxy DS nodeSelector field that the platform-api set
-# via SSA force-claim. This catches the PR-#43→#45 regression where
-# Flux's kustomize-controller fought platform-api on every reconcile.
-# Requires --mode-flip to have run.
+# After Phase C flips port-exposure, sleep 60s and assert the haproxy
+# DaemonSet lifecycle matches the operator's intent:
+#   - mode=allServerNodes → DS exists, labelled managed-by=platform-api,
+#     Flux's kustomize-controller is NOT in its managedFields.
+#   - mode=thisNodeOnly   → DS does NOT exist (platform-api deleted it
+#     on the flip-back; Flux must not re-create it).
+# 2026-05-14 streamline: haproxy DS lifecycle is now wholly owned by
+# platform-api (k8s/base/stalwart-mail/haproxy/daemonset.yaml was
+# deleted; spec moved to haproxy-builder.ts). Pre-streamline, this
+# probe asserted SSA field-ownership on a Flux-owned DS — that
+# arrangement is gone.
 phase_i_flux_ownership() {
   echo "## Phase I — Flux ownership post-flip (sleeps 60s)"
 
@@ -1214,39 +1220,65 @@ phase_i_flux_ownership() {
     return
   fi
 
-  # The current haproxy nodeSelector right after Phase C should reflect
-  # the LAST mode we left the cluster in (Phase C flips, then flips back).
-  # Either way, the field-manager on nodeSelector MUST be the platform-api,
-  # not kustomize-controller — that's the invariant being checked.
   echo "  Waiting 60s for Flux reconcile loops..."
   sleep 60
 
-  local managers
-  managers=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
-    -o json 2>/dev/null \
-    | python3 -c "
-import sys, json
-try:
-  d = json.load(sys.stdin)
-  for entry in (d.get('metadata', {}).get('managedFields') or []):
-    f = entry.get('fieldsV1', {})
-    # Look for entries that claim spec.template.spec.nodeSelector
-    raw = json.dumps(f)
-    if 'nodeSelector' in raw:
-      print(entry.get('manager', ''))
-except Exception:
-  pass" 2>/dev/null || echo '')
+  local current_mode
+  current_mode="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/port-exposure" 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["mode"])' 2>/dev/null \
+    || echo 'unknown')"
 
-  if echo "$managers" | grep -q 'platform-api.port-exposure'; then
-    note_pass "I1. platform-api.port-exposure owns haproxy.nodeSelector after Flux loops"
+  local ds_present
+  if kctl -n "$STALWART_NS" get daemonset stalwart-haproxy >/dev/null 2>&1; then
+    ds_present=true
   else
-    note_fail "I1. platform-api.port-exposure NOT in managers of haproxy.nodeSelector — Flux may have re-claimed (managers: ${managers})"
+    ds_present=false
   fi
 
-  if echo "$managers" | grep -q 'kustomize-controller'; then
-    note_warn "I2. kustomize-controller also claims nodeSelector (likely harmless with ssa:merge)"
-  else
-    note_pass "I2. kustomize-controller does NOT claim haproxy.nodeSelector"
+  case "$current_mode" in
+    allServerNodes)
+      if $ds_present; then
+        note_pass "I1. mode=allServerNodes AND haproxy DS exists"
+      else
+        note_fail "I1. mode=allServerNodes but haproxy DS is MISSING (platform-api failed to create or Flux deleted)"
+      fi
+      ;;
+    thisNodeOnly)
+      if $ds_present; then
+        note_fail "I1. mode=thisNodeOnly but haproxy DS STILL EXISTS (platform-api failed to delete or Flux re-created)"
+      else
+        note_pass "I1. mode=thisNodeOnly AND haproxy DS absent"
+      fi
+      ;;
+    *)
+      note_warn "I1. unknown mode '${current_mode}' — could not verify DS lifecycle invariant"
+      ;;
+  esac
+
+  if $ds_present; then
+    # I2. DS carries the platform-api managed-by label.
+    local managed_by
+    managed_by=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
+      -o jsonpath='{.metadata.labels.platform\.phoenix-host\.net/managed-by}' 2>/dev/null || echo '')
+    if [[ "$managed_by" == "platform-api" ]]; then
+      note_pass "I2. haproxy DS labelled managed-by=platform-api"
+    else
+      note_fail "I2. haproxy DS missing managed-by=platform-api label (got: '${managed_by}')"
+    fi
+
+    # I3. kustomize-controller is NOT in managedFields. The DS spec was
+    # removed from k8s/base, so Flux should never claim ownership of
+    # this object after the streamline.
+    local managers
+    managers=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
+      -o jsonpath='{.metadata.managedFields[*].manager}' 2>/dev/null || echo '')
+    if echo "$managers" | grep -q 'kustomize-controller'; then
+      note_fail "I3. kustomize-controller is in managedFields — Flux is still trying to manage this DS (managers: ${managers})"
+    else
+      note_pass "I3. kustomize-controller absent from managedFields (managers: ${managers})"
+    fi
   fi
   echo ""
 }
