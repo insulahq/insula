@@ -1,6 +1,7 @@
 /**
- * Mail SSL status modal — opened from the TLS/SSL cell in
- * MailServerStatusTile. Replaces the old inline MailSslStatusCard.
+ * Mail SSL status modal — opened from the TLS/SSL section of the
+ * Email Management page (or via the upcoming /admin/mail/health
+ * banner drill-down). Replaces the old inline MailSslStatusCard.
  *
  * Behaviour mirrors the old card:
  *   - Lazy: the probe doesn't run on mount. The modal opens with a

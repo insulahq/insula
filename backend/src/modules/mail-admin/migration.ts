@@ -12,10 +12,15 @@
  * PVC on the target node and lets the restore-state initContainer repopulate
  * it from the latest restic snapshot.
  *
- * POST /admin/mail/migrate    → startMailMigration
+ * Single entry-point since the 2026-05-14 streamline: `startMailMigration`
+ * accepts an `intent` discriminator and resolves the target node from
+ * system_settings for failover/failback. The previous thin wrappers
+ * (`startFailoverMigration`, `startFailbackMigration`) were folded in.
+ *
+ * POST /admin/mail/migrate    → startMailMigration({intent:'explicit', targetNode})
+ * POST /admin/mail/failover   → startMailMigration({intent:'failover'})
+ * POST /admin/mail/failback   → startMailMigration({intent:'failback'})
  * GET  /admin/mail/migrate/:runId → getMailMigrationStatus
- * POST /admin/mail/failover   → startFailoverMigration (picks secondary node)
- * POST /admin/mail/failback   → startFailbackMigration (picks primary node)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -65,8 +70,25 @@ type MigrationRunRow = Record<string, unknown> & {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/**
+ * Migration intent discriminator. The `explicit` intent requires the
+ * caller to pass `targetNode`; `failover` and `failback` resolve the
+ * target node from `system_settings` (mailSecondaryNode|mailTertiaryNode
+ * for failover; mailPrimaryNode for failback).
+ */
+export type MigrationIntent =
+  | { readonly kind: 'explicit'; readonly targetNode: string; readonly newGiB?: number }
+  | { readonly kind: 'failover' }
+  | { readonly kind: 'failback' };
+
+const INTENT_TRIGGERED_BY: Record<MigrationIntent['kind'], string> = {
+  explicit: 'operator',
+  failover: 'manual-failover',
+  failback: 'manual-failback',
+};
+
 export async function startMailMigration(
-  { targetNode, triggeredBy = 'operator', newGiB }: { targetNode: string; triggeredBy?: string; newGiB?: number },
+  intent: MigrationIntent,
   deps: MigrationDeps,
 ): Promise<{ runId: string }> {
   const { db, core } = deps;
@@ -81,14 +103,23 @@ export async function startMailMigration(
     throw new ApiError('MAIL_MIGRATION_ALREADY_RUNNING', 'A migration is already in progress', 409);
   }
 
-  // Validate target node exists
+  // Resolve target node from intent. Failover/failback look up
+  // settings; explicit takes the caller-supplied targetNode verbatim.
+  const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+  const targetNode = resolveTargetNode(intent, row);
+  const newGiB = intent.kind === 'explicit' ? intent.newGiB : undefined;
+  const triggeredBy = INTENT_TRIGGERED_BY[intent.kind];
+
+  // Validate target node exists in the cluster.
+  // @kubernetes/client-node v1 SDK takes a single request object
+  // (CoreV1ApiReadNodeRequest); the v0 positional `readNode(name)` shape
+  // was removed in the typescript-axios codegen rewrite.
   try {
-    await (core as unknown as { readNode: (name: string) => Promise<unknown> }).readNode(targetNode);
+    await core.readNode({ name: targetNode });
   } catch {
     throw new ApiError('MAIL_NODE_NOT_FOUND', `Node '${targetNode}' not found in the cluster`, 404);
   }
 
-  const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
   const sourceNode = row?.mailActiveNode ?? row?.mailPrimaryNode ?? null;
   if (!sourceNode) {
     throw new ApiError('MAIL_NO_ACTIVE_NODE', 'No active mail node is configured in system_settings', 409);
@@ -117,36 +148,39 @@ export async function startMailMigration(
   return { runId };
 }
 
-export async function startFailoverMigration(
-  _opts: { confirm: true },
-  deps: MigrationDeps,
-): Promise<{ runId: string }> {
-  const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-  const targetNode = row?.mailSecondaryNode ?? row?.mailTertiaryNode ?? null;
-  if (!targetNode) {
-    throw new ApiError(
-      'MAIL_PLACEMENT_NO_CANDIDATE',
-      'No secondary or tertiary node configured — set placement policy before triggering failover',
-      409,
-    );
-  }
-  return startMailMigration({ targetNode, triggeredBy: 'manual-failover' }, deps);
+interface PlacementRow {
+  readonly mailPrimaryNode?: string | null;
+  readonly mailSecondaryNode?: string | null;
+  readonly mailTertiaryNode?: string | null;
 }
 
-export async function startFailbackMigration(
-  _opts: { confirm: true },
-  deps: MigrationDeps,
-): Promise<{ runId: string }> {
-  const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-  const targetNode = row?.mailPrimaryNode ?? null;
-  if (!targetNode) {
-    throw new ApiError(
-      'MAIL_PLACEMENT_NO_CANDIDATE',
-      'No primary node configured — set placement policy before triggering failback',
-      409,
-    );
+function resolveTargetNode(intent: MigrationIntent, row: PlacementRow | undefined): string {
+  switch (intent.kind) {
+    case 'explicit':
+      return intent.targetNode;
+    case 'failover': {
+      const t = row?.mailSecondaryNode ?? row?.mailTertiaryNode ?? null;
+      if (!t) {
+        throw new ApiError(
+          'MAIL_PLACEMENT_NO_CANDIDATE',
+          'No secondary or tertiary node configured — set placement policy before triggering failover',
+          409,
+        );
+      }
+      return t;
+    }
+    case 'failback': {
+      const t = row?.mailPrimaryNode ?? null;
+      if (!t) {
+        throw new ApiError(
+          'MAIL_PLACEMENT_NO_CANDIDATE',
+          'No primary node configured — set placement policy before triggering failback',
+          409,
+        );
+      }
+      return t;
+    }
   }
-  return startMailMigration({ targetNode, triggeredBy: 'manual-failback' }, deps);
 }
 
 export async function getMailMigrationStatus(
@@ -211,28 +245,27 @@ export async function triggerRestoreBasedFailover(
   // Create the new PVC on target node (local-path provisioner uses the
   // selected-node annotation to pin PV creation to the right host).
   try {
-    await (core as unknown as {
-      readNamespacedPersistentVolumeClaim: (name: string, ns: string) => Promise<unknown>
-    }).readNamespacedPersistentVolumeClaim(newPvcName, MAIL_NAMESPACE);
+    await core.readNamespacedPersistentVolumeClaim({ name: newPvcName, namespace: MAIL_NAMESPACE });
     // Already exists — skip creation
   } catch {
     // Mail-DR PVC — transient copy of mail data during failover. Live
     // PVC is captured by the mail-snapshot bundle component.
     // backup-coverage: excluded:cluster-infrastructure
-    await (core as unknown as {
-      createNamespacedPersistentVolumeClaim: (ns: string, body: unknown) => Promise<unknown>
-    }).createNamespacedPersistentVolumeClaim(MAIL_NAMESPACE, {
-      metadata: {
-        name: newPvcName,
-        namespace: MAIL_NAMESPACE,
-        annotations: { 'volume.kubernetes.io/selected-node': targetNode },
-        labels: { 'platform.example.test/mail-dr-pvc': 'true' },
-      },
-      spec: {
-        storageClassName: 'local-path',
-        accessModes: ['ReadWriteOnce'],
-        resources: { requests: { storage: `${Math.ceil((await getMailPvcRequestedBytes(core)) / (1024 ** 3))}Gi` } },
-      },
+    await core.createNamespacedPersistentVolumeClaim({
+      namespace: MAIL_NAMESPACE,
+      body: {
+        metadata: {
+          name: newPvcName,
+          namespace: MAIL_NAMESPACE,
+          annotations: { 'volume.kubernetes.io/selected-node': targetNode },
+          labels: { 'platform.example.test/mail-dr-pvc': 'true' },
+        },
+        spec: {
+          storageClassName: 'local-path',
+          accessModes: ['ReadWriteOnce'],
+          resources: { requests: { storage: `${Math.ceil((await getMailPvcRequestedBytes(core)) / (1024 ** 3))}Gi` } },
+        },
+      } as unknown as Parameters<typeof core.createNamespacedPersistentVolumeClaim>[0]['body'],
     });
   }
 
@@ -443,22 +476,17 @@ async function runMigrationStateMachine(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getMailPvcRequestedBytes(core: CoreV1Api): Promise<number> {
-  const pvc = await (core as unknown as {
-    readNamespacedPersistentVolumeClaim: (name: string, ns: string) => Promise<{
-      body?: { spec?: { resources?: { requests?: { storage?: string } } } };
-      spec?: { resources?: { requests?: { storage?: string } } };
-    }>
-  }).readNamespacedPersistentVolumeClaim(MAIL_PVC_NAME, MAIL_NAMESPACE);
-  const pvcObj = (pvc as { body?: { spec?: { resources?: { requests?: { storage?: string } } } } }).body ?? pvc;
-  const storageStr = (pvcObj as { spec?: { resources?: { requests?: { storage?: string } } } }).spec?.resources?.requests?.storage ?? '20Gi';
+  const pvc = await core.readNamespacedPersistentVolumeClaim({
+    name: MAIL_PVC_NAME,
+    namespace: MAIL_NAMESPACE,
+  }) as { spec?: { resources?: { requests?: { storage?: string } } } };
+  const storageStr = pvc.spec?.resources?.requests?.storage ?? '20Gi';
   return parseQuantity(storageStr);
 }
 
 async function ensureLocalPathPvc(core: CoreV1Api, name: string, nodeName: string, sizeGiB = 20): Promise<void> {
   try {
-    await (core as unknown as {
-      readNamespacedPersistentVolumeClaim: (name: string, ns: string) => Promise<unknown>
-    }).readNamespacedPersistentVolumeClaim(name, MAIL_NAMESPACE);
+    await core.readNamespacedPersistentVolumeClaim({ name, namespace: MAIL_NAMESPACE });
     return; // already exists
   } catch {
     // Fall through to create
@@ -466,19 +494,20 @@ async function ensureLocalPathPvc(core: CoreV1Api, name: string, nodeName: strin
   // Mail-DR helper PVC (callers are all failover/failback flows).
   // Same rationale as the DR call site above.
   // backup-coverage: excluded:cluster-infrastructure
-  await (core as unknown as {
-    createNamespacedPersistentVolumeClaim: (ns: string, body: unknown) => Promise<unknown>
-  }).createNamespacedPersistentVolumeClaim(MAIL_NAMESPACE, {
-    metadata: {
-      name,
-      namespace: MAIL_NAMESPACE,
-      annotations: { 'volume.kubernetes.io/selected-node': nodeName },
-    },
-    spec: {
-      storageClassName: 'local-path',
-      accessModes: ['ReadWriteOnce'],
-      resources: { requests: { storage: `${sizeGiB}Gi` } },
-    },
+  await core.createNamespacedPersistentVolumeClaim({
+    namespace: MAIL_NAMESPACE,
+    body: {
+      metadata: {
+        name,
+        namespace: MAIL_NAMESPACE,
+        annotations: { 'volume.kubernetes.io/selected-node': nodeName },
+      },
+      spec: {
+        storageClassName: 'local-path',
+        accessModes: ['ReadWriteOnce'],
+        resources: { requests: { storage: `${sizeGiB}Gi` } },
+      },
+    } as unknown as Parameters<typeof core.createNamespacedPersistentVolumeClaim>[0]['body'],
   });
 }
 
@@ -498,11 +527,11 @@ async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promi
 async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSeconds: number): Promise<void> {
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
-    const dep = await (apps as unknown as {
-      readNamespacedDeployment: (name: string, ns: string) => Promise<{ body?: unknown }>
-    }).readNamespacedDeployment(DEPLOYMENT_NAME, MAIL_NAMESPACE);
-    const depObj = (dep as { body?: unknown }).body ?? dep;
-    const status = (depObj as { status?: { readyReplicas?: number; unavailableReplicas?: number } }).status;
+    const dep = await apps.readNamespacedDeployment({
+      name: DEPLOYMENT_NAME,
+      namespace: MAIL_NAMESPACE,
+    }) as { status?: { readyReplicas?: number; unavailableReplicas?: number } };
+    const status = dep.status;
     const ready = status?.readyReplicas ?? 0;
     const unavailable = status?.unavailableReplicas ?? 0;
     if (target === 0 && ready === 0 && unavailable === 0) return;
@@ -519,12 +548,11 @@ async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSecon
 async function waitForJobCompletion(batch: BatchV1Api, jobName: string, timeoutSeconds: number): Promise<void> {
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
-    const job = await (batch as unknown as {
-      readNamespacedJob: (name: string, ns: string) => Promise<{ body?: unknown }>
-    }).readNamespacedJob(jobName, MAIL_NAMESPACE);
-    const jobObj = (job as { body?: unknown }).body ?? job;
-    const conditions: Array<{ type: string; status: string }> =
-      (jobObj as { status?: { conditions?: Array<{ type: string; status: string }> } }).status?.conditions ?? [];
+    const job = await batch.readNamespacedJob({
+      name: jobName,
+      namespace: MAIL_NAMESPACE,
+    }) as { status?: { conditions?: Array<{ type: string; status: string }> } };
+    const conditions = job.status?.conditions ?? [];
     if (conditions.some((c) => c.type === 'Complete' && c.status === 'True')) return;
     if (conditions.some((c) => c.type === 'Failed' && c.status === 'True')) {
       throw new ApiError('MAIL_MIGRATION_RSYNC_FAILED', `rsync Job ${jobName} failed`, 500);
@@ -536,16 +564,11 @@ async function waitForJobCompletion(batch: BatchV1Api, jobName: string, timeoutS
 
 async function findStalwartPod(core: CoreV1Api): Promise<string | null> {
   try {
-    const pods = await (core as unknown as {
-      listNamespacedPod: (
-        ns: string, u1?: unknown, u2?: unknown, u3?: unknown, u4?: unknown, labelSelector?: string
-      ) => Promise<{
-        body?: { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> };
-        items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }>;
-      }>
-    }).listNamespacedPod(MAIL_NAMESPACE, undefined, undefined, undefined, undefined, 'app=stalwart-mail');
-    const podsObj = (pods as { body?: { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> } }).body ?? pods;
-    const items = (podsObj as { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> }).items ?? [];
+    const pods = await core.listNamespacedPod({
+      namespace: MAIL_NAMESPACE,
+      labelSelector: 'app=stalwart-mail',
+    }) as { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> };
+    const items = pods.items ?? [];
     return items.find((p) => p.status?.phase === 'Running')?.metadata?.name ?? null;
   } catch {
     return null;
@@ -599,9 +622,7 @@ async function spawnRsyncJob(
   //   (private key), corresponding public key in authorized_keys on target nodes.
   //
   // The job determines the target PV path via the k8s API (service-account token).
-  await (batch as unknown as {
-    createNamespacedJob: (ns: string, body: unknown) => Promise<unknown>
-  }).createNamespacedJob(MAIL_NAMESPACE, {
+  const rsyncJobBody = {
     metadata: {
       name: jobName,
       namespace: MAIL_NAMESPACE,
@@ -705,6 +726,10 @@ echo "=== rsync complete ==="`,
         },
       },
     },
+  };
+  await batch.createNamespacedJob({
+    namespace: MAIL_NAMESPACE,
+    body: rsyncJobBody as unknown as Parameters<typeof batch.createNamespacedJob>[0]['body'],
   });
 }
 
