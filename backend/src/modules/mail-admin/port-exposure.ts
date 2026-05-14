@@ -43,7 +43,7 @@ import { isNotFound } from '../../shared/k8s-errors.js';
  * field; Flux's subsequent reconciles use `ssa: merge` (non-force)
  * and leave our value alone.
  */
-const APPLY_PATCH_PORT_EXPOSURE = applyPatch('platform-api.port-exposure', { force: true });
+const PORT_EXPOSURE_APPLY_PATCH = applyPatch('platform-api.port-exposure', { force: true });
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -316,7 +316,7 @@ async function setDaemonSetNodeSelector(
         name: DAEMONSET_NAME,
         body: body as unknown as object,
       } as unknown as Parameters<typeof apps.patchNamespacedDaemonSet>[0],
-      APPLY_PATCH_PORT_EXPOSURE,
+      PORT_EXPOSURE_APPLY_PATCH,
     );
   } catch (err) {
     if (isNotFound(err)) {
