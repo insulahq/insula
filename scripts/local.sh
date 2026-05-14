@@ -399,6 +399,19 @@ _install_traefik_local() {
   helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
   helm repo update >/dev/null 2>&1
 
+  # Apply Traefik CRDs FIRST. The Helm chart ships them in `crds/`,
+  # which `helm template` does NOT render — only `helm install` does.
+  # Without this step the subsequent kustomize apply fails with
+  # "no matches for kind IngressRoute / Middleware in version
+  # traefik.io/v1alpha1". Pull the chart locally, apply its crds/.
+  local chart_dir
+  chart_dir=$(mktemp -d)
+  helm pull traefik/traefik --version "${TRAEFIK_CHART_VERSION_LOCAL}" --untar -d "${chart_dir}" >/dev/null 2>&1
+  if [[ -d "${chart_dir}/traefik/crds" ]]; then
+    cat "${chart_dir}/traefik/crds"/traefik.io_*.yaml | docker exec -i "$K3S_CONTAINER" kubectl apply --server-side -f - >/dev/null
+  fi
+  rm -rf "${chart_dir}"
+
   local rendered
   rendered=$(helm template traefik traefik/traefik \
     --version "${TRAEFIK_CHART_VERSION_LOCAL}" \
@@ -406,7 +419,7 @@ _install_traefik_local() {
     --set deployment.kind=DaemonSet \
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
-    --set service.type=ClusterIP \
+    --set service.spec.type=ClusterIP \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \

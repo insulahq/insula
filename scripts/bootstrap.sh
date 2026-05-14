@@ -2788,7 +2788,7 @@ install_traefik() {
     --set deployment.kind=DaemonSet \
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
-    --set service.type=ClusterIP \
+    --set service.spec.type=ClusterIP \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
