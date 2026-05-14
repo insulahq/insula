@@ -1,0 +1,85 @@
+# Coraza WAF Middlewares.
+#
+# Coraza is the open-source ModSecurity-compatible WAF engine; we run
+# it inside Traefik via the Coraza HTTP WASM Traefik plugin (enabled in
+# the Helm chart values — see `experimental.plugins.coraza` in
+# scripts/bootstrap.sh install_traefik()).
+#
+# Two base Middlewares — option-C hybrid design:
+#   * coraza-base@traefik   — shared OWASP CRS for tenant routes that
+#                              opt in (wafEnabled=1) without per-route
+#                              overrides. Every tenant route that toggles
+#                              WAF on (and has no excluded rules / non-
+#                              default threshold) references THIS name.
+#                              One Coraza engine instance covers all of
+#                              them, keeping per-pod memory bounded.
+#   * coraza-platform@traefik — platform-ingress (admin / client panel)
+#                              variant. Same CRS but with the
+#                              platform-specific exclusions baked in:
+#                                - 911100 (Method Not Allowed) — admin
+#                                  uses DELETE/PATCH/PUT
+#                                - 920420 (Disallowed Content-Type) —
+#                                  the File Manager streams binary
+#                                  uploads as application/octet-stream
+#
+# Tenant routes that DO have per-route customisation (wafExcludedRules
+# or wafAnomalyThreshold != 10) get a `coraza-r-<routeId>` Middleware
+# emitted by annotation-sync.ts; the cost is one extra Coraza engine
+# per customised route, paid in trade for cleaner schema mapping.
+#
+# Directives use the OWASP CRS v4 distribution that ships with the
+# Coraza plugin. Operators with stricter requirements can patch the
+# directives in their overlay; the base values target the cluster's
+# default profile.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: coraza-base
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  plugin:
+    coraza:
+      directives: |
+        Include @coraza.conf-recommended
+        Include @crs-setup.conf.example
+        Include @owasp_crs/*.conf
+        SecRuleEngine On
+        SecResponseBodyAccess Off
+        SecRequestBodyAccess On
+        SecRequestBodyLimit 52428800
+        SecRequestBodyNoFilesLimit 131072
+        # Anomaly-scoring threshold. Lower = stricter.
+        SecAction "id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=10"
+        SecAction "id:900120,phase:1,nolog,pass,t:none,setvar:tx.outbound_anomaly_score_threshold=5"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: coraza-platform
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  plugin:
+    coraza:
+      directives: |
+        Include @coraza.conf-recommended
+        Include @crs-setup.conf.example
+        Include @owasp_crs/*.conf
+        SecRuleEngine On
+        SecResponseBodyAccess Off
+        SecRequestBodyAccess On
+        SecRequestBodyLimit 52428800
+        SecRequestBodyNoFilesLimit 131072
+        # Admin panel uses DELETE/PATCH/PUT — relax CRS 911100.
+        SecRuleRemoveById 911100
+        # File-manager upload-raw uses application/octet-stream —
+        # relax CRS 920420.
+        SecRuleRemoveById 920420
+        SecAction "id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=10"
+        SecAction "id:900120,phase:1,nolog,pass,t:none,setvar:tx.outbound_anomaly_score_threshold=5"
