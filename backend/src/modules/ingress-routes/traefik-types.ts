@@ -301,6 +301,68 @@ export function chainSpec(middlewares: Array<{ name: string; namespace?: string 
   return { chain: { middlewares } };
 }
 
+export interface CorazaArgs {
+  /** Include OWASP CRS v4 rule bundle. Default true. */
+  owaspCrs?: boolean;
+  /** Anomaly-scoring threshold (inbound). Lower = stricter. Default 10. */
+  anomalyThreshold?: number;
+  /** Outbound anomaly threshold. Default 5. */
+  outboundAnomalyThreshold?: number;
+  /** CRS rule IDs to disable (e.g. ['911100', '920420']). */
+  excludedRules?: string[];
+  /** Max body size buffered for inspection (bytes). Default 50 MiB. */
+  bodyLimit?: number;
+}
+
+/**
+ * Build a Coraza WAF plugin Middleware spec. The plugin slug `coraza`
+ * is set in Traefik's Helm `experimental.plugins.coraza` block by
+ * scripts/bootstrap.sh. Directives use the OWASP CRS v4 bundle that
+ * ships with the Coraza plugin's wasm payload.
+ *
+ * For the base/platform variants ship as static YAML in
+ * k8s/base/traefik/middlewares-waf.yaml. This builder is for per-route
+ * customisations only (excluded rules + threshold overrides).
+ */
+export function corazaSpec(args: CorazaArgs = {}): Record<string, unknown> {
+  const includeCrs = args.owaspCrs ?? true;
+  const inboundThreshold = args.anomalyThreshold ?? 10;
+  const outboundThreshold = args.outboundAnomalyThreshold ?? 5;
+  const bodyLimit = args.bodyLimit ?? 52428800;
+  const lines: string[] = [
+    'Include @coraza.conf-recommended',
+  ];
+  if (includeCrs) {
+    lines.push('Include @crs-setup.conf.example');
+    lines.push('Include @owasp_crs/*.conf');
+  }
+  lines.push('SecRuleEngine On');
+  lines.push('SecResponseBodyAccess Off');
+  lines.push('SecRequestBodyAccess On');
+  lines.push(`SecRequestBodyLimit ${bodyLimit}`);
+  lines.push('SecRequestBodyNoFilesLimit 131072');
+  // CRS anomaly-scoring threshold tunables — must be set BEFORE the
+  // CRS rules evaluate. We include the SecAction here regardless of
+  // whether the threshold differs from default so the directive block
+  // is self-contained.
+  lines.push(`SecAction "id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=${inboundThreshold}"`);
+  lines.push(`SecAction "id:900120,phase:1,nolog,pass,t:none,setvar:tx.outbound_anomaly_score_threshold=${outboundThreshold}"`);
+  for (const id of args.excludedRules ?? []) {
+    // SecRuleRemoveById accepts a single id per directive. CRS rule
+    // ids are 6-digit integers (e.g. 911100); reject anything else as
+    // a defence against directive injection.
+    if (!/^\d{3,7}$/.test(id)) continue;
+    lines.push(`SecRuleRemoveById ${id}`);
+  }
+  return {
+    plugin: {
+      coraza: {
+        directives: lines.join('\n'),
+      },
+    },
+  };
+}
+
 // ─── Match-expression helpers ─────────────────────────────────────────
 
 /**
