@@ -1,0 +1,21 @@
+displayName: Coraza WAF (WASM)
+type: middleware
+runtime: wasm
+import: insula/traefik-plugin-coraza
+
+summary: |
+  Coraza WAF as a Traefik http-wasm middleware. The plugin.wasm binary
+  ships in this image; the Traefik DaemonSet's initContainer stages it
+  under /plugins-local/src/insula/traefik-plugin-coraza/.
+
+  Why WASM and not a vendored Yaegi plugin: Coraza's internal/corazawaf
+  package imports `unsafe`, which Yaegi (Traefik's embedded Go
+  interpreter) cannot evaluate. The 2026-05-14 vendored-Yaegi attempt
+  failed at plugin load time. The WASM build path uses TinyGo +
+  WebAssembly System Interface and runs inside Traefik via the
+  http-wasm host protocol, avoiding the `unsafe` constraint entirely.
+
+testData:
+  directives:
+    - "SecRuleEngine On"
+    - 'SecRule REQUEST_URI "@contains evil" "id:1,deny,status:403"'
