@@ -30,7 +30,7 @@ import {
   toggleDirUser,
   changeDirUserPassword,
 } from './protected-dirs-service.js';
-import { syncRouteAnnotations, deleteProtectedDirIngress } from './annotation-sync.js';
+import { deleteProtectedDirIngress } from './annotation-sync.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -70,15 +70,15 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  const triggerAnnotationSync = async (routeId: string, clientId: string) => {
-    const k8s = getK8s();
-    if (!k8s) return;
-    try {
-      await syncRouteAnnotations(app.db, k8s, routeId, clientId);
-      await triggerReconcile(clientId);
-    } catch {
-      // Non-blocking — annotation sync failure should not break the settings update
-    }
+  // Triggering route reconciliation. In the Traefik model annotation
+  // sync no longer mutates a shared Ingress — the per-route Middlewares
+  // are owned by reconcileIngress, which calls buildAllRouteSpecs to
+  // rebuild every Middleware + IngressRoute from the current DB state.
+  // Callers historically passed routeId; we accept it for API
+  // compatibility but ignore it because the full client namespace
+  // reconciles in one pass anyway.
+  const triggerAnnotationSync = async (_routeId: string, clientId: string) => {
+    await triggerReconcile(clientId);
   };
 
   // ─── Client-scoped routes ─────────────────────────────────────────────────
