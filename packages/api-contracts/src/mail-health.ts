@@ -65,8 +65,45 @@ export const mailHealthJmapComponentSchema = componentStatusSchema.extend({
   serverVersion: z.string().nullable(),
 });
 
-export const mailHealthOptionalComponentSchema = componentStatusSchema.extend({
-  status: z.enum(['ok', 'fail', 'not_implemented']),
+/**
+ * Status enum shared by the optional Phase-3b probes (rocksdb / cert / tcp):
+ *   `ok`              — probe ran AND result was good
+ *   `fail`            — probe ran AND result was bad (see `error`)
+ *   `not_implemented` — probe didn't run on this platform/build
+ */
+export const optionalProbeStatusSchema = z.enum(['ok', 'fail', 'not_implemented']);
+
+export const mailHealthRocksdbComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  /** RocksDB CURRENT sentinel file exists in /var/lib/stalwart/data. */
+  currentFile: z.boolean().nullable(),
+  /** RocksDB LOCK file exists (only present while DB is open). */
+  lockFile: z.boolean().nullable(),
+});
+
+export const mailHealthCertPortSchema = z.object({
+  port: z.number().int(),
+  protocol: z.enum(['smtps', 'submission', 'imaps', 'imap', 'managesieve', 'smtp']),
+  daysUntilExpiry: z.number().int().nullable(),
+  issuer: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const mailHealthCertComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  ports: z.array(mailHealthCertPortSchema),
+});
+
+export const mailHealthTcpPortSchema = z.object({
+  port: z.number().int(),
+  reachable: z.boolean(),
+  latencyMs: z.number().int().nullable(),
+  error: z.string().nullable(),
+});
+
+export const mailHealthTcpComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  ports: z.array(mailHealthTcpPortSchema),
 });
 
 export const mailHealthResponseSchema = z.object({
@@ -74,9 +111,9 @@ export const mailHealthResponseSchema = z.object({
   components: z.object({
     pod: mailHealthPodComponentSchema,
     jmap: mailHealthJmapComponentSchema,
-    rocksdb: mailHealthOptionalComponentSchema,
-    cert: mailHealthOptionalComponentSchema,
-    tcp: mailHealthOptionalComponentSchema,
+    rocksdb: mailHealthRocksdbComponentSchema,
+    cert: mailHealthCertComponentSchema,
+    tcp: mailHealthTcpComponentSchema,
   }),
   checkedAt: z.string().datetime(),
   cachedFor: z.number().int().nonnegative(),
@@ -84,4 +121,8 @@ export const mailHealthResponseSchema = z.object({
 export type MailHealthResponse = z.infer<typeof mailHealthResponseSchema>;
 export type MailHealthPodComponent = z.infer<typeof mailHealthPodComponentSchema>;
 export type MailHealthJmapComponent = z.infer<typeof mailHealthJmapComponentSchema>;
-export type MailHealthOptionalComponent = z.infer<typeof mailHealthOptionalComponentSchema>;
+export type MailHealthRocksdbComponent = z.infer<typeof mailHealthRocksdbComponentSchema>;
+export type MailHealthCertComponent = z.infer<typeof mailHealthCertComponentSchema>;
+export type MailHealthCertPort = z.infer<typeof mailHealthCertPortSchema>;
+export type MailHealthTcpComponent = z.infer<typeof mailHealthTcpComponentSchema>;
+export type MailHealthTcpPort = z.infer<typeof mailHealthTcpPortSchema>;
