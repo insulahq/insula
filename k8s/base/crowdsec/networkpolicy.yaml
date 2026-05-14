@@ -1,0 +1,54 @@
+# Allow Traefik bouncer (in `traefik` namespace) to reach the CrowdSec
+# LAPI on :8080. Also allow CrowdSec itself egress to api.crowdsec.net
+# for the community blocklist pull. Deny everything else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: crowdsec
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS resolution.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Outbound HTTPS to api.crowdsec.net for the community blocklist.
+    # Operators in air-gapped environments must remove this rule + use
+    # a mirrored blocklist source (DISABLE_ONLINE_API + custom blocklist
+    # URL in the CrowdSec config) — out of scope for the baseline.
+    - to:
+        - ipBlock:
+            # 0.0.0.0/0 is too broad but the CrowdSec API uses CDN
+            # frontends whose IPs rotate. Operators with strict egress
+            # policies can pin the destination via FQDN egress firewall
+            # (we don't enforce that at the NetworkPolicy layer).
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

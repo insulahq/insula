@@ -1,0 +1,52 @@
+# ModSecurity-CRS WAF Middleware — tenant-opt-in.
+#
+# Attached to a tenant route when ingress_routes.waf_enabled=1; emitted
+# by backend/src/modules/ingress-routes/annotation-sync.ts:
+# buildMiddlewaresForRoute (WAF branch).
+#
+# Also attached unconditionally to the platform-ingress panel routes
+# (admin / client) — they're sensitive surfaces, so the WAF runs there
+# regardless of tenant-level waf_enabled (which only controls tenant
+# routes).
+#
+# Plugin loader: github.com/madebymode/traefik-modsecurity-plugin
+# registered in Traefik's helm install via
+# `--set experimental.plugins.modsecurity.moduleName=...` (see
+# scripts/bootstrap.sh install_traefik). The plugin proxies request
+# bodies to the ModSecurity-CRS sidecar
+# (k8s/base/modsecurity-crs/) for verdict.
+#
+# Single shared sidecar — option-C hybrid per-route directives are not
+# achievable with this plugin (it lacks a Middleware-level config knob
+# for SecRule directives). Operators wanting differentiated rule sets
+# per tenant can run multiple modsec-crs Deployments and emit one
+# Middleware per backend; today every wafEnabled route hits the same
+# CRS config (paranoia level + anomaly thresholds baked into the
+# modsec-crs Deployment's env).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: modsecurity-crs
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  plugin:
+    modsecurity:
+      # URL the plugin POSTs request bodies to. The modsec-crs Service
+      # in the same namespace (Service DNS short form is fine).
+      modSecurityUrl: http://modsec-crs.traefik.svc.cluster.local
+      # Request body size cap (bytes) — bodies larger than this skip
+      # WAF inspection. 5 MiB covers typical form posts / JSON APIs;
+      # operators expecting larger payloads can raise this in an
+      # overlay. Tenant routes that DON'T need body inspection (large
+      # uploads, streaming) should not opt into WAF — the
+      # annotation-sync `wafEnabled=0` default is the right setting.
+      maxBodySize: 5242880
+      # Timeout (ms) for the ModSec verdict round-trip. Default 1s;
+      # network hop + CRS evaluation is typically 5–50ms but generous
+      # to avoid spurious 503s under load. On timeout, the plugin
+      # fails open (allow traffic) — a hostile pod can't DoS tenants
+      # by killing modsec-crs.
+      timeoutMillis: 1000
