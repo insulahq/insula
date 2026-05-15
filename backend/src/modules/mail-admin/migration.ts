@@ -3,7 +3,7 @@
  *
  * **2026-05-15 streamline (Phase 1 of mail-arch v2):**
  *   The pre-streamline pipeline rsynced the local-path PVC to a *new* PVC
- *   name (`stalwart-rocksdb-data-mig-XXX`) and then SSA-patched the
+ *   name (e.g. `stalwart-rocksdb-data-mig-XXXXXXX`) and then SSA-patched the  // ci-mail-arch: ignore
  *   Deployment to point at the new PVC. That triggered an ongoing
  *   Flux/platform-api ownership war on `template.spec.volumes` —
  *   Flux's reconcile reverted the cutover ~60s after every migration.
