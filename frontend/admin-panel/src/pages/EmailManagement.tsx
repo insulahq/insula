@@ -17,7 +17,8 @@ import {
   type DkimSelectorInfo,
 } from '@/hooks/use-email';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
-import MailServerSettings from '@/components/MailServerSettings';
+import MailSettingsTab from '@/components/mail-settings/MailSettingsTab';
+import WebmailSettingsTab from '@/components/mail-settings/WebmailSettingsTab';
 import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
 import MailDrCard from '@/components/MailDrCard';
@@ -35,6 +36,7 @@ const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-6
 type DomainsTab = 'domains' | 'relays';
 type OpsTab = 'placement' | 'backups' | 'storage';
 type BackupTab = 'snapshot' | 'archive';
+type SettingsTab = 'mail' | 'webmail';
 
 /**
  * Email Management page — Phase 3 streamline (2026-05-15).
@@ -61,6 +63,7 @@ export default function EmailManagement() {
   const [domainsTab, setDomainsTab] = useState<DomainsTab>('domains');
   const [opsTab, setOpsTab] = useState<OpsTab>('placement');
   const [backupTab, setBackupTab] = useState<BackupTab>('snapshot');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('mail');
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
 
@@ -118,15 +121,32 @@ export default function EmailManagement() {
         {domainsTab === 'relays' && <SmtpRelaysSection />}
       </MailSectionCard>
 
-      {/* ─── Section 2: Server settings (hostname + webmail URL) ─── */}
+      {/* ─── Section 2: Settings (mail + webmail tabs) ─── */}
       <MailSectionCard
         icon={Settings}
-        title="Server settings"
-        summary="Public hostname + webmail URL (ACME-managed TLS)"
-        dataTestId="mail-section-server-settings"
-        storageKey="server-settings"
+        title="Settings"
+        summary="Mail hostname • Stalwart Web-Admin URL • Webmail engine"
+        dataTestId="mail-section-settings"
+        storageKey="mail-settings"
       >
-        <MailServerSettings />
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+          {[
+            { key: 'mail' as SettingsTab, label: 'Mail Settings' },
+            { key: 'webmail' as SettingsTab, label: 'Webmail' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setSettingsTab(t.key)}
+              className={`border-b-2 px-4 py-2.5 text-sm font-medium ${settingsTab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              data-testid={`settings-tab-${t.key}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {settingsTab === 'mail' && <MailSettingsTab />}
+        {settingsTab === 'webmail' && <WebmailSettingsTab />}
       </MailSectionCard>
 
       {/* ─── Section 3: Operations (placement / backups / storage) ─── */}
