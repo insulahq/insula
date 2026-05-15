@@ -41,15 +41,32 @@ metadata:
     # ensures restore-state on next pod start picks up new credentials.
     configmap.reloader.stakater.com/reload: "stalwart-config"
     secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
-    # Tell Flux to use non-force SSA when reconciling this Deployment.
-    # Phase 7 streamline E2E (Phase C3/C4) caught: platform-api's port-
-    # exposure mode flip SSA-applies `spec.template.spec.containers[].
-    # ports` with fieldManager=platform-api.port-exposure force=true.
-    # Without ssa:merge, Flux's kustomize-controller would use force-
-    # claim on every reconcile (typically every ~10min), undoing the
-    # operator's claim. With ssa:merge, Flux preserves whatever owner
-    # other actors have on a field — exactly the behaviour we want.
-    kustomize.toolkit.fluxcd.io/ssa: merge
+    # NOTE on Flux SSA semantics (2026-05-15 investigation):
+    #
+    # The earlier revision of this file carried
+    #   kustomize.toolkit.fluxcd.io/ssa: merge
+    # with a comment claiming the annotation made Flux respect other
+    # field-managers' ownership during reconcile. Live testing
+    # contradicted that: with the annotation, Flux's kustomize-
+    # controller force-conflicted on every reconcile and overrode
+    # platform-api's mail-migration cutover claim on
+    # `volumes[stalwart-data].persistentVolumeClaim.claimName` and
+    # `template.spec.affinity` within ~60s. The annotation's actual
+    # effect appears to be "force-conflicts=true regardless of
+    # Kustomization.spec.force" — opposite of the comment.
+    #
+    # Removed the annotation so the cluster's Flux Kustomization spec
+    # `force: false` actually takes effect for this resource. Result:
+    # Flux's reconcile uses non-force SSA, which respects
+    # platform-api.port-exposure and platform-api.migration field
+    # ownership.
+    #
+    # Port-exposure is unaffected by this removal: its claimed fields
+    # (`hostPort` per port) are NOT declared in this manifest (Phase-7
+    # streamline stripped them), so Flux's apply never includes
+    # `hostPort` in its body and there's no conflict to force-resolve.
+    # See project_mail_migration_flux_revert_2026_05_15 memory note
+    # for the full investigation log.
 spec:
   # Rolling-update strategy: kill the old pod BEFORE scheduling the new
   # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
