@@ -816,6 +816,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           db: app.db,
           core: k8sForImapsync.core,
           apps: k8sForImapsync.apps,
+          batch: k8sForImapsync.batch,
+          kubeconfigPath: kubePath,
           logger: {
             warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
             info: (...args: unknown[]) => app.log.info(args.join(' ')),
