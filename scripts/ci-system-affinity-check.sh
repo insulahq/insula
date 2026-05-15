@@ -38,6 +38,9 @@ WORKLOADS=(
   # Cut 3 (2026-05-04): the v015 StatefulSet `stalwart-mail` was retired;
   # the v016 Deployment `stalwart-mail` replaces it.
   "mail|Deployment|stalwart-mail|1"
+  # ADR-039 Bulwark — staging+production; impersonator runs as
+  # sidecar inside this Pod and inherits the affinity.
+  "mail|Deployment|bulwark|1"
   "platform|Deployment|dex|1"
   # Valkey/Sentinel coordinator cache — staging-only until production
   # overlay folds in k8s/base/valkey/. StatefulSet (not Deployment).
