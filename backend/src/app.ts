@@ -843,6 +843,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           },
         });
         app.addHook('onClose', () => proxyNetworksStop());
+
+        // Phase 2 streamline (2026-05-15): on first install the DB default is
+        // mailPortExposureMode='allServerNodes' but nothing has applied the
+        // haproxy DaemonSet yet. Drive cluster state to match the DB value
+        // once at startup. Idempotent — if state already matches, the calls
+        // are no-ops. Fire-and-forget; failures get logged via the catch.
+        const { ensureMailPortExposureApplied } = await import(
+          './modules/mail-admin/port-exposure.js'
+        );
+        void ensureMailPortExposureApplied(app.db, { kubeconfigPath: kubePath })
+          .catch((err: unknown) => {
+            app.log.warn(
+              { err },
+              'mail port-exposure startup reconcile failed; cluster may drift from DB until next operator action',
+            );
+          });
       } catch (err) {
         // Catch covers the entire mail-related scheduler block above
         // (mail-imapsync, mail-stats, cnpg-backup-health, dr-watcher,
