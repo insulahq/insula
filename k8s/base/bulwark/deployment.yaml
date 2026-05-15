@@ -93,7 +93,7 @@ spec:
             # public mail server hostname. Overlays override via env
             # patch.
             - name: JMAP_SERVER_URL
-              value: "https://stalwart.${PLATFORM_BASE_DOMAIN}"
+              value: "https://stalwart.${DOMAIN}"
             - name: ALLOW_CUSTOM_JMAP_ENDPOINT
               value: "false"
             - name: STALWART_FEATURES
@@ -179,11 +179,11 @@ spec:
             - name: BULWARK_PORT
               value: "3000"
             - name: PLATFORM_BASE_DOMAIN
-              value: "${PLATFORM_BASE_DOMAIN}"
+              value: "${DOMAIN}"
             - name: PUBLIC_ORIGIN
-              value: "https://bulwark.${PLATFORM_BASE_DOMAIN}"
+              value: "https://bulwark.${DOMAIN}"
             - name: STALWART_JMAP_URL
-              value: "https://stalwart.${PLATFORM_BASE_DOMAIN}"
+              value: "https://stalwart.${DOMAIN}"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:

@@ -35,7 +35,9 @@ metadata:
 spec:
   secretName: bulwark-tls
   issuerRef:
-    name: letsencrypt-prod
+    # Flux postBuild substituteFrom: comes from platform-cluster-config
+    # (letsencrypt-staging-http01 on staging, letsencrypt-prod on prod).
+    name: ${CLUSTER_ISSUER_NAME}
     kind: ClusterIssuer
   dnsNames:
     - bulwark.${DOMAIN}
