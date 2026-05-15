@@ -117,6 +117,14 @@ Both modes:
 
 After rotation, run `make secrets-fetch` to refresh your offline copy of `Secret/platform-admin-seed`. Or wait — the daily CronJob picks it up by 03:15 UTC the next morning.
 
+> **Note (2026-05-15)**: `platform-admin-seed` is auto-deleted by the platform-api on the first successful `PATCH /api/v1/auth/password` (via `backend/src/modules/auth/seed-cleanup.ts`). The bootstrap-time admin password the Secret carries goes permanently out of sync with `users.password_hash` once the operator rotates through the UI, so the platform pre-empts the "Secret says X, DB says Y" trap by removing the Secret outright.
+>
+> Steady-state post-first-login: the Secret does NOT exist, the secrets-bundle MANIFEST shows a line `platform/platform-admin-seed    (cleared by platform-api after first password change — ...)`, and the daily backup CronJob simply doesn't re-bundle it.
+>
+> Break-glass remains via `scripts/admin-password-reset.sh` — that script writes directly to `users.password_hash` and doesn't need the Secret to exist. So losing the bootstrap seed doesn't lose recoverability.
+>
+> If you want to preserve the seed Secret long-term (e.g. for compliance archival before rotating), copy its value off-cluster BEFORE the first UI password change. The pre-first-change daily backup CronJob run captures it in the day's bundle automatically.
+
 ### Other rotations
 
 | Rotation | Procedure |
