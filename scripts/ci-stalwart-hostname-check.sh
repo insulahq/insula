@@ -70,7 +70,7 @@ if [[ -z "$api_url" ]]; then
   printf '%s\n' "$session" | head -c 400 >&2
   echo >&2
   exit 1
-}
+fi
 
 # Strip scheme + path: `https://<host>/jmap/` → `<host>`.
 host_in_url=$(printf '%s' "$api_url" | sed -E 's|^https?://||; s|[:/].*$||')
