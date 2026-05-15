@@ -167,6 +167,27 @@ export async function startMailMigration(
     throw new ApiError('MAIL_MIGRATION_SAME_NODE', 'Source and target nodes are the same', 400);
   }
 
+  // **Phase 1 streamline (2026-05-15) precondition** — Phase K live-test
+  // on staging surfaced a fatal gap: the migration architecture deletes
+  // the source PVC and relies on the snapshot CronJob's restic backup
+  // to restore data on the target node. If no backup target is
+  // configured, the snapshot CronJob silently no-ops AND
+  // `triggerMailSnapshot` succeeds without producing a real snapshot —
+  // the migration then deletes the PVC and the restore-state
+  // initContainer has nothing to restore. The DataStore is lost.
+  //
+  // Refuse migration when no `mailSnapshotBackupStoreId` is set. The
+  // UI surfaces this gap via the Phase 10 backup-target CTA on
+  // MailSnapshotHealthCard, but a programmatic caller hitting
+  // /admin/mail/migrate directly needs this hard-fail.
+  if (!row?.mailSnapshotBackupStoreId) {
+    throw new ApiError(
+      'MAIL_MIGRATION_NO_BACKUP_TARGET',
+      'Mail migration requires a configured backup target. Go to Settings → Backups to add a CIFS / S3 / Hetzner-Storage-Box BackupStore, then Email Management → Operations → Backups to select it.',
+      412, // Precondition Failed
+    );
+  }
+
   const runId = randomUUID();
   await db.execute(sql`
     INSERT INTO mail_migration_runs
@@ -394,10 +415,24 @@ async function runMigrationStateMachine(
 
   const pvcSizeGiB = newGiB ?? Math.ceil(await getMailPvcRequestedBytes(core) / (1024 ** 3));
 
+  // **Phase K live-test (2026-05-15) fix:** clear completed snapshot
+  // CronJob pods that still reference the PVC, otherwise pvc-protection
+  // deadlocks the delete. K8s holds the PVC in Terminating while ANY
+  // pod references it — including Completed pods that haven't hit
+  // ttlSecondsAfterFinished yet. The snapshot CronJob runs every 2 min
+  // and leaves 5-10 Completed pods stacked at any time.
+  try {
+    await suspendSnapshotCronJobAndDeleteCompletedPods(deps);
+  } catch (err) {
+    log.warn('[migration] snapshot CronJob cleanup non-fatal — proceeding:', err);
+  }
+
   try {
     await deletePvcAndWait(core, MAIL_PVC_NAME, 120);
   } catch (err) {
     await failRun(db, runId, `failed to delete source PVC: ${(err as Error).message}`);
+    // Re-enable the snapshot CronJob even on failure so backups resume.
+    await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     return;
   }
 
@@ -446,6 +481,13 @@ async function runMigrationStateMachine(
     await clearAllowRestoreAnnotation(apps);
   } catch (annotErr) {
     log.warn('[migration] failed to clear allow-restore annotation (non-fatal):', annotErr);
+  }
+
+  // Step 7b: Resume the snapshot CronJob suspended at swapping-pvc.
+  try {
+    await resumeSnapshotCronJob(deps);
+  } catch (err) {
+    log.warn('[migration] failed to resume snapshot CronJob (non-fatal — operator should re-enable manually):', err);
   }
 
   // Step 8: Update DB → success
@@ -555,13 +597,32 @@ async function createMailPvc(core: CoreV1Api, targetNode: string, sizeGiB: numbe
 
 /**
  * Patch the Stalwart Deployment with:
- *   - `template.spec.affinity.nodeAffinity` pinning to `targetNode`
+ *   - `template.spec.nodeSelector[kubernetes.io/hostname] = targetNode`
+ *     (hostname pinning — see "Why nodeSelector not nodeAffinity" below)
  *   - `metadata.annotations[mail.platform/allow-restore] = "true"` (when
  *     `allowRestore` is true; the downward-API mount surfaces this to
  *     the `restore-state` initContainer).
  *
- * Neither field is declared in the manifest. Flux's reconcile (non-force
- * SSA) leaves them alone after this patch — no ownership war.
+ * **Why nodeSelector, not nodeAffinity** (Phase K live-test, 2026-05-15):
+ *
+ * The `k8s/components/system-node-affinity/affinity-patch-stalwart.yaml`
+ * component sets `nodeAffinity` to allow role: [server, worker]. Any
+ * patch we send to `spec.template.spec.affinity` collides with that
+ * component's strategic-merge — the apiserver applies a merge-by-key
+ * on `matchExpressions[].key`, and Flux's next reconcile re-applies
+ * the component's affinity, dropping our hostname expression.
+ *
+ * `nodeSelector` is a flat `map[string]string` with no merge-key
+ * semantics. We OWN our key (`kubernetes.io/hostname`); Flux doesn't
+ * declare it; the apiserver merges the two flat maps independently.
+ * BOTH the affinity (role: server,worker) AND our nodeSelector
+ * (hostname: targetNode) must match for the pod to schedule — the
+ * intersection is exactly the target node.
+ *
+ * If a future Flux change starts setting `nodeSelector` too, we'd
+ * have the same collision again — but Stalwart's manifest doesn't
+ * use `nodeSelector` today and there's no reason for an operator to
+ * pin Stalwart globally via that field, so this is stable.
  */
 async function applyDeploymentAffinity(
   apps: AppsV1Api,
@@ -575,18 +636,8 @@ async function applyDeploymentAffinity(
     spec: {
       template: {
         spec: {
-          affinity: {
-            nodeAffinity: {
-              requiredDuringSchedulingIgnoredDuringExecution: {
-                nodeSelectorTerms: [{
-                  matchExpressions: [{
-                    key: 'kubernetes.io/hostname',
-                    operator: 'In',
-                    values: [targetNode],
-                  }],
-                }],
-              },
-            },
+          nodeSelector: {
+            'kubernetes.io/hostname': targetNode,
           },
         },
       },
@@ -609,6 +660,82 @@ async function applyDeploymentAffinity(
  *
  * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
  */
+/**
+ * Suspend the `stalwart-snapshot` CronJob and force-delete all of its
+ * existing Completed pods.
+ *
+ * Why both:
+ *   - Suspend prevents the next CronJob fire from creating a new pod
+ *     mid-migration (which would re-bind the source PVC and block delete).
+ *   - Force-delete clears the backlog of Completed pods that K8s keeps
+ *     around for ttlSecondsAfterFinished (typically 5-10 such pods at any
+ *     time given the 2-min snapshot cadence). Each Completed pod holds a
+ *     PVC reference and blocks pvc-protection from finalising the delete.
+ *
+ * Best-effort — if the CronJob doesn't exist, we silently no-op. If
+ * suspend fails, we still try to delete the pods. The migration's
+ * deletePvcAndWait has its own 120s timeout that will surface the issue
+ * as MAIL_MIGRATION_PVC_DELETE_TIMEOUT if pods aren't gone in time.
+ */
+async function suspendSnapshotCronJobAndDeleteCompletedPods(deps: MigrationDeps): Promise<void> {
+  const { core, batch } = deps;
+
+  // Suspend the CronJob.
+  try {
+    await batch.patchNamespacedCronJob(
+      {
+        namespace: MAIL_NAMESPACE,
+        name: 'stalwart-snapshot',
+        body: { spec: { suspend: true } },
+      } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
+      MIGRATION_DEPLOYMENT_PATCH,
+    );
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    // CronJob absent — no backlog to clear either.
+    return;
+  }
+
+  // Find + force-delete all pods labelled as snapshot jobs.
+  const pods = await core.listNamespacedPod({
+    namespace: MAIL_NAMESPACE,
+    labelSelector: 'app.kubernetes.io/component=stalwart-snapshot',
+  }) as { items?: Array<{ metadata?: { name?: string } }> };
+  for (const p of pods.items ?? []) {
+    const podName = p.metadata?.name;
+    if (!podName) continue;
+    try {
+      await core.deleteNamespacedPod({
+        namespace: MAIL_NAMESPACE,
+        name: podName,
+        gracePeriodSeconds: 0,
+      } as unknown as Parameters<typeof core.deleteNamespacedPod>[0]);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  }
+}
+
+/**
+ * Re-enable the `stalwart-snapshot` CronJob after migration completes
+ * (success or failure path). Idempotent.
+ */
+async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
+  const { batch } = deps;
+  try {
+    await batch.patchNamespacedCronJob(
+      {
+        namespace: MAIL_NAMESPACE,
+        name: 'stalwart-snapshot',
+        body: { spec: { suspend: false } },
+      } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
+      MIGRATION_DEPLOYMENT_PATCH,
+    );
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+}
+
 async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
   await apps.patchNamespacedDeployment(
     {
