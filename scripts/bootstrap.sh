@@ -4301,6 +4301,19 @@ bundle_bootstrap_secrets() {
     if kctl get secret -n "$ns" "$name" -o yaml >"$out_file" 2>/dev/null; then
       echo "  ${ns}/${name}" >> "$manifest"
       count=$((count+1))
+    else
+      # `>` may have left an empty / partial file when kctl errored — drop it
+      # so the encrypted bundle doesn't ship zero-byte placeholders.
+      rm -f "$out_file" 2>/dev/null
+      if [[ "$item" == "platform platform-admin-seed" ]]; then
+        # platform-admin-seed is auto-deleted by the platform-api on the
+        # first successful PATCH /auth/password (see
+        # backend/src/modules/auth/seed-cleanup.ts). Absence here is the
+        # POST-FIRST-LOGIN steady state, not a bug. Document it in the
+        # manifest so DR-restore operators know not to chase a missing
+        # Secret. Break-glass path: scripts/admin-password-reset.sh.
+        echo "  ${ns}/${name}    (cleared by platform-api after first password change — break-glass via scripts/admin-password-reset.sh)" >> "$manifest"
+      fi
     fi
   done
 

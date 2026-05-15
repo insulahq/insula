@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { loginSchema, changePasswordSchema, updateProfileSchema } from './schema.js';
 import { authenticateUser, verifyPassword, hashNewPassword } from './service.js';
+import { deleteAdminSeedSecret } from './seed-cleanup.js';
 import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
@@ -419,6 +420,36 @@ export async function authRoutes(app: FastifyInstance) {
       .set({ passwordHash: newHash })
       .where(eq(users.id, payload.sub));
 
+    // platform-admin-seed Secret cleanup: the bootstrap-time admin
+    // password lives in `platform-admin-seed` and is what seed.ts
+    // would INSERT on first install. After the user has rotated
+    // their password through the UI, that Secret is permanently
+    // out of sync with `users.password_hash` — keeping it around
+    // creates a silent trap (bundle export emits a credential that
+    // no longer works; a DB cold-restore that loses the new hash
+    // could "resurrect" the seed password unexpectedly).
+    //
+    // Break-glass remains via scripts/admin-password-reset.sh, which
+    // doesn't depend on the Secret existing. Best-effort delete: a
+    // failure here MUST NOT bounce a successful password change
+    // back to a 5xx. Logged at warn for ops visibility.
+    let seedSecretCleared = false;
+    try {
+      const result = await deleteAdminSeedSecret();
+      seedSecretCleared = result.cleared;
+      if (result.reason === 'error') {
+        app.log.warn(
+          { err: result.error, userId: payload.sub },
+          'platform-admin-seed cleanup failed after password change (non-fatal — password change itself succeeded)',
+        );
+      }
+    } catch (err) {
+      app.log.warn(
+        { err, userId: payload.sub },
+        'platform-admin-seed cleanup threw unexpectedly after password change (non-fatal)',
+      );
+    }
+
     // Phase 3: a password change MUST invalidate every refresh token —
     // any leaked token from before the change must stop working
     // immediately. The current request's access JWT is left alone (it
@@ -441,6 +472,13 @@ export async function authRoutes(app: FastifyInstance) {
         message: 'Password updated successfully',
         refreshToken: issued.token,
         refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
+        // Surfaces to the UI: when true, the bootstrap-seed Secret
+        // was deleted as part of this rotation (true on first
+        // password change post-bootstrap; false thereafter or when
+        // the operator pre-deleted it). UI can use this to show a
+        // one-time "bootstrap seed cleared — break-glass via
+        // scripts/admin-password-reset.sh" info toast.
+        seedSecretCleared,
       },
     });
   });
