@@ -1028,6 +1028,13 @@ _bulwark_render_apply() {
   rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dev/bulwark) || {
     echo "  kustomize build failed"; return 1; }
   rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
+  # Manifests escape $${VAR} for Flux postBuild envsubst (so Flux
+  # doesn't try to resolve JS template literals as substitution
+  # variables). Production rendering collapses `$${` → `${`; dev
+  # applies via `kubectl apply -k` so we do the same collapse here
+  # — otherwise the impersonator's Node script sees `$$` instead of
+  # `$` and template strings break.
+  rendered=$(echo "$rendered" | sed 's|\$\$\$\${|\${|g; s|\$\${|\${|g')
   local staged="${PROJECT_DIR}/.local.bulwark-rendered.yaml"
   echo "$rendered" > "$staged"
   docker cp "$staged" "${K3S_CONTAINER}:/tmp/bulwark-rendered.yaml" >/dev/null
