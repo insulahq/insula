@@ -292,61 +292,104 @@ export async function applyRaw(
   url.searchParams.set('fieldManager', opts.fieldManager);
   url.searchParams.set('force', opts.force ? 'true' : 'false');
 
-  // Auth — pull from the kubeconfig's current user. v1 SDK exposes
-  // `applyToHTTPSOptions` that fills in headers + ca; we use it on a
-  // stub to extract Authorization without re-implementing auth.
-  // (Bearer-token clusters are the only kind in this codebase's
-  // staging + prod; client-cert clusters would need https.Agent
-  // wiring which we skip for now.)
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/apply-patch+yaml',
-    Accept: 'application/json',
-  };
+  // Source of the Bearer token, in order:
+  //   1. KubeConfig's `user.token` — populated by `loadFromFile` for
+  //      static kubeconfigs.
+  //   2. `/var/run/secrets/kubernetes.io/serviceaccount/token` — the
+  //      in-cluster ServiceAccount path. The k8s SDK's
+  //      `loadFromCluster()` does NOT populate `user.token` from this
+  //      file (it wires the file into the HTTPS client at request time
+  //      via a different code path), so we must read it ourselves.
+  //   3. Otherwise: 401. Throw a clear error.
   const user = kc.getCurrentUser();
-  if (user?.token) {
-    headers.Authorization = `Bearer ${user.token}`;
-  } else {
-    // In-cluster path: loadFromCluster() copies the ServiceAccount
-    // token into user.token already; if we land here we have no
-    // token (e.g. exec-plugin auth) and the apiserver will respond
-    // 401. Surface that as a clearer error than a raw HTTP error.
+  let token = user?.token;
+  if (!token) {
+    try {
+      const { readFileSync } = await import('node:fs');
+      const inClusterTokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+      token = readFileSync(inClusterTokenPath, 'utf8').trim();
+    } catch {
+      /* fall through to throw below */
+    }
+  }
+  if (!token) {
     throw new Error(
-      'k8s-patch.applyRaw: KubeConfig has no Bearer token. '
+      'k8s-patch.applyRaw: no Bearer token in KubeConfig.user nor at '
+      + '/var/run/secrets/kubernetes.io/serviceaccount/token. '
       + 'exec-plugin / client-cert auth not yet supported via this raw path.',
     );
   }
 
-  // CA: in-cluster SA token is signed by the cluster CA; SDK's
-  // KubeConfig.loadFromCluster() points at /var/run/secrets/.../ca.crt.
-  // We let Node fetch use the system CA trust + this CA via undici's
-  // dispatcher only if needed — simplest path is to set NODE_EXTRA_CA_CERTS
-  // for the platform-api pod at deploy time. For now, support
-  // skipTLSVerify clusters (local-dev) and trust the system CA otherwise.
-  let dispatcher: unknown;
-  if (cluster.skipTLSVerify) {
-    const { Agent } = await import('undici');
-    dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
-  } else if (cluster.caData || cluster.caFile) {
-    const { Agent } = await import('undici');
-    const { readFileSync } = await import('node:fs');
-    const ca = cluster.caData
-      ? Buffer.from(cluster.caData, 'base64').toString('utf8')
-      : readFileSync(cluster.caFile!, 'utf8');
-    dispatcher = new Agent({ connect: { ca } });
+  // Use node:https directly so we can pass the cluster CA via the
+  // standard `ca` option — Node's native fetch doesn't accept `ca`
+  // (only undici's Agent does, and undici isn't bundled in the prod
+  // Docker image's pruned node_modules). https is in Node core.
+  const { request: httpsRequest } = await import('node:https');
+  const { readFileSync } = await import('node:fs');
+
+  // CA source: KubeConfig.caData/caFile first, then the in-cluster
+  // ServiceAccount ca.crt as fallback. Same rationale as the token
+  // fallback above — loadFromCluster() doesn't always propagate the
+  // CA file path into cluster.caFile.
+  let ca: string | Buffer | undefined;
+  if (cluster.caData) {
+    ca = Buffer.from(cluster.caData, 'base64');
+  } else if (cluster.caFile) {
+    ca = readFileSync(cluster.caFile);
+  } else if (!cluster.skipTLSVerify) {
+    try {
+      ca = readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt');
+    } catch {
+      /* fall through — system CA may already trust the apiserver */
+    }
   }
 
-  const res = await fetch(url.toString(), {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify(body),
-    // @ts-expect-error — undici Dispatcher isn't part of Node fetch's stable types
-    dispatcher,
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(
-      `k8s-patch.applyRaw: ${target.kind}/${target.name} → HTTP ${res.status} ${res.statusText}: ${txt.slice(0, 500)}`,
+  const bodyBuf = Buffer.from(JSON.stringify(body), 'utf8');
+
+  return await new Promise<unknown>((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        method: 'PATCH',
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: `${url.pathname}${url.search}`,
+        ca,
+        rejectUnauthorized: !cluster.skipTLSVerify,
+        headers: {
+          // Explicit Content-Length so Node uses fixed-length encoding
+          // instead of Transfer-Encoding: chunked. The apiserver's
+          // apply-patch parser is fine with chunked in normal cases
+          // but live testing on staging showed only `f:name` got
+          // claimed when the body was sent chunked; switching to
+          // fixed-length restored the full field claim. Curl always
+          // sends Content-Length, which is why curl worked while
+          // Node's default chunked didn't.
+          'Content-Type': 'application/apply-patch+yaml',
+          'Content-Length': String(bodyBuf.length),
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) {
+            try { resolve(JSON.parse(text)); }
+            catch (err) { reject(new Error(`k8s-patch.applyRaw: bad JSON response (${(err as Error).message})`)); }
+            return;
+          }
+          reject(new Error(
+            `k8s-patch.applyRaw: ${target.kind}/${target.name} → HTTP ${status}: ${text.slice(0, 500)}`,
+          ));
+        });
+        res.on('error', reject);
+      },
     );
-  }
-  return res.json();
+    req.on('error', reject);
+    req.write(bodyBuf);
+    req.end();
+  });
 }
