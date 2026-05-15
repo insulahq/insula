@@ -58,6 +58,11 @@ patches:
   # ── mail namespace ────────────────────────────────────────────────
   - target: { kind: Deployment, name: roundcube, namespace: mail }
     path: affinity-patch.yaml
+  # ADR-039 — Bulwark webmail. Same shared server-role affinity as
+  # Roundcube; the impersonator sidecar lives inside this Pod so
+  # it inherits the affinity for free.
+  - target: { kind: Deployment, name: bulwark, namespace: mail }
+    path: affinity-patch.yaml
   # Cut 3 (2026-05-04): v015 StatefulSet `stalwart-mail` retired;
   # v016 ships as a Deployment named `stalwart-mail`.
   #
