@@ -292,14 +292,30 @@ export async function applyRaw(
   url.searchParams.set('fieldManager', opts.fieldManager);
   url.searchParams.set('force', opts.force ? 'true' : 'false');
 
+  // Source of the Bearer token, in order:
+  //   1. KubeConfig's `user.token` — populated by `loadFromFile` for
+  //      static kubeconfigs.
+  //   2. `/var/run/secrets/kubernetes.io/serviceaccount/token` — the
+  //      in-cluster ServiceAccount path. The k8s SDK's
+  //      `loadFromCluster()` does NOT populate `user.token` from this
+  //      file (it wires the file into the HTTPS client at request time
+  //      via a different code path), so we must read it ourselves.
+  //   3. Otherwise: 401. Throw a clear error.
   const user = kc.getCurrentUser();
-  if (!user?.token) {
-    // In-cluster path: loadFromCluster() copies the ServiceAccount
-    // token into user.token already; if we land here we have no
-    // token (e.g. exec-plugin auth) and the apiserver would respond
-    // 401. Surface that as a clearer error than a raw HTTP error.
+  let token = user?.token;
+  if (!token) {
+    try {
+      const { readFileSync } = await import('node:fs');
+      const inClusterTokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+      token = readFileSync(inClusterTokenPath, 'utf8').trim();
+    } catch {
+      /* fall through to throw below */
+    }
+  }
+  if (!token) {
     throw new Error(
-      'k8s-patch.applyRaw: KubeConfig has no Bearer token. '
+      'k8s-patch.applyRaw: no Bearer token in KubeConfig.user nor at '
+      + '/var/run/secrets/kubernetes.io/serviceaccount/token. '
       + 'exec-plugin / client-cert auth not yet supported via this raw path.',
     );
   }
@@ -311,11 +327,21 @@ export async function applyRaw(
   const { request: httpsRequest } = await import('node:https');
   const { readFileSync } = await import('node:fs');
 
+  // CA source: KubeConfig.caData/caFile first, then the in-cluster
+  // ServiceAccount ca.crt as fallback. Same rationale as the token
+  // fallback above — loadFromCluster() doesn't always propagate the
+  // CA file path into cluster.caFile.
   let ca: string | Buffer | undefined;
   if (cluster.caData) {
     ca = Buffer.from(cluster.caData, 'base64');
   } else if (cluster.caFile) {
     ca = readFileSync(cluster.caFile);
+  } else if (!cluster.skipTLSVerify) {
+    try {
+      ca = readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt');
+    } catch {
+      /* fall through — system CA may already trust the apiserver */
+    }
   }
 
   return await new Promise<unknown>((resolve, reject) => {
@@ -330,7 +356,7 @@ export async function applyRaw(
         headers: {
           'Content-Type': 'application/apply-patch+yaml',
           Accept: 'application/json',
-          Authorization: `Bearer ${user.token}`,
+          Authorization: `Bearer ${token}`,
         },
       },
       (res) => {
