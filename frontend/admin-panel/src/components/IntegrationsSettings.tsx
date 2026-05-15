@@ -3,35 +3,25 @@ import { Loader2, Save, CheckCircle, AlertCircle, RotateCcw, Link2 } from 'lucid
 import { usePlatformUrls, useUpdatePlatformUrls } from '@/hooks/use-platform-urls';
 
 /**
- * Integrations — operator-editable URLs for services the admin panel
- * embeds (Longhorn, Stalwart) or links to (webmail).
+ * Integrations — operator-editable URLs for non-mail services the
+ * admin panel embeds. The Stalwart Web-Admin URL moved to Email
+ * Management → Settings → Mail Settings so all mail-related toggles
+ * live in one place.
  *
  * Each row shows the current value, a "Default: <apex-derived>" hint,
  * and a Reset button that clears the DB row → falls back to the apex
- * default on next load. Changes to the apex (from the Networking
- * section of the main SystemSettingsForm) automatically shift the
- * defaults shown here.
- *
- * Submit is a partial PATCH — only changed fields are sent. Zod on the
- * server enforces https:// (http allowed for localhost) and valid FQDN
- * on the mail hostname.
+ * default on next load.
  */
 export default function IntegrationsSettings() {
   const { data: urls, isLoading } = usePlatformUrls();
   const update = useUpdatePlatformUrls();
 
   const [longhornUrl, setLonghornUrl] = useState('');
-  const [stalwartAdminUrl, setStalwartAdminUrl] = useState('');
   const [success, setSuccess] = useState(false);
 
-  // Sync form state with the server state whenever the query resolves.
-  // Guarded on `.source === 'db'` so a Reset-click that yields the
-  // derived default doesn't loop the user back into "set" mode — the
-  // input stays blank, placeholder shows the default.
   useEffect(() => {
     if (!urls) return;
     setLonghornUrl(urls.longhornUrl.source === 'db' ? urls.longhornUrl.value : '');
-    setStalwartAdminUrl(urls.stalwartAdminUrl.source === 'db' ? urls.stalwartAdminUrl.value : '');
   }, [urls]);
 
   const handleSubmit = async (e: FormEvent) => {
@@ -40,9 +30,6 @@ export default function IntegrationsSettings() {
     const payload: Record<string, string | null> = {};
     if ((urls?.longhornUrl.source === 'db' ? urls.longhornUrl.value : '') !== longhornUrl) {
       payload.longhornUrl = longhornUrl.trim() === '' ? null : longhornUrl.trim();
-    }
-    if ((urls?.stalwartAdminUrl.source === 'db' ? urls.stalwartAdminUrl.value : '') !== stalwartAdminUrl) {
-      payload.stalwartAdminUrl = stalwartAdminUrl.trim() === '' ? null : stalwartAdminUrl.trim();
     }
     if (Object.keys(payload).length === 0) return;
     try {
@@ -54,7 +41,7 @@ export default function IntegrationsSettings() {
     }
   };
 
-  const handleReset = async (field: 'longhornUrl' | 'stalwartAdminUrl') => {
+  const handleReset = async (field: 'longhornUrl') => {
     setSuccess(false);
     try {
       await update.mutateAsync({ [field]: null });
@@ -103,20 +90,6 @@ export default function IntegrationsSettings() {
         onChange={setLonghornUrl}
         onReset={() => handleReset('longhornUrl')}
         resetDisabled={urls.longhornUrl.source !== 'db' || update.isPending}
-        inputClass={inputClass}
-      />
-
-      {/* Stalwart web-admin */}
-      <UrlRow
-        id="int-stalwart"
-        label="Stalwart Web-Admin URL"
-        help="Embedded in the Mail Management page. Leave blank on environments where Stalwart is not yet deployed."
-        value={stalwartAdminUrl}
-        defaultValue={urls.stalwartAdminUrl.default}
-        source={urls.stalwartAdminUrl.source}
-        onChange={setStalwartAdminUrl}
-        onReset={() => handleReset('stalwartAdminUrl')}
-        resetDisabled={urls.stalwartAdminUrl.source !== 'db' || update.isPending}
         inputClass={inputClass}
       />
 

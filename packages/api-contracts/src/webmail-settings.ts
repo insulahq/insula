@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { webmailEngineSchema } from './mailboxes.js';
 
 // Accept any URL the operator types — we intentionally don't force
 // https:// or a .com TLD so local dev and corporate intranets can use
@@ -18,6 +19,10 @@ export const updateWebmailSettingsSchema = z.object({
   // (messages per hour). null = no default (Stalwart uses its built-in
   // defaults). 0 = all customers blocked unless an override allows.
   emailSendRateLimitDefault: z.number().int().min(0).max(1000000).nullable().optional(),
+  // ADR-039 Phase 10: which webmail UI the platform mints handoff
+  // tokens for. The backend already maps `roundcube` → `?_task=login&_jwt=`
+  // and `bulwark` → `/_impersonate?token=` in generateWebmailToken.
+  defaultWebmailEngine: webmailEngineSchema.optional(),
 });
 
 export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSchema>;
@@ -26,6 +31,7 @@ export const webmailSettingsResponseSchema = z.object({
   defaultWebmailUrl: z.string(),
   mailServerHostname: z.string().optional(),
   emailSendRateLimitDefault: z.number().nullable().optional(),
+  defaultWebmailEngine: webmailEngineSchema,
 });
 
 export type WebmailSettingsResponse = z.infer<typeof webmailSettingsResponseSchema>;

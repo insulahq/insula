@@ -18,6 +18,7 @@ interface UpdateWebmailSettingsInput {
   readonly defaultWebmailUrl?: string;
   readonly mailServerHostname?: string;
   readonly emailSendRateLimitDefault?: number | null;
+  readonly defaultWebmailEngine?: 'roundcube' | 'bulwark';
 }
 
 export function useUpdateWebmailSettings() {
