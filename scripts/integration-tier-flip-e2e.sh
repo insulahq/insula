@@ -84,7 +84,7 @@ fi
 log "── creating client (mirrors UI: New Client) ──"
 STAMP=$(date +%s)
 COMPANY="Tier Flip E2E $STAMP"
-RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"tier-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"tier-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
@@ -93,7 +93,7 @@ trap cleanup EXIT
 
 log "── waiting for full provisioning ──"
 for _ in $(seq 1 60); do
-  STATUS=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
+  STATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
   [[ "$STATUS" == "provisioned" ]] && break
   sleep 2
 done
@@ -105,13 +105,13 @@ PVNAME=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.volume
 
 # ─── PATCH storage_tier (mirrors UI: Save in PlacementCard) ──────────
 log "── PATCH storage_tier=ha (UI Save click) ──"
-FLIP=$(api PATCH "/clients/$CID" '{"storage_tier":"ha"}')
+FLIP=$(api PATCH "/tenants/$CID" '{"storage_tier":"ha"}')
 RESPONSE_TIER=$(echo "$FLIP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('storageTier') or 'MISSING')" 2>/dev/null)
 [[ "$RESPONSE_TIER" == "ha" ]] && ok "PATCH response storageTier=ha" || fail "PATCH response storageTier=$RESPONSE_TIER (expected ha) — body: $(echo "$FLIP" | head -c 300)"
 
 # ─── reload page (GET /tenants/:id again) ────────────────────────────
 log "── GET /tenants/:id (UI reload) ──"
-RELOAD=$(api GET "/clients/$CID")
+RELOAD=$(api GET "/tenants/$CID")
 PERSISTED_TIER=$(echo "$RELOAD" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageTier') or 'MISSING')" 2>/dev/null)
 [[ "$PERSISTED_TIER" == "ha" ]] && ok "GET after reload: storageTier=ha (THIS IS THE BUG THE USER REPORTED)" || fail "GET after reload: storageTier=$PERSISTED_TIER (regression — silent revert)"
 
@@ -127,7 +127,7 @@ done
 
 # ─── storage-placement endpoint returns size + used ──────────────────
 log "── GET /storage-placement (storage table data) ──"
-PLACEMENT=$(api GET "/clients/$CID/storage-placement")
+PLACEMENT=$(api GET "/tenants/$CID/storage-placement")
 HAS_SIZE=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print('Y' if d and d[0].get('sizeBytes',0) > 0 else 'N')" 2>/dev/null)
 HAS_USED_FIELD=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print('Y' if d and 'usedBytes' in d[0] else 'N')" 2>/dev/null)
 HAS_ALLOC_FIELD=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print('Y' if d and 'allocatedBytes' in d[0] else 'N')" 2>/dev/null)
@@ -186,9 +186,9 @@ fi
 # locate it — that's only populated when something attaches the
 # volume. Start FM briefly so the volume gets attached, then run
 # fsck (which will quiesce/attach again with its own pod).
-api POST "/clients/$CID/files/start" "" >/dev/null
+api POST "/tenants/$CID/files/start" "" >/dev/null
 for _ in $(seq 1 30); do
-  R=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+  R=$(api GET "/tenants/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
   [[ "$R" == "true" ]] && break
   sleep 3
 done
@@ -263,7 +263,7 @@ except Exception:
   fi
 fi
 DEPL_NAME="t$(date +%s)"
-DEPL_RESP=$(api POST "/clients/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$DEPL_NAME\",\"replica_count\":1}")
+DEPL_RESP=$(api POST "/tenants/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$DEPL_NAME\",\"replica_count\":1}")
 DEPL_ID=$(echo "$DEPL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('id',''))" 2>/dev/null)
 [[ -n "$DEPL_ID" ]] && ok "deployment created $DEPL_NAME" || { fail "deploy create failed: $(echo "$DEPL_RESP" | head -c 200)"; }
 
@@ -282,8 +282,8 @@ HA_NS=$(echo "$STATE" | cut -d'|' -f1)
 
 # ─── flip back to local + verify nodeSelector reapplied ──────────────
 log "── flip back to local (round-trip) ──"
-api PATCH "/clients/$CID" '{"storage_tier":"local"}' >/dev/null
-RELOAD2=$(api GET "/clients/$CID")
+api PATCH "/tenants/$CID" '{"storage_tier":"local"}' >/dev/null
+RELOAD2=$(api GET "/tenants/$CID")
 TIER2=$(echo "$RELOAD2" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageTier'))" 2>/dev/null)
 [[ "$TIER2" == "local" ]] && ok "round-trip ha→local persists" || fail "round-trip failed: tier=$TIER2"
 
@@ -304,9 +304,9 @@ STRATEGY=$(ssh_cp "kubectl -n $NS get deploy $DEPL_NAME -o jsonpath='{.spec.stra
 
 # ─── FM colocation: same node as the tenant workload ────────────────
 log "── FM colocates with tenant workload (RWO sharing) ──"
-api POST "/clients/$CID/files/start" "" >/dev/null
+api POST "/tenants/$CID/files/start" "" >/dev/null
 for _ in $(seq 1 30); do
-  R=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('ready'))" 2>/dev/null)
+  R=$(api GET "/tenants/$CID/files/status" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('ready'))" 2>/dev/null)
   [[ "$R" == "True" ]] && break
   sleep 4
 done

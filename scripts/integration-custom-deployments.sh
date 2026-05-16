@@ -134,7 +134,7 @@ info "Admin login OK"
 # deployments under that client.
 TENANT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
 if [[ -z "$TENANT_ID" ]]; then
-  TENANT_ID=$(api GET "/clients?limit=20" | python3 -c "
+  TENANT_ID=$(api GET "/tenants?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:
@@ -146,7 +146,7 @@ fi
 info "Using client $TENANT_ID"
 
 # Resolve the tenant namespace once.
-TENANT_NS=$(api GET "/clients/$TENANT_ID" | python3 -c "
+TENANT_NS=$(api GET "/tenants/$TENANT_ID" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
 " 2>/dev/null)
 [[ -z "$TENANT_NS" ]] && { echo "FATAL: client has no kubernetesNamespace" >&2; exit 2; }
@@ -176,7 +176,7 @@ scenario_simple() {
 EOF
 )
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   SIMPLE_ID=$(echo "$resp" | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin)['data']['id'])
@@ -225,7 +225,7 @@ scenario_upgrade() {
   [[ -z "$SIMPLE_ID" ]] && { info "skipped — simple-mode scenario did not run"; return; }
 
   local resp
-  resp=$(api PUT "/clients/$TENANT_ID/custom-deployments/$SIMPLE_ID/upgrade-tag" '{"image":"nginx:1.27"}')
+  resp=$(api PUT "/tenants/$TENANT_ID/custom-deployments/$SIMPLE_ID/upgrade-tag" '{"image":"nginx:1.27"}')
   if echo "$resp" | grep -q '"id"'; then
     pass "PUT /upgrade-tag accepted"
   else
@@ -261,7 +261,7 @@ scenario_updates() {
 EOF
 )
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments/check-updates-batch" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments/check-updates-batch" "$body")
   local status
   status=$(echo "$resp" | python3 -c "
 import json,sys
@@ -306,7 +306,7 @@ print(json.dumps({
 }))
 ")
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   COMPOSE_ID=$(echo "$resp" | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin)['data']['id'])
@@ -361,7 +361,7 @@ scenario_pat() {
   # we don't actually expect a successful pull, only the Secret).
   local body='{"registry_host":"ghcr.io","username":"e2e-test","token":"ghp_fake_e2e_token_xyz"}'
   local status
-  status=$(api_status PUT "/clients/$TENANT_ID/custom-deployments/$SIMPLE_ID/pull-credentials" "$body")
+  status=$(api_status PUT "/tenants/$TENANT_ID/custom-deployments/$SIMPLE_ID/pull-credentials" "$body")
   if [[ "$status" == "200" ]]; then
     pass "PUT /pull-credentials → 200"
   else
@@ -381,7 +381,7 @@ scenario_pat() {
 
   # Public response echoes lastFour only, not the cleartext.
   local resp
-  resp=$(api GET "/clients/$TENANT_ID/custom-deployments/$SIMPLE_ID/pull-credentials")
+  resp=$(api GET "/tenants/$TENANT_ID/custom-deployments/$SIMPLE_ID/pull-credentials")
   if echo "$resp" | grep -q "fake_e2e_token"; then
     fail "API echoed PAT cleartext — should only return lastFour"
   else
@@ -389,7 +389,7 @@ scenario_pat() {
   fi
 
   # Revoke → Secret gone.
-  status=$(api_status DELETE "/clients/$TENANT_ID/custom-deployments/$SIMPLE_ID/pull-credentials" "")
+  status=$(api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$SIMPLE_ID/pull-credentials" "")
   if [[ "$status" == "204" ]]; then
     pass "DELETE /pull-credentials → 204"
   else
@@ -409,7 +409,7 @@ scenario_delete() {
   for id in "$SIMPLE_ID" "$COMPOSE_ID"; do
     [[ -z "$id" ]] && continue
     local status
-    status=$(api_status DELETE "/clients/$TENANT_ID/custom-deployments/$id" "")
+    status=$(api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$id" "")
     if [[ "$status" == "204" ]]; then
       pass "DELETE /custom-deployments/$id → 204"
     else

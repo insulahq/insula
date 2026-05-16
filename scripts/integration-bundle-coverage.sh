@@ -127,7 +127,7 @@ print(nginx.get("id","") if nginx else "")' 2>/dev/null)
 [[ -n "$region_id" ]] || { fail "regions: no region available"; exit 1; }
 [[ -n "$catalog_id" ]] || { fail "catalog: nginx-php entry not found"; exit 1; }
 
-create_resp=$(api POST "/clients" "{
+create_resp=$(api POST "/tenants" "{
   \"name\": \"coverage-$stamp\",
   \"primary_email\": \"coverage-$stamp@phoenix-host.net\",
   \"plan_id\": \"$plan_id\",
@@ -140,7 +140,7 @@ ok "client created cid=$cid"
 
 # Wait for provision.
 for _ in $(seq 1 30); do
-  status=$(api GET "/clients/$cid" \
+  status=$(api GET "/tenants/$cid" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin).get("data",{}); print(d.get("provisioningStatus",""))' 2>/dev/null)
   [[ "$status" == "provisioned" || "$status" == "ready" || "$status" == "active" ]] && break
   sleep 4
@@ -150,9 +150,9 @@ done
 # can attach to (matches the integration-staging.sh restore scenario
 # convention of creating a bare domain first, then bundling).
 hostname="cov-${stamp}.${TENANT_BASE}"
-dom_resp=$(api POST "/clients/$cid/domains" "{\"domain_name\":\"$hostname\"}")
+dom_resp=$(api POST "/tenants/$cid/domains" "{\"domain_name\":\"$hostname\"}")
 domain_id=$(echo "$dom_resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
-[[ -n "$domain_id" ]] || { fail "domain: create failed: $(echo "$dom_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1; exit 1; }
+[[ -n "$domain_id" ]] || { fail "domain: create failed: $(echo "$dom_resp" | head -c 300)"; api DELETE "/tenants/$cid" >/dev/null 2>&1; exit 1; }
 ok "domain created hostname=$hostname"
 
 # ─── Capture full bundle ────────────────────────────────────────
@@ -165,7 +165,7 @@ b_status=$(echo "$b_resp" | python3 -c 'import json,sys; print(json.load(sys.std
 
 cleanup() {
   [[ -n "$bundle_id" ]] && api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true
-  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+  api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

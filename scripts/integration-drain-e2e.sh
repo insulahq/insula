@@ -197,7 +197,7 @@ provision_on_worker() {
   local company="$2"
   local stamp; stamp=$(date +%s%N)
   local resp cid
-  resp=$(api POST "/clients" "{
+  resp=$(api POST "/tenants" "{
     \"name\":\"$company\",
     \"primary_email\":\"drain-$tier-$stamp@phoenix-host.net\",
     \"plan_id\":\"$PLAN_ID\",
@@ -210,23 +210,23 @@ provision_on_worker() {
 
   for _ in $(seq 1 90); do
     local status
-    status=$(api GET "/clients/$cid" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
+    status=$(api GET "/tenants/$cid" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
     [[ "$status" == "provisioned" ]] && break
     sleep 2
   done
   [[ "$status" == "provisioned" ]] || { echo "stuck at $status" >&2; return 1; }
 
   local depl_name="t$(date +%s%N | tail -c 9)"
-  api POST "/clients/$cid/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}" >/dev/null
+  api POST "/tenants/$cid/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}" >/dev/null
   for _ in $(seq 1 30); do
     local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || true)
     [[ -n "$ns" ]] && break
     sleep 2
   done
-  api POST "/clients/$cid/files/start" "" >/dev/null
+  api POST "/tenants/$cid/files/start" "" >/dev/null
   for _ in $(seq 1 30); do
     local r
-    r=$(api GET "/clients/$cid/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+    r=$(api GET "/tenants/$cid/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
     [[ "$r" == "true" ]] && break
     sleep 3
   done
@@ -452,8 +452,8 @@ fi
 # the new pin. With auto-fill (target=""), both clients should land
 # on node_name=null.
 log "── tenant-level pin propagation ──"
-LOCAL_DB_PIN=$(api GET "/clients/$LOCAL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
-HA_DB_PIN=$(api GET "/clients/$HA_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
+LOCAL_DB_PIN=$(api GET "/tenants/$LOCAL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
+HA_DB_PIN=$(api GET "/tenants/$HA_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
 [[ "$LOCAL_DB_PIN" == "NULL" ]] && ok "LOCAL clients.node_name cleared (auto-pin propagated to DB)" \
   || fail "LOCAL clients.node_name=$LOCAL_DB_PIN (expected NULL after auto re-pin)"
 [[ "$HA_DB_PIN"    == "NULL" ]] && ok "HA clients.node_name cleared" \
