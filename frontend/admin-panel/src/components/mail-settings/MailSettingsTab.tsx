@@ -15,9 +15,9 @@ const FQDN_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[
  *
  * Hostname changes go through Stalwart's JMAP `SystemSettings.defaultHostname`
  * first; only after Stalwart accepts does the platform_settings row
- * update. The Stalwart Web-Admin URL lives in platform_urls (alongside
- * Longhorn) — moved here from the System Settings → Integrations card
- * so all mail-related toggles are co-located.
+ * update. The Stalwart Web-Admin URL lives in platform_urls — moved
+ * here from the System Settings → Integrations card so all
+ * mail-related toggles are co-located.
  */
 export default function MailSettingsTab() {
   const webmail = useWebmailSettings();

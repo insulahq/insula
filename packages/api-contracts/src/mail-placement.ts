@@ -103,6 +103,20 @@ export const mailPortExposureUpdateSchema = z.object({
   mode: z.enum(['thisNodeOnly', 'allServerNodes']),
 });
 
+/**
+ * Response shape for `PATCH /admin/mail/port-exposure`.
+ *
+ * 2026-05-16: returns `taskId` so the operator UI can open the progress
+ * modal immediately. When the caller is a service-account (no user.sub
+ * in the JWT), the backend runs the op synchronously and returns
+ * `taskId: null` — the work is already done by the time the response
+ * is observed.
+ */
+export const mailPortExposureUpdateResponseSchema = z.object({
+  updated: z.literal(true),
+  taskId: z.string().uuid().nullable(),
+});
+
 export const mailPortExposureResponseSchema = z.object({
   mode: z.enum(['thisNodeOnly', 'allServerNodes']),
   proxyProtocolActive: z.boolean(),
@@ -117,5 +131,6 @@ export type MailPlacementUpdateRequest = z.infer<typeof mailPlacementUpdateReque
 export type MailFailoverRequest = z.infer<typeof mailFailoverRequestSchema>;
 export type MailFailbackRequest = z.infer<typeof mailFailbackRequestSchema>;
 export type MailPortExposureUpdate = z.infer<typeof mailPortExposureUpdateSchema>;
+export type MailPortExposureUpdateResponse = z.infer<typeof mailPortExposureUpdateResponseSchema>;
 export type MailPortExposureResponse = z.infer<typeof mailPortExposureResponseSchema>;
 export type NodeCandidate = z.infer<typeof nodeCandidateSchema>;

@@ -546,13 +546,129 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     async (req: { user?: { sub?: string } }) => {
       const cfg = app.config as Record<string, unknown>;
       const userId = req.user?.sub ?? 'unknown';
+      const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
       app.log.warn({ userId }, 'mail-admin: manual snapshot trigger requested');
       try {
-        const result = await triggerMailSnapshot({
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
+        const result = await triggerMailSnapshot({ kubeconfigPath });
         app.log.warn({ userId, jobName: result.jobName }, 'mail-admin: manual snapshot Job created');
-        return success(result);
+
+        // Task-center wiring (2026-05-16): chip + modal for the
+        // spawned Job. The existing SnapshotJobStatusPanel polls
+        // /admin/mail/snapshot/jobs/:name; the chip's modal does the
+        // same via MailTaskProgressModal. Background watcher updates
+        // the task as the Job advances.
+        let taskId: string | null = null;
+        if (req.user?.sub) {
+          try {
+            const { start: startTask, progress: progressTask, finish: finishTask } =
+              await import('../tasks/service.js');
+            const { toSafeText } = await import('@k8s-hosting/api-contracts');
+            const started = await startTask(app.db, {
+              kind: 'mail.snapshot.trigger',
+              refId: result.jobName,
+              scope: 'admin',
+              userId: req.user.sub,
+              label: toSafeText(`Mail snapshot: ${result.jobName}`),
+              target: {
+                type: 'modal',
+                modal: 'mail-operation',
+                modalProps: { jobName: result.jobName },
+              },
+              progressPct: 5,
+              progressText: toSafeText('Snapshot Job created — waiting for pod scheduling'),
+              details: {
+                jobName: result.jobName,
+                steps: [
+                  { name: 'Create snapshot Job', state: 'done' },
+                  { name: 'Wait for pod to start', state: 'running' },
+                  { name: 'Run restic backup', state: 'pending' },
+                  { name: 'Job complete', state: 'pending' },
+                ],
+              },
+            });
+            taskId = started.id;
+
+            // Background watcher polls the Job status every 5s and
+            // finalises the task when Complete or Failed. Best-effort —
+            // a missed Job state still leaves the chip showing
+            // "running" until terminal cleanup kicks in.
+            void (async () => {
+              const deadline = Date.now() + 30 * 60 * 1000; // 30 min cap
+              let lastState = 'running';
+              while (Date.now() < deadline) {
+                try {
+                  const status = await getMailSnapshotJobStatus(result.jobName, { kubeconfigPath });
+                  // status.status is 'pending'|'running'|'succeeded'|'failed'
+                  if (status.status === 'succeeded') {
+                    await finishTask(app.db, taskId!, {
+                      status: 'succeeded',
+                      text: toSafeText(`Snapshot complete (${status.completedAt ?? 'now'})`),
+                      detailsPatch: {
+                        jobName: result.jobName,
+                        steps: [
+                          { name: 'Create snapshot Job', state: 'done' },
+                          { name: 'Wait for pod to start', state: 'done' },
+                          { name: 'Run restic backup', state: 'done' },
+                          { name: 'Job complete', state: 'done' },
+                        ],
+                      },
+                    });
+                    return;
+                  }
+                  if (status.status === 'failed') {
+                    await finishTask(app.db, taskId!, {
+                      status: 'failed',
+                      error: status.failureReason ?? 'Snapshot Job failed',
+                      detailsPatch: {
+                        jobName: result.jobName,
+                        steps: [
+                          { name: 'Create snapshot Job', state: 'done' },
+                          { name: 'Wait for pod to start', state: 'done' },
+                          { name: 'Run restic backup', state: 'failed' },
+                          { name: 'Job complete', state: 'pending' },
+                        ],
+                      },
+                    });
+                    return;
+                  }
+                  if (status.status !== lastState) {
+                    lastState = status.status;
+                    await progressTask(app.db, taskId!, {
+                      pct: status.status === 'running' ? 50 : 10,
+                      text: toSafeText(`Snapshot Job ${status.status}`),
+                      detailsPatch: {
+                        jobName: result.jobName,
+                        steps: [
+                          { name: 'Create snapshot Job', state: 'done' },
+                          { name: 'Wait for pod to start', state: status.status === 'queued' ? 'running' : 'done' },
+                          { name: 'Run restic backup', state: status.status === 'running' ? 'running' : 'pending' },
+                          { name: 'Job complete', state: 'pending' },
+                        ],
+                      },
+                    });
+                  }
+                } catch {
+                  /* ignore — retry next tick */
+                }
+                await new Promise((r) => setTimeout(r, 5_000));
+              }
+              // Timed out — finalise as failed so the chip clears.
+              try {
+                await finishTask(app.db, taskId!, {
+                  status: 'failed',
+                  error: 'Snapshot watcher timed out after 30 min — check Job status manually',
+                });
+              } catch { /* best-effort */ }
+            })();
+          } catch (taskErr) {
+            app.log.warn(
+              { err: taskErr instanceof Error ? taskErr.message : String(taskErr) },
+              'mail-admin: snapshot task-center enroll failed (non-fatal)',
+            );
+          }
+        }
+
+        return success({ ...result, taskId });
       } catch (err) {
         if (err instanceof ApiError) throw err;
         app.log.error({ err, userId }, 'mail-admin: snapshot trigger failed');
@@ -1102,7 +1218,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const intent = parsed.data.targetNode
           ? ({ kind: 'explicit', targetNode: parsed.data.targetNode } as const)
           : ({ kind: 'failover' } as const);
-        const result = await startMailMigration(intent, { ...k8s, db: app.db, kubeconfigPath });
+        const result = await startMailMigration(intent, { ...k8s, db: app.db, kubeconfigPath, userId: req.user?.sub ?? null });
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: failover migration started');
         return success(result);
       } catch (err) {
@@ -1134,7 +1250,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const k8s = createK8sClients(kubeconfigPath);
         const result = await startMailMigration(
           { kind: 'failback' },
-          { ...k8s, db: app.db, kubeconfigPath },
+          { ...k8s, db: app.db, kubeconfigPath, userId: req.user?.sub ?? null },
         );
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: failback migration started');
         return success(result);
@@ -1167,7 +1283,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const k8s = createK8sClients(kubeconfigPath);
         const result = await startMailMigration(
           { kind: 'explicit', targetNode: parsed.data.targetNode, newGiB: parsed.data.newGiB },
-          { ...k8s, db: app.db, kubeconfigPath },
+          { ...k8s, db: app.db, kubeconfigPath, userId: req.user?.sub ?? null },
         );
         app.log.warn({ userId, runId: result.runId, targetNode: parsed.data.targetNode }, 'mail-admin: migration started');
         return success(result);
@@ -1239,21 +1355,166 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         );
       }
       app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode change requested');
-      try {
-        await updateMailPortExposure(parsed.data, app.db, {
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode updated');
-        return success({ updated: true });
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: port-exposure update failed');
-        throw new ApiError(
-          'MAIL_PORT_EXPOSURE_UPDATE_FAILED',
-          'Mail port exposure update failed — see server logs',
-          500,
-        );
+
+      // Task-center wiring (2026-05-16): port-exposure flip takes 30-60s
+      // (Stalwart Deployment roll + haproxy DS create/delete + rollout
+      // wait). Run the work in the background while we return an
+      // immediate response with the taskId — the operator's progress
+      // modal polls the task row + chip surfaces it.
+      const { start: startTask, progress: progressTask, finish: finishTask } =
+        await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+
+      if (!req.user?.sub) {
+        // Service-account caller (no user_id) — fall through to the
+        // synchronous path so the response is a clean 204 instead of
+        // a chip-track that nobody will see.
+        try {
+          await updateMailPortExposure(parsed.data, app.db, {
+            kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+          });
+          return success({ updated: true, taskId: null });
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.error({ err, userId }, 'mail-admin: port-exposure update failed');
+          throw new ApiError(
+            'MAIL_PORT_EXPOSURE_UPDATE_FAILED',
+            'Mail port exposure update failed — see server logs',
+            500,
+          );
+        }
       }
+
+      const targetLabel =
+        parsed.data.mode === 'allServerNodes'
+          ? 'Switch mail port exposure → all server nodes (haproxy DS)'
+          : 'Switch mail port exposure → this node only (hostPort)';
+
+      const started = await startTask(app.db, {
+        kind: 'mail.port-exposure',
+        scope: 'admin',
+        userId: req.user.sub,
+        label: toSafeText(targetLabel),
+        target: {
+          type: 'modal',
+          modal: 'mail-operation',
+          modalProps: {}, // taskId is added by the chip dispatcher
+        },
+        progressPct: 0,
+        progressText: toSafeText('Starting port-exposure flip'),
+        details: {
+          mode: parsed.data.mode,
+          steps: [
+            { name: 'Removing host ports from Stalwart Deployment', state: parsed.data.mode === 'allServerNodes' ? 'pending' : 'pending' },
+            { name: 'Stalwart rollout', state: 'pending' },
+            { name: parsed.data.mode === 'allServerNodes' ? 'Creating haproxy DaemonSet' : 'Deleting haproxy DaemonSet', state: 'pending' },
+            { name: 'Persisting mode to database', state: 'pending' },
+          ],
+        },
+      });
+      const taskId = started.id;
+
+      // Step → checklist-index mapping for the details.steps update.
+      // For allServerNodes: remove-hostports → 0, wait-rollout → 1, create-ds → 2, db-persist → 3
+      // For thisNodeOnly:    delete-ds → 2, add-hostports → 0, wait-rollout → 1, db-persist → 3
+      const stepIndex: Record<string, number> = parsed.data.mode === 'allServerNodes'
+        ? { 'remove-hostports': 0, 'wait-stalwart-rollout': 1, 'create-haproxy-ds': 2, 'db-persist': 3 }
+        : { 'add-hostports': 0, 'wait-stalwart-rollout': 1, 'delete-haproxy-ds': 2, 'db-persist': 3 };
+
+      const stepLabels: Record<string, string> = parsed.data.mode === 'allServerNodes'
+        ? {
+            'remove-hostports': 'Remove host ports from Stalwart Deployment',
+            'wait-stalwart-rollout': 'Wait for Stalwart rollout',
+            'create-haproxy-ds': 'Create haproxy DaemonSet on server-role nodes',
+            'db-persist': 'Persist mode to database',
+          }
+        : {
+            'delete-haproxy-ds': 'Delete haproxy DaemonSet',
+            'add-hostports': 'Add host ports back to Stalwart Deployment',
+            'wait-stalwart-rollout': 'Wait for Stalwart rollout',
+            'db-persist': 'Persist mode to database',
+          };
+
+      // Background execution: the response below returns immediately
+      // with the taskId; this promise runs to completion (or failure)
+      // independently and updates the task row as it goes.
+      void (async () => {
+        // Rebuild the steps checklist from scratch on every progress
+        // tick so the modal can render a stable order regardless of
+        // which step fires next.
+        const stepNames = parsed.data.mode === 'allServerNodes'
+          ? ['remove-hostports', 'wait-stalwart-rollout', 'create-haproxy-ds', 'db-persist']
+          : ['delete-haproxy-ds', 'add-hostports', 'wait-stalwart-rollout', 'db-persist'];
+        const stepStates: Record<string, 'pending' | 'running' | 'done' | 'failed'> = {};
+        for (const k of stepNames) stepStates[k] = 'pending';
+
+        try {
+          await updateMailPortExposure(
+            parsed.data,
+            app.db,
+            { kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined },
+            async (event) => {
+              // Mark previous step done, current step running.
+              const idx = stepIndex[event.stepKey];
+              if (idx !== undefined && stepNames[idx]) {
+                // Steps before idx → done; idx → running; after → pending.
+                for (let i = 0; i < stepNames.length; i++) {
+                  stepStates[stepNames[i]] =
+                    i < idx ? 'done'
+                    : i === idx ? 'running'
+                    : 'pending';
+                }
+              }
+              const steps = stepNames.map((k) => ({
+                name: stepLabels[k] ?? k,
+                state: stepStates[k],
+              }));
+              await progressTask(app.db, taskId, {
+                pct: event.pct,
+                text: toSafeText(event.text),
+                detailsPatch: { steps },
+              });
+            },
+          );
+          // Mark every step done on success.
+          const finalSteps = stepNames.map((k) => ({
+            name: stepLabels[k] ?? k,
+            state: 'done' as const,
+          }));
+          await finishTask(app.db, taskId, {
+            status: 'succeeded',
+            text: toSafeText(`Port exposure is now ${parsed.data.mode}`),
+            detailsPatch: { steps: finalSteps },
+          });
+          app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode updated');
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          // Mark the currently-running step as failed.
+          const failedSteps = stepNames.map((k) => ({
+            name: stepLabels[k] ?? k,
+            state:
+              stepStates[k] === 'running' ? 'failed' as const
+              : stepStates[k] === 'done' ? 'done' as const
+              : 'pending' as const,
+          }));
+          try {
+            await finishTask(app.db, taskId, {
+              status: 'failed',
+              error: errMsg,
+              detailsPatch: { steps: failedSteps },
+            });
+          } catch (taskErr) {
+            app.log.warn(
+              { err: taskErr instanceof Error ? taskErr.message : String(taskErr) },
+              'mail-admin: task-finish (port-exposure failure) write failed',
+            );
+          }
+          app.log.error({ err, userId }, 'mail-admin: port-exposure update failed');
+        }
+      })();
+
+      // Synchronous response — the work is now running in the background.
+      return success({ updated: true, taskId });
     },
   );
 }
