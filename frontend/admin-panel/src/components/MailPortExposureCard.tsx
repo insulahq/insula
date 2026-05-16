@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Network, AlertTriangle, Loader2, Check, Info } from 'lucide-react';
 import { useMailPortExposure, useUpdateMailPortExposure } from '@/hooks/use-mail-port-exposure';
+import MailTaskProgressModal from '@/components/MailTaskProgressModal';
 
 export default function MailPortExposureCard() {
   const query = useMailPortExposure();
@@ -8,6 +9,12 @@ export default function MailPortExposureCard() {
   const [draft, setDraft] = useState<'thisNodeOnly' | 'allServerNodes' | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  // taskId returned by the PATCH response (null for service-account
+  // calls, which run synchronously). When set, MailTaskProgressModal
+  // mounts and streams progress from the task-center polling hook.
+  // Closing the modal only dismisses the UI — the chip continues to
+  // track the task in the top bar until it terminates.
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   if (query.isLoading) {
     return (
@@ -39,11 +46,19 @@ export default function MailPortExposureCard() {
 
   async function applyChange() {
     try {
-      await update.mutateAsync({ mode: selected });
+      const resp = await update.mutateAsync({ mode: selected });
       setDraft(null);
       setConfirmOpen(false);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 6_000);
+      // Service-account path returns taskId=null (synchronous backend
+      // path). User-initiated calls always have a taskId — open the
+      // progress modal so the operator sees the 30–60s flip live
+      // instead of a stale "Applying…" spinner.
+      if (resp.data.taskId) {
+        setActiveTaskId(resp.data.taskId);
+      } else {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 6_000);
+      }
     } catch {
       // Failed mutation: surfaced via update.isError below, but ALSO
       // clear the draft + close the confirm dialog so the operator
@@ -219,6 +234,13 @@ export default function MailPortExposureCard() {
             {update.error instanceof Error ? update.error.message : 'Update failed — see server logs.'}
           </span>
         </div>
+      )}
+
+      {activeTaskId && (
+        <MailTaskProgressModal
+          taskId={activeTaskId}
+          onClose={() => setActiveTaskId(null)}
+        />
       )}
 
       {confirmOpen && (

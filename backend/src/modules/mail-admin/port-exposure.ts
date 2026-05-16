@@ -159,20 +159,57 @@ export async function getMailPortExposure(
 }
 
 /**
+ * Per-step progress callback. The route handler wires this to the task
+ * center; tests + the startup reconciler pass a no-op.
+ *
+ * `stepKey` is a stable identifier; `pct` is 0..100 (or null for
+ * indeterminate); `text` is the operator-visible label.
+ */
+export interface PortExposureProgressCallback {
+  (event: {
+    readonly stepKey: string;
+    readonly pct: number | null;
+    readonly text: string;
+  }): Promise<void> | void;
+}
+
+/**
  * Switch the port-exposure mode.
  * Applies the two-step transition to avoid port conflicts on nodes.
+ *
+ * Accepts an optional `onProgress` callback so the route handler can
+ * write task-center progress between sub-steps. The operation takes
+ * 30-60s (Deployment roll + DS create/delete + rollout wait), so
+ * granular progress is the difference between "page hangs for a
+ * minute" and "operator watches the steps tick".
  */
 export async function updateMailPortExposure(
   { mode }: { mode: 'thisNodeOnly' | 'allServerNodes' },
   db: Database,
   opts: PortExposureOptions,
+  onProgress?: PortExposureProgressCallback,
 ): Promise<void> {
-  await applyModeToCluster(mode, opts);
+  await applyModeToCluster(mode, opts, onProgress);
 
+  if (onProgress) {
+    await onProgress({
+      stepKey: 'db-persist',
+      pct: 95,
+      text: 'Persisting mode to database',
+    });
+  }
   // Persist the new mode.
   await db.update(systemSettings)
     .set({ mailPortExposureMode: mode })
     .where(eq(systemSettings.id, SETTINGS_ID));
+
+  if (onProgress) {
+    await onProgress({
+      stepKey: 'done',
+      pct: 100,
+      text: `Port exposure now ${mode}`,
+    });
+  }
 }
 
 /**
@@ -202,25 +239,70 @@ export async function ensureMailPortExposureApplied(
 async function applyModeToCluster(
   mode: 'thisNodeOnly' | 'allServerNodes',
   opts: PortExposureOptions,
+  onProgress?: PortExposureProgressCallback,
 ): Promise<void> {
   const { apps } = await loadK8sAppsClient(opts.kubeconfigPath);
 
   if (mode === 'allServerNodes') {
     // Step 1: Remove hostPort from Stalwart Deployment so haproxy can bind
     // the same ports on the same nodes without conflict.
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'remove-hostports',
+        pct: 10,
+        text: 'Removing host ports from Stalwart Deployment',
+      });
+    }
     await removeHostPortsFromDeployment(apps);
 
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'wait-stalwart-rollout',
+        pct: 50,
+        text: 'Waiting for Stalwart rollout to complete',
+      });
+    }
+
     // Step 2: Create the haproxy DaemonSet.
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'create-haproxy-ds',
+        pct: 70,
+        text: 'Creating haproxy DaemonSet on server-role nodes',
+      });
+    }
     await ensureHaproxyDaemonSetExists(apps);
   } else {
     // thisNodeOnly path — reverse order.
 
     // Step 1: Delete the haproxy DaemonSet first so its hostPorts are
     // released before Stalwart tries to bind them.
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'delete-haproxy-ds',
+        pct: 20,
+        text: 'Deleting haproxy DaemonSet',
+      });
+    }
     await ensureHaproxyDaemonSetAbsent(apps);
 
     // Step 2: Re-add hostPorts to Stalwart Deployment.
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'add-hostports',
+        pct: 50,
+        text: 'Adding host ports back to Stalwart Deployment',
+      });
+    }
     await addHostPortsToDeployment(apps);
+
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'wait-stalwart-rollout',
+        pct: 80,
+        text: 'Waiting for Stalwart rollout to complete',
+      });
+    }
   }
 }
 

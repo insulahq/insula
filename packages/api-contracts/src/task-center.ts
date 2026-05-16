@@ -88,6 +88,12 @@ export const TASK_KIND_REGISTRY = [
   'mail.archive',
   'mail.archive.restore',
   'mail.rotate',
+  // 2026-05-16: long-running mail ops registered with the task center so
+  // the operator gets a detailed progress modal + chip indicator. Each
+  // kind has a matching modal in frontend/src/tasks/modal-registry.tsx.
+  'mail.port-exposure',
+  'mail.migration',
+  'mail.snapshot.trigger',
   'cache.purge',
   'restore.cart',
 ] as const;

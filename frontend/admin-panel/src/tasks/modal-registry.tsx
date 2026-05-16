@@ -19,6 +19,13 @@ const BulkProgressModal = lazy(() => import('@/components/BulkProgressModal'));
 const OperationProgressModal = lazy(() => import('@/components/OperationProgressModal'));
 const ProvisioningProgressModal = lazy(() => import('@/components/ProvisioningProgressModal'));
 const ApplyHaProgressModal = lazy(() => import('@/components/ApplyHaProgressModal'));
+// 2026-05-16: long-running mail ops registered with the task center.
+// `mail-operation` is the generic kind for port-exposure flips +
+// snapshot triggers (one-page lifecycle visible via task chip).
+// `mail-migration` reuses the dedicated migration modal that already
+// polls /admin/mail/migrate/:runId (per-step state machine UI).
+const MailTaskProgressModal = lazy(() => import('@/components/MailTaskProgressModal'));
+const MailMigrationProgressModal = lazy(() => import('@/components/MailMigrationProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -33,6 +40,8 @@ const ApplyHaProgressModal = lazy(() => import('@/components/ApplyHaProgressModa
 //   operation             → OperationProgressModal      (storage.*)
 //   provisioning          → ProvisioningProgressModal   (client.provision)
 //   platform-storage-apply→ ApplyHaProgressModal        (storage.tier-flip)
+//   mail-operation        → MailTaskProgressModal       (mail.port-exposure, mail.snapshot.trigger)
+//   mail-migration        → MailMigrationProgressModal  (mail.migration)
 //
 // Surfaces without a dedicated modal use `target.type = 'route'`
 // instead.
@@ -51,6 +60,12 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'platform-storage-apply': {
     Component: ApplyHaProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'mail-operation': {
+    Component: MailTaskProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'mail-migration': {
+    Component: MailMigrationProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 
