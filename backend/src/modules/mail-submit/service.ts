@@ -1,7 +1,7 @@
 /**
  * Phase 3 T5.1 — sendmail-compat submission credentials service.
  *
- * Provides per-client SMTP submission credentials that legacy web
+ * Provides per-tenant SMTP submission credentials that legacy web
  * apps (WordPress, PHP mail(), classic CGI) can use via a sendmail
  * wrapper (msmtp in the workload base image). The credentials:
  *
@@ -86,25 +86,25 @@ export function buildAuthFileContent(input: AuthFileInput): string {
   return lines.join('\n') + '\n';
 }
 
-function usernameFor(clientId: string): string {
-  return `submit-${clientId}`;
+function usernameFor(tenantId: string): string {
+  return `submit-${tenantId}`;
 }
 
 /**
- * Look up the currently-active submit credential for a client (or
+ * Look up the currently-active submit credential for a tenant (or
  * null if none exists). Used by the rotation flow and by the PVC
  * file-write path.
  */
 export async function loadActiveCredential(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<MailSubmitCredential | null> {
   const [row] = await db
     .select()
     .from(mailSubmitCredentials)
     .where(
       and(
-        eq(mailSubmitCredentials.clientId, clientId),
+        eq(mailSubmitCredentials.tenantId, tenantId),
         isNull(mailSubmitCredentials.revokedAt),
       ),
     );
@@ -119,19 +119,19 @@ export async function loadActiveCredential(
  */
 async function insertNewCredential(
   db: Database,
-  clientId: string,
+  tenantId: string,
   encryptionKey: string,
   note?: string,
 ): Promise<GenerateResult> {
   const id = crypto.randomUUID();
-  const username = usernameFor(clientId);
+  const username = usernameFor(tenantId);
   const plain = crypto.randomBytes(PASSWORD_BYTES).toString('base64');
   const passwordEncrypted = encrypt(plain, encryptionKey);
   const passwordHash = await bcrypt.hash(plain, BCRYPT_ROUNDS);
 
   await db.insert(mailSubmitCredentials).values({
     id,
-    clientId,
+    tenantId,
     username,
     passwordEncrypted,
     passwordHash,
@@ -142,36 +142,36 @@ async function insertNewCredential(
 }
 
 /**
- * Generate a new submit credential for a client. Intended for the
- * first-time provisioning path (e.g. when the client first enables
+ * Generate a new submit credential for a tenant. Intended for the
+ * first-time provisioning path (e.g. when the tenant first enables
  * email). If an active credential already exists, prefer
  * rotateSubmitCredential() — this function will happily insert a
  * duplicate row and violate the partial unique index.
  */
 export async function generateSubmitCredential(
   db: Database,
-  clientId: string,
+  tenantId: string,
   encryptionKey: string,
   options: { note?: string } = {},
 ): Promise<GenerateResult> {
-  return insertNewCredential(db, clientId, encryptionKey, options.note);
+  return insertNewCredential(db, tenantId, encryptionKey, options.note);
 }
 
 /**
- * Rotate the submit credential for a client: revoke the existing
+ * Rotate the submit credential for a tenant: revoke the existing
  * active row (if any) and insert a new active row. Returns the new
  * plain password so the caller can write the updated auth file to
  * the PVC.
  *
  * The revoke + insert runs inside a single transaction so a crash
- * or concurrent call can never leave the client with zero active
+ * or concurrent call can never leave the tenant with zero active
  * credentials (Stalwart would reject every submission) or more
  * than one (the partial unique index on username WHERE
  * revoked_at IS NULL would throw).
  */
 export async function rotateSubmitCredential(
   db: Database,
-  clientId: string,
+  tenantId: string,
   encryptionKey: string,
   options: { note?: string } = {},
 ): Promise<GenerateResult> {
@@ -180,29 +180,29 @@ export async function rotateSubmitCredential(
   // either see the old row active or the new row active, never
   // neither.
   return await db.transaction(async (tx) => {
-    const existing = await loadActiveCredential(tx as unknown as Database, clientId);
+    const existing = await loadActiveCredential(tx as unknown as Database, tenantId);
     if (existing) {
       await tx
         .update(mailSubmitCredentials)
         .set({ revokedAt: new Date() })
         .where(eq(mailSubmitCredentials.id, existing.id));
     }
-    return insertNewCredential(tx as unknown as Database, clientId, encryptionKey, options.note);
+    return insertNewCredential(tx as unknown as Database, tenantId, encryptionKey, options.note);
   });
 }
 
 /**
- * List all credentials (including revoked) for a client, newest
+ * List all credentials (including revoked) for a tenant, newest
  * first. Admin audit UI uses this.
  */
 export async function listCredentials(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<readonly MailSubmitCredential[]> {
   return await db
     .select()
     .from(mailSubmitCredentials)
-    .where(eq(mailSubmitCredentials.clientId, clientId))
+    .where(eq(mailSubmitCredentials.tenantId, tenantId))
     .orderBy(desc(mailSubmitCredentials.createdAt))
     .limit(20);
 }

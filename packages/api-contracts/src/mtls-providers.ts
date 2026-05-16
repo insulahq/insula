@@ -1,5 +1,5 @@
 /**
- * Per-client mTLS provider — API contract.
+ * Per-tenant mTLS provider — API contract.
  *
  * Reusable CA cert (and optional CA private key) referenced by zero
  * or more ingress_mtls_configs.providerId. Two creation paths:
@@ -63,7 +63,7 @@ export type MtlsProviderUpdate = z.infer<typeof mtlsProviderUpdateSchema>;
 
 /**
  * One row per ingress route that references this provider via the
- * `ingress_mtls_configs` table. Surfaced so the client panel can list
+ * `ingress_mtls_configs` table. Surfaced so the tenant panel can list
  * the linked hostnames in the provider-delete modal — the operator
  * needs to know which routes to detach before delete will succeed.
  */
@@ -86,7 +86,7 @@ export const mtlsProviderResponseSchema = z.object({
   consumerCount: z.number().int().nonnegative(),
   /**
    * Detail of each consumer — hostname + route id. Kept inline in the
-   * list response because providers are 1–3 per client and consumers
+   * list response because providers are 1–3 per tenant and consumers
    * are 1–5 per provider in practice. Saves an extra fetch on delete.
    */
   consumers: z.array(mtlsProviderConsumerSchema).default([]),
@@ -116,7 +116,7 @@ export const mtlsIssueCertInputSchema = z.object({
   /**
    * Set to true to also receive a base64-encoded PKCS#12 bundle
    * (cert + key + CA) — the format Windows / macOS keychain / most
-   * browsers expect for client-cert import.
+   * browsers expect for tenant-cert import.
    *
    * When omitted (or false), no .p12 bundle is generated.
    */
@@ -125,7 +125,7 @@ export const mtlsIssueCertInputSchema = z.object({
    * Optional PKCS#12 export password. When non-empty AND `pkcs12` is
    * true, the bundle is encrypted with this password. Empty / omitted
    * = passwordless .p12 (no password prompt during import — Windows
-   * 10/11 + macOS 11+ accept empty passwords; some legacy clients
+   * 10/11 + macOS 11+ accept empty passwords; some legacy tenants
    * still prompt and accept "" as the answer).
    *
    * Backwards compat: supplying `pkcs12Password` alone (without
@@ -139,7 +139,7 @@ export type MtlsIssueCertInput = z.infer<typeof mtlsIssueCertInputSchema>;
 export const mtlsIssueCertResponseSchema = z.object({
   /**
    * Cert identifier inside the platform DB. New in v2 — lets the
-   * client UI deep-link to /certificates/:id (e.g. revoke from the
+   * tenant UI deep-link to /certificates/:id (e.g. revoke from the
    * issuance toast) without round-tripping a list call.
    */
   id: z.string(),

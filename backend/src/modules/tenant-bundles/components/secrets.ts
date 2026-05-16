@@ -4,8 +4,8 @@
  * Per BACKUP_COMPONENT_MODEL.md:
  *   components/secrets/tls.json.gz.enc — encrypted TLS Secrets payload.
  *
- * Source: every Secret of `type: kubernetes.io/tls` in the client's
- * namespace (typically `client-<id>`). The TLS keys are irreproducible
+ * Source: every Secret of `type: kubernetes.io/tls` in the tenant's
+ * namespace (typically `tenant-<id>`). The TLS keys are irreproducible
  * state — without them an SSL cert restore from cert-manager could take
  * up to LE rate-limit windows.
  *
@@ -24,7 +24,7 @@
  *   {
  *     "schemaVersion": 1,
  *     "exportedAt": "2026-05-01T10:00:00Z",
- *     "namespace": "client-abc",
+ *     "namespace": "tenant-abc",
  *     "secrets": [
  *       { "name": "wordpress-tls", "type": "kubernetes.io/tls",
  *         "data": { "tls.crt": "...base64...", "tls.key": "...base64..." } },
@@ -131,7 +131,7 @@ interface ListSecretsResponse {
 
 /**
  * Build the secrets manifest by listing kubernetes.io/tls Secrets in
- * the client namespace. Pure data — does not encrypt.
+ * the tenant namespace. Pure data — does not encrypt.
  *
  * Pulled out as a separate function so tests can assert on the
  * filtering behaviour without exercising the encryption + gzip layers.
@@ -140,7 +140,7 @@ export async function buildSecretsDump(
   k8s: K8sClients,
   namespace: string,
 ): Promise<SecretsDumpV1> {
-  // Duck-type the kube client so this module doesn't need to import
+  // Duck-type the kube tenant so this module doesn't need to import
   // the heavy K8s types — same pattern used elsewhere in the platform.
   const core = k8s.core as unknown as {
     listNamespacedSecret: (args: { namespace: string }) => Promise<ListSecretsResponse>;

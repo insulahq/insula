@@ -28,7 +28,7 @@ import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
  * dumped by `tenant-bundles/components/config.ts` (CONFIG_DUMP_TABLES).
  */
 const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
-  clients: 'clients',
+  tenants: 'tenants',
   users: 'users',
   domains: 'domains',
   emailDomains: 'email_domains',
@@ -42,10 +42,10 @@ const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   sslCertificates: 'ssl_certificates',
   cronJobs: 'cron_jobs',
   resourceQuotas: 'resource_quotas',
-  clientOidcProviders: 'client_oidc_providers',
-  clientMtlsProviders: 'client_mtls_providers',
-  clientZitiProviders: 'client_ziti_providers',
-  clientZrokAccounts: 'client_zrok_accounts',
+  tenantOidcProviders: 'tenant_oidc_providers',
+  tenantMtlsProviders: 'tenant_mtls_providers',
+  tenantZitiProviders: 'tenant_ziti_providers',
+  tenantZrokAccounts: 'tenant_zrok_accounts',
 };
 
 interface Selector {

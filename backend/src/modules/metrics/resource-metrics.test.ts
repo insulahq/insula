@@ -11,12 +11,12 @@ vi.mock('../../shared/redis.js', () => ({
   getRedis: () => mockRedis,
 }));
 
-// Mock file-manager service (dynamic import inside collectClientMetrics)
+// Mock file-manager service (dynamic import inside collectTenantMetrics)
 vi.mock('../file-manager/service.js', () => ({
   proxyToFileManager: vi.fn().mockRejectedValue(new Error('not running')),
 }));
 
-const { getCachedMetrics, getAllCachedMetrics, collectClientMetrics } = await import('./resource-metrics.js');
+const { getCachedMetrics, getAllCachedMetrics, collectTenantMetrics } = await import('./resource-metrics.js');
 
 describe('resource-metrics', () => {
   beforeEach(() => {
@@ -29,15 +29,15 @@ describe('resource-metrics', () => {
     it('should return null when no cached data exists', async () => {
       mockRedis.get.mockResolvedValue(null);
 
-      const result = await getCachedMetrics('client-1');
+      const result = await getCachedMetrics('tenant-1');
 
       expect(result).toBeNull();
-      expect(mockRedis.get).toHaveBeenCalledWith('metrics:client-1');
+      expect(mockRedis.get).toHaveBeenCalledWith('metrics:tenant-1');
     });
 
     it('should return parsed ResourceMetrics when cached', async () => {
       const cached = {
-        clientId: 'client-1',
+        tenantId: 'tenant-1',
         cpu: { inUse: 0.5, reserved: 1, available: 2 },
         memory: { inUse: 1.5, reserved: 2, available: 4 },
         storage: { inUse: 5, reserved: 10, available: 50 },
@@ -45,10 +45,10 @@ describe('resource-metrics', () => {
       };
       mockRedis.get.mockResolvedValue(JSON.stringify(cached));
 
-      const result = await getCachedMetrics('client-1');
+      const result = await getCachedMetrics('tenant-1');
 
       expect(result).toEqual(cached);
-      expect(result?.clientId).toBe('client-1');
+      expect(result?.tenantId).toBe('tenant-1');
       expect(result?.cpu.inUse).toBe(0.5);
       expect(result?.cpu.reserved).toBe(1);
       expect(result?.cpu.available).toBe(2);
@@ -61,16 +61,16 @@ describe('resource-metrics', () => {
   // ─── getAllCachedMetrics ─────────────────────────────────────────────────────
 
   describe('getAllCachedMetrics', () => {
-    it('should return empty object for empty client list', async () => {
+    it('should return empty object for empty tenant list', async () => {
       const result = await getAllCachedMetrics([]);
 
       expect(result).toEqual({});
       expect(mockRedis.mget).not.toHaveBeenCalled();
     });
 
-    it('should return metrics for clients that have cached data', async () => {
+    it('should return metrics for tenants that have cached data', async () => {
       const metrics1 = {
-        clientId: 'c1',
+        tenantId: 'c1',
         cpu: { inUse: 0.1, reserved: 0.5, available: 2 },
         memory: { inUse: 0.5, reserved: 1, available: 4 },
         storage: { inUse: 2, reserved: 5, available: 50 },
@@ -95,9 +95,9 @@ describe('resource-metrics', () => {
     });
   });
 
-  // ─── collectClientMetrics ───────────────────────────────────────────────────
+  // ─── collectTenantMetrics ───────────────────────────────────────────────────
 
-  describe('collectClientMetrics', () => {
+  describe('collectTenantMetrics', () => {
     const mockK8s = {
       core: {
         readNamespacedResourceQuota: vi.fn(),
@@ -122,16 +122,16 @@ describe('resource-metrics', () => {
       mockK8s.custom.listNamespacedCustomObject.mockResolvedValue({ items: [] });
       mockK8s.core.readNamespacedResourceQuota.mockRejectedValue(new Error('not found'));
 
-      const db = {} as Parameters<typeof collectClientMetrics>[0];
-      const result = await collectClientMetrics(
+      const db = {} as Parameters<typeof collectTenantMetrics>[0];
+      const result = await collectTenantMetrics(
         db,
-        mockK8s as unknown as Parameters<typeof collectClientMetrics>[1],
-        'client-1',
-        'client-ns-1',
+        mockK8s as unknown as Parameters<typeof collectTenantMetrics>[1],
+        'tenant-1',
+        'tenant-ns-1',
         planLimits,
       );
 
-      expect(result.clientId).toBe('client-1');
+      expect(result.tenantId).toBe('tenant-1');
       expect(result.cpu).toEqual({ inUse: 0, reserved: 0, available: 4 });
       expect(result.memory).toEqual({ inUse: 0, reserved: 0, available: 8 });
       expect(result.storage).toEqual({ inUse: 0, reserved: 0, available: 100 });
@@ -156,12 +156,12 @@ describe('resource-metrics', () => {
       });
       mockK8s.core.readNamespacedResourceQuota.mockRejectedValue(new Error('not found'));
 
-      const db = {} as Parameters<typeof collectClientMetrics>[0];
-      const result = await collectClientMetrics(
+      const db = {} as Parameters<typeof collectTenantMetrics>[0];
+      const result = await collectTenantMetrics(
         db,
-        mockK8s as unknown as Parameters<typeof collectClientMetrics>[1],
-        'client-2',
-        'client-ns-2',
+        mockK8s as unknown as Parameters<typeof collectTenantMetrics>[1],
+        'tenant-2',
+        'tenant-ns-2',
         planLimits,
       );
 
@@ -183,12 +183,12 @@ describe('resource-metrics', () => {
         },
       });
 
-      const db = {} as Parameters<typeof collectClientMetrics>[0];
-      const result = await collectClientMetrics(
+      const db = {} as Parameters<typeof collectTenantMetrics>[0];
+      const result = await collectTenantMetrics(
         db,
-        mockK8s as unknown as Parameters<typeof collectClientMetrics>[1],
-        'client-3',
-        'client-ns-3',
+        mockK8s as unknown as Parameters<typeof collectTenantMetrics>[1],
+        'tenant-3',
+        'tenant-ns-3',
         planLimits,
       );
 
@@ -201,33 +201,33 @@ describe('resource-metrics', () => {
       mockK8s.custom.listNamespacedCustomObject.mockResolvedValue({ items: [] });
       mockK8s.core.readNamespacedResourceQuota.mockRejectedValue(new Error('not found'));
 
-      const db = {} as Parameters<typeof collectClientMetrics>[0];
-      await collectClientMetrics(
+      const db = {} as Parameters<typeof collectTenantMetrics>[0];
+      await collectTenantMetrics(
         db,
-        mockK8s as unknown as Parameters<typeof collectClientMetrics>[1],
-        'client-4',
-        'client-ns-4',
+        mockK8s as unknown as Parameters<typeof collectTenantMetrics>[1],
+        'tenant-4',
+        'tenant-ns-4',
         planLimits,
       );
 
       expect(mockRedis.setex).toHaveBeenCalledTimes(1);
       const [key, ttl, value] = mockRedis.setex.mock.calls[0];
-      expect(key).toBe('metrics:client-4');
+      expect(key).toBe('metrics:tenant-4');
       expect(ttl).toBe(7200);
       const parsed = JSON.parse(value);
-      expect(parsed.clientId).toBe('client-4');
+      expect(parsed.tenantId).toBe('tenant-4');
     });
 
     it('should handle K8s metrics API failure gracefully', async () => {
       mockK8s.custom.listNamespacedCustomObject.mockRejectedValue(new Error('API unavailable'));
       mockK8s.core.readNamespacedResourceQuota.mockRejectedValue(new Error('not found'));
 
-      const db = {} as Parameters<typeof collectClientMetrics>[0];
-      const result = await collectClientMetrics(
+      const db = {} as Parameters<typeof collectTenantMetrics>[0];
+      const result = await collectTenantMetrics(
         db,
-        mockK8s as unknown as Parameters<typeof collectClientMetrics>[1],
-        'client-5',
-        'client-ns-5',
+        mockK8s as unknown as Parameters<typeof collectTenantMetrics>[1],
+        'tenant-5',
+        'tenant-ns-5',
         planLimits,
       );
 
@@ -242,12 +242,12 @@ describe('resource-metrics', () => {
       mockK8s.core.readNamespacedResourceQuota.mockRejectedValue(new Error('not found'));
 
       const customLimits = { cpuLimit: 16, memoryLimitGi: 32, storageLimitGi: 500 };
-      const db = {} as Parameters<typeof collectClientMetrics>[0];
-      const result = await collectClientMetrics(
+      const db = {} as Parameters<typeof collectTenantMetrics>[0];
+      const result = await collectTenantMetrics(
         db,
-        mockK8s as unknown as Parameters<typeof collectClientMetrics>[1],
-        'client-6',
-        'client-ns-6',
+        mockK8s as unknown as Parameters<typeof collectTenantMetrics>[1],
+        'tenant-6',
+        'tenant-ns-6',
         customLimits,
       );
 

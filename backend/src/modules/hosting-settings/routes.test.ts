@@ -48,14 +48,14 @@ describe('hosting-settings routes', () => {
   // ─── Auth ────────────────────────────────────────────────────────────────
 
   it('GET hosting-settings should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/domains/d1/hosting-settings' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/domains/d1/hosting-settings' });
     expect(res.statusCode).toBe(401);
   });
 
   it('GET hosting-settings should reject read_only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1/hosting-settings',
+      url: '/api/v1/tenants/c1/domains/d1/hosting-settings',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -66,7 +66,7 @@ describe('hosting-settings routes', () => {
   it('GET hosting-settings should return settings for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1/hosting-settings',
+      url: '/api/v1/tenants/c1/domains/d1/hosting-settings',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -78,7 +78,7 @@ describe('hosting-settings routes', () => {
   it('PATCH hosting-settings should reject invalid field values', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/domains/d1/hosting-settings',
+      url: '/api/v1/tenants/c1/domains/d1/hosting-settings',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { redirect_www: 'not-a-boolean' },
     });
@@ -88,7 +88,7 @@ describe('hosting-settings routes', () => {
   it('PATCH hosting-settings should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/domains/d1/hosting-settings',
+      url: '/api/v1/tenants/c1/domains/d1/hosting-settings',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { redirect_www: false },
     });

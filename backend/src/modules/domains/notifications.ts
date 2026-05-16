@@ -27,12 +27,12 @@ function formatRelativeTime(date: Date | null | undefined): string {
 }
 
 /**
- * Find the primary user id for the given client.
- * Prefers users with the 'owner' role; falls back to any active client-panel user.
+ * Find the primary user id for the given tenant.
+ * Prefers users with the 'owner' role; falls back to any active tenant-panel user.
  */
-async function findClientOwnerUserId(
+async function findTenantOwnerUserId(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string | null> {
   // Try to find an 'owner' role user first
   const ownerRows = await db
@@ -40,8 +40,8 @@ async function findClientOwnerUserId(
     .from(users)
     .where(
       and(
-        eq(users.clientId, clientId),
-        eq(users.panel, 'client'),
+        eq(users.tenantId, tenantId),
+        eq(users.panel, 'tenant'),
         eq(users.status, 'active'),
         eq(users.roleName, 'owner'),
       ),
@@ -49,14 +49,14 @@ async function findClientOwnerUserId(
     .limit(1);
   if (ownerRows.length > 0) return ownerRows[0].id;
 
-  // Fall back to any active client-panel user
+  // Fall back to any active tenant-panel user
   const anyRows = await db
     .select({ id: users.id })
     .from(users)
     .where(
       and(
-        eq(users.clientId, clientId),
-        eq(users.panel, 'client'),
+        eq(users.tenantId, tenantId),
+        eq(users.panel, 'tenant'),
         eq(users.status, 'active'),
       ),
     )
@@ -68,10 +68,10 @@ async function findClientOwnerUserId(
 
 export async function notifyDomainRegression(
   db: Database,
-  domain: { id: string; clientId: string; domainName: string; verifiedAt: Date | null },
+  domain: { id: string; tenantId: string; domainName: string; verifiedAt: Date | null },
   result: VerificationResult,
 ): Promise<{ sent: boolean; reason?: string }> {
-  // 7-day cooldown: don't spam the client if verification keeps failing.
+  // 7-day cooldown: don't spam the tenant if verification keeps failing.
   // HIGH fix from code review: filter on title prefix so a prior
   // grace-unverified notification doesn't suppress regression alerts —
   // they're independent signals.
@@ -93,7 +93,7 @@ export async function notifyDomainRegression(
     return { sent: false, reason: 'cooldown' };
   }
 
-  const recipientId = await findClientOwnerUserId(db, domain.clientId);
+  const recipientId = await findTenantOwnerUserId(db, domain.tenantId);
   if (!recipientId) {
     return { sent: false, reason: 'no_recipient' };
   }
@@ -122,7 +122,7 @@ export async function notifyDomainRegression(
   });
 
   // TODO: email dispatch (gated by system_settings.notify_dns_failures_via_email)
-  // When true AND client has contact email, send via the existing mail-submit path.
+  // When true AND tenant has contact email, send via the existing mail-submit path.
 
   return { sent: true };
 }
@@ -131,7 +131,7 @@ export async function notifyDomainRegression(
 
 export async function notifyDomainGraceUnverified(
   db: Database,
-  domain: { id: string; clientId: string; domainName: string; createdAt: Date },
+  domain: { id: string; tenantId: string; domainName: string; createdAt: Date },
 ): Promise<{ sent: boolean; reason?: string }> {
   // Dedup: only notify once per domain. HIGH fix — filter on title so a
   // regression notification doesn't permanently suppress the grace alert
@@ -153,7 +153,7 @@ export async function notifyDomainGraceUnverified(
     return { sent: false, reason: 'already_notified' };
   }
 
-  const recipientId = await findClientOwnerUserId(db, domain.clientId);
+  const recipientId = await findTenantOwnerUserId(db, domain.tenantId);
   if (!recipientId) {
     return { sent: false, reason: 'no_recipient' };
   }

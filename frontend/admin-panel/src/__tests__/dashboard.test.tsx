@@ -4,8 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import Dashboard from '../pages/Dashboard';
 
-vi.mock('@/hooks/use-clients', () => ({
-  useClients: () => ({
+vi.mock('@/hooks/use-tenants', () => ({
+  useTenants: () => ({
     data: { data: [], pagination: { total_count: 0 } },
     isLoading: false,
     error: null,

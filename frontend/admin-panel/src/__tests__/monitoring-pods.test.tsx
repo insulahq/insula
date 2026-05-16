@@ -27,11 +27,11 @@ vi.mock('../hooks/use-audit-logs', () => ({
 }));
 
 const SAMPLE_PODS = [
-  { name: 'web-abc', namespace: 'client-acme', phase: 'Running', classification: 'running' as const, isOrphaned: false, ready: true, restarts: 0, waitingReason: null, node: 'k8s-local', age: '2026-04-09T10:00:00Z' },
-  { name: 'db-xyz', namespace: 'client-acme', phase: 'Running', classification: 'not_ready' as const, isOrphaned: false, ready: false, restarts: 3, waitingReason: null, node: 'k8s-local', age: '2026-04-09T11:00:00Z' },
-  { name: 'fm-orphan', namespace: 'client-smoke-test-123', phase: 'Pending', classification: 'orphaned' as const, isOrphaned: true, ready: false, restarts: 0, waitingReason: 'FailedScheduling', node: null, age: '2026-04-09T12:00:00Z' },
-  { name: 'backup-done', namespace: 'client-acme', phase: 'Succeeded', classification: 'completed' as const, isOrphaned: false, ready: false, restarts: 0, waitingReason: null, node: 'k8s-local', age: '2026-04-09T13:00:00Z' },
-  { name: 'crash-loop', namespace: 'client-acme', phase: 'Failed', classification: 'failed' as const, isOrphaned: false, ready: false, restarts: 12, waitingReason: 'CrashLoopBackOff', node: 'k8s-local', age: '2026-04-09T14:00:00Z' },
+  { name: 'web-abc', namespace: 'tenant-acme', phase: 'Running', classification: 'running' as const, isOrphaned: false, ready: true, restarts: 0, waitingReason: null, node: 'k8s-local', age: '2026-04-09T10:00:00Z' },
+  { name: 'db-xyz', namespace: 'tenant-acme', phase: 'Running', classification: 'not_ready' as const, isOrphaned: false, ready: false, restarts: 3, waitingReason: null, node: 'k8s-local', age: '2026-04-09T11:00:00Z' },
+  { name: 'fm-orphan', namespace: 'tenant-smoke-test-123', phase: 'Pending', classification: 'orphaned' as const, isOrphaned: true, ready: false, restarts: 0, waitingReason: 'FailedScheduling', node: null, age: '2026-04-09T12:00:00Z' },
+  { name: 'backup-done', namespace: 'tenant-acme', phase: 'Succeeded', classification: 'completed' as const, isOrphaned: false, ready: false, restarts: 0, waitingReason: null, node: 'k8s-local', age: '2026-04-09T13:00:00Z' },
+  { name: 'crash-loop', namespace: 'tenant-acme', phase: 'Failed', classification: 'failed' as const, isOrphaned: false, ready: false, restarts: 12, waitingReason: 'CrashLoopBackOff', node: 'k8s-local', age: '2026-04-09T14:00:00Z' },
 ];
 
 function wrap(children: React.ReactNode) {

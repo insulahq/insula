@@ -8,14 +8,14 @@ import Monitoring from '../pages/Monitoring';
 const MOCK_AUDIT_ENTRIES = [
   {
     id: 'log-1',
-    clientId: null,
+    tenantId: null,
     actionType: 'create',
-    resourceType: 'client',
+    resourceType: 'tenant',
     resourceId: 'c-1',
     actorId: 'admin-1',
     actorType: 'user',
     httpMethod: 'POST',
-    httpPath: '/api/v1/clients',
+    httpPath: '/api/v1/tenants',
     httpStatus: 201,
     changes: null,
     ipAddress: '127.0.0.1',
@@ -23,14 +23,14 @@ const MOCK_AUDIT_ENTRIES = [
   },
   {
     id: 'log-2',
-    clientId: 'c-1',
+    tenantId: 'c-1',
     actionType: 'update',
     resourceType: 'domain',
     resourceId: 'd-1',
     actorId: 'admin-1',
     actorType: 'user',
     httpMethod: 'PATCH',
-    httpPath: '/api/v1/clients/c-1/domains/d-1',
+    httpPath: '/api/v1/tenants/c-1/domains/d-1',
     httpStatus: 500,
     changes: null,
     ipAddress: '127.0.0.1',
@@ -38,7 +38,7 @@ const MOCK_AUDIT_ENTRIES = [
   },
   {
     id: 'log-3',
-    clientId: null,
+    tenantId: null,
     actionType: 'delete',
     resourceType: 'backup',
     resourceId: 'b-1',
@@ -53,7 +53,7 @@ const MOCK_AUDIT_ENTRIES = [
   },
   {
     id: 'log-old-1',
-    clientId: null,
+    tenantId: null,
     actionType: 'create',
     resourceType: 'region',
     resourceId: 'r-1',
@@ -124,7 +124,7 @@ describe('Monitoring page', () => {
   it('renders Active Alerts tab by default with audit log data', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tab-active-alerts')).toHaveClass('border-brand-500');
-    expect(screen.getByText('create client')).toBeInTheDocument();
+    expect(screen.getByText('create tenant')).toBeInTheDocument();
     expect(screen.getByText('update domain')).toBeInTheDocument();
   });
 

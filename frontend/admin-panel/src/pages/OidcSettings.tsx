@@ -25,7 +25,7 @@ export default function OidcSettings() {
   }
 
   const hasAdminProvider = providers.some((p) => p.panelScope === 'admin' && p.enabled);
-  const hasClientProvider = providers.some((p) => p.panelScope === 'client' && p.enabled);
+  const hasTenantProvider = providers.some((p) => p.panelScope === 'tenant' && p.enabled);
 
   return (
     <div className="space-y-6" data-testid="oidc-settings-page">
@@ -41,7 +41,7 @@ export default function OidcSettings() {
       <AuthenticationSection
         settings={globalSettings}
         hasAdminProvider={hasAdminProvider}
-        hasClientProvider={hasClientProvider}
+        hasTenantProvider={hasTenantProvider}
       />
     </div>
   );
@@ -49,24 +49,24 @@ export default function OidcSettings() {
 
 // ─── Combined Authentication & Ingress Protection ────────────────────────────
 
-function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }: {
+function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }: {
   readonly settings: OidcGlobalSettings | undefined;
   readonly hasAdminProvider: boolean;
-  readonly hasClientProvider: boolean;
+  readonly hasTenantProvider: boolean;
 }) {
   const saveSettings = useSaveOidcGlobalSettings();
   const regenerateBreakGlass = useRegenerateBreakGlass();
   const regenerateCookieSecret = useRegenerateCookieSecret();
   const [disableAdmin, setDisableAdmin] = useState(settings?.disableLocalAuthAdmin ?? false);
-  const [disableClient, setDisableClient] = useState(settings?.disableLocalAuthClient ?? false);
+  const [disableTenant, setDisableTenant] = useState(settings?.disableLocalAuthTenant ?? false);
   const [proxyAdmin, setProxyAdmin] = useState(settings?.proxyProtectAdmin ?? false);
-  const [proxyClient, setProxyClient] = useState(settings?.proxyProtectClient ?? false);
+  const [proxyTenant, setProxyTenant] = useState(settings?.proxyProtectTenant ?? false);
   const [showWarning, setShowWarning] = useState(false);
   const [warningChecks, setWarningChecks] = useState({ tested: false, secretSet: false });
   const [bgCopied, setBgCopied] = useState(false);
   const [showCookieConfirm, setShowCookieConfirm] = useState(false);
 
-  const canDisableClient = hasClientProvider;
+  const canDisableTenant = hasTenantProvider;
   const canDisableAdmin = hasAdminProvider;
 
   const breakGlassUrl = settings?.breakGlassPath
@@ -83,9 +83,9 @@ function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }
     try {
       await saveSettings.mutateAsync({
         disable_local_auth_admin: disableAdmin,
-        disable_local_auth_client: disableClient,
+        disable_local_auth_tenant: disableTenant,
         proxy_protect_admin: proxyAdmin,
-        proxy_protect_client: proxyClient,
+        proxy_protect_tenant: proxyTenant,
       });
       setShowWarning(false);
     } catch { /* error shown */ }
@@ -99,19 +99,19 @@ function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }
       </div>
 
       {/* ── Client Panel ── */}
-      <label className={clsx('flex items-start gap-3', !canDisableClient && 'opacity-50')}>
-        <input type="checkbox" checked={disableClient} onChange={(e) => setDisableClient(e.target.checked)} disabled={!canDisableClient} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-client-toggle" />
+      <label className={clsx('flex items-start gap-3', !canDisableTenant && 'opacity-50')}>
+        <input type="checkbox" checked={disableTenant} onChange={(e) => setDisableTenant(e.target.checked)} disabled={!canDisableTenant} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-tenant-toggle" />
         <div>
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Disable Local Auth for Client Panel</span>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {canDisableClient ? 'Clients must use SSO. Email/password login blocked.' : 'Enable a client-scoped OIDC provider first.'}
+            {canDisableTenant ? 'Clients must use SSO. Email/password login blocked.' : 'Enable a tenant-scoped OIDC provider first.'}
           </p>
         </div>
       </label>
 
-      {disableClient && (
-        <label className={clsx('flex items-start gap-3 ml-6', !hasClientProvider && 'opacity-50')}>
-          <input type="checkbox" checked={proxyClient} onChange={(e) => setProxyClient(e.target.checked)} disabled={!hasClientProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-client-toggle" />
+      {disableTenant && (
+        <label className={clsx('flex items-start gap-3 ml-6', !hasTenantProvider && 'opacity-50')}>
+          <input type="checkbox" checked={proxyTenant} onChange={(e) => setProxyTenant(e.target.checked)} disabled={!hasTenantProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-tenant-toggle" />
           <div>
             <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect client panel via OAuth2 Proxy</span>
             <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the client panel without OIDC authentication.</p>
@@ -172,7 +172,7 @@ function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }
       )}
 
       {/* ── Cookie Secret (shown when any proxy is enabled) ── */}
-      {(proxyAdmin || proxyClient) && (
+      {(proxyAdmin || proxyTenant) && (
         <div className="ml-6 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid="cookie-secret-section">
           <div className="flex items-center justify-between">
             <div>
@@ -245,8 +245,8 @@ function ProvidersSection({ providers }: { readonly providers: readonly OidcProv
 function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
   const create = useCreateOidcProvider();
   const [form, setForm] = useState({
-    display_name: '', issuer_url: '', client_id: '', client_secret: '',
-    panel_scope: 'admin' as 'admin' | 'client',
+    display_name: '', issuer_url: '', tenant_id: '', tenant_secret: '',
+    panel_scope: 'admin' as 'admin' | 'tenant',
     auto_provision: false, default_role: 'read_only', additional_claims: '',
   });
 
@@ -259,8 +259,8 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
       await create.mutateAsync({
         display_name: form.display_name,
         issuer_url: form.issuer_url,
-        client_id: form.client_id,
-        client_secret: form.client_secret,
+        tenant_id: form.tenant_id,
+        tenant_secret: form.tenant_secret,
         panel_scope: form.panel_scope,
         enabled: true,
         auto_provision: form.auto_provision,
@@ -276,11 +276,11 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label><input type="text" className={INPUT_CLASS} placeholder="Corporate SSO" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required data-testid="provider-name-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Issuer URL</label><input type="url" className={INPUT_CLASS} placeholder="https://dex.example.com" value={form.issuer_url} onChange={(e) => setForm({ ...form, issuer_url: e.target.value })} required data-testid="provider-issuer-input" /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} required data-testid="provider-client-id-input" /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} value={form.client_secret} onChange={(e) => setForm({ ...form, client_secret: e.target.value })} required data-testid="provider-secret-input" /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={form.tenant_id} onChange={(e) => setForm({ ...form, tenant_id: e.target.value })} required data-testid="provider-tenant-id-input" /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} value={form.tenant_secret} onChange={(e) => setForm({ ...form, tenant_secret: e.target.value })} required data-testid="provider-secret-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Panel Scope</label>
-          <select className={INPUT_CLASS} value={form.panel_scope} onChange={(e) => setForm({ ...form, panel_scope: e.target.value as 'admin' | 'client' })} data-testid="provider-scope-select">
-            <option value="admin">Admin Panel</option><option value="client">Client Panel</option>
+          <select className={INPUT_CLASS} value={form.panel_scope} onChange={(e) => setForm({ ...form, panel_scope: e.target.value as 'admin' | 'tenant' })} data-testid="provider-scope-select">
+            <option value="admin">Admin Panel</option><option value="tenant">Client Panel</option>
           </select>
         </div>
       </div>
@@ -313,7 +313,7 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
 
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Additional OIDC Claims</label>
-          <input type="text" className={INPUT_CLASS} placeholder="organization, company_name" value={form.additional_claims} onChange={(e) => setForm({ ...form, additional_claims: e.target.value })} data-testid="provider-additional-claims-input" />
+          <input type="text" className={INPUT_CLASS} placeholder="organization, name" value={form.additional_claims} onChange={(e) => setForm({ ...form, additional_claims: e.target.value })} data-testid="provider-additional-claims-input" />
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Comma-separated claim names to request from the OIDC provider</p>
         </div>
       </div>
@@ -336,9 +336,9 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
   const [editForm, setEditForm] = useState({
     display_name: provider.displayName,
     issuer_url: provider.issuerUrl,
-    client_id: provider.clientId,
-    client_secret: '',
-    panel_scope: provider.panelScope as 'admin' | 'client',
+    tenant_id: provider.tenantId,
+    tenant_secret: '',
+    panel_scope: provider.panelScope as 'admin' | 'tenant',
     auto_provision: provider.autoProvision ?? false,
     default_role: provider.defaultRole ?? 'read_only',
     additional_claims: (provider.additionalClaims ?? []).join(', '),
@@ -354,8 +354,8 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
         id: provider.id,
         display_name: editForm.display_name,
         issuer_url: editForm.issuer_url,
-        client_id: editForm.client_id,
-        client_secret: editForm.client_secret || undefined,
+        tenant_id: editForm.tenant_id,
+        tenant_secret: editForm.tenant_secret || undefined,
         panel_scope: editForm.panel_scope,
         auto_provision: editForm.auto_provision,
         default_role: editForm.panel_scope === 'admin' ? editForm.default_role : undefined,
@@ -371,11 +371,11 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label><input type="text" className={INPUT_CLASS} value={editForm.display_name} onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })} required /></div>
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Issuer URL</label><input type="url" className={INPUT_CLASS} value={editForm.issuer_url} onChange={(e) => setEditForm({ ...editForm, issuer_url: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={editForm.client_id} onChange={(e) => setEditForm({ ...editForm, client_id: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} placeholder="(unchanged)" value={editForm.client_secret} onChange={(e) => setEditForm({ ...editForm, client_secret: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={editForm.tenant_id} onChange={(e) => setEditForm({ ...editForm, tenant_id: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} placeholder="(unchanged)" value={editForm.tenant_secret} onChange={(e) => setEditForm({ ...editForm, tenant_secret: e.target.value })} /></div>
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Panel Scope</label>
-            <select className={INPUT_CLASS} value={editForm.panel_scope} onChange={(e) => setEditForm({ ...editForm, panel_scope: e.target.value as 'admin' | 'client' })}>
-              <option value="admin">Admin Panel</option><option value="client">Client Panel</option>
+            <select className={INPUT_CLASS} value={editForm.panel_scope} onChange={(e) => setEditForm({ ...editForm, panel_scope: e.target.value as 'admin' | 'tenant' })}>
+              <option value="admin">Admin Panel</option><option value="tenant">Client Panel</option>
             </select>
           </div>
         </div>
@@ -408,7 +408,7 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
 
           <div>
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Additional OIDC Claims</label>
-            <input type="text" className={INPUT_CLASS} placeholder="organization, company_name" value={editForm.additional_claims} onChange={(e) => setEditForm({ ...editForm, additional_claims: e.target.value })} data-testid="edit-additional-claims-input" />
+            <input type="text" className={INPUT_CLASS} placeholder="organization, name" value={editForm.additional_claims} onChange={(e) => setEditForm({ ...editForm, additional_claims: e.target.value })} data-testid="edit-additional-claims-input" />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Comma-separated claim names to request from the OIDC provider</p>
           </div>
         </div>

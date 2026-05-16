@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { createSmtpRelaySchema, updateSmtpRelaySchema } from '@k8s-hosting/api-contracts';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
@@ -18,7 +18,7 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     k8s = createK8sClients(kubeconfigPath);
   } catch (err) {
-    app.log.warn({ err }, 'smtp-relay: k8s client unavailable — outbound reconcile disabled');
+    app.log.warn({ err }, 'smtp-relay: k8s tenant unavailable — outbound reconcile disabled');
     k8s = undefined;
   }
 
@@ -31,9 +31,9 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  // The /admin/* routes below require admin. The /clients/:cid/mail/...
+  // The /admin/* routes below require admin. The /tenants/:cid/mail/...
   // routes are registered separately at the bottom with their own
-  // role + client-access guards.
+  // role + tenant-access guards.
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
@@ -100,12 +100,12 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
   // Phase 3.B.1: manual trigger to re-render the Stalwart outbound
   // ConfigMap from the current DB state. Automatically called on
   // every smtp-relay CRUD, but exposed here for operator debugging
-  // or when a client's rate limit was updated via a direct DB write.
+  // or when a tenant's rate limit was updated via a direct DB write.
   app.post('/admin/mail/outbound/reconcile', async () => {
     if (!k8s) {
       throw new ApiError(
         'K8S_UNAVAILABLE',
-        'Kubernetes client is not configured — cannot reconcile outbound config',
+        'Kubernetes tenant is not configured — cannot reconcile outbound config',
         503,
       );
     }
@@ -113,10 +113,10 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
-  // GET /api/v1/admin/clients/:clientId/mail/rate-limit
+  // GET /api/v1/admin/tenants/:tenantId/mail/rate-limit
   //
   // Phase 3 (post-Phase-3) G5: read the effective email send rate
-  // limit for a client. Mirrors the same calculation that the
+  // limit for a tenant. Mirrors the same calculation that the
   // [queue.throttle] reconciler uses, so admins can verify what's
   // actually configured without having to read the rendered
   // ConfigMap. Returns the source (override / platform_default /
@@ -124,9 +124,9 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
   // what it is.
   //
   // This route inherits the admin-only guard from the addHook above.
-  app.get('/admin/clients/:clientId/mail/rate-limit', async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const result = await getEffectiveRateLimit(app.db, clientId);
+  app.get('/admin/tenants/:tenantId/mail/rate-limit', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const result = await getEffectiveRateLimit(app.db, tenantId);
     return success(result);
   });
 }
@@ -135,19 +135,19 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
 //
 // Registered as a SEPARATE plugin so the parent's admin-only
 // authenticate+requireRole hooks don't apply. This route lets a
-// client_admin read their OWN rate limit from the client panel; an
+// tenant_admin read their OWN rate limit from the tenant panel; an
 // admin can also call it via the same path because requireRole
 // includes 'super_admin' | 'admin'.
-export async function smtpRelayClientRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/clients/:clientId/mail/rate-limit', {
+export async function smtpRelayTenantRoutes(app: FastifyInstance): Promise<void> {
+  app.get('/tenants/:tenantId/mail/rate-limit', {
     onRequest: [
       authenticate,
-      requireRole('super_admin', 'admin', 'support', 'client_admin'),
-      requireClientAccess(),
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin'),
+      requireTenantAccess(),
     ],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const result = await getEffectiveRateLimit(app.db, clientId);
+    const { tenantId } = request.params as { tenantId: string };
+    const result = await getEffectiveRateLimit(app.db, tenantId);
     return success(result);
   });
 }

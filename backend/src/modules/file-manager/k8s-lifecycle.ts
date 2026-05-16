@@ -25,7 +25,7 @@ function isK8s404(err: unknown): boolean {
 /**
  * Ensure the file-manager Deployment + Service exist in the namespace.
  *
- * The file-manager mounts the same RWO `client-storage` PVC that
+ * The file-manager mounts the same RWO `tenant-storage` PVC that
  * tenant workloads also mount. K8s RWO requires single-node
  * attachment, so when FM and a workload land on different nodes,
  * the second one to schedule hits a Multi-Attach error and stays
@@ -86,7 +86,7 @@ export async function ensureFileManagerRunning(
         spec: {
           replicas: initialReplicas,
           // Recreate (not the default RollingUpdate) — FM mounts the
-          // same RWO `client-storage` PVC as tenant pods, so a surge
+          // same RWO `tenant-storage` PVC as tenant pods, so a surge
           // pod during a node move would race into Multi-Attach. The
           // applyTenantTier flow patches FM's nodeSelector when tier
           // changes, which triggers a rollout — Recreate guarantees
@@ -96,15 +96,15 @@ export async function ensureFileManagerRunning(
           template: {
             metadata: { labels: FM_LABELS },
             spec: {
-              // file-manager runs in the client namespace because it
-              // mounts the client's RWO PVC, but it is platform infra,
+              // file-manager runs in the tenant namespace because it
+              // mounts the tenant's RWO PVC, but it is platform infra,
               // not tenant workload — so it MUST NOT count against the
-              // client's ResourceQuota. The `platform-tenant-overhead`
+              // tenant's ResourceQuota. The `platform-tenant-overhead`
               // PriorityClass is exempted by the quota's scopeSelector
               // (see applyResourceQuota in k8s-provisioner/service.ts).
               priorityClassName: 'platform-tenant-overhead',
               // Co-locate FM with tenant workload pods that mount the
-              // shared RWO `client-storage` PVC. Use platform.io/managed=true
+              // shared RWO `tenant-storage` PVC. Use platform.io/managed=true
               // — that label is on tenant deployments but NOT on system
               // sidecars (oauth2-proxy, etc.) which don't mount storage.
               // An "any non-FM pod" selector drew FM to oauth2-proxy's
@@ -180,12 +180,12 @@ export async function ensureFileManagerRunning(
                   // handlers (write-raw, download via createReadStream,
                   // fetch-url piped to disk) don't buffer file content.
                   // FM runs under platform-tenant-overhead PriorityClass
-                  // and is exempted from client quota by scopeSelector.
+                  // and is exempted from tenant quota by scopeSelector.
                   requests: { cpu: '25m', memory: '128Mi' },
                   limits: { memory: '128Mi' },
                 },
                 volumeMounts: [
-                  { name: 'client-storage', mountPath: '/data' },
+                  { name: 'tenant-storage', mountPath: '/data' },
                   { name: 'sftp-jail', mountPath: '/jail' },
                 ],
                 livenessProbe: {
@@ -201,7 +201,7 @@ export async function ensureFileManagerRunning(
               }],
               volumes: [
                 {
-                  name: 'client-storage',
+                  name: 'tenant-storage',
                   persistentVolumeClaim: { claimName: `${namespace}-storage` },
                 },
                 {

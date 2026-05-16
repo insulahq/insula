@@ -1,9 +1,9 @@
 /**
  * Reconcile the `platform-ingress` IngressRoute + Certificate from the
- * admin/client panel URLs configured in System Settings.
+ * admin/tenant panel URLs configured in System Settings.
  *
  * The DB is the single source of truth. On startup and on every write
- * to admin_panel_url / client_panel_url, this reconciler rebuilds the
+ * to admin_panel_url / tenant_panel_url, this reconciler rebuilds the
  * IngressRoute's routes[] and the cert-manager Certificate's dnsNames[]
  * from the URLs' hostnames using server-side apply with
  * fieldManager: platform-api. The reconciler OWNS both resources
@@ -22,7 +22,7 @@ import * as k8s from '@kubernetes/client-node';
 
 export interface IngressReconcileInput {
   readonly adminPanelUrl: string | null;
-  readonly clientPanelUrl: string | null;
+  readonly tenantPanelUrl: string | null;
   readonly tlsSecretName: string;
   /**
    * When true, the reconciler emits a `/oauth2` prefix route on the admin
@@ -32,8 +32,8 @@ export interface IngressReconcileInput {
    * matches `/` to the admin panel.
    */
   readonly protectAdminViaProxy?: boolean;
-  /** Same as protectAdminViaProxy but for the client panel host. */
-  readonly protectClientViaProxy?: boolean;
+  /** Same as protectAdminViaProxy but for the tenant panel host. */
+  readonly protectTenantViaProxy?: boolean;
 }
 
 export interface IngressReconcileResult {
@@ -80,9 +80,9 @@ const DEFAULTS = {
   clusterIssuerName: 'letsencrypt-prod-http01',
 } as const;
 
-const PANEL_SERVICES: Record<'admin' | 'client', string> = {
+const PANEL_SERVICES: Record<'admin' | 'tenant', string> = {
   admin: 'admin-panel',
-  client: 'client-panel',
+  tenant: 'tenant-panel',
 };
 
 const OAUTH2_PROXY_SERVICE = 'oauth2-proxy';
@@ -111,7 +111,7 @@ const PLATFORM_WAF_MIDDLEWARE_NAME = 'modsecurity-crs';
 
 /**
  * CrowdSec bouncer Middleware — platform-wide IP-reputation gate
- * attached to EVERY route the platform ingresses (admin/client panels
+ * attached to EVERY route the platform ingresses (admin/tenant panels
  * here, tenant routes via the buildAllRouteSpecs path). Runs first in
  * the middleware chain so known-bad IPs short-circuit before any other
  * processing.
@@ -167,7 +167,7 @@ interface DesiredRoute {
 export function buildDesiredRoutes(input: IngressReconcileInput): DesiredRoute[] {
   const desired: DesiredRoute[] = [];
   const adminHost = extractHost(input.adminPanelUrl);
-  const clientHost = extractHost(input.clientPanelUrl);
+  const tenantHost = extractHost(input.tenantPanelUrl);
   if (adminHost) {
     desired.push({
       host: adminHost,
@@ -175,11 +175,11 @@ export function buildDesiredRoutes(input: IngressReconcileInput): DesiredRoute[]
       oauth2: input.protectAdminViaProxy === true,
     });
   }
-  if (clientHost) {
+  if (tenantHost) {
     desired.push({
-      host: clientHost,
-      serviceName: PANEL_SERVICES.client,
-      oauth2: input.protectClientViaProxy === true,
+      host: tenantHost,
+      serviceName: PANEL_SERVICES.tenant,
+      oauth2: input.protectTenantViaProxy === true,
     });
   }
   return desired;
@@ -215,7 +215,7 @@ export function buildIngressRouteBody(
     //   1. CrowdSec bouncer — short-circuit known-bad IPs before any
     //      downstream processing. Always-on, platform-wide.
     //   2. ForwardAuth (oauth2-proxy) when protect* is on.
-    //   3. WAF (`modsecurity-crs@traefik`) — admin / client panels are
+    //   3. WAF (`modsecurity-crs@traefik`) — admin / tenant panels are
     //      sensitive surfaces, so WAF is always-on here regardless of
     //      tenant-level wafEnabled (which only controls tenant routes).
     const panelMiddlewares: Array<{ name: string; namespace: string }> = [

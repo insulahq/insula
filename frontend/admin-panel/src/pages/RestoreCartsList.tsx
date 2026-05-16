@@ -28,8 +28,8 @@ const STATUS_FILTERS: ReadonlyArray<{ key: string; label: string }> = [
 
 export default function RestoreCartsList() {
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [clientFilter, setClientFilter] = useState<string>('');
-  const q = useRestoreCarts({ status: statusFilter || undefined, clientId: clientFilter || undefined });
+  const [tenantFilter, setTenantFilter] = useState<string>('');
+  const q = useRestoreCarts({ status: statusFilter || undefined, tenantId: tenantFilter || undefined });
   // API envelope is {data: {data: [...]}} — see CartListResponse in
   // hooks/use-restore-carts.ts.
   const carts = q.data?.data?.data ?? [];
@@ -62,9 +62,9 @@ export default function RestoreCartsList() {
         </div>
         <input
           type="text"
-          value={clientFilter}
-          onChange={(e) => setClientFilter(e.target.value.trim())}
-          placeholder="Filter by client id…"
+          value={tenantFilter}
+          onChange={(e) => setTenantFilter(e.target.value.trim())}
+          placeholder="Filter by tenant id…"
           className="rounded-md border border-gray-300 bg-white px-3 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
         />
         {q.isFetching && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
@@ -105,7 +105,7 @@ export default function RestoreCartsList() {
               {carts.map((c) => (
                 <tr key={c.id} className="border-b border-gray-100 last:border-0 dark:border-gray-700">
                   <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{c.id.slice(0, 16)}…</td>
-                  <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{c.clientId.slice(0, 12)}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{c.tenantId.slice(0, 12)}</td>
                   <td className="px-4 py-2">
                     <CartStatusPill status={c.status} />
                   </td>
@@ -119,7 +119,7 @@ export default function RestoreCartsList() {
                   <td className="px-4 py-2">
                     {(c.status === 'failed' || c.status === 'paused' || c.status === 'draft') ? (
                       <Link
-                        to={`/restore?cartId=${encodeURIComponent(c.id)}&clientId=${encodeURIComponent(c.clientId)}`}
+                        to={`/restore?cartId=${encodeURIComponent(c.id)}&tenantId=${encodeURIComponent(c.tenantId)}`}
                         className="inline-flex items-center gap-1 rounded-md border border-amber-300 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
                       >
                         {c.status === 'failed' ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}

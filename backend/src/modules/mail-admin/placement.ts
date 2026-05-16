@@ -54,7 +54,7 @@ interface K8sCoreBundle {
   core: import('@kubernetes/client-node').CoreV1Api;
 }
 
-async function loadK8sCoreClient(kubeconfigPath: string | undefined): Promise<K8sCoreBundle> {
+async function loadK8sCoreTenant(kubeconfigPath: string | undefined): Promise<K8sCoreBundle> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
@@ -120,7 +120,7 @@ export async function getMailPlacement(
   db: Database,
   opts: PlacementOptions,
 ): Promise<MailPlacementResponse> {
-  const { core } = await loadK8sCoreClient(opts.kubeconfigPath);
+  const { core } = await loadK8sCoreTenant(opts.kubeconfigPath);
 
   const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
 
@@ -260,7 +260,7 @@ export async function updateMailPlacement(
   db: Database,
   opts: PlacementOptions,
 ): Promise<void> {
-  const { core } = await loadK8sCoreClient(opts.kubeconfigPath);
+  const { core } = await loadK8sCoreTenant(opts.kubeconfigPath);
 
   // Validate that each named node exists in the cluster.
   for (const nodeName of [update.primaryNode, update.secondaryNode, update.tertiaryNode]) {

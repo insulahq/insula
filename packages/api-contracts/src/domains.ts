@@ -53,7 +53,7 @@ export const dnsProviderGroupResponseSchema = z.object({
 
 export const domainResponseSchema = z.object({
   id: uuidField,
-  clientId: uuidField,
+  tenantId: uuidField,
   domainName: z.string(),
   status: z.string(),
   dnsMode: z.string(),

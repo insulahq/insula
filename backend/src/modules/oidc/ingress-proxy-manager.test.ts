@@ -69,7 +69,7 @@ describe('syncProxyIngressAnnotations — ForwardAuth Middleware', () => {
     const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: true,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: null,
       adminHost: 'admin.example.com',
     });
@@ -97,7 +97,7 @@ describe('syncProxyIngressAnnotations — ForwardAuth Middleware', () => {
     const k8s = makeK8s(initial);
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: false,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: null,
       adminHost: 'admin.example.com',
     });
@@ -112,7 +112,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
     const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: true,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: 'emergency-admin',
       adminHost: 'admin.example.com',
     });
@@ -153,7 +153,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
     const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: false,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: 'emergency-admin',
       adminHost: 'admin.example.com',
     });
@@ -169,7 +169,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
     const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: true,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: null,
       adminHost: 'admin.example.com',
     });
@@ -185,7 +185,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
     const k8s = makeK8s();
     await syncProxyIngressAnnotations(db, k8s, {
       protectAdminViaProxy: true,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: 'emergency-admin',
       adminHost: null,
     });

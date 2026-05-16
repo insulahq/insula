@@ -3,7 +3,7 @@ import { encodeCursor, decodeCursor, parsePaginationParams } from './pagination.
 
 describe('cursor encoding/decoding', () => {
   it('should round-trip encode and decode', () => {
-    const data = { resource: 'client', sort: '2026-01-15T10:30:00Z', id: 'abc-123' };
+    const data = { resource: 'tenant', sort: '2026-01-15T10:30:00Z', id: 'abc-123' };
     const encoded = encodeCursor(data);
     const decoded = decodeCursor(encoded);
     expect(decoded).toEqual(data);

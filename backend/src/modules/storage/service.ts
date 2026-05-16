@@ -1,7 +1,7 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { sql } from 'drizzle-orm';
-import { clients } from '../../db/schema.js';
+import { tenants } from '../../db/schema.js';
 import { getRedis } from '../../shared/redis.js';
 import type {
   StorageOverviewResponse,
@@ -234,15 +234,15 @@ async function getPlatformDbUsedBytes(db: Database): Promise<number> {
 
 // ─── Per-Client Storage Usage ────────────────────────────────────────────────
 
-async function getClientStorageUsage(
+async function getTenantStorageUsage(
   db: Database,
   k8s: K8sClients,
   kubeconfigPath: string | undefined,
-): Promise<StorageOverviewResponse['clients']> {
-  const allClients = await db.select().from(clients);
-  const results: StorageOverviewResponse['clients'] = [];
+): Promise<StorageOverviewResponse['tenants']> {
+  const allTenants = await db.select().from(tenants);
+  const results: StorageOverviewResponse['tenants'] = [];
 
-  for (const c of allClients) {
+  for (const c of allTenants) {
     if (!c.kubernetesNamespace || c.provisioningStatus !== 'provisioned') continue;
 
     let usedBytes = 0;
@@ -258,8 +258,8 @@ async function getClientStorageUsage(
     }
 
     results.push({
-      clientId: c.id,
-      companyName: c.companyName,
+      tenantId: c.id,
+      name: c.name,
       namespace: c.kubernetesNamespace,
       usedBytes,
     });
@@ -299,16 +299,16 @@ export async function getStorageOverview(
   k8s: K8sClients,
   kubeconfigPath: string | undefined,
 ): Promise<StorageOverviewResponse> {
-  const [node, platformDbBytes, redisBytes, imagesSummary, clientUsage] = await Promise.all([
+  const [node, platformDbBytes, redisBytes, imagesSummary, tenantUsage] = await Promise.all([
     getNodeStats(k8s),
     getPlatformDbUsedBytes(db),
     getRedisUsedBytes(),
     getNodeImagesSummary(k8s),
-    getClientStorageUsage(db, k8s, kubeconfigPath),
+    getTenantStorageUsage(db, k8s, kubeconfigPath),
   ]);
 
   const systemBytes = platformDbBytes + redisBytes + imagesSummary.totalBytes;
-  const clientBytes = clientUsage.reduce((sum, c) => sum + c.usedBytes, 0);
+  const tenantBytes = tenantUsage.reduce((sum, c) => sum + c.usedBytes, 0);
 
   return {
     node,
@@ -317,8 +317,8 @@ export async function getStorageOverview(
       redis: { usedBytes: redisBytes },
       dockerImages: { totalBytes: imagesSummary.totalBytes, count: imagesSummary.count },
     },
-    clients: clientUsage,
-    total: { systemBytes, clientBytes },
+    tenants: tenantUsage,
+    total: { systemBytes, tenantBytes },
   };
 }
 

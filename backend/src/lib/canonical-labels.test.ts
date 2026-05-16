@@ -3,23 +3,23 @@ import {
   CANONICAL_LABEL_KEYS,
   PLATFORM_API_MANAGER,
   buildCanonicalLabels,
-  clientOwnerLabel,
-  clientStoragePvcLabels,
-  clientStoragePvcLabelsFromNamespace,
+  tenantOwnerLabel,
+  tenantStoragePvcLabels,
+  tenantStoragePvcLabelsFromNamespace,
 } from './canonical-labels.js';
 
 describe('buildCanonicalLabels', () => {
   it('emits the four canonical keys when canonicalName is supplied', () => {
     const labels = buildCanonicalLabels({
-      role: 'client-storage',
-      owner: 'client-abc12345',
-      canonicalName: 'client-acme-abc12345-storage',
+      role: 'tenant-storage',
+      owner: 'tenant-abc12345',
+      canonicalName: 'tenant-acme-abc12345-storage',
     });
 
     expect(labels).toEqual({
-      [CANONICAL_LABEL_KEYS.role]: 'client-storage',
-      [CANONICAL_LABEL_KEYS.owner]: 'client-abc12345',
-      [CANONICAL_LABEL_KEYS.canonicalName]: 'client-acme-abc12345-storage',
+      [CANONICAL_LABEL_KEYS.role]: 'tenant-storage',
+      [CANONICAL_LABEL_KEYS.owner]: 'tenant-abc12345',
+      [CANONICAL_LABEL_KEYS.canonicalName]: 'tenant-acme-abc12345-storage',
       [CANONICAL_LABEL_KEYS.managedBy]: PLATFORM_API_MANAGER,
     });
   });
@@ -54,56 +54,56 @@ describe('buildCanonicalLabels', () => {
   });
 });
 
-describe('clientOwnerLabel', () => {
+describe('tenantOwnerLabel', () => {
   it('strips dashes and takes the first 8 hex chars', () => {
-    expect(clientOwnerLabel('abc12345-678a-9bcd-ef01-23456789abcd')).toBe(
-      'client-abc12345',
+    expect(tenantOwnerLabel('abc12345-678a-9bcd-ef01-23456789abcd')).toBe(
+      'tenant-abc12345',
     );
   });
 
   it('handles a UUID with no dashes idempotently', () => {
-    expect(clientOwnerLabel('abc123456789abcdefghijklmnop')).toBe(
-      'client-abc12345',
+    expect(tenantOwnerLabel('abc123456789abcdefghijklmnop')).toBe(
+      'tenant-abc12345',
     );
   });
 });
 
-describe('clientStoragePvcLabels', () => {
+describe('tenantStoragePvcLabels', () => {
   it('builds the full canonical set for a tenant PVC', () => {
-    const labels = clientStoragePvcLabels(
+    const labels = tenantStoragePvcLabels(
       'abc12345-678a-9bcd-ef01-23456789abcd',
-      'client-acme-abc12345',
+      'tenant-acme-abc12345',
     );
 
     expect(labels).toEqual({
-      [CANONICAL_LABEL_KEYS.role]: 'client-storage',
-      [CANONICAL_LABEL_KEYS.owner]: 'client-abc12345',
-      [CANONICAL_LABEL_KEYS.canonicalName]: 'client-acme-abc12345-storage',
+      [CANONICAL_LABEL_KEYS.role]: 'tenant-storage',
+      [CANONICAL_LABEL_KEYS.owner]: 'tenant-abc12345',
+      [CANONICAL_LABEL_KEYS.canonicalName]: 'tenant-acme-abc12345-storage',
       [CANONICAL_LABEL_KEYS.managedBy]: PLATFORM_API_MANAGER,
     });
   });
 });
 
-describe('clientStoragePvcLabelsFromNamespace', () => {
+describe('tenantStoragePvcLabelsFromNamespace', () => {
   it('extracts the 8-hex owner short-id from the canonical namespace form', () => {
-    const labels = clientStoragePvcLabelsFromNamespace('client-acme-abc12345');
-    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client-abc12345');
+    const labels = tenantStoragePvcLabelsFromNamespace('tenant-acme-abc12345');
+    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('tenant-abc12345');
     expect(labels[CANONICAL_LABEL_KEYS.canonicalName]).toBe(
-      'client-acme-abc12345-storage',
+      'tenant-acme-abc12345-storage',
     );
   });
 
-  it('falls back to client-unknown when namespace does not match the canonical form', () => {
-    const labels = clientStoragePvcLabelsFromNamespace('garbage-ns');
-    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client-unknown');
+  it('falls back to tenant-unknown when namespace does not match the canonical form', () => {
+    const labels = tenantStoragePvcLabelsFromNamespace('garbage-ns');
+    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('tenant-unknown');
   });
 
   it('handles slugs that themselves contain 8-hex-looking groups (anchors at end)', () => {
     // Slug 'abc12345' should NOT be picked up as the owner ID — only the
     // trailing 8 hex chars after the last hyphen.
-    const labels = clientStoragePvcLabelsFromNamespace(
-      'client-abc12345-deadbeef',
+    const labels = tenantStoragePvcLabelsFromNamespace(
+      'tenant-abc12345-deadbeef',
     );
-    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('client-deadbeef');
+    expect(labels[CANONICAL_LABEL_KEYS.owner]).toBe('tenant-deadbeef');
   });
 });

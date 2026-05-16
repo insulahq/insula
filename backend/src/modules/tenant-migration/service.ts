@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { clients, clusterNodes } from '../../db/schema.js';
+import { tenants, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
@@ -9,11 +9,11 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 //
 // Flow:
 //   1. Validate the target worker (must exist in cluster_nodes and
-//      carry canHostClientWorkloads=true).
-//   2. Flip clients.worker_node_name in the DB so future Deployment
+//      carry canHostTenantWorkloads=true).
+//   2. Flip tenants.node_name in the DB so future Deployment
 //      creates pick the new pin (via M5 plumbing).
 //   3. Trigger a rollout-restart on every tenant Deployment in the
-//      client's namespace so the scheduler re-evaluates with the
+//      tenant's namespace so the scheduler re-evaluates with the
 //      new nodeSelector.
 //
 // Not yet covered (out of M6 scope — future revisit):
@@ -29,13 +29,13 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 //     wait for ready; kubectl just patches the annotation).
 
 /**
- * Re-pin every Deployment in the client's namespace to the new
+ * Re-pin every Deployment in the tenant's namespace to the new
  * worker AND force a new ReplicaSet via a fresh restart annotation.
  * Combined in one patch so pods that restart also pick up the new
  * nodeSelector — pure rollout-restart alone would land pods on the
  * SAME node because the pod template's nodeSelector is unchanged.
  */
-async function repinAndRestart(k8s: K8sClients, namespace: string, workerNodeName: string): Promise<number> {
+async function repinAndRestart(k8s: K8sClients, namespace: string, nodeName: string): Promise<number> {
   let count = 0;
   const now = new Date().toISOString();
 
@@ -55,7 +55,7 @@ async function repinAndRestart(k8s: K8sClients, namespace: string, workerNodeNam
               },
             },
             spec: {
-              nodeSelector: { 'kubernetes.io/hostname': workerNodeName },
+              nodeSelector: { 'kubernetes.io/hostname': nodeName },
             },
           },
         },
@@ -68,60 +68,60 @@ async function repinAndRestart(k8s: K8sClients, namespace: string, workerNodeNam
 }
 
 export interface MigrateToWorkerInput {
-  readonly workerNodeName: string;
+  readonly nodeName: string;
 }
 
 export interface MigrateToWorkerResult {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly previousWorker: string | null;
   readonly currentWorker: string;
   readonly deploymentsRestarted: number;
 }
 
-export async function migrateClientToWorker(
+export async function migrateTenantToWorker(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   input: MigrateToWorkerInput,
 ): Promise<MigrateToWorkerResult> {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
 
   const [targetNode] = await db.select()
     .from(clusterNodes)
-    .where(eq(clusterNodes.name, input.workerNodeName))
+    .where(eq(clusterNodes.name, input.nodeName))
     .limit(1);
   if (!targetNode) {
-    throw new ApiError('NODE_NOT_FOUND', `Node '${input.workerNodeName}' not found`, 404, { node_name: input.workerNodeName });
+    throw new ApiError('NODE_NOT_FOUND', `Node '${input.nodeName}' not found`, 404, { node_name: input.nodeName });
   }
-  if (!targetNode.canHostClientWorkloads) {
+  if (!targetNode.canHostTenantWorkloads) {
     throw new ApiError(
       'NODE_NOT_TENANT_CAPABLE',
-      `Node '${input.workerNodeName}' is not tenant-capable (host_client_workloads=false).`,
+      `Node '${input.nodeName}' is not tenant-capable (host_client_workloads=false).`,
       409,
-      { node_name: input.workerNodeName },
+      { node_name: input.nodeName },
     );
   }
 
-  const previousWorker = client.workerNodeName ?? null;
+  const previousWorker = tenant.nodeName ?? null;
 
   // Roll the Deployments first. If the k8s patch fails, the DB stays
   // consistent with the old state and the operator sees the error.
   // Only after every Deployment is successfully re-patched do we
   // commit the new pin to the DB — avoids the DB pointing at a
   // worker where no pods actually live.
-  const deploymentsRestarted = await repinAndRestart(k8s, client.kubernetesNamespace, input.workerNodeName);
+  const deploymentsRestarted = await repinAndRestart(k8s, tenant.kubernetesNamespace, input.nodeName);
 
-  await db.update(clients)
-    .set({ workerNodeName: input.workerNodeName, updatedAt: sql`NOW()` })
-    .where(eq(clients.id, clientId));
+  await db.update(tenants)
+    .set({ nodeName: input.nodeName, updatedAt: sql`NOW()` })
+    .where(eq(tenants.id, tenantId));
 
   return {
-    clientId,
+    tenantId,
     previousWorker,
-    currentWorker: input.workerNodeName,
+    currentWorker: input.nodeName,
     deploymentsRestarted,
   };
 }

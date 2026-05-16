@@ -25,7 +25,7 @@ interface StuckRow {
   readonly name: string;
   readonly deletionTimestamp: string | null;
   readonly finalizers: ReadonlyArray<string>;
-  readonly clientId: string | null;
+  readonly tenantId: string | null;
   readonly stuckForMs: number;
 }
 

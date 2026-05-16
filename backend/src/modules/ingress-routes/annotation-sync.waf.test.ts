@@ -22,7 +22,7 @@ describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', ()
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, wafEnabled: 0 },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     // No per-route WAF Middleware emitted, no reference to the shared sidecar.
     expect(middlewares.find((m) => m.metadata.name.endsWith('-waf'))).toBeUndefined();
@@ -34,7 +34,7 @@ describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', ()
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, wafEnabled: 1, wafOwaspCrs: 1 },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     // No per-route WAF Middleware emitted — single shared sidecar.
     expect(middlewares.find((m) => m.metadata.name.endsWith('-waf'))).toBeUndefined();
@@ -58,7 +58,7 @@ describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', ()
         wafAnomalyThreshold: 5,
       },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     expect(middlewares.find((m) => m.metadata.name.endsWith('-waf'))).toBeUndefined();
     expect(referenceList.find((r) => r.name === 'modsecurity-crs')).toBeDefined();
@@ -73,12 +73,12 @@ describe('buildMiddlewaresForRoute — concurrent-connection cap (rateLimitConne
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, rateLimitConnections: 50 },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-inflight');
     expect(mw).toBeDefined();
     expect((mw!.spec as { inFlightReq: { amount: number } }).inFlightReq.amount).toBe(50);
-    expect(referenceList).toContainEqual({ name: 'r-route-12-inflight', namespace: 'client-ns' });
+    expect(referenceList).toContainEqual({ name: 'r-route-12-inflight', namespace: 'tenant-ns' });
   });
 
   it('emits NO inFlightReq Middleware when rateLimitConnections is null or 0', () => {
@@ -86,7 +86,7 @@ describe('buildMiddlewaresForRoute — concurrent-connection cap (rateLimitConne
       const { middlewares } = buildMiddlewaresForRoute(
         { ...baseRoute, rateLimitConnections: value as number | null },
         'route-12345678',
-        'client-ns',
+        'tenant-ns',
       );
       expect(middlewares.find((m) => m.metadata.name.endsWith('-inflight'))).toBeUndefined();
     }
@@ -96,7 +96,7 @@ describe('buildMiddlewaresForRoute — concurrent-connection cap (rateLimitConne
     const { middlewares } = buildMiddlewaresForRoute(
       { ...baseRoute, rateLimitRps: 10, rateLimitConnections: 50 },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     expect(middlewares.find((m) => m.metadata.name.endsWith('-ratelimit'))).toBeDefined();
     expect(middlewares.find((m) => m.metadata.name.endsWith('-inflight'))).toBeDefined();
@@ -108,7 +108,7 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, customErrorCodes: '404,503', customErrorPath: '/errors/{status}.html' },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
     expect(mw).toBeDefined();
@@ -124,14 +124,14 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
       namespace: 'platform-system',
     });
     expect(spec.errors.query).toBe('/errors/{status}.html');
-    expect(referenceList).toContainEqual({ name: 'r-route-12-errors', namespace: 'client-ns' });
+    expect(referenceList).toContainEqual({ name: 'r-route-12-errors', namespace: 'tenant-ns' });
   });
 
   it('does NOT emit the errors Middleware when customErrorPath is unset (avoids 500 from unresolvable backend)', () => {
     const { middlewares } = buildMiddlewaresForRoute(
       { ...baseRoute, customErrorCodes: '500-599', customErrorPath: null },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     expect(middlewares.find((m) => m.metadata.name === 'r-route-12-errors')).toBeUndefined();
   });
@@ -144,7 +144,7 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
         customErrorPath: '/errors/{status}.html',
       },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
     expect(mw).toBeDefined();
@@ -161,7 +161,7 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
     const { middlewares } = buildMiddlewaresForRoute(
       { ...baseRoute, customErrorCodes: null },
       'route-12345678',
-      'client-ns',
+      'tenant-ns',
     );
     expect(middlewares.find((m) => m.metadata.name.endsWith('-errors'))).toBeUndefined();
   });

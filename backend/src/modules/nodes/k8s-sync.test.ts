@@ -3,12 +3,12 @@ import { projectNode, parseCpuMillicores, parseMemoryBytes, applyNewServerDefaul
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 describe('projectNode', () => {
-  it('defaults unlabeled node to worker with canHostClientWorkloads=true', () => {
+  it('defaults unlabeled node to worker with canHostTenantWorkloads=true', () => {
     const observed = projectNode({
       metadata: { name: 'node-1', labels: {} },
     });
     expect(observed.role).toBe('worker');
-    expect(observed.canHostClientWorkloads).toBe(true);
+    expect(observed.canHostTenantWorkloads).toBe(true);
   });
 
   it('respects platform.phoenix-host.net/node-role=server label', () => {
@@ -19,22 +19,22 @@ describe('projectNode', () => {
       },
     });
     expect(observed.role).toBe('server');
-    // Server with no host-client label defaults to false.
-    expect(observed.canHostClientWorkloads).toBe(false);
+    // Server with no host-tenant label defaults to false.
+    expect(observed.canHostTenantWorkloads).toBe(false);
   });
 
-  it('respects host-client-workloads=true override on server', () => {
+  it('respects host-tenant-workloads=true override on server', () => {
     const observed = projectNode({
       metadata: {
         name: 'node-1',
         labels: {
           'platform.phoenix-host.net/node-role': 'server',
-          'platform.phoenix-host.net/host-client-workloads': 'true',
+          'platform.phoenix-host.net/host-tenant-workloads': 'true',
         },
       },
     });
     expect(observed.role).toBe('server');
-    expect(observed.canHostClientWorkloads).toBe(true);
+    expect(observed.canHostTenantWorkloads).toBe(true);
   });
 
   it('prefers ExternalIP over InternalIP for publicIp', () => {
@@ -95,7 +95,7 @@ describe('parseCpuMillicores', () => {
 });
 
 describe('applyNewServerDefault', () => {
-  // The reconciler stamps the missing host-client-workloads label on a
+  // The reconciler stamps the missing host-tenant-workloads label on a
   // freshly-joined server. These tests verify both the label and taint
   // shape match bootstrap.sh's behaviour for the same flag value.
 
@@ -107,7 +107,7 @@ describe('applyNewServerDefault', () => {
     return { k8s, patchSpy };
   }
 
-  it('stamps host-client-workloads=true and removes server-only taint when default=true', async () => {
+  it('stamps host-tenant-workloads=true and removes server-only taint when default=true', async () => {
     const { k8s, patchSpy } = makeK8sStub();
     await applyNewServerDefault(k8s, 'server-1', true, [
       { key: 'platform.phoenix-host.net/server-only', value: 'true', effect: 'NoSchedule' },
@@ -120,11 +120,11 @@ describe('applyNewServerDefault', () => {
       metadata: { labels: Record<string, string> };
       spec: { taints: Array<{ key: string }> };
     };
-    expect(body.metadata.labels['platform.phoenix-host.net/host-client-workloads']).toBe('true');
+    expect(body.metadata.labels['platform.phoenix-host.net/host-tenant-workloads']).toBe('true');
     expect(body.spec.taints.find((t) => t.key === 'platform.phoenix-host.net/server-only')).toBeUndefined();
   });
 
-  it('stamps host-client-workloads=false and applies server-only NoSchedule taint when default=false', async () => {
+  it('stamps host-tenant-workloads=false and applies server-only NoSchedule taint when default=false', async () => {
     const { k8s, patchSpy } = makeK8sStub();
     await applyNewServerDefault(k8s, 'server-1', false, []);
 
@@ -134,7 +134,7 @@ describe('applyNewServerDefault', () => {
       metadata: { labels: Record<string, string> };
       spec: { taints: Array<{ key: string; value?: string; effect: string }> };
     };
-    expect(body.metadata.labels['platform.phoenix-host.net/host-client-workloads']).toBe('false');
+    expect(body.metadata.labels['platform.phoenix-host.net/host-tenant-workloads']).toBe('false');
     const ours = body.spec.taints.find((t) => t.key === 'platform.phoenix-host.net/server-only');
     expect(ours).toEqual({ key: 'platform.phoenix-host.net/server-only', value: 'true', effect: 'NoSchedule' });
   });
@@ -153,11 +153,11 @@ describe('applyNewServerDefault', () => {
 });
 
 describe('projectNode + applyNewServerDefault contract', () => {
-  // The reconciler relies on projectNode setting `canHostClientWorkloads`
+  // The reconciler relies on projectNode setting `canHostTenantWorkloads`
   // to false for unlabelled servers — that "missing label" state is what
   // triggers the default to be applied. This test pins that contract so
   // a future projectNode change can't silently disable the reconciler.
-  it('an unlabeled server projects to canHostClientWorkloads=false (the trigger)', () => {
+  it('an unlabeled server projects to canHostTenantWorkloads=false (the trigger)', () => {
     const observed = projectNode({
       metadata: {
         name: 'fresh-server',
@@ -165,11 +165,11 @@ describe('projectNode + applyNewServerDefault contract', () => {
       },
     });
     expect(observed.role).toBe('server');
-    expect(observed.canHostClientWorkloads).toBe(false);
-    // The labels object should NOT contain host-client-workloads — that
+    expect(observed.canHostTenantWorkloads).toBe(false);
+    // The labels object should NOT contain host-tenant-workloads — that
     // absence is what the syncNodesOnce branch checks.
     const labels = observed.labels;
-    expect(labels['platform.phoenix-host.net/host-client-workloads']).toBeUndefined();
+    expect(labels['platform.phoenix-host.net/host-tenant-workloads']).toBeUndefined();
   });
 });
 

@@ -1,9 +1,9 @@
 /**
- * Per-client oauth2-proxy + claim-validator reconciler.
+ * Per-tenant oauth2-proxy + claim-validator reconciler.
  *
  * Lifecycle:
- *   - First ingress in a client namespace gets `enabled=true` →
- *     ensureClientProxy() materialises a Deployment (oauth2-proxy +
+ *   - First ingress in a tenant namespace gets `enabled=true` →
+ *     ensureTenantProxy() materialises a Deployment (oauth2-proxy +
  *     claim-validator sidecar), Service, ConfigMap, Secret in that
  *     namespace, and updates the ConfigMap with the per-route OIDC
  *     config + claim rules.
@@ -11,7 +11,7 @@
  *     is unchanged. ConfigMap reload is picked up by:
  *       * oauth2-proxy via SIGHUP / mounted-config refresh
  *       * claim-validator via fs.watch
- *   - Last ingress disables → tearDownClientProxy() deletes the four
+ *   - Last ingress disables → tearDownTenantProxy() deletes the four
  *     resources cleanly.
  *
  * Idempotent: every resource write is a server-side apply via
@@ -19,7 +19,7 @@
  * leave the cluster in a broken state — the next reconciler tick
  * re-runs the same operations.
  *
- * NOTE on the K8s client API style: we call `replaceNamespacedX` /
+ * NOTE on the K8s tenant API style: we call `replaceNamespacedX` /
  * `createNamespacedX` from `@kubernetes/client-node` v1, which
  * requires the args to be passed as an object literal (not positional)
  * and the body cast as an unknown type — the library's signatures
@@ -29,15 +29,15 @@
 import * as k8s from '@kubernetes/client-node';
 import { eq, sql } from 'drizzle-orm';
 import {
-  clientOauth2ProxyState,
-  clients,
+  tenantOauth2ProxyState,
+  tenants,
   ingressAuthConfigs,
   ingressRoutes,
   domains,
 } from '../../db/schema.js';
 import {
-  getOrCreateClientCookieSecret,
-  listEnabledForClient as listEnabledForClientJoined,
+  getOrCreateTenantCookieSecret,
+  listEnabledForTenant as listEnabledForTenantJoined,
   type EnabledIngressAuthRow,
 } from './service.js';
 import { decryptProviderSecret } from './providers-service.js';
@@ -69,7 +69,7 @@ const OAUTH2_PROXY_IMAGE = process.env.OAUTH2_PROXY_IMAGE
 const CLAIM_VALIDATOR_IMAGE = process.env.CLAIM_VALIDATOR_IMAGE
   ?? 'ghcr.io/phoenixtechnam/hosting-platform/claim-validator:latest';
 
-export interface IngressAuthClients {
+export interface IngressAuthTenants {
   readonly core: k8s.CoreV1Api;
   readonly apps: k8s.AppsV1Api;
   readonly networking: k8s.NetworkingV1Api;
@@ -78,12 +78,12 @@ export interface IngressAuthClients {
 
 export interface ReconcileDeps {
   readonly db: Database;
-  readonly k8s: IngressAuthClients;
+  readonly k8s: IngressAuthTenants;
   readonly encryptionKey: string;
 }
 
 /**
- * Top-level entry point: reconcile a single client's oauth2-proxy
+ * Top-level entry point: reconcile a single tenant's oauth2-proxy
  * resources to match the current set of enabled ingress_auth_configs.
  *
  * Returns an outcome that the caller can log / surface in lastError
@@ -91,43 +91,43 @@ export interface ReconcileDeps {
  * outcome.
  */
 export interface ReconcileOutcome {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly namespace: string;
   readonly action: 'provisioned' | 'updated' | 'torn_down' | 'noop';
   readonly enabledIngresses: number;
   readonly error: string | null;
 }
 
-export async function reconcileClient(
+export async function reconcileTenant(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReconcileOutcome> {
-  const namespace = await getClientNamespace(deps.db, clientId);
+  const namespace = await getTenantNamespace(deps.db, tenantId);
   if (!namespace) {
     return {
-      clientId,
+      tenantId,
       namespace: '',
       action: 'noop',
       enabledIngresses: 0,
-      error: 'client not found',
+      error: 'tenant not found',
     };
   }
 
-  const enabled = await listEnabledForClientJoined(deps.db, clientId);
+  const enabled = await listEnabledForTenantJoined(deps.db, tenantId);
   try {
     if (enabled.length === 0) {
-      const wasProvisioned = await tearDownClientProxy(deps, clientId, namespace);
+      const wasProvisioned = await tearDownTenantProxy(deps, tenantId, namespace);
       return {
-        clientId,
+        tenantId,
         namespace,
         action: wasProvisioned ? 'torn_down' : 'noop',
         enabledIngresses: 0,
         error: null,
       };
     }
-    const action = await ensureClientProxy(deps, clientId, namespace, enabled);
+    const action = await ensureTenantProxy(deps, tenantId, namespace, enabled);
     return {
-      clientId,
+      tenantId,
       namespace,
       action,
       enabledIngresses: enabled.length,
@@ -135,9 +135,9 @@ export async function reconcileClient(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await markStateError(deps.db, clientId, msg);
+    await markStateError(deps.db, tenantId, msg);
     return {
-      clientId,
+      tenantId,
       namespace,
       action: 'noop',
       enabledIngresses: enabled.length,
@@ -147,28 +147,28 @@ export async function reconcileClient(
 }
 
 // Backward-compat re-export for callers that only need the list.
-export { listEnabledForClientJoined as listEnabledForClient };
+export { listEnabledForTenantJoined as listEnabledForTenant };
 
-async function getClientNamespace(
+async function getTenantNamespace(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string | null> {
   const [row] = await db
-    .select({ ns: clients.kubernetesNamespace })
-    .from(clients)
-    .where(eq(clients.id, clientId));
+    .select({ ns: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
   return row?.ns ?? null;
 }
 
 async function markStateError(
   db: Database,
-  clientId: string,
+  tenantId: string,
   error: string,
 ): Promise<void> {
   await db
-    .update(clientOauth2ProxyState)
+    .update(tenantOauth2ProxyState)
     .set({ lastError: error })
-    .where(eq(clientOauth2ProxyState.clientId, clientId));
+    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
 }
 
 /** Build the single oauth2_proxy.cfg ConfigMap key from the enabled
@@ -177,16 +177,16 @@ async function markStateError(
  *  serve all of that client's ingresses with the SAME OIDC config
  *  (the FIRST enabled ingress's row).
  *
- *  This is a pragmatic constraint of the per-client architecture —
+ *  This is a pragmatic constraint of the per-tenant architecture —
  *  if a client wants different OIDC providers per ingress, they can
  *  request a per-ingress proxy in v2. Documented in the contract
  *  doc so the UI can show a warning when a second ingress under the
- *  same client uses a different issuer URL.
+ *  same tenant uses a different issuer URL.
  */
 function buildOauth2ProxyConfig(
   primary: EnabledIngressAuthRow,
   cookieSecret: string,
-  clientSecret: string,
+  tenantSecret: string,
 ): string {
   // oauth2-proxy reads TOML. Booleans MUST be unquoted, strings MUST
   // be quoted. Durations are strings (`"3600s"`).
@@ -198,8 +198,8 @@ function buildOauth2ProxyConfig(
   const normalisedIssuer = provider.issuerUrl.replace(/\/+$/, '');
   lines.push(`provider="oidc"`);
   lines.push(`oidc_issuer_url="${normalisedIssuer}"`);
-  lines.push(`client_id="${provider.oauthClientId}"`);
-  lines.push(`client_secret="${clientSecret}"`);
+  lines.push(`tenant_id="${provider.oauthClientId}"`);
+  lines.push(`tenant_secret="${tenantSecret}"`);
   if (provider.usePkce) {
     lines.push(`code_challenge_method="S256"`);
   }
@@ -239,33 +239,33 @@ function buildClaimRulesJson(
 }
 
 /**
- * True when at least one enabled auth config under the client has a
+ * True when at least one enabled auth config under the tenant has a
  * non-empty claimRules array. Drives whether the claim-validator
  * sidecar is deployed: when false, the sidecar is omitted from the
  * Deployment and the auth-url annotation bypasses it (points at
  * oauth2-proxy:4180/oauth2/auth directly). See annotation-sync.ts.
  */
-export function clientNeedsClaimValidator(
+export function tenantNeedsClaimValidator(
   configs: ReadonlyArray<EnabledIngressAuthRow>,
 ): boolean {
   return configs.some(({ cfg }) => cfg.claimRules && cfg.claimRules.length > 0);
 }
 
-async function ensureClientProxy(
+async function ensureTenantProxy(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
   namespace: string,
   enabled: ReadonlyArray<EnabledIngressAuthRow>,
 ): Promise<'provisioned' | 'updated'> {
-  const cookieSecret = await getOrCreateClientCookieSecret(
+  const cookieSecret = await getOrCreateTenantCookieSecret(
     deps.db,
     deps.encryptionKey,
-    clientId,
+    tenantId,
   );
   const primary = enabled[0]!;
-  const clientSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
-  const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, clientSecret);
-  const needsValidator = clientNeedsClaimValidator(enabled);
+  const tenantSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
+  const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, tenantSecret);
+  const needsValidator = tenantNeedsClaimValidator(enabled);
   const claimRulesJson = buildClaimRulesJson(enabled);
 
   // ConfigMap — always carries oauth2_proxy.cfg. rules.json is only
@@ -280,7 +280,7 @@ async function ensureClientProxy(
 
   // Secret — currently empty (config inlines secrets via ConfigMap
   // for v1). When we add Secret-volume mounting in v2 we'll move
-  // client_secret + cookie_secret here for K8s-side encryption-at-rest.
+  // tenant_secret + cookie_secret here for K8s-side encryption-at-rest.
   await upsertSecret(deps.k8s.core, namespace);
 
   // NetworkPolicy — limit oauth2-proxy egress to OIDC issuer host +
@@ -302,9 +302,9 @@ async function ensureClientProxy(
 
   // Mark provisioned in DB.
   await deps.db
-    .update(clientOauth2ProxyState)
+    .update(tenantOauth2ProxyState)
     .set({ provisioned: true, lastProvisionedAt: new Date(), lastError: null })
-    .where(eq(clientOauth2ProxyState.clientId, clientId));
+    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
 
   // Update last_reconciled_at on every config row so the UI shows a
   // recent timestamp even when nothing about the row changed.
@@ -319,15 +319,15 @@ async function ensureClientProxy(
   return wasNew ? 'provisioned' : 'updated';
 }
 
-async function tearDownClientProxy(
+async function tearDownTenantProxy(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
   namespace: string,
 ): Promise<boolean> {
   const [state] = await deps.db
     .select()
-    .from(clientOauth2ProxyState)
-    .where(eq(clientOauth2ProxyState.clientId, clientId));
+    .from(tenantOauth2ProxyState)
+    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
   if (!state?.provisioned) return false;
 
   await deleteAuthIngressRoute(deps.k8s.custom, namespace, PASSTHROUGH_INGRESS_NAME);
@@ -357,9 +357,9 @@ async function tearDownClientProxy(
   );
 
   await deps.db
-    .update(clientOauth2ProxyState)
+    .update(tenantOauth2ProxyState)
     .set({ provisioned: false, lastError: null })
-    .where(eq(clientOauth2ProxyState.clientId, clientId));
+    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
 
   return true;
 }
@@ -406,7 +406,7 @@ async function upsertSecret(core: k8s.CoreV1Api, namespace: string): Promise<voi
     },
     type: 'Opaque',
     stringData: {
-      // Reserved for v2 — Secret-volume mount of client_secret +
+      // Reserved for v2 — Secret-volume mount of tenant_secret +
       // cookie_secret. v1 inlines them in oauth2_proxy.cfg via the
       // ConfigMap (acceptable because the ConfigMap is namespace-
       // scoped and access is restricted by RBAC).

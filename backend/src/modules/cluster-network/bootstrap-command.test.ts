@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { generateBootstrapCommand } from './bootstrap-command.js';
 import type { ClusterNetworkClients } from './k8s-client.js';
 
-function fakeClients(opts: {
+function fakeTenants(opts: {
   cpp?: unknown;
   cppErr?: unknown;
   nodes?: unknown;
@@ -21,7 +21,7 @@ function fakeClients(opts: {
 
 describe('generateBootstrapCommand', () => {
   it('happy path: builds bootstrap.sh + preAuth + picks v4 ready peer', async () => {
-    const c = fakeClients({
+    const c = fakeTenants({
       cpp: {
         metadata: { name: 'new-worker', creationTimestamp: '2026-05-08T12:00:00Z' },
         spec: { ip: '10.0.0.50', role: 'worker', ttlSeconds: 1800 },
@@ -55,7 +55,7 @@ describe('generateBootstrapCommand', () => {
   });
 
   it('skips not-ready peers when picking server IP', async () => {
-    const c = fakeClients({
+    const c = fakeTenants({
       cpp: {
         metadata: { name: 'p', creationTimestamp: '2026-05-08T12:00:00Z' },
         spec: { ip: '10.0.0.50', role: 'worker', ttlSeconds: 1800 },
@@ -82,7 +82,7 @@ describe('generateBootstrapCommand', () => {
   });
 
   it('throws NO_READY_PEERS when no Ready Node has an InternalIP', async () => {
-    const c = fakeClients({
+    const c = fakeTenants({
       cpp: {
         metadata: { name: 'p', creationTimestamp: '2026-05-08T12:00:00Z' },
         spec: { ip: '10.0.0.50', role: 'worker', ttlSeconds: 1800 },
@@ -105,7 +105,7 @@ describe('generateBootstrapCommand', () => {
   });
 
   it('prefers same-family peer (v6 cpp picks v6 server)', async () => {
-    const c = fakeClients({
+    const c = fakeTenants({
       cpp: {
         metadata: { name: 'v6peer', creationTimestamp: '2026-05-08T12:00:00Z' },
         spec: { ip: 'fd00::5', role: 'server', ttlSeconds: 1800 },
@@ -133,7 +133,7 @@ describe('generateBootstrapCommand', () => {
   });
 
   it('CPP not found surfaces PENDING_PEER_NOT_FOUND', async () => {
-    const c = fakeClients({ cppErr: { statusCode: 404 } });
+    const c = fakeTenants({ cppErr: { statusCode: 404 } });
     await expect(generateBootstrapCommand('gone', {}, c)).rejects.toMatchObject({
       code: 'PENDING_PEER_NOT_FOUND',
       status: 404,

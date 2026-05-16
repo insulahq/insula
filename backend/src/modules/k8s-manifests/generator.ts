@@ -1,6 +1,6 @@
 import * as yaml from 'js-yaml';
 import { eq, inArray } from 'drizzle-orm';
-import { clients, hostingPlans, domains, deployments, catalogEntries } from '../../db/schema.js';
+import { tenants, hostingPlans, domains, deployments, catalogEntries } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
@@ -17,35 +17,35 @@ export interface ManifestFile {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = any;
 
-export async function generateClientManifests(
+export async function generateTenantManifests(
   db: Db,
-  clientId: string,
+  tenantId: string,
   input?: GenerateManifestInput,
 ): Promise<readonly ManifestFile[]> {
-  // Fetch client
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+  // Fetch tenant
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
 
-  const typedClient = client as typeof clients.$inferSelect;
+  const typedTenant = tenant as typeof tenants.$inferSelect;
 
   // Fetch hosting plan
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, typedClient.planId)).limit(1);
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, typedTenant.planId)).limit(1);
   if (!plan) {
-    throw new ApiError('PLAN_NOT_FOUND', `Hosting plan '${typedClient.planId}' not found`, 404, { plan_id: typedClient.planId });
+    throw new ApiError('PLAN_NOT_FOUND', `Hosting plan '${typedTenant.planId}' not found`, 404, { plan_id: typedTenant.planId });
   }
 
   const typedPlan = plan as typeof hostingPlans.$inferSelect;
 
-  // Fetch domains for this client
-  const clientDomains = await db.select().from(domains).where(eq(domains.clientId, clientId)) as Array<typeof domains.$inferSelect>;
+  // Fetch domains for this tenant
+  const tenantDomains = await db.select().from(domains).where(eq(domains.tenantId, tenantId)) as Array<typeof domains.$inferSelect>;
 
-  // Fetch deployments for this client
-  const clientDeployments = await db.select().from(deployments).where(eq(deployments.clientId, clientId)) as Array<typeof deployments.$inferSelect>;
+  // Fetch deployments for this tenant
+  const tenantDeployments = await db.select().from(deployments).where(eq(deployments.tenantId, tenantId)) as Array<typeof deployments.$inferSelect>;
 
   // Fetch catalog entries for deployments
-  const entryIds = clientDeployments
+  const entryIds = tenantDeployments
     .map(d => d.catalogEntryId)
     .filter((id): id is string => id !== null);
 
@@ -57,7 +57,7 @@ export async function generateClientManifests(
     }
   }
 
-  const namespace = typedClient.kubernetesNamespace;
+  const namespace = typedTenant.kubernetesNamespace;
   const overrides = input?.overrides;
 
   // Resolve limits (overrides take precedence)
@@ -81,7 +81,7 @@ export async function generateClientManifests(
       name: namespace,
       labels: {
         platform: 'k8s-hosting',
-        client: clientId,
+        tenant: tenantId,
         'pod-security.kubernetes.io/enforce': 'baseline',
         'pod-security.kubernetes.io/enforce-version': 'latest',
         'pod-security.kubernetes.io/warn': 'restricted',
@@ -188,7 +188,7 @@ export async function generateClientManifests(
   }));
 
   // 5. Deployments + Services (one per deployment)
-  for (const deployment of clientDeployments) {
+  for (const deployment of tenantDeployments) {
     // Custom deployments (ADR-036) render via the custom-deployments
     // module in PR-2, not the catalog-manifests path. Skip them here.
     if (deployment.catalogEntryId === null) continue;
@@ -263,20 +263,20 @@ export async function generateClientManifests(
     }));
   }
 
-  // 6. IngressRoute (one per client, one route per domain).
+  // 6. IngressRoute (one per tenant, one route per domain).
   // The Traefik migration removed the per-Ingress cert-manager annotation
   // (the Ingress shim doesn't process IngressRoute CRDs) in favour of
   // an explicit Certificate CR alongside the IngressRoute.
-  if (clientDomains.length > 0) {
+  if (tenantDomains.length > 0) {
     const deploymentMap = new Map<string, string>();
-    for (const d of clientDeployments) {
+    for (const d of tenantDeployments) {
       deploymentMap.set(d.id, d.name);
     }
 
-    const routes = clientDomains.map((domain) => {
+    const routes = tenantDomains.map((domain) => {
       const serviceName = domain.deploymentId
-        ? (deploymentMap.get(domain.deploymentId) ?? clientDeployments[0]?.name ?? 'default')
-        : (clientDeployments[0]?.name ?? 'default');
+        ? (deploymentMap.get(domain.deploymentId) ?? tenantDeployments[0]?.name ?? 'default')
+        : (tenantDeployments[0]?.name ?? 'default');
       return {
         match: `Host(\`${domain.domainName}\`)`,
         kind: 'Rule',
@@ -285,8 +285,8 @@ export async function generateClientManifests(
     });
 
     const autoTls = await isAutoTlsEnabled(db);
-    const primarySecret = autoTls && clientDomains[0]
-      ? domainToSecretName(clientDomains[0].domainName)
+    const primarySecret = autoTls && tenantDomains[0]
+      ? domainToSecretName(tenantDomains[0].domainName)
       : null;
 
     manifests.push(buildManifest('ingressroute.yaml', {
@@ -309,7 +309,7 @@ export async function generateClientManifests(
     // only needs to reference one primary secret to register the host).
     if (autoTls) {
       const clusterIssuer = await getClusterIssuerName(db);
-      for (const domain of clientDomains) {
+      for (const domain of tenantDomains) {
         manifests.push(buildManifest(`certificate-${domain.domainName.replace(/\./g, '-')}.yaml`, {
           apiVersion: 'cert-manager.io/v1',
           kind: 'Certificate',

@@ -136,7 +136,7 @@ function parsePhase(raw: string | undefined): BackupPhase {
   return KNOWN_PHASES.has(lower) ? (lower as BackupPhase) : 'unknown';
 }
 
-export interface CnpgBackupHealthClients {
+export interface CnpgBackupHealthTenants {
   readonly custom: k8s.CustomObjectsApi;
 }
 
@@ -235,7 +235,7 @@ const DEFAULT_STALE_MS = 24 * 60 * 60 * 1000;
  * one entry per CNPG Cluster CR observed.
  */
 export async function readBackupHealth(
-  clients: CnpgBackupHealthClients,
+  tenants: CnpgBackupHealthTenants,
   opts: SnapshotOptions = {},
 ): Promise<ClusterBackupHealth[]> {
   const nowMs = opts.nowMs ?? Date.now();
@@ -245,9 +245,9 @@ export async function readBackupHealth(
 
   for (const namespace of WATCHED_NAMESPACES) {
     const [clusters, backups, scheduledBackups] = await Promise.all([
-      listClustersInNamespace(clients.custom, namespace),
-      listBackupsInNamespace(clients.custom, namespace),
-      listScheduledBackupsInNamespace(clients.custom, namespace),
+      listClustersInNamespace(tenants.custom, namespace),
+      listBackupsInNamespace(tenants.custom, namespace),
+      listScheduledBackupsInNamespace(tenants.custom, namespace),
     ]);
 
     for (const cluster of clusters) {
@@ -312,7 +312,7 @@ export async function readBackupHealth(
 }
 
 // Test-only re-exports for unit testing pure helpers without the
-// expensive K8s API client.
+// expensive K8s API tenant.
 export const __test = {
   parsePhase,
   toRecord,

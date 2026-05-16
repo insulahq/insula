@@ -76,18 +76,18 @@ beforeEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('generateSubmitCredential', () => {
-  it('creates a new active credential for a client with deterministic username', async () => {
+  it('creates a new active credential for a tenant with deterministic username', async () => {
     // No existing credentials → insert new row
     selectResults = [[]];
     const db = createMockDb();
 
     const result = await service.generateSubmitCredential(
       db as never,
-      'client-abc-123',
+      'tenant-abc-123',
       'test-key',
     );
 
-    expect(result.username).toBe('submit-client-abc-123');
+    expect(result.username).toBe('submit-tenant-abc-123');
     expect(result.password).toMatch(/^[A-Za-z0-9+/=]{32,}$/); // base64 password
     expect(result.id).toBeDefined();
     expect(db.insert).toHaveBeenCalled();
@@ -114,7 +114,7 @@ describe('rotateSubmitCredential', () => {
   it('revokes the existing active credential and generates a new one', async () => {
     const existing = {
       id: 'old-id',
-      clientId: 'c1',
+      tenantId: 'c1',
       username: 'submit-c1',
       passwordEncrypted: 'encrypted:oldpw',
       passwordHash: 'bcrypt:oldpw',
@@ -160,7 +160,7 @@ describe('loadActiveCredential', () => {
   it('returns the active (non-revoked) credential', async () => {
     const active = {
       id: 'k1',
-      clientId: 'c1',
+      tenantId: 'c1',
       username: 'submit-c1',
       revokedAt: null,
     };

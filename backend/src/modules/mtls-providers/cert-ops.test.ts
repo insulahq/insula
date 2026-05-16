@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   generateSelfSignedCa,
-  signClientCert,
+  signTenantCert,
   generateCrl,
   generateSerialHex,
   bundlePkcs12,
@@ -40,14 +40,14 @@ describe('generateSerialHex', () => {
   });
 });
 
-describe('signClientCert', () => {
+describe('signTenantCert', () => {
   it('signs a cert against the CA, embedding the supplied serial', async () => {
     const ca = await generateSelfSignedCa({
       commonName: 'unit-test-ca',
       validityDays: 30,
     });
     const explicitSerial = '7abc1234567890abcdef1122334455ff';
-    const signed = await signClientCert({
+    const signed = await signTenantCert({
       caCertPem: ca.certPem,
       caKeyPem: ca.keyPem,
       commonName: 'alice@example.com',
@@ -74,13 +74,13 @@ describe('signClientCert', () => {
       commonName: 'unit-test-ca-2',
       validityDays: 30,
     });
-    const a = await signClientCert({
+    const a = await signTenantCert({
       caCertPem: ca.certPem,
       caKeyPem: ca.keyPem,
       commonName: 'user-a',
       validityDays: 30,
     });
-    const b = await signClientCert({
+    const b = await signTenantCert({
       caCertPem: ca.certPem,
       caKeyPem: ca.keyPem,
       commonName: 'user-b',
@@ -95,7 +95,7 @@ describe('signClientCert', () => {
       commonName: 'reject-test-ca',
       validityDays: 30,
     });
-    await expect(signClientCert({
+    await expect(signTenantCert({
       caCertPem: ca.certPem,
       caKeyPem: ca.keyPem,
       commonName: 'user',
@@ -143,7 +143,7 @@ describe('generateCrl', () => {
       commonName: 'crl-revoked-ca',
       validityDays: 30,
     });
-    const signed = await signClientCert({
+    const signed = await signTenantCert({
       caCertPem: ca.certPem,
       caKeyPem: ca.keyPem,
       commonName: 'alice',
@@ -220,7 +220,7 @@ describe('bundlePkcs12', () => {
   // This test guards both code paths.
   async function setupCert() {
     const ca = await generateSelfSignedCa({ commonName: 'bundle-test-ca', validityDays: 30 });
-    const u = await signClientCert({
+    const u = await signTenantCert({
       caCertPem: ca.certPem, caKeyPem: ca.keyPem,
       commonName: 'bundle-user', validityDays: 7,
     });

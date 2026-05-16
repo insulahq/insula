@@ -41,7 +41,7 @@ import { getClusterFailoverHeadroom } from '../platform-storage-policy/failover-
 
 export interface QuotaGateInput {
   /** Client whose quota is about to change. */
-  readonly clientId: string;
+  readonly tenantId: string;
   /**
    * New limit values. `null` means "leave the existing field alone" —
    * the gate then uses the current DB value for that dimension.
@@ -68,7 +68,7 @@ export interface QuotaGateResult {
 }
 
 interface QuotaRow {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly cpuCoresLimit: string | null;
   readonly memoryGbLimit: number | null;
 }
@@ -90,11 +90,11 @@ interface QuotaRow {
  */
 async function sumCurrentQuotas(
   db: Database,
-  excludeClientId: string,
+  excludeTenantId: string,
 ): Promise<{ sumCpu: number; sumMemoryGi: number; selfRow: QuotaRow | null }> {
   const rows = await db
     .select({
-      clientId: resourceQuotas.clientId,
+      tenantId: resourceQuotas.tenantId,
       cpuCoresLimit: resourceQuotas.cpuCoresLimit,
       memoryGbLimit: resourceQuotas.memoryGbLimit,
     })
@@ -106,7 +106,7 @@ async function sumCurrentQuotas(
   let sumMemoryGi = 0;
   let selfRow: QuotaRow | null = null;
   for (const r of rows) {
-    if (r.clientId === excludeClientId) {
+    if (r.tenantId === excludeTenantId) {
       selfRow = r;
       continue;
     }
@@ -122,12 +122,12 @@ export async function validateQuotaFitsHeadroom(
   input: QuotaGateInput,
 ): Promise<QuotaGateResult> {
   const headroom = await getClusterFailoverHeadroom(k8s);
-  const { sumCpu, sumMemoryGi, selfRow } = await sumCurrentQuotas(db, input.clientId);
+  const { sumCpu, sumMemoryGi, selfRow } = await sumCurrentQuotas(db, input.tenantId);
 
   const DEFAULT_CPU = 2;
   const DEFAULT_MEM = 4;
 
-  // Resolve the projected limit for THIS client:
+  // Resolve the projected limit for THIS tenant:
   //   - if a new value is supplied in the patch, use it
   //   - otherwise fall back to the existing DB value
   //   - otherwise the application default

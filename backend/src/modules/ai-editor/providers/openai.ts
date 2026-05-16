@@ -2,14 +2,14 @@ import OpenAI from 'openai';
 import type { LlmProviderAdapter, LlmMessage, LlmResponse } from './types.js';
 
 export function createOpenAiAdapter(apiKey: string, baseUrl?: string | null): LlmProviderAdapter {
-  const client = new OpenAI({
+  const tenant = new OpenAI({
     apiKey: apiKey || 'dummy',
     ...(baseUrl ? { baseURL: baseUrl } : {}),
   });
 
   return {
     async call(modelName, messages, options = {}) {
-      const response = await client.chat.completions.create({
+      const response = await tenant.chat.completions.create({
         model: modelName,
         max_tokens: options.maxTokens ?? 4096,
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -29,7 +29,7 @@ export function createOpenAiAdapter(apiKey: string, baseUrl?: string | null): Ll
     async testConnection(modelName) {
       const start = Date.now();
       try {
-        await client.chat.completions.create({
+        await tenant.chat.completions.create({
           model: modelName ?? 'gpt-4o-mini',
           max_tokens: 10,
           messages: [{ role: 'user', content: 'Reply with "ok"' }],

@@ -1,9 +1,9 @@
 /**
- * Manual DKIM key rotation for a client email domain.
+ * Manual DKIM key rotation for a tenant email domain.
  *
  * Stalwart 0.16 ships with `Bootstrap.generateDkimKeys=false` (set
  * in bootstrap-plan-cm.yaml), so DKIM keys do NOT auto-rotate. The
- * client-panel offers a button per domain to trigger a manual
+ * tenant-panel offers a button per domain to trigger a manual
  * rotation when needed (annual key rotation hygiene, suspected
  * compromise, etc.).
  *

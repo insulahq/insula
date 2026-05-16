@@ -178,7 +178,7 @@ describe('Application Detail Panel', () => {
     expect(screen.getByText('/wp-login.php')).toBeInTheDocument();
 
     // Deploy note for admin
-    expect(screen.getByText('Deploy from client panel')).toBeInTheDocument();
+    expect(screen.getByText('Deploy from tenant panel')).toBeInTheDocument();
   });
 
   it('closes the detail panel when clicking Close', async () => {

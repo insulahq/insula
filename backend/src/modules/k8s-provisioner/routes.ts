@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { triggerProvisionSchema } from '@k8s-hosting/api-contracts';
-import { clients, provisioningTasks } from '../../db/schema.js';
+import { tenants, provisioningTasks } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from './k8s-client.js';
@@ -13,21 +13,21 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
-  // POST /api/v1/admin/clients/:clientId/provision
+  // POST /api/v1/admin/tenants/:tenantId/provision
   // Triggers async namespace provisioning
-  app.post('/admin/clients/:clientId/provision', {
+  app.post('/admin/tenants/:tenantId/provision', {
     schema: {
       tags: ['Provisioning'],
-      summary: 'Trigger namespace provisioning for a client',
+      summary: 'Trigger namespace provisioning for a tenant',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
-        required: ['clientId'],
-        properties: { clientId: { type: 'string' } },
+        required: ['tenantId'],
+        properties: { tenantId: { type: 'string' } },
       },
     },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
 
     // Validate body
     const parsed = triggerProvisionSchema.safeParse(request.body ?? {});
@@ -41,14 +41,14 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    // Verify client exists
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-    if (!client) {
-      throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+    // Verify tenant exists
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    if (!tenant) {
+      throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
     }
 
     // Check if already provisioning
-    if (client.provisioningStatus === 'provisioning') {
+    if (tenant.provisioningStatus === 'provisioning') {
       throw new ApiError('ALREADY_PROVISIONING', 'Client is already being provisioned', 409);
     }
 
@@ -58,7 +58,7 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
 
     await app.db.insert(provisioningTasks).values({
       id: taskId,
-      clientId,
+      tenantId,
       type: 'provision_namespace',
       status: 'pending',
       totalSteps: PROVISION_STEPS.length,
@@ -74,51 +74,51 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
 
     // Fire-and-forget: run provisioning in background
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const k8sClients = createK8sClients(kubeconfigPath);
+    const k8sTenants = createK8sClients(kubeconfigPath);
 
     // Don't await — this runs async
-    runProvisionNamespace(app.db, k8sClients, taskId, clientId, parsed.data).catch((err) => {
-      app.log.error({ err, taskId, clientId }, 'Provisioning failed unexpectedly');
+    runProvisionNamespace(app.db, k8sTenants, taskId, tenantId, parsed.data).catch((err) => {
+      app.log.error({ err, taskId, tenantId }, 'Provisioning failed unexpectedly');
     });
 
     reply.status(202);
     return success({
       taskId,
-      clientId,
+      tenantId,
       status: 'pending',
       totalSteps: PROVISION_STEPS.length,
     });
   });
 
-  // GET /api/v1/admin/clients/:clientId/provision/status
-  // Returns the latest provisioning task for this client
-  app.get('/admin/clients/:clientId/provision/status', {
+  // GET /api/v1/admin/tenants/:tenantId/provision/status
+  // Returns the latest provisioning task for this tenant
+  app.get('/admin/tenants/:tenantId/provision/status', {
     schema: {
       tags: ['Provisioning'],
-      summary: 'Get provisioning status for a client',
+      summary: 'Get provisioning status for a tenant',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
-        required: ['clientId'],
-        properties: { clientId: { type: 'string' } },
+        required: ['tenantId'],
+        properties: { tenantId: { type: 'string' } },
       },
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
 
     const [task] = await app.db.select()
       .from(provisioningTasks)
-      .where(eq(provisioningTasks.clientId, clientId))
+      .where(eq(provisioningTasks.tenantId, tenantId))
       .orderBy(desc(provisioningTasks.createdAt))
       .limit(1);
 
     if (!task) {
-      throw new ApiError('TASK_NOT_FOUND', 'No provisioning task found for this client', 404);
+      throw new ApiError('TASK_NOT_FOUND', 'No provisioning task found for this tenant', 404);
     }
 
     return success({
       id: task.id,
-      clientId: task.clientId,
+      tenantId: task.tenantId,
       type: task.type,
       status: task.status,
       currentStep: task.currentStep,
@@ -147,23 +147,23 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
       .from(provisioningTasks)
       .where(inArray(provisioningTasks.status, ['pending', 'running']));
 
-    // Enrich with client company names
-    const clientIds = [...new Set(activeTasks.map(t => t.clientId))];
-    const clientMap = new Map<string, string>();
+    // Enrich with tenant company names
+    const tenantIds = [...new Set(activeTasks.map(t => t.tenantId))];
+    const tenantMap = new Map<string, string>();
 
-    if (clientIds.length > 0) {
-      const clientRows = await app.db.select()
-        .from(clients)
-        .where(inArray(clients.id, clientIds));
-      for (const c of clientRows) {
-        clientMap.set(c.id, c.companyName);
+    if (tenantIds.length > 0) {
+      const tenantRows = await app.db.select()
+        .from(tenants)
+        .where(inArray(tenants.id, tenantIds));
+      for (const c of tenantRows) {
+        tenantMap.set(c.id, c.name);
       }
     }
 
     const tasks = activeTasks.map(t => ({
       id: t.id,
-      clientId: t.clientId,
-      companyName: clientMap.get(t.clientId) ?? 'Unknown',
+      tenantId: t.tenantId,
+      name: tenantMap.get(t.tenantId) ?? 'Unknown',
       type: t.type,
       status: t.status,
       currentStep: t.currentStep,
@@ -177,38 +177,38 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // POST /api/v1/admin/clients/:clientId/decommission
+  // POST /api/v1/admin/tenants/:tenantId/decommission
   // Deletes the K8s namespace and all resources inside it
-  app.post('/admin/clients/:clientId/decommission', {
+  app.post('/admin/tenants/:tenantId/decommission', {
     schema: {
       tags: ['Provisioning'],
-      summary: 'Decommission a client — delete K8s namespace and all resources',
+      summary: 'Decommission a tenant — delete K8s namespace and all resources',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
-        required: ['clientId'],
-        properties: { clientId: { type: 'string' } },
+        required: ['tenantId'],
+        properties: { tenantId: { type: 'string' } },
       },
     },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
 
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-    if (!client) {
-      throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    if (!tenant) {
+      throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
     }
 
-    // Only allow decommission for suspended clients
-    if (client.status !== 'suspended') {
+    // Only allow decommission for suspended tenants
+    if (tenant.status !== 'suspended') {
       throw new ApiError('CLIENT_NOT_SUSPENDED', 'Client must be suspended before decommissioning', 409);
     }
 
     // Must be provisioned (or failed) to decommission
-    if (client.provisioningStatus === 'unprovisioned') {
+    if (tenant.provisioningStatus === 'unprovisioned') {
       throw new ApiError('NOT_PROVISIONED', 'Client is not provisioned — nothing to decommission', 409);
     }
 
-    if (client.provisioningStatus === 'provisioning') {
+    if (tenant.provisioningStatus === 'provisioning') {
       throw new ApiError('ALREADY_PROVISIONING', 'Cannot decommission while provisioning is in progress', 409);
     }
 
@@ -217,7 +217,7 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
 
     await app.db.insert(provisioningTasks).values({
       id: taskId,
-      clientId,
+      tenantId,
       type: 'deprovision',
       status: 'pending',
       totalSteps: DEPROVISION_STEPS.length,
@@ -230,16 +230,16 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
     });
 
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const k8sClients = createK8sClients(kubeconfigPath);
+    const k8sTenants = createK8sClients(kubeconfigPath);
 
-    runDeprovision(app.db, k8sClients, taskId, clientId).catch((err) => {
-      app.log.error({ err, taskId, clientId }, 'Decommission failed unexpectedly');
+    runDeprovision(app.db, k8sTenants, taskId, tenantId).catch((err) => {
+      app.log.error({ err, taskId, tenantId }, 'Decommission failed unexpectedly');
     });
 
     reply.status(202);
     return success({
       taskId,
-      clientId,
+      tenantId,
       status: 'pending',
       totalSteps: DEPROVISION_STEPS.length,
     });

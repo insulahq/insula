@@ -9,7 +9,7 @@ interface ImpersonateResponse {
     readonly fullName: string;
     readonly role: string;
     readonly panel: string;
-    readonly clientId: string;
+    readonly tenantId: string;
   };
   readonly impersonatedBy: string;
   readonly expiresIn: number;
@@ -17,8 +17,8 @@ interface ImpersonateResponse {
 
 export function useImpersonate() {
   return useMutation({
-    mutationFn: (clientId: string) =>
-      apiFetch<{ data: ImpersonateResponse }>(`/api/v1/admin/impersonate/${clientId}`, {
+    mutationFn: (tenantId: string) =>
+      apiFetch<{ data: ImpersonateResponse }>(`/api/v1/admin/impersonate/${tenantId}`, {
         method: 'POST',
       }),
   });

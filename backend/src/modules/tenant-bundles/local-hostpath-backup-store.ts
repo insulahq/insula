@@ -87,7 +87,7 @@ export class LocalHostPathBackupStore implements BackupStore {
     return join(backend.bundleDir, componentDir(component), name);
   }
 
-  async reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle> {
+  async reserveBundle(input: { backupId: string; tenantId: string }): Promise<BundleHandle> {
     const bundleDir = this.safeBundleDir(input.backupId);
     // Create the bundle root + four component subdirs up-front so component
     // writers don't race on mkdir for sibling artifacts.

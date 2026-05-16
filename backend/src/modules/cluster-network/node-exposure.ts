@@ -48,9 +48,9 @@ export async function setNodeExposure(
   req: SetNodeExposureRequest,
   changedBy: string,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<SetNodeExposureResponse> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   // null on the label key clears it (semantic: public == absent label).
   const labelValue = req.exposure === 'private' ? 'private' : null;
   const changedAt = new Date().toISOString();

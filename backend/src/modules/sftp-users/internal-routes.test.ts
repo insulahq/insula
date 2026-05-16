@@ -23,7 +23,7 @@ const INTERNAL_SECRET = 'test-internal-secret';
 function buildMockRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'sftp-1',
-    clientId: 'c1',
+    tenantId: 'c1',
     username: 'testuser',
     passwordHash: '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012',
     description: null,
@@ -198,7 +198,7 @@ describe('sftp internal routes', () => {
         payload: {
           events: [
             {
-              client_id: 'c1',
+              tenant_id: 'c1',
               event: 'CONNECT',
               source_ip: '10.0.0.1',
               protocol: 'sftp',
@@ -219,7 +219,7 @@ describe('sftp internal routes', () => {
         url: '/api/v1/internal/sftp/audit',
         headers: { 'x-internal-auth': INTERNAL_SECRET },
         payload: {
-          events: [{ client_id: 'c1', event: 'CONNECT', source_ip: '10.0.0.1' }],
+          events: [{ tenant_id: 'c1', event: 'CONNECT', source_ip: '10.0.0.1' }],
         },
       });
 
@@ -233,7 +233,7 @@ describe('sftp internal routes', () => {
 
   describe('POST /internal/sftp/ensure-file-manager', () => {
     it('should return pod_name wrapped in envelope', async () => {
-      // Namespace validation requires a matching client row
+      // Namespace validation requires a matching tenant row
       mockDb.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([{ id: 'c1' }]),
@@ -244,7 +244,7 @@ describe('sftp internal routes', () => {
         method: 'POST',
         url: '/api/v1/internal/sftp/ensure-file-manager',
         headers: { 'x-internal-auth': INTERNAL_SECRET },
-        payload: { namespace: 'client-abc' },
+        payload: { namespace: 'tenant-abc' },
       });
 
       expect(res.statusCode).toBe(200);

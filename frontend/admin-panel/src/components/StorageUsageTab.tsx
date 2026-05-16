@@ -64,12 +64,12 @@ export default function StorageUsageTab() {
             value={formatBytes(overview.system.dockerImages.totalBytes)}
             sublabel={`${overview.system.dockerImages.count} images`}
           />
-          <StatTile label="Total Client Data" value={formatBytes(overview.total.clientBytes)} />
+          <StatTile label="Total Client Data" value={formatBytes(overview.total.tenantBytes)} />
         </div>
       )}
 
       {/* Per-Client Usage Table */}
-      {overview && overview.clients.length > 0 && (
+      {overview && overview.tenants.length > 0 && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-700">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
@@ -86,11 +86,11 @@ export default function StorageUsageTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {[...overview.clients].sort((a, b) => b.usedBytes - a.usedBytes).map(client => (
-                <tr key={client.clientId} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
-                  <td className="px-5 py-2.5 font-medium text-gray-900 dark:text-gray-100">{client.companyName}</td>
-                  <td className="px-5 py-2.5 font-mono text-xs text-gray-500 dark:text-gray-400">{client.namespace}</td>
-                  <td className="px-5 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300">{formatBytes(client.usedBytes)}</td>
+              {[...overview.tenants].sort((a, b) => b.usedBytes - a.usedBytes).map(tenant => (
+                <tr key={tenant.tenantId} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                  <td className="px-5 py-2.5 font-medium text-gray-900 dark:text-gray-100">{tenant.name}</td>
+                  <td className="px-5 py-2.5 font-mono text-xs text-gray-500 dark:text-gray-400">{tenant.namespace}</td>
+                  <td className="px-5 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300">{formatBytes(tenant.usedBytes)}</td>
                 </tr>
               ))}
             </tbody>

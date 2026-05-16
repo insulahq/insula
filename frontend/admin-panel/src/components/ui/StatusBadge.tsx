@@ -2,9 +2,9 @@ import clsx from 'clsx';
 
 type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' | 'error' | 'failed' | 'healthy' | 'warning' | 'running' | 'stopped'
   | 'deploying' | 'upgrading' | 'deleting' | 'completed' | 'rolled_back' | 'rolling_back' | 'backing_up' | 'pre_check' | 'health_check'
-  // Client lifecycle (extends clients.status)
+  // Client lifecycle (extends tenants.status)
   | 'archived'
-  // Storage lifecycle transient states — rendered as their own pill on the clients list.
+  // Storage lifecycle transient states — rendered as their own pill on the tenants list.
   | 'idle' | 'snapshotting' | 'quiescing' | 'resizing' | 'replacing' | 'restoring' | 'unquiescing' | 'archiving'
   // Domain verification states (migration 0069)
   | 'unverified' | 'verified'
@@ -14,7 +14,7 @@ type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' 
   | 'partial'
   // Tenant Backup — restore-cart lifecycle.
   | 'draft' | 'executing' | 'paused' | 'done'
-  // Bundle client status — for bundles whose source client has been
+  // Bundle tenant status — for bundles whose source tenant has been
   // deleted (`missing`) the bundle is still valid but a Restore From
   // Bundle dialog is the only path back.
   | 'missing';
@@ -44,7 +44,7 @@ const statusStyles: Record<BadgeStatus, string> = {
   backing_up: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   pre_check: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   health_check: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
-  // Archived clients read like "parked" — neutral slate.
+  // Archived tenants read like "parked" — neutral slate.
   archived: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
   // Storage lifecycle transient states.
   idle: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
@@ -61,7 +61,7 @@ const statusStyles: Record<BadgeStatus, string> = {
   executing: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   paused: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   done: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  // Bundle client status — red dot for clients that have been deleted
+  // Bundle tenant status — red dot for tenants that have been deleted
   // and are now unrecoverable except via a bundle import.
   missing: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
 };

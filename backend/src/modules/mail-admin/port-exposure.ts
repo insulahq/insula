@@ -7,7 +7,7 @@
  *
  *   allServerNodes — haproxy DaemonSet bound on every server-role node
  *                    forwards mail traffic to stalwart-mail.mail.svc with
- *                    PROXY Protocol v2 so Stalwart sees real client IPs.
+ *                    PROXY Protocol v2 so Stalwart sees real tenant IPs.
  *                    DS is CREATED by platform-api on entry to this mode,
  *                    DELETED on exit.
  *
@@ -99,7 +99,7 @@ interface K8sAppsBundle {
   apps: import('@kubernetes/client-node').AppsV1Api;
 }
 
-async function loadK8sAppsClient(kubeconfigPath: string | undefined): Promise<K8sAppsBundle> {
+async function loadK8sAppsTenant(kubeconfigPath: string | undefined): Promise<K8sAppsBundle> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
@@ -122,7 +122,7 @@ export async function getMailPortExposure(
   db: Database,
   opts: PortExposureOptions,
 ): Promise<MailPortExposureResponse> {
-  const { apps } = await loadK8sAppsClient(opts.kubeconfigPath);
+  const { apps } = await loadK8sAppsTenant(opts.kubeconfigPath);
 
   const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
     .from(systemSettings)
@@ -241,7 +241,7 @@ async function applyModeToCluster(
   opts: PortExposureOptions,
   onProgress?: PortExposureProgressCallback,
 ): Promise<void> {
-  const { apps } = await loadK8sAppsClient(opts.kubeconfigPath);
+  const { apps } = await loadK8sAppsTenant(opts.kubeconfigPath);
 
   if (mode === 'allServerNodes') {
     // Step 1: Remove hostPort from Stalwart Deployment so haproxy can bind
@@ -523,7 +523,7 @@ async function ensureHaproxyDaemonSetAbsent(
   }
   // Belt-and-suspenders: poll until the DaemonSet is fully gone.
   // Foreground propagation makes the delete-call wait for child pods,
-  // but client-side cancellation or apiserver hiccups could short-cut
+  // but tenant-side cancellation or apiserver hiccups could short-cut
   // that. Verify empirically.
   await waitForHaproxyDaemonSetGone(apps, 60_000);
 }

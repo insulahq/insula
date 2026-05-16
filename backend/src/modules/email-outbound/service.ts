@@ -1,7 +1,7 @@
 /**
  * Outbound email reconciler — Phase 3.B.1 + B.3.
  *
- * Reads smtp_relay_configs + per-client rate limits from the DB and
+ * Reads smtp_relay_configs + per-tenant rate limits from the DB and
  * writes a Stalwart TOML fragment into a Kubernetes ConfigMap in the
  * `mail` namespace. Triggers Stalwart to reload via a config-change
  * annotation on the StatefulSet pod template (which causes a
@@ -9,20 +9,20 @@
  *
  * Called:
  *   - on smtp_relay_configs CRUD (create / update / delete)
- *   - on client status change (suspend / unsuspend)
- *   - on client rate-limit update
+ *   - on tenant status change (suspend / unsuspend)
+ *   - on tenant rate-limit update
  *   - on platform-settings default rate limit change
  *   - manually via POST /api/v1/admin/mail/outbound/reconcile
  */
 
 import { eq } from 'drizzle-orm';
-import { clients, smtpRelayConfigs, platformSettings } from '../../db/schema.js';
+import { tenants, smtpRelayConfigs, platformSettings } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import {
   renderQueueOutboundToml,
   renderQueueThrottleToml,
   type OutboundRelay,
-  type ClientThrottleOverride,
+  type TenantThrottleOverride,
 } from './renderer.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -96,13 +96,13 @@ export async function renderCurrentOutboundConfig(
     .where(eq(platformSettings.key, 'email_send_rate_limit_default'));
   const defaultRateLimit = defaultRow?.value ? parseInt(defaultRow.value, 10) : null;
 
-  // Load client overrides (any client with non-null email_send_rate_limit
+  // Load tenant overrides (any tenant with non-null email_send_rate_limit
   // OR status='suspended')
-  const clientRows = await db.select().from(clients);
-  const overrides: ClientThrottleOverride[] = clientRows
+  const tenantRows = await db.select().from(tenants);
+  const overrides: TenantThrottleOverride[] = tenantRows
     .filter((c) => c.emailSendRateLimit !== null || c.status === 'suspended')
     .map((c) => ({
-      clientId: c.id,
+      tenantId: c.id,
       rateLimit: c.emailSendRateLimit ?? null,
       suspended: c.status === 'suspended',
     }));
@@ -110,7 +110,7 @@ export async function renderCurrentOutboundConfig(
   const outbound = renderQueueOutboundToml({ relays });
   const throttle = renderQueueThrottleToml({
     defaultRateLimit: Number.isFinite(defaultRateLimit) ? defaultRateLimit : null,
-    clientOverrides: overrides,
+    tenantOverrides: overrides,
   });
 
   return { outbound, throttle };
@@ -141,8 +141,8 @@ export async function reconcileOutboundConfig(
   logger: OutboundReconcileLogger = noopLogger,
 ): Promise<ReconcileOutboundResult> {
   if (!k8s) {
-    logger.warn({}, 'reconcileOutboundConfig: no k8s client, skipping');
-    return { skipped: true, reason: 'no k8s client' };
+    logger.warn({}, 'reconcileOutboundConfig: no k8s tenant, skipping');
+    return { skipped: true, reason: 'no k8s tenant' };
   }
 
   const { outbound, throttle } = await renderCurrentOutboundConfig(db);
@@ -187,8 +187,8 @@ export async function reconcileOutboundConfig(
   // Count enabled relays and overrides for the return value
   const relayRows = await db.select().from(smtpRelayConfigs);
   const enabledRelays = relayRows.filter((r) => r.enabled === 1).length;
-  const clientRows = await db.select().from(clients);
-  const overrideCount = clientRows.filter(
+  const tenantRows = await db.select().from(tenants);
+  const overrideCount = tenantRows.filter(
     (c) => c.emailSendRateLimit !== null || c.status === 'suspended',
   ).length;
 

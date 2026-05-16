@@ -2,7 +2,7 @@
  * Label & annotation contract for backup-health discovery.
  *
  * The reconciler watches Jobs cluster-wide using these labels rather
- * than hardcoded names, so future backup jobs (client-initiated tenant
+ * than hardcoded names, so future backup jobs (tenant-initiated tenant
  * backups, catalog-defined customs, Longhorn recurring jobs via
  * Kustomize patches) participate automatically.
  */
@@ -16,8 +16,8 @@ export const LABEL_CATEGORY = 'platform.phoenix-host.net/backup-category';
 /** Optional: drives notification severity. Default 'warning'. */
 export const LABEL_SEVERITY = 'platform.phoenix-host.net/backup-severity';
 
-/** Optional: route notifications to that client's recipients. */
-export const LABEL_CLIENT_ID = 'platform.phoenix-host.net/client-id';
+/** Optional: route notifications to that tenant's recipients. */
+export const LABEL_CLIENT_ID = 'platform.phoenix-host.net/tenant-id';
 
 /** Optional: human-friendly UI label (annotation, not a label). */
 export const ANNOTATION_DISPLAY_NAME = 'platform.phoenix-host.net/backup-display-name';

@@ -10,7 +10,7 @@ import {
 } from '@k8s-hosting/api-contracts';
 import type { ZodError } from 'zod';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { LonghornClients } from './longhorn-reconciler.js';
+import type { LonghornTenants } from './longhorn-reconciler.js';
 
 // Turn a Zod issue list into a single human-readable message that's safe
 // to surface to an operator via the admin panel. We preserve the field
@@ -28,22 +28,22 @@ function zodMessage(err: ZodError): string {
 export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   const encryptionKey = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
 
-  // K8s client for the Longhorn reconciler. Created once at plugin
+  // K8s tenant for the Longhorn reconciler. Created once at plugin
   // registration; pattern mirrors webmail-settings/routes.ts. Undefined
   // means the in-cluster config isn't loadable (e.g. vitest runs with
   // no kubeconfig) — handlers that need it return 502 from the
   // try/catch below rather than silently no-op-ing, which was the
-  // original bug where `app.k8sClients` was never decorated and the
+  // original bug where `app.k8sTenants` was never decorated and the
   // Longhorn reconciler was always skipped.
   let k8s: K8sClients | undefined;
   try {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     k8s = createK8sClients(kubeconfigPath);
   } catch (err) {
-    app.log.warn({ err }, 'backup-config: k8s client unavailable — reconciler disabled');
+    app.log.warn({ err }, 'backup-config: k8s tenant unavailable — reconciler disabled');
     k8s = undefined;
   }
-  const longhornClients: LonghornClients | undefined = k8s
+  const longhornTenants: LonghornTenants | undefined = k8s
     ? { core: k8s.core, custom: k8s.custom, batch: k8s.batch }
     : undefined;
 
@@ -99,10 +99,10 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
         const active = await service.getActiveBackupConfig(app.db, encryptionKey);
         if (active) {
           const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
-          if (!longhornClients) {
-            throw new Error('K8s client unavailable — check platform-api pod logs on startup');
+          if (!longhornTenants) {
+            throw new Error('K8s tenant unavailable — check platform-api pod logs on startup');
           }
-          await reconcileBackupTarget(longhornClients, active);
+          await reconcileBackupTarget(longhornTenants, active);
         }
       } catch (err) {
         request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn after PATCH of active config');
@@ -143,10 +143,10 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     if (active) {
       try {
         const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
-        if (!longhornClients) {
-          throw new Error('K8s client unavailable — check platform-api pod logs on startup');
+        if (!longhornTenants) {
+          throw new Error('K8s tenant unavailable — check platform-api pod logs on startup');
         }
-        await reconcileBackupTarget(longhornClients, active);
+        await reconcileBackupTarget(longhornTenants, active);
       } catch (err) {
         request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn BackupTarget on activate');
         throw new ApiError(
@@ -163,13 +163,13 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   // `id` is the config row id; the scoping for which backups belong to
   // this config is implicit (Longhorn only has one active BackupTarget
   // at a time). When multiple historical targets are listed, the UI
-  // can filter client-side by `url` prefix if needed.
+  // can filter tenant-side by `url` prefix if needed.
   app.get('/admin/backup-configs/:id/backups', async () => {
-    if (!longhornClients) {
-      throw new ApiError('K8S_UNAVAILABLE', 'K8s client unavailable', 502);
+    if (!longhornTenants) {
+      throw new ApiError('K8S_UNAVAILABLE', 'K8s tenant unavailable', 502);
     }
     const { listBackups } = await import('./longhorn-backups.js');
-    const backups = await listBackups(longhornClients);
+    const backups = await listBackups(longhornTenants);
     return success(backups);
   });
 
@@ -178,12 +178,12 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   // group label. Returns the list of volumes it triggered; operators
   // poll /backups to see progress.
   app.post('/admin/backup-configs/:id/backup-now', async () => {
-    if (!longhornClients) {
-      throw new ApiError('K8S_UNAVAILABLE', 'K8s client unavailable', 502);
+    if (!longhornTenants) {
+      throw new ApiError('K8S_UNAVAILABLE', 'K8s tenant unavailable', 502);
     }
     const { triggerBackupNow } = await import('./longhorn-backups.js');
     try {
-      const result = await triggerBackupNow(longhornClients);
+      const result = await triggerBackupNow(longhornTenants);
       return success(result);
     } catch (err) {
       throw new ApiError(
@@ -198,13 +198,13 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   // every Job carrying the backup-health-watch=true label. Used by
   // the admin Backups page banner + DR Job Health table.
   app.get('/admin/backup-health', async () => {
-    if (!longhornClients?.batch) {
-      throw new ApiError('K8S_UNAVAILABLE', 'K8s client unavailable', 502);
+    if (!longhornTenants?.batch) {
+      throw new ApiError('K8S_UNAVAILABLE', 'K8s tenant unavailable', 502);
     }
     const { listHealthWatchedJobs, summariseHealth } = await import(
       '../backup-health/service.js'
     );
-    const jobs = await listHealthWatchedJobs(longhornClients.batch);
+    const jobs = await listHealthWatchedJobs(longhornTenants.batch);
     const summary = summariseHealth(jobs);
     return success(summary);
   });
@@ -215,10 +215,10 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     const row = await service.deactivateBackupConfig(app.db, id);
     try {
       const { clearBackupTarget } = await import('./longhorn-reconciler.js');
-      if (longhornClients) {
+      if (longhornTenants) {
         // Pass the kind so SSH deactivate skips the Longhorn BackupTarget
         // CR patch (nothing to clear there — SSH never wrote to it).
-        await clearBackupTarget(longhornClients, { kind: row.storageType });
+        await clearBackupTarget(longhornTenants, { kind: row.storageType });
       }
     } catch (err) {
       request.log.warn({ err, configId: id }, 'Failed to clear Longhorn BackupTarget on deactivate');

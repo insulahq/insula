@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveBaseDomain,
   adminHost,
-  clientHost,
+  tenantHost,
   mailHost,
   stalwartHost,
   dexHost,
@@ -44,8 +44,8 @@ describe('subdomain helpers', () => {
     expect(adminHost(cfg)).toBe('admin.acme.example');
   });
 
-  it('clientHost → client.<base>', () => {
-    expect(clientHost(cfg)).toBe('client.acme.example');
+  it('tenantHost → tenant.<base>', () => {
+    expect(tenantHost(cfg)).toBe('tenant.acme.example');
   });
 
   it('mailHost → mail.<base>', () => {

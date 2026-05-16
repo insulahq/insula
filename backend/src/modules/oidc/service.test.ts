@@ -6,7 +6,7 @@ describe('OIDC crypto', () => {
   const key = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
   it('should encrypt and decrypt a secret', () => {
-    const plaintext = 'my-super-secret-client-secret';
+    const plaintext = 'my-super-secret-tenant-secret';
     const encrypted = encrypt(plaintext, key);
     expect(encrypted).not.toBe(plaintext);
     expect(encrypted).toContain(':');
@@ -80,7 +80,7 @@ describe('getGlobalSettings', () => {
 
     const result = await getGlobalSettings(db);
     expect(result.disableLocalAuthAdmin).toBe(false);
-    expect(result.disableLocalAuthClient).toBe(false);
+    expect(result.disableLocalAuthTenant).toBe(false);
     expect(result.hasBreakGlassSecret).toBe(false);
   });
 });
@@ -92,7 +92,7 @@ describe('isLocalAuthDisabled', () => {
     } as unknown as Parameters<typeof isLocalAuthDisabled>[0];
 
     expect(await isLocalAuthDisabled(db, 'admin')).toBe(false);
-    expect(await isLocalAuthDisabled(db, 'client')).toBe(false);
+    expect(await isLocalAuthDisabled(db, 'tenant')).toBe(false);
   });
 });
 
@@ -101,7 +101,7 @@ describe('findOrCreateOidcUser', () => {
     id: 'prov-1',
     displayName: 'Test Provider',
     issuerUrl: 'https://dex',
-    clientId: 'client-id',
+    tenantId: 'tenant-id',
     clientSecretEncrypted: 'encrypted',
     panelScope: 'admin' as const,
     enabled: 1,
@@ -164,6 +164,6 @@ describe('findOrCreateOidcUser', () => {
     await expect(findOrCreateOidcUser(db, {
       sub: 'sub-new', iss: 'https://dex', email: 'new@example.com',
       aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
-    }, makeProvider({ panelScope: 'client', autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
+    }, makeProvider({ panelScope: 'tenant', autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
   });
 });

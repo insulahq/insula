@@ -75,10 +75,10 @@ describe('system-settings service: round-trip', () => {
     expect(settings.adminPanelUrl).toBe('https://admin.acme.test');
   });
 
-  it('persists clientPanelUrl', async () => {
-    await updateSettings(db, { clientPanelUrl: 'https://my.acme.test' });
+  it('persists tenantPanelUrl', async () => {
+    await updateSettings(db, { tenantPanelUrl: 'https://my.acme.test' });
     const settings = await getSettings(db);
-    expect(settings.clientPanelUrl).toBe('https://my.acme.test');
+    expect(settings.tenantPanelUrl).toBe('https://my.acme.test');
   });
 
   it('persists supportEmail', async () => {
@@ -111,17 +111,17 @@ describe('system-settings service: round-trip', () => {
     expect(settings.timezone).toBe('Europe/Berlin');
   });
 
-  it('persists newServerHostsClientWorkloads (true → false)', async () => {
-    await updateSettings(db, { newServerHostsClientWorkloads: false });
+  it('persists newServerHostsTenantWorkloads (true → false)', async () => {
+    await updateSettings(db, { newServerHostsTenantWorkloads: false });
     const settings = await getSettings(db);
-    expect(settings.newServerHostsClientWorkloads).toBe(false);
+    expect(settings.newServerHostsTenantWorkloads).toBe(false);
   });
 
-  it('persists newServerHostsClientWorkloads (false → true)', async () => {
-    await updateSettings(db, { newServerHostsClientWorkloads: false });
-    await updateSettings(db, { newServerHostsClientWorkloads: true });
+  it('persists newServerHostsTenantWorkloads (false → true)', async () => {
+    await updateSettings(db, { newServerHostsTenantWorkloads: false });
+    await updateSettings(db, { newServerHostsTenantWorkloads: true });
     const settings = await getSettings(db);
-    expect(settings.newServerHostsClientWorkloads).toBe(true);
+    expect(settings.newServerHostsTenantWorkloads).toBe(true);
   });
 
   it('getSetting falls back to provided env value when DB is empty', async () => {

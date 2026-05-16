@@ -74,8 +74,8 @@ async function setupApp() {
   await app.register(nodeRoutes, { prefix: '/api/v1' });
   await app.ready();
   const adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin' });
-  const clientToken = app.jwt.sign({ sub: 'client-1', role: 'client_admin', panel: 'client', clientId: 'c1' });
-  return { app, mockDb, adminToken, clientToken };
+  const tenantToken = app.jwt.sign({ sub: 'tenant-1', role: 'tenant_admin', panel: 'tenant', tenantId: 'c1' });
+  return { app, mockDb, adminToken, tenantToken };
 }
 
 describe('Nodes routes', () => {
@@ -100,12 +100,12 @@ describe('Nodes routes', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('rejects client_admin tokens (403)', async () => {
-      const { app, clientToken } = await setupApp();
+    it('rejects tenant_admin tokens (403)', async () => {
+      const { app, tenantToken } = await setupApp();
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/admin/nodes',
-        headers: { authorization: `Bearer ${clientToken}` },
+        headers: { authorization: `Bearer ${tenantToken}` },
       });
       expect(res.statusCode).toBe(403);
     });
@@ -113,7 +113,7 @@ describe('Nodes routes', () => {
     it('returns list envelope with total', async () => {
       const { app, mockDb, adminToken } = await setupApp();
       mockDb.select.mockReturnValue(makeSelectChain([
-        { name: 'staging', role: 'server', canHostClientWorkloads: true },
+        { name: 'staging', role: 'server', canHostTenantWorkloads: true },
       ]));
       const res = await app.inject({
         method: 'GET',
@@ -142,7 +142,7 @@ describe('Nodes routes', () => {
     it('returns the node row on success', async () => {
       const { app, mockDb, adminToken } = await setupApp();
       mockDb.select.mockReturnValue(makeSelectChain([
-        { name: 'staging', role: 'server', canHostClientWorkloads: true, labels: {}, taints: [] },
+        { name: 'staging', role: 'server', canHostTenantWorkloads: true, labels: {}, taints: [] },
       ]));
       const res = await app.inject({
         method: 'GET',
@@ -170,7 +170,7 @@ describe('Nodes routes', () => {
     it('returns NODE_DEMOTION_BLOCKED when server→worker with system pods', async () => {
       const { app, mockDb, adminToken } = await setupApp();
       mockDb.select.mockReturnValue(makeSelectChain([
-        { name: 'staging', role: 'server', canHostClientWorkloads: false, labels: {}, taints: [] },
+        { name: 'staging', role: 'server', canHostTenantWorkloads: false, labels: {}, taints: [] },
       ]));
       mockListNamespacedPod.mockResolvedValueOnce({
         items: [{ metadata: { name: 'platform-api-xyz' } }],
@@ -199,8 +199,8 @@ describe('Nodes routes', () => {
         // something to return.
         return makeSelectChain([
           selectCallCount === 1
-            ? { name: 'staging', role: 'server', canHostClientWorkloads: false, labels: {}, taints: [] }
-            : { name: 'staging', role: 'worker', canHostClientWorkloads: true, labels: {}, taints: [] },
+            ? { name: 'staging', role: 'server', canHostTenantWorkloads: false, labels: {}, taints: [] }
+            : { name: 'staging', role: 'worker', canHostTenantWorkloads: true, labels: {}, taints: [] },
         ]);
       });
       mockPatchNode.mockResolvedValue({});
@@ -225,7 +225,7 @@ describe('Nodes routes', () => {
       // still wipe the inventory row.
       const { app, mockDb, adminToken } = await setupApp();
       mockDb.select.mockReturnValue(makeSelectChain([
-        { name: 'orphan-3', role: 'worker', canHostClientWorkloads: true, labels: {}, taints: [] },
+        { name: 'orphan-3', role: 'worker', canHostTenantWorkloads: true, labels: {}, taints: [] },
       ]));
       const notFound = Object.assign(new Error('nodes "orphan-3" not found'), { code: 404 });
       mockReadNode.mockRejectedValue(notFound);

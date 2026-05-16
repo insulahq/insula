@@ -2,12 +2,12 @@
  * Multi-component K8s deployer.
  *
  * Creates/manages Deployments, CronJobs, and Services for catalog entries
- * in client namespaces. For single-writer-per-tenant workloads (one
+ * in tenant namespaces. For single-writer-per-tenant workloads (one
  * WordPress + one MariaDB per blog, etc.), a Deployment with strategy:
- * Recreate and the client's shared PVC mounted via subPath delivers
+ * Recreate and the tenant's shared PVC mounted via subPath delivers
  * everything a StatefulSet would, with less complexity:
  *   - single replica → no ordered rollout / stable-pod-name need
- *   - shared PVC → one PVC per client, not N per app
+ *   - shared PVC → one PVC per tenant, not N per app
  *   - Recreate → stop old pod before new, safe for databases
  *
  * `type: statefulset` in legacy catalog manifests is accepted for
@@ -49,7 +49,7 @@ export interface DeployComponentInput {
    * Per-component resource override. One-shot jobs (wp-install, migrate
    * jobs) should declare small footprints — sharing the app-level
    * `cpuRequest`/`memoryRequest` of a WordPress deploy (250m/512Mi) wastes
-   * client ResourceQuota on a container that runs for 15 seconds. When
+   * tenant ResourceQuota on a container that runs for 15 seconds. When
    * unset, falls back to the top-level `cpuRequest`/`memoryRequest`.
    *
    * Components that declare `resources` are excluded from the weighted
@@ -101,16 +101,16 @@ export interface DeployCatalogEntryInput {
   /** Client timezone — injected as TZ env var */
   readonly timezone?: string;
   /**
-   * M5: worker pin from clients.worker_node_name. Null/undefined lets
+   * M5: worker pin from tenants.node_name. Null/undefined lets
    * the default scheduler pick any node matching the implicit
    * constraints (server-only taints prevent tenant pods from landing
    * on tainted control-plane nodes). When set:
    *   - Local tier: hard nodeSelector (pod must run on that node).
    *   - HA tier: soft preferred affinity (pod can fail over).
    */
-  readonly workerNodeName?: string | null;
+  readonly nodeName?: string | null;
   /**
-   * Storage tier from clients.storage_tier. Drives whether the worker
+   * Storage tier from tenants.storage_tier. Drives whether the worker
    * pin is hard (nodeSelector) or soft (preferred affinity). HA tier
    * MUST use soft so the pod can reschedule when the pin node fails.
    */
@@ -264,7 +264,7 @@ function filterVolumesForComponent(
 
 /**
  * Produce volumeMounts + the init-dirs init container + the pod-level volumes
- * entry for a given set of volumes, all referencing the shared client PVC.
+ * entry for a given set of volumes, all referencing the shared tenant PVC.
  * Returns `null` when the component mounts nothing (caller skips PVC entirely).
  *
  * When `local_path === "."` (or missing), the mount has no `subPath` — the
@@ -307,12 +307,12 @@ function buildVolumeMountSpec(
       // string fallback exists only for the legacy test path that didn't
       // pass storagePath.
       if (!storagePath) {
-        return { name: 'client-storage', mountPath: v.container_path };
+        return { name: 'tenant-storage', mountPath: v.container_path };
       }
-      return { name: 'client-storage', mountPath: v.container_path, subPath: storagePath };
+      return { name: 'tenant-storage', mountPath: v.container_path, subPath: storagePath };
     }
     const subPath = storagePath ? `${storagePath}/${key}` : key;
-    return { name: 'client-storage', mountPath: v.container_path, subPath };
+    return { name: 'tenant-storage', mountPath: v.container_path, subPath };
   });
 
   // Every mount needs its target directory to exist + be writable by the
@@ -341,12 +341,12 @@ function buildVolumeMountSpec(
     name: 'init-dirs',
     image: 'busybox:1.36',
     command: ['sh', '-c', mkdirCmd],
-    volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
+    volumeMounts: [{ name: 'tenant-storage', mountPath: '/data' }],
     // Asymmetric QoS (ADR-037): CPU request only, memory request==limit.
     resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '32Mi' } },
   };
 
-  const podVolumes = [{ name: 'client-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }];
+  const podVolumes = [{ name: 'tenant-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }];
 
   return { mounts, podVolumes, initDirsContainer };
 }
@@ -465,7 +465,7 @@ export async function deployCatalogEntry(
     configurableEnvKeys,
   });
 
-  // Inject client timezone as TZ env var (respected by most Linux base images)
+  // Inject tenant timezone as TZ env var (respected by most Linux base images)
   if (timezone && !env.some((e) => e.name === 'TZ')) {
     env.push({ name: 'TZ', value: timezone });
   }
@@ -476,7 +476,7 @@ export async function deployCatalogEntry(
         catalogCode: input.catalogCode,
         image: components[0]?.image ?? '',
         storagePath: input.storagePath,
-        volumeMountName: 'client-storage',
+        volumeMountName: 'tenant-storage',
         passwordEnvVar: input.passwordEnvVar,
       })
     : null;
@@ -556,7 +556,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier, firewallAnnotations);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
         break;
 
       case 'statefulset':
@@ -567,7 +567,7 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier, firewallAnnotations);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
         break;
 
       case 'cronjob':
@@ -676,7 +676,7 @@ async function deployK8sDeployment(
   // to move the pod to a node holding the surviving replica). Without
   // this distinction HA tier provides no actual failover — the pod
   // stays Pending forever waiting for the dead node to come back.
-  workerNodeName?: string | null,
+  nodeName?: string | null,
   storageTier?: 'local' | 'ha' | null,
   // Firewall annotations from the catalog manifest's `firewall` block.
   // Stamped onto the pod template's metadata (NOT the Deployment's
@@ -706,7 +706,7 @@ async function deployK8sDeployment(
     containers: [containerWithMounts],
     ...(spec ? { volumes: spec.podVolumes } : {}),
   };
-  if (workerNodeName) {
+  if (nodeName) {
     if (storageTier === 'ha') {
       // HA tier: soft preference. Pod prefers the pin node for locality
       // but k8s is free to schedule elsewhere when that node is
@@ -720,7 +720,7 @@ async function deployK8sDeployment(
               matchExpressions: [{
                 key: 'kubernetes.io/hostname',
                 operator: 'In',
-                values: [workerNodeName],
+                values: [nodeName],
               }],
             },
           }],
@@ -729,7 +729,7 @@ async function deployK8sDeployment(
     } else {
       // Local tier (or unset → defaults to local semantics): hard pin.
       // The single replica only exists here, so the pod must run here.
-      podSpec.nodeSelector = { 'kubernetes.io/hostname': workerNodeName };
+      podSpec.nodeSelector = { 'kubernetes.io/hostname': nodeName };
     }
   }
 

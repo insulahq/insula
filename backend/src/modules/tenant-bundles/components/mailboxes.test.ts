@@ -12,7 +12,7 @@ describe('buildMailboxesComponentJobSpec', () => {
   const baseInput = {
     jobName: 'bk-mbox-bkp-test',
     mailNamespace: 'mail',
-    clientId: 'abc',
+    tenantId: 'abc',
     backupId: 'bkp-test',
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
     jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',

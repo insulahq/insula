@@ -15,11 +15,11 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../../db/schema.js', () => ({
   mailboxes: {
     id: 'id', fullAddress: 'full_address', stalwartPrincipalId: 'stalwart_principal_id',
-    clientId: 'client_id',
+    tenantId: 'tenant_id',
   },
   emailDomains: {
     id: 'id', domainId: 'domain_id', stalwartDomainId: 'stalwart_domain_id',
-    clientId: 'client_id',
+    tenantId: 'tenant_id',
   },
   domains: { id: 'id', domainName: 'domain_name' },
 }));
@@ -29,7 +29,7 @@ vi.mock('../../db/schema.js', () => ({
 const mockGetJmapSession = vi.fn();
 const mockPrincipalGet = vi.fn();
 
-vi.mock('./client.js', () => ({
+vi.mock('./tenant.js', () => ({
   getJmapSession: (...args: unknown[]) => mockGetJmapSession(...args),
   principalGet: (...args: unknown[]) => mockPrincipalGet(...args),
 }));

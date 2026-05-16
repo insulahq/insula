@@ -5,8 +5,8 @@ import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
-import Clients from '@/pages/Clients';
-import ClientDetail from '@/pages/ClientDetail';
+import Tenants from '@/pages/Tenants';
+import TenantDetail from '@/pages/TenantDetail';
 import Domains from '@/pages/Domains';
 import Monitoring from '@/pages/Monitoring';
 import Storage from '@/pages/Storage';
@@ -81,10 +81,10 @@ export default function App() {
             }
           >
             <Route index element={<Dashboard />} />
-            <Route path="clients" element={<Clients />} />
-            <Route path="clients/:id" element={<ClientDetail />} />
+            <Route path="tenants" element={<Tenants />} />
+            <Route path="tenants/:id" element={<TenantDetail />} />
             <Route path="domains" element={<Domains />} />
-            <Route path="clients/:clientId/domains/:domainId" element={<DomainDetail />} />
+            <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
             <Route path="storage" element={<Storage />} />
             <Route path="cron-jobs" element={<CronJobs />} />

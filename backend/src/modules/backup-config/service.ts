@@ -145,7 +145,7 @@ export async function deleteBackupConfig(db: Database, id: string) {
 //
 // Does NOT call the Longhorn reconciler directly — the route does that
 // after activation succeeds. Separating DB and cluster writes lets tests
-// exercise activation without mocking the k8s client.
+// exercise activation without mocking the k8s tenant.
 //
 // Accepts BOTH s3 and ssh kinds. SSH configs don't drive Longhorn's
 // BackupTarget CR (Longhorn upstream is S3-only); they populate the

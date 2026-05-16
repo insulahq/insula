@@ -41,7 +41,7 @@ export const updateCronJobSchema = z.object({
 
 export const cronJobResponseSchema = z.object({
   id: uuidField,
-  clientId: uuidField,
+  tenantId: uuidField,
   name: z.string(),
   type: z.enum(['webcron', 'deployment']),
   schedule: z.string(),

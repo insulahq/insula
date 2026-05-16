@@ -8,7 +8,7 @@
  * Operations:
  *   - generateSelfSignedCa({commonName, organization, validityDays})
  *     → { certPem, keyPem }
- *   - signClientCert({caCertPem, caKeyPem, commonName, organization,
+ *   - signTenantCert({caCertPem, caKeyPem, commonName, organization,
  *                     organizationalUnit, validityDays, serialHex?})
  *     → { certPem, keyPem, serialHex, fingerprintSha256,
  *         subject, expiresAt }
@@ -72,7 +72,7 @@ interface CertKeyPair {
   readonly keyPem: string;
 }
 
-export interface SignedClientCert extends CertKeyPair {
+export interface SignedTenantCert extends CertKeyPair {
   readonly serialHex: string;
   readonly fingerprintSha256: string;
   readonly subject: string;
@@ -166,7 +166,7 @@ export async function generateSelfSignedCa(input: GenerateCaInput): Promise<Cert
 
 /**
  * Bundle a cert+key+ca into a PKCS#12 (.p12) file. Windows + macOS
- * keychain + most browsers expect this format for client-cert import.
+ * keychain + most browsers expect this format for tenant-cert import.
  *
  * The password is mandatory — Windows refuses to import a .p12 with
  * an empty password, and a passwordless .p12 leaks the private key
@@ -231,15 +231,15 @@ export async function bundlePkcs12(input: BundlePkcs12Input): Promise<Uint8Array
 }
 
 /**
- * Sign a client cert using the provider's CA + key. The serial is
+ * Sign a tenant cert using the provider's CA + key. The serial is
  * supplied by the caller (or generated here as a 128-bit crypto-random
  * value) so the platform layer can write the same serial into the
- * `client_certificates` table for revocation lookups.
+ * `tenant_certificates` table for revocation lookups.
  *
  * Returns the cert/key PEM plus the metadata needed to persist a row
  * (serial, fingerprint, full subject, expiry).
  */
-export async function signClientCert(input: SignCertInput): Promise<SignedClientCert> {
+export async function signTenantCert(input: SignCertInput): Promise<SignedTenantCert> {
   const serialHex = (input.serialHex ?? generateSerialHex()).toLowerCase();
   if (!/^[0-9a-f]{2,40}$/.test(serialHex)) {
     throw new Error(`invalid serialHex: ${serialHex}`);
@@ -275,11 +275,11 @@ export async function signClientCert(input: SignCertInput): Promise<SignedClient
       '-subj', subject,
     ], { timeout: 30_000 });
 
-    // Extension file: client-auth EKU + non-CA basic constraints.
+    // Extension file: tenant-auth EKU + non-CA basic constraints.
     await writeFile(extPath,
       'basicConstraints=critical,CA:FALSE\n' +
       'keyUsage=critical,digitalSignature,keyEncipherment\n' +
-      'extendedKeyUsage=clientAuth\n',
+      'extendedKeyUsage=tenantAuth\n',
       { mode: 0o600 },
     );
 
@@ -331,7 +331,7 @@ export async function signClientCert(input: SignCertInput): Promise<SignedClient
  * under the `ca.crl` key.
  *
  * Empty CRL (no revoked entries) is valid and produced when the input
- * list is empty — clients then verify "no revocations on file."
+ * list is empty — tenants then verify "no revocations on file."
  */
 export async function generateCrl(input: GenerateCrlInput): Promise<GenerateCrlResult> {
   const dir = await mkdtemp(join(tmpdir(), 'mtls-crl-'));

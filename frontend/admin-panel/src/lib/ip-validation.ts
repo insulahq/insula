@@ -1,5 +1,5 @@
 /**
- * Lightweight IPv4 / IPv6 validators for client-side form inputs.
+ * Lightweight IPv4 / IPv6 validators for tenant-side form inputs.
  *
  * Not a replacement for server-side Zod validation (the backend also
  * enforces these via z.ipv4() / z.ipv6() since Zod 4) — this exists

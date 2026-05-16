@@ -15,19 +15,19 @@ vi.mock('drizzle-orm', () => ({
 // Stub the DB schema so service.ts (+ its helpers: limit.ts, notifications/events.ts)
 // can resolve without a real database.
 vi.mock('../../db/schema.js', () => ({
-  mailboxes: { id: 'id', clientId: 'client_id', emailDomainId: 'email_domain_id', fullAddress: 'full_address', hashedPassword: 'hashed_password', quota: 'quota', stalwartPrincipalId: 'stalwart_principal_id' },
+  mailboxes: { id: 'id', tenantId: 'tenant_id', emailDomainId: 'email_domain_id', fullAddress: 'full_address', hashedPassword: 'hashed_password', quota: 'quota', stalwartPrincipalId: 'stalwart_principal_id' },
   mailboxAccess: { id: 'id', mailboxId: 'mailbox_id', userId: 'user_id', role: 'role' },
-  emailDomains: { id: 'id', clientId: 'client_id', domainId: 'domain_id' },
+  emailDomains: { id: 'id', tenantId: 'tenant_id', domainId: 'domain_id' },
   domains: { id: 'id', domainName: 'domain_name' },
   users: { id: 'id', email: 'email', role: 'role' },
-  clients: { id: 'id', planId: 'plan_id' },
+  tenants: { id: 'id', planId: 'plan_id' },
   // Referenced by mailboxes/limit.ts
   hostingPlans: { id: 'id', maxMailboxes: 'max_mailboxes' },
   // Referenced by notifications/events.ts and other modules pulled in transitively
-  cronJobs: { id: 'id', clientId: 'client_id' },
-  deployments: { id: 'id', clientId: 'client_id' },
+  cronJobs: { id: 'id', tenantId: 'tenant_id' },
+  deployments: { id: 'id', tenantId: 'tenant_id' },
   emailAliases: { id: 'id', mailboxId: 'mailbox_id' },
-  sftp_users: { id: 'id', clientId: 'client_id' },
+  sftp_users: { id: 'id', tenantId: 'tenant_id' },
 }));
 
 // Mock bcrypt
@@ -105,18 +105,18 @@ describe('createMailbox', () => {
   });
 
   it('should create a mailbox and hash the password', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
     const planRow = { planLimit: 50, override: null };
     const countResult = { count: 0 };
     const created = {
-      id: 'mb1', emailDomainId: 'ed1', clientId: 'c1', localPart: 'info',
+      id: 'mb1', emailDomainId: 'ed1', tenantId: 'c1', localPart: 'info',
       fullAddress: 'info@example.com', displayName: null, quotaMb: 1024,
       usedMb: 0, status: 'active', mailboxType: 'mailbox', autoReply: 0,
     };
 
-    // Select calls: 1) emailDomain, 2) domain, 3) clients+hostingPlans for
-    //   getClientMailboxLimit, 4) count for getClientMailboxCount,
+    // Select calls: 1) emailDomain, 2) domain, 3) tenants+hostingPlans for
+    //   getTenantMailboxLimit, 4) count for getTenantMailboxCount,
     //   5) existing check, 6) return created
     selectResults = [
       [emailDomain],
@@ -140,8 +140,8 @@ describe('createMailbox', () => {
     expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).toHaveBeenCalled();
   });
 
-  it('should enforce client mailbox limit from the plan', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
+  it('should enforce tenant mailbox limit from the plan', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
     const planRow = { planLimit: 2, override: null };
     const countResult = { count: 2 };
@@ -158,8 +158,8 @@ describe('createMailbox', () => {
     });
   });
 
-  it('should prefer a positive per-client override over the plan limit', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
+  it('should prefer a positive per-tenant override over the plan limit', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
     // Plan allows 50, override cuts it to 5 — count is at 5
     const planRow = { planLimit: 50, override: 5 };
@@ -173,12 +173,12 @@ describe('createMailbox', () => {
     ).rejects.toMatchObject({
       code: 'CLIENT_MAILBOX_LIMIT_REACHED',
       status: 409,
-      details: { limit: 5, current: 5, source: 'client_override' },
+      details: { limit: 5, current: 5, source: 'tenant_override' },
     });
   });
 
   it('should reject duplicate full address', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
     const planRow = { planLimit: 50, override: null };
     const countResult = { count: 1 };
@@ -231,7 +231,7 @@ describe('listMailboxes', () => {
 
 describe('getMailbox', () => {
   it('should return a mailbox when found', async () => {
-    const mailbox = { id: 'mb1', clientId: 'c1', fullAddress: 'info@example.com' };
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com' };
     selectResults = [[mailbox]];
     const db = createMockDb();
 
@@ -253,7 +253,7 @@ describe('getMailbox', () => {
 describe('updateMailbox', () => {
   it('should rehash password if provided (already-synced mailbox path)', async () => {
     // stalwartPrincipalId set → JMAP-PATCH path, NOT orphan-recovery path.
-    const mailbox = { id: 'mb1', clientId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
     const updated = { ...mailbox, displayName: 'Updated' };
 
     // 1) getMailbox select, 2) return updated after update
@@ -282,7 +282,7 @@ describe('updateMailbox', () => {
     // platform-DB update completes, the function returns the row.
     const orphanMailbox = {
       id: 'mb-orphan-1',
-      clientId: 'c1',
+      tenantId: 'c1',
       emailDomainId: 'ed1',
       localPart: 'john',
       fullAddress: 'john@x.staging.success.com.na',
@@ -312,7 +312,7 @@ describe('updateMailbox', () => {
 
 describe('deleteMailbox', () => {
   it('should delete access rows and then the mailbox', async () => {
-    const mailbox = { id: 'mb1', clientId: 'c1', fullAddress: 'test@example.com', stalwartPrincipalId: null };
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'test@example.com', stalwartPrincipalId: null };
     selectResults = [[mailbox]];
     const db = createMockDb();
 
@@ -353,14 +353,14 @@ describe('grantMailboxAccess / revokeMailboxAccess', () => {
 });
 
 describe('getAccessibleMailboxes', () => {
-  it('should return all client mailboxes for client_admin', async () => {
-    const user = { roleName: 'client_admin', clientId: 'c1' };
+  it('should return all tenant mailboxes for tenant_admin', async () => {
+    const user = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [
       { id: 'mb1', fullAddress: 'a@example.com' },
       { id: 'mb2', fullAddress: 'b@example.com' },
     ];
 
-    // 1) user lookup, 2) mailboxes for client
+    // 1) user lookup, 2) mailboxes for tenant
     selectResults = [[user], allMailboxes];
     const db = createMockDb();
 
@@ -368,8 +368,8 @@ describe('getAccessibleMailboxes', () => {
     expect(result).toHaveLength(2);
   });
 
-  it('should return only assigned mailboxes for client_user', async () => {
-    const user = { roleName: 'client_user', clientId: 'c1' };
+  it('should return only assigned mailboxes for tenant_user', async () => {
+    const user = { roleName: 'tenant_user', tenantId: 'c1' };
     const assignedMailboxes = [{ id: 'mb1', fullAddress: 'a@example.com' }];
 
     // 1) user lookup, 2) joined mailbox_access + mailboxes
@@ -423,14 +423,14 @@ describe('generateWebmailToken', () => {
   }
 
   it('should generate a signed JWT with embedded URL using the default fallback host', async () => {
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
 
-    // 1) user lookup, 2) client status, 3) role, 4) mailboxes, 5) mb status
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    // 1) user lookup, 2) tenant status, 3) role, 4) mailboxes, 5) mb status
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -455,13 +455,13 @@ describe('generateWebmailToken', () => {
 
   it('should use WEBMAIL_URL env when set', async () => {
     process.env.WEBMAIL_URL = 'https://webmail.platform.test';
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
 
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -471,13 +471,13 @@ describe('generateWebmailToken', () => {
   it('should prefer WEBMAIL_JWT_SECRET over JWT_SECRET when both are set', async () => {
     const webmailSecret = 'independent-webmail-secret-value';
     process.env.WEBMAIL_JWT_SECRET = webmailSecret;
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
 
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const { signWebmailJwt } = await import('./service.js');
@@ -499,12 +499,12 @@ describe('generateWebmailToken', () => {
     delete process.env.JWT_SECRET;
     delete process.env.WEBMAIL_JWT_SECRET;
 
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     await expect(
@@ -518,12 +518,12 @@ describe('generateWebmailToken', () => {
   // ─── Bulwark engine path (ADR-039) ───────────────────────────────
 
   it('engine=bulwark mints a JWT with iss/jti/tenant_id/actor_user_id + /_impersonate URL', async () => {
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const result = await generateWebmailToken(
@@ -555,16 +555,16 @@ describe('generateWebmailToken', () => {
   });
 
   it('engine=bulwark generates a fresh jti each call', async () => {
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
 
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const r1 = await generateWebmailToken(makeMockApp(), createMockDb() as never, 'u1', 'mb1', { engine: 'bulwark' });
 
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const r2 = await generateWebmailToken(makeMockApp(), createMockDb() as never, 'u1', 'mb1', { engine: 'bulwark' });
 
     const jti1 = (decodeJwtPayload(r1.token) as { jti: string }).jti;
@@ -573,12 +573,12 @@ describe('generateWebmailToken', () => {
   });
 
   it('engine defaults to roundcube when omitted (back-compat)', async () => {
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -590,13 +590,13 @@ describe('generateWebmailToken', () => {
   });
 
   it('should reject token generation for unauthorized user', async () => {
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_user', clientId: 'c1' };
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_user', tenantId: 'c1' };
     const noMailboxes: unknown[] = [];
 
     // No mailbox row is reached because the user has no access
-    selectResults = [[user], [activeClient], [userRole], noMailboxes];
+    selectResults = [[user], [activeTenant], [userRole], noMailboxes];
     const db = createMockDb();
 
     await expect(
@@ -609,12 +609,12 @@ describe('generateWebmailToken', () => {
 
   // Phase 3.C.3: new suspend enforcement tests
 
-  it('should reject webmail token for suspended client', async () => {
-    const user = { clientId: 'c1' };
-    const suspendedClient = { status: 'suspended' };
+  it('should reject webmail token for suspended tenant', async () => {
+    const user = { tenantId: 'c1' };
+    const suspendedTenant = { status: 'suspended' };
 
-    // user lookup, client status lookup → throws before getAccessibleMailboxes
-    selectResults = [[user], [suspendedClient]];
+    // user lookup, tenant status lookup → throws before getAccessibleMailboxes
+    selectResults = [[user], [suspendedTenant]];
     const db = createMockDb();
 
     await expect(
@@ -625,11 +625,11 @@ describe('generateWebmailToken', () => {
     });
   });
 
-  it('should reject webmail token for archived client', async () => {
-    const user = { clientId: 'c1' };
-    const archivedClient = { status: 'archived' };
+  it('should reject webmail token for archived tenant', async () => {
+    const user = { tenantId: 'c1' };
+    const archivedTenant = { status: 'archived' };
 
-    selectResults = [[user], [archivedClient]];
+    selectResults = [[user], [archivedTenant]];
     const db = createMockDb();
 
     await expect(
@@ -640,14 +640,14 @@ describe('generateWebmailToken', () => {
     });
   });
 
-  it('should reject webmail token for suspended mailbox (active client)', async () => {
-    const user = { clientId: 'c1' };
-    const activeClient = { status: 'active' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+  it('should reject webmail token for suspended mailbox (active tenant)', async () => {
+    const user = { tenantId: 'c1' };
+    const activeTenant = { status: 'active' };
+    const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const suspendedMailbox = { status: 'suspended' };
 
-    selectResults = [[user], [activeClient], [userRole], allMailboxes, [suspendedMailbox]];
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [suspendedMailbox]];
     const db = createMockDb();
 
     await expect(

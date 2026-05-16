@@ -7,13 +7,13 @@
  *                          public Ingress + LE cert. No additional
  *                          machinery.
  *   - 'tunneler': deployment is advertised as a Ziti service via a
- *                 ziti-edge-tunnel pod in bind mode in the client
+ *                 ziti-edge-tunnel pod in bind mode in the tenant
  *                 namespace. The public Ingress for every route
  *                 pointing at this deployment is suppressed —
  *                 hostnames resolve only on the Ziti mesh and end
  *                 users must run a Ziti tunneler.
  *   - 'zrok':     deployment is exposed via a private zrok share
- *                 brokered by a zrok-frontdoor pod in the client
+ *                 brokered by a zrok-frontdoor pod in the tenant
  *                 namespace. Public Ingress STAYS up but the
  *                 frontdoor enforces a valid zrok identity from the
  *                 caller; unauthenticated callers receive 403.
@@ -103,7 +103,7 @@ export const deploymentNetworkAccessResponseSchema = z.object({
   zrokShareToken: z.string().nullable(),
   passIdentityHeaders: z.boolean(),
   /**
-   * True when the per-client mesh proxy pod (ziti-edge-tunnel or
+   * True when the per-tenant mesh proxy pod (ziti-edge-tunnel or
    * zrok-frontdoor) has been provisioned successfully. Set by the
    * reconciler.
    */

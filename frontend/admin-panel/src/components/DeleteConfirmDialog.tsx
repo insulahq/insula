@@ -5,7 +5,7 @@ interface DeleteConfirmDialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly onConfirm: () => Promise<void>;
-  readonly clientName: string;
+  readonly tenantName: string;
   readonly isPending: boolean;
 }
 
@@ -13,7 +13,7 @@ export default function DeleteConfirmDialog({
   open,
   onClose,
   onConfirm,
-  clientName,
+  tenantName,
   isPending,
 }: DeleteConfirmDialogProps) {
   const [errorMessage, setErrorMessage] = useState('');
@@ -26,7 +26,7 @@ export default function DeleteConfirmDialog({
       await onConfirm();
     } catch (err) {
       setErrorMessage(
-        err instanceof Error ? err.message : 'Failed to delete client. Please try again.',
+        err instanceof Error ? err.message : 'Failed to delete tenant. Please try again.',
       );
     }
   };
@@ -48,7 +48,7 @@ export default function DeleteConfirmDialog({
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Client</h2>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400" data-testid="delete-warning-text">
-              Are you sure you want to delete <strong>{clientName}</strong>? This cannot be undone.
+              Are you sure you want to delete <strong>{tenantName}</strong>? This cannot be undone.
             </p>
           </div>
         </div>

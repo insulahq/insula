@@ -74,7 +74,7 @@ describe('checkQuotaThresholds', () => {
         rows: [
           {
             mailbox_id: 'mb1',
-            client_id: 'c1',
+            tenant_id: 'c1',
             full_address: 'alice@acme.com',
             quota_mb: 100,
             used_mb: 82, // 82 % → crosses 80
@@ -108,7 +108,7 @@ describe('checkQuotaThresholds', () => {
         rows: [
           {
             mailbox_id: 'mb1',
-            client_id: 'c1',
+            tenant_id: 'c1',
             full_address: 'alice@acme.com',
             quota_mb: 100,
             used_mb: 85,
@@ -133,7 +133,7 @@ describe('checkQuotaThresholds', () => {
         rows: [
           {
             mailbox_id: 'mb1',
-            client_id: 'c1',
+            tenant_id: 'c1',
             full_address: 'alice@acme.com',
             quota_mb: 100,
             used_mb: 100,
@@ -182,7 +182,7 @@ describe('checkQuotaThresholds', () => {
         rows: [
           {
             mailbox_id: 'mb1',
-            client_id: 'c1',
+            tenant_id: 'c1',
             full_address: 'alice@acme.com',
             quota_mb: 100,
             used_mb: 85,
@@ -208,7 +208,7 @@ describe('checkQuotaThresholds', () => {
         rows: [
           {
             mailbox_id: 'mb1',
-            client_id: 'c1',
+            tenant_id: 'c1',
             full_address: 'alice@acme.com',
             quota_mb: 100,
             used_mb: 85,

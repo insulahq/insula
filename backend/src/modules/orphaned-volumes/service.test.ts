@@ -5,7 +5,7 @@ import { detectOrphans, deleteOrphan, purgeAllOrphans } from './service.js';
 
 // Schema mock so the dynamic-import path inside service.ts works.
 vi.mock('../../db/schema.js', () => ({
-  clients: { kubernetesNamespace: 'kubernetesNamespace', companyName: 'companyName' },
+  tenants: { kubernetesNamespace: 'kubernetesNamespace', name: 'name' },
 }));
 
 function makeDb(rows: ReadonlyArray<{ ns: string | null; name: string }>): Database {
@@ -115,25 +115,25 @@ describe('detectOrphans', () => {
     });
   });
 
-  it('flags tenant PV whose client row was deleted but namespace still exists', async () => {
+  it('flags tenant PV whose tenant row was deleted but namespace still exists', async () => {
     const k8s = makeK8s({
       pvs: [{
         metadata: { name: 'pvc-orphan-tenant' },
         spec: {
-          claimRef: { namespace: 'client-stale', name: 'data' },
+          claimRef: { namespace: 'tenant-stale', name: 'data' },
           capacity: { storage: '5Gi' },
         },
         status: { phase: 'Bound', lastTransitionTime: new Date().toISOString() },
       }],
-      namespaces: ['client-stale'],
+      namespaces: ['tenant-stale'],
       longhornVolumes: [{ metadata: { name: 'pvc-orphan-tenant' }, status: { kubernetesStatus: { pvName: 'pvc-orphan-tenant' } } }],
     });
-    const db = makeDb([]); // no client rows
+    const db = makeDb([]); // no tenant rows
 
     const r = await detectOrphans(db, k8s);
     expect(r.orphans[0]).toMatchObject({
-      reason: 'client_record_deleted',
-      ownerLabel: 'Platform System (client-stale)',
+      reason: 'tenant_record_deleted',
+      ownerLabel: 'Platform System (tenant-stale)',
     });
   });
 
@@ -155,24 +155,24 @@ describe('detectOrphans', () => {
     expect(r.orphans[0].ageDays).toBeGreaterThanOrEqual(10);
   });
 
-  it('does NOT flag a Bound PV whose client row exists', async () => {
+  it('does NOT flag a Bound PV whose tenant row exists', async () => {
     const k8s = makeK8s({
       pvs: [{
         metadata: { name: 'pvc-healthy' },
-        spec: { claimRef: { namespace: 'client-acme', name: 'data' }, capacity: { storage: '2Gi' } },
+        spec: { claimRef: { namespace: 'tenant-acme', name: 'data' }, capacity: { storage: '2Gi' } },
         status: { phase: 'Bound', lastTransitionTime: new Date().toISOString() },
       }],
-      namespaces: ['client-acme'],
+      namespaces: ['tenant-acme'],
       longhornVolumes: [{ metadata: { name: 'pvc-healthy' }, status: { kubernetesStatus: { pvName: 'pvc-healthy' } } }],
     });
-    const db = makeDb([{ ns: 'client-acme', name: 'Acme Co' }]);
+    const db = makeDb([{ ns: 'tenant-acme', name: 'Acme Co' }]);
 
     const r = await detectOrphans(db, k8s);
     expect(r.totalCount).toBe(0);
   });
 
   it('surfaces canonical platform/role + platform/owner labels from the orphaned PV', async () => {
-    // Forensics: even after the owning client + namespace + PVC are
+    // Forensics: even after the owning tenant + namespace + PVC are
     // gone, the labels stamped on the PV by the PVC→PV mirror tick
     // survive — the orphaned-volumes API should expose them so the
     // operator can see "what was this volume?" before deleting it.
@@ -181,9 +181,9 @@ describe('detectOrphans', () => {
         metadata: {
           name: 'pvc-stamped-orphan',
           labels: {
-            'platform/role': 'client-storage',
-            'platform/owner': 'client-abc12345',
-            'platform/canonical-name': 'client-acme-abc12345-storage',
+            'platform/role': 'tenant-storage',
+            'platform/owner': 'tenant-abc12345',
+            'platform/canonical-name': 'tenant-acme-abc12345-storage',
             'platform/managed-by': 'platform-api',
           },
         },
@@ -200,8 +200,8 @@ describe('detectOrphans', () => {
     expect(r.orphans[0]).toMatchObject({
       pvName: 'pvc-stamped-orphan',
       reason: 'namespace_deleted',
-      canonicalRole: 'client-storage',
-      canonicalOwner: 'client-abc12345',
+      canonicalRole: 'tenant-storage',
+      canonicalOwner: 'tenant-abc12345',
     });
   });
 
@@ -248,17 +248,17 @@ describe('detectOrphans', () => {
     });
   });
 
-  it('attributes a tenant orphan to its client when the client row still exists', async () => {
+  it('attributes a tenant orphan to its tenant when the tenant row still exists', async () => {
     const k8s = makeK8s({
       pvs: [{
         metadata: { name: 'pvc-acme' },
-        spec: { claimRef: { namespace: 'client-acme', name: 'data' }, capacity: { storage: '5Gi' } },
+        spec: { claimRef: { namespace: 'tenant-acme', name: 'data' }, capacity: { storage: '5Gi' } },
         status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 10 * 86400_000).toISOString() },
       }],
-      namespaces: ['client-acme'],
+      namespaces: ['tenant-acme'],
       longhornVolumes: [{ metadata: { name: 'pvc-acme' }, status: { kubernetesStatus: { pvName: 'pvc-acme' } } }],
     });
-    const db = makeDb([{ ns: 'client-acme', name: 'Acme Co' }]);
+    const db = makeDb([{ ns: 'tenant-acme', name: 'Acme Co' }]);
 
     const r = await detectOrphans(db, k8s);
     expect(r.orphans[0]).toMatchObject({
@@ -267,54 +267,54 @@ describe('detectOrphans', () => {
     });
   });
 
-  it('flags a client-* namespace with no client row + no PV as namespace_orphaned', async () => {
+  it('flags a tenant-* namespace with no tenant row + no PV as namespace_orphaned', async () => {
     const k8s = makeK8s({
       pvs: [],
-      namespaces: [{ name: 'client-stranded', createdDaysAgo: 2 }, 'platform'],
+      namespaces: [{ name: 'tenant-stranded', createdDaysAgo: 2 }, 'platform'],
       longhornVolumes: [],
     });
-    const db = makeDb([]); // no client rows
+    const db = makeDb([]); // no tenant rows
 
     const r = await detectOrphans(db, k8s);
     expect(r.totalCount).toBe(1);
     expect(r.orphans[0]).toMatchObject({
       pvName: null,
       longhornVolumeName: null,
-      namespace: 'client-stranded',
+      namespace: 'tenant-stranded',
       reason: 'namespace_orphaned',
       sizeBytes: 0,
-      ownerLabel: 'Platform System (client-stranded)',
+      ownerLabel: 'Platform System (tenant-stranded)',
     });
     expect(r.orphans[0].ageDays).toBeGreaterThanOrEqual(1);
   });
 
   it('does NOT double-report a namespace already covered by a PV-side orphan row', async () => {
-    // The namespace is also tenant-shaped without a client row, but a PV
-    // already triggered `client_record_deleted` — the namespace pass
+    // The namespace is also tenant-shaped without a tenant row, but a PV
+    // already triggered `tenant_record_deleted` — the namespace pass
     // must skip it so the operator sees one row, not two.
     const k8s = makeK8s({
       pvs: [{
         metadata: { name: 'pvc-existing' },
-        spec: { claimRef: { namespace: 'client-dup', name: 'data' }, capacity: { storage: '1Gi' } },
+        spec: { claimRef: { namespace: 'tenant-dup', name: 'data' }, capacity: { storage: '1Gi' } },
         status: { phase: 'Bound', lastTransitionTime: new Date().toISOString() },
       }],
-      namespaces: [{ name: 'client-dup', createdDaysAgo: 3 }],
+      namespaces: [{ name: 'tenant-dup', createdDaysAgo: 3 }],
       longhornVolumes: [{ metadata: { name: 'pvc-existing' }, status: { kubernetesStatus: { pvName: 'pvc-existing' } } }],
     });
     const db = makeDb([]);
 
     const r = await detectOrphans(db, k8s);
     expect(r.totalCount).toBe(1);
-    expect(r.orphans[0].reason).toBe('client_record_deleted');
+    expect(r.orphans[0].reason).toBe('tenant_record_deleted');
   });
 
-  it('does NOT flag a namespace that has a matching client row', async () => {
+  it('does NOT flag a namespace that has a matching tenant row', async () => {
     const k8s = makeK8s({
       pvs: [],
-      namespaces: ['client-acme'],
+      namespaces: ['tenant-acme'],
       longhornVolumes: [],
     });
-    const db = makeDb([{ ns: 'client-acme', name: 'Acme Co' }]);
+    const db = makeDb([{ ns: 'tenant-acme', name: 'Acme Co' }]);
 
     const r = await detectOrphans(db, k8s);
     expect(r.totalCount).toBe(0);
@@ -357,11 +357,11 @@ describe('deleteOrphan', () => {
     const r = await deleteOrphan(k8s, {
       pvName: null,
       longhornVolumeName: null,
-      namespace: 'client-gone',
+      namespace: 'tenant-gone',
       cascadeNamespace: true,
     });
     expect(r.deletedNamespace).toBe(true);
-    expect(captures.deletedNamespaces).toEqual(['client-gone']);
+    expect(captures.deletedNamespaces).toEqual(['tenant-gone']);
   });
 
   it('does NOT delete the namespace unless cascadeNamespace=true', async () => {
@@ -370,7 +370,7 @@ describe('deleteOrphan', () => {
     const r = await deleteOrphan(k8s, {
       pvName: 'pvc-x',
       longhornVolumeName: 'pvc-x',
-      namespace: 'client-keep',
+      namespace: 'tenant-keep',
     });
     expect(r.deletedNamespace).toBe(false);
     expect(captures.deletedNamespaces).toEqual([]);
@@ -386,17 +386,17 @@ describe('purgeAllOrphans', () => {
         spec: { claimRef: { namespace: 'platform', name: 'old' }, capacity: { storage: '4Gi' } },
         status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 30 * 86400_000).toISOString() },
       }],
-      namespaces: ['platform', { name: 'client-orphan-ns' }],
+      namespaces: ['platform', { name: 'tenant-orphan-ns' }],
       longhornVolumes: [{ metadata: { name: 'pvc-stale' }, spec: { size: String(4 * 1024 ** 3) }, status: { kubernetesStatus: { pvName: 'pvc-stale' } } }],
     }, captures);
-    const db = makeDb([]); // no clients → client-orphan-ns is namespace_orphaned
+    const db = makeDb([]); // no tenants → tenant-orphan-ns is namespace_orphaned
 
     const r = await purgeAllOrphans(db, k8s);
     expect(r.attempted).toBe(2);
     expect(r.deleted).toBe(2);
     expect(r.failures).toEqual([]);
     expect(r.bytesReclaimed).toBe(4 * 1024 ** 3);
-    expect(captures.deletedNamespaces).toEqual(['client-orphan-ns']);
+    expect(captures.deletedNamespaces).toEqual(['tenant-orphan-ns']);
   });
 
   it('reports per-row failures without aborting the batch', async () => {

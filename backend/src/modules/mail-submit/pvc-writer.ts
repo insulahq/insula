@@ -17,15 +17,15 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 const AUTH_FILE_PATH = '.platform/sendmail-auth';
 
 export interface WriteAuthFileDeps {
-  readonly k8sClients: K8sClients;
+  readonly k8sTenants: K8sClients;
   readonly kubeconfigPath?: string;
   readonly fileManagerImage: string;
 }
 
 /**
- * Write (or overwrite) the sendmail auth file on the client's PVC.
+ * Write (or overwrite) the sendmail auth file on the tenant's PVC.
  *
- * - namespace: the customer's k8s namespace (usually `client-<id>`)
+ * - namespace: the customer's k8s namespace (usually `tenant-<id>`)
  * - input: the credential + mail host info to embed in the file
  *
  * Throws if the file-manager sidecar is unreachable or the write
@@ -47,7 +47,7 @@ export async function writeSendmailAuthFile(
   // Any HTTP error including 404 (which means the path itself was
   // rejected by the sidecar's safePath guard) is fatal.
   const mkdirResult = await fileManagerRequest(
-    deps.k8sClients,
+    deps.k8sTenants,
     deps.kubeconfigPath,
     namespace,
     deps.fileManagerImage,
@@ -67,7 +67,7 @@ export async function writeSendmailAuthFile(
 
   // Write the file contents.
   const writeResult = await fileManagerRequest(
-    deps.k8sClients,
+    deps.k8sTenants,
     deps.kubeconfigPath,
     namespace,
     deps.fileManagerImage,

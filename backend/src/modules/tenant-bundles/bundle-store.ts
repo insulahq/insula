@@ -10,7 +10,7 @@
  *   - s3-backup-store.ts              → 's3'
  *   - ssh-backup-store.ts             → 'ssh'
  *
- * Component capture code never opens sockets, files, or S3 clients
+ * Component capture code never opens sockets, files, or S3 tenants
  * directly — it always goes through this interface so retention sweeps,
  * audits, and presigned downloads work uniformly across backends.
  */
@@ -61,7 +61,7 @@ export interface BackupStore {
    * Implementations MUST NOT write meta.json yet — the bundle is
    * "in-flight" until {@link putMeta} is called.
    */
-  reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle>;
+  reserveBundle(input: { backupId: string; tenantId: string }): Promise<BundleHandle>;
 
   /**
    * Resolve a stored bundle by id. Returns `null` if the bundle has

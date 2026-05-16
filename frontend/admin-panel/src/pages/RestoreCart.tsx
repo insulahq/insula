@@ -10,10 +10,10 @@
  *           per-item; failures pause the cart at the failed item
  *           and the operator can re-execute to retry.
  *
- * Routing: /restore?bundleId=...&clientId=...
+ * Routing: /restore?bundleId=...&tenantId=...
  *   bundleId is mandatory — the picker reads from one bundle.
- *   clientId is mandatory — the cart binds to one client (the cart
- *           CRUD route enforces bundle.clientId === cart.clientId).
+ *   tenantId is mandatory — the cart binds to one tenant (the cart
+ *           CRUD route enforces bundle.tenantId === cart.tenantId).
  *
  * The cart id lives in URL query state too, so reload-after-execute
  * keeps showing the same cart.
@@ -42,7 +42,7 @@ type Tab = 'config-tables' | 'deployments' | 'domains' | 'mailboxes' | 'files';
 export default function RestoreCartPage() {
   const [params, setParams] = useSearchParams();
   const bundleId = params.get('bundleId');
-  const clientId = params.get('clientId');
+  const tenantId = params.get('tenantId');
   const cartId = params.get('cartId');
   const [tab, setTab] = useState<Tab>('config-tables');
 
@@ -56,9 +56,9 @@ export default function RestoreCartPage() {
 
   // Auto-create the cart on first add if the operator hasn't done so.
   useEffect(() => {
-    if (!cartId && clientId) {
+    if (!cartId && tenantId) {
       createCart.mutate(
-        { clientId, description: `Restore from bundle ${bundleId ?? ''}` },
+        { tenantId, description: `Restore from bundle ${bundleId ?? ''}` },
         {
           onSuccess: (resp) => {
             const next = new URLSearchParams(params);
@@ -68,13 +68,13 @@ export default function RestoreCartPage() {
         },
       );
     }
-  }, [clientId, cartId]);
+  }, [tenantId, cartId]);
 
-  if (!bundleId || !clientId) {
+  if (!bundleId || !tenantId) {
     return (
       <div className="p-6">
         <div className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
-          Missing <code>bundleId</code> or <code>clientId</code> query parameter. Open this page from the bundle list's "Restore" action.
+          Missing <code>bundleId</code> or <code>tenantId</code> query parameter. Open this page from the bundle list's "Restore" action.
         </div>
       </div>
     );
@@ -88,7 +88,7 @@ export default function RestoreCartPage() {
           Browse the bundle and add items to the cart. Items execute sequentially; failures pause the cart so you can retry.
         </p>
         <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          Bundle: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{bundleId}</code> · Client: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{clientId}</code>
+          Bundle: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{bundleId}</code> · Client: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{tenantId}</code>
           {cartId && <> · Cart: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{cartId}</code></>}
         </div>
       </header>

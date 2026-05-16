@@ -190,7 +190,7 @@ describe('getJmapSession', () => {
 // new x:Account / x:Domain wire format. The legacy shim now makes 1 or
 // 2 parallel fetches (account + domain) depending on `ids: null` vs
 // specific IDs, so these tests need 2 mocked responses each. Skipped
-// until the rewrite. Refactored client wire-format is verified by
+// until the rewrite. Refactored tenant wire-format is verified by
 // scripts/integration-stalwart-local.sh on real Stalwart.
 describe.skip('principalGet', () => {
   it('returns list of principals', async () => {
@@ -507,7 +507,7 @@ describe.skip("getDomainDnsZoneFile", () => {
 describe('findDomainByName (Stalwart 0.16 list-and-filter)', () => {
   // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Domain/query
   // server-side filter silently returns []. We list-and-filter via
-  // x:Domain/get with ids:null + client-side match. The test mocks
+  // x:Domain/get with ids:null + tenant-side match. The test mocks
   // a single x:Domain/get fetch.
   it('returns matching domain when the list contains it', async () => {
     mockFetch(200, makeJmapResponse('x:Domain/get', {

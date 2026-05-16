@@ -4,7 +4,7 @@
  * The hook is a thin orchestration layer over the existing SQL Manager
  * primitives in `db-manager.ts` (exportDatabaseToPvc + listDatabases).
  * Tests focus on the orchestration shape — backup-tool image carries
- * NO DB clients, so there is no shell or container surface to test
+ * NO DB tenants, so there is no shell or container surface to test
  * here.
  *
  * Tested behaviours:
@@ -29,7 +29,7 @@ function makeDb(over: Partial<PreDumpDeployment> = {}): PreDumpDeployment {
   return {
     deploymentId: 'd1',
     deploymentName: 'maria-x',
-    namespace: 'client-test',
+    namespace: 'tenant-test',
     catalogCode: 'mariadb',
     catalogRuntime: 'mariadb',
     catalogType: 'database',
@@ -154,7 +154,7 @@ describe('preCaptureDatabaseDumps', () => {
   });
 });
 
-// Stub for the db-manager surface so we don't drag k8s clients into the test.
+// Stub for the db-manager surface so we don't drag k8s tenants into the test.
 function stubDeps(over: Partial<PreDumpDeps> = {}): PreDumpDeps {
   return {
     buildDbContext: vi.fn(async (dep) => ({

@@ -233,7 +233,7 @@ export type PromMetrics = Record<string, PromMetric>;
  * single `auth_failures_total: 8` entry).
  *
  * This is intentionally simple — we don't ship a full Prometheus
- * client because the backend just needs a few headline counters for
+ * tenant because the backend just needs a few headline counters for
  * the admin UI cards. For full per-label series, prometheus-operator
  * is the right tool.
  */
@@ -455,7 +455,7 @@ export async function getMailQueue(
           resolve();
         } else {
           // Wrap the raw status in a generic error so the route
-          // can decide what to surface to the client. The full
+          // can decide what to surface to the tenant. The full
           // status object is logged separately by the caller.
           const e = new Error('stalwart-cli queue list exec failed') as Error & {
             details?: unknown;

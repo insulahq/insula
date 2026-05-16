@@ -89,16 +89,16 @@ beforeEach(() => {
 describe('ensureDomainCertificate', () => {
   const domain = {
     id: 'd1',
-    clientId: 'c1',
+    tenantId: 'c1',
     domainName: 'acme.com',
     dnsMode: 'cname',
     dnsGroupId: null,
   };
-  const client = { id: 'c1', kubernetesNamespace: 'client-acme' };
+  const tenant = { id: 'c1', kubernetesNamespace: 'tenant-acme' };
 
   it('skips provisioning entirely when auto-TLS is disabled', async () => {
     vi.mocked(tlsSettings.isAutoTlsEnabled).mockResolvedValue(false);
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
 
@@ -110,7 +110,7 @@ describe('ensureDomainCertificate', () => {
   });
 
   it('creates an HTTP-01 per-hostname Certificate CR for cname mode', async () => {
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
 
@@ -122,7 +122,7 @@ describe('ensureDomainCertificate', () => {
     expect(k8s._createCustom).toHaveBeenCalledOnce();
 
     const call = k8s._createCustom.mock.calls[0][0];
-    expect(call.namespace).toBe('client-acme');
+    expect(call.namespace).toBe('tenant-acme');
     expect(call.body.metadata.name).toBe('acme-com-cert');
     expect(call.body.spec.secretName).toBe('acme-com-tls');
     expect(call.body.spec.dnsNames).toEqual(['acme.com']);
@@ -133,7 +133,7 @@ describe('ensureDomainCertificate', () => {
     vi.mocked(dnsServersService.getActiveServersForDomain).mockResolvedValue([
       { id: 's1', providerType: 'powerdns', enabled: 1, role: 'primary' } as never,
     ]);
-    selectResults = [[{ ...domain, dnsMode: 'primary' }], [client]];
+    selectResults = [[{ ...domain, dnsMode: 'primary' }], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
 
@@ -154,7 +154,7 @@ describe('ensureDomainCertificate', () => {
     vi.mocked(dnsServersService.getActiveServersForDomain).mockResolvedValue([
       { id: 's1', providerType: 'cloudflare', enabled: 1, role: 'primary' } as never,
     ]);
-    selectResults = [[{ ...domain, dnsMode: 'primary' }], [client]];
+    selectResults = [[{ ...domain, dnsMode: 'primary' }], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
 
@@ -166,7 +166,7 @@ describe('ensureDomainCertificate', () => {
 
   it('uses local-ca-issuer in development environment', async () => {
     process.env.CERT_ENVIRONMENT = 'development';
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
 
@@ -178,7 +178,7 @@ describe('ensureDomainCertificate', () => {
   });
 
   it('replaces an existing Certificate on 409 instead of failing', async () => {
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
     (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
@@ -195,7 +195,7 @@ describe('ensureDomainCertificate', () => {
     // PUT with 422 ("is invalid: metadata.resourceVersion: ... must be
     // specified for an update"). We GET the existing object first, copy
     // its resourceVersion into the body, then replace.
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
     (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
@@ -220,7 +220,7 @@ describe('ensureDomainCertificate', () => {
     // Race: cert-manager (or an admin) deletes the CR after our create
     // returned 409 but before our GET — don't throw, just accept it's gone
     // and let the original create be retried.
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
     let createCalls = 0;
@@ -240,7 +240,7 @@ describe('ensureDomainCertificate', () => {
   });
 
   it('throws on non-409 k8s errors', async () => {
-    selectResults = [[domain], [client]];
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
     (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
@@ -262,7 +262,7 @@ describe('ensureDomainCertificate', () => {
     ).rejects.toMatchObject({ code: 'DOMAIN_NOT_FOUND', status: 404 });
   });
 
-  it('throws CLIENT_NOT_FOUND when the client row is missing', async () => {
+  it('throws CLIENT_NOT_FOUND when the tenant row is missing', async () => {
     selectResults = [[domain], []];
     const db = createMockDb();
     const k8s = createMockK8s();
@@ -272,8 +272,8 @@ describe('ensureDomainCertificate', () => {
     ).rejects.toMatchObject({ code: 'CLIENT_NOT_FOUND', status: 404 });
   });
 
-  it('skips provisioning when k8s client is undefined (no-k8s mode)', async () => {
-    selectResults = [[domain], [client]];
+  it('skips provisioning when k8s tenant is undefined (no-k8s mode)', async () => {
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
 
     const result = await service.ensureDomainCertificate(
@@ -283,7 +283,7 @@ describe('ensureDomainCertificate', () => {
       makeLogger(),
     );
     expect(result.skipped).toBe(true);
-    expect(result.reason).toContain('no k8s client');
+    expect(result.reason).toContain('no k8s tenant');
   });
 });
 
@@ -294,8 +294,8 @@ describe('ensureDomainCertificate', () => {
 describe('deleteDomainCertificate', () => {
   it('deletes Certificate CR + TLS Secret for the wildcard name', async () => {
     const domain = { id: 'd1', domainName: 'acme.com' };
-    const client = { id: 'c1', kubernetesNamespace: 'client-acme' };
-    selectResults = [[domain], [client]];
+    const tenant = { id: 'c1', kubernetesNamespace: 'tenant-acme' };
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
     // Also need deleteNamespacedSecret for the TLS secret cleanup
@@ -309,8 +309,8 @@ describe('deleteDomainCertificate', () => {
 
   it('tolerates 404 on Certificate delete (already gone)', async () => {
     const domain = { id: 'd1', domainName: 'acme.com' };
-    const client = { id: 'c1', kubernetesNamespace: 'client-acme' };
-    selectResults = [[domain], [client]];
+    const tenant = { id: 'c1', kubernetesNamespace: 'tenant-acme' };
+    selectResults = [[domain], [tenant]];
     const db = createMockDb();
     const k8s = createMockK8s();
     (k8s as never as { core: { deleteNamespacedSecret: ReturnType<typeof vi.fn> } }).core = {
@@ -489,7 +489,7 @@ describe('ensureMailServerCertificate', () => {
     expect(k8s._createCustom).not.toHaveBeenCalled();
   });
 
-  it('skips when no k8s client is available', async () => {
+  it('skips when no k8s tenant is available', async () => {
     const db = createMockDb();
     const result = await service.ensureMailServerCertificate(
       db as never,
@@ -498,7 +498,7 @@ describe('ensureMailServerCertificate', () => {
       makeLogger(),
     );
     expect(result.skipped).toBe(true);
-    expect(result.reason).toContain('no k8s client');
+    expect(result.reason).toContain('no k8s tenant');
   });
 
   it('throws CERT_PROVISIONING_FAILED on non-409 errors', async () => {

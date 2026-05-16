@@ -79,7 +79,7 @@ describe.skipIf(!dbAvailable)('storage-lifecycle settings', () => {
     expect(redacted.backend).toBe('s3');
     expect(redacted.s3Bucket).toBe('my-bucket');
     expect(redacted.s3AccessKeyId).toBe('AKIA-TEST');
-    // Secret is redacted — never returned to the client.
+    // Secret is redacted — never returned to the tenant.
     expect(redacted.s3SecretAccessKey).toBeNull();
     expect(redacted.s3SecretAccessKeySet).toBe(true);
   });

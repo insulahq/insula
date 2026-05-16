@@ -152,7 +152,7 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         targetConfigId: parsed.data.targetConfigId,
         retentionDays: parsed.data.retentionDays,
         operatorUserId: userId,
-        operatorIp: clientIp(request),
+        operatorIp: tenantIp(request),
         archiveTimeout: parsed.data.archiveTimeout,
         baseBackupSchedule: parsed.data.baseBackupSchedule ?? null,
         baseBackupRetentionDays: parsed.data.baseBackupRetentionDays,
@@ -307,7 +307,7 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         clusterNamespace: parsed.data.clusterNamespace,
         clusterName: parsed.data.clusterName,
         operatorUserId: userId,
-        operatorIp: clientIp(request),
+        operatorIp: tenantIp(request),
       });
       return success<WalArchiveActionResponse>({
         clusterNamespace: parsed.data.clusterNamespace,
@@ -328,9 +328,9 @@ function isKnownCluster(ns: string, name: string): boolean {
 }
 
 // Fastify is configured with trustProxy globally, so request.ip is
-// already the real client IP (last hop outside trustProxy chain).
+// already the real tenant IP (last hop outside trustProxy chain).
 // Don't re-parse X-Forwarded-For — that would re-introduce a spoofing
 // surface for super_admins manipulating their own audit trail.
-function clientIp(request: FastifyRequest): string | null {
+function tenantIp(request: FastifyRequest): string | null {
   return request.ip || null;
 }

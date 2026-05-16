@@ -59,7 +59,7 @@ describe('recyclePod', () => {
     const { db } = makeFakeDb();
     await expect(recyclePod({
       k8s, db, actorUserId: 'u1',
-      node: 'worker', namespace: 'client-acme-12345678', podName: 'web',
+      node: 'worker', namespace: 'tenant-acme-12345678', podName: 'web',
       reason: 'test',
     })).rejects.toBeInstanceOf(ApiError);
   });
@@ -166,7 +166,7 @@ describe('cleanStalePodsOnNode', () => {
         // refuse: CNPG instance even though Failed
         { metadata: { name: 'pg-1', namespace: 'cnpg-system', labels: { 'cnpg.io/instance': 'system-db-1' } }, spec: { nodeName: 'worker' }, status: { phase: 'Failed' } },
         // refuse: tenant namespace
-        { metadata: { name: 'wp-evicted', namespace: 'client-acme-aabbccdd' }, spec: { nodeName: 'worker' }, status: { phase: 'Failed', reason: 'Evicted' } },
+        { metadata: { name: 'wp-evicted', namespace: 'tenant-acme-aabbccdd' }, spec: { nodeName: 'worker' }, status: { phase: 'Failed', reason: 'Evicted' } },
         // skip: healthy pod (Running)
         { metadata: { name: 'running-1', namespace: 'kube-system' }, spec: { nodeName: 'worker' }, status: { phase: 'Running' } },
       ],

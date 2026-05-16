@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import type { Database } from '../../db/index.js';
-import { users, clients } from '../../db/schema.js';
+import { users, tenants } from '../../db/schema.js';
 import { invalidToken } from '../../shared/errors.js';
 
 const SALT_ROUNDS = 12;
@@ -46,15 +46,15 @@ export async function authenticateUser(
     throw invalidToken();
   }
 
-  // Archived clients are terminal — block login for any user attached to one.
-  // Suspended is allowed (user still sees the suspension banner in client-panel
+  // Archived tenants are terminal — block login for any user attached to one.
+  // Suspended is allowed (user still sees the suspension banner in tenant-panel
   // and can request reactivation); archived is irreversible and the data is
   // pending purge, so authenticating offers nothing useful.
-  if (user.clientId) {
+  if (user.tenantId) {
     const [c] = await db
-      .select({ status: clients.status })
-      .from(clients)
-      .where(eq(clients.id, user.clientId))
+      .select({ status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, user.tenantId))
       .limit(1);
     if (c && c.status === 'archived') {
       throw invalidToken();
@@ -79,7 +79,7 @@ export async function authenticateUser(
     fullName: user.fullName,
     role: user.roleName,
     panel: user.panel ?? 'admin',
-    clientId: user.clientId ?? undefined,
+    tenantId: user.tenantId ?? undefined,
     // Passkey integration: caller decides whether to issue tokens
     // immediately (NULL or 'alternative') or to require a second
     // factor ('second_factor').

@@ -33,7 +33,7 @@ export interface DrWatcherDeps {
   readonly core: CoreV1Api;
   readonly apps: AppsV1Api;
   /**
-   * Batch client — required since Phase 1 streamline (2026-05-15)
+   * Batch tenant — required since Phase 1 streamline (2026-05-15)
    * because the restore-based failover polls the snapshot CronJob's
    * `status.lastSuccessfulTime` to wait for fresh snapshots before
    * scaling Stalwart down.

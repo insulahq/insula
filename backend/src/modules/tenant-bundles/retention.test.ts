@@ -72,7 +72,7 @@ describe('runRetentionSweep', () => {
     mem.public.none(`
       CREATE TABLE backup_jobs (
         id              VARCHAR(64) PRIMARY KEY,
-        client_id       VARCHAR(36) NOT NULL,
+        tenant_id       VARCHAR(36) NOT NULL,
         status          VARCHAR(32) NOT NULL,
         target_config_id VARCHAR(36),
         started_at      TIMESTAMP,
@@ -94,7 +94,7 @@ describe('runRetentionSweep', () => {
     // see retention.ts. The test uses 48h / 5 min to be well past /
     // under the boundary regardless of any small future tweaks.
     mem.public.none(`
-      INSERT INTO backup_jobs(id, client_id, status, started_at) VALUES
+      INSERT INTO backup_jobs(id, tenant_id, status, started_at) VALUES
         ('bkp-stuck', 'c1', 'running', now() - interval '48 hours'),
         ('bkp-fresh', 'c1', 'running', now() - interval '5 minutes');
     `);
@@ -118,7 +118,7 @@ describe('runRetentionSweep', () => {
     mem.public.none(`
       CREATE TABLE backup_jobs (
         id              VARCHAR(64) PRIMARY KEY,
-        client_id       VARCHAR(36) NOT NULL,
+        tenant_id       VARCHAR(36) NOT NULL,
         status          VARCHAR(32) NOT NULL,
         target_config_id VARCHAR(36),
         started_at      TIMESTAMP,

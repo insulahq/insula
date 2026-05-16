@@ -6,7 +6,7 @@ import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, Cloudflare
  */
 export class CloudflareDnsProvider implements DnsProviderAdapter {
   readonly providerType = 'cloudflare';
-  private readonly baseUrl = 'https://api.cloudflare.com/client/v4';
+  private readonly baseUrl = 'https://api.cloudflare.com/tenant/v4';
   private readonly headers: Record<string, string>;
 
   constructor(private readonly config: CloudflareConfig) {

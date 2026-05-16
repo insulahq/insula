@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { listDirectories, createDirectory, deleteDirectory, listDirectoryUsers, createDirectoryUser, toggleDirectoryUser, deleteDirectoryUser } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
-const DOMAIN = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+const DOMAIN = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 const DIR = { id: 'dir1', domainId: 'd1', path: '/admin', realm: 'Admin Area', createdAt: new Date(), updatedAt: new Date() };
 const USER = { id: 'u1', directoryId: 'dir1', username: 'admin', enabled: 1, createdAt: new Date() };
 

@@ -24,7 +24,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Readable } from 'node:stream';
 import { eq } from 'drizzle-orm';
-import { backupJobs, backupConfigurations, clients, tenantBackupV2Settings } from '../../db/schema.js';
+import { backupJobs, backupConfigurations, tenants, tenantBackupV2Settings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
@@ -115,7 +115,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     );
     if (verifyErr) {
       // Server-side log carries the precise reason (MALFORMED /
-      // EXPIRED / BAD_MAC) for ops debugging. The client-facing
+      // EXPIRED / BAD_MAC) for ops debugging. The tenant-facing
       // 401 body is intentionally indistinguishable so a probing
       // attacker can't differentiate "wrong MAC" from "expired
       // token" via the response — which would narrow brute-force
@@ -160,7 +160,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
   // BUT NO BACKEND CREDS. Backend creds (S3 access key, SSH private
   // key) materialise only here, decrypted from backup_configurations.
   // The per-tenant restic password is derived from
-  // PLATFORM_ENCRYPTION_KEY + clientId via HKDF-SHA256 — the same vector
+  // PLATFORM_ENCRYPTION_KEY + tenantId via HKDF-SHA256 — the same vector
   // asserted in restic-driver.test.ts and the Phase 0 spike.
   app.put('/internal/bundles/:bundleId/components/:component/restic-stream', {
     schema: {
@@ -195,7 +195,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
 
     // Token binds (bundleId, component, RESTIC_STREAM_ARTIFACT) — a
     // file-upload token cannot be replayed for the restic stream and
-    // vice versa. Server-side log carries the rejection reason; client
+    // vice versa. Server-side log carries the rejection reason; tenant
     // body is generic per the same rationale as the file-upload route.
     const verifyErr = verifyUploadToken(
       token,
@@ -232,12 +232,12 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     );
 
     // Per-tenant HKDF password — pinned by Phase 0 lock vector.
-    const password = deriveResticPassword(secretsKeyHex, job.clientId);
+    const password = deriveResticPassword(secretsKeyHex, job.tenantId);
 
     // Snapshot tags carry the full metadata Region B needs to identify
     // and restore this snapshot from outside (ADR-036 multi-region).
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, job.clientId)).limit(1);
-    if (!client) throw new ApiError('NOT_FOUND', 'Bundle client missing', 404);
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, job.tenantId)).limit(1);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Bundle tenant missing', 404);
     const [settings] = await app.db.select().from(tenantBackupV2Settings).limit(1);
     const regionOverride = settings?.regionIdOverride ?? '';
     const apex = resolveBaseDomain({
@@ -248,8 +248,8 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     const platformVersion = app.config.PLATFORM_VERSION;
     const tags = buildSnapshotTags({
       bundleId,
-      clientId: job.clientId,
-      tenantSlug: client.kubernetesNamespace,
+      tenantId: job.tenantId,
+      tenantSlug: tenant.kubernetesNamespace,
       component: component as ResticComponent,
       regionId,
       platformVersion,
@@ -263,14 +263,14 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // pattern). The signal is also fired on response close in case
     // Fastify itself drops the connection mid-stream.
     const abortController = new AbortController();
-    const onClientGone = () => abortController.abort();
+    const onTenantGone = () => abortController.abort();
     // 'close' fires on both successful end + connection abort. Only
     // treat it as an abort if the body wasn't fully consumed — a
     // success path runs the success branch BEFORE the close fires.
     const onClose = () => {
-      if (!request.raw.readableEnded) onClientGone();
+      if (!request.raw.readableEnded) onTenantGone();
     };
-    request.raw.on('aborted', onClientGone);
+    request.raw.on('aborted', onTenantGone);
     request.raw.on('close', onClose);
     // Phase 1 piece #13 — TCP idle-detection fallback. Force-killed
     // Job pods (kubectl delete --force --grace-period=0) leave the
@@ -282,7 +282,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // for the full hour.
     //
     // Setting socket.setTimeout(N) makes Node emit 'timeout' after N
-    // ms with no bytes received. We then explicitly fire onClientGone.
+    // ms with no bytes received. We then explicitly fire onTenantGone.
     // 2 min is generous — a healthy 5 GiB capture flows continuously
     // (no idle window > a few hundred ms); a dead Job pod's socket
     // never delivers another byte.
@@ -290,8 +290,8 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     if (idleSocket) {
       idleSocket.setKeepAlive(true, 30_000);
       idleSocket.setTimeout(2 * 60 * 1000, () => {
-        app.log.warn({ bundleId, component }, 'tenant-bundles restic-stream: TCP idle 2m — treating as client abort');
-        onClientGone();
+        app.log.warn({ bundleId, component }, 'tenant-bundles restic-stream: TCP idle 2m — treating as tenant abort');
+        onTenantGone();
         // Destroy the socket so the kernel slot is freed too.
         try { idleSocket.destroy(new Error('upload idle timeout')); } catch { /* ignore */ }
       });
@@ -326,7 +326,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     } catch (err) {
       // Always remove the listeners on this error path — the
       // body-finally below is not reached.
-      request.raw.off('aborted', onClientGone);
+      request.raw.off('aborted', onTenantGone);
       request.raw.off('close', onClose);
       try { request.raw.socket?.setTimeout(0); } catch { /* ignore */ }
       if (err instanceof ClusterGateError) {
@@ -350,7 +350,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     try {
       result = await runResticBackup({
         target,
-        clientId: job.clientId,
+        tenantId: job.tenantId,
         component: component as ResticComponent,
         passwordHex: password,
         stdinFilename,
@@ -362,21 +362,21 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       const msg = err instanceof Error ? err.message : String(err);
       const aborted = msg.includes('aborted (HTTP request cancelled)');
       app.log[aborted ? 'warn' : 'error'](
-        { err, bundleId, component, clientId: job.clientId, aborted },
+        { err, bundleId, component, tenantId: job.tenantId, aborted },
         aborted
-          ? 'tenant-bundles restic-stream: aborted by client disconnect'
+          ? 'tenant-bundles restic-stream: aborted by tenant disconnect'
           : 'tenant-bundles restic-stream: restic backup failed',
       );
       if (aborted) {
         // 499 Client Closed Request — body is informational only since
-        // the client is already gone. The orchestrator's component
+        // the tenant is already gone. The orchestrator's component
         // wait-for-Job path will see the Job pod's curl exit non-zero
         // and mark the component failed independently.
         return reply.code(499).send({ error: { code: 'CLIENT_ABORTED', message: msg } });
       }
       throw new ApiError('RESTIC_BACKUP_FAILED', msg, 500);
     } finally {
-      request.raw.off('aborted', onClientGone);
+      request.raw.off('aborted', onTenantGone);
       request.raw.off('close', onClose);
       // Clear the idle-socket timeout so Fastify can reuse the
       // connection for the next request (HTTP/1.1 keep-alive).

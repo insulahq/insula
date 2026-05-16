@@ -104,7 +104,7 @@ describe('db-manager', () => {
       const ctx = await buildDbContext(
         k8s,
         '/tmp/kubeconfig',
-        'client-abc',
+        'tenant-abc',
         'mydb',
         { runtime: 'mariadb', code: 'mariadb' },
         { MARIADB_ROOT_PASSWORD: 'secret123' },
@@ -114,7 +114,7 @@ describe('db-manager', () => {
       expect(ctx.rootPassword).toBe('secret123');
       expect(ctx.podName).toBe('mydb-0');
       expect(ctx.containerName).toBe('mariadb');
-      expect(ctx.namespace).toBe('client-abc');
+      expect(ctx.namespace).toBe('tenant-abc');
     });
 
     it('should detect postgresql engine', async () => {
@@ -123,7 +123,7 @@ describe('db-manager', () => {
       const ctx = await buildDbContext(
         k8s,
         undefined,
-        'client-abc',
+        'tenant-abc',
         'pgdb',
         { runtime: 'postgresql', code: 'postgresql' },
         {},
@@ -139,7 +139,7 @@ describe('db-manager', () => {
       const ctx = await buildDbContext(
         k8s,
         undefined,
-        'client-abc',
+        'tenant-abc',
         'pgdb',
         { runtime: 'postgres', code: 'postgres' },
         {},
@@ -154,7 +154,7 @@ describe('db-manager', () => {
       const ctx = await buildDbContext(
         k8s,
         undefined,
-        'client-abc',
+        'tenant-abc',
         'mysql-inst',
         { runtime: 'mysql', code: 'mysql' },
         { MYSQL_ROOT_PASSWORD: 'mysecret' },
@@ -168,7 +168,7 @@ describe('db-manager', () => {
       const k8s = createMockK8s([{ name: 'redis-0', phase: 'Running' }]);
 
       await expect(
-        buildDbContext(k8s, undefined, 'client-abc', 'redis', { runtime: 'redis', code: 'redis' }, {}),
+        buildDbContext(k8s, undefined, 'tenant-abc', 'redis', { runtime: 'redis', code: 'redis' }, {}),
       ).rejects.toThrow('not supported for management');
     });
 
@@ -176,7 +176,7 @@ describe('db-manager', () => {
       const k8s = createMockK8s([{ name: 'mydb-0', phase: 'Pending' }]);
 
       await expect(
-        buildDbContext(k8s, undefined, 'client-abc', 'mydb', { runtime: 'mariadb', code: 'mariadb' }, {}),
+        buildDbContext(k8s, undefined, 'tenant-abc', 'mydb', { runtime: 'mariadb', code: 'mariadb' }, {}),
       ).rejects.toThrow('No running pod found');
     });
 
@@ -184,7 +184,7 @@ describe('db-manager', () => {
       const k8s = createMockK8s([]);
 
       await expect(
-        buildDbContext(k8s, undefined, 'client-abc', 'mydb', { runtime: 'mariadb', code: 'mariadb' }, {}),
+        buildDbContext(k8s, undefined, 'tenant-abc', 'mydb', { runtime: 'mariadb', code: 'mariadb' }, {}),
       ).rejects.toThrow('No running pod found');
     });
 
@@ -215,7 +215,7 @@ describe('db-manager', () => {
 
       const ctx = {
         kubeconfigPath: '/tmp/kubeconfig',
-        namespace: 'client-abc',
+        namespace: 'tenant-abc',
         podName: 'mydb-0',
         containerName: 'mariadb',
         engine: 'mariadb' as const,
@@ -231,7 +231,7 @@ describe('db-manager', () => {
 
       const ctx = {
         kubeconfigPath: undefined,
-        namespace: 'client-abc',
+        namespace: 'tenant-abc',
         podName: 'pgdb-0',
         containerName: 'postgresql',
         engine: 'postgresql' as const,

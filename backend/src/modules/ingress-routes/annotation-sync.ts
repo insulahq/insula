@@ -7,7 +7,7 @@
  * `spec.routes[]` entry.
  *
  * The tenant reconciler in domains/k8s-ingress.ts:
- *   1. Calls buildRouteSpecs(db, k8s, clientId, domainIds) to get a
+ *   1. Calls buildRouteSpecs(db, k8s, tenantId, domainIds) to get a
  *      RouteSpec per active ingress_routes row.
  *   2. Applies every Middleware in `spec.middlewares[]` first (the
  *      IngressRoute that references them must come AFTER, otherwise
@@ -28,7 +28,7 @@ import {
   routeProtectedDirs,
   routeAuthUsers,
   domains,
-  clients,
+  tenants,
   ingressAuthConfigs,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -503,16 +503,16 @@ export async function buildRouteSpec(
   db: Database,
   k8s: K8sClients,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   serviceName: string,
   servicePort: number,
 ): Promise<RouteBuildResult | null> {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) return null;
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client?.kubernetesNamespace) return null;
-  const namespace = client.kubernetesNamespace;
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant?.kubernetesNamespace) return null;
+  const namespace = tenant.kubernetesNamespace;
 
   // 1. Sync htpasswd Secrets (kept here because they're K8s Secrets, not
   //    Middlewares — the basicAuth Middleware just references them).
@@ -585,32 +585,32 @@ export async function buildRouteSpec(
 }
 
 /**
- * Walk every active ingress_routes row for a client and build a RouteSpec
+ * Walk every active ingress_routes row for a tenant and build a RouteSpec
  * per row. The reconciler in domains/k8s-ingress.ts iterates this to
  * assemble the tenant IngressRoute.
  */
 export async function buildAllRouteSpecs(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   domainIds: string[],
   backendResolver: (route: { id: string; deploymentId: string | null; privateWorkerId: string | null; servicePort: number | null }) => { serviceName: string; port: number } | null,
 ): Promise<Map<string, RouteBuildResult>> {
   const out = new Map<string, RouteBuildResult>();
   const allRoutes = await db.select().from(ingressRoutes);
-  const clientRoutes = allRoutes.filter(
+  const tenantRoutes = allRoutes.filter(
     (r) => domainIds.includes(r.domainId)
       && (r.deploymentId || r.privateWorkerId)
       && r.status === 'active',
   );
-  for (const route of clientRoutes) {
+  for (const route of tenantRoutes) {
     const backend = backendResolver(route);
     if (!backend) continue;
     const spec = await buildRouteSpec(
       db,
       k8s,
       route.id,
-      clientId,
+      tenantId,
       backend.serviceName,
       backend.port,
     );
@@ -702,18 +702,18 @@ export async function deleteProtectedDirIngress(
 // ─── OIDC ForwardAuth Middleware ────────────────────────────────────────────
 
 /**
- * True when at least one enabled auth config under the same client as
+ * True when at least one enabled auth config under the same tenant as
  * `routeId` has a non-empty claim_rules array. The claim-validator
  * sidecar is deployed only when this is true; in that case the
  * ForwardAuth address points at the sidecar (port 4181), otherwise
  * directly at oauth2-proxy (port 4180).
  */
-export async function clientHasActiveClaimRules(
+export async function tenantHasActiveClaimRules(
   db: Database,
   routeId: string,
 ): Promise<boolean> {
   const [routeRow] = await db
-    .select({ clientId: domains.clientId })
+    .select({ tenantId: domains.tenantId })
     .from(ingressRoutes)
     .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
     .where(eq(ingressRoutes.id, routeId));
@@ -727,7 +727,7 @@ export async function clientHasActiveClaimRules(
     .where(
       and(
         eq(ingressAuthConfigs.enabled, true),
-        eq(domains.clientId, routeRow.clientId),
+        eq(domains.tenantId, routeRow.tenantId),
       ),
     );
   return rows.some((r) => Array.isArray(r.claimRules) && r.claimRules.length > 0);
@@ -745,7 +745,7 @@ async function buildOidcMiddleware(
     .where(eq(ingressAuthConfigs.ingressRouteId, routeId));
   if (!cfg || !cfg.enabled) return { middlewares: [], refs: [] };
 
-  const sidecarPresent = await clientHasActiveClaimRules(db, routeId);
+  const sidecarPresent = await tenantHasActiveClaimRules(db, routeId);
   const proxyHost = `oauth2-proxy.${namespace}.svc.cluster.local`;
   // When the sidecar is present, claim-validator at :4181/auth accepts
   // ?route=<id> to select the matching rule set; otherwise we hit
@@ -774,7 +774,7 @@ async function buildOidcMiddleware(
       // Inherit forwardAuthSpec's safe default (false). Traefik's
       // entryPoint trustedIPs=127.0.0.1/32 already strips attacker XFF
       // upstream; oauth2-proxy / claim-validator don't need the
-      // client IP — they enforce auth via cookie/JWT.
+      // tenant IP — they enforce auth via cookie/JWT.
       authResponseHeaders: responseHeaders.length > 0 ? responseHeaders : undefined,
     }),
     labels: {
@@ -790,10 +790,10 @@ async function buildOidcMiddleware(
 
 /**
  * Sync the CA-bundle Secret for an mTLS-enabled route and emit the
- * companion passTLSClientCert Middleware that forwards the client cert
+ * companion passTLSClientCert Middleware that forwards the tenant cert
  * details to the upstream as a header.
  *
- * mTLS REQUIRES a TLSOption CR (clientAuth.clientAuthType + secretNames
+ * mTLS REQUIRES a TLSOption CR (tenantAuth.tenantAuthType + secretNames
  * pointing at the CA bundle Secret) — that piece is returned by a
  * separate function consumed by the IngressRoute builder (which
  * attaches it via spec.tls.options). For now, this function only emits

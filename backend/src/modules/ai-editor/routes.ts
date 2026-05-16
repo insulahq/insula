@@ -203,20 +203,20 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── Token budget status ────────────────────────────────────────────────
 
-  app.get('/clients/:clientId/ai/budget', {
+  app.get('/tenants/:tenantId/ai/budget', {
     onRequest: [authenticate],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const budget = await service.getTokenBudget(app.db, clientId);
+    const { tenantId } = request.params as { tenantId: string };
+    const budget = await service.getTokenBudget(app.db, tenantId);
     return success(budget);
   });
 
   // ─── AI Edit ───────────────────────────────────────────────────────────
 
-  app.post('/clients/:clientId/ai/edit', {
+  app.post('/tenants/:tenantId/ai/edit', {
     onRequest: [authenticate],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = aiEditRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -228,7 +228,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
     // Check token budget (skip for admins and impersonated sessions)
     if (!isAdmin && !isImpersonating) {
-      const budget = await service.getTokenBudget(app.db, clientId);
+      const budget = await service.getTokenBudget(app.db, tenantId);
       if (budget.exhausted) {
         throw new ApiError('BUDGET_EXHAUSTED', `Weekly AI token budget exhausted (${budget.percentUsed}% used). Resets ${budget.weekStart}.`, 429);
       }
@@ -248,7 +248,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
         fileContent: parsed.data.file_content ?? '',
         instruction: parsed.data.instruction,
         modelId: parsed.data.model_id,
-        clientId,
+        tenantId,
         deploymentId: parsed.data.deployment_id ?? null,
         isAdmin,
       });
@@ -265,13 +265,13 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const k8sClients = (() => { try { return createK8sClients(kubeconfigPath); } catch { return undefined; } })();
-      if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+      const k8sTenants = (() => { try { return createK8sClients(kubeconfigPath); } catch { return undefined; } })();
+      if (!k8sTenants) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
-      const namespace = await deploymentService.getClientNamespace(app.db, clientId);
+      const namespace = await deploymentService.getTenantNamespace(app.db, tenantId);
 
       // List files recursively via sidecar
-      const lsResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
+      const lsResult = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
         query: { path: parsed.data.folder_path, recursive: 'true' },
       });
       if (lsResult.status !== 200) throw new ApiError('FILE_MANAGER_ERROR', 'Failed to list directory', 500);
@@ -295,7 +295,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
       // Combined folder mode — plan + execute in one call
       const readFileFn = async (filePath: string) => {
-        const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
+        const readResult = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
           query: { path: filePath },
         });
         if (readResult.status !== 200) throw new Error(`Failed to read ${filePath}`);
@@ -308,7 +308,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
         plan: planResult.plan,
         instruction: parsed.data.instruction,
         modelId: parsed.data.model_id,
-        clientId,
+        tenantId,
         deploymentId: parsed.data.deployment_id ?? null,
         isAdmin,
         readFile: readFileFn,
@@ -337,10 +337,10 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const k8sClients = (() => { try { return createK8sClients(kubeconfigPath); } catch { return undefined; } })();
-      if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+      const k8sTenants = (() => { try { return createK8sClients(kubeconfigPath); } catch { return undefined; } })();
+      if (!k8sTenants) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
-      const namespace = await deploymentService.getClientNamespace(app.db, clientId);
+      const namespace = await deploymentService.getTenantNamespace(app.db, tenantId);
 
       const result = await service.executeFolderEdit(app.db, {
         folderPath: parsed.data.folder_path,
@@ -348,11 +348,11 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
         plan,
         instruction: parsed.data.instruction,
         modelId: parsed.data.model_id,
-        clientId,
+        tenantId,
         deploymentId: parsed.data.deployment_id ?? null,
         isAdmin,
         readFile: async (filePath: string) => {
-          const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
+          const readResult = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
             query: { path: filePath },
           });
           if (readResult.status !== 200) throw new Error(`Failed to read ${filePath}`);

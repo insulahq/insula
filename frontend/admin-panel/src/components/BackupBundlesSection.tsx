@@ -9,7 +9,7 @@ import {
   useVerifyBundle,
   downloadDataExport,
 } from '@/hooks/use-backup-bundles';
-import { useClients } from '@/hooks/use-clients';
+import { useTenants } from '@/hooks/use-tenants';
 import type {
   BundleSummary,
   BackupConfigResponse,
@@ -178,8 +178,8 @@ function BundleRow({
       <td className="px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-400" title={bundle.id}>
         {bundle.id.slice(0, 16)}…
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-400" title={bundle.clientId}>
-        {bundle.clientId.slice(0, 8)}
+      <td className="px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-400" title={bundle.tenantId}>
+        {bundle.tenantId.slice(0, 8)}
       </td>
       <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
@@ -208,7 +208,7 @@ function BundleRow({
           </button>
           {bundle.status === 'completed' && (
             <Link
-              to={`/restore?bundleId=${encodeURIComponent(bundle.id)}&clientId=${encodeURIComponent(bundle.clientId)}`}
+              to={`/restore?bundleId=${encodeURIComponent(bundle.id)}&tenantId=${encodeURIComponent(bundle.tenantId)}`}
               className="cursor-pointer flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
               title="Open the Plesk-style cart to selectively restore from this bundle"
             >
@@ -255,9 +255,9 @@ function CreateBundleModal({
   targets: BackupConfigResponse[];
   onClose: () => void;
 }) {
-  const { data: clientsResp } = useClients({ limit: 100 });
+  const { data: clientsResp } = useTenants({ limit: 100 });
   const create = useCreateBundle();
-  const [clientId, setClientId] = useState('');
+  const [tenantId, setTenantId] = useState('');
   const [targetId, setTargetId] = useState(targets[0]?.id ?? '');
   const [label, setLabel] = useState('');
   const [retentionDays, setRetentionDays] = useState(30);
@@ -269,12 +269,12 @@ function CreateBundleModal({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ bundleId: string; status: string } | null>(null);
 
-  const clients = clientsResp?.data ?? [];
+  const tenants = clientsResp?.data ?? [];
 
   const onSubmit = async () => {
     setError(null);
-    if (!clientId || !targetId) {
-      setError('Pick a client and a backup target.');
+    if (!tenantId || !targetId) {
+      setError('Pick a tenant and a backup target.');
       return;
     }
     if (enableDataExport && exportPassphrase.length < 12) {
@@ -284,13 +284,13 @@ function CreateBundleModal({
     setSubmitting(true);
     try {
       const r = await create.mutateAsync({
-        clientId,
+        tenantId,
         targetConfigId: targetId,
-        // GDPR exportMode requires initiator='client' per the schema
-        // refinement (the client owns the request + passphrase). The
-        // admin endpoint accepts client-initiated bundles when
+        // GDPR exportMode requires initiator='tenant' per the schema
+        // refinement (the tenant owns the request + passphrase). The
+        // admin endpoint accepts tenant-initiated bundles when
         // exportMode is set.
-        initiator: enableDataExport ? 'client' : 'admin',
+        initiator: enableDataExport ? 'tenant' : 'admin',
         label: label || undefined,
         retentionDays,
         components: {
@@ -340,10 +340,10 @@ function CreateBundleModal({
           <div className="space-y-3">
             <label className="block text-sm">
               <span className="text-gray-700 dark:text-gray-300 font-medium">Client</span>
-              <select className={`${INPUT_CLASS} mt-1`} value={clientId} onChange={(e) => setClientId(e.target.value)}>
-                <option value="">Pick a client…</option>
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>{c.companyName} ({c.id.slice(0, 8)})</option>
+              <select className={`${INPUT_CLASS} mt-1`} value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+                <option value="">Pick a tenant…</option>
+                {tenants.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.id.slice(0, 8)})</option>
                 ))}
               </select>
             </label>
@@ -372,7 +372,7 @@ function CreateBundleModal({
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={includeConfig} onChange={(e) => setIncludeConfig(e.target.checked)} />
                 <Database size={14} className="text-gray-500" />
-                <span>Config (client DB rows)</span>
+                <span>Config (tenant DB rows)</span>
               </label>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={includeSecrets} onChange={(e) => setIncludeSecrets(e.target.checked)} />

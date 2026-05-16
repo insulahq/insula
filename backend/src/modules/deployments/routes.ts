@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
 import { triggerUpgradeSchema, batchUpgradeSchema } from '@k8s-hosting/api-contracts';
 import * as service from './service.js';
@@ -13,18 +13,18 @@ import { restartDeployment } from './k8s-deployer.js';
 import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
 import { eq, and, ne, inArray, desc, sql } from 'drizzle-orm';
-import { catalogEntries, deployments, clients } from '../../db/schema.js';
+import { catalogEntries, deployments, tenants } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 import { getFileManagerImage } from '../file-manager/image.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
-  // Phase 6: method-aware role guard — read for all client roles,
-  // writes only for client_admin + staff.
+  // Phase 6: method-aware role guard — read for all tenant roles,
+  // writes only for tenant_admin + staff.
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireClientRoleByMethod());
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantRoleByMethod());
+  app.addHook('onRequest', requireTenantAccess());
 
-  // Lazy-init K8s clients (null if no kubeconfig available)
+  // Lazy-init K8s tenants (null if no kubeconfig available)
   const getK8s = () => {
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -34,9 +34,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  // POST /api/v1/clients/:clientId/deployments
-  app.post('/clients/:clientId/deployments', async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+  // POST /api/v1/tenants/:tenantId/deployments
+  app.post('/tenants/:tenantId/deployments', async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = createDeploymentSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -48,24 +48,24 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const deployment = await service.createDeployment(app.db, clientId, parsed.data, request.user.sub, getK8s());
+    const deployment = await service.createDeployment(app.db, tenantId, parsed.data, request.user.sub, getK8s());
     reply.status(201).send(success(deployment));
   });
 
-  // GET /api/v1/clients/:clientId/deployments
-  app.get('/clients/:clientId/deployments', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/deployments
+  app.get('/tenants/:tenantId/deployments', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const paginationParams = parsePaginationParams(query);
     const includeDeleted = query.include_deleted === 'true' || query.include_deleted === '1';
 
-    const result = await service.listDeployments(app.db, clientId, { ...paginationParams, includeDeleted });
+    const result = await service.listDeployments(app.db, tenantId, { ...paginationParams, includeDeleted });
     return paginated(result.data, result.pagination);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/storage-folders?type=database&code=mariadb
-  app.get('/clients/:clientId/deployments/storage-folders', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/deployments/storage-folders?type=database&code=mariadb
+  app.get('/tenants/:tenantId/deployments/storage-folders', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const entryType = String(query.type ?? '');
     const entryCode = String(query.code ?? '');
@@ -80,20 +80,20 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const result = await service.listStorageFolders(app.db, clientId, entryType, entryCode, getK8s(), kubeconfigPath);
+    const result = await service.listStorageFolders(app.db, tenantId, entryType, entryCode, getK8s(), kubeconfigPath);
     return success(result);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id
-  app.get('/clients/:clientId/deployments/:id', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const deployment = await service.getDeploymentWithVolumePaths(app.db, clientId, id);
+  // GET /api/v1/tenants/:tenantId/deployments/:id
+  app.get('/tenants/:tenantId/deployments/:id', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const deployment = await service.getDeploymentWithVolumePaths(app.db, tenantId, id);
     return success(deployment);
   });
 
-  // PATCH /api/v1/clients/:clientId/deployments/:id
-  app.patch('/clients/:clientId/deployments/:id', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // PATCH /api/v1/tenants/:tenantId/deployments/:id
+  app.patch('/tenants/:tenantId/deployments/:id', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const parsed = updateDeploymentSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -105,7 +105,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const updated = await service.updateDeployment(app.db, clientId, id, parsed.data, getK8s());
+    const updated = await service.updateDeployment(app.db, tenantId, id, parsed.data, getK8s());
 
     // Clear any previous error when deployment transitions to running
     if (parsed.data.status === 'running') {
@@ -115,9 +115,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
-  // PATCH /api/v1/clients/:clientId/deployments/:id/resources
-  app.patch('/clients/:clientId/deployments/:id/resources', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // PATCH /api/v1/tenants/:tenantId/deployments/:id/resources
+  app.patch('/tenants/:tenantId/deployments/:id/resources', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const parsed = updateDeploymentResourcesSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -129,60 +129,60 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const updated = await service.updateDeploymentResources(app.db, clientId, id, parsed.data, getK8s());
+    const updated = await service.updateDeploymentResources(app.db, tenantId, id, parsed.data, getK8s());
     return success(updated);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/resource-availability
-  app.get('/clients/:clientId/deployments/:id/resource-availability', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const availability = await service.getResourceAvailability(app.db, clientId, id);
+  // GET /api/v1/tenants/:tenantId/deployments/:id/resource-availability
+  app.get('/tenants/:tenantId/deployments/:id/resource-availability', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const availability = await service.getResourceAvailability(app.db, tenantId, id);
     return success(availability);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/resource-breakdown
+  // GET /api/v1/tenants/:tenantId/deployments/:id/resource-breakdown
   //   ADR-037: returns the per-component CPU/memory allocation that the
   //   allocator produced from the deployment-level cpu_request /
   //   memory_request. Surfaces:
   //     - The total (deployment-level) budget
   //     - Per-component {cpu, memory, weight, pinned}
   //     - Warnings (e.g. no resourceShare declared → even split)
-  //     - QoS model labels for client-facing badges
-  app.get('/clients/:clientId/deployments/:id/resource-breakdown', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const breakdown = await service.getResourceBreakdown(app.db, clientId, id);
+  //     - QoS model labels for tenant-facing badges
+  app.get('/tenants/:tenantId/deployments/:id/resource-breakdown', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const breakdown = await service.getResourceBreakdown(app.db, tenantId, id);
     return success(breakdown);
   });
 
   // ─── Catalog version upgrade ───────────────────────────────────────────────
-  // GET /api/v1/clients/:clientId/deployments/:id/available-upgrades
+  // GET /api/v1/tenants/:tenantId/deployments/:id/available-upgrades
   //   Returns { from, direct[], recommendedChain[], lockMode }. Lists every
   //   catalog version that lists the current installedVersion in its
   //   upgradeFrom. For strict apps the recommendedChain walks intermediate
   //   versions toward the newest reachable target.
-  app.get('/clients/:clientId/deployments/:id/available-upgrades', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    // Pass clientId so the service enforces tenant isolation — without
-    // it, a client_admin for tenant A could enumerate upgrades for
+  app.get('/tenants/:tenantId/deployments/:id/available-upgrades', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    // Pass tenantId so the service enforces tenant isolation — without
+    // it, a tenant_admin for tenant A could enumerate upgrades for
     // tenant B's deployments by UUID guessing.
-    const upgrades = await upgradeVersion.getAvailableUpgrades(app.db, id, clientId);
+    const upgrades = await upgradeVersion.getAvailableUpgrades(app.db, id, tenantId);
     return success(upgrades);
   });
 
-  // PATCH /api/v1/clients/:clientId/deployments/:id/version
+  // PATCH /api/v1/tenants/:tenantId/deployments/:id/version
   //   body: { target_version: "5.1", force?: true }
   //   Enforces versionLockMode + upgradeFrom chain. 409 on path violation,
   //   404 on unknown version, 500 on K8s deploy failure (deployment row is
   //   marked failed so the UI surfaces lastError).
-  app.patch('/clients/:clientId/deployments/:id/version', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.patch('/tenants/:tenantId/deployments/:id/version', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const parsed = triggerUpgradeSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
       throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${firstError.message}`, 400, { field: firstError.path.join('.') });
     }
     // Role-gate the force flag: only admins can override the upgrade-path
-    // guard on advisory apps. A client_admin attempting force=true gets
+    // guard on advisory apps. A tenant_admin attempting force=true gets
     // rejected here — the service layer's JSDoc explicitly delegates this
     // check to the route.
     const userRole = (request.user as { role?: string } | undefined)?.role;
@@ -196,62 +196,62 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       );
     }
     const k8s = getK8s();
-    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
-    const updated = await upgradeVersion.upgradeDeploymentVersion(app.db, clientId, id, {
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster tenant unavailable; cannot redeploy', 503);
+    const updated = await upgradeVersion.upgradeDeploymentVersion(app.db, tenantId, id, {
       targetVersion: parsed.data.target_version,
       force: parsed.data.force,
     }, k8s);
     return success(updated);
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/rollback-version
+  // POST /api/v1/tenants/:tenantId/deployments/:id/rollback-version
   //   Restores previous_version (single-step). Schema migrations are NOT
   //   reversed — the UI shows a warning before calling this.
-  app.post('/clients/:clientId/deployments/:id/rollback-version', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.post('/tenants/:tenantId/deployments/:id/rollback-version', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const k8s = getK8s();
-    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
-    const updated = await upgradeVersion.rollbackDeploymentVersion(app.db, clientId, id, k8s);
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster tenant unavailable; cannot redeploy', 503);
+    const updated = await upgradeVersion.rollbackDeploymentVersion(app.db, tenantId, id, k8s);
     return success(updated);
   });
 
-  // PATCH /api/v1/clients/:clientId/deployments/:id/auto-upgrade
+  // PATCH /api/v1/tenants/:tenantId/deployments/:id/auto-upgrade
   //   body: { enabled: boolean }
   //   Toggles the per-deployment opt-in flag for the upgrade cron.
   //   Strict apps reject the toggle entirely (the cron would skip them
   //   anyway — surface the intent at API time so the UI doesn't show
   //   a misleading "auto-upgrade enabled" badge).
-  app.patch('/clients/:clientId/deployments/:id/auto-upgrade', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.patch('/tenants/:tenantId/deployments/:id/auto-upgrade', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = request.body as { enabled?: unknown };
     if (typeof body?.enabled !== 'boolean') {
       throw new ApiError('INVALID_FIELD_VALUE', 'enabled must be a boolean', 400, { field: 'enabled' });
     }
-    const updated = await upgradeVersion.setAutoUpgrade(app.db, clientId, id, body.enabled);
+    const updated = await upgradeVersion.setAutoUpgrade(app.db, tenantId, id, body.enabled);
     return success(updated);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/credentials
-  app.get('/clients/:clientId/deployments/:id/credentials', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const result = await service.getDeploymentCredentials(app.db, clientId, id);
+  // GET /api/v1/tenants/:tenantId/deployments/:id/credentials
+  app.get('/tenants/:tenantId/deployments/:id/credentials', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const result = await service.getDeploymentCredentials(app.db, tenantId, id);
     return success(result);
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/regenerate-credentials
+  // POST /api/v1/tenants/:tenantId/deployments/:id/regenerate-credentials
   // Deprecated: credential regeneration is no longer supported. Credentials are
   // generated once at deployment time and treated as read-only by the platform.
-  app.post('/clients/:clientId/deployments/:id/regenerate-credentials', async (_request, reply) => {
+  app.post('/tenants/:tenantId/deployments/:id/regenerate-credentials', async (_request, reply) => {
     reply.status(410).send({
       error: 'FEATURE_REMOVED',
       message: 'Credential regeneration is not supported. Credentials are set at deployment time.',
     });
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/restart
-  app.post('/clients/:clientId/deployments/:id/restart', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const deployment = await service.getDeploymentById(app.db, clientId, id);
+  // POST /api/v1/tenants/:tenantId/deployments/:id/restart
+  app.post('/tenants/:tenantId/deployments/:id/restart', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const deployment = await service.getDeploymentById(app.db, tenantId, id);
 
     const k8s = getK8s();
     if (!k8s) {
@@ -265,7 +265,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const components = await service.resolveDeploymentComponents(app.db, deployment);
-    const namespace = await service.getClientNamespace(app.db, clientId);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
 
     await restartDeployment(k8s, namespace, deployment.name, components);
 
@@ -277,14 +277,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success({ message: 'Rolling restart initiated' });
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/logs?lines=100
-  app.get('/clients/:clientId/deployments/:id/logs', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // GET /api/v1/tenants/:tenantId/deployments/:id/logs?lines=100
+  app.get('/tenants/:tenantId/deployments/:id/logs', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const tailLines = Math.min(parseInt(String(query.lines ?? '200'), 10) || 200, 1000);
 
-    const deployment = await service.getDeploymentById(app.db, clientId, id);
-    const namespace = await service.getClientNamespace(app.db, clientId);
+    const deployment = await service.getDeploymentById(app.db, tenantId, id);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
     const k8s = getK8s();
     if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
@@ -371,12 +371,12 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/live-metrics
-  app.get('/clients/:clientId/deployments/:id/live-metrics', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // GET /api/v1/tenants/:tenantId/deployments/:id/live-metrics
+  app.get('/tenants/:tenantId/deployments/:id/live-metrics', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
 
-    const deployment = await service.getDeploymentById(app.db, clientId, id);
-    const namespace = await service.getClientNamespace(app.db, clientId);
+    const deployment = await service.getDeploymentById(app.db, tenantId, id);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
     const k8s = getK8s();
     if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
@@ -432,16 +432,16 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/restore
-  app.post('/clients/:clientId/deployments/:id/restore', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const restored = await service.restoreDeployment(app.db, clientId, id, getK8s());
+  // POST /api/v1/tenants/:tenantId/deployments/:id/restore
+  app.post('/tenants/:tenantId/deployments/:id/restore', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const restored = await service.restoreDeployment(app.db, tenantId, id, getK8s());
     return success(restored);
   });
 
   // ─── Database Management Routes ──────────────────────────────────────────
 
-  async function buildDbCtx(clientId: string, deploymentId: string) {
+  async function buildDbCtx(tenantId: string, deploymentId: string) {
     const k8s = getK8s();
     if (!k8s) {
       throw new ApiError(
@@ -453,7 +453,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const deployment = await service.getDeploymentById(app.db, clientId, deploymentId);
+    const deployment = await service.getDeploymentById(app.db, tenantId, deploymentId);
     const [entry] = await app.db
       .select()
       .from(catalogEntries)
@@ -480,7 +480,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const namespace = await service.getClientNamespace(app.db, clientId);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
     const config = service.parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 
@@ -495,53 +495,53 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return { ...ctx, deploymentSubPath };
   }
 
-  // GET /api/v1/clients/:clientId/deployments/:id/databases
-  app.get('/clients/:clientId/deployments/:id/databases', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const ctx = await buildDbCtx(clientId, id);
+  // GET /api/v1/tenants/:tenantId/deployments/:id/databases
+  app.get('/tenants/:tenantId/deployments/:id/databases', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const ctx = await buildDbCtx(tenantId, id);
     const databases = await dbManager.listDatabases(ctx);
     return success(databases);
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/databases
-  app.post('/clients/:clientId/deployments/:id/databases', async (request, reply) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // POST /api/v1/tenants/:tenantId/deployments/:id/databases
+  app.post('/tenants/:tenantId/deployments/:id/databases', async (request, reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { name?: string };
     if (!body.name) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'Database name is required', 400, { field: 'name' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     await dbManager.createDatabase(ctx, body.name);
     reply.status(201).send(success({ name: body.name }));
   });
 
-  // DELETE /api/v1/clients/:clientId/deployments/:id/databases/:dbName
-  app.delete('/clients/:clientId/deployments/:id/databases/:dbName', async (request, reply) => {
-    const { clientId, id, dbName } = request.params as { clientId: string; id: string; dbName: string };
-    const ctx = await buildDbCtx(clientId, id);
+  // DELETE /api/v1/tenants/:tenantId/deployments/:id/databases/:dbName
+  app.delete('/tenants/:tenantId/deployments/:id/databases/:dbName', async (request, reply) => {
+    const { tenantId, id, dbName } = request.params as { tenantId: string; id: string; dbName: string };
+    const ctx = await buildDbCtx(tenantId, id);
     await dbManager.dropDatabase(ctx, dbName);
     reply.status(204).send();
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/db-users
-  app.get('/clients/:clientId/deployments/:id/db-users', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const ctx = await buildDbCtx(clientId, id);
+  // GET /api/v1/tenants/:tenantId/deployments/:id/db-users
+  app.get('/tenants/:tenantId/deployments/:id/db-users', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const ctx = await buildDbCtx(tenantId, id);
     const users = await dbManager.listUsers(ctx);
     return success(users);
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/db-users
-  app.post('/clients/:clientId/deployments/:id/db-users', async (request, reply) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // POST /api/v1/tenants/:tenantId/deployments/:id/db-users
+  app.post('/tenants/:tenantId/deployments/:id/db-users', async (request, reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { username?: string; database?: string };
     if (!body.username) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'Username is required', 400, { field: 'username' });
     }
 
     const password = generateSecurePassword(24);
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     await dbManager.createUser(ctx, body.username, password, body.database);
     reply.status(201).send(success({
       username: body.username,
@@ -550,29 +550,29 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }));
   });
 
-  // DELETE /api/v1/clients/:clientId/deployments/:id/db-users/:username
-  app.delete('/clients/:clientId/deployments/:id/db-users/:username', async (request, reply) => {
-    const { clientId, id, username } = request.params as { clientId: string; id: string; username: string };
-    const ctx = await buildDbCtx(clientId, id);
+  // DELETE /api/v1/tenants/:tenantId/deployments/:id/db-users/:username
+  app.delete('/tenants/:tenantId/deployments/:id/db-users/:username', async (request, reply) => {
+    const { tenantId, id, username } = request.params as { tenantId: string; id: string; username: string };
+    const ctx = await buildDbCtx(tenantId, id);
     await dbManager.dropUser(ctx, username);
     reply.status(204).send();
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/db-users/:username/password
-  app.post('/clients/:clientId/deployments/:id/db-users/:username/password', async (request) => {
-    const { clientId, id, username } = request.params as { clientId: string; id: string; username: string };
+  // POST /api/v1/tenants/:tenantId/deployments/:id/db-users/:username/password
+  app.post('/tenants/:tenantId/deployments/:id/db-users/:username/password', async (request) => {
+    const { tenantId, id, username } = request.params as { tenantId: string; id: string; username: string };
 
     const password = generateSecurePassword(24);
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     await dbManager.setUserPassword(ctx, username, password);
     return success({ username, password });
   });
 
   // ─── Database Query & Browsing Routes ───────────────────────────────────
 
-  // POST /api/v1/clients/:clientId/deployments/:id/query
-  app.post('/clients/:clientId/deployments/:id/query', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // POST /api/v1/tenants/:tenantId/deployments/:id/query
+  app.post('/tenants/:tenantId/deployments/:id/query', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { database?: string; query?: string };
 
     if (!body.database) {
@@ -582,15 +582,15 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'Query is required', 400, { field: 'query' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     const result = await dbManager.executeQuery(ctx, body.database, body.query);
     return success(result);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/tables?database=mydb
+  // GET /api/v1/tenants/:tenantId/deployments/:id/tables?database=mydb
   // Returns table names with sizes
-  app.get('/clients/:clientId/deployments/:id/tables', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.get('/tenants/:tenantId/deployments/:id/tables', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
 
@@ -598,23 +598,23 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     const tables = await dbManager.listTablesWithSize(ctx, database);
     return success(tables);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/databases-with-size
+  // GET /api/v1/tenants/:tenantId/deployments/:id/databases-with-size
   // Returns database names with total sizes
-  app.get('/clients/:clientId/deployments/:id/databases-with-size', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const ctx = await buildDbCtx(clientId, id);
+  app.get('/tenants/:tenantId/deployments/:id/databases-with-size', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const ctx = await buildDbCtx(tenantId, id);
     const databases = await dbManager.listDatabasesWithSize(ctx);
     return success(databases);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/table-structure?database=mydb&table=users
-  app.get('/clients/:clientId/deployments/:id/table-structure', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // GET /api/v1/tenants/:tenantId/deployments/:id/table-structure?database=mydb&table=users
+  app.get('/tenants/:tenantId/deployments/:id/table-structure', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
     const table = query.table as string | undefined;
@@ -626,14 +626,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     const columns = await dbManager.describeTable(ctx, database, table);
     return success(columns);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/table-data?database=mydb&table=users&limit=50&offset=0&orderBy=id&orderDir=desc
-  app.get('/clients/:clientId/deployments/:id/table-data', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // GET /api/v1/tenants/:tenantId/deployments/:id/table-data?database=mydb&table=users&limit=50&offset=0&orderBy=id&orderDir=desc
+  app.get('/tenants/:tenantId/deployments/:id/table-data', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
     const table = query.table as string | undefined;
@@ -650,14 +650,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const orderBy = query.orderBy as string | undefined;
     const orderDir = (query.orderDir as string | undefined)?.toLowerCase() === 'desc' ? 'desc' as const : 'asc' as const;
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     const result = await dbManager.browseTable(ctx, database, table, { limit, offset, orderBy, orderDir });
     return success(result);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/row-count?database=mydb&table=users
-  app.get('/clients/:clientId/deployments/:id/row-count', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // GET /api/v1/tenants/:tenantId/deployments/:id/row-count?database=mydb&table=users
+  app.get('/tenants/:tenantId/deployments/:id/row-count', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
     const table = query.table as string | undefined;
@@ -669,16 +669,16 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     const count = await dbManager.countRows(ctx, database, table);
     return success({ count });
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/export?database=mydb&output_path=/exports
+  // POST /api/v1/tenants/:tenantId/deployments/:id/export?database=mydb&output_path=/exports
   // Export database dump to PVC. If output_path is given, writes to PVC and returns path.
   // Otherwise returns the dump as a downloadable file (for small DBs).
-  app.post('/clients/:clientId/deployments/:id/export', async (request, _reply) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.post('/tenants/:tenantId/deployments/:id/export', async (request, _reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
 
@@ -686,7 +686,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
     }
 
-    const { deploymentSubPath, ...ctx } = await buildDbCtx(clientId, id);
+    const { deploymentSubPath, ...ctx } = await buildDbCtx(tenantId, id);
 
     // PVC-based export (recommended for large databases)
     const fileName = `${database}-export-${Date.now()}.sql`;
@@ -700,9 +700,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/import
-  app.post('/clients/:clientId/deployments/:id/import', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  // POST /api/v1/tenants/:tenantId/deployments/:id/import
+  app.post('/tenants/:tenantId/deployments/:id/import', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { database?: string; sql?: string };
 
     if (!body.database) {
@@ -712,16 +712,16 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'SQL content is required', 400, { field: 'sql' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
+    const ctx = await buildDbCtx(tenantId, id);
     const result = await dbManager.importSql(ctx, body.database, body.sql);
     return success(result);
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/import-from-file
+  // POST /api/v1/tenants/:tenantId/deployments/:id/import-from-file
   // Import SQL from a file on the shared PVC. The file is copied into the
   // database pod's subPath, then piped to the database CLI. Handles files of any size.
-  app.post('/clients/:clientId/deployments/:id/import-from-file', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.post('/tenants/:tenantId/deployments/:id/import-from-file', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { database?: string; file_path?: string };
 
     if (!body.database) {
@@ -738,51 +738,51 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     // Strip leading slash — the PVC file picker returns paths relative to /data/ root
     const filePath = body.file_path.replace(/^\/+/, '');
 
-    const { deploymentSubPath, ...ctx } = await buildDbCtx(clientId, id);
+    const { deploymentSubPath, ...ctx } = await buildDbCtx(tenantId, id);
     const result = await dbManager.importSqlFromPvcFile(ctx, body.database, '', filePath, deploymentSubPath);
     return success(result);
   });
 
-  // GET /api/v1/clients/:clientId/deployments/:id/delete-preview
-  app.get('/clients/:clientId/deployments/:id/delete-preview', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const result = await service.getDeletePreview(app.db, clientId, id);
+  // GET /api/v1/tenants/:tenantId/deployments/:id/delete-preview
+  app.get('/tenants/:tenantId/deployments/:id/delete-preview', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const result = await service.getDeletePreview(app.db, tenantId, id);
     return success(result);
   });
 
-  // DELETE /api/v1/clients/:clientId/deployments/:id
+  // DELETE /api/v1/tenants/:tenantId/deployments/:id
   // ?force=true for permanent deletion (skips soft-delete)
-  app.delete('/clients/:clientId/deployments/:id', async (request, reply) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.delete('/tenants/:tenantId/deployments/:id', async (request, reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const force = query.force === 'true' || query.force === '1';
 
     if (force) {
       const deleteData = query.deleteData === 'true' || query.deleteData === '1';
-      await service.hardDeleteDeployment(app.db, clientId, id, getK8s(), deleteData);
+      await service.hardDeleteDeployment(app.db, tenantId, id, getK8s(), deleteData);
       reply.status(204).send();
     } else {
-      const preview = await service.getDeletePreview(app.db, clientId, id);
-      await service.deleteDeployment(app.db, clientId, id, getK8s());
+      const preview = await service.getDeletePreview(app.db, tenantId, id);
+      await service.deleteDeployment(app.db, tenantId, id, getK8s());
       reply.status(200).send(success(preview));
     }
   });
 
-  // GET /api/v1/clients/:clientId/resource-usage — namespace resource usage from K8s quota
-  app.get('/clients/:clientId/resource-usage', {
+  // GET /api/v1/tenants/:tenantId/resource-usage — namespace resource usage from K8s quota
+  app.get('/tenants/:tenantId/resource-usage', {
     schema: {
       tags: ['Deployments'],
       summary: 'Get resource usage from K8s ResourceQuota',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const k8s = getK8s();
     if (!k8s) {
       throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
     }
 
-    const namespace = await service.getClientNamespace(app.db, clientId);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
     const quotaName = `${namespace}-quota`;
 
     try {
@@ -815,7 +815,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // GET /api/v1/admin/deployments — list all deployments across all clients (admin)
+  // GET /api/v1/admin/deployments — list all deployments across all tenants (admin)
   // Also aliased as GET /api/v1/admin/application-instances for backwards compat
   const adminListHandler = async (request: import('fastify').FastifyRequest) => {
     const query = request.query as Record<string, unknown>;
@@ -823,7 +823,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const limit = Math.min(100, Math.max(1, parseInt(String(query.limit ?? '50'), 10) || 50));
     const statusFilter = query.status ? String(query.status) : undefined;
     const catalogFilter = query.catalog_entry_id ? String(query.catalog_entry_id) : undefined;
-    const clientFilter = query.client_id ? String(query.client_id) : undefined;
+    const tenantFilter = query.tenant_id ? String(query.tenant_id) : undefined;
     const includeDeleted = query.include_deleted === 'true';
     const offset = (page - 1) * limit;
 
@@ -831,7 +831,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!includeDeleted) conditions.push(ne(deployments.status, 'deleted'));
     if (statusFilter) conditions.push(eq(deployments.status, statusFilter as typeof deployments.status.enumValues[number]));
     if (catalogFilter) conditions.push(eq(deployments.catalogEntryId, catalogFilter));
-    if (clientFilter) conditions.push(eq(deployments.clientId, clientFilter));
+    if (tenantFilter) conditions.push(eq(deployments.tenantId, tenantFilter));
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -839,8 +839,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       .select({
         id: deployments.id,
         name: deployments.name,
-        clientId: deployments.clientId,
-        clientName: clients.companyName,
+        tenantId: deployments.tenantId,
+        tenantName: tenants.name,
         catalogEntryId: deployments.catalogEntryId,
         catalogEntryName: catalogEntries.name,
         catalogEntryCode: catalogEntries.code,
@@ -858,7 +858,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         updatedAt: deployments.updatedAt,
       })
       .from(deployments)
-      .leftJoin(clients, eq(deployments.clientId, clients.id))
+      .leftJoin(tenants, eq(deployments.tenantId, tenants.id))
       .leftJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
       .where(where)
       .orderBy(desc(deployments.createdAt))
@@ -886,7 +886,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/admin/deployments', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
-    schema: { tags: ['Deployments'], summary: 'List all deployments across clients', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Deployments'], summary: 'List all deployments across tenants', security: [{ bearerAuth: [] }] },
   }, adminListHandler);
 
   // Backwards-compat alias
@@ -909,7 +909,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       try {
         const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
         if (!dep) { errors.push(`${depId}: not found`); continue; }
-        await service.updateDeployment(app.db, dep.clientId, depId, { status: 'running' }, getK8s());
+        await service.updateDeployment(app.db, dep.tenantId, depId, { status: 'running' }, getK8s());
         succeeded++;
       } catch (err) {
         errors.push(`${depId}: ${err instanceof Error ? err.message : String(err)}`);
@@ -932,7 +932,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       try {
         const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
         if (!dep) { errors.push(`${depId}: not found`); continue; }
-        await service.updateDeployment(app.db, dep.clientId, depId, { status: 'stopped' }, getK8s());
+        await service.updateDeployment(app.db, dep.tenantId, depId, { status: 'stopped' }, getK8s());
         succeeded++;
       } catch (err) {
         errors.push(`${depId}: ${err instanceof Error ? err.message : String(err)}`);
@@ -955,7 +955,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       try {
         const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
         if (!dep) { errors.push(`${depId}: not found`); continue; }
-        await service.deleteDeployment(app.db, dep.clientId, depId, getK8s());
+        await service.deleteDeployment(app.db, dep.tenantId, depId, getK8s());
         succeeded++;
       } catch (err) {
         errors.push(`${depId}: ${err instanceof Error ? err.message : String(err)}`);
@@ -992,14 +992,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${firstError.message}`, 400, { field: firstError.path.join('.') });
     }
     const k8s = getK8s();
-    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster tenant unavailable; cannot redeploy', 503);
     let succeeded = 0;
     const errors: Array<{ deploymentId: string; error: string; code?: string }> = [];
     for (const depId of parsed.data.deployment_ids) {
       try {
         const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
         if (!dep) { errors.push({ deploymentId: depId, error: 'not found' }); continue; }
-        await upgradeVersion.upgradeDeploymentVersion(app.db, dep.clientId, depId, {
+        await upgradeVersion.upgradeDeploymentVersion(app.db, dep.tenantId, depId, {
           targetVersion: parsed.data.target_version,
           force: parsed.data.force,
         }, k8s);
@@ -1024,8 +1024,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, id));
     if (!dep) throw new ApiError('DEPLOYMENT_NOT_FOUND', 'Deployment not found', 404);
     const k8s = getK8s();
-    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
-    const updated = await upgradeVersion.rollbackDeploymentVersion(app.db, dep.clientId, id, k8s);
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster tenant unavailable; cannot redeploy', 503);
+    const updated = await upgradeVersion.rollbackDeploymentVersion(app.db, dep.tenantId, id, k8s);
     return success(updated);
   });
 
@@ -1091,27 +1091,27 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       .select({
         id: deployments.id,
         name: deployments.name,
-        clientId: deployments.clientId,
+        tenantId: deployments.tenantId,
         catalogEntryId: deployments.catalogEntryId,
       })
       .from(deployments)
       .where(and(...conditions));
 
-    // Group by client for namespace lookup
-    const clientIds = [...new Set(runningDeployments.map(d => d.clientId))];
-    const clientRows = await app.db
-      .select({ id: clients.id, kubernetesNamespace: clients.kubernetesNamespace })
-      .from(clients)
-      .where(inArray(clients.id, clientIds));
+    // Group by tenant for namespace lookup
+    const tenantIds = [...new Set(runningDeployments.map(d => d.tenantId))];
+    const tenantRows = await app.db
+      .select({ id: tenants.id, kubernetesNamespace: tenants.kubernetesNamespace })
+      .from(tenants)
+      .where(inArray(tenants.id, tenantIds));
 
-    const nsMap = new Map(clientRows.map(c => [c.id, c.kubernetesNamespace]));
+    const nsMap = new Map(tenantRows.map(c => [c.id, c.kubernetesNamespace]));
 
     let restarted = 0;
     let failed = 0;
     const errors: string[] = [];
 
     for (const dep of runningDeployments) {
-      const namespace = nsMap.get(dep.clientId);
+      const namespace = nsMap.get(dep.tenantId);
       if (!namespace) continue;
 
       try {

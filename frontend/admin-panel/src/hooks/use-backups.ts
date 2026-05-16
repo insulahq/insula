@@ -5,12 +5,12 @@ import type { BackupResponse } from '@k8s-hosting/api-contracts';
 
 export type { BackupResponse as Backup } from '@k8s-hosting/api-contracts';
 
-export function useBackups(clientId: string | undefined) {
-  const path = `/api/v1/clients/${clientId}/backups`;
+export function useBackups(tenantId: string | undefined) {
+  const path = `/api/v1/tenants/${tenantId}/backups`;
 
   return useQuery({
-    queryKey: ['backups', clientId],
+    queryKey: ['backups', tenantId],
     queryFn: () => apiFetch<PaginatedResponse<BackupResponse>>(path),
-    enabled: !!clientId,
+    enabled: !!tenantId,
   });
 }

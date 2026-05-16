@@ -25,16 +25,16 @@ async function getRouteOrThrow(db: Database, routeId: string) {
   return route;
 }
 
-async function verifyRouteOwnership(db: Database, routeId: string, clientId: string) {
+async function verifyRouteOwnership(db: Database, routeId: string, tenantId: string) {
   const route = await getRouteOrThrow(db, routeId);
 
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, route.domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, route.domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found for client`, 404);
+    throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found for tenant`, 404);
   }
 
   return route;
@@ -61,10 +61,10 @@ async function fetchUpdatedRoute(db: Database, routeId: string) {
 export async function updateRedirectSettings(
   db: Database,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   input: Record<string, unknown>,
 ) {
-  const route = await verifyRouteOwnership(db, routeId, clientId);
+  const route = await verifyRouteOwnership(db, routeId, tenantId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.force_https !== undefined) updateValues.forceHttps = input.force_https ? 1 : 0;
@@ -109,10 +109,10 @@ export async function updateRedirectSettings(
 export async function updateSecuritySettings(
   db: Database,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   input: Record<string, unknown>,
 ) {
-  await verifyRouteOwnership(db, routeId, clientId);
+  await verifyRouteOwnership(db, routeId, tenantId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.ip_allowlist !== undefined) updateValues.ipAllowlist = input.ip_allowlist;
@@ -140,10 +140,10 @@ export async function updateSecuritySettings(
 export async function updateAdvancedSettings(
   db: Database,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   input: Record<string, unknown>,
 ) {
-  await verifyRouteOwnership(db, routeId, clientId);
+  await verifyRouteOwnership(db, routeId, tenantId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.custom_error_codes !== undefined) updateValues.customErrorCodes = input.custom_error_codes;
@@ -172,7 +172,7 @@ export async function listWafLogs(db: Database, routeId: string, limit = 50) {
 export async function ingestWafLog(
   db: Database,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   log: {
     ruleId: string;
     severity: string;
@@ -187,7 +187,7 @@ export async function ingestWafLog(
   await db.insert(wafLogs).values({
     id,
     routeId,
-    clientId,
+    tenantId,
     ruleId: log.ruleId,
     severity: log.severity,
     message: log.message,

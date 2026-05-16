@@ -31,15 +31,15 @@ export interface RenderQueueOutboundInput {
   readonly relays: readonly OutboundRelay[];
 }
 
-export interface ClientThrottleOverride {
-  readonly clientId: string;
+export interface TenantThrottleOverride {
+  readonly tenantId: string;
   readonly rateLimit: number | null; // messages / hour; null = inherit default
   readonly suspended: boolean;
 }
 
 export interface RenderQueueThrottleInput {
   readonly defaultRateLimit: number | null;
-  readonly clientOverrides: readonly ClientThrottleOverride[];
+  readonly tenantOverrides: readonly TenantThrottleOverride[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -134,8 +134,8 @@ export function renderQueueThrottleToml(input: RenderQueueThrottleInput): string
   lines.push('# ─── Outbound throttle (Phase 3.B.3) ───────────────────────────────');
   lines.push('# Per-customer send rate limits rendered from:');
   lines.push('#   - platform_settings.email_send_rate_limit_default (global default)');
-  lines.push('#   - clients.email_send_rate_limit (per-customer override)');
-  lines.push('#   - clients.status (suspended → rate = 0)');
+  lines.push('#   - tenants.email_send_rate_limit (per-customer override)');
+  lines.push('#   - tenants.status (suspended → rate = 0)');
   lines.push('');
 
   lines.push('[queue.throttle]');
@@ -154,14 +154,14 @@ export function renderQueueThrottleToml(input: RenderQueueThrottleInput): string
   }
 
   // Per-customer overrides
-  for (const override of input.clientOverrides) {
-    const key = sanitizeKey(`client-${override.clientId}`);
+  for (const override of input.tenantOverrides) {
+    const key = sanitizeKey(`tenant-${override.tenantId}`);
     lines.push(`[queue.throttle.${key}]`);
     lines.push(`key = ["sender-domain"]`);
-    lines.push(`match = "authenticated-as = '${override.clientId}'"`);
+    lines.push(`match = "authenticated-as = '${override.tenantId}'"`);
 
     if (override.suspended) {
-      // Suspended clients get rate=0 — blocks all outbound.
+      // Suspended tenants get rate=0 — blocks all outbound.
       lines.push('rate = 0');
       lines.push('enable = true');
     } else if (override.rateLimit !== null && override.rateLimit > 0) {

@@ -1052,7 +1052,7 @@ export async function promotePostgresFromSnapshot(
     // postgres is being recreated, but that's transparent to the
     // orchestrator and recovers automatically.
     //
-    // Stalwart IS scaled to 0 — it's a long-lived postgres client
+    // Stalwart IS scaled to 0 — it's a long-lived postgres tenant
     // for DKIM + mailbox metadata, and partial writes during cutover
     // can corrupt mailbox state. Scaling Stalwart down is safe
     // because Stalwart doesn't host the orchestration.

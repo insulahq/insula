@@ -7,7 +7,7 @@ import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-s
  * "Cluster Settings" tab on the Nodes & Storage admin page.
  *
  * Exposes:
- *   1. Toggle: "New SERVER nodes host client workloads by default"
+ *   1. Toggle: "New SERVER nodes host tenant workloads by default"
  *   2. Image cache GC: start-at threshold (imageGcHighThreshold)
  *   3. Image cache GC: stop-at threshold (imageGcLowThreshold)
  *   4. Image min retain (imageGcMinTtlMinutes)
@@ -32,7 +32,7 @@ export default function NodeDefaultsCard() {
   const [gcError, setGcError] = useState<string | null>(null);
 
   const settings = data?.data;
-  const serverValue = settings?.newServerHostsClientWorkloads ?? true;
+  const serverValue = settings?.newServerHostsTenantWorkloads ?? true;
   const value = pending ?? serverValue;
 
   const highVal = gcHigh ?? settings?.imageGcHighThreshold ?? 70;
@@ -73,7 +73,7 @@ export default function NodeDefaultsCard() {
   const onToggle = async (next: boolean): Promise<void> => {
     setPending(next);
     try {
-      await update.mutateAsync({ newServerHostsClientWorkloads: next });
+      await update.mutateAsync({ newServerHostsTenantWorkloads: next });
     } catch {
       // Roll back the optimistic local state — the query will refetch
       // and confirm the persisted value either way.
@@ -118,14 +118,14 @@ export default function NodeDefaultsCard() {
         was made on the joining host.
       </p>
 
-      {/* ── Toggle: new server hosts client workloads ── */}
+      {/* ── Toggle: new server hosts tenant workloads ── */}
       <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
         <div className="flex-1">
           <label
-            htmlFor="new-server-hosts-clients-toggle"
+            htmlFor="new-server-hosts-tenants-toggle"
             className="block text-sm font-medium text-gray-900 dark:text-gray-100"
           >
-            New SERVER nodes host client workloads by default
+            New SERVER nodes host tenant workloads by default
           </label>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             When ON, freshly-joined server nodes are labelled to host tenant pods just
@@ -134,8 +134,8 @@ export default function NodeDefaultsCard() {
           </p>
         </div>
         <button
-          id="new-server-hosts-clients-toggle"
-          data-testid="new-server-hosts-clients-toggle"
+          id="new-server-hosts-tenants-toggle"
+          data-testid="new-server-hosts-tenants-toggle"
           type="button"
           role="switch"
           aria-checked={value}

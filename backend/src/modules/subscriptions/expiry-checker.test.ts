@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { suspendExpiredClients } from './expiry-checker.js';
+import { suspendExpiredTenants } from './expiry-checker.js';
 
 /**
- * After the grace-period removal + cascades refactor, suspendExpiredClients:
- *   1. SELECTs candidate clients (status=active, expired)
+ * After the grace-period removal + cascades refactor, suspendExpiredTenants:
+ *   1. SELECTs candidate tenants (status=active, expired)
  *   2. For each candidate, calls applySuspended() which runs ingress +
  *      mailbox + domain + cronJob cascades plus the status update.
  *
@@ -25,38 +25,38 @@ function createMockDb(candidates: Array<{ id: string; namespace: string }>) {
     delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     _whereFn: whereFn,
     _selectFn: selectFn,
-  } as unknown as Parameters<typeof suspendExpiredClients>[0] & {
+  } as unknown as Parameters<typeof suspendExpiredTenants>[0] & {
     _whereFn: ReturnType<typeof vi.fn>;
     _selectFn: ReturnType<typeof vi.fn>;
   };
 }
 
 // Mock the cross-namespace cascade module so the test stays unit-level.
-vi.mock('../client-lifecycle/cascades.js', () => ({
+vi.mock('../tenant-lifecycle/cascades.js', () => ({
   applySuspended: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../k8s-provisioner/k8s-client.js', () => ({
   createK8sClients: vi.fn().mockReturnValue({}),
 }));
 
-describe('suspendExpiredClients', () => {
+describe('suspendExpiredTenants', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('returns count of candidates when expired clients exist', async () => {
+  it('returns count of candidates when expired tenants exist', async () => {
     const db = createMockDb([
       { id: '1', namespace: 'ns-1' },
       { id: '2', namespace: 'ns-2' },
       { id: '3', namespace: 'ns-3' },
     ]);
-    const count = await suspendExpiredClients(db);
+    const count = await suspendExpiredTenants(db);
     expect(count).toBe(3);
   });
 
-  it('returns 0 when no expired clients exist', async () => {
+  it('returns 0 when no expired tenants exist', async () => {
     const db = createMockDb([]);
-    const count = await suspendExpiredClients(db);
+    const count = await suspendExpiredTenants(db);
     expect(count).toBe(0);
   });
 
@@ -65,23 +65,23 @@ describe('suspendExpiredClients', () => {
       { id: 'c-1', namespace: 'ns-1' },
       { id: 'c-2', namespace: 'ns-2' },
     ]);
-    const cascades = await import('../client-lifecycle/cascades.js');
-    await suspendExpiredClients(db);
+    const cascades = await import('../tenant-lifecycle/cascades.js');
+    await suspendExpiredTenants(db);
     expect(cascades.applySuspended).toHaveBeenCalledTimes(2);
     expect(cascades.applySuspended).toHaveBeenCalledWith(expect.any(Object), 'c-1', 'ns-1');
     expect(cascades.applySuspended).toHaveBeenCalledWith(expect.any(Object), 'c-2', 'ns-2');
   });
 
-  it('continues past a failing cascade so one bad client does not stall the cron', async () => {
+  it('continues past a failing cascade so one bad tenant does not stall the cron', async () => {
     const db = createMockDb([
       { id: 'fail', namespace: 'ns-fail' },
       { id: 'ok', namespace: 'ns-ok' },
     ]);
-    const cascades = await import('../client-lifecycle/cascades.js');
+    const cascades = await import('../tenant-lifecycle/cascades.js');
     (cascades.applySuspended as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(async () => { throw new Error('cascade down'); })
       .mockResolvedValueOnce(undefined);
-    const count = await suspendExpiredClients(db);
+    const count = await suspendExpiredTenants(db);
     // Count reflects candidates picked up; the fatal cascade for `fail`
     // is logged but doesn't abort the loop.
     expect(count).toBe(2);

@@ -2,12 +2,12 @@
  * Phase 3 T2.1 — IMAPSync admin API.
  *
  * Endpoints:
- *   GET    /clients/:clientId/mail/imapsync          list jobs
- *   GET    /clients/:clientId/mail/imapsync/:jobId   detail
- *   POST   /clients/:clientId/mail/imapsync          create + start
- *   DELETE /clients/:clientId/mail/imapsync/:jobId   cancel
+ *   GET    /tenants/:tenantId/mail/imapsync          list jobs
+ *   GET    /tenants/:tenantId/mail/imapsync/:jobId   detail
+ *   POST   /tenants/:tenantId/mail/imapsync          create + start
+ *   DELETE /tenants/:tenantId/mail/imapsync/:jobId   cancel
  *
- * All endpoints require admin or client_admin. The destination
+ * All endpoints require admin or tenant_admin. The destination
  * authentication uses Stalwart's `master` SSO via the
  * `<mailbox>%master` user with MASTER_SECRET — no per-mailbox
  * cleartext password is needed.
@@ -15,7 +15,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { mailboxes } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -61,25 +61,25 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     k8s = createK8sClients(kubeconfigPath);
   } catch (err) {
-    app.log.warn({ err }, 'mail-imapsync: k8s client unavailable — job creation disabled');
+    app.log.warn({ err }, 'mail-imapsync: k8s tenant unavailable — job creation disabled');
     k8s = undefined;
   }
 
   // GET — list
-  app.get('/clients/:clientId/mail/imapsync', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin'), requireClientAccess()],
+  app.get('/tenants/:tenantId/mail/imapsync', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'tenant_admin'), requireTenantAccess()],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const rows = await service.listImapSyncJobs(app.db, clientId);
+    const { tenantId } = request.params as { tenantId: string };
+    const rows = await service.listImapSyncJobs(app.db, tenantId);
     return success(rows);
   });
 
   // GET — single
-  app.get('/clients/:clientId/mail/imapsync/:jobId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin'), requireClientAccess()],
+  app.get('/tenants/:tenantId/mail/imapsync/:jobId', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'tenant_admin'), requireTenantAccess()],
   }, async (request) => {
-    const { clientId, jobId } = request.params as { clientId: string; jobId: string };
-    const row = await service.getImapSyncJob(app.db, clientId, jobId);
+    const { tenantId, jobId } = request.params as { tenantId: string; jobId: string };
+    const row = await service.getImapSyncJob(app.db, tenantId, jobId);
     if (!row) {
       throw new ApiError('IMAPSYNC_JOB_NOT_FOUND', 'IMAPSync job not found', 404);
     }
@@ -87,10 +87,10 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST — create + start
-  app.post('/clients/:clientId/mail/imapsync', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.post('/tenants/:tenantId/mail/imapsync', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = createImapSyncJobSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -105,7 +105,7 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     if (!k8s) {
       throw new ApiError(
         'K8S_UNAVAILABLE',
-        'Kubernetes client is not configured — IMAPSync disabled',
+        'Kubernetes tenant is not configured — IMAPSync disabled',
         503,
       );
     }
@@ -129,16 +129,16 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    // Enforce per-client limits before inserting.
-    await service.enforceTotalJobLimit(app.db, clientId);
-    await service.enforceActiveJobLimit(app.db, clientId);
+    // Enforce per-tenant limits before inserting.
+    await service.enforceTotalJobLimit(app.db, tenantId);
+    await service.enforceActiveJobLimit(app.db, tenantId);
 
     // 1. Insert pending row (mailbox ownership + concurrency check
     //    enforced inside service.createImapSyncJob).
     const row = await service.createImapSyncJob(
       app.db,
       resolvedEncryptionKey,
-      clientId,
+      tenantId,
       parsed.data,
     );
 
@@ -283,16 +283,16 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await service.markRunning(app.db, row.id, `imapsync-${row.id}`);
-    const updated = await service.getImapSyncJob(app.db, clientId, row.id);
+    const updated = await service.getImapSyncJob(app.db, tenantId, row.id);
     reply.status(201).send(success(updated));
   });
 
   // DELETE — cancel
-  app.delete('/clients/:clientId/mail/imapsync/:jobId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.delete('/tenants/:tenantId/mail/imapsync/:jobId', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request, reply) => {
-    const { clientId, jobId } = request.params as { clientId: string; jobId: string };
-    const row = await service.getImapSyncJob(app.db, clientId, jobId);
+    const { tenantId, jobId } = request.params as { tenantId: string; jobId: string };
+    const row = await service.getImapSyncJob(app.db, tenantId, jobId);
     if (!row) {
       throw new ApiError('IMAPSYNC_JOB_NOT_FOUND', 'IMAPSync job not found', 404);
     }
@@ -342,14 +342,14 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
   // endpoint does the inverse and only operates on terminal jobs.
   // Review HIGH-3 fix: deleteTerminalJob now returns the K8s
   // coordinates so we don't need a second SELECT here.
-  app.delete('/clients/:clientId/mail/imapsync/:jobId/purge', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.delete('/tenants/:tenantId/mail/imapsync/:jobId/purge', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request, reply) => {
-    const { clientId, jobId } = request.params as { clientId: string; jobId: string };
+    const { tenantId, jobId } = request.params as { tenantId: string; jobId: string };
 
     // deleteTerminalJob throws INVALID_STATE 409 for active rows
-    // and returns null if the row doesn't exist for this client.
-    const deleted = await service.deleteTerminalJob(app.db, clientId, jobId);
+    // and returns null if the row doesn't exist for this tenant.
+    const deleted = await service.deleteTerminalJob(app.db, tenantId, jobId);
     if (!deleted) {
       throw new ApiError('IMAPSYNC_JOB_NOT_FOUND', 'IMAPSync job not found', 404);
     }
@@ -394,15 +394,15 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
   // POST — re-sync a terminal job. Resets the existing row in-place
   // (clears progress, logs, errors) and creates a new K8s Job using
   // the same job row ID with a timestamped K8s Job name.
-  app.post('/clients/:clientId/mail/imapsync/:jobId/resync', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.post('/tenants/:tenantId/mail/imapsync/:jobId/resync', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request, reply) => {
-    const { clientId, jobId } = request.params as { clientId: string; jobId: string };
+    const { tenantId, jobId } = request.params as { tenantId: string; jobId: string };
 
     if (!k8s) {
       throw new ApiError(
         'K8S_UNAVAILABLE',
-        'Kubernetes client is not configured — IMAPSync disabled',
+        'Kubernetes tenant is not configured — IMAPSync disabled',
         503,
       );
     }
@@ -421,7 +421,7 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // 1. Reset the row in-place (status, limits, concurrency checked inside).
-    const resetRow = await service.resyncImapSyncJob(app.db, clientId, jobId);
+    const resetRow = await service.resyncImapSyncJob(app.db, tenantId, jobId);
     const k8sJobName = resetRow.k8sJobName!;
 
     // 2. Look up the destination mailbox address (still needed for SSO).
@@ -542,15 +542,15 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await service.markRunning(app.db, resetRow.id, k8sJobName);
-    const updated = await service.getImapSyncJob(app.db, clientId, resetRow.id);
+    const updated = await service.getImapSyncJob(app.db, tenantId, resetRow.id);
     return success(updated);
   });
 
   // PATCH — update source settings on a terminal job.
-  app.patch('/clients/:clientId/mail/imapsync/:jobId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.patch('/tenants/:tenantId/mail/imapsync/:jobId', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request) => {
-    const { clientId, jobId } = request.params as { clientId: string; jobId: string };
+    const { tenantId, jobId } = request.params as { tenantId: string; jobId: string };
     const parsed = updateImapSyncJobSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -574,7 +574,7 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const updated = await service.updateImapSyncJob(
-      app.db, resolvedEncryptionKey, clientId, jobId, parsed.data,
+      app.db, resolvedEncryptionKey, tenantId, jobId, parsed.data,
     );
     return success(updated);
   });

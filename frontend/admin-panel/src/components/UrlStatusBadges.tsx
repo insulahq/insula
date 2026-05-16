@@ -147,7 +147,7 @@ function Pill({ spec, testId }: { readonly spec: BadgeSpec; readonly testId: str
 }
 
 export interface UrlStatusBadgesProps {
-  readonly panel: 'admin' | 'client';
+  readonly panel: 'admin' | 'tenant';
   readonly health: PanelUrlHealth | undefined;
 }
 

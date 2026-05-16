@@ -17,7 +17,7 @@ import { extractOperatorError } from '@/lib/extract-operator-error';
 
 /**
  * Render "free / total" CPU + RAM + Disk for a worker option in the
- * Re-pin dropdown. Mirrors the formatter used by the client-detail
+ * Re-pin dropdown. Mirrors the formatter used by the tenant-detail
  * Placement card so the operator sees the same shape in both places.
  * Returns "" when usage data isn't loaded yet (option still shows the
  * bare node name).
@@ -52,20 +52,20 @@ interface NodeDrainDeleteModalProps {
  * Two-stage destructive flow for a node:
  *   1. DRAIN  — cordon + evict every non-system pod. Operators re-pin
  *               affected CLIENTS (not individual workloads or PVCs);
- *               pinning is a client-level property and the orchestrator
+ *               pinning is a tenant-level property and the orchestrator
  *               propagates the chosen target across every Deployment,
  *               StatefulSet, FM sidecar, and Longhorn volume in the
- *               client's namespace.
+ *               tenant's namespace.
  *   2. DELETE — only enabled after the node is fully drained.
  *
  * Design goals:
- *  - One re-pin target per client (matches the client-detail page,
- *    where pinning is also expressed at the client level).
+ *  - One re-pin target per tenant (matches the tenant-detail page,
+ *    where pinning is also expressed at the tenant level).
  *  - Each row expandable to show the workloads + PVCs that will be
  *    moved together — informational, not editable.
  *  - The "Last-replica risk" banner is reserved for PLATFORM volumes
  *    (postgres, longhorn-system, mail) since tenant volumes are
- *    already represented inside their client row.
+ *    already represented inside their tenant row.
  */
 export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteModalProps) {
   const [forceLastReplica, setForceLastReplica] = useState(false);
@@ -76,68 +76,68 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const del = useDeleteNode(node.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  // clientPlacement keyed by clientId. Values: "" (auto, default),
+  // tenantPlacement keyed by tenantId. Values: "" (auto, default),
   // "<targetNode>" (re-pin), or "stay" (refuse to move).
-  const [clientPlacement, setClientPlacement] = useState<Record<string, string>>({});
-  // Per-client expand state for the workloads/PVCs detail.
-  const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({});
+  const [tenantPlacement, setTenantPlacement] = useState<Record<string, string>>({});
+  // Per-tenant expand state for the workloads/PVCs detail.
+  const [expandedTenants, setExpandedTenants] = useState<Record<string, boolean>>({});
 
   const impact: DrainImpact | undefined = impactQuery.data?.data;
   // Delete is only safe when the node has no remaining tenant
   // attachment of any kind. Three concurrent conditions:
   //   - alreadyCordoned (k8s scheduler will refuse new pods)
   //   - no non-system pods left to evict (the live workloads are gone)
-  //   - no pinnedClients left (no Deployment/StatefulSet/Volume in
+  //   - no pinnedTenants left (no Deployment/StatefulSet/Volume in
   //     any tenant namespace still references this node, even at rest
   //     — a stopped tenant pod or an unattached PVC would otherwise
-  //     keep the node bound to the client and a delete would orphan
+  //     keep the node bound to the tenant and a delete would orphan
   //     them).
   const drained = impact !== undefined
     && impact.alreadyCordoned
     && impact.nonSystemPods.length === 0
-    && impact.pinnedClients.length === 0;
+    && impact.pinnedTenants.length === 0;
   // Reserve the "Last-replica risk" banner for PLATFORM volumes —
-  // tenant volumes are already represented in their client row above
+  // tenant volumes are already represented in their tenant row above
   // (where the re-pin dropdown lives).
   const lastReplicaVolumes = impact?.longhornReplicas.filter(
-    (r) => r.isLastReplica && r.clientId === null,
+    (r) => r.isLastReplica && r.tenantId === null,
   ) ?? [];
 
   // Build target options once, joining the cluster-nodes list with
   // worker-usage so each <option> shows live capacity in the same
-  // format the client-detail Placement card uses.
+  // format the tenant-detail Placement card uses.
   const usageByName = useMemo(() => {
     return new Map((usageQuery.data?.data ?? []).map((u) => [u.name, u]));
   }, [usageQuery.data]);
   const targetNodeOptions = useMemo(() => {
     const list = nodesQuery.data?.data ?? [];
     return list
-      .filter((n) => n.name !== node.name && n.canHostClientWorkloads)
+      .filter((n) => n.name !== node.name && n.canHostTenantWorkloads)
       .map((n) => ({ name: n.name, usage: usageByName.get(n.name) }));
   }, [nodesQuery.data, node.name, usageByName]);
 
   // Block "Apply re-pin & drain" only when the operator has EXPLICITLY
-  // set a client to "stay" — that's a refusal-to-move signal and
+  // set a tenant to "stay" — that's a refusal-to-move signal and
   // letting the drain proceed would evict pods but leave their
   // nodeSelector pointing at the cordoned node.
-  const stayPinnedClients = (impact?.pinnedClients ?? []).filter(
-    (c) => clientPlacement[c.clientId] === 'stay',
+  const stayPinnedTenants = (impact?.pinnedTenants ?? []).filter(
+    (c) => tenantPlacement[c.tenantId] === 'stay',
   );
-  const anyStayPinned = stayPinnedClients.length > 0;
+  const anyStayPinned = stayPinnedTenants.length > 0;
 
   const handleDrain = async (): Promise<void> => {
     try {
-      // Auto-fill: any pinned client without an explicit placement
+      // Auto-fill: any pinned tenant without an explicit placement
       // gets "" (auto). Backend defaults the same — this is just a
       // defence-in-depth so an older backend that hasn't rolled the
       // server-side default still gets a complete map.
-      const finalClientPlacement = { ...clientPlacement };
-      for (const c of impact?.pinnedClients ?? []) {
-        if (!(c.clientId in finalClientPlacement)) finalClientPlacement[c.clientId] = '';
+      const finalTenantPlacement = { ...tenantPlacement };
+      for (const c of impact?.pinnedTenants ?? []) {
+        if (!(c.tenantId in finalTenantPlacement)) finalTenantPlacement[c.tenantId] = '';
       }
       await drain.mutateAsync({
         forceLastReplica,
-        clientPlacement: finalClientPlacement,
+        tenantPlacement: finalTenantPlacement,
       });
       // Refetch impact so the modal flips to "drained → ready to delete".
       await impactQuery.refetch();
@@ -146,8 +146,8 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
     }
   };
 
-  const toggleExpand = (clientId: string) => {
-    setExpandedClients((prev) => ({ ...prev, [clientId]: !prev[clientId] }));
+  const toggleExpand = (tenantId: string) => {
+    setExpandedTenants((prev) => ({ ...prev, [tenantId]: !prev[tenantId] }));
   };
 
   const handleDelete = async (): Promise<void> => {
@@ -210,12 +210,12 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   : 'Not cordoned yet. Drain will cordon the node first, then evict pods.'}
               />
 
-              {/* ─── Pinned clients — one re-pin target per client ─── */}
-              {impact.pinnedClients.length > 0 && (
+              {/* ─── Pinned tenants — one re-pin target per tenant ─── */}
+              {impact.pinnedTenants.length > 0 && (
                 <ImpactSection
-                  title={`Pinned clients (${impact.pinnedClients.length})`}
-                  tone={impact.pinnedClients.some((c) => c.pvcs.some((p) => p.isLastReplica)) ? 'danger' : 'warn'}
-                  content="These tenants have one or more workloads or volumes on this node. Pinning is a client-level property — pick one target per client; drain will patch every Deployment, StatefulSet, and Longhorn volume in the client's namespace consistently. Click a row to see what will be moved."
+                  title={`Pinned tenants (${impact.pinnedTenants.length})`}
+                  tone={impact.pinnedTenants.some((c) => c.pvcs.some((p) => p.isLastReplica)) ? 'danger' : 'warn'}
+                  content="These tenants have one or more workloads or volumes on this node. Pinning is a tenant-level property — pick one target per tenant; drain will patch every Deployment, StatefulSet, and Longhorn volume in the tenant's namespace consistently. Click a row to see what will be moved."
                 >
                   <table className="mt-3 w-full text-xs">
                     <thead className="text-gray-500 dark:text-gray-400">
@@ -230,34 +230,34 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                       </tr>
                     </thead>
                     <tbody>
-                      {impact.pinnedClients.map((c) => {
-                        const isExpanded = expandedClients[c.clientId] === true;
-                        const value = clientPlacement[c.clientId] ?? '';
+                      {impact.pinnedTenants.map((c) => {
+                        const isExpanded = expandedTenants[c.tenantId] === true;
+                        const value = tenantPlacement[c.tenantId] ?? '';
                         const hasLastReplica = c.pvcs.some((p) => p.isLastReplica);
                         const rowBorder = hasLastReplica
                           ? 'border-t border-red-200/60 dark:border-red-700/40'
                           : 'border-t border-amber-200/60 dark:border-amber-700/40';
                         return (
-                          <Fragment key={c.clientId}>
+                          <Fragment key={c.tenantId}>
                             <tr className={rowBorder}>
                               <td className="py-1.5 pl-1">
                                 <button
                                   type="button"
-                                  onClick={() => toggleExpand(c.clientId)}
+                                  onClick={() => toggleExpand(c.tenantId)}
                                   className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                                   aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
-                                  data-testid={`expand-client-${c.clientId}`}
+                                  data-testid={`expand-tenant-${c.tenantId}`}
                                 >
                                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                                 </button>
                               </td>
                               <td className="py-1.5 pr-2">
                                 <Link
-                                  to={`/clients/${c.clientId}`}
+                                  to={`/tenants/${c.tenantId}`}
                                   className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
-                                  data-testid={`pinned-client-link-${c.clientId}`}
+                                  data-testid={`pinned-tenant-link-${c.tenantId}`}
                                 >
-                                  {c.clientName}
+                                  {c.tenantName}
                                   <ExternalLink size={10} />
                                 </Link>
                               </td>
@@ -269,7 +269,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                 </span>
                               </td>
                               <td className="py-1.5 pr-2 font-mono text-gray-600 dark:text-gray-400">
-                                {c.currentWorkerNodeName ?? <span className="italic text-gray-400">—</span>}
+                                {c.currentNodeName ?? <span className="italic text-gray-400">—</span>}
                               </td>
                               <td className="py-1.5 pr-2 text-right tabular-nums">{c.workloads.length}</td>
                               <td className="py-1.5 pr-2 text-right tabular-nums">
@@ -282,8 +282,8 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                 <select
                                   className="rounded border border-amber-300 bg-white px-2 py-0.5 text-xs dark:bg-gray-800 dark:border-amber-700"
                                   value={value}
-                                  onChange={(e) => setClientPlacement((prev) => ({ ...prev, [c.clientId]: e.target.value }))}
-                                  data-testid={`client-placement-${c.clientId}`}
+                                  onChange={(e) => setTenantPlacement((prev) => ({ ...prev, [c.tenantId]: e.target.value }))}
+                                  data-testid={`tenant-placement-${c.tenantId}`}
                                 >
                                   <option value="stay">Stay (refuse to move)</option>
                                   <option value="">Auto (clear pin)</option>
@@ -369,12 +369,12 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                       {impact.nonSystemPods.map((p) => (
                         <tr key={`${p.namespace}/${p.name}`} className="border-t border-gray-200/60 dark:border-gray-700/40">
                           <td className="py-1.5 pr-2">
-                            {p.clientId ? (
+                            {p.tenantId ? (
                               <Link
-                                to={`/clients/${p.clientId}`}
+                                to={`/tenants/${p.tenantId}`}
                                 className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
                               >
-                                {p.clientName ?? p.clientId.slice(0, 8)}
+                                {p.tenantName ?? p.tenantId.slice(0, 8)}
                                 <ExternalLink size={10} />
                               </Link>
                             ) : (
@@ -416,12 +416,12 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                       {lastReplicaVolumes.map((r) => (
                         <tr key={r.replicaName} className="border-t border-red-200/60 dark:border-red-700/40">
                           <td className="py-1.5 pr-2">
-                            {r.clientId ? (
+                            {r.tenantId ? (
                               <Link
-                                to={`/clients/${r.clientId}`}
+                                to={`/tenants/${r.tenantId}`}
                                 className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
                               >
-                                {r.clientName ?? r.ownerLabel}
+                                {r.tenantName ?? r.ownerLabel}
                                 <ExternalLink size={10} />
                               </Link>
                             ) : (
@@ -486,7 +486,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           )}
           {drain.isSuccess && (
             <p className="text-xs text-gray-600 dark:text-gray-400">
-              Re-pinned: {drain.data?.data.rePinnedClients ?? 0} client(s)
+              Re-pinned: {drain.data?.data.rePinnedTenants ?? 0} tenant(s)
               {' '}({drain.data?.data.rePinnedWorkloads ?? 0} workload(s), {drain.data?.data.rePinnedPvcs ?? 0} PVC(s)).
             </p>
           )}
@@ -502,16 +502,16 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           {!drained && anyStayPinned && (
             <div className="rounded-lg border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-600 dark:bg-amber-900/40 dark:text-amber-100" data-testid="drain-blocked-stay-pinned">
               <div className="flex items-center gap-1 font-semibold">
-                <AlertTriangle size={12} /> Drain blocked — {stayPinnedClients.length} client(s) still set to &quot;Stay&quot;.
+                <AlertTriangle size={12} /> Drain blocked — {stayPinnedTenants.length} tenant(s) still set to &quot;Stay&quot;.
               </div>
-              <p className="mt-1">Pick &quot;Auto&quot; or a specific target node for each pinned client. Leaving a client on &quot;Stay&quot; would evict its pods but their nodeSelectors would still point at this cordoned node — replacement pods sit Pending forever.</p>
+              <p className="mt-1">Pick &quot;Auto&quot; or a specific target node for each pinned tenant. Leaving a tenant on &quot;Stay&quot; would evict its pods but their nodeSelectors would still point at this cordoned node — replacement pods sit Pending forever.</p>
             </div>
           )}
 
           {drained && !confirmDelete && (
             <div className="rounded-lg border border-green-300 bg-green-50 p-3 text-xs text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
               <div className="flex items-center gap-1 font-semibold">
-                <CheckCircle size={12} /> Node is fully drained — cordoned, no tenant pods, no pinned clients, no PVC replicas attached. You may now delete it from the cluster.
+                <CheckCircle size={12} /> Node is fully drained — cordoned, no tenant pods, no pinned tenants, no PVC replicas attached. You may now delete it from the cluster.
               </div>
             </div>
           )}
@@ -519,7 +519,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           {/* Post-cordon but not yet fully drained — explain to the
               operator exactly which condition is still holding Delete
               back, so they don't have to count rows in the tables. */}
-          {!drained && impact?.alreadyCordoned && (impact.nonSystemPods.length > 0 || impact.pinnedClients.length > 0) && (
+          {!drained && impact?.alreadyCordoned && (impact.nonSystemPods.length > 0 || impact.pinnedTenants.length > 0) && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="drain-incomplete-banner">
               <div className="flex items-center gap-1 font-semibold">
                 <AlertTriangle size={12} /> Drain not yet complete — Delete is disabled.
@@ -528,8 +528,8 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 {impact.nonSystemPods.length > 0 && (
                   <li>{impact.nonSystemPods.length} non-system pod(s) still on the node.</li>
                 )}
-                {impact.pinnedClients.length > 0 && (
-                  <li>{impact.pinnedClients.length} client(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Apply re-pin &amp; drain</strong> again, or wait for Longhorn to finish replica garbage-collection.</li>
+                {impact.pinnedTenants.length > 0 && (
+                  <li>{impact.pinnedTenants.length} tenant(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Apply re-pin &amp; drain</strong> again, or wait for Longhorn to finish replica garbage-collection.</li>
                 )}
               </ul>
             </div>
@@ -566,7 +566,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   || anyStayPinned
                 }
                 title={anyStayPinned
-                  ? `${stayPinnedClients.length} client(s) still set to "Stay" — pick Auto or a target node first`
+                  ? `${stayPinnedTenants.length} tenant(s) still set to "Stay" — pick Auto or a target node first`
                   : undefined}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
                 data-testid={`drain-node-${node.name}-button`}

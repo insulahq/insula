@@ -20,7 +20,7 @@ export const uploadSslCertSchema = z.object({
 export const sslCertResponseSchema = z.object({
   id: uuidField,
   domainId: uuidField,
-  clientId: uuidField,
+  tenantId: uuidField,
   issuer: z.string().nullable(),
   subject: z.string().nullable(),
   expiresAt: z.string().nullable(),

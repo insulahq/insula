@@ -1,5 +1,5 @@
 /**
- * URL health probe for the admin/client panel URLs in System Settings.
+ * URL health probe for the admin/tenant panel URLs in System Settings.
  *
  * Answers two operator-facing questions:
  *   - Does DNS resolve the hostname? (Green = resolved, Amber = unresolved,

@@ -47,7 +47,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
 
   // ─── Resize ──────────────────────────────────────────────────────────
 
-  app.post('/admin/clients/:clientId/storage/resize/dry-run', {
+  app.post('/admin/tenants/:tenantId/storage/resize/dry-run', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
@@ -55,28 +55,28 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = resizeSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
-    const result = await service.resizeDryRunMib(await ctx(), clientId, mib);
+    const result = await service.resizeDryRunMib(await ctx(), tenantId, mib);
     return success(result);
   });
 
-  app.post('/admin/clients/:clientId/storage/resize', {
+  app.post('/admin/tenants/:tenantId/storage/resize', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
-      summary: 'Resize a client PVC (shrink supported via snapshot+recreate)',
+      summary: 'Resize a tenant PVC (shrink supported via snapshot+recreate)',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = resizeSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
-    const { operationId } = await service.resizeClient(await ctx(), clientId, {
+    const { operationId } = await service.resizeTenant(await ctx(), tenantId, {
       newMib: mib,
       triggeredByUserId: userId,
     });
@@ -85,19 +85,19 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
 
   // ─── Manual snapshot ────────────────────────────────────────────────
 
-  app.post('/admin/clients/:clientId/storage/snapshot', {
+  app.post('/admin/tenants/:tenantId/storage/snapshot', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
-      summary: 'Take an ad-hoc snapshot of a client PVC',
+      summary: 'Take an ad-hoc snapshot of a tenant PVC',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = snapshotSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    const snap = await service.snapshotClient(await ctx(), clientId, {
+    const snap = await service.snapshotTenant(await ctx(), tenantId, {
       label: parsed.data.label,
       retentionDays: parsed.data.retentionDays,
       triggeredByUserId: userId,
@@ -105,12 +105,12 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     return success(snap);
   });
 
-  app.get('/admin/clients/:clientId/storage/snapshots', {
+  app.get('/admin/tenants/:tenantId/storage/snapshots', {
     onRequest: adminGate,
-    schema: { tags: ['Storage Lifecycle'], summary: 'List snapshots for a client', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Storage Lifecycle'], summary: 'List snapshots for a tenant', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    return success(await service.listSnapshotsForClient(app.db, clientId));
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await service.listSnapshotsForTenant(app.db, tenantId));
   });
 
   app.delete('/admin/storage/snapshots/:snapshotId', {
@@ -124,49 +124,49 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
 
   // ─── Suspend / Resume ───────────────────────────────────────────────
 
-  app.post('/admin/clients/:clientId/storage/suspend', {
+  app.post('/admin/tenants/:tenantId/storage/suspend', {
     onRequest: adminGate,
-    schema: { tags: ['Storage Lifecycle'], summary: 'Suspend a client — scale workloads to 0, preserve PVC', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Storage Lifecycle'], summary: 'Suspend a tenant — scale workloads to 0, preserve PVC', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.suspendClient(await ctx(), clientId, { triggeredByUserId: userId }));
+    return success(await service.suspendTenant(await ctx(), tenantId, { triggeredByUserId: userId }));
   });
 
-  app.post('/admin/clients/:clientId/storage/resume', {
+  app.post('/admin/tenants/:tenantId/storage/resume', {
     onRequest: adminGate,
-    schema: { tags: ['Storage Lifecycle'], summary: 'Resume a suspended client — restore workloads to prior replica counts', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Storage Lifecycle'], summary: 'Resume a suspended tenant — restore workloads to prior replica counts', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.resumeClient(await ctx(), clientId, { triggeredByUserId: userId }));
+    return success(await service.resumeTenant(await ctx(), tenantId, { triggeredByUserId: userId }));
   });
 
   // ─── Archive / Restore ──────────────────────────────────────────────
 
-  app.post('/admin/clients/:clientId/storage/archive', {
+  app.post('/admin/tenants/:tenantId/storage/archive', {
     onRequest: adminGate,
-    schema: { tags: ['Storage Lifecycle'], summary: 'Archive a client — final snapshot + delete PVC/workloads', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Storage Lifecycle'], summary: 'Archive a tenant — final snapshot + delete PVC/workloads', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = archiveSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.archiveClient(await ctx(), clientId, {
+    return success(await service.archiveTenant(await ctx(), tenantId, {
       retentionDays: parsed.data.retentionDays,
       triggeredByUserId: userId,
     }));
   });
 
-  app.post('/admin/clients/:clientId/storage/restore', {
+  app.post('/admin/tenants/:tenantId/storage/restore', {
     onRequest: adminGate,
-    schema: { tags: ['Storage Lifecycle'], summary: 'Restore an archived client from its pre-archive snapshot', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Storage Lifecycle'], summary: 'Restore an archived tenant from its pre-archive snapshot', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = restoreSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.restoreArchivedClient(await ctx(), clientId, {
+    return success(await service.restoreArchivedTenant(await ctx(), tenantId, {
       newGi: parsed.data.newGi,
       triggeredByUserId: userId,
     }));
@@ -174,12 +174,12 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
 
   // ─── Operations + audit ─────────────────────────────────────────────
 
-  app.get('/admin/clients/:clientId/storage/operations', {
+  app.get('/admin/tenants/:tenantId/storage/operations', {
     onRequest: adminGate,
-    schema: { tags: ['Storage Lifecycle'], summary: 'List recent storage operations for a client', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Storage Lifecycle'], summary: 'List recent storage operations for a tenant', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    return success(await service.listOperationsForClient(app.db, clientId));
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await service.listOperationsForTenant(app.db, tenantId));
   });
 
   app.get('/admin/storage/operations/:operationId', {
@@ -214,36 +214,36 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   // Output is captured into the operation row's progressMessage
   // (clean) or lastError (errors found). Frontend polls the op id
   // and renders the full report in a modal.
-  app.post('/admin/clients/:clientId/storage/fsck', {
+  app.post('/admin/tenants/:tenantId/storage/fsck', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
-      summary: 'Run a dry-run filesystem check (xfs_repair -n / e2fsck -n) on a client PVC',
+      summary: 'Run a dry-run filesystem check (xfs_repair -n / e2fsck -n) on a tenant PVC',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.fsckCheckClient(await ctx(), clientId, { triggeredByUserId: userId }));
+    return success(await service.fsckCheckTenant(await ctx(), tenantId, { triggeredByUserId: userId }));
   });
 
-  app.post('/admin/clients/:clientId/storage/fsck-repair', {
+  app.post('/admin/tenants/:tenantId/storage/fsck-repair', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
-      summary: 'Run a repair-mode filesystem check on a client PVC (writes to disk; quiesces tenant)',
+      summary: 'Run a repair-mode filesystem check on a tenant PVC (writes to disk; quiesces tenant)',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.fsckRepairClient(await ctx(), clientId, { triggeredByUserId: userId }));
+    return success(await service.fsckRepairTenant(await ctx(), tenantId, { triggeredByUserId: userId }));
   });
 
   // ─── Operator recovery ──────────────────────────────────────────────
   //
   // When an op fails partway through (e.g. PVC delete times out), the
-  // client is stuck in state='failed' and any subsequent ops return 409.
+  // tenant is stuck in state='failed' and any subsequent ops return 409.
   // This endpoint is the safety valve — admin resets the state back to
   // 'idle' so the next op can proceed. The failed operation's DB row is
   // NOT removed so the original error is still auditable.
@@ -252,29 +252,29 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   // non-idle state (quiescing/snapshotting/resizing/restoring/fsck).
   // Useful when the underlying K8s Job is wedged (quota / image-pull
   // / orphaned). Best-effort deletes the Job(s) and resets the
-  // client's storage state to idle so subsequent ops can proceed.
-  app.post('/admin/clients/:clientId/storage/cancel', {
+  // tenant's storage state to idle so subsequent ops can proceed.
+  app.post('/admin/tenants/:tenantId/storage/cancel', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
-      summary: "Force-cancel a client's in-progress storage operation and reset state to idle",
+      summary: "Force-cancel a tenant's in-progress storage operation and reset state to idle",
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    return success(await service.cancelStorageOperation(await ctx(), clientId));
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await service.cancelStorageOperation(await ctx(), tenantId));
   });
 
-  app.post('/admin/clients/:clientId/storage/clear-failed', {
+  app.post('/admin/tenants/:tenantId/storage/clear-failed', {
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],
-      summary: "Force-clear a client's stuck 'failed' storage state back to idle",
+      summary: "Force-clear a tenant's stuck 'failed' storage state back to idle",
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    return success(await service.clearFailedStorageState(app.db, clientId));
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await service.clearFailedStorageState(app.db, tenantId));
   });
 
   // ─── Settings ───────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
       const changedKeys = Object.keys(parsed.data);
       await app.db.insert(auditLogs).values({
         id: crypto.randomUUID(),
-        clientId: null,
+        tenantId: null,
         actionType: 'storage_lifecycle_settings.update',
         resourceType: 'platform_settings',
         resourceId: null,

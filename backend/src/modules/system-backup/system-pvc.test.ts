@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock @kubernetes/client-node — system-pvc.ts lazy-imports it inside
-// loadK8sClients(). Mirrors the mail-pvc.test.ts harness.
+// loadK8sTenants(). Mirrors the mail-pvc.test.ts harness.
 const mockReadPvc = vi.fn();
 const mockReadSc = vi.fn();
 const mockListPods = vi.fn();

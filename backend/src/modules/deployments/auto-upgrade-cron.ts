@@ -123,7 +123,7 @@ export async function runAutoUpgradePass(
       // rest of the pass. The status reconciler will pick up the failed
       // pod within its next cycle.
       await withTimeout(
-        upgradeDeploymentVersion(db, dep.clientId, dep.id, { targetVersion: latest.version }, k8s),
+        upgradeDeploymentVersion(db, dep.tenantId, dep.id, { targetVersion: latest.version }, k8s),
         PER_DEPLOYMENT_TIMEOUT_MS,
         `upgradeDeploymentVersion(${dep.id})`,
       );

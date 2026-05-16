@@ -20,13 +20,13 @@
  *     route), existing secret-per-hostname layout preserved
  *   - dev environment → local-ca-issuer (self-signed), no ACME
  *
- * All Certificate CRs live in the client's kubernetesNamespace so that
+ * All Certificate CRs live in the tenant's kubernetesNamespace so that
  * the Ingress that references them can find the TLS secret (cert-manager
  * secrets are namespace-scoped).
  */
 
 import { eq } from 'drizzle-orm';
-import { domains, clients } from '../../db/schema.js';
+import { domains, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { isAutoTlsEnabled, getClusterIssuerName } from '../tls-settings/service.js';
 import { getActiveServersForDomain } from '../dns-servers/service.js';
@@ -264,8 +264,8 @@ export interface EnsureCertificateResult {
  *
  * Behaviour matrix:
  *   - auto-TLS disabled → no-op, returns { skipped: true }
- *   - no k8s client → no-op, returns { skipped: true }
- *   - otherwise → create/replace Certificate CR in the client namespace
+ *   - no k8s tenant → no-op, returns { skipped: true }
+ *   - otherwise → create/replace Certificate CR in the tenant namespace
  */
 export async function ensureDomainCertificate(
   db: Database,
@@ -279,8 +279,8 @@ export async function ensureDomainCertificate(
   }
 
   if (!k8s) {
-    logger.warn({ domainId }, 'ensureDomainCertificate: no k8s client, skipping');
-    return { skipped: true, reason: 'no k8s client' };
+    logger.warn({ domainId }, 'ensureDomainCertificate: no k8s tenant, skipping');
+    return { skipped: true, reason: 'no k8s tenant' };
   }
 
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
@@ -288,11 +288,11 @@ export async function ensureDomainCertificate(
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
   }
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, domain.clientId));
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${domain.clientId}' not found`, 404);
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${domain.tenantId}' not found`, 404);
   }
-  const namespace = client.kubernetesNamespace;
+  const namespace = tenant.kubernetesNamespace;
 
   // Resolve DNS authority inputs
   const activeServers = await getActiveServersForDomain(db, domainId);
@@ -387,7 +387,7 @@ export async function deleteDomainCertificate(
   logger: CertLogger = noopLogger,
 ): Promise<void> {
   if (!k8s) {
-    logger.warn({ domainId }, 'deleteDomainCertificate: no k8s client, skipping');
+    logger.warn({ domainId }, 'deleteDomainCertificate: no k8s tenant, skipping');
     return;
   }
 
@@ -397,12 +397,12 @@ export async function deleteDomainCertificate(
     return;
   }
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, domain.clientId));
-  if (!client) {
-    logger.info({ domainId }, 'deleteDomainCertificate: client not found, no-op');
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));
+  if (!tenant) {
+    logger.info({ domainId }, 'deleteDomainCertificate: tenant not found, no-op');
     return;
   }
-  const namespace = client.kubernetesNamespace;
+  const namespace = tenant.kubernetesNamespace;
 
   // Delete both wildcard and non-wildcard variants since we may be in
   // the middle of a dnsMode transition where both previously existed.
@@ -454,29 +454,29 @@ export async function deleteDomainCertificate(
 }
 
 /**
- * Re-run ensureDomainCertificate for every domain belonging to a client.
+ * Re-run ensureDomainCertificate for every domain belonging to a tenant.
  *
  * Used when something changes that affects issuer selection for all of
- * the client's domains — for example, a new DNS provider is added to
+ * the tenant's domains — for example, a new DNS provider is added to
  * their group, or an operator flips auto-TLS on/off.
  */
-export async function recomputeAllCertificatesForClient(
+export async function recomputeAllCertificatesForTenant(
   db: Database,
   k8s: K8sClients | undefined,
-  clientId: string,
+  tenantId: string,
   logger: CertLogger = noopLogger,
 ): Promise<void> {
   const rows = await db
     .select({ id: domains.id, domainName: domains.domainName })
     .from(domains)
-    .where(eq(domains.clientId, clientId));
+    .where(eq(domains.tenantId, tenantId));
   for (const row of rows) {
     try {
       await ensureDomainCertificate(db, k8s, row.id, logger);
     } catch (err) {
       logger.error(
         { err, domainId: row.id, domain: row.domainName },
-        'recomputeAllCertificatesForClient: ensureDomainCertificate failed',
+        'recomputeAllCertificatesForTenant: ensureDomainCertificate failed',
       );
     }
   }
@@ -542,7 +542,7 @@ export interface EnsureMailServerCertificateResult {
  * Unlike `ensureDomainCertificate` (which is per-customer-domain), this
  * is a single platform-wide cert for the global mail hostname (e.g.
  * `mail.platform.net`). Customer-specific `mail.<customer>.com`
- * hostnames CNAME to this global hostname and clients accept the cert
+ * hostnames CNAME to this global hostname and tenants accept the cert
  * because the CNAME chain is transparent at the TLS layer.
  *
  * Selection:
@@ -579,9 +579,9 @@ export async function ensureMailServerCertificate(
   if (!k8s) {
     logger.warn(
       { hostname: cleanHostname },
-      'ensureMailServerCertificate: no k8s client, skipping',
+      'ensureMailServerCertificate: no k8s tenant, skipping',
     );
-    return { skipped: true, reason: 'no k8s client' };
+    return { skipped: true, reason: 'no k8s tenant' };
   }
 
   const environment = getEnvironment();
@@ -690,7 +690,7 @@ export async function ensureRouteCertificate(
     return { skipped: true, reason: 'auto-TLS disabled' };
   }
   if (!k8s) {
-    return { skipped: true, reason: 'no k8s client' };
+    return { skipped: true, reason: 'no k8s tenant' };
   }
 
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
@@ -698,11 +698,11 @@ export async function ensureRouteCertificate(
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
   }
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, domain.clientId));
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${domain.clientId}' not found`, 404);
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${domain.tenantId}' not found`, 404);
   }
-  const namespace = client.kubernetesNamespace;
+  const namespace = tenant.kubernetesNamespace;
 
   // Step 1: ensure the domain-level cert. If it produces a wildcard or
   // matches the hostname as apex, we can reuse its secret.

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock @kubernetes/client-node module — `mail-pvc.ts` lazy-imports it
-// inside loadK8sClients(). vi.hoisted+vi.mock at file top ensures any
+// inside loadK8sTenants(). vi.hoisted+vi.mock at file top ensures any
 // dynamic import the module performs returns the test double.
 //
 // 2026-05-14 streamline: resize was removed (mail is local-path only,

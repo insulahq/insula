@@ -40,7 +40,7 @@ describe('storage service', () => {
     it('should classify platform images as protected when in use (default)', () => {
       expect(classifyImage('hosting-platform-backend:latest').protected).toBe(true);
       expect(classifyImage('hosting-platform-admin-panel:latest').protected).toBe(true);
-      expect(classifyImage('hosting-platform-client-panel:latest').protected).toBe(true);
+      expect(classifyImage('hosting-platform-tenant-panel:latest').protected).toBe(true);
       expect(classifyImage('file-manager:latest').protected).toBe(true);
       expect(classifyImage('docker.io/library/file-manager:latest').protected).toBe(true);
     });
@@ -236,7 +236,7 @@ describe('storage service', () => {
       expect(result.system.dockerImages.count).toBe(2);
       expect(result.system.dockerImages.totalBytes).toBe(505_000_000);
       expect(result.total.systemBytes).toBeGreaterThan(0);
-      expect(Array.isArray(result.clients)).toBe(true);
+      expect(Array.isArray(result.tenants)).toBe(true);
     });
 
     it('should handle K8s API errors gracefully', async () => {

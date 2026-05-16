@@ -9,7 +9,7 @@ import { ApiError } from '../../shared/errors.js';
 export async function storageRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
-  // GET /api/v1/admin/storage/overview — system + client storage usage
+  // GET /api/v1/admin/storage/overview — system + tenant storage usage
   app.get('/admin/storage/overview', {
     preHandler: [requireRole('admin', 'super_admin', 'read_only')],
   }, async () => {

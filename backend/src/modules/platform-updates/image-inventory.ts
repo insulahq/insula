@@ -64,7 +64,7 @@ interface StatefulSetList {
 }
 
 // Namespaces whose platform-controlled workloads we surface. Client
-// namespaces (`client-*`) are intentionally excluded — this view is
+// namespaces (`tenant-*`) are intentionally excluded — this view is
 // about the platform itself, not tenants.
 const PLATFORM_NAMESPACES = [
   'platform',
@@ -97,12 +97,12 @@ export async function getImageInventory(
   kubeconfigPath?: string,
 ): Promise<ImageInventoryEntry[]> {
   try {
-    const clients = createK8sClients(kubeconfigPath);
+    const tenants = createK8sClients(kubeconfigPath);
     const entries: ImageInventoryEntry[] = [];
 
     for (const ns of PLATFORM_NAMESPACES) {
       // Deployments
-      const deployments = await clients.apps
+      const deployments = await tenants.apps
         .listNamespacedDeployment({ namespace: ns })
         .catch(() => ({ items: [] } as DeploymentList)) as DeploymentList;
 
@@ -127,7 +127,7 @@ export async function getImageInventory(
       }
 
       // DaemonSets (ingress-nginx, calico-node, etc.)
-      const daemonsets = await clients.apps
+      const daemonsets = await tenants.apps
         .listNamespacedDaemonSet({ namespace: ns })
         .catch(() => ({ items: [] } as DaemonSetList)) as DaemonSetList;
 
@@ -152,7 +152,7 @@ export async function getImageInventory(
       }
 
       // StatefulSets (postgres, longhorn CSI, etc.)
-      const statefulsets = await clients.apps
+      const statefulsets = await tenants.apps
         .listNamespacedStatefulSet({ namespace: ns })
         .catch(() => ({ items: [] } as StatefulSetList)) as StatefulSetList;
 

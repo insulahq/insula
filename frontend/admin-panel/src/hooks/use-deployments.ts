@@ -4,7 +4,7 @@ import type { PaginatedResponse } from '@/types/api';
 
 export interface Deployment {
   readonly id: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly name: string;
   // Nullable: custom deployments (ADR-036, source='custom') carry no
   // catalog entry. The XOR constraint at the DB layer keeps `source`
@@ -34,25 +34,25 @@ export interface Deployment {
   readonly customSpec?: { allowRoot?: boolean; [key: string]: unknown } | null;
 }
 
-export function useDeployments(clientId: string | undefined, type?: string) {
+export function useDeployments(tenantId: string | undefined, type?: string) {
   const params = new URLSearchParams();
   if (type) params.set('type', type);
   const qs = params.toString();
-  const path = `/api/v1/clients/${clientId}/deployments${qs ? `?${qs}` : ''}`;
+  const path = `/api/v1/tenants/${tenantId}/deployments${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['deployments', clientId, type],
+    queryKey: ['deployments', tenantId, type],
     queryFn: () => apiFetch<PaginatedResponse<Deployment>>(path),
-    enabled: !!clientId,
+    enabled: !!tenantId,
   });
 }
 
-export function useDeployment(clientId: string | undefined, deploymentId: string | undefined) {
+export function useDeployment(tenantId: string | undefined, deploymentId: string | undefined) {
   return useQuery({
-    queryKey: ['deployments', clientId, deploymentId],
+    queryKey: ['deployments', tenantId, deploymentId],
     queryFn: () =>
-      apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}`),
-    enabled: !!clientId && !!deploymentId,
+      apiFetch<{ data: Deployment }>(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}`),
+    enabled: !!tenantId && !!deploymentId,
   });
 }
 
@@ -64,16 +64,16 @@ interface CreateDeploymentInput {
   readonly memory_request?: string;
 }
 
-export function useCreateDeployment(clientId: string | undefined) {
+export function useCreateDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateDeploymentInput) =>
-      apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments`, {
+      apiFetch<{ data: Deployment }>(`/api/v1/tenants/${tenantId}/deployments`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });
 }
@@ -86,36 +86,36 @@ interface UpdateDeploymentInput {
   readonly status?: 'running' | 'stopped';
 }
 
-export function useUpdateDeployment(clientId: string | undefined) {
+export function useUpdateDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ deploymentId, ...input }: UpdateDeploymentInput & { readonly deploymentId: string }) =>
-      apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}`, {
+      apiFetch<{ data: Deployment }>(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });
 }
 
-export function useDeleteDeployment(clientId: string | undefined) {
+export function useDeleteDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (deploymentId: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/deployments/${deploymentId}`, { method: 'DELETE' }),
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}`, { method: 'DELETE' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });
 }
 
-export function useRestartDeployment(clientId: string | undefined) {
+export function useRestartDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (deploymentId: string) =>
-      apiFetch(`/api/v1/clients/${clientId}/deployments/${deploymentId}/restart`, { method: 'POST' }),
+      apiFetch(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}/restart`, { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments'] });
     },
@@ -147,16 +147,16 @@ export function useBulkRestartDeployments() {
   });
 }
 
-export function useSetCustomDeploymentAllowRoot(clientId: string | undefined) {
+export function useSetCustomDeploymentAllowRoot(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ deploymentId, allowRoot }: { deploymentId: string; allowRoot: boolean }) =>
       apiFetch<{ data: unknown }>(
-        `/api/v1/admin/clients/${clientId}/custom-deployments/${deploymentId}/allow-root`,
+        `/api/v1/admin/tenants/${tenantId}/custom-deployments/${deploymentId}/allow-root`,
         { method: 'PATCH', body: JSON.stringify({ allowRoot }) },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });
 }

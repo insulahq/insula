@@ -25,7 +25,7 @@ describe('sanitizeRedirect', () => {
   });
 
   it('passes through a relative path with a query string', () => {
-    expect(sanitizeRedirect('/clients?tab=active', ADMIN_ORIGIN, APEX)).toBe('/clients?tab=active');
+    expect(sanitizeRedirect('/tenants?tab=active', ADMIN_ORIGIN, APEX)).toBe('/tenants?tab=active');
   });
 
   it('passes through an absolute URL on the same admin origin', () => {

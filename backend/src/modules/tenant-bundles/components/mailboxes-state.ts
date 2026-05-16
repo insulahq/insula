@@ -29,7 +29,7 @@ export interface JmapStateUpdate {
 }
 
 /**
- * UPSERT one row per mailbox. PK is `(client_id, mailbox_jmap_id)`.
+ * UPSERT one row per mailbox. PK is `(tenant_id, mailbox_jmap_id)`.
  *
  * Notes on the `error_message` column:
  *   - cleared on every successful sync (fullPull=false, no skipped)
@@ -41,14 +41,14 @@ export interface JmapStateUpdate {
  */
 export async function persistJmapStates(
   db: Database,
-  clientId: string,
+  tenantId: string,
   states: ReadonlyArray<JmapStateUpdate>,
 ): Promise<void> {
   if (states.length === 0) return;
   for (const s of states) {
     // Per-row UPSERT keeps each one independent — a row that violates
     // (e.g. mailbox_jmap_id too long) doesn't drop the whole batch.
-    // The volume per client is small (<50 rows typical).
+    // The volume per tenant is small (<50 rows typical).
     const reason: string | null = s.fullPull
       ? `Email/changes returned cannotCalculateChanges; full pull ran (${s.fetched} fetched, ${s.skipped} skipped)`
       : s.skipped > 0
@@ -56,13 +56,13 @@ export async function persistJmapStates(
       : null;
     await db.execute(sql`
       INSERT INTO tenant_jmap_state (
-        client_id, mailbox_jmap_id, mailbox_address,
+        tenant_id, mailbox_jmap_id, mailbox_address,
         last_jmap_state, last_synced_at, last_error
       ) VALUES (
-        ${clientId}, ${s.jmapId}, ${s.address},
+        ${tenantId}, ${s.jmapId}, ${s.address},
         ${s.newState}, NOW(), ${reason}
       )
-      ON CONFLICT (client_id, mailbox_jmap_id) DO UPDATE SET
+      ON CONFLICT (tenant_id, mailbox_jmap_id) DO UPDATE SET
         mailbox_address = EXCLUDED.mailbox_address,
         last_jmap_state = EXCLUDED.last_jmap_state,
         last_synced_at  = EXCLUDED.last_synced_at,

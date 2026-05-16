@@ -4,10 +4,10 @@ import { eq, and } from 'drizzle-orm';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'mailboxes' });
-import { mailboxes, mailboxAccess, emailDomains, domains, users, clients } from '../../db/schema.js';
+import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { getClientMailboxLimit, getClientMailboxCount } from './limit.js';
-import { notifyClientMailboxLimitReached } from '../notifications/events.js';
+import { getTenantMailboxLimit, getTenantMailboxCount } from './limit.js';
+import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
 import {
   getJmapSession,
   createMailbox as jmapCreateMailbox,
@@ -68,7 +68,7 @@ function emailDomainNotFound(id: string): ApiError {
 const mailboxColumns = {
   id: mailboxes.id,
   emailDomainId: mailboxes.emailDomainId,
-  clientId: mailboxes.clientId,
+  tenantId: mailboxes.tenantId,
   localPart: mailboxes.localPart,
   fullAddress: mailboxes.fullAddress,
   displayName: mailboxes.displayName,
@@ -86,15 +86,15 @@ const mailboxColumns = {
 
 export async function createMailbox(
   db: Database,
-  clientId: string,
+  tenantId: string,
   emailDomainId: string,
   input: CreateMailboxInput,
 ) {
-  // 1. Verify emailDomain exists and belongs to client
+  // 1. Verify emailDomain exists and belongs to tenant
   const [emailDomain] = await db
     .select()
     .from(emailDomains)
-    .where(and(eq(emailDomains.id, emailDomainId), eq(emailDomains.clientId, clientId)));
+    .where(and(eq(emailDomains.id, emailDomainId), eq(emailDomains.tenantId, tenantId)));
 
   if (!emailDomain) {
     throw emailDomainNotFound(emailDomainId);
@@ -110,20 +110,20 @@ export async function createMailbox(
     throw new ApiError('DOMAIN_NOT_FOUND', 'Associated domain not found', 404);
   }
 
-  // 3. Check mailbox count against plan-based client-total limit.
+  // 3. Check mailbox count against plan-based tenant-total limit.
   //    Round-2 refactor: per-email-domain max_mailboxes is gone. We
-  //    now cap TOTAL mailboxes for the client via the plan
-  //    (hosting_plans.max_mailboxes) with an optional per-client
-  //    override (clients.max_mailboxes_override). See limit.ts.
-  const effective = await getClientMailboxLimit(db, clientId);
-  const currentCount = await getClientMailboxCount(db, clientId);
+  //    now cap TOTAL mailboxes for the tenant via the plan
+  //    (hosting_plans.max_mailboxes) with an optional per-tenant
+  //    override (tenants.max_mailboxes_override). See limit.ts.
+  const effective = await getTenantMailboxLimit(db, tenantId);
+  const currentCount = await getTenantMailboxCount(db, tenantId);
   if (currentCount >= effective.limit) {
-    // Fire-and-forget notification fan-out to all client_admin users.
+    // Fire-and-forget notification fan-out to all tenant_admin users.
     // We do NOT await the email delivery; we only await the DB insert
     // so the test path is deterministic. Any failure inside
-    // notifyClientMailboxLimitReached is swallowed by notifyUser's
+    // notifyTenantMailboxLimitReached is swallowed by notifyUser's
     // try/catch so this cannot mask the original ApiError.
-    void notifyClientMailboxLimitReached(db, clientId, {
+    void notifyTenantMailboxLimitReached(db, tenantId, {
       limit: effective.limit,
       current: currentCount,
       source: effective.source,
@@ -137,7 +137,7 @@ export async function createMailbox(
         current: currentCount,
         source: effective.source,
       },
-      'Upgrade your plan or request a per-client override from your administrator',
+      'Upgrade your plan or request a per-tenant override from your administrator',
     );
   }
 
@@ -256,7 +256,7 @@ export async function createMailbox(
     await db.insert(mailboxes).values({
       id,
       emailDomainId,
-      clientId,
+      tenantId,
       localPart: input.local_part,
       fullAddress,
       passwordHash,
@@ -294,10 +294,10 @@ export async function createMailbox(
 
 export async function listMailboxes(
   db: Database,
-  clientId: string,
+  tenantId: string,
   emailDomainId?: string,
 ) {
-  const conditions = [eq(mailboxes.clientId, clientId)];
+  const conditions = [eq(mailboxes.tenantId, tenantId)];
   if (emailDomainId) {
     conditions.push(eq(mailboxes.emailDomainId, emailDomainId));
   }
@@ -312,13 +312,13 @@ export async function listMailboxes(
 
 export async function getMailbox(
   db: Database,
-  clientId: string,
+  tenantId: string,
   mailboxId: string,
 ) {
   const [record] = await db
     .select(mailboxColumns)
     .from(mailboxes)
-    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.clientId, clientId)));
+    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.tenantId, tenantId)));
 
   if (!record) throw mailboxNotFound(mailboxId);
   return record;
@@ -417,13 +417,13 @@ export async function syncOrphanMailboxToStalwart(
 
 export async function updateMailbox(
   db: Database,
-  clientId: string,
+  tenantId: string,
   mailboxId: string,
   input: UpdateMailboxInput,
 ) {
   // Verify mailbox exists and belongs to client. Capture for later JMAP
   // sync so we don't burn a second SELECT on stalwartPrincipalId.
-  const existingMailbox = await getMailbox(db, clientId, mailboxId);
+  const existingMailbox = await getMailbox(db, tenantId, mailboxId);
 
   const updateData: Record<string, unknown> = {};
 
@@ -546,14 +546,14 @@ export async function updateMailbox(
 
 export async function deleteMailbox(
   db: Database,
-  clientId: string,
+  tenantId: string,
   mailboxId: string,
 ) {
   // Load full row so we have stalwartPrincipalId for JMAP cleanup.
   const [row] = await db
-    .select({ id: mailboxes.id, clientId: mailboxes.clientId, fullAddress: mailboxes.fullAddress, stalwartPrincipalId: mailboxes.stalwartPrincipalId })
+    .select({ id: mailboxes.id, tenantId: mailboxes.tenantId, fullAddress: mailboxes.fullAddress, stalwartPrincipalId: mailboxes.stalwartPrincipalId })
     .from(mailboxes)
-    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.clientId, clientId)));
+    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.tenantId, tenantId)));
 
   if (!row) throw mailboxNotFound(mailboxId);
 
@@ -586,11 +586,11 @@ export async function deleteMailbox(
 
 export async function changeMailboxPassword(
   db: Database,
-  clientId: string,
+  tenantId: string,
   mailboxId: string,
   newPassword: string,
 ) {
-  await getMailbox(db, clientId, mailboxId);
+  await getMailbox(db, tenantId, mailboxId);
 
   // Best-effort JMAP password update — keeps Stalwart in sync.
   // Non-fatal: the bcrypt hash update below is the authoritative write.
@@ -685,11 +685,11 @@ export async function listMailboxAccess(
 export async function getAccessibleMailboxes(
   db: Database,
   userId: string,
-  clientId: string,
+  tenantId: string,
 ) {
   // Look up user to determine role
   const [user] = await db
-    .select({ roleName: users.roleName, clientId: users.clientId })
+    .select({ roleName: users.roleName, tenantId: users.tenantId })
     .from(users)
     .where(eq(users.id, userId));
 
@@ -697,20 +697,20 @@ export async function getAccessibleMailboxes(
     throw new ApiError('USER_NOT_FOUND', `User '${userId}' not found`, 404);
   }
 
-  // client_admin gets ALL mailboxes for the client
-  if (user.roleName === 'client_admin') {
+  // tenant_admin gets ALL mailboxes for the tenant
+  if (user.roleName === 'tenant_admin') {
     return db
       .select(mailboxColumns)
       .from(mailboxes)
-      .where(eq(mailboxes.clientId, clientId));
+      .where(eq(mailboxes.tenantId, tenantId));
   }
 
-  // client_user gets only mailboxes assigned via mailbox_access
+  // tenant_user gets only mailboxes assigned via mailbox_access
   const rows = await db
     .select({
       id: mailboxes.id,
       emailDomainId: mailboxes.emailDomainId,
-      clientId: mailboxes.clientId,
+      tenantId: mailboxes.tenantId,
       localPart: mailboxes.localPart,
       fullAddress: mailboxes.fullAddress,
       displayName: mailboxes.displayName,
@@ -726,7 +726,7 @@ export async function getAccessibleMailboxes(
     })
     .from(mailboxAccess)
     .innerJoin(mailboxes, eq(mailboxAccess.mailboxId, mailboxes.id))
-    .where(and(eq(mailboxAccess.userId, userId), eq(mailboxes.clientId, clientId)));
+    .where(and(eq(mailboxAccess.userId, userId), eq(mailboxes.tenantId, tenantId)));
 
   return rows;
 }
@@ -743,7 +743,7 @@ interface GenerateWebmailTokenOptions {
    * are validated by the bulwark-impersonator sidecar.
    */
   engine?: 'roundcube' | 'bulwark';
-  /** Tenant ID stamped on Bulwark JWTs for audit. Defaults to the user's clientId. */
+  /** Tenant ID stamped on Bulwark JWTs for audit. Defaults to the user's tenantId. */
   tenantId?: string;
   /** Actor user ID stamped on Bulwark JWTs for audit. Defaults to the calling userId. */
   actorUserId?: string;
@@ -756,38 +756,38 @@ export async function generateWebmailToken(
   mailboxId: string,
   options?: GenerateWebmailTokenOptions,
 ) {
-  // Look up user to get clientId
+  // Look up user to get tenantId
   const [user] = await db
-    .select({ clientId: users.clientId })
+    .select({ tenantId: users.tenantId })
     .from(users)
     .where(eq(users.id, userId));
 
-  if (!user?.clientId) {
-    throw new ApiError('USER_NOT_FOUND', 'User not found or has no client', 404);
+  if (!user?.tenantId) {
+    throw new ApiError('USER_NOT_FOUND', 'User not found or has no tenant', 404);
   }
 
-  // Phase 3.C.3: suspended / archived clients cannot access webmail.
+  // Phase 3.C.3: suspended / archived tenants cannot access webmail.
   // Data is retained but all access paths (IMAP / POP / SMTP-auth /
   // webmail SSO / inbound SMTP delivery) are blocked. `pending` is
-  // allowed so newly created clients can set up their first mailbox
+  // allowed so newly created tenants can set up their first mailbox
   // before provisioning flips the status to `active`.
-  const [client] = await db
-    .select({ status: clients.status })
-    .from(clients)
-    .where(eq(clients.id, user.clientId));
-  const clientStatus = client?.status;
-  if (!client || (clientStatus !== 'active' && clientStatus !== 'pending')) {
+  const [tenant] = await db
+    .select({ status: tenants.status })
+    .from(tenants)
+    .where(eq(tenants.id, user.tenantId));
+  const tenantStatus = tenant?.status;
+  if (!tenant || (tenantStatus !== 'active' && tenantStatus !== 'pending')) {
     throw new ApiError(
       'CLIENT_SUSPENDED',
-      'This client account is not currently active — webmail access is blocked',
+      'This tenant account is not currently active — webmail access is blocked',
       403,
-      { client_id: user.clientId, status: clientStatus ?? 'unknown' },
+      { tenant_id: user.tenantId, status: tenantStatus ?? 'unknown' },
       'Contact your administrator to restore access',
     );
   }
 
   // Verify user has access to this mailbox
-  const accessible = await getAccessibleMailboxes(db, userId, user.clientId);
+  const accessible = await getAccessibleMailboxes(db, userId, user.tenantId);
   const mailbox = accessible.find((m) => m.id === mailboxId);
 
   if (!mailbox) {
@@ -802,7 +802,7 @@ export async function generateWebmailToken(
 
   // Phase 3.C.3: also check the individual mailbox status. Accessing a
   // mailbox's webmail when the mailbox is suspended is blocked even if
-  // the owning client is active.
+  // the owning tenant is active.
   const [mbRow] = await db
     .select({ status: mailboxes.status })
     .from(mailboxes)
@@ -871,7 +871,7 @@ export async function generateWebmailToken(
       engine = 'roundcube';
     }
   }
-  const tenantId = options?.tenantId ?? user.clientId;
+  const tenantId = options?.tenantId ?? user.tenantId;
   const actorUserId = options?.actorUserId ?? userId;
 
   let token: string;

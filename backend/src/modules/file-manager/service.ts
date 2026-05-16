@@ -95,14 +95,14 @@ async function getHttpAgent(): Promise<import('node:http').Agent> {
  * Caller falls back to the apiserver-proxy path in that case.
  */
 export async function resolveFmServiceUrlForRoute(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   namespace: string,
 ): Promise<string | null> {
-  return resolveFmServiceUrl(k8sClients, namespace);
+  return resolveFmServiceUrl(k8sTenants, namespace);
 }
 
 async function resolveFmServiceUrl(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   namespace: string,
 ): Promise<string | null> {
   // In-cluster check: KUBERNETES_SERVICE_HOST is set when running
@@ -133,18 +133,18 @@ async function resolveFmServiceUrl(
  * the underlying transfer would have been fast.
  */
 export async function ensureFileManagerReady(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   namespace: string,
   image: string,
 ): Promise<{ directUrl: string | null }> {
-  const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
+  const directUrl = await resolveFmServiceUrl(k8sTenants, namespace);
   if (recentlySeenReady(namespace)) return { directUrl };
   if (directUrl && await probeFmHealth(directUrl)) {
     cacheReady(namespace);
     return { directUrl };
   }
-  await ensureFileManagerRunning(k8sClients, namespace, image, 1);
-  const status = await waitForReady(k8sClients, namespace);
+  await ensureFileManagerRunning(k8sTenants, namespace, image, 1);
+  const status = await waitForReady(k8sTenants, namespace);
   if (!status.ready) {
     throw new Error(`File manager not ready: ${status.message}`);
   }
@@ -257,13 +257,13 @@ export function __resetKubeContextCacheForTests(): void {
  * Wait for the file-manager pod to be ready.
  */
 async function waitForReady(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   namespace: string,
   timeoutMs = STARTUP_TIMEOUT_MS,
 ): Promise<FileManagerStatus> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const status = await getFileManagerStatus(k8sClients, namespace);
+    const status = await getFileManagerStatus(k8sTenants, namespace);
     if (status.ready) return status;
     if (status.phase === 'failed') return status;
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -283,7 +283,7 @@ interface ProxyResult {
  * going through the apiserver proxy. Saves 0.5-1.5s per call.
  *
  * Used when KUBERNETES_SERVICE_HOST is set (in-cluster) AND the
- * caller passed directUrl. No TLS, no client certs — the request
+ * caller passed directUrl. No TLS, no tenant certs — the request
  * stays on the pod-network and Network Policies enforce isolation.
  */
 async function proxyDirect(
@@ -354,7 +354,7 @@ async function proxyDirect(
 /**
  * Proxy a request to the file-manager sidecar via the K8s API server.
  * Uses the service proxy: /api/v1/namespaces/{ns}/services/{svc}:{port}/proxy/{path}
- * Auth is handled via kubeconfig (client certs or token).
+ * Auth is handled via kubeconfig (tenant certs or token).
  *
  * Returns both body (string) and bodyBuffer (Buffer) so callers can choose.
  * Binary endpoints (download) should use bodyBuffer to avoid UTF-8 corruption.
@@ -481,7 +481,7 @@ export async function proxyToFileManager(
 }
 
 /**
- * Stream a response FROM the file-manager sidecar directly to the client.
+ * Stream a response FROM the file-manager sidecar directly to the tenant.
  * Unlike proxyToFileManager, this does NOT buffer — it pipes the K8s API
  * proxy response directly to the outgoing HTTP response for real-time progress.
  *
@@ -494,17 +494,17 @@ export async function proxyToFileManagerStream(
   namespace: string,
   sidecarPath: string,
   body: string,
-  clientRes: import('node:http').ServerResponse,
+  tenantRes: import('node:http').ServerResponse,
   options: { directUrl?: string } = {},
 ): Promise<void> {
   const writeUpstream = (res: import('node:http').IncomingMessage) => {
     const contentType = res.headers['content-type'] ?? 'application/json';
-    clientRes.writeHead(res.statusCode ?? 200, {
+    tenantRes.writeHead(res.statusCode ?? 200, {
       'Content-Type': contentType,
       'Transfer-Encoding': 'chunked',
       'Cache-Control': 'no-cache',
     });
-    res.pipe(clientRes);
+    res.pipe(tenantRes);
   };
 
   if (options.directUrl) {
@@ -525,7 +525,7 @@ export async function proxyToFileManagerStream(
       }, (res) => {
         writeUpstream(res);
         res.on('end', resolve);
-        res.on('error', (err) => { try { clientRes.end(); } catch { /* ignore */ } reject(err); });
+        res.on('error', (err) => { try { tenantRes.end(); } catch { /* ignore */ } reject(err); });
       });
       req.on('error', reject);
       req.write(body);
@@ -566,7 +566,7 @@ export async function proxyToFileManagerStream(
     }, (res) => {
       writeUpstream(res);
       res.on('end', resolve);
-      res.on('error', (err) => { try { clientRes.end(); } catch { /* ignore */ } reject(err); });
+      res.on('error', (err) => { try { tenantRes.end(); } catch { /* ignore */ } reject(err); });
     });
     req.on('error', reject);
     req.write(body);
@@ -576,21 +576,21 @@ export async function proxyToFileManagerStream(
 
 /**
  * Stream a response FROM the file-manager sidecar (e.g. binary file
- * download) back to the client without buffering. Memory stays flat
- * regardless of file size — bytes go pod→platform-api→client in flight.
+ * download) back to the tenant without buffering. Memory stays flat
+ * regardless of file size — bytes go pod→platform-api→tenant in flight.
  *
  * Returns:
- *   - on 2xx: pipes the upstream body directly to clientRes after
+ *   - on 2xx: pipes the upstream body directly to tenantRes after
  *     forwarding Content-Type / Content-Length / Content-Disposition.
  *   - on non-2xx: drains a small bounded buffer (16 KiB) and throws an
  *     ApiError-shaped object with the status + body. We never stream a
- *     potentially 1 GB body to the client when the upstream is an error.
+ *     potentially 1 GB body to the tenant when the upstream is an error.
  */
 export async function streamFromFileManager(
   kubeconfigPath: string | undefined,
   namespace: string,
   sidecarPath: string,
-  clientRes: import('node:http').ServerResponse,
+  tenantRes: import('node:http').ServerResponse,
   options: {
     query?: Record<string, string>;
     method?: string;
@@ -612,10 +612,10 @@ export async function streamFromFileManager(
         const v = res.headers[k];
         if (typeof v === 'string') out[k] = v;
       }
-      clientRes.writeHead(status, out);
-      res.pipe(clientRes);
+      tenantRes.writeHead(status, out);
+      res.pipe(tenantRes);
       res.on('end', resolve);
-      res.on('error', (err) => { try { clientRes.end(); } catch { /* ignore */ } reject(err); });
+      res.on('error', (err) => { try { tenantRes.end(); } catch { /* ignore */ } reject(err); });
       return;
     }
     // Non-2xx: drain bounded buffer then surface as a thrown error so
@@ -812,7 +812,7 @@ export async function streamToFileManager(
     // When pipe completes, req.end() is called automatically by pipe
     req.on('finish', () => { pipeCompleted = true; });
 
-    // Only handle abnormal close (client abort)
+    // Only handle abnormal close (tenant abort)
     incomingStream.on('error', (err) => {
       if (!pipeCompleted) req.destroy(err);
     });
@@ -826,7 +826,7 @@ export async function streamToFileManager(
  * Ensure file manager is running and ready, then proxy a request.
  */
 export async function fileManagerRequest(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   kubeconfigPath: string | undefined,
   namespace: string,
   image: string,
@@ -842,7 +842,7 @@ export async function fileManagerRequest(
   // Phase 1: hot path — if we recently saw FM ready in this namespace,
   // skip ensureFileManagerRunning + waitForReady entirely.
   const hot = recentlySeenReady(namespace);
-  const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
+  const directUrl = await resolveFmServiceUrl(k8sTenants, namespace);
 
   if (!hot) {
     // Phase 5: probe-first. With N platform-api replicas, the per-
@@ -856,8 +856,8 @@ export async function fileManagerRequest(
     if (probedOk) {
       cacheReady(namespace);
     } else {
-      await ensureFileManagerRunning(k8sClients, namespace, image, 1);
-      const status = await waitForReady(k8sClients, namespace);
+      await ensureFileManagerRunning(k8sTenants, namespace, image, 1);
+      const status = await waitForReady(k8sTenants, namespace);
       if (!status.ready) {
         throw new Error(`File manager not ready: ${status.message}`);
       }
@@ -885,19 +885,19 @@ export async function fileManagerRequest(
  * Handles auto-start from idle (scaled to 0) with up to 30s wait.
  */
 export async function getReadyFileManagerPod(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   namespace: string,
   image = getFileManagerImage(),
 ): Promise<string> {
   // Same on-demand semantics as fileManagerRequest — scale up to 1
   // even if provisioner created it at 0.
-  await ensureFileManagerRunning(k8sClients, namespace, image, 1);
-  const status = await waitForReady(k8sClients, namespace);
+  await ensureFileManagerRunning(k8sTenants, namespace, image, 1);
+  const status = await waitForReady(k8sTenants, namespace);
   if (!status.ready) {
     throw new Error(`File manager not ready: ${status.message ?? 'timeout'}`);
   }
 
-  const pods = await k8sClients.core.listNamespacedPod({
+  const pods = await k8sTenants.core.listNamespacedPod({
     namespace,
     labelSelector: 'app=file-manager',
   });

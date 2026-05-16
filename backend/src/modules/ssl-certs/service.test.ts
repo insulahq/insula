@@ -73,7 +73,7 @@ function createMockDb(options: {
   certResult?: unknown[];
   certResults?: unknown[][];
 } = {}) {
-  const { domainResult = [{ id: 'd1', clientId: 'c1', domainName: 'example.com' }] } = options;
+  const { domainResult = [{ id: 'd1', tenantId: 'c1', domainName: 'example.com' }] } = options;
   const certResults = options.certResults ?? [options.certResult ?? []];
 
   let selectCallIndex = 0;
@@ -135,7 +135,7 @@ describe('uploadCert', () => {
     const certRow = {
       id: 'cert-1',
       domainId: 'd1',
-      clientId: 'c1',
+      tenantId: 'c1',
       certificate: VALID_PEM_CERT,
       privateKeyEncrypted: 'encrypted-private-key',
       caBundle: null,
@@ -187,7 +187,7 @@ describe('getCert', () => {
     const certRow = {
       id: 'cert-1',
       domainId: 'd1',
-      clientId: 'c1',
+      tenantId: 'c1',
       certificate: VALID_PEM_CERT,
       privateKeyEncrypted: 'encrypted',
       caBundle: null,

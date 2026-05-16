@@ -11,7 +11,7 @@ import {
   __test,
   readBackupHealth,
   type BackupRecord,
-  type CnpgBackupHealthClients,
+  type CnpgBackupHealthTenants,
 } from './service.js';
 
 describe('cnpg-backup-health: parsePhase', () => {
@@ -63,7 +63,7 @@ describe('cnpg-backup-health: compareRecordsDesc', () => {
 describe('cnpg-backup-health: readBackupHealth', () => {
   const NOW_MS = new Date('2026-05-06T16:00:00Z').getTime();
 
-  function fakeClient(payloadByPlural: Record<string, unknown[]>): CnpgBackupHealthClients {
+  function fakeTenant(payloadByPlural: Record<string, unknown[]>): CnpgBackupHealthTenants {
     return {
       custom: {
         listNamespacedCustomObject: async ({ plural, namespace }: { plural: string; namespace: string }) => {
@@ -76,12 +76,12 @@ describe('cnpg-backup-health: readBackupHealth', () => {
           });
           return { items: filtered };
         },
-      } as unknown as CnpgBackupHealthClients['custom'],
+      } as unknown as CnpgBackupHealthTenants['custom'],
     };
   }
 
   it('healthy state — completed backup < 24h ago', async () => {
-    const clients = fakeClient({
+    const tenants = fakeTenant({
       clusters: [
         { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
@@ -96,7 +96,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
         { metadata: { name: 'mail-pg-daily', namespace: 'mail' }, spec: { cluster: { name: 'mail-pg' } } },
       ],
     });
-    const result = await readBackupHealth(clients, { nowMs: NOW_MS });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     const mail = result.find((r) => r.clusterName === 'mail-pg');
     expect(mail?.state).toBe('healthy');
     expect(mail?.lastSuccessfulBackup?.name).toBe('mail-pg-daily-1');
@@ -106,7 +106,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
   });
 
   it('failing state — last attempt is failed (newer than last success)', async () => {
-    const clients = fakeClient({
+    const tenants = fakeTenant({
       clusters: [
         { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
@@ -126,7 +126,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
       ],
       scheduledbackups: [],
     });
-    const result = await readBackupHealth(clients, { nowMs: NOW_MS });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     const mail = result.find((r) => r.clusterName === 'mail-pg');
     expect(mail?.state).toBe('failing');
     expect(mail?.mostRecentFailure?.name).toBe('fresh-failure');
@@ -136,7 +136,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
   });
 
   it('stale state — completed backup older than 24h', async () => {
-    const clients = fakeClient({
+    const tenants = fakeTenant({
       clusters: [
         { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
@@ -149,28 +149,28 @@ describe('cnpg-backup-health: readBackupHealth', () => {
       ],
       scheduledbackups: [],
     });
-    const result = await readBackupHealth(clients, { nowMs: NOW_MS });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     const mail = result.find((r) => r.clusterName === 'mail-pg');
     expect(mail?.state).toBe('stale');
     expect(mail?.lastSuccessSecondsAgo).toBeGreaterThan(24 * 3600);
   });
 
   it('never_run state — no backups at all', async () => {
-    const clients = fakeClient({
+    const tenants = fakeTenant({
       clusters: [
         { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
       backups: [],
       scheduledbackups: [],
     });
-    const result = await readBackupHealth(clients, { nowMs: NOW_MS });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     const mail = result.find((r) => r.clusterName === 'mail-pg');
     expect(mail?.state).toBe('never_run');
     expect(mail?.lastSuccessfulBackup).toBeNull();
   });
 
   it('no_backup_config state — cluster has no backup spec', async () => {
-    const clients = fakeClient({
+    const tenants = fakeTenant({
       clusters: [
         // No spec.backup — happens transiently during recovery
         { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: {} },
@@ -184,7 +184,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
         { metadata: { name: 'mail-pg-daily', namespace: 'mail' }, spec: { cluster: { name: 'mail-pg' } } },
       ],
     });
-    const result = await readBackupHealth(clients, { nowMs: NOW_MS });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     const mail = result.find((r) => r.clusterName === 'mail-pg');
     expect(mail?.state).toBe('no_backup_config');
     expect(mail?.clusterHasBackupSpec).toBe(false);
@@ -192,7 +192,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
   });
 
   it('aggregates across both watched namespaces', async () => {
-    const clients = fakeClient({
+    const tenants = fakeTenant({
       clusters: [
         { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
         { metadata: { name: 'postgres', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
@@ -211,7 +211,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
       ],
       scheduledbackups: [],
     });
-    const result = await readBackupHealth(clients, { nowMs: NOW_MS });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     expect(result.map((r) => `${r.namespace}/${r.clusterName}`).sort()).toEqual([
       'mail/mail-pg',
       'platform/postgres',

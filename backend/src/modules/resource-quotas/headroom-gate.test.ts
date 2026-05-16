@@ -39,7 +39,7 @@ function mockHeadroom(opts: {
   });
 }
 
-function makeDb(rows: Array<{ clientId: string; cpuCoresLimit: string | null; memoryGbLimit: number | null }>): Database {
+function makeDb(rows: Array<{ tenantId: string; cpuCoresLimit: string | null; memoryGbLimit: number | null }>): Database {
   // Drizzle .select({...}).from(table) returns a thenable in real usage;
   // the gate awaits the result directly. Mock the chain accordingly.
   const from = vi.fn().mockResolvedValue(rows);
@@ -56,7 +56,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
     mockHeadroom({ cpu: 8, memoryGi: 16 });
     const db = makeDb([]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 4,
       newMemoryLimitGi: 8,
     });
@@ -68,12 +68,12 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
 
   it('rejects a quota that overshoots CPU headroom', async () => {
     mockHeadroom({ cpu: 8, memoryGi: 16 });
-    // One existing tenant at 6 CPU; this client adds 4 → sum 10 > 8.
+    // One existing tenant at 6 CPU; this tenant adds 4 → sum 10 > 8.
     const db = makeDb([
-      { clientId: 'other', cpuCoresLimit: '6', memoryGbLimit: 4 },
+      { tenantId: 'other', cpuCoresLimit: '6', memoryGbLimit: 4 },
     ]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 4,
       newMemoryLimitGi: 4,
     });
@@ -86,7 +86,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
     mockHeadroom({ cpu: 100, memoryGi: 8 });
     const db = makeDb([]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 4,
       newMemoryLimitGi: 16,
     });
@@ -99,7 +99,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
     mockHeadroom({ cpu: 0, memoryGi: 0, clamped: true });
     const db = makeDb([]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 0.1,
       newMemoryLimitGi: 0.1,
     });
@@ -115,7 +115,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
     mockHeadroom({ cpu: 0, memoryGi: 0, clamped: true });
     const db = makeDb([]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 5,
       newMemoryLimitGi: 8,
     });
@@ -130,13 +130,13 @@ describe('validateQuotaFitsHeadroom — sum across tenants', () => {
   it('uses the application default (2 CPU, 4 GiB) for any tenant whose limit is NULL', async () => {
     mockHeadroom({ cpu: 8, memoryGi: 16 });
     // Two existing tenants with NULL limits — should each count as 2 CPU + 4 GiB.
-    // Plus the patch client adding 5 CPU → projected sum 9 > 8.
+    // Plus the patch tenant adding 5 CPU → projected sum 9 > 8.
     const db = makeDb([
-      { clientId: 'a', cpuCoresLimit: null, memoryGbLimit: null },
-      { clientId: 'b', cpuCoresLimit: null, memoryGbLimit: null },
+      { tenantId: 'a', cpuCoresLimit: null, memoryGbLimit: null },
+      { tenantId: 'b', cpuCoresLimit: null, memoryGbLimit: null },
     ]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 5,
       newMemoryLimitGi: 4,
     });
@@ -145,16 +145,16 @@ describe('validateQuotaFitsHeadroom — sum across tenants', () => {
     expect(r.allowed).toBe(false);
   });
 
-  it('excludes the patch-target client from the current sum (avoids double counting their old quota)', async () => {
+  it('excludes the patch-target tenant from the current sum (avoids double counting their old quota)', async () => {
     mockHeadroom({ cpu: 10, memoryGi: 16 });
     // The patch target already has a 6 CPU quota in the DB; the patch
     // raises it to 8. Current sum (excluding self) should be 0; projected
     // sum should be 8 (new), not 6 + 8 = 14.
     const db = makeDb([
-      { clientId: 'c1', cpuCoresLimit: '6', memoryGbLimit: 8 },
+      { tenantId: 'c1', cpuCoresLimit: '6', memoryGbLimit: 8 },
     ]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 8,
       newMemoryLimitGi: 8,
     });
@@ -165,13 +165,13 @@ describe('validateQuotaFitsHeadroom — sum across tenants', () => {
 
   it('falls back to existing DB value when the patch leaves a field unset (null)', async () => {
     mockHeadroom({ cpu: 10, memoryGi: 16 });
-    // Existing client has 4 CPU / 8 GiB; the patch only raises memory.
+    // Existing tenant has 4 CPU / 8 GiB; the patch only raises memory.
     // The gate must keep using 4 for CPU (existing) and combine with 12 GiB (new).
     const db = makeDb([
-      { clientId: 'c1', cpuCoresLimit: '4', memoryGbLimit: 8 },
+      { tenantId: 'c1', cpuCoresLimit: '4', memoryGbLimit: 8 },
     ]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: null,
       newMemoryLimitGi: 12,
     });
@@ -186,7 +186,7 @@ describe('validateQuotaFitsHeadroom — boundary cases', () => {
     mockHeadroom({ cpu: 8, memoryGi: 16 });
     const db = makeDb([]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 8,
       newMemoryLimitGi: 16,
     });
@@ -199,7 +199,7 @@ describe('validateQuotaFitsHeadroom — boundary cases', () => {
     mockHeadroom({ cpu: 8, memoryGi: 16 });
     const db = makeDb([]);
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
-      clientId: 'c1',
+      tenantId: 'c1',
       newCpuLimit: 8.01,
       newMemoryLimitGi: 16,
     });

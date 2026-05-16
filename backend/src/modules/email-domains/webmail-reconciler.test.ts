@@ -4,7 +4,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // ─── Mock the cert-manager Certificate CR fetch ────────────────────
 
-function makeK8sClient(certs: Record<string, { conditions: { type: string; status: string; message?: string; reason?: string }[] } | null>): K8sClients {
+function makeK8sTenant(certs: Record<string, { conditions: { type: string; status: string; message?: string; reason?: string }[] } | null>): K8sClients {
   return {
     custom: {
       getNamespacedCustomObject: vi.fn().mockImplementation((args: { name: string }) => {
@@ -23,7 +23,7 @@ function makeK8sClient(certs: Record<string, { conditions: { type: string; statu
 function makeDb(rows: Array<{
   id: string;
   domainName: string;
-  clientNamespace: string;
+  tenantNamespace: string;
   webmailStatus: string;
   webmailEnabled: number;
 }>) {
@@ -56,27 +56,27 @@ function makeDb(rows: Array<{
 
 describe('readCertReadyStatus', () => {
   it('returns the Ready condition when cert-manager has issued the cert', async () => {
-    const k8s = makeK8sClient({
+    const k8s = makeK8sTenant({
       'webmail-example-com-cert': { conditions: [{ type: 'Ready', status: 'True' }] },
     });
-    const cond = await readCertReadyStatus(k8s, 'client-x', 'webmail.example.com');
+    const cond = await readCertReadyStatus(k8s, 'tenant-x', 'webmail.example.com');
     expect(cond?.status).toBe('True');
   });
 
   it('returns the Ready condition with status=False when cert-manager rejected the cert', async () => {
-    const k8s = makeK8sClient({
+    const k8s = makeK8sTenant({
       'webmail-example-com-cert': {
         conditions: [{ type: 'Ready', status: 'False', reason: 'Failed', message: 'ACME challenge timeout' }],
       },
     });
-    const cond = await readCertReadyStatus(k8s, 'client-x', 'webmail.example.com');
+    const cond = await readCertReadyStatus(k8s, 'tenant-x', 'webmail.example.com');
     expect(cond?.status).toBe('False');
     expect(cond?.message).toContain('ACME challenge timeout');
   });
 
   it('returns null when the Certificate CR does not exist', async () => {
-    const k8s = makeK8sClient({});
-    const cond = await readCertReadyStatus(k8s, 'client-x', 'webmail.gone.com');
+    const k8s = makeK8sTenant({});
+    const cond = await readCertReadyStatus(k8s, 'tenant-x', 'webmail.gone.com');
     expect(cond).toBeNull();
   });
 });
@@ -87,12 +87,12 @@ describe('reconcileWebmailCertificates', () => {
       {
         id: 'ed1',
         domainName: 'example.com',
-        clientNamespace: 'client-x',
+        tenantNamespace: 'tenant-x',
         webmailStatus: 'pending',
         webmailEnabled: 1,
       },
     ]);
-    const k8s = makeK8sClient({
+    const k8s = makeK8sTenant({
       'webmail-example-com-cert': { conditions: [{ type: 'Ready', status: 'True' }] },
     });
 
@@ -111,12 +111,12 @@ describe('reconcileWebmailCertificates', () => {
       {
         id: 'ed1',
         domainName: 'example.com',
-        clientNamespace: 'client-x',
+        tenantNamespace: 'tenant-x',
         webmailStatus: 'ready_no_tls',
         webmailEnabled: 1,
       },
     ]);
-    const k8s = makeK8sClient({
+    const k8s = makeK8sTenant({
       'webmail-example-com-cert': { conditions: [{ type: 'Ready', status: 'True' }] },
     });
 
@@ -130,12 +130,12 @@ describe('reconcileWebmailCertificates', () => {
       {
         id: 'ed1',
         domainName: 'example.com',
-        clientNamespace: 'client-x',
+        tenantNamespace: 'tenant-x',
         webmailStatus: 'pending',
         webmailEnabled: 1,
       },
     ]);
-    const k8s = makeK8sClient({
+    const k8s = makeK8sTenant({
       'webmail-example-com-cert': {
         conditions: [{ type: 'Ready', status: 'False', message: 'ACME timeout' }],
       },
@@ -153,12 +153,12 @@ describe('reconcileWebmailCertificates', () => {
       {
         id: 'ed1',
         domainName: 'example.com',
-        clientNamespace: 'client-x',
+        tenantNamespace: 'tenant-x',
         webmailStatus: 'pending',
         webmailEnabled: 1,
       },
     ]);
-    const k8s = makeK8sClient({});
+    const k8s = makeK8sTenant({});
 
     const result = await reconcileWebmailCertificates(db, k8s);
     expect(result.promoted).toBe(0);
@@ -170,12 +170,12 @@ describe('reconcileWebmailCertificates', () => {
       {
         id: 'ed1',
         domainName: 'example.com',
-        clientNamespace: 'client-x',
+        tenantNamespace: 'tenant-x',
         webmailStatus: 'pending',
         webmailEnabled: 0,
       },
     ]);
-    const k8s = makeK8sClient({
+    const k8s = makeK8sTenant({
       'webmail-example-com-cert': { conditions: [{ type: 'Ready', status: 'True' }] },
     });
 
@@ -189,7 +189,7 @@ describe('reconcileWebmailCertificates', () => {
     // ['pending', 'ready_no_tls'] — `ready` rows are never returned
     // by the query, so nothing should be updated.
     const { db, updateCalls } = makeDb([]);
-    const k8s = makeK8sClient({});
+    const k8s = makeK8sTenant({});
 
     const result = await reconcileWebmailCertificates(db, k8s);
     expect(result.scanned).toBe(0);

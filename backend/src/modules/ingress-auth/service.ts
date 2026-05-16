@@ -1,16 +1,16 @@
 /**
  * Ingress access-control service (provider-split version).
  *
- * Ingress configs reference a `client_oidc_providers` row via
+ * Ingress configs reference a `tenant_oidc_providers` row via
  * provider_id. Read responses flatten the joined provider so the
  * UI doesn't need to compose two requests. Write inputs accept
  * either:
  *   - `providerId` (preferred — picks an existing provider), OR
  *   - inline OIDC fields (compat shim — auto-creates a provider
- *     for the client on first write).
+ *     for the tenant on first write).
  *
  * The shim preserves the v1 UX where the operator types issuer/
- * client/secret directly into the ingress form. After a few
+ * tenant/secret directly into the ingress form. After a few
  * provider rows accumulate, the UI surfaces a dropdown so they
  * can be reused.
  */
@@ -20,8 +20,8 @@ import {
   ingressAuthConfigs,
   ingressRoutes,
   domains,
-  clientOauth2ProxyState,
-  clientOidcProviders,
+  tenantOauth2ProxyState,
+  tenantOidcProviders,
 } from '../../db/schema.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
@@ -31,7 +31,7 @@ import {
 } from './providers-service.js';
 import type { Database } from '../../db/index.js';
 import type {
-  ClientOidcProvider,
+  TenantOidcProvider,
   IngressAuthConfig,
   IngressClaimRule,
 } from '../../db/schema.js';
@@ -42,8 +42,8 @@ export interface IngressAuthConfigInput {
   readonly providerId?: string;
   /** Compat shim: inline OIDC fields auto-create a provider. */
   readonly issuerUrl?: string;
-  readonly clientId?: string;
-  readonly clientSecret?: string;
+  readonly tenantId?: string;
+  readonly tenantSecret?: string;
   readonly authMethod?: 'client_secret_basic' | 'client_secret_post';
   readonly responseType?: 'code' | 'id_token' | 'code_id_token';
   readonly usePkce?: boolean;
@@ -68,10 +68,10 @@ export interface IngressAuthConfigResponse {
   readonly enabled: boolean;
   readonly providerId: string;
   readonly providerName: string;
-  /** Issuer + client_id flattened from the joined provider. */
+  /** Issuer + tenant_id flattened from the joined provider. */
   readonly issuerUrl: string;
-  readonly clientId: string;
-  readonly clientSecretSet: boolean;
+  readonly tenantId: string;
+  readonly tenantSecretSet: boolean;
   readonly authMethod: 'client_secret_basic' | 'client_secret_post';
   readonly responseType: 'code' | 'id_token' | 'code_id_token';
   readonly usePkce: boolean;
@@ -105,7 +105,7 @@ export function buildCallbackUrl(hostname: string): string {
 
 function buildResponse(
   cfg: IngressAuthConfig,
-  provider: ClientOidcProvider,
+  provider: TenantOidcProvider,
   hostname: string,
 ): IngressAuthConfigResponse {
   return {
@@ -113,8 +113,8 @@ function buildResponse(
     providerId: provider.id,
     providerName: provider.name,
     issuerUrl: provider.issuerUrl,
-    clientId: provider.oauthClientId,
-    clientSecretSet: provider.oauthClientSecretEncrypted.length > 0,
+    tenantId: provider.oauthClientId,
+    tenantSecretSet: provider.oauthClientSecretEncrypted.length > 0,
     authMethod: provider.authMethod as IngressAuthConfigResponse['authMethod'],
     responseType: provider.responseType as IngressAuthConfigResponse['responseType'],
     usePkce: provider.usePkce,
@@ -144,9 +144,9 @@ export async function getAuthConfig(
   ingressRouteId: string,
 ): Promise<IngressAuthConfigResponse | null> {
   const rows = await db
-    .select({ cfg: ingressAuthConfigs, provider: clientOidcProviders, hostname: ingressRoutes.hostname })
+    .select({ cfg: ingressAuthConfigs, provider: tenantOidcProviders, hostname: ingressRoutes.hostname })
     .from(ingressAuthConfigs)
-    .innerJoin(clientOidcProviders, eq(clientOidcProviders.id, ingressAuthConfigs.providerId))
+    .innerJoin(tenantOidcProviders, eq(tenantOidcProviders.id, ingressAuthConfigs.providerId))
     .innerJoin(ingressRoutes, eq(ingressRoutes.id, ingressAuthConfigs.ingressRouteId))
     .where(eq(ingressAuthConfigs.ingressRouteId, ingressRouteId));
   const row = rows[0];
@@ -164,7 +164,7 @@ export async function getAuthConfig(
 async function resolveOrCreateProvider(
   db: Database,
   ctx: IngressAuthServiceContext,
-  clientId: string,
+  tenantId: string,
   hostname: string,
   existing: IngressAuthConfig | undefined,
   input: IngressAuthConfigInput,
@@ -173,49 +173,49 @@ async function resolveOrCreateProvider(
   if (input.providerId) {
     const [p] = await db
       .select()
-      .from(clientOidcProviders)
-      .where(and(eq(clientOidcProviders.id, input.providerId), eq(clientOidcProviders.clientId, clientId)));
+      .from(tenantOidcProviders)
+      .where(and(eq(tenantOidcProviders.id, input.providerId), eq(tenantOidcProviders.tenantId, tenantId)));
     if (!p) {
-      throw new ApiError('NOT_FOUND', `Provider ${input.providerId} not found for this client`, 404);
+      throw new ApiError('NOT_FOUND', `Provider ${input.providerId} not found for this tenant`, 404);
     }
     return p.id;
   }
   // Path 2: keep existing provider; optionally update inline fields on it
   if (existing) {
-    const updates: Partial<typeof clientOidcProviders.$inferInsert> = {};
+    const updates: Partial<typeof tenantOidcProviders.$inferInsert> = {};
     if (input.issuerUrl !== undefined) updates.issuerUrl = input.issuerUrl;
-    if (input.clientId !== undefined) updates.oauthClientId = input.clientId;
-    if (input.clientSecret) updates.oauthClientSecretEncrypted = encrypt(input.clientSecret, ctx.encryptionKey);
+    if (input.tenantId !== undefined) updates.oauthClientId = input.tenantId;
+    if (input.tenantSecret) updates.oauthClientSecretEncrypted = encrypt(input.tenantSecret, ctx.encryptionKey);
     if (input.authMethod !== undefined) updates.authMethod = input.authMethod;
     if (input.responseType !== undefined) updates.responseType = input.responseType;
     if (input.usePkce !== undefined) updates.usePkce = input.usePkce;
     if (Object.keys(updates).length > 0) {
       await db
-        .update(clientOidcProviders)
+        .update(tenantOidcProviders)
         .set(updates)
-        .where(eq(clientOidcProviders.id, existing.providerId));
+        .where(eq(tenantOidcProviders.id, existing.providerId));
     }
     return existing.providerId;
   }
   // Path 3: auto-create from inline fields
-  if (!input.issuerUrl || !input.clientId || !input.clientSecret) {
+  if (!input.issuerUrl || !input.tenantId || !input.tenantSecret) {
     throw new ApiError(
       'VALIDATION_ERROR',
-      'When creating an ingress auth config without providerId, issuerUrl + clientId + clientSecret are required.',
+      'When creating an ingress auth config without providerId, issuerUrl + tenantId + tenantSecret are required.',
       400,
     );
   }
   const provider: ProviderInput = {
     name: `Auto-created for ${hostname}`,
     issuerUrl: input.issuerUrl,
-    oauthClientId: input.clientId,
-    oauthClientSecret: input.clientSecret,
+    oauthClientId: input.tenantId,
+    oauthClientSecret: input.tenantSecret,
     authMethod: input.authMethod,
     responseType: input.responseType,
     usePkce: input.usePkce,
     defaultScopes: input.scopes,
   };
-  const created = await createProvider(db, ctx, clientId, provider);
+  const created = await createProvider(db, ctx, tenantId, provider);
   return created.id;
 }
 
@@ -225,9 +225,9 @@ export async function upsertAuthConfig(
   ingressRouteId: string,
   input: IngressAuthConfigInput,
 ): Promise<IngressAuthConfigResponse> {
-  // Resolve hostname + clientId for callback URL + provider scoping.
+  // Resolve hostname + tenantId for callback URL + provider scoping.
   const routeRows = await db
-    .select({ hostname: ingressRoutes.hostname, clientId: domains.clientId })
+    .select({ hostname: ingressRoutes.hostname, tenantId: domains.tenantId })
     .from(ingressRoutes)
     .innerJoin(domains, eq(domains.id, ingressRoutes.domainId))
     .where(eq(ingressRoutes.id, ingressRouteId));
@@ -241,7 +241,7 @@ export async function upsertAuthConfig(
     .from(ingressAuthConfigs)
     .where(eq(ingressAuthConfigs.ingressRouteId, ingressRouteId));
 
-  const providerId = await resolveOrCreateProvider(db, ctx, route.clientId, route.hostname, existing, input);
+  const providerId = await resolveOrCreateProvider(db, ctx, route.tenantId, route.hostname, existing, input);
 
   const claimRules = input.claimRules ?? null;
   // scopesOverride is set ONLY when the operator explicitly passed
@@ -313,18 +313,18 @@ export async function deleteAuthConfig(
 }
 
 /**
- * Per-client-namespace cookie-secret used by oauth2-proxy. Generates
+ * Per-tenant-namespace cookie-secret used by oauth2-proxy. Generates
  * + encrypts on first call. Returns plaintext for reconciler use.
  */
-export async function getOrCreateClientCookieSecret(
+export async function getOrCreateTenantCookieSecret(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
 ): Promise<string> {
   const [existing] = await db
     .select()
-    .from(clientOauth2ProxyState)
-    .where(eq(clientOauth2ProxyState.clientId, clientId));
+    .from(tenantOauth2ProxyState)
+    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
   if (existing) {
     return decrypt(existing.cookieSecretEncrypted, encryptionKey);
   }
@@ -335,9 +335,9 @@ export async function getOrCreateClientCookieSecret(
     .replace(/\//g, '_')
     .replace(/=+$/, '');
   await db
-    .insert(clientOauth2ProxyState)
+    .insert(tenantOauth2ProxyState)
     .values({
-      clientId,
+      tenantId,
       cookieSecretEncrypted: encrypt(cookieSecret, encryptionKey),
       provisioned: false,
     })
@@ -346,30 +346,30 @@ export async function getOrCreateClientCookieSecret(
 }
 
 /**
- * Reconciler-facing: list all enabled configs for a client, with the
- * resolved provider already joined. Matches the per-client iteration
+ * Reconciler-facing: list all enabled configs for a tenant, with the
+ * resolved provider already joined. Matches the per-tenant iteration
  * the reconciler does to render oauth2_proxy.cfg.
  */
 export interface EnabledIngressAuthRow {
   readonly cfg: IngressAuthConfig;
-  readonly provider: ClientOidcProvider;
+  readonly provider: TenantOidcProvider;
   readonly hostname: string;
 }
 
-export async function listEnabledForClient(
+export async function listEnabledForTenant(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<EnabledIngressAuthRow>> {
   const rows = await db
     .select({
       cfg: ingressAuthConfigs,
-      provider: clientOidcProviders,
+      provider: tenantOidcProviders,
       hostname: ingressRoutes.hostname,
     })
     .from(ingressAuthConfigs)
-    .innerJoin(clientOidcProviders, eq(clientOidcProviders.id, ingressAuthConfigs.providerId))
+    .innerJoin(tenantOidcProviders, eq(tenantOidcProviders.id, ingressAuthConfigs.providerId))
     .innerJoin(ingressRoutes, eq(ingressRoutes.id, ingressAuthConfigs.ingressRouteId))
     .innerJoin(domains, eq(domains.id, ingressRoutes.domainId))
-    .where(and(eq(ingressAuthConfigs.enabled, true), eq(domains.clientId, clientId)));
+    .where(and(eq(ingressAuthConfigs.enabled, true), eq(domains.tenantId, tenantId)));
   return rows.map((r) => ({ cfg: r.cfg, provider: r.provider, hostname: r.hostname }));
 }

@@ -114,9 +114,9 @@ export default function PlatformStoragePolicyCard() {
         Apply <strong>High Availability</strong> when the cluster has at least three Ready server
         nodes — Longhorn replicates Postgres + Stalwart-mail volumes 3× (system-tagged nodes only),
         CNPG scales Postgres instances 1 → 3 with streaming replication, and stateless platform
-        Deployments (admin-panel, client-panel, platform-api, oauth2-proxy, dex) scale to 3 with
+        Deployments (admin-panel, tenant-panel, platform-api, oauth2-proxy, dex) scale to 3 with
         a per-server topology spread so a single node loss never takes the platform offline.
-        Reversible at any time. Distinct from per-tenant storage tier, which is set on each client.
+        Reversible at any time. Distinct from per-tenant storage tier, which is set on each tenant.
       </p>
 
       {showRecommendBanner && (
@@ -266,7 +266,7 @@ export default function PlatformStoragePolicyCard() {
             <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1 mb-4 list-disc pl-5">
               <li><strong>Longhorn volumes:</strong> {confirming === 'ha' ? '1 → 3 replicas (Longhorn rebuilds in background)' : '3 → 1 replica (extra copies deleted permanently)'}</li>
               <li><strong>Postgres (CNPG):</strong> {confirming === 'ha' ? '1 → 3 instances (streaming replication, primary stays primary)' : '3 → 1 instance (replicas removed; primary keeps data)'}</li>
-              <li><strong>Stateless deployments:</strong> {confirming === 'ha' ? '2 → 3 replicas (admin-panel, client-panel, platform-api, oauth2-proxy, dex) + topology spread to one pod per server' : '3 → 2 replicas (topology spread retained, harmless at 2)'}</li>
+              <li><strong>Stateless deployments:</strong> {confirming === 'ha' ? '2 → 3 replicas (admin-panel, tenant-panel, platform-api, oauth2-proxy, dex) + topology spread to one pod per server' : '3 → 2 replicas (topology spread retained, harmless at 2)'}</li>
               <li>No data migration. No downtime.</li>
               <li>{confirming === 'ha' ? 'Disk + CPU usage roughly triples for the affected components.' : 'Cluster reverts to "single-node failure = platform outage" risk profile.'}</li>
             </ul>

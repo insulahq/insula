@@ -43,13 +43,13 @@ export function serializeMeta(meta: BackupMetaV1): Buffer {
  * store layer can surface a structured OperatorError envelope.
  *
  * Legacy v1 bundles (captured before the schema bump on 2026-05-08)
- * are accepted on READ paths — the missing v2-only fields (`client`,
+ * are accepted on READ paths — the missing v2-only fields (`tenant`,
  * `domainsSummary`, `deploymentsSummary`) are filled with safe
  * defaults so verify / export / restore-cart continue to work for
  * pre-existing bundles. NEW captures always write v2; only the
  * IMPORT endpoint rejects v1 with `UNKNOWN_SCHEMA_VERSION` because
  * a cross-region import without v2 metadata can't reproduce the
- * client config (the whole point of v2).
+ * tenant config (the whole point of v2).
  */
 export function parseMeta(raw: Buffer | string): BackupMetaV1 {
   const text = typeof raw === 'string' ? raw : raw.toString('utf8');
@@ -69,7 +69,7 @@ export function parseMeta(raw: Buffer | string): BackupMetaV1 {
       `meta.json missing or non-numeric schemaVersion (${String(sv)})`,
     );
   }
-  // v1 = legacy capture without client/domains/deployments blocks.
+  // v1 = legacy capture without tenant/domains/deployments blocks.
   // v2 = current. Anything else is forward-incompatible.
   if (sv !== 1 && sv !== BACKUP_META_SCHEMA_VERSION) {
     throw new BackupMetaError(
@@ -79,9 +79,9 @@ export function parseMeta(raw: Buffer | string): BackupMetaV1 {
   }
 
   // Promote v1 → v2 in-memory: fill the v2-only fields with `null`
-  // (client) and empty arrays so downstream code can rely on the v2
+  // (tenant) and empty arrays so downstream code can rely on the v2
   // shape. v1 bundles can be verified / exported / restored-via-cart
-  // but cannot be IMPORTED to a new region (no client block to seed).
+  // but cannot be IMPORTED to a new region (no tenant block to seed).
   const upgraded = sv === 1 ? upgradeV1ToV2(json as Record<string, unknown>) : json;
 
   const parsed = backupMetaV1Schema.safeParse(upgraded);
@@ -93,16 +93,16 @@ export function parseMeta(raw: Buffer | string): BackupMetaV1 {
 
 /**
  * Promote a v1 manifest to v2 in-memory. The v2-only fields default
- * to `null` (client) and `[]` (summaries) — sufficient for read paths
+ * to `null` (tenant) and `[]` (summaries) — sufficient for read paths
  * (verify / export / restore-via-cart). The IMPORT endpoint enforces
- * non-null `client` separately, so a v1-promoted manifest cannot
+ * non-null `tenant` separately, so a v1-promoted manifest cannot
  * sneak through that path.
  */
 function upgradeV1ToV2(v1: Record<string, unknown>): Record<string, unknown> {
   return {
     ...v1,
     schemaVersion: BACKUP_META_SCHEMA_VERSION,
-    client: v1.client ?? null,
+    tenant: v1.tenant ?? null,
     domainsSummary: v1.domainsSummary ?? [],
     deploymentsSummary: v1.deploymentsSummary ?? [],
   };

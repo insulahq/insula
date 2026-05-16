@@ -48,8 +48,8 @@ const mockDeployments = {
     {
       id: 'inst-001',
       name: 'my-wordpress',
-      clientId: 'client-001',
-      clientName: 'Acme Corp',
+      tenantId: 'tenant-001',
+      tenantName: 'Acme Corp',
       catalogEntryId: 'cat-001',
       catalogEntryName: 'WordPress',
       catalogEntryCode: 'wordpress',
@@ -68,8 +68,8 @@ const mockDeployments = {
     {
       id: 'inst-002',
       name: 'blog-wordpress',
-      clientId: 'client-002',
-      clientName: 'Beta Inc',
+      tenantId: 'tenant-002',
+      tenantName: 'Beta Inc',
       catalogEntryId: 'cat-001',
       catalogEntryName: 'WordPress',
       catalogEntryCode: 'wordpress',
@@ -109,8 +109,8 @@ const mockUpgradesOverview = {
       deployments: [
         {
           id: 'inst-001',
-          clientId: 'client-001',
-          clientCompanyName: 'Acme Corp',
+          tenantId: 'tenant-001',
+          tenantCompanyName: 'Acme Corp',
           name: 'my-wordpress',
           status: 'running',
           installedVersion: '6.7',
@@ -124,8 +124,8 @@ const mockUpgradesOverview = {
         },
         {
           id: 'inst-002',
-          clientId: 'client-002',
-          clientCompanyName: 'Beta Inc',
+          tenantId: 'tenant-002',
+          tenantCompanyName: 'Beta Inc',
           name: 'blog-wordpress',
           status: 'running',
           installedVersion: '6.8',

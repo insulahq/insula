@@ -6,7 +6,7 @@ import { registerAuth } from '../../middleware/auth.js';
 
 const mockQuota = {
   id: 'q-1',
-  clientId: 'c1',
+  tenantId: 'c1',
   cpuCoresLimit: '2.00',
   memoryGbLimit: 4,
   storageGbLimit: 50,
@@ -18,7 +18,7 @@ const mockQuota = {
 vi.mock('./service.js', () => ({
   getResourceQuota: vi.fn().mockResolvedValue(mockQuota),
   updateResourceQuota: vi.fn().mockResolvedValue({ ...mockQuota, cpuCoresLimit: '4.00' }),
-  getClientResourceAvailability: vi.fn(),
+  getTenantResourceAvailability: vi.fn(),
 }));
 
 // Mock the headroom gate so existing happy-path PATCH tests don't need
@@ -77,7 +77,7 @@ describe('resource-quota routes', () => {
   // ─── Auth ────────────────────────────────────────────────────────────────
 
   it('GET resource-quota should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/resource-quota' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/resource-quota' });
     expect(res.statusCode).toBe(401);
   });
 
@@ -86,7 +86,7 @@ describe('resource-quota routes', () => {
   it('GET resource-quota should return quota for any authenticated user', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/resource-quota',
+      url: '/api/v1/tenants/c1/resource-quota',
       headers: { authorization: `Bearer ${supportToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -98,7 +98,7 @@ describe('resource-quota routes', () => {
   it('PATCH resource-quota should reject non-admin role', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/resource-quota',
+      url: '/api/v1/tenants/c1/resource-quota',
       headers: { authorization: `Bearer ${supportToken}` },
       payload: { cpu_cores_limit: 4 },
     });
@@ -108,7 +108,7 @@ describe('resource-quota routes', () => {
   it('PATCH resource-quota should update for admin', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/resource-quota',
+      url: '/api/v1/tenants/c1/resource-quota',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { cpu_cores_limit: 4 },
     });

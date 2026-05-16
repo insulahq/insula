@@ -1,12 +1,12 @@
 /**
  * Phase 3 (post-Phase-3 hardening): rate-limit inspection helpers.
  *
- * Reads the effective email send rate limit for a client from:
- *   1. clients.email_send_rate_limit (per-customer override)
+ * Reads the effective email send rate limit for a tenant from:
+ *   1. tenants.email_send_rate_limit (per-customer override)
  *   2. platform_settings.email_send_rate_limit_default
  *   3. HARDCODED_DEFAULT_LIMIT_PER_HOUR
  *
- * Suspended clients are forced to limit = 0 regardless of the
+ * Suspended tenants are forced to limit = 0 regardless of the
  * configured override — same rule the email-outbound reconciler
  * applies when rendering [queue.throttle].
  *
@@ -17,14 +17,14 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { clients, platformSettings } from '../../db/schema.js';
+import { tenants, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 
 export const HARDCODED_DEFAULT_LIMIT_PER_HOUR = 100;
 
 export type RateLimitSource =
-  | 'client_override'
+  | 'tenant_override'
   | 'platform_default'
   | 'hardcoded_default'
   | 'suspended';
@@ -37,24 +37,24 @@ export interface EffectiveRateLimit {
 
 export async function getEffectiveRateLimit(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<EffectiveRateLimit> {
-  const [client] = await db
-    .select({ status: clients.status, emailSendRateLimit: clients.emailSendRateLimit })
-    .from(clients)
-    .where(eq(clients.id, clientId));
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404);
+  const [tenant] = await db
+    .select({ status: tenants.status, emailSendRateLimit: tenants.emailSendRateLimit })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404);
   }
 
-  if (client.status === 'suspended') {
+  if (tenant.status === 'suspended') {
     return { limitPerHour: 0, source: 'suspended', suspended: true };
   }
 
-  if (typeof client.emailSendRateLimit === 'number' && client.emailSendRateLimit > 0) {
+  if (typeof tenant.emailSendRateLimit === 'number' && tenant.emailSendRateLimit > 0) {
     return {
-      limitPerHour: client.emailSendRateLimit,
-      source: 'client_override',
+      limitPerHour: tenant.emailSendRateLimit,
+      source: 'tenant_override',
       suspended: false,
     };
   }

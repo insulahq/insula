@@ -10,9 +10,9 @@ import { buildFilesPathsJobSpec } from './files-paths.js';
 describe('buildFilesPathsJobSpec', () => {
   const baseInput = {
     jobName: 'rs-files-item-1',
-    namespace: 'client-acme',
-    pvcName: 'client-acme-storage',
-    clientId: 'client-acme',
+    namespace: 'tenant-acme',
+    pvcName: 'tenant-acme-storage',
+    tenantId: 'tenant-acme',
     cartId: 'rstr-1',
     itemId: 'item-1',
     downloadUrl: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-1/components/files/archive.tar.gz?token=1.deadbeef',
@@ -24,9 +24,9 @@ describe('buildFilesPathsJobSpec', () => {
       metadata: { namespace: string };
       spec: { template: { spec: { volumes: Array<{ name: string; persistentVolumeClaim?: { claimName: string } }> } } };
     };
-    expect(spec.metadata.namespace).toBe('client-acme');
+    expect(spec.metadata.namespace).toBe('tenant-acme');
     const target = spec.spec.template.spec.volumes.find((v) => v.name === 'target');
-    expect(target?.persistentVolumeClaim?.claimName).toBe('client-acme-storage');
+    expect(target?.persistentVolumeClaim?.claimName).toBe('tenant-acme-storage');
   });
 
   it('labels with platform.io/component=restore-files so the tightened NetworkPolicy applies', () => {

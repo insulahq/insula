@@ -85,20 +85,20 @@ export async function syncRecordToProviders(
   }
 }
 
-async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
+async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for client`, 404);
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for tenant`, 404);
   }
   return domain;
 }
 
-export async function listDnsRecords(db: Database, clientId: string, domainId: string) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function listDnsRecords(db: Database, tenantId: string, domainId: string) {
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   return db
     .select()
@@ -108,11 +108,11 @@ export async function listDnsRecords(db: Database, clientId: string, domainId: s
 
 export async function createDnsRecord(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   input: CreateDnsRecordInput,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const id = crypto.randomUUID();
 
@@ -147,12 +147,12 @@ export async function createDnsRecord(
 
 export async function updateDnsRecord(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   recordId: string,
   input: UpdateDnsRecordInput,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [record] = await db
     .select()
@@ -200,11 +200,11 @@ export async function updateDnsRecord(
 
 export async function deleteDnsRecord(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   recordId: string,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [record] = await db
     .select()
@@ -237,10 +237,10 @@ export interface DnsRecordDiffEntry {
 
 export async function diffRecordsWithProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ): Promise<DnsRecordDiffEntry[]> {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [domainRow] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domainRow) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
@@ -357,8 +357,8 @@ export async function diffRecordsWithProvider(
   return diff;
 }
 
-export async function createDnsRecordLocalOnly(db: Database, clientId: string, domainId: string, input: CreateDnsRecordInput) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function createDnsRecordLocalOnly(db: Database, tenantId: string, domainId: string, input: CreateDnsRecordInput) {
+  await verifyDomainOwnership(db, tenantId, domainId);
   const id = crypto.randomUUID();
   await db.insert(dnsRecords).values({
     id,
@@ -377,10 +377,10 @@ export async function createDnsRecordLocalOnly(db: Database, clientId: string, d
 
 export async function syncRecordsFromProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ): Promise<DnsRecordRow[]> {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [domainRow] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domainRow) {

@@ -17,7 +17,7 @@ function mockK8s(opts: {
   return {
     scaleCalls,
     cronPatchCalls,
-    client: {
+    tenant: {
       core: {
         listNamespacedPod: vi.fn().mockImplementation(async () => {
           listPodsCallCount += 1;
@@ -76,7 +76,7 @@ describe('quiesce', () => {
         { name: 'redis', replicas: 0 }, // already-zero deployment must still be recorded
       ],
     });
-    const snap = await quiesce(m.client, 'ns');
+    const snap = await quiesce(m.tenant, 'ns');
     expect(snap.deployments).toEqual([
       { name: 'wordpress', replicas: 1 },
       { name: 'mariadb', replicas: 1 },
@@ -96,7 +96,7 @@ describe('quiesce', () => {
         { name: 'backup', suspend: true }, // already suspended
       ],
     });
-    const snap = await quiesce(m.client, 'ns');
+    const snap = await quiesce(m.tenant, 'ns');
     expect(snap.cronJobs).toEqual([
       { name: 'wp-cron', wasSuspended: false },
       { name: 'backup', wasSuspended: true },
@@ -109,7 +109,7 @@ describe('quiesce', () => {
       deployments: [{ name: 'x', replicas: 0 }],
       cronJobs: [{ name: 'c', suspend: true }],
     });
-    await quiesce(m.client, 'ns');
+    await quiesce(m.tenant, 'ns');
     expect(m.scaleCalls).toEqual([]);
     expect(m.cronPatchCalls).toEqual([]);
   });
@@ -118,25 +118,25 @@ describe('quiesce', () => {
 describe('waitForQuiesced', () => {
   it('returns 0 immediately when no pods match the selector', async () => {
     const m = mockK8s({ pods: [] });
-    await expect(waitForQuiesced(m.client, 'ns', 5000)).resolves.toBe(0);
+    await expect(waitForQuiesced(m.tenant, 'ns', 5000)).resolves.toBe(0);
   });
 
   it('polls until pods drain, then returns 0', async () => {
     const m = mockK8s({ pods: [{ name: 'p1' }], podsAfterDrainCalls: 2 });
-    const result = await waitForQuiesced(m.client, 'ns', 5000);
+    const result = await waitForQuiesced(m.tenant, 'ns', 5000);
     expect(result).toBe(0);
   });
 
   it('throws when timeout exceeded', async () => {
     const m = mockK8s({ pods: [{ name: 'stuck' }] });
-    await expect(waitForQuiesced(m.client, 'ns', 50)).rejects.toThrow(/1 pod.* still running/);
+    await expect(waitForQuiesced(m.tenant, 'ns', 50)).rejects.toThrow(/1 pod.* still running/);
   });
 });
 
 describe('unquiesce', () => {
   it('scales deployments back to their pre-quiesce replica counts', async () => {
     const m = mockK8s();
-    await unquiesce(m.client, 'ns', {
+    await unquiesce(m.tenant, 'ns', {
       deployments: [{ name: 'wp', replicas: 1 }, { name: 'mdb', replicas: 1 }, { name: 'redis', replicas: 0 }],
       cronJobs: [],
     });
@@ -149,7 +149,7 @@ describe('unquiesce', () => {
 
   it('only unsuspends CronJobs that were previously active', async () => {
     const m = mockK8s();
-    await unquiesce(m.client, 'ns', {
+    await unquiesce(m.tenant, 'ns', {
       deployments: [],
       cronJobs: [{ name: 'wp-cron', wasSuspended: false }, { name: 'backup', wasSuspended: true }],
     });
@@ -158,11 +158,11 @@ describe('unquiesce', () => {
 
   it('best-effort: a Deployment that 404s during restore does not block the rest', async () => {
     const m = mockK8s();
-    (m.client.apps as unknown as { readNamespacedDeploymentScale: ReturnType<typeof vi.fn> })
+    (m.tenant.apps as unknown as { readNamespacedDeploymentScale: ReturnType<typeof vi.fn> })
       .readNamespacedDeploymentScale
       .mockImplementationOnce(() => Promise.reject(Object.assign(new Error('404'), { statusCode: 404 })))
       .mockResolvedValueOnce({ metadata: { name: 'alive' }, spec: { replicas: 2 } });
-    await expect(unquiesce(m.client, 'ns', {
+    await expect(unquiesce(m.tenant, 'ns', {
       deployments: [{ name: 'gone', replicas: 1 }, { name: 'alive', replicas: 2 }],
       cronJobs: [],
     })).resolves.not.toThrow();

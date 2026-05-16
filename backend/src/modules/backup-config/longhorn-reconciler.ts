@@ -72,7 +72,7 @@ export interface SshBackupTargetInput {
 // handling gets applied.
 export type LonghornBackupTargetInput = S3BackupTargetInput | SshBackupTargetInput;
 
-export interface LonghornClients {
+export interface LonghornTenants {
   readonly core: k8s.CoreV1Api;
   readonly custom: k8s.CustomObjectsApi;
   // Optional: the BatchV1Api used to suspend/unsuspend the DR CronJobs
@@ -111,11 +111,11 @@ const DEPENDS_ON_VALUE = 'backup-credentials';
  * The admin panel is the source of truth.
  */
 export async function reconcileBackupTarget(
-  clients: LonghornClients,
+  tenants: LonghornTenants,
   input: LonghornBackupTargetInput,
 ): Promise<void> {
   if (input.kind === 'ssh') {
-    await upsertPlatformSecret(clients.core, buildSshSecretData(input));
+    await upsertPlatformSecret(tenants.core, buildSshSecretData(input));
     // Longhorn BackupTarget CR is intentionally left alone — SSH is
     // platform-level only. `clearBackupTarget({kind:'ssh'})` is the
     // reverse path and also a no-op on the CR.
@@ -123,21 +123,21 @@ export async function reconcileBackupTarget(
     // fails loudly (rather than silently using stale S3 creds) when
     // an operator switches from S3 to SSH backup target.
     try {
-      await upsertMailSecret(clients.core, buildSshSecretData(input));
+      await upsertMailSecret(tenants.core, buildSshSecretData(input));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[longhorn-reconciler] Failed to sync mail backup-credentials (SSH target):', err);
     }
-    await setBackupCronJobsSuspended(clients.batch, false);
+    await setBackupCronJobsSuspended(tenants.batch, false);
     return;
   }
   // S3 path — longhorn-system Secret mandatory (BackupTarget patch reads
   // from it), platform-ns copy is best-effort so DR CronJobs keep working
   // even if that namespace is misconfigured.
   const s3Secret = buildS3SecretData(input);
-  await upsertNamespacedSecret(clients.core, LONGHORN_SECRET_NAME, LONGHORN_NAMESPACE, s3Secret);
+  await upsertNamespacedSecret(tenants.core, LONGHORN_SECRET_NAME, LONGHORN_NAMESPACE, s3Secret);
   try {
-    await upsertPlatformSecret(clients.core, s3Secret);
+    await upsertPlatformSecret(tenants.core, s3Secret);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[longhorn-reconciler] Failed to sync platform backup-credentials:', err);
@@ -148,13 +148,13 @@ export async function reconcileBackupTarget(
   // once an operator enables it). Best-effort: failure here does not
   // block Longhorn or platform DR CronJob activation.
   try {
-    await upsertMailSecret(clients.core, s3Secret);
+    await upsertMailSecret(tenants.core, s3Secret);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[longhorn-reconciler] Failed to sync mail backup-credentials:', err);
   }
-  await upsertBackupTarget(clients.custom, input);
-  await setBackupCronJobsSuspended(clients.batch, false);
+  await upsertBackupTarget(tenants.custom, input);
+  await setBackupCronJobsSuspended(tenants.batch, false);
 }
 
 /**
@@ -168,22 +168,22 @@ export async function reconcileBackupTarget(
  * be an operator surprise if they intend to toggle the flag.
  */
 export async function clearBackupTarget(
-  clients: LonghornClients,
+  tenants: LonghornTenants,
   opts: { readonly kind?: 's3' | 'ssh' } = {},
 ): Promise<void> {
   // Suspend DR CronJobs first so they stop trying to mount the
   // (still-present) credentials Secret while the BackupTarget CR is
   // being torn down. Idempotent — no-op when already suspended.
-  await setBackupCronJobsSuspended(clients.batch, true);
+  await setBackupCronJobsSuspended(tenants.batch, true);
   if (opts.kind === 'ssh') return;
-  await patchBackupTarget(clients.custom, {
+  await patchBackupTarget(tenants.custom, {
     spec: { backupTargetURL: '', credentialSecret: '' },
   });
   // Clear the mail namespace mirror — barman-cloud would otherwise retry
   // with stale creds indefinitely. Best-effort: mail namespace may not
   // exist on clusters where mail-pg hasn't been deployed.
   try {
-    await upsertMailSecret(clients.core, buildEmptySecretData());
+    await upsertMailSecret(tenants.core, buildEmptySecretData());
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[longhorn-reconciler] Failed to clear mail backup-credentials:', err);
@@ -259,7 +259,7 @@ async function patchCronJobSuspend(
   suspended: boolean,
 ): Promise<void> {
   // Strategic-merge-patch for the built-in CronJob resource. Without the
-  // STRATEGIC_MERGE_PATCH override the v1.4 client defaults to
+  // STRATEGIC_MERGE_PATCH override the v1.4 tenant defaults to
   // application/json-patch+json and the apiserver rejects this object body.
   // (Longhorn's BackupTarget CR uses MERGE_PATCH instead — see patchBackupTarget.)
   await batch.patchNamespacedCronJob(
@@ -342,7 +342,7 @@ async function upsertNamespacedSecret(
   secretNamespace: string,
   stringData: Record<string, string>,
 ): Promise<void> {
-  // Base64 encoding is done by the @kubernetes client-node Secret API
+  // Base64 encoding is done by the @kubernetes tenant-node Secret API
   // when we pass `stringData`.
   const body: k8s.V1Secret = {
     apiVersion: 'v1',
@@ -404,7 +404,7 @@ async function patchBackupTarget(
   patch: Record<string, unknown>,
 ): Promise<void> {
   // Longhorn BackupTarget accepts RFC 7396 merge-patch but NOT the v1.4
-  // client default of application/json-patch+json (which expects [{op, path,
+  // tenant default of application/json-patch+json (which expects [{op, path,
   // value}] arrays). MERGE_PATCH overrides the Content-Type so our
   // object-shaped body lands as merge-patch+json. See shared/k8s-patch.ts
   // for the middleware shim implementation.

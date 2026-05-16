@@ -28,7 +28,7 @@ export interface BackupJobMeta {
   readonly displayName: string;
   readonly category: BackupCategory;
   readonly severity: BackupSeverity;
-  readonly clientId: string | null;
+  readonly tenantId: string | null;
   readonly state: 'succeeded' | 'failed' | 'running' | 'unknown';
   readonly startedAt: Date | null;
   readonly completedAt: Date | null;
@@ -41,7 +41,7 @@ export interface BackupHealthSummary {
   readonly namespace: string;
   readonly category: BackupCategory;
   readonly severity: BackupSeverity;
-  readonly clientId: string | null;
+  readonly tenantId: string | null;
   readonly state: 'healthy' | 'failing' | 'never_run';
   readonly lastSuccessAt: Date | null;
   readonly lastFailedAt: Date | null;
@@ -83,7 +83,7 @@ export function parseJob(job: k8s.V1Job): BackupJobMeta | null {
 
   const category = parseCategory(labels[LABEL_CATEGORY]);
   const severity = parseSeverity(labels[LABEL_SEVERITY]);
-  const clientId = labels[LABEL_CLIENT_ID] ?? null;
+  const tenantId = labels[LABEL_CLIENT_ID] ?? null;
 
   const parentRef = (job.metadata?.ownerReferences ?? []).find(
     (ref) => ref.kind === 'CronJob' || ref.kind === 'cronjob',
@@ -108,7 +108,7 @@ export function parseJob(job: k8s.V1Job): BackupJobMeta | null {
     displayName,
     category,
     severity,
-    clientId,
+    tenantId,
     state,
     startedAt,
     completedAt,
@@ -180,7 +180,7 @@ export function summariseHealth(
       namespace: newest.namespace,
       category: newest.category,
       severity: newest.severity,
-      clientId: newest.clientId,
+      tenantId: newest.tenantId,
       state,
       lastSuccessAt: lastSuccess?.completedAt ?? lastSuccess?.startedAt ?? null,
       lastFailedAt: lastFailed?.completedAt ?? lastFailed?.startedAt ?? null,

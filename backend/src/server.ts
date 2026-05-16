@@ -1,7 +1,7 @@
 import { loadConfig } from './config/index.js';
 import { getDb, closeDb } from './db/index.js';
 import { buildApp } from './app.js';
-import { suspendExpiredClients } from './modules/subscriptions/expiry-checker.js';
+import { suspendExpiredTenants } from './modules/subscriptions/expiry-checker.js';
 import { runAutoUpgradePass } from './modules/deployments/auto-upgrade-cron.js';
 import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 
@@ -35,9 +35,9 @@ console.log(`Server listening on port ${config.PORT}`);
 const EXPIRY_CHECK_INTERVAL = 60 * 60 * 1000;
 expiryCheckTimer = setInterval(async () => {
   try {
-    const count = await suspendExpiredClients(db);
+    const count = await suspendExpiredTenants(db);
     if (count > 0) {
-      app.log.info(`Auto-suspended ${count} client(s) with expired subscriptions`);
+      app.log.info(`Auto-suspended ${count} tenant(s) with expired subscriptions`);
     }
   } catch (err) {
     app.log.error({ err }, 'Failed to check expired subscriptions');
@@ -45,13 +45,13 @@ expiryCheckTimer = setInterval(async () => {
 }, EXPIRY_CHECK_INTERVAL);
 
 // Run immediately on startup
-suspendExpiredClients(db).catch((err) => {
+suspendExpiredTenants(db).catch((err) => {
   app.log.error({ err }, 'Failed initial expired subscription check');
 });
 
 // Auto-upgrade cron — runs every 24h. Opt-in per deployment via
 // deployments.autoUpgrade=true. Strict apps are always skipped (handled
-// inside runAutoUpgradePass + at the setAutoUpgrade API). The k8s client
+// inside runAutoUpgradePass + at the setAutoUpgrade API). The k8s tenant
 // is lazily created; if no kubeconfig is available (e.g. unit-test boot),
 // the cron is a no-op.
 const AUTO_UPGRADE_INTERVAL = 24 * 60 * 60 * 1000;

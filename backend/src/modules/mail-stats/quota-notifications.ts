@@ -25,7 +25,7 @@ type Threshold = (typeof THRESHOLDS)[number];
 
 interface MailboxRow extends Record<string, unknown> {
   mailbox_id: string;
-  client_id: string;
+  tenant_id: string;
   full_address: string;
   quota_mb: number;
   used_mb: number;
@@ -75,7 +75,7 @@ export async function checkQuotaThresholds(
   const candidates = await db.execute<MailboxRow>(sql`
     SELECT
       m.id          AS mailbox_id,
-      m.client_id   AS client_id,
+      m.tenant_id   AS tenant_id,
       m.full_address AS full_address,
       m.quota_mb    AS quota_mb,
       m.used_mb     AS used_mb,

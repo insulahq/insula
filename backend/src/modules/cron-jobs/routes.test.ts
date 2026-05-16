@@ -6,7 +6,7 @@ import { registerAuth } from '../../middleware/auth.js';
 
 const mockJob = {
   id: 'j1',
-  clientId: 'c1',
+  tenantId: 'c1',
   name: 'cleanup',
   type: 'webcron',
   schedule: '0 * * * *',
@@ -58,14 +58,14 @@ describe('cron-job routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/cron-jobs' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/cron-jobs' });
     expect(res.statusCode).toBe(401);
   });
 
   it('GET should list cron jobs', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -74,7 +74,7 @@ describe('cron-job routes', () => {
   it('POST should reject missing type', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { name: 'test', schedule: '0 * * * *', url: 'https://example.com/cron' },
     });
@@ -84,7 +84,7 @@ describe('cron-job routes', () => {
   it('POST should reject invalid cron expression', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { name: 'test', type: 'webcron', schedule: 'invalid', url: 'https://example.com' },
     });
@@ -94,7 +94,7 @@ describe('cron-job routes', () => {
   it('POST should create webcron job with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'test',
@@ -109,7 +109,7 @@ describe('cron-job routes', () => {
   it('POST should create deployment cron job with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'deploy-cron',
@@ -125,7 +125,7 @@ describe('cron-job routes', () => {
   it('POST should reject webcron without url', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { name: 'test', type: 'webcron', schedule: '0 * * * *' },
     });
@@ -135,7 +135,7 @@ describe('cron-job routes', () => {
   it('POST should reject deployment without command', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/cron-jobs',
+      url: '/api/v1/tenants/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'test',
@@ -150,7 +150,7 @@ describe('cron-job routes', () => {
   it('GET /:cronJobId should return cron job', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/cron-jobs/j1',
+      url: '/api/v1/tenants/c1/cron-jobs/j1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -159,7 +159,7 @@ describe('cron-job routes', () => {
   it('PATCH should reject invalid schedule', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/cron-jobs/j1',
+      url: '/api/v1/tenants/c1/cron-jobs/j1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { schedule: 'bad-cron' },
     });
@@ -170,7 +170,7 @@ describe('cron-job routes', () => {
   it('PATCH should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/cron-jobs/j1',
+      url: '/api/v1/tenants/c1/cron-jobs/j1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { name: 'updated-name' },
     });
@@ -180,7 +180,7 @@ describe('cron-job routes', () => {
   it('DELETE should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/cron-jobs/j1',
+      url: '/api/v1/tenants/c1/cron-jobs/j1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

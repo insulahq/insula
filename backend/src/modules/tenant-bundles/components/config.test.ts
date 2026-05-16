@@ -27,11 +27,11 @@ function fakeDb(rowsByQuery: (sqlText: string) => unknown[]): Database {
 }
 
 describe('buildConfigDump', () => {
-  it('returns a stable manifest shape with schemaVersion + clientId', async () => {
+  it('returns a stable manifest shape with schemaVersion + tenantId', async () => {
     const db = fakeDb(() => []);
     const dump = await buildConfigDump(db, '4ec7436d-6159-4bf0-9282-d7e4cc19410b');
     expect(dump.schemaVersion).toBe(CONFIG_DUMP_SCHEMA_VERSION);
-    expect(dump.clientId).toBe('4ec7436d-6159-4bf0-9282-d7e4cc19410b');
+    expect(dump.tenantId).toBe('4ec7436d-6159-4bf0-9282-d7e4cc19410b');
     expect(typeof dump.exportedAt).toBe('string');
     // All declared tables show up as keys, even when empty.
     for (const t of CONFIG_DUMP_TABLES) {
@@ -42,12 +42,12 @@ describe('buildConfigDump', () => {
 
   it('captures rows returned by the SELECT for each table', async () => {
     const db = fakeDb((q) => {
-      if (/^\s*SELECT \* FROM clients\b/.test(q)) return [{ id: 'c1', userId: 'u1' }];
-      if (/^\s*SELECT \* FROM domains\b/.test(q)) return [{ id: 'd1', clientId: 'c1' }];
+      if (/^\s*SELECT \* FROM tenants\b/.test(q)) return [{ id: 'c1', userId: 'u1' }];
+      if (/^\s*SELECT \* FROM domains\b/.test(q)) return [{ id: 'd1', tenantId: 'c1' }];
       return [];
     });
     const dump = await buildConfigDump(db, 'c1');
-    expect((dump.tables.clients as unknown[]).length).toBe(1);
+    expect((dump.tables.tenants as unknown[]).length).toBe(1);
     expect((dump.tables.domains as unknown[]).length).toBe(1);
     expect((dump.tables.users as unknown[]).length).toBe(0); // mock returns []
   });
@@ -67,10 +67,10 @@ describe('captureConfigComponent', () => {
       }),
     } as unknown as BackupStore;
 
-    const db = fakeDb((q) => (/^\s*SELECT \* FROM clients\b/.test(q) ? [{ id: 'c1' }] : []));
+    const db = fakeDb((q) => (/^\s*SELECT \* FROM tenants\b/.test(q) ? [{ id: 'c1' }] : []));
     const handle: BundleHandle = { bundleId: 'bk', _backend: {} };
 
-    const r = await captureConfigComponent({ db, clientId: 'c1', store: fakeStore, handle });
+    const r = await captureConfigComponent({ db, tenantId: 'c1', store: fakeStore, handle });
 
     expect(writes).toHaveLength(1);
     expect(writes[0]!.component).toBe('config');
@@ -78,7 +78,7 @@ describe('captureConfigComponent', () => {
 
     const decoded = JSON.parse(gunzipSync(writes[0]!.body).toString('utf8'));
     expect(decoded.schemaVersion).toBe(CONFIG_DUMP_SCHEMA_VERSION);
-    expect(decoded.clientId).toBe('c1');
+    expect(decoded.tenantId).toBe('c1');
 
     expect(r.rowCount).toBe(1);
     expect(r.sizeBytes).toBe(writes[0]!.body.length);

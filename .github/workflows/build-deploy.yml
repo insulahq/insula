@@ -6,7 +6,7 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/admin-panel/**'
-      - 'frontend/client-panel/**'
+      - 'frontend/tenant-panel/**'
       - 'packages/api-contracts/**'
       - 'images/firewall-reconciler/**'
       - '.github/workflows/build-deploy.yml'
@@ -47,7 +47,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       admin_panel: ${{ steps.filter.outputs.admin_panel }}
-      client_panel: ${{ steps.filter.outputs.client_panel }}
+      tenant_panel: ${{ steps.filter.outputs.tenant_panel }}
     steps:
       - uses: actions/checkout@v4
       - id: filter
@@ -60,8 +60,8 @@ jobs:
             admin_panel:
               - 'frontend/admin-panel/**'
               - 'packages/api-contracts/**'
-            client_panel:
-              - 'frontend/client-panel/**'
+            tenant_panel:
+              - 'frontend/tenant-panel/**'
               - 'packages/api-contracts/**'
 
   build-backend:
@@ -154,10 +154,10 @@ jobs:
           echo "timestamp_tag=${ts_tag}" >> "$GITHUB_OUTPUT"
           echo "admin-panel timestamp tag → ${ts_tag}"
 
-  build-client-panel:
-    name: Build Client Panel
+  build-tenant-panel:
+    name: Build Tenant Panel
     needs: changes
-    if: needs.changes.outputs.client_panel == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.changes.outputs.tenant_panel == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
@@ -173,7 +173,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_PREFIX }}/client-panel
+          images: ${{ env.IMAGE_PREFIX }}/tenant-panel
           tags: |
             type=sha,prefix=
             type=raw,value=latest
@@ -182,7 +182,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: frontend/client-panel/Dockerfile
+          file: frontend/tenant-panel/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -195,7 +195,7 @@ jobs:
           ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
           [[ -z "$ts_tag" ]] && { echo "::error::no timestamp tag in $ALL_TAGS"; exit 1; }
           echo "timestamp_tag=${ts_tag}" >> "$GITHUB_OUTPUT"
-          echo "client-panel timestamp tag → ${ts_tag}"
+          echo "tenant-panel timestamp tag → ${ts_tag}"
 
   # Tag strategy:
   # - SHA:          for traceability (e.g., a1b2c3d)
@@ -224,7 +224,7 @@ jobs:
   update-staging-version:
     name: Update staging platform-version
     runs-on: ubuntu-latest
-    needs: [build-backend, build-admin-panel, build-client-panel]
+    needs: [build-backend, build-admin-panel, build-tenant-panel]
     if: |
       always() &&
       github.ref == 'refs/heads/main' &&
@@ -320,7 +320,7 @@ jobs:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: client-panel
+            name: tenant-panel
             namespace: platform
           spec:
             template:
@@ -350,7 +350,7 @@ jobs:
         env:
           BACKEND_TAG: ${{ needs.build-backend.outputs.timestamp_tag }}
           ADMIN_TAG: ${{ needs.build-admin-panel.outputs.timestamp_tag }}
-          CLIENT_TAG: ${{ needs.build-client-panel.outputs.timestamp_tag }}
+          CLIENT_TAG: ${{ needs.build-tenant-panel.outputs.timestamp_tag }}
         run: |
           # Replaces the work that Flux's image-automation-controller
           # used to do via a long-lived PAT. The IUA approach failed
@@ -372,7 +372,7 @@ jobs:
           }
           pin backend       "$BACKEND_TAG"
           pin admin-panel   "$ADMIN_TAG"
-          pin client-panel  "$CLIENT_TAG"
+          pin tenant-panel  "$CLIENT_TAG"
           echo "---kustomization newTag lines after pin---"
           grep -B1 newTag "$KUST" | grep -E "name: ghcr|newTag"
 

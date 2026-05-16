@@ -76,8 +76,8 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
   // so anything past 1 h indicates a finalizer / orphan PV / Longhorn
   // volume blocking termination. Operator-actionable: each row links
   // to the namespace name + the time it's been Terminating; the
-  // existing /admin/clients/:id/storage/clear-failed route can clear
-  // stuck client storage state, but namespace-finalizer rescue is
+  // existing /admin/tenants/:id/storage/clear-failed route can clear
+  // stuck tenant storage state, but namespace-finalizer rescue is
   // manual today (kubectl patch ns ... -p '{"spec":{"finalizers":[]}}').
   // A future destructive force-delete route should land here.
   app.get('/admin/stuck-deprovisions', {
@@ -105,7 +105,7 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
         name: ns.metadata?.name ?? '',
         deletionTimestamp: ns.metadata?.deletionTimestamp ?? null,
         finalizers: ns.metadata?.finalizers ?? [],
-        clientId: ns.metadata?.labels?.client ?? null,
+        tenantId: ns.metadata?.labels?.tenant ?? null,
         stuckForMs: ns.metadata?.deletionTimestamp ? Date.now() - new Date(ns.metadata.deletionTimestamp).getTime() : 0,
       }))
       .sort((a, b) => b.stuckForMs - a.stuckForMs);
@@ -388,14 +388,14 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     if (body.confirmName !== namespace) {
       throw new ApiError('CONFIRMATION_MISMATCH', `confirmName must match the namespace exactly (expected '${namespace}')`, 400);
     }
-    // Tightened regex: must start with `client-`, end with an
+    // Tightened regex: must start with `tenant-`, end with an
     // alphanumeric, no double hyphens, no trailing hyphen. Matches
-    // auto-generated tenant slugs like `client-abc123`,
-    // `client-foo-bar-1234`. Rejects `client-`, `client--a`,
-    // `client-a-`. Last code-level guard on a destructive endpoint —
+    // auto-generated tenant slugs like `tenant-abc123`,
+    // `tenant-foo-bar-1234`. Rejects `tenant-`, `tenant--a`,
+    // `tenant-a-`. Last code-level guard on a destructive endpoint —
     // any leak past this is super_admin + Terminating + 60min gate.
-    if (!/^client-[a-z0-9]+([a-z0-9-]*[a-z0-9])?$/.test(namespace) || namespace.includes('--')) {
-      throw new ApiError('INVALID_FIELD_VALUE', `force-clear is only valid on client-* tenant namespaces`, 400);
+    if (!/^tenant-[a-z0-9]+([a-z0-9-]*[a-z0-9])?$/.test(namespace) || namespace.includes('--')) {
+      throw new ApiError('INVALID_FIELD_VALUE', `force-clear is only valid on tenant-* tenant namespaces`, 400);
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);

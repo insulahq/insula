@@ -6,9 +6,9 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import CreateDomainModal from '@/components/CreateDomainModal';
-import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
+import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import { useDomains } from '@/hooks/use-domains';
-import { useClients } from '@/hooks/use-clients';
+import { useTenants } from '@/hooks/use-tenants';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
 import { useBulkVerifyDomains, useBulkDeleteDomains } from '@/hooks/use-bulk-domains';
@@ -17,7 +17,7 @@ import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function Domains() {
   const navigate = useNavigate();
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -25,19 +25,19 @@ export default function Domains() {
 
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
-  // Reset pagination when search or client filter changes
+  // Reset pagination when search or tenant filter changes
   useEffect(() => {
     pagination.resetPagination();
-  }, [debouncedSearch, selectedClientId]);
+  }, [debouncedSearch, selectedTenantId]);
 
   const { data: domainsData, isLoading: domainsLoading, error: domainsError } = useDomains(
-    selectedClientId ?? undefined,
+    selectedTenantId ?? undefined,
     { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor },
   );
 
-  const { data: clientsData } = useClients({ limit: 100 });
-  const clientMap = new Map(
-    (clientsData?.data ?? []).map((c) => [c.id, c.companyName]),
+  const { data: clientsData } = useTenants({ limit: 100 });
+  const tenantMap = new Map(
+    (clientsData?.data ?? []).map((c) => [c.id, c.name]),
   );
 
   const domains = domainsData?.data ?? [];
@@ -87,9 +87,9 @@ export default function Domains() {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <SearchableClientSelect
-          selectedClientId={selectedClientId}
-          onSelect={setSelectedClientId}
+        <SearchableTenantSelect
+          selectedTenantId={selectedTenantId}
+          onSelect={setSelectedTenantId}
         />
 
         <div className="relative flex-1 max-w-sm">
@@ -132,7 +132,7 @@ export default function Domains() {
                       />
                     </th>
                     <SortableHeader label="Domain Name" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <SortableHeader label="Client" sortKey="clientId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Client" sortKey="tenantId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                     <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
@@ -148,7 +148,7 @@ export default function Domains() {
                           ? 'bg-brand-50 dark:bg-brand-900/20'
                           : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                       }`}
-                      onClick={() => navigate(`/clients/${domain.clientId}/domains/${domain.id}`)}
+                      onClick={() => navigate(`/tenants/${domain.tenantId}/domains/${domain.id}`)}
                       data-testid={`domain-row-${domain.id}`}
                     >
                       <td className="w-10 px-3 py-3.5" onClick={(e) => e.stopPropagation()}>
@@ -164,7 +164,7 @@ export default function Domains() {
                         </div>
                       </td>
                       <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
-                        {clientMap.get(domain.clientId) ?? '\u2014'}
+                        {tenantMap.get(domain.tenantId) ?? '\u2014'}
                       </td>
                       <td className="px-5 py-3.5">
                         <StatusBadge status={domain.status as 'active' | 'pending' | 'unverified' | 'verified' | 'suspended' | 'deleted'} />
@@ -185,9 +185,9 @@ export default function Domains() {
                       <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No domains found matching your search.'
-                          : selectedClientId
+                          : selectedTenantId
                             ? 'No domains yet. Click "Add Domain" to create one.'
-                            : 'No domains found across any client.'}
+                            : 'No domains found across any tenant.'}
                       </td>
                     </tr>
                   )}
@@ -264,7 +264,7 @@ export default function Domains() {
       <CreateDomainModal
         open={showCreate}
         onClose={() => setShowCreate(false)}
-        clientId={selectedClientId}
+        tenantId={selectedTenantId}
       />
     </div>
   );

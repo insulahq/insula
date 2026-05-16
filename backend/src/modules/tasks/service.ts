@@ -8,7 +8,7 @@
 //
 // Visibility model:
 //   * scope='admin'   + user_id NOT NULL → that admin's chip
-//   * scope='client'  + user_id NOT NULL → that client user's chip
+//   * scope='tenant'  + user_id NOT NULL → that tenant user's chip
 //   * scope='system'  + user_id NULL     → bell + global system view only
 //
 // Cron-emitted tasks (scope='system') do NOT appear in any user's chip.
@@ -34,15 +34,15 @@ import {
 export interface TaskStartArgs {
   readonly kind: TaskKind | (string & {});
   /**
-   * Natural id of the underlying op (e.g., `client_lifecycle_transitions.id`).
+   * Natural id of the underlying op (e.g., `tenant_lifecycle_transitions.id`).
    * When set, ON CONFLICT (kind, ref_id) DO UPDATE makes this idempotent.
    */
   readonly refId?: string | null;
   readonly scope: TaskScope;
   /** Initiator user id. Must be NULL when scope='system'. */
   readonly userId: string | null;
-  /** Tenant scope for RBAC — set when the task is per-client. */
-  readonly clientId?: string | null;
+  /** Tenant scope for RBAC — set when the task is per-tenant. */
+  readonly tenantId?: string | null;
   readonly label: SafeText;
   /** Click-action contract: opens a modal or navigates a route. */
   readonly target: TaskTarget;
@@ -86,7 +86,7 @@ export async function start(db: Database, args: TaskStartArgs): Promise<TaskStar
         refId,
         scope: args.scope,
         userId: args.userId ?? null,
-        clientId: args.clientId ?? null,
+        tenantId: args.tenantId ?? null,
         label: args.label,
         status,
         progressPct: args.progressPct ?? null,
@@ -104,7 +104,7 @@ export async function start(db: Database, args: TaskStartArgs): Promise<TaskStar
         // and reset status to running.
         //
         // INTENTIONALLY OMITTED: `parentTaskId`, `userId`, `scope`,
-        // `clientId`. These are set on INSERT and treated as immutable
+        // `tenantId`. These are set on INSERT and treated as immutable
         // for the row's lifetime. A re-`start` against the same refId
         // never re-parents the row or reassigns ownership — that would
         // break the chip's fan-out fold + RBAC scoping. Surfaces that
@@ -137,7 +137,7 @@ export async function start(db: Database, args: TaskStartArgs): Promise<TaskStar
     refId: null,
     scope: args.scope,
     userId: args.userId ?? null,
-    clientId: args.clientId ?? null,
+    tenantId: args.tenantId ?? null,
     label: args.label,
     status,
     progressPct: args.progressPct ?? null,
@@ -202,7 +202,7 @@ export interface TaskFinishArgs {
  * Finish a task by its underlying op's natural id (`refId`). Lets
  * surfaces that don't keep the task uuid around (most of them — we
  * don't currently round-trip through service.start's return) call
- * `finishByRef('client.transition', transitionId, { status })` without
+ * `finishByRef('tenant.transition', transitionId, { status })` without
  * an extra SELECT.
  */
 function buildFinishUpdate(args: TaskFinishArgs): Record<string, unknown> {
@@ -272,11 +272,11 @@ export async function tracked<T>(
 
 /**
  * Snapshot for the chip: in-flight + recently terminal (≤ 5 min) + not
- * cleared. Caller must filter by user/client scope before serializing.
+ * cleared. Caller must filter by user/tenant scope before serializing.
  */
 export interface SnapshotFilter {
   readonly userId: string;
-  readonly clientId?: string | null;
+  readonly tenantId?: string | null;
   /** Include `scope='admin'` rows where user_id != filter.userId? Off by default. */
   readonly includeOtherAdmins?: boolean;
   /** Cap on returned rows. Default 100, hard max 100 (enforced by API contract). */
@@ -306,7 +306,7 @@ export async function snapshot(db: Database, filter: SnapshotFilter): Promise<Ta
     ref_id: string | null;
     scope: string;
     user_id: string | null;
-    client_id: string | null;
+    tenant_id: string | null;
     label: string;
     status: string;
     progress_pct: number | null;
@@ -320,7 +320,7 @@ export async function snapshot(db: Database, filter: SnapshotFilter): Promise<Ta
     cleared_at: Date | null;
     parent_task_id: string | null;
   }>(sql`
-    SELECT id, kind, ref_id, scope, user_id, client_id, label, status,
+    SELECT id, kind, ref_id, scope, user_id, tenant_id, label, status,
            progress_pct, progress_text, target, error_message, details,
            started_at, updated_at, finished_at, cleared_at, parent_task_id
       FROM tasks
@@ -341,7 +341,7 @@ export async function snapshot(db: Database, filter: SnapshotFilter): Promise<Ta
   // Fan-out folding: when a parent task is visible in the result, hide
   // its children. The popover can re-fetch children on click via the
   // bulk modal which queries by bulkOpId. This keeps the chip tidy
-  // during a 50-client bulk op (1 parent vs. 51 rows).
+  // during a 50-tenant bulk op (1 parent vs. 51 rows).
   const visibleIds = new Set(all.map((t) => t.id));
   return all.filter((t) => !t.parentTaskId || !visibleIds.has(t.parentTaskId));
 }
@@ -356,7 +356,7 @@ function toTaskRow(row: Record<string, unknown>): TaskRow | null {
     refId: row.ref_id,
     scope: row.scope,
     userId: row.user_id,
-    clientId: row.client_id,
+    tenantId: row.tenant_id,
     label: row.label,
     status: row.status,
     progressPct: row.progress_pct,

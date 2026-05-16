@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// Per-client tunnel agents that let a service running outside the cluster
+// Per-tenant tunnel agents that let a service running outside the cluster
 // (home box, NAS, on-prem VPS) be exposed under the platform's ingress.
 // See docs/04-deployment/PRIVATE_WORKER.md for the full design.
 
@@ -45,7 +45,7 @@ export const privateWorkerStatusSchema = z.enum([
 
 export const privateWorkerResponseSchema = z.object({
   id: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   name: z.string(),
   slug: z.string(),
   status: privateWorkerStatusSchema,
@@ -74,7 +74,7 @@ export const privateWorkerSecretResponseSchema = z.object({
   // PRIVATE_WORKER_TOKEN env var. See docs/04-deployment/PRIVATE_WORKER.md
   // for the inner format.
   token: z.string(),
-  // Convenience copy-paste artefacts for the client UI.
+  // Convenience copy-paste artefacts for the tenant UI.
   dockerRunCommand: z.string(),
   dockerComposeYaml: z.string(),
   // Mirror of privateWorkerResponseSchema so the UI can update its row

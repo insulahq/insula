@@ -55,13 +55,13 @@ interface FsckOpts {
   /**
    * Client's own namespace. The fsck Job DOES NOT run here anymore —
    * it runs in PLATFORM_TENANT_OPS_NS — but we keep the field as a
-   * label for filtering by client and for log messages.
+   * label for filtering by tenant and for log messages.
    */
   readonly namespace: string;
   /** PV name (NOT the PVC name) — Longhorn names its block device
    *  /dev/longhorn/<pv-name>. Caller looks this up via PVC.spec.volumeName. */
   readonly volumeName: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly fsType: string;
   readonly dryRun: boolean;
   /** Node name where the Longhorn volume is currently attached (or
@@ -135,8 +135,8 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
   const script = buildFsckScript(opts.fsType, opts.dryRun);
 
   // Job runs in the platform-tenant-ops namespace (no quota), NOT in
-  // the client namespace. The client's namespace is preserved as a
-  // label only, so cancel-by-client and progress UIs still work.
+  // the tenant namespace. The tenant's namespace is preserved as a
+  // label only, so cancel-by-tenant and progress UIs still work.
   const jobNamespace = PLATFORM_TENANT_OPS_NS;
 
   // Longhorn block device path on the host. Created by the engine pod
@@ -149,8 +149,8 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
       namespace: jobNamespace,
       labels: {
         'platform.io/component': 'fsck',
-        'platform.io/client-id': opts.clientId,
-        'platform.io/client-namespace': opts.namespace,
+        'platform.io/tenant-id': opts.tenantId,
+        'platform.io/tenant-namespace': opts.namespace,
         'platform.io/fsck-mode': opts.dryRun ? 'check' : 'repair',
       },
     },
@@ -161,7 +161,7 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
         metadata: {
           labels: {
             'platform.io/component': 'fsck',
-            'platform.io/client-id': opts.clientId,
+            'platform.io/tenant-id': opts.tenantId,
           },
         },
         spec: {

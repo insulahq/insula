@@ -7,7 +7,7 @@ export const createSshKeySchema = z.object({
 
 export const sshKeyResponseSchema = z.object({
   id: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   name: z.string(),
   publicKey: z.string(),
   keyFingerprint: z.string(),

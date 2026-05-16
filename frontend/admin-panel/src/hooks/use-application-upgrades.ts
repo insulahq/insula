@@ -30,8 +30,8 @@ interface InstanceListResponse {
 export interface AdminDeployment {
   readonly id: string;
   readonly name: string;
-  readonly clientId: string;
-  readonly clientName: string | null;
+  readonly tenantId: string;
+  readonly tenantName: string | null;
   readonly catalogEntryId: string;
   readonly catalogEntryName: string | null;
   readonly catalogEntryCode: string | null;
@@ -61,13 +61,13 @@ interface AdminDeploymentsResponse {
   };
 }
 
-export function useAdminDeployments(params?: { page?: number; limit?: number; status?: string; catalog_entry_id?: string; client_id?: string }) {
+export function useAdminDeployments(params?: { page?: number; limit?: number; status?: string; catalog_entry_id?: string; tenant_id?: string }) {
   const query = new URLSearchParams();
   if (params?.page) query.set('page', String(params.page));
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.status) query.set('status', String(params.status));
   if (params?.catalog_entry_id) query.set('catalog_entry_id', params.catalog_entry_id);
-  if (params?.client_id) query.set('client_id', params.client_id);
+  if (params?.tenant_id) query.set('tenant_id', params.tenant_id);
   const qs = query.toString();
 
   return useQuery({

@@ -3,7 +3,7 @@ import { uuidField, paginatedResponseSchema } from './shared.js';
 
 // ─── Enums (mirror DB enums from migration 0066) ─────────────────────────────
 
-export const backupInitiatorSchema = z.enum(['client', 'admin', 'system', 'cluster']);
+export const backupInitiatorSchema = z.enum(['tenant', 'admin', 'system', 'cluster']);
 export type BackupInitiator = z.infer<typeof backupInitiatorSchema>;
 
 export const backupSystemTriggerSchema = z.enum(['pre_resize', 'pre_archive', 'scheduled', 'manual']);
@@ -40,8 +40,8 @@ export type BackupTargetKind = z.infer<typeof backupTargetKindSchema>;
 // Restore code MUST reject schemaVersion values it does not recognize.
 //
 // v2 adds enough information for the import flow to fully restore a
-// deleted client without first unzipping the config component:
-//   - `client` block: account + subscription + node placement + overrides
+// deleted tenant without first unzipping the config component:
+//   - `tenant` block: account + subscription + node placement + overrides
 //   - `domainsSummary[]`, `deploymentsSummary[]`: small previews so the
 //     operator import-confirmation UI can show counts + names without
 //     gunzipping db-rows.json.gz
@@ -83,26 +83,26 @@ export const backupMetaComponentsSchema = z.object({
 
 /**
  * Client account + subscription block carried in meta.json v2 so the
- * import flow can fully restore a deleted client without gunzipping
+ * import flow can fully restore a deleted tenant without gunzipping
  * the config component.
  *
  * Field semantics:
  *   - `kubernetesNamespace` is captured but the import dialog can
  *     opt to derive a fresh one (typical when restoring across regions).
- *   - `workerNodeName` is captured so the operator can choose to pin
+ *   - `nodeName` is captured so the operator can choose to pin
  *     to the same physical node, but the import dialog typically
  *     resets to "auto" so the scheduler picks an available node.
  *   - `*Override` fields are nullable; null = use plan default.
  */
-export const backupMetaClientSchema = z.object({
-  companyName: z.string(),
-  companyEmail: z.string(),
-  contactEmail: z.string().nullable(),
-  status: z.string(), // client_status enum at capture time (active/suspended/archived)
+export const backupMetaTenantSchema = z.object({
+  name: z.string(),
+  primaryEmail: z.string(),
+  secondaryEmail: z.string().nullable(),
+  status: z.string(), // tenant_status enum at capture time (active/suspended/archived)
   kubernetesNamespace: z.string(),
   regionId: uuidField,
   planId: uuidField,
-  workerNodeName: z.string().nullable(),
+  nodeName: z.string().nullable(),
   storageTier: z.string(), // 'local' | 'longhorn' | ...
   timezone: z.string().nullable(),
   storageLimitOverride: z.number().nullable(),
@@ -121,7 +121,7 @@ export const backupMetaClientSchema = z.object({
     deployments: z.number().int().nonnegative(),
   }),
 });
-export type BackupMetaClient = z.infer<typeof backupMetaClientSchema>;
+export type BackupMetaTenant = z.infer<typeof backupMetaTenantSchema>;
 
 export const backupMetaDomainSummarySchema = z.object({
   name: z.string(),
@@ -140,7 +140,7 @@ export type BackupMetaDeploymentSummary = z.infer<typeof backupMetaDeploymentSum
 export const backupMetaV2Schema = z.object({
   schemaVersion: z.literal(BACKUP_META_SCHEMA_VERSION),
   backupId: z.string().min(1),
-  clientId: uuidField,
+  tenantId: uuidField,
   capturedAt: z.string().datetime(),
   platformVersion: z.string(),
   initiator: backupInitiatorSchema,
@@ -157,11 +157,11 @@ export const backupMetaV2Schema = z.object({
   retentionDays: z.number().int().positive(),
   description: z.string().nullable(),
   // v2 additions:
-  // `client` is required on FRESH captures (orchestrator always writes
-  // it); legacy v1 bundles promoted via `parseMeta` carry `client: null`
+  // `tenant` is required on FRESH captures (orchestrator always writes
+  // it); legacy v1 bundles promoted via `parseMeta` carry `tenant: null`
   // so verify / export / restore-cart still work. The IMPORT endpoint
-  // refuses any bundle whose meta has `client: null`.
-  client: backupMetaClientSchema.nullable(),
+  // refuses any bundle whose meta has `tenant: null`.
+  tenant: backupMetaTenantSchema.nullable(),
   domainsSummary: z.array(backupMetaDomainSummarySchema),
   deploymentsSummary: z.array(backupMetaDeploymentSummarySchema),
 });
@@ -187,30 +187,30 @@ export const backupComponentInfoSchema = z.object({
 });
 export type BackupComponentInfo = z.infer<typeof backupComponentInfoSchema>;
 
-// ─── Bundle summary + detail (admin/client list endpoints) ───────────────────
+// ─── Bundle summary + detail (admin/tenant list endpoints) ───────────────────
 
 /**
- * Live status of the client this bundle belongs to. Computed at list
- * time via LEFT JOIN clients on backup_jobs.client_id:
+ * Live status of the tenant this bundle belongs to. Computed at list
+ * time via LEFT JOIN tenants on backup_jobs.tenant_id:
  *   - 'active' / 'suspended' / 'archived' → live row found
- *   - 'missing' → no row in clients (client was deleted; bundle survives
+ *   - 'missing' → no row in tenants (tenant was deleted; bundle survives
  *     until its own retention sweep). Operator UI uses this to surface
  *     the "Restore from bundle" affordance with a different copy.
  */
-export const bundleClientStatusSchema = z.enum([
+export const bundleTenantStatusSchema = z.enum([
   'active',
   'suspended',
   'archived',
   'missing',
 ]);
-export type BundleClientStatus = z.infer<typeof bundleClientStatusSchema>;
+export type BundleTenantStatus = z.infer<typeof bundleTenantStatusSchema>;
 
 export const bundleSummarySchema = z.object({
   id: uuidField,
-  clientId: uuidField,
-  clientStatus: bundleClientStatusSchema,
-  /** companyName from clients (null when clientStatus='missing'). */
-  clientName: z.string().nullable(),
+  tenantId: uuidField,
+  tenantStatus: bundleTenantStatusSchema,
+  /** name from tenants (null when tenantStatus='missing'). */
+  tenantName: z.string().nullable(),
   initiator: backupInitiatorSchema,
   systemTrigger: backupSystemTriggerSchema.nullable(),
   status: backupJobStatusSchema,
@@ -296,7 +296,7 @@ const componentToggleSchema = z.object({
 
 export const createBundleSchema = z
   .object({
-    clientId: uuidField,
+    tenantId: uuidField,
     initiator: backupInitiatorSchema.default('admin'),
     systemTrigger: backupSystemTriggerSchema.nullable().optional(),
     label: z.string().max(255).nullable().optional(),
@@ -304,7 +304,7 @@ export const createBundleSchema = z
     retentionDays: z.number().int().positive().max(3650).optional(),
     components: componentToggleSchema.partial().optional(),
     targetConfigId: uuidField.nullable().optional(),
-    // Optional GDPR-export wrapper (client initiator only).
+    // Optional GDPR-export wrapper (tenant initiator only).
     exportMode: z.literal('data_export').optional(),
     exportPassphrase: z.string().min(12).max(256).optional(),
     // When true, the route returns immediately with status='running'
@@ -317,20 +317,20 @@ export const createBundleSchema = z
   .refine(
     (input) =>
       input.exportMode === undefined ||
-      (input.initiator === 'client' && !!input.exportPassphrase),
-    { message: 'exportMode=data_export requires initiator=client and exportPassphrase' },
+      (input.initiator === 'tenant' && !!input.exportPassphrase),
+    { message: 'exportMode=data_export requires initiator=tenant and exportPassphrase' },
   );
 export type CreateBundleInput = z.infer<typeof createBundleSchema>;
 
-// ─── Schedule (per-client cron) ──────────────────────────────────────────────
+// ─── Schedule (per-tenant cron) ──────────────────────────────────────────────
 
-export const clientBackupScheduleFrequencySchema = z.enum(['daily', 'weekly', 'monthly']);
-export type ClientBackupScheduleFrequency = z.infer<typeof clientBackupScheduleFrequencySchema>;
+export const tenantBackupScheduleFrequencySchema = z.enum(['daily', 'weekly', 'monthly']);
+export type TenantBackupScheduleFrequency = z.infer<typeof tenantBackupScheduleFrequencySchema>;
 
-export const clientBackupScheduleSchema = z.object({
-  clientId: uuidField,
+export const tenantBackupScheduleSchema = z.object({
+  tenantId: uuidField,
   enabled: z.boolean(),
-  frequency: clientBackupScheduleFrequencySchema,
+  frequency: tenantBackupScheduleFrequencySchema,
   hourOfDayUtc: z.number().int().min(0).max(23),
   dayOfWeek: z.number().int().min(0).max(6).nullable(),
   dayOfMonth: z.number().int().min(1).max(28).nullable(),
@@ -338,26 +338,26 @@ export const clientBackupScheduleSchema = z.object({
   lastRunAt: z.string().nullable(),
   lastRunStatus: backupJobStatusSchema.nullable(),
 });
-export type ClientBackupSchedule = z.infer<typeof clientBackupScheduleSchema>;
+export type TenantBackupSchedule = z.infer<typeof tenantBackupScheduleSchema>;
 
-export const updateClientBackupScheduleSchema = z.object({
+export const updateTenantBackupScheduleSchema = z.object({
   enabled: z.boolean().optional(),
-  frequency: clientBackupScheduleFrequencySchema.optional(),
+  frequency: tenantBackupScheduleFrequencySchema.optional(),
   hourOfDayUtc: z.number().int().min(0).max(23).optional(),
   dayOfWeek: z.number().int().min(0).max(6).nullable().optional(),
   dayOfMonth: z.number().int().min(1).max(28).nullable().optional(),
   retentionDays: z.number().int().positive().optional(),
 });
-export type UpdateClientBackupScheduleInput = z.infer<typeof updateClientBackupScheduleSchema>;
+export type UpdateTenantBackupScheduleInput = z.infer<typeof updateTenantBackupScheduleSchema>;
 
 /**
- * Per-client schedule summary, joined with the client's display name
+ * Per-tenant schedule summary, joined with the tenant's display name
  * for the global Tenant Backup admin page (operator never wants a
  * row that says "schedule for 4f3a-…-c2"). Returned by
  * GET /admin/backup-schedules.
  */
-export const backupScheduleSummarySchema = clientBackupScheduleSchema.extend({
-  /** clients.business_name for display. Nullable if the client row was
+export const backupScheduleSummarySchema = tenantBackupScheduleSchema.extend({
+  /** tenants.business_name for display. Nullable if the tenant row was
    * deleted but the schedule row hasn't been cascaded yet — operator
    * sees "(deleted)" so they can clean up. */
   businessName: z.string().nullable(),

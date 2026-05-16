@@ -66,7 +66,7 @@ describe('ExportImport page', () => {
 
   it('shows export description text', () => {
     render(<ExportImport />, { wrapper: createWrapper() });
-    expect(screen.getByText('Download all clients, domains, plans, and DNS servers as a JSON file.')).toBeInTheDocument();
+    expect(screen.getByText('Download all tenants, domains, plans, and DNS servers as a JSON file.')).toBeInTheDocument();
   });
 
   it('shows import description text', () => {

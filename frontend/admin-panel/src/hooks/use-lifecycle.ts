@@ -6,7 +6,7 @@ interface Envelope<T> { readonly data: T }
 
 export interface LifecycleTransitionRow {
   id: string;
-  clientId: string;
+  tenantId: string;
   transitionKind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted';
   fromStatus: string | null;
   toStatus: string;
@@ -42,41 +42,41 @@ export interface BulkOpResponse extends TransitionsResponse {
   bulkOpId: string;
 }
 
-/** List recent transitions (cluster-wide or filtered by clientId). */
+/** List recent transitions (cluster-wide or filtered by tenantId). */
 export function useLifecycleTransitions(opts: {
-  clientId?: string;
+  tenantId?: string;
   limit?: number;
   refetchInterval?: number;
 } = {}) {
   const params = new URLSearchParams();
-  if (opts.clientId) params.set('clientId', opts.clientId);
+  if (opts.tenantId) params.set('tenantId', opts.tenantId);
   if (opts.limit) params.set('limit', String(opts.limit));
   const qs = params.toString();
   return useQuery({
-    queryKey: ['lifecycle-transitions', opts.clientId ?? 'all', opts.limit ?? 50],
+    queryKey: ['lifecycle-transitions', opts.tenantId ?? 'all', opts.limit ?? 50],
     queryFn: () => apiFetch<Envelope<TransitionsResponse>>(`/api/v1/admin/lifecycle/transitions${qs ? `?${qs}` : ''}`),
     refetchInterval: opts.refetchInterval ?? undefined,
   });
 }
 
 /**
- * Per-client transitions (live-poll variant for the progress modal).
+ * Per-tenant transitions (live-poll variant for the progress modal).
  *
  * Pass `paused=true` to stop polling — TanStack Query honours `false`
  * returned from a refetchInterval function and stops the timer
  * (whereas a fixed prop value is only read at construction). The
  * caller is responsible for setting `paused` once the work is done.
  */
-export function useClientLifecycleTransitions(
-  clientId: string,
+export function useTenantLifecycleTransitions(
+  tenantId: string,
   refetchIntervalMs = 2000,
   paused = false,
 ) {
   return useQuery({
-    queryKey: ['client-lifecycle-transitions', clientId],
-    queryFn: () => apiFetch<Envelope<TransitionsResponse>>(`/api/v1/admin/clients/${encodeURIComponent(clientId)}/lifecycle/transitions`),
+    queryKey: ['tenant-lifecycle-transitions', tenantId],
+    queryFn: () => apiFetch<Envelope<TransitionsResponse>>(`/api/v1/admin/tenants/${encodeURIComponent(tenantId)}/lifecycle/transitions`),
     refetchInterval: paused ? false : refetchIntervalMs,
-    enabled: !!clientId,
+    enabled: !!tenantId,
   });
 }
 
@@ -104,7 +104,7 @@ export function useRetryHookRun() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lifecycle-transitions'] });
-      qc.invalidateQueries({ queryKey: ['client-lifecycle-transitions'] });
+      qc.invalidateQueries({ queryKey: ['tenant-lifecycle-transitions'] });
       qc.invalidateQueries({ queryKey: ['lifecycle-bulk-op'] });
     },
   });

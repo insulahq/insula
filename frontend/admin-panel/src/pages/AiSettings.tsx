@@ -402,7 +402,7 @@ export default function AiSettings() {
               <input type="checkbox" checked={form.adminOnly} onChange={(e) => setForm({ ...form, adminOnly: e.target.checked })}
                 className="rounded border-gray-300 text-red-500 focus:ring-red-500" />
               Admin only
-              <span className="text-[10px] text-gray-400">(hidden from clients)</span>
+              <span className="text-[10px] text-gray-400">(hidden from tenants)</span>
             </label>
           </div>
 

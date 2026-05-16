@@ -893,7 +893,7 @@ function AppDetailPanel({
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
-            <span className="text-xs text-gray-400 dark:text-gray-500">Deploy from client panel</span>
+            <span className="text-xs text-gray-400 dark:text-gray-500">Deploy from tenant panel</span>
             <button
               type="button"
               onClick={onClose}
@@ -964,7 +964,7 @@ function InstalledTab() {
   const totalPages = pagination?.total_pages ?? 1;
 
   // Filter by search query first, then sort. Searching across all
-  // operator-relevant fields (app name, deployment name, client,
+  // operator-relevant fields (app name, deployment name, tenant,
   // status, current node) — picking by node is the most common
   // post-drain triage query.
   const filtered = useMemo(() => {
@@ -973,7 +973,7 @@ function InstalledTab() {
     return deployments.filter((d) => {
       const haystack = [
         d.name, d.catalogEntryName, d.catalogEntryCode, d.catalogEntryType,
-        d.clientName, d.status, d.currentNodeName, d.installedVersion,
+        d.tenantName, d.status, d.currentNodeName, d.installedVersion,
       ].filter((v): v is string => Boolean(v)).join(' ').toLowerCase();
       return haystack.includes(q);
     });
@@ -1064,7 +1064,7 @@ function InstalledTab() {
           type="search"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search by app, client, status, node…"
+          placeholder="Search by app, tenant, status, node…"
           className="flex-1 max-w-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           data-testid="installed-search"
         />
@@ -1264,7 +1264,7 @@ function InstalledTab() {
                         <td className="px-3 py-3">
                           <button
                             type="button"
-                            onClick={() => navigate(`/clients/${d.clientId}`)}
+                            onClick={() => navigate(`/tenants/${d.tenantId}`)}
                             className="text-brand-600 dark:text-brand-400 hover:underline text-sm"
                           >
                             {d.name}
@@ -1273,10 +1273,10 @@ function InstalledTab() {
                         <td className="px-3 py-3">
                           <button
                             type="button"
-                            onClick={() => navigate(`/clients/${d.clientId}`)}
+                            onClick={() => navigate(`/tenants/${d.tenantId}`)}
                             className="text-brand-600 dark:text-brand-400 hover:underline text-sm"
                           >
-                            {d.clientName ?? d.clientId.slice(0, 8)}
+                            {d.tenantName ?? d.tenantId.slice(0, 8)}
                           </button>
                         </td>
                         <td className="px-3 py-3">

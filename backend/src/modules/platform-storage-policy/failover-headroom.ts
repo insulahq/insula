@@ -37,7 +37,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
 
 // Namespaces whose pod requests count as "system baseline". Tenant
-// namespaces (client-*) are intentionally excluded — their requests
+// namespaces (tenant-*) are intentionally excluded — their requests
 // are the thing we're computing headroom AGAINST. ingress-nginx,
 // calico, longhorn-* are DaemonSets so their per-node footprint is
 // inherent and unavoidable.
@@ -81,7 +81,7 @@ export interface FailoverHeadroom {
   /** What tenants can safely request in total, after baseline + failover reserve. */
   readonly tenantAvailableCpu: number;
   readonly tenantAvailableMemoryGi: number;
-  /** Currently observed tenant requests (sum across client-* namespaces). */
+  /** Currently observed tenant requests (sum across tenant-* namespaces). */
   readonly tenantUsedCpu: number;
   readonly tenantUsedMemoryGi: number;
   /**
@@ -192,7 +192,7 @@ export function computeFailoverHeadroom(
   );
 
   const systemPredicate = (ns: string): boolean => SYSTEM_NAMESPACES.includes(ns);
-  const tenantPredicate = (ns: string): boolean => ns.startsWith('client-');
+  const tenantPredicate = (ns: string): boolean => ns.startsWith('tenant-');
 
   const system = sumPodRequests(pods, systemPredicate);
   const tenant = sumPodRequests(pods, tenantPredicate);

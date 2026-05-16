@@ -3,7 +3,7 @@ import { createAlias, listAliases, updateAlias, deleteAlias } from './service.js
 
 const DOMAIN = {
   id: 'ed1',
-  clientId: 'c1',
+  tenantId: 'c1',
   domainId: 'd1',
   enabled: 1,
   // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey dropped (migration 0075).
@@ -20,7 +20,7 @@ const DOMAIN = {
 
 const PARENT_DOMAIN = {
   id: 'd1',
-  clientId: 'c1',
+  tenantId: 'c1',
   domainName: 'example.com',
   dnsMode: 'primary',
   status: 'active',
@@ -31,7 +31,7 @@ const PARENT_DOMAIN = {
 const ALIAS = {
   id: 'a1',
   emailDomainId: 'ed1',
-  clientId: 'c1',
+  tenantId: 'c1',
   sourceAddress: 'info@example.com',
   destinationAddresses: ['user@example.com'],
   enabled: 1,
@@ -125,7 +125,7 @@ describe('listAliases', () => {
     expect(result).toEqual([ALIAS]);
   });
 
-  it('should list all aliases for client when no domain specified', async () => {
+  it('should list all aliases for tenant when no domain specified', async () => {
     const whereFn = vi.fn().mockResolvedValue([ALIAS]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });

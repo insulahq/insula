@@ -1,9 +1,9 @@
 /**
- * Phase 3 of client-panel email parity round 2: typed notification
+ * Phase 3 of tenant-panel email parity round 2: typed notification
  * event helpers.
  *
- * Each helper takes a minimal payload shape, resolves the client's
- * notification recipients via getClientNotificationRecipients, and
+ * Each helper takes a minimal payload shape, resolves the tenant's
+ * notification recipients via getTenantNotificationRecipients, and
  * fans out the pre-formatted notification. Call-sites never build
  * titles/messages by hand — they pass domain data and let the
  * helper produce consistent wording, types, and resource tags.
@@ -15,7 +15,7 @@
  */
 
 import { notifyUsers } from './service.js';
-import { getClientNotificationRecipients } from './recipients.js';
+import { getTenantNotificationRecipients } from './recipients.js';
 import type { Database } from '../../db/index.js';
 import type { MailboxLimitSource } from '../mailboxes/limit.js';
 
@@ -30,27 +30,27 @@ export interface MailboxLimitPayload {
 }
 
 /**
- * Fire when a client's create-mailbox call was rejected because the
- * plan (or per-client override) cap is full. Error level — it blocks
- * an action the client is actively trying to take.
+ * Fire when a tenant's create-mailbox call was rejected because the
+ * plan (or per-tenant override) cap is full. Error level — it blocks
+ * an action the tenant is actively trying to take.
  */
-export async function notifyClientMailboxLimitReached(
+export async function notifyTenantMailboxLimitReached(
   db: Database,
-  clientId: string,
+  tenantId: string,
   payload: MailboxLimitPayload,
 ): Promise<void> {
-  const recipients = await getClientNotificationRecipients(db, clientId);
+  const recipients = await getTenantNotificationRecipients(db, tenantId);
   if (recipients.length === 0) return;
 
-  const sourceText = payload.source === 'client_override' ? 'custom limit' : 'hosting plan';
+  const sourceText = payload.source === 'tenant_override' ? 'custom limit' : 'hosting plan';
   await notifyUsers(db, recipients, {
     type: 'error',
     title: 'Mailbox limit reached',
     message:
       `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}. `
       + 'New mailboxes cannot be created until you remove an existing one or upgrade your plan.',
-    resourceType: 'client',
-    resourceId: clientId,
+    resourceType: 'tenant',
+    resourceId: tenantId,
   });
 }
 
@@ -66,15 +66,15 @@ export interface DkimRotatedPayload {
 
 /**
  * Fire when the DKIM rotation scheduler rolls a new key for a
- * client's email domain. Info level — no action required from the
- * client but they should know the key material changed.
+ * tenant's email domain. Info level — no action required from the
+ * tenant but they should know the key material changed.
  */
-export async function notifyClientDkimRotated(
+export async function notifyTenantDkimRotated(
   db: Database,
-  clientId: string,
+  tenantId: string,
   payload: DkimRotatedPayload,
 ): Promise<void> {
-  const recipients = await getClientNotificationRecipients(db, clientId);
+  const recipients = await getTenantNotificationRecipients(db, tenantId);
   if (recipients.length === 0) return;
 
   await notifyUsers(db, recipients, {
@@ -119,14 +119,14 @@ function isTerminal(status: string): status is ImapsyncTerminalStatus {
  * No-op for non-terminal statuses so the caller can blindly pipe
  * every status transition through this helper.
  */
-export async function notifyClientImapsyncTerminal(
+export async function notifyTenantImapsyncTerminal(
   db: Database,
-  clientId: string,
+  tenantId: string,
   payload: ImapsyncTerminalPayload,
 ): Promise<void> {
   if (!isTerminal(payload.status)) return;
 
-  const recipients = await getClientNotificationRecipients(db, clientId);
+  const recipients = await getTenantNotificationRecipients(db, tenantId);
   if (recipients.length === 0) return;
 
   const title = (() => {
@@ -159,7 +159,7 @@ export async function notifyClientImapsyncTerminal(
       return `IMAPSync migration job finished successfully. ${count} message(s) transferred.`;
     }
     if (payload.status === 'failed') {
-      return `IMAPSync migration job failed. ${payload.errorMessage ?? 'See the job details in the client panel for the error log.'}`;
+      return `IMAPSync migration job failed. ${payload.errorMessage ?? 'See the job details in the tenant panel for the error log.'}`;
     }
     return 'IMAPSync migration job was cancelled before it could finish.';
   })();
@@ -183,15 +183,15 @@ export interface EmailBootstrappedPayload {
 }
 
 /**
- * Fire when a client enables email on a domain for the first time.
- * Success level — confirms a client-initiated action.
+ * Fire when a tenant enables email on a domain for the first time.
+ * Success level — confirms a tenant-initiated action.
  */
-export async function notifyClientEmailBootstrapped(
+export async function notifyTenantEmailBootstrapped(
   db: Database,
-  clientId: string,
+  tenantId: string,
   payload: EmailBootstrappedPayload,
 ): Promise<void> {
-  const recipients = await getClientNotificationRecipients(db, clientId);
+  const recipients = await getTenantNotificationRecipients(db, tenantId);
   if (recipients.length === 0) return;
 
   await notifyUsers(db, recipients, {
@@ -199,7 +199,7 @@ export async function notifyClientEmailBootstrapped(
     title: 'Email enabled for domain',
     message:
       `Email hosting is now active for ${payload.domainName}. You can create mailboxes and `
-      + 'configure DNS from the client panel Mail page.',
+      + 'configure DNS from the tenant panel Mail page.',
     resourceType: 'email_domain',
     resourceId: payload.emailDomainId,
   });
@@ -209,7 +209,7 @@ export async function notifyClientEmailBootstrapped(
 // Webmail cert / provisioning failure
 // ──────────────────────────────────────────────────────────────────
 //
-// Round-4 Phase 2 review HIGH-2: notifyClientWebmailCertFailed was
+// Round-4 Phase 2 review HIGH-2: notifyTenantWebmailCertFailed was
 // removed as a dead code path. The previous behaviour was to fire
 // an "error" notification whenever ensureRouteCertificate threw —
 // but in dev (and any environment using HTTP-01 ACME without real

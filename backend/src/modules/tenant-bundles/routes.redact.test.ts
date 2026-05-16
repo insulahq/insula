@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { redactCredentialsForUi, clientRowToBundleStatus } from './routes.js';
+import { redactCredentialsForUi, tenantRowToBundleStatus } from './routes.js';
 
 describe('redactCredentialsForUi', () => {
   it('masks the password in a postgres connection string', () => {
@@ -43,33 +43,33 @@ describe('redactCredentialsForUi', () => {
   });
 });
 
-describe('clientRowToBundleStatus', () => {
-  // Bundles for deleted clients lose the LEFT JOIN row → status is
+describe('tenantRowToBundleStatus', () => {
+  // Bundles for deleted tenants lose the LEFT JOIN row → status is
   // null/undefined. The UI surfaces `missing` so the operator knows
   // the source tenant is gone (and a Restore From Bundle dialog is
   // the only path back).
   it('null/undefined → missing', () => {
-    expect(clientRowToBundleStatus(null)).toBe('missing');
-    expect(clientRowToBundleStatus(undefined)).toBe('missing');
+    expect(tenantRowToBundleStatus(null)).toBe('missing');
+    expect(tenantRowToBundleStatus(undefined)).toBe('missing');
   });
 
   it('archived → archived', () => {
-    expect(clientRowToBundleStatus('archived')).toBe('archived');
+    expect(tenantRowToBundleStatus('archived')).toBe('archived');
   });
 
   it('suspended → suspended', () => {
-    expect(clientRowToBundleStatus('suspended')).toBe('suspended');
+    expect(tenantRowToBundleStatus('suspended')).toBe('suspended');
   });
 
   it('active → active', () => {
-    expect(clientRowToBundleStatus('active')).toBe('active');
+    expect(tenantRowToBundleStatus('active')).toBe('active');
   });
 
-  it('any unknown clients.status maps to active (defensive)', () => {
-    // Future clients.status values default to active so the bundle
+  it('any unknown tenants.status maps to active (defensive)', () => {
+    // Future tenants.status values default to active so the bundle
     // list never breaks on an enum drift; the dedicated values for
     // suspended/archived are explicit.
-    expect(clientRowToBundleStatus('pending')).toBe('active');
-    expect(clientRowToBundleStatus('migrating')).toBe('active');
+    expect(tenantRowToBundleStatus('pending')).toBe('active');
+    expect(tenantRowToBundleStatus('migrating')).toBe('active');
   });
 });

@@ -117,20 +117,20 @@ describe('authenticateUser', () => {
       .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
   });
 
-  it('should throw INVALID_TOKEN when the user.s client is archived', async () => {
+  it('should throw INVALID_TOKEN when the user.s tenant is archived', async () => {
     const password = 'my-password';
     const userRow = {
       id: 'u1',
       email: 'tenant-admin@example.com',
       passwordHash: await hashNewPassword(password),
       fullName: 'Tenant Admin',
-      roleName: 'client_admin',
-      panel: 'client',
-      clientId: 'c1',
+      roleName: 'tenant_admin',
+      panel: 'tenant',
+      tenantId: 'c1',
       status: 'active',
     };
-    // Two consecutive selects: 1) users 2) clients(status). The mock returns
-    // the user row first, then a client row marked archived.
+    // Two consecutive selects: 1) users 2) tenants(status). The mock returns
+    // the user row first, then a tenant row marked archived.
     const limit = vi.fn()
       .mockResolvedValueOnce([userRow])
       .mockResolvedValueOnce([{ status: 'archived' }]);
@@ -147,16 +147,16 @@ describe('authenticateUser', () => {
       .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
   });
 
-  it('should still authenticate when the user.s client is suspended (only archived blocks login)', async () => {
+  it('should still authenticate when the user.s tenant is suspended (only archived blocks login)', async () => {
     const password = 'my-password';
     const userRow = {
       id: 'u2',
       email: 'tenant-admin@example.com',
       passwordHash: await hashNewPassword(password),
       fullName: 'Tenant Admin',
-      roleName: 'client_admin',
-      panel: 'client',
-      clientId: 'c2',
+      roleName: 'tenant_admin',
+      panel: 'tenant',
+      tenantId: 'c2',
       status: 'active',
     };
     const limit = vi.fn()
@@ -173,7 +173,7 @@ describe('authenticateUser', () => {
 
     const result = await authenticateUser(db, 'tenant-admin@example.com', password);
     expect(result.id).toBe('u2');
-    expect(result.clientId).toBe('c2');
+    expect(result.tenantId).toBe('c2');
   });
 
   it('should return user data and update last login on success', async () => {
@@ -193,7 +193,7 @@ describe('authenticateUser', () => {
               fullName: 'Test User',
               roleName: 'super_admin',
               panel: 'admin',
-              clientId: null,
+              tenantId: null,
               status: 'active',
             }]),
           }),
@@ -210,7 +210,7 @@ describe('authenticateUser', () => {
       fullName: 'Test User',
       role: 'super_admin',
       panel: 'admin',
-      clientId: undefined,
+      tenantId: undefined,
     });
     expect(updateFn).toHaveBeenCalled();
   });

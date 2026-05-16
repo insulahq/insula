@@ -5,10 +5,10 @@
 //
 // Sources:
 //   GET /api/v1/admin/upgrades/overview        (the table data)
-//   PATCH /api/v1/clients/:cid/.../version     (single upgrade)
+//   PATCH /api/v1/tenants/:cid/.../version     (single upgrade)
 //   POST /api/v1/admin/deployments/bulk-upgrade (per-app fleet upgrade)
 //   POST /api/v1/admin/deployments/:id/rollback-version (admin rollback)
-//   PATCH /api/v1/clients/:cid/.../auto-upgrade (toggle)
+//   PATCH /api/v1/tenants/:cid/.../auto-upgrade (toggle)
 
 import { useState, useMemo } from 'react';
 import {
@@ -296,7 +296,7 @@ function DeploymentRow({ dep, lockMode }: { readonly dep: AdminUpgradesDeploymen
   return (
     <>
       <tr className="hover:bg-gray-50 dark:hover:bg-gray-800/50" data-testid={`deployment-row-${dep.id}`}>
-        <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{dep.clientCompanyName ?? <span className="text-gray-400">—</span>}</td>
+        <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{dep.tenantCompanyName ?? <span className="text-gray-400">—</span>}</td>
         <td className="px-4 py-2">
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{dep.name}</span>
@@ -340,7 +340,7 @@ function DeploymentRow({ dep, lockMode }: { readonly dep: AdminUpgradesDeploymen
                 type="checkbox"
                 checked={dep.autoUpgrade}
                 onChange={(e) =>
-                  toggleAuto.mutate({ clientId: dep.clientId, deploymentId: dep.id, enabled: e.target.checked })
+                  toggleAuto.mutate({ tenantId: dep.tenantId, deploymentId: dep.id, enabled: e.target.checked })
                 }
                 disabled={toggleAuto.isPending}
                 className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
@@ -386,7 +386,7 @@ function DeploymentRow({ dep, lockMode }: { readonly dep: AdminUpgradesDeploymen
           onClose={() => setUpgradeConfirmOpen(false)}
           onConfirm={(force) =>
             upgrade.mutate(
-              { clientId: dep.clientId, deploymentId: dep.id, targetVersion: dep.latestReachable!, force },
+              { tenantId: dep.tenantId, deploymentId: dep.id, targetVersion: dep.latestReachable!, force },
               { onSuccess: () => setUpgradeConfirmOpen(false) },
             )
           }

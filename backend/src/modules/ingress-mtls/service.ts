@@ -4,11 +4,11 @@
  * Mode B of the multi-mode access design. Stores the CA bundle
  * encrypted at rest (re-using PLATFORM_ENCRYPTION_KEY for v1) and
  * computes a fingerprint + Subject + notAfter on upload for UI
- * display. The CA bundle itself is never returned to the client —
+ * display. The CA bundle itself is never returned to the tenant —
  * the response only flags `caCertSet`.
  *
  * The reconciler (annotation-sync extension) materialises the CA
- * bundle as a K8s Secret in the client namespace and adds the
+ * bundle as a K8s Secret in the tenant namespace and adds the
  * `auth-tls-*` annotations to the tenant Ingress.
  */
 
@@ -22,7 +22,7 @@ import type { IngressMtlsConfig } from '../../db/schema.js';
 
 export interface IngressMtlsConfigInput {
   readonly enabled: boolean;
-  /** Preferred — references a row in client_mtls_providers. */
+  /** Preferred — references a row in tenant_mtls_providers. */
   readonly providerId?: string | null;
   /** Legacy inline upload path. Mutually exclusive with providerId. */
   readonly caCertPem?: string;

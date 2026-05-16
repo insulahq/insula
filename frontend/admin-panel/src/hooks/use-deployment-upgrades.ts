@@ -11,25 +11,25 @@ import type {
   DeploymentResponse,
 } from '@k8s-hosting/api-contracts';
 
-// ─── GET /clients/:cid/deployments/:id/available-upgrades ───────────────────
+// ─── GET /tenants/:cid/deployments/:id/available-upgrades ───────────────────
 
-export function useAvailableUpgradesV2(clientId: string | null, deploymentId: string | null) {
+export function useAvailableUpgradesV2(tenantId: string | null, deploymentId: string | null) {
   return useQuery({
-    queryKey: ['available-upgrades-v2', clientId, deploymentId],
+    queryKey: ['available-upgrades-v2', tenantId, deploymentId],
     queryFn: () =>
       apiFetch<{ data: AvailableUpgradesResponse }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/available-upgrades`,
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/available-upgrades`,
       ).then((r) => r.data),
-    enabled: !!(clientId && deploymentId),
+    enabled: !!(tenantId && deploymentId),
     // Catalog versions don't change often; 1-min cache is fine.
     staleTime: 60_000,
   });
 }
 
-// ─── PATCH /clients/:cid/deployments/:id/version ────────────────────────────
+// ─── PATCH /tenants/:cid/deployments/:id/version ────────────────────────────
 
 interface UpgradeVersionInput {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly deploymentId: string;
   readonly targetVersion: string;
   readonly force?: boolean;
@@ -38,9 +38,9 @@ interface UpgradeVersionInput {
 export function useUpgradeDeploymentVersion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId, deploymentId, targetVersion, force }: UpgradeVersionInput) =>
+    mutationFn: ({ tenantId, deploymentId, targetVersion, force }: UpgradeVersionInput) =>
       apiFetch<{ data: DeploymentResponse }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/version`,
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/version`,
         {
           method: 'PATCH',
           body: JSON.stringify({ target_version: targetVersion, force }),
@@ -50,45 +50,45 @@ export function useUpgradeDeploymentVersion() {
       // Invalidate every list that might surface the version change.
       qc.invalidateQueries({ queryKey: ['admin-upgrades-overview'] });
       qc.invalidateQueries({ queryKey: ['admin-deployments'] });
-      qc.invalidateQueries({ queryKey: ['available-upgrades-v2', vars.clientId, vars.deploymentId] });
-      qc.invalidateQueries({ queryKey: ['deployments', vars.clientId] });
+      qc.invalidateQueries({ queryKey: ['available-upgrades-v2', vars.tenantId, vars.deploymentId] });
+      qc.invalidateQueries({ queryKey: ['deployments', vars.tenantId] });
       qc.invalidateQueries({ queryKey: ['deployment', vars.deploymentId] });
     },
   });
 }
 
-// ─── POST /clients/:cid/deployments/:id/rollback-version ────────────────────
+// ─── POST /tenants/:cid/deployments/:id/rollback-version ────────────────────
 
 interface RollbackInput {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly deploymentId: string;
 }
 
 export function useRollbackDeploymentVersion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId, deploymentId }: RollbackInput) =>
+    mutationFn: ({ tenantId, deploymentId }: RollbackInput) =>
       apiFetch<{ data: DeploymentResponse }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/rollback-version`,
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/rollback-version`,
         { method: 'POST' },
       ).then((r) => r.data),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ['admin-upgrades-overview'] });
       qc.invalidateQueries({ queryKey: ['admin-deployments'] });
-      qc.invalidateQueries({ queryKey: ['available-upgrades-v2', vars.clientId, vars.deploymentId] });
-      qc.invalidateQueries({ queryKey: ['deployments', vars.clientId] });
+      qc.invalidateQueries({ queryKey: ['available-upgrades-v2', vars.tenantId, vars.deploymentId] });
+      qc.invalidateQueries({ queryKey: ['deployments', vars.tenantId] });
     },
   });
 }
 
-// ─── PATCH /clients/:cid/deployments/:id/auto-upgrade ───────────────────────
+// ─── PATCH /tenants/:cid/deployments/:id/auto-upgrade ───────────────────────
 
 export function useSetAutoUpgrade() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId, deploymentId, enabled }: { clientId: string; deploymentId: string; enabled: boolean }) =>
+    mutationFn: ({ tenantId, deploymentId, enabled }: { tenantId: string; deploymentId: string; enabled: boolean }) =>
       apiFetch<{ data: DeploymentResponse }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/auto-upgrade`,
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/auto-upgrade`,
         { method: 'PATCH', body: JSON.stringify({ enabled }) },
       ).then((r) => r.data),
     onSuccess: () => {

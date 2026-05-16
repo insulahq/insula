@@ -1,7 +1,7 @@
 import { eq, sql, and, gte } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import type { Database } from '../../db/index.js';
-import { aiProviders, aiModels, aiTokenUsage, clients, hostingPlans } from '../../db/schema.js';
+import { aiProviders, aiModels, aiTokenUsage, tenants, hostingPlans } from '../../db/schema.js';
 import { createProviderAdapter, type LlmMessage, type LlmResponse } from './providers/index.js';
 import { scanOutput } from './output-scanner.js';
 import type { AiProviderType } from '@k8s-hosting/api-contracts';
@@ -18,7 +18,7 @@ function getWeekStart(): Date {
   return monday;
 }
 
-export async function getTokenBudget(db: Database, clientId: string) {
+export async function getTokenBudget(db: Database, tenantId: string) {
   const weekStart = getWeekStart();
 
   // Get this week's token usage
@@ -26,17 +26,17 @@ export async function getTokenBudget(db: Database, clientId: string) {
     totalInput: sql<number>`COALESCE(SUM(tokens_input), 0)`,
     totalOutput: sql<number>`COALESCE(SUM(tokens_output), 0)`,
   }).from(aiTokenUsage).where(
-    and(eq(aiTokenUsage.clientId, clientId), gte(aiTokenUsage.createdAt, weekStart))
+    and(eq(aiTokenUsage.tenantId, tenantId), gte(aiTokenUsage.createdAt, weekStart))
   );
 
   const tokensUsed = Number(usageRows[0]?.totalInput ?? 0) + Number(usageRows[0]?.totalOutput ?? 0);
 
-  // Get budget limit from client's plan
-  const clientRows = await db.select().from(clients).where(eq(clients.id, clientId));
-  const client = clientRows[0];
+  // Get budget limit from tenant's plan
+  const tenantRows = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  const tenant = tenantRows[0];
   let weeklyBudgetCents = 100; // default $1/week
-  if (client?.planId) {
-    const planRows = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
+  if (tenant?.planId) {
+    const planRows = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
     if (planRows[0]?.weeklyAiBudgetCents) {
       weeklyBudgetCents = planRows[0].weeklyAiBudgetCents;
     }
@@ -211,7 +211,7 @@ export interface FileEditInput {
   fileContent: string;
   instruction: string;
   modelId: string;
-  clientId: string;
+  tenantId: string;
   deploymentId: string | null;
   isAdmin: boolean;
 }
@@ -283,7 +283,7 @@ export async function editFile(db: Database, input: FileEditInput): Promise<Edit
   // Log token usage
   await db.insert(aiTokenUsage).values({
     id: randomUUID(),
-    clientId: input.clientId,
+    tenantId: input.tenantId,
     deploymentId: input.deploymentId,
     modelId: input.modelId,
     mode: 'file',
@@ -374,7 +374,7 @@ export interface FolderExecuteInput {
   plan: string;
   instruction: string;
   modelId: string;
-  clientId: string;
+  tenantId: string;
   deploymentId: string | null;
   isAdmin: boolean;
   readFile: (path: string) => Promise<string>;
@@ -386,7 +386,7 @@ export interface FolderEditInput {
   fileList: Array<{ name: string; size: number; type: string }>;
   instruction: string;
   modelId: string;
-  clientId: string;
+  tenantId: string;
   deploymentId: string | null;
   isAdmin: boolean;
   readFile: (path: string) => Promise<string>;
@@ -557,7 +557,7 @@ export async function executeFolderEdit(db: Database, input: FolderExecuteInput)
   // Log usage
   await db.insert(aiTokenUsage).values({
     id: randomUUID(),
-    clientId: input.clientId,
+    tenantId: input.tenantId,
     deploymentId: input.deploymentId,
     modelId: input.modelId,
     mode: 'folder',
@@ -648,7 +648,7 @@ export async function editFolder(db: Database, input: FolderEditInput): Promise<
   // Log usage
   await db.insert(aiTokenUsage).values({
     id: randomUUID(),
-    clientId: input.clientId,
+    tenantId: input.tenantId,
     deploymentId: input.deploymentId,
     modelId: input.modelId,
     mode: 'folder',

@@ -1,17 +1,17 @@
 /**
- * Ziti provider service — per-client OpenZiti controller registry.
+ * Ziti provider service — per-tenant OpenZiti controller registry.
  *
  * Used by the deployment-level Network Access feature (mode A:
  * tunneler). Stores controller URL + enrollment JWT (encrypted at
- * rest using PLATFORM_ENCRYPTION_KEY for v1) per client. The reconciler
- * (Milestone A) consumes these rows when provisioning per-client
+ * rest using PLATFORM_ENCRYPTION_KEY for v1) per tenant. The reconciler
+ * (Milestone A) consumes these rows when provisioning per-tenant
  * ziti-edge-tunnel pods.
  */
 
 import { randomUUID } from 'node:crypto';
 import { eq, and, sql } from 'drizzle-orm';
 import {
-  clientZitiProviders,
+  tenantZitiProviders,
   deploymentNetworkAccessConfigs,
 } from '../../db/schema.js';
 import { encrypt } from '../oidc/crypto.js';
@@ -24,24 +24,24 @@ import type {
 
 export async function listProviders(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<ZitiProviderResponse>> {
   const rows = await db
     .select({
-      id: clientZitiProviders.id,
-      name: clientZitiProviders.name,
-      controllerUrl: clientZitiProviders.controllerUrl,
-      enrollmentJwt: clientZitiProviders.enrollmentJwtEncrypted,
-      certExpiresAt: clientZitiProviders.certExpiresAt,
-      createdAt: clientZitiProviders.createdAt,
-      updatedAt: clientZitiProviders.updatedAt,
+      id: tenantZitiProviders.id,
+      name: tenantZitiProviders.name,
+      controllerUrl: tenantZitiProviders.controllerUrl,
+      enrollmentJwt: tenantZitiProviders.enrollmentJwtEncrypted,
+      certExpiresAt: tenantZitiProviders.certExpiresAt,
+      createdAt: tenantZitiProviders.createdAt,
+      updatedAt: tenantZitiProviders.updatedAt,
       consumerCount: sql<number>`(
         SELECT COUNT(*)::int FROM ${deploymentNetworkAccessConfigs}
-        WHERE ${deploymentNetworkAccessConfigs.zitiProviderId} = ${clientZitiProviders.id}
+        WHERE ${deploymentNetworkAccessConfigs.zitiProviderId} = ${tenantZitiProviders.id}
       )`,
     })
-    .from(clientZitiProviders)
-    .where(eq(clientZitiProviders.clientId, clientId));
+    .from(tenantZitiProviders)
+    .where(eq(tenantZitiProviders.tenantId, tenantId));
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -57,7 +57,7 @@ export async function listProviders(
 export async function createProvider(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   input: ZitiProviderInput,
 ): Promise<ZitiProviderResponse> {
   if (!input.enrollmentJwt) {
@@ -68,9 +68,9 @@ export async function createProvider(
     );
   }
   const id = randomUUID();
-  await db.insert(clientZitiProviders).values({
+  await db.insert(tenantZitiProviders).values({
     id,
-    clientId,
+    tenantId,
     name: input.name,
     controllerUrl: input.controllerUrl,
     enrollmentJwtEncrypted: encrypt(input.enrollmentJwt, encryptionKey),
@@ -85,19 +85,19 @@ export async function createProvider(
 export async function updateProvider(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   input: Partial<ZitiProviderInput>,
 ): Promise<ZitiProviderResponse> {
   const [existing] = await db
     .select()
-    .from(clientZitiProviders)
-    .where(and(eq(clientZitiProviders.id, providerId), eq(clientZitiProviders.clientId, clientId)));
+    .from(tenantZitiProviders)
+    .where(and(eq(tenantZitiProviders.id, providerId), eq(tenantZitiProviders.tenantId, tenantId)));
   if (!existing) {
     throw new ApiError('NOT_FOUND', 'Ziti provider not found', 404);
   }
   await db
-    .update(clientZitiProviders)
+    .update(tenantZitiProviders)
     .set({
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.controllerUrl !== undefined ? { controllerUrl: input.controllerUrl } : {}),
@@ -106,7 +106,7 @@ export async function updateProvider(
         : {}),
       updatedAt: new Date(),
     })
-    .where(eq(clientZitiProviders.id, providerId));
+    .where(eq(tenantZitiProviders.id, providerId));
   const [updated] = await listProvidersById(db, [providerId]);
   if (!updated) {
     throw new ApiError('INTERNAL_ERROR', 'provider disappeared after update', 500);
@@ -116,7 +116,7 @@ export async function updateProvider(
 
 export async function deleteProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
 ): Promise<void> {
   // FK ON DELETE RESTRICT will reject this when consumers exist; we
@@ -134,8 +134,8 @@ export async function deleteProvider(
     );
   }
   await db
-    .delete(clientZitiProviders)
-    .where(and(eq(clientZitiProviders.id, providerId), eq(clientZitiProviders.clientId, clientId)));
+    .delete(tenantZitiProviders)
+    .where(and(eq(tenantZitiProviders.id, providerId), eq(tenantZitiProviders.tenantId, tenantId)));
 }
 
 async function listProvidersById(
@@ -145,20 +145,20 @@ async function listProvidersById(
   if (ids.length === 0) return [];
   const rows = await db
     .select({
-      id: clientZitiProviders.id,
-      name: clientZitiProviders.name,
-      controllerUrl: clientZitiProviders.controllerUrl,
-      enrollmentJwt: clientZitiProviders.enrollmentJwtEncrypted,
-      certExpiresAt: clientZitiProviders.certExpiresAt,
-      createdAt: clientZitiProviders.createdAt,
-      updatedAt: clientZitiProviders.updatedAt,
+      id: tenantZitiProviders.id,
+      name: tenantZitiProviders.name,
+      controllerUrl: tenantZitiProviders.controllerUrl,
+      enrollmentJwt: tenantZitiProviders.enrollmentJwtEncrypted,
+      certExpiresAt: tenantZitiProviders.certExpiresAt,
+      createdAt: tenantZitiProviders.createdAt,
+      updatedAt: tenantZitiProviders.updatedAt,
       consumerCount: sql<number>`(
         SELECT COUNT(*)::int FROM ${deploymentNetworkAccessConfigs}
-        WHERE ${deploymentNetworkAccessConfigs.zitiProviderId} = ${clientZitiProviders.id}
+        WHERE ${deploymentNetworkAccessConfigs.zitiProviderId} = ${tenantZitiProviders.id}
       )`,
     })
-    .from(clientZitiProviders)
-    .where(eq(clientZitiProviders.id, ids[0]!));
+    .from(tenantZitiProviders)
+    .where(eq(tenantZitiProviders.id, ids[0]!));
   return rows.map((r) => ({
     id: r.id,
     name: r.name,

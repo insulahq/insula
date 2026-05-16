@@ -3,26 +3,26 @@ import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
 
 interface UseCronJobsParams {
-  readonly clientId?: string;
+  readonly tenantId?: string;
   readonly limit?: number;
   readonly cursor?: string;
 }
 
 export function useCronJobs(params: UseCronJobsParams = {}) {
-  const { clientId, limit, cursor } = params;
+  const { tenantId, limit, cursor } = params;
 
   const searchParams = new URLSearchParams();
   if (limit) searchParams.set('limit', String(limit));
   if (cursor) searchParams.set('cursor', cursor);
 
   const qs = searchParams.toString();
-  const basePath = clientId
-    ? `/api/v1/clients/${clientId}/cron-jobs`
+  const basePath = tenantId
+    ? `/api/v1/tenants/${tenantId}/cron-jobs`
     : `/api/v1/admin/cron-jobs`;
   const path = `${basePath}${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['cron-jobs', clientId ?? 'all', { limit, cursor }],
+    queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor }],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
   });
 }
@@ -38,26 +38,26 @@ interface CreateCronJobInput {
   readonly enabled?: boolean;
 }
 
-export function useCreateCronJob(clientId: string | undefined) {
+export function useCreateCronJob(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input: CreateCronJobInput) =>
-      apiFetch<{ data: CronJob }>(`/api/v1/clients/${clientId}/cron-jobs`, {
+      apiFetch<{ data: CronJob }>(`/api/v1/tenants/${tenantId}/cron-jobs`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['cron-jobs', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['cron-jobs', tenantId] });
     },
   });
 }
 
-export function useUpdateCronJob(clientId: string | undefined) {
+export function useUpdateCronJob(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ cronJobId, ...input }: { cronJobId: string; enabled?: boolean }) =>
-      apiFetch<{ data: CronJob }>(`/api/v1/clients/${clientId}/cron-jobs/${cronJobId}`, {
+      apiFetch<{ data: CronJob }>(`/api/v1/tenants/${tenantId}/cron-jobs/${cronJobId}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
@@ -67,11 +67,11 @@ export function useUpdateCronJob(clientId: string | undefined) {
   });
 }
 
-export function useRunCronJob(clientId: string | undefined) {
+export function useRunCronJob(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (cronJobId: string) =>
-      apiFetch<{ data: CronJob }>(`/api/v1/clients/${clientId}/cron-jobs/${cronJobId}/run`, {
+      apiFetch<{ data: CronJob }>(`/api/v1/tenants/${tenantId}/cron-jobs/${cronJobId}/run`, {
         method: 'POST',
       }),
     onSuccess: () => {
@@ -80,16 +80,16 @@ export function useRunCronJob(clientId: string | undefined) {
   });
 }
 
-export function useDeleteCronJob(clientId: string | undefined) {
+export function useDeleteCronJob(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (cronJobId: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/cron-jobs/${cronJobId}`, {
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/cron-jobs/${cronJobId}`, {
         method: 'DELETE',
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['cron-jobs', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['cron-jobs', tenantId] });
     },
   });
 }

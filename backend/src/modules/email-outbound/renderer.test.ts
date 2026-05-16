@@ -143,10 +143,10 @@ describe('renderQueueOutboundToml', () => {
 });
 
 describe('renderQueueThrottleToml', () => {
-  it('returns empty when no clients have limits set', () => {
+  it('returns empty when no tenants have limits set', () => {
     const input: RenderQueueThrottleInput = {
       defaultRateLimit: null,
-      clientOverrides: [],
+      tenantOverrides: [],
     };
     const toml = renderQueueThrottleToml(input);
     // Still emits a [queue.throttle] block header for stability
@@ -156,7 +156,7 @@ describe('renderQueueThrottleToml', () => {
   it('renders the global default throttle rule', () => {
     const input: RenderQueueThrottleInput = {
       defaultRateLimit: 100, // 100/hour global default
-      clientOverrides: [],
+      tenantOverrides: [],
     };
     const toml = renderQueueThrottleToml(input);
     expect(toml).toContain('100');
@@ -166,9 +166,9 @@ describe('renderQueueThrottleToml', () => {
   it('renders per-customer overrides alongside the default', () => {
     const input: RenderQueueThrottleInput = {
       defaultRateLimit: 100,
-      clientOverrides: [
-        { clientId: 'c1', rateLimit: 500, suspended: false },
-        { clientId: 'c2', rateLimit: 50, suspended: false },
+      tenantOverrides: [
+        { tenantId: 'c1', rateLimit: 500, suspended: false },
+        { tenantId: 'c2', rateLimit: 50, suspended: false },
       ],
     };
     const toml = renderQueueThrottleToml(input);
@@ -178,23 +178,23 @@ describe('renderQueueThrottleToml', () => {
     expect(toml).toContain('50');
   });
 
-  it('sets rate=0 for suspended clients (blocks sending)', () => {
+  it('sets rate=0 for suspended tenants (blocks sending)', () => {
     const input: RenderQueueThrottleInput = {
       defaultRateLimit: 100,
-      clientOverrides: [
-        { clientId: 'suspended-client', rateLimit: null, suspended: true },
+      tenantOverrides: [
+        { tenantId: 'suspended-tenant', rateLimit: null, suspended: true },
       ],
     };
     const toml = renderQueueThrottleToml(input);
-    expect(toml).toContain('suspended-client');
+    expect(toml).toContain('suspended-tenant');
     expect(toml).toMatch(/rate = 0\b|rate\s*=\s*"0/);
   });
 
   it('suspended override beats any explicit rate_limit', () => {
     const input: RenderQueueThrottleInput = {
       defaultRateLimit: 100,
-      clientOverrides: [
-        { clientId: 'c1', rateLimit: 500, suspended: true },
+      tenantOverrides: [
+        { tenantId: 'c1', rateLimit: 500, suspended: true },
       ],
     };
     const toml = renderQueueThrottleToml(input);

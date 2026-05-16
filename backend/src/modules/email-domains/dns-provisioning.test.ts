@@ -65,7 +65,7 @@ describe('buildEmailDnsRecordsForDisplay', () => {
   });
 
   // 2026-05-06 TLS-bootstrap rewrite: regression guards.
-  it('points the MX record at the platform mail-server hostname (not a per-client mail.<domain> alias)', () => {
+  it('points the MX record at the platform mail-server hostname (not a per-tenant mail.<domain> alias)', () => {
     const records = buildEmailDnsRecordsForDisplay(
       'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
     );
@@ -76,7 +76,7 @@ describe('buildEmailDnsRecordsForDisplay', () => {
     expect(mx?.recordValue).not.toBe('mail.example.com');
   });
 
-  it('does NOT emit a per-client mail.<domain> A record (was redundant + cert-mismatch source)', () => {
+  it('does NOT emit a per-tenant mail.<domain> A record (was redundant + cert-mismatch source)', () => {
     const records = buildEmailDnsRecordsForDisplay(
       'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
     );

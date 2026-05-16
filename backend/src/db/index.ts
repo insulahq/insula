@@ -27,7 +27,7 @@ export async function closeDb(): Promise<void> {
  * Borrow a raw pg.Client from the same pool the Drizzle instance uses.
  * Required for long-lived `LISTEN` consumers (the Task Tracker SSE
  * stream) — Drizzle has no surface for `LISTEN/NOTIFY`. Caller MUST
- * release the client when done. The pool is initialised on first
+ * release the tenant when done. The pool is initialised on first
  * `getDb()` call; this throws if called before `getDb()`.
  */
 export function getPool(): pg.Pool {

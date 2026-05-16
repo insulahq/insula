@@ -47,12 +47,12 @@ export interface SnapshotOptions {
   readonly db?: Database;
 }
 
-interface K8sClientsBundle {
+interface K8sTenantsBundle {
   core: import('@kubernetes/client-node').CoreV1Api;
   batch: import('@kubernetes/client-node').BatchV1Api;
 }
 
-async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sClientsBundle> {
+async function loadK8sTenants(kubeconfigPath: string | undefined): Promise<K8sTenantsBundle> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
@@ -117,7 +117,7 @@ function jobStatusFromConditions(
 export async function getMailSnapshotStatus(
   opts: SnapshotOptions,
 ): Promise<MailSnapshotStatusResponse> {
-  const { batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   // ── 1. Read the CronJob to check enabled/schedule ──────────────────
   let cronJob: CronJobShape | null = null;
@@ -162,7 +162,7 @@ export async function getMailSnapshotStatus(
   });
 
   // Sort descending by completionTime to find the most recent.
-  // The k8s client returns completionTime as a Date object at runtime
+  // The k8s tenant returns completionTime as a Date object at runtime
   // despite the interface typing it as string — use getTime() for comparison.
   successfulJobs.sort((a, b) => {
     const ta = a.status?.completionTime ? new Date(a.status.completionTime).getTime() : 0;
@@ -237,7 +237,7 @@ export async function getMailSnapshotStatus(
 export async function triggerMailSnapshot(
   opts: SnapshotOptions,
 ): Promise<MailSnapshotTriggerResponse> {
-  const { batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   // Read the CronJob to get the job template
   let cronJob: CronJobShape | null = null;
@@ -301,7 +301,7 @@ export async function getMailSnapshotJobStatus(
     );
   }
 
-  const { core, batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   const job = await batch.readNamespacedJob({
     namespace: MAIL_NAMESPACE,

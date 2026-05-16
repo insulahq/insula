@@ -121,7 +121,7 @@ export interface RotateJmapDeps {
    * surface a partial failure to the operator instead of just logging.
    * Only called when `opts.recyclePodsBeforeVerify === true`. Test deps
    * supply a no-op or mock; production deps perform `kubectl delete pod
-   * -l app=stalwart-mail` via the K8s client.
+   * -l app=stalwart-mail` via the K8s tenant.
    */
   recyclePods(): Promise<{ deletedCount: number; errors?: readonly string[] }>;
   sleep(ms: number): Promise<void>;
@@ -384,7 +384,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
     async findAdminPrincipalId(accountId: JmapAccountId, username: string): Promise<string | null> {
       // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
       // does NOT honour `{ name }` (or any tested filter) — silently
-      // returns ids: []. We list-and-filter via x:Account/get + client-
+      // returns ids: []. We list-and-filter via x:Account/get + tenant-
       // side match until a working filter shape is documented. The
       // expected user count for the admin namespace is tiny (1–10),
       // so the full list is cheap.
@@ -435,7 +435,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       // Bug history (2026-05-03):
       //   - First HIGH-3 fix (855b443) misdiagnosed the SDK default and
       //     switched the body to `{ data: {...} }` merge-object — that
-      //     would have failed in production because client-node 1.4 forces
+      //     would have failed in production because tenant-node 1.4 forces
       //     application/json-patch+json on the wire.
       //   - Second pass (this version) restores RFC 6902 op arrays — the
       //     body shape that matches the SDK's wire content-type — and

@@ -1,11 +1,11 @@
 /**
  * HTTP routes for zrok provider CRUD.
  *
- *   GET    /api/v1/clients/:cid/zrok-providers
- *   POST   /api/v1/clients/:cid/zrok-providers
- *   PATCH  /api/v1/clients/:cid/zrok-providers/:pid
- *   DELETE /api/v1/clients/:cid/zrok-providers/:pid
- *   POST   /api/v1/clients/:cid/zrok-providers/:pid/test
+ *   GET    /api/v1/tenants/:cid/zrok-providers
+ *   POST   /api/v1/tenants/:cid/zrok-providers
+ *   PATCH  /api/v1/tenants/:cid/zrok-providers/:pid
+ *   DELETE /api/v1/tenants/:cid/zrok-providers/:pid
+ *   POST   /api/v1/tenants/:cid/zrok-providers/:pid/test
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -33,15 +33,15 @@ export async function zrokProvidersRoutes(app: FastifyInstance): Promise<void> {
     ?? '0'.repeat(64);
 
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'client_admin'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
 
-  app.get('/clients/:cid/zrok-providers', async (request) => {
+  app.get('/tenants/:cid/zrok-providers', async (request) => {
     const { cid } = request.params as { cid: string };
     const rows = await listProviders(app.db, cid);
     return success(rows);
   });
 
-  app.post('/clients/:cid/zrok-providers', async (request) => {
+  app.post('/tenants/:cid/zrok-providers', async (request) => {
     const { cid } = request.params as { cid: string };
     const parsed = zrokProviderInputSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -51,7 +51,7 @@ export async function zrokProvidersRoutes(app: FastifyInstance): Promise<void> {
     return success(created);
   });
 
-  app.patch('/clients/:cid/zrok-providers/:pid', async (request) => {
+  app.patch('/tenants/:cid/zrok-providers/:pid', async (request) => {
     const { cid, pid } = request.params as { cid: string; pid: string };
     const parsed = zrokProviderInputSchema.partial().safeParse(request.body);
     if (!parsed.success) {
@@ -61,13 +61,13 @@ export async function zrokProvidersRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
-  app.delete('/clients/:cid/zrok-providers/:pid', async (request) => {
+  app.delete('/tenants/:cid/zrok-providers/:pid', async (request) => {
     const { cid, pid } = request.params as { cid: string; pid: string };
     await deleteProvider(app.db, cid, pid);
     return success({ deleted: true });
   });
 
-  app.post('/clients/:cid/zrok-providers/:pid/test', async (request) => {
+  app.post('/tenants/:cid/zrok-providers/:pid/test', async (request) => {
     const body = request.body as { controllerUrl?: string } | null;
     const url = body?.controllerUrl;
     if (!url) {

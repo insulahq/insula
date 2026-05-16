@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  getClientNotificationRecipients,
+  getTenantNotificationRecipients,
   getAdminRecipients,
   resolveRecipients,
 } from './recipients.js';
@@ -12,22 +12,22 @@ function mockDb(rows: Array<{ id: string }>) {
   return { select: selectFn } as never;
 }
 
-describe('getClientNotificationRecipients', () => {
-  it('returns user IDs for all client_admin users of a client', async () => {
+describe('getTenantNotificationRecipients', () => {
+  it('returns user IDs for all tenant_admin users of a tenant', async () => {
     const db = mockDb([{ id: 'u1' }, { id: 'u2' }]);
-    const result = await getClientNotificationRecipients(db, 'c1');
+    const result = await getTenantNotificationRecipients(db, 'c1');
     expect(result).toEqual(['u1', 'u2']);
   });
 
   it('returns empty array when no admins exist', async () => {
     const db = mockDb([]);
-    const result = await getClientNotificationRecipients(db, 'c1');
+    const result = await getTenantNotificationRecipients(db, 'c1');
     expect(result).toEqual([]);
   });
 
   it('deduplicates user ids', async () => {
     const db = mockDb([{ id: 'u1' }, { id: 'u1' }, { id: 'u2' }]);
-    const result = await getClientNotificationRecipients(db, 'c1');
+    const result = await getTenantNotificationRecipients(db, 'c1');
     expect(result).toEqual(['u1', 'u2']);
   });
 });
@@ -68,9 +68,9 @@ describe('resolveRecipients', () => {
     expect(result).toEqual(['b1']);
   });
 
-  it('client scope dispatches to getClientNotificationRecipients', async () => {
+  it('tenant scope dispatches to getTenantNotificationRecipients', async () => {
     const db = mockDb([{ id: 'c1-admin' }]);
-    const result = await resolveRecipients(db, { kind: 'client', clientId: 'c1' });
+    const result = await resolveRecipients(db, { kind: 'tenant', tenantId: 'c1' });
     expect(result).toEqual(['c1-admin']);
   });
 

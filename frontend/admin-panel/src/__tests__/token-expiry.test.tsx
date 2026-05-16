@@ -40,7 +40,7 @@ describe('apiFetch 401 handling', () => {
     });
 
     try {
-      await apiFetch('/api/v1/admin/clients');
+      await apiFetch('/api/v1/admin/tenants');
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError);
       expect((err as ApiError).code).toBe('INVALID_TOKEN');
@@ -74,7 +74,7 @@ describe('apiFetch 401 handling', () => {
       json: () => Promise.resolve({ error: { code: 'FORBIDDEN', message: 'Not allowed' } }),
     });
 
-    await expect(apiFetch('/api/v1/admin/clients')).rejects.toMatchObject({
+    await expect(apiFetch('/api/v1/admin/tenants')).rejects.toMatchObject({
       status: 403,
       code: 'FORBIDDEN',
     });

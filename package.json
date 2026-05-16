@@ -5,7 +5,7 @@
     "packages/api-contracts",
     "backend",
     "frontend/admin-panel",
-    "frontend/client-panel"
+    "frontend/tenant-panel"
   ],
   "scripts": {
     "test:e2e": "playwright test",

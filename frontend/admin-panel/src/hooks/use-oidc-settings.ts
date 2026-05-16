@@ -7,8 +7,8 @@ export interface OidcProvider {
   readonly id: string;
   readonly displayName: string;
   readonly issuerUrl: string;
-  readonly clientId: string;
-  readonly panelScope: 'admin' | 'client';
+  readonly tenantId: string;
+  readonly panelScope: 'admin' | 'tenant';
   readonly enabled: boolean;
   readonly backchannelLogoutEnabled: boolean;
   readonly displayOrder: number;
@@ -22,10 +22,10 @@ export interface OidcProvider {
 
 export interface OidcGlobalSettings {
   readonly disableLocalAuthAdmin: boolean;
-  readonly disableLocalAuthClient: boolean;
+  readonly disableLocalAuthTenant: boolean;
   readonly hasBreakGlassSecret: boolean;
   readonly proxyProtectAdmin: boolean;
-  readonly proxyProtectClient: boolean;
+  readonly proxyProtectTenant: boolean;
   readonly breakGlassPath: string | null;
 }
 
@@ -51,9 +51,9 @@ export function useOidcProviders() {
 interface CreateProviderInput {
   readonly display_name: string;
   readonly issuer_url: string;
-  readonly client_id: string;
-  readonly client_secret: string;
-  readonly panel_scope: 'admin' | 'client';
+  readonly tenant_id: string;
+  readonly tenant_secret: string;
+  readonly panel_scope: 'admin' | 'tenant';
   readonly enabled?: boolean;
   readonly backchannel_logout_enabled?: boolean;
   readonly auto_provision?: boolean;
@@ -110,10 +110,10 @@ export function useOidcGlobalSettings() {
 
 interface SaveGlobalSettingsInput {
   readonly disable_local_auth_admin?: boolean;
-  readonly disable_local_auth_client?: boolean;
+  readonly disable_local_auth_tenant?: boolean;
   readonly break_glass_secret?: string;
   readonly proxy_protect_admin?: boolean;
-  readonly proxy_protect_client?: boolean;
+  readonly proxy_protect_tenant?: boolean;
 }
 
 export function useSaveOidcGlobalSettings() {

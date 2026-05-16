@@ -3,24 +3,24 @@ import { apiFetch } from '@/lib/api-client';
 
 interface MigrateResult {
   readonly data: {
-    readonly clientId: string;
+    readonly tenantId: string;
     readonly previousWorker: string | null;
     readonly currentWorker: string;
     readonly deploymentsRestarted: number;
   };
 }
 
-export function useMigrateClientToWorker(clientId: string) {
+export function useMigrateTenantToWorker(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (workerNodeName: string) =>
-      apiFetch<MigrateResult>(`/api/v1/admin/clients/${clientId}/migrate-to-worker`, {
+    mutationFn: (nodeName: string) =>
+      apiFetch<MigrateResult>(`/api/v1/admin/tenants/${tenantId}/migrate-to-worker`, {
         method: 'POST',
-        body: JSON.stringify({ worker_node_name: workerNodeName }),
+        body: JSON.stringify({ node_name: nodeName }),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['clients', clientId] });
-      qc.invalidateQueries({ queryKey: ['clients'] });
+      qc.invalidateQueries({ queryKey: ['tenants', tenantId] });
+      qc.invalidateQueries({ queryKey: ['tenants'] });
       qc.invalidateQueries({ queryKey: ['cluster-nodes'] });
     },
   });

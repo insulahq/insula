@@ -68,9 +68,9 @@ describe('buildSecretsDump', () => {
         })),
       },
     } as unknown as K8sClients;
-    const dump = await buildSecretsDump(fakeK8s, 'client-abc');
+    const dump = await buildSecretsDump(fakeK8s, 'tenant-abc');
     expect(dump.schemaVersion).toBe(SECRETS_DUMP_SCHEMA_VERSION);
-    expect(dump.namespace).toBe('client-abc');
+    expect(dump.namespace).toBe('tenant-abc');
     expect(dump.secrets).toHaveLength(1);
     expect(dump.secrets[0]!.name).toBe('wp-tls');
   });
@@ -100,7 +100,7 @@ describe('captureSecretsComponent', () => {
 
     const r = await captureSecretsComponent({
       k8s: fakeK8s,
-      namespace: 'client-abc',
+      namespace: 'tenant-abc',
       store: fakeStore,
       handle: { bundleId: 'bk', _backend: {} },
       keyHex: KEY_HEX,

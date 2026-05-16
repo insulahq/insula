@@ -22,7 +22,7 @@ export const backupHealthSummarySchema = z.object({
   namespace: z.string(),
   category: backupCategorySchema,
   severity: backupSeveritySchema,
-  clientId: z.string().nullable(),
+  tenantId: z.string().nullable(),
   state: backupHealthStateSchema,
   lastSuccessAt: z.string().nullable(),
   lastFailedAt: z.string().nullable(),

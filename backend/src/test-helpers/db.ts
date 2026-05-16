@@ -12,10 +12,10 @@ let pool: pg.Pool | null = null;
 
 export async function isDbAvailable(): Promise<boolean> {
   try {
-    const client = new pg.Client({ connectionString: TEST_DB_URL });
-    await client.connect();
-    await client.query('SELECT 1');
-    await client.end();
+    const tenant = new pg.Client({ connectionString: TEST_DB_URL });
+    await tenant.connect();
+    await tenant.query('SELECT 1');
+    await tenant.end();
     return true;
   } catch {
     return false;
@@ -110,7 +110,7 @@ export async function cleanTables() {
     'email_domains',
     'dns_records',
     'ingress_routes',
-    'domains', 'deployments', 'clients',
+    'domains', 'deployments', 'tenants',
     'hosting_plans', 'regions', 'rbac_roles', 'catalog_entries', 'catalog_repositories', 'users',
   ];
   for (const table of tables) {

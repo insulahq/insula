@@ -17,9 +17,9 @@
  *     in `os.tmpdir()` and unlinked in a `finally`.
  *
  * Per-tenant isolation:
- *   - Repo URI is `<store>/restic-{component}/<clientId>/`.
+ *   - Repo URI is `<store>/restic-{component}/<tenantId>/`.
  *   - Repo password is HKDF-SHA256(PLATFORM_ENCRYPTION_KEY, info=
- *     `restic-tenant-${clientId}`). Cryptographic isolation: even on
+ *     `restic-tenant-${tenantId}`). Cryptographic isolation: even on
  *     misconfigured repo paths, restic refuses to open with the wrong
  *     password.
  *   - The HKDF lock vector is asserted in restic-driver.test.ts so a
@@ -90,7 +90,7 @@ export type BackupTarget =
 export type ResticComponent = 'files' | 'mailboxes';
 const ALLOWED_COMPONENTS: ReadonlySet<string> = new Set<ResticComponent>(['files', 'mailboxes']);
 
-/** Permissive but bounded shape for clientIds. The platform schema uses
+/** Permissive but bounded shape for tenantIds. The platform schema uses
  *  UUIDs / kebab-style IDs; this regex rejects path traversal and shell
  *  metacharacters defensively. */
 const CLIENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -103,7 +103,7 @@ export interface ResticBackupResult {
 
 export interface RunResticBackupArgs {
   readonly target: BackupTarget;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly component: ResticComponent;
   readonly passwordHex: string;
   readonly stdinFilename: string;
@@ -137,13 +137,13 @@ const DEFAULT_BACKUP_TIMEOUT_MS = 60 * 60 * 1000;
  *
  * Lock vector (Phase 0 spike):
  *   key    = 0123…cdef (32 bytes hex)
- *   client = "fixture-client-001"
+ *   tenant = "fixture-tenant-001"
  *   ⇒ password = 9cc1efeff2216dd12759fb93b3b3948f830036b87f5d6a29f8470108dc4d39a8
  *
  * This is asserted in restic-driver.test.ts.
  */
-export function deriveResticPassword(secretHex: string, clientId: string): string {
-  return hkdfHex(secretHex, `restic-tenant-${assertClientId(clientId)}`);
+export function deriveResticPassword(secretHex: string, tenantId: string): string {
+  return hkdfHex(secretHex, `restic-tenant-${assertTenantId(tenantId)}`);
 }
 
 /**
@@ -152,7 +152,7 @@ export function deriveResticPassword(secretHex: string, clientId: string): strin
  * PLATFORM_ENCRYPTION_KEY). Phase 1.5 multi-region/DR.
  *
  * Region B reproduces this deterministically given DR_RECOVERY_KEY +
- * the source-region clientId; that lets it open Region A's restic
+ * the source-region tenantId; that lets it open Region A's restic
  * repo via the secondary password added by `restic key add`. The
  * primary HKDF-over-OIDC password stays Region-A-only.
  *
@@ -160,8 +160,8 @@ export function deriveResticPassword(secretHex: string, clientId: string): strin
  * derivation: even if an operator mistakenly uses the same key for
  * both, the resulting passwords differ.
  */
-export function deriveDrRecoveryPassword(secretHex: string, clientId: string): string {
-  return hkdfHex(secretHex, `dr-recovery:${assertClientId(clientId)}`);
+export function deriveDrRecoveryPassword(secretHex: string, tenantId: string): string {
+  return hkdfHex(secretHex, `dr-recovery:${assertTenantId(tenantId)}`);
 }
 
 function hkdfHex(secretHex: string, info: string): string {
@@ -174,15 +174,15 @@ function hkdfHex(secretHex: string, info: string): string {
   return Buffer.from(out).toString('hex');
 }
 
-function assertClientId(clientId: string): string {
+function assertTenantId(tenantId: string): string {
   // Reviewer #1 HIGH: enforce the same CLIENT_ID_RE that the URI builder
   // uses, so derivation, repo path, and runtime guard all agree on the
   // valid id space. Otherwise a Phase 3 executor that parses tenant-id
   // from a snapshot tag could pass derivation but fail later — confusing.
-  if (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId)) {
-    throw new Error(`clientId '${String(clientId).slice(0, 64)}' fails CLIENT_ID_RE`);
+  if (typeof tenantId !== 'string' || !CLIENT_ID_RE.test(tenantId)) {
+    throw new Error(`tenantId '${String(tenantId).slice(0, 64)}' fails CLIENT_ID_RE`);
   }
-  return clientId;
+  return tenantId;
 }
 
 // ─── Region id derivation (Phase 1.5) ───────────────────────────────────────
@@ -242,7 +242,7 @@ const ABS_PATH_RE = /^\/(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]*$/;
 
 export interface SnapshotTagInputs {
   readonly bundleId: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly tenantSlug: string;
   readonly component: ResticComponent;
   readonly regionId: string;
@@ -254,7 +254,7 @@ export function buildSnapshotTags(inputs: SnapshotTagInputs): string[] {
     ['bundle-version', String(BUNDLE_SCHEMA_VERSION)],
     ['platform-version', inputs.platformVersion],
     ['region', inputs.regionId],
-    ['tenant-id', inputs.clientId],
+    ['tenant-id', inputs.tenantId],
     ['tenant-slug', inputs.tenantSlug],
     ['bundle-id', inputs.bundleId],
     ['component', inputs.component],
@@ -277,33 +277,33 @@ export function buildSnapshotTags(inputs: SnapshotTagInputs): string[] {
 
 export function buildResticRepoUri(
   target: BackupTarget,
-  clientId: string,
+  tenantId: string,
   component: ResticComponent,
 ): string {
   if (!ALLOWED_COMPONENTS.has(component)) {
     throw new Error(`buildResticRepoUri: invalid component '${component}'`);
   }
-  if (!CLIENT_ID_RE.test(clientId)) {
-    throw new Error(`buildResticRepoUri: invalid clientId '${clientId}'`);
+  if (!CLIENT_ID_RE.test(tenantId)) {
+    throw new Error(`buildResticRepoUri: invalid tenantId '${tenantId}'`);
   }
   switch (target.kind) {
     case 's3': {
       const prefix = (target.s3Prefix ?? '').replace(/^\/+|\/+$/g, '');
       const segments = [target.s3Endpoint.replace(/\/$/, ''), target.s3Bucket];
       if (prefix) segments.push(prefix);
-      segments.push(`restic-${component}`, clientId);
+      segments.push(`restic-${component}`, tenantId);
       return `s3:${segments.join('/')}`;
     }
     case 'ssh': {
       const path = target.sshPath.replace(/^\/+|\/+$/g, '');
       const tail = path
-        ? `${path}/restic-${component}/${clientId}`
-        : `restic-${component}/${clientId}`;
+        ? `${path}/restic-${component}/${tenantId}`
+        : `restic-${component}/${tenantId}`;
       return `sftp:${target.sshUser}@${target.sshHost}:${tail}`;
     }
     case 'hostpath': {
       const root = target.hostPath.replace(/\/$/, '');
-      return `${root}/restic-${component}/${clientId}`;
+      return `${root}/restic-${component}/${tenantId}`;
     }
   }
 }
@@ -522,14 +522,14 @@ function performanceOpts(target: BackupTarget): string[] {
  * semaphore (defaults to a process-singleton).
  */
 export async function runResticBackup(args: RunResticBackupArgs): Promise<ResticBackupResult> {
-  if (!CLIENT_ID_RE.test(args.clientId)) {
-    throw new Error(`runResticBackup: invalid clientId '${args.clientId}'`);
+  if (!CLIENT_ID_RE.test(args.tenantId)) {
+    throw new Error(`runResticBackup: invalid tenantId '${args.tenantId}'`);
   }
   const sem = args.semaphore ?? DEFAULT_SEM;
   const release = await sem.acquire();
   let sftpCleanup: (() => Promise<void>) | null = null;
   try {
-    const repoUri = buildResticRepoUri(args.target, args.clientId, args.component);
+    const repoUri = buildResticRepoUri(args.target, args.tenantId, args.component);
     const env = {
       ...buildResticEnv(args.target),
       RESTIC_PASSWORD: args.passwordHex,
@@ -729,7 +729,7 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
           new Promise((res) => setTimeout(res, 5_000)),
         ]);
         throw new Error(
-          `restic backup timed out after ${Math.round(timeoutMs / 1000)}s (clientId=${args.clientId} component=${args.component})`,
+          `restic backup timed out after ${Math.round(timeoutMs / 1000)}s (tenantId=${args.tenantId} component=${args.component})`,
         );
       }
       if (args.abortSignal?.aborted) {
@@ -912,7 +912,7 @@ export async function listResticSnapshots(args: ListResticSnapshotsArgs): Promis
   let sftpCleanup: (() => Promise<void>) | null = null;
   try {
     // For listing we don't need a per-component repo URI — the restic
-    // repo IS the per-(client,component) directory. Caller passes a
+    // repo IS the per-(tenant,component) directory. Caller passes a
     // BackupTarget already pointed at a specific repo prefix; we
     // mirror it without appending. Use a pseudo-component to satisfy
     // the type constraint on the URI builder; for listing we skip the

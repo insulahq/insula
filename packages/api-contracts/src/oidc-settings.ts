@@ -15,10 +15,10 @@ const BREAK_GLASS_PATH_RE = /^[a-z0-9-]+$/;
 
 export const saveOidcGlobalSettingsSchema = z.object({
   disable_local_auth_admin: z.boolean().optional(),
-  disable_local_auth_client: z.boolean().optional(),
+  disable_local_auth_tenant: z.boolean().optional(),
   break_glass_secret: z.string().min(8).optional(),
   protect_admin_via_proxy: z.boolean().optional(),
-  protect_client_via_proxy: z.boolean().optional(),
+  protect_tenant_via_proxy: z.boolean().optional(),
   break_glass_path: z.union([
     z.string().min(1).max(100).regex(BREAK_GLASS_PATH_RE, {
       message: 'break_glass_path must contain only lowercase alphanumerics and hyphens',
@@ -31,10 +31,10 @@ export const saveOidcGlobalSettingsSchema = z.object({
 
 export const oidcGlobalSettingsResponseSchema = z.object({
   disableLocalAuthAdmin: z.boolean(),
-  disableLocalAuthClient: z.boolean(),
+  disableLocalAuthTenant: z.boolean(),
   hasBreakGlassSecret: z.boolean(),
   protectAdminViaProxy: z.boolean(),
-  protectClientViaProxy: z.boolean(),
+  protectTenantViaProxy: z.boolean(),
   breakGlassPath: z.string().nullable(),
 });
 

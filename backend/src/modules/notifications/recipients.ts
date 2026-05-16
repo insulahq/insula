@@ -33,13 +33,13 @@ const DEFAULT_ADMIN_ROLES: ReadonlyArray<AdminRole> = ['super_admin', 'admin'];
  *
  *   admin        — every panel='admin' user with role super_admin or admin
  *   admin_role   — every panel='admin' user whose role is in the given list
- *   client       — every client_admin user of the given client
+ *   tenant       — every tenant_admin user of the given tenant
  *   user         — exactly one user
  */
 export type RecipientScope =
   | { readonly kind: 'admin' }
   | { readonly kind: 'admin_role'; readonly roles: ReadonlyArray<AdminRole> }
-  | { readonly kind: 'client'; readonly clientId: string }
+  | { readonly kind: 'tenant'; readonly tenantId: string }
   | { readonly kind: 'user'; readonly userId: string };
 
 /**
@@ -56,31 +56,31 @@ export async function resolveRecipients(
       return getAdminRecipients(db, DEFAULT_ADMIN_ROLES);
     case 'admin_role':
       return getAdminRecipients(db, scope.roles);
-    case 'client':
-      return getClientNotificationRecipients(db, scope.clientId);
+    case 'tenant':
+      return getTenantNotificationRecipients(db, scope.tenantId);
     case 'user':
       return [scope.userId];
   }
 }
 
 /**
- * Return the distinct user IDs for all client_admin users of a given
- * client. Used by notifyUser fan-out for any "the client needs to
+ * Return the distinct user IDs for all tenant_admin users of a given
+ * tenant. Used by notifyUser fan-out for any "the tenant needs to
  * know" event (mailbox limit reached, DKIM rotated, IMAPSync done,
  * email bootstrapped, etc.).
  *
- * Returns an empty array rather than throwing when the client has no
+ * Returns an empty array rather than throwing when the tenant has no
  * admins — callers should decide whether to fall back to platform
  * admins or silently skip.
  */
-export async function getClientNotificationRecipients(
+export async function getTenantNotificationRecipients(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<readonly string[]> {
   const rows = await db
     .select({ id: users.id })
     .from(users)
-    .where(and(eq(users.clientId, clientId), eq(users.roleName, 'client_admin')));
+    .where(and(eq(users.tenantId, tenantId), eq(users.roleName, 'tenant_admin')));
 
   const seen = new Set<string>();
   for (const row of rows) {

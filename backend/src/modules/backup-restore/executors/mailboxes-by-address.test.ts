@@ -5,7 +5,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
   const baseInput = {
     jobName: 'rs-mbox-item-1',
     mailNamespace: 'mail',
-    clientId: 'client-acme',
+    tenantId: 'tenant-acme',
     cartId: 'rstr-1',
     itemId: 'item-1',
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',

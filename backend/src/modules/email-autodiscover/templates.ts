@@ -36,7 +36,7 @@ export function renderMozillaAutoconfigXml(input: MozillaAutoconfigInput): strin
   const name = escapeXml(input.displayName);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<clientConfig version="1.1">
+<tenantConfig version="1.1">
   <emailProvider id="${domain}">
     <identity/>
     <domain>${domain}</domain>
@@ -82,7 +82,7 @@ export function renderMozillaAutoconfigXml(input: MozillaAutoconfigInput): strin
       <descr lang="en">Generic configuration page</descr>
     </documentation>
   </emailProvider>
-</clientConfig>
+</tenantConfig>
 `;
 }
 

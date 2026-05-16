@@ -3,8 +3,8 @@
  *
  * Runs every BACKUP_HEALTH_TICK_MS in the in-cluster process. Each
  * tick: list health-watched Jobs, find new failures (dedup via
- * notifications.resourceId=uid), route to admin or client recipients
- * per the Job's `client-id` label, emit one notification per Job UID.
+ * notifications.resourceId=uid), route to admin or tenant recipients
+ * per the Job's `tenant-id` label, emit one notification per Job UID.
  *
  * Idempotent: the next tick re-derives the already-notified set from
  * the notifications table, so a pod restart mid-tick is safe.
@@ -105,13 +105,13 @@ async function notifyForFailure(
   failure: BackupJobMeta,
   log: { warn: (msg: string, err?: unknown) => void },
 ): Promise<void> {
-  const recipients = failure.clientId
-    ? await resolveRecipients(db, { kind: 'client', clientId: failure.clientId })
+  const recipients = failure.tenantId
+    ? await resolveRecipients(db, { kind: 'tenant', tenantId: failure.tenantId })
     : await resolveRecipients(db, { kind: 'admin' });
 
   if (recipients.length === 0) {
     log.warn(
-      `no recipients for failed backup job ${failure.namespace}/${failure.name} (clientId=${failure.clientId ?? 'admin'})`,
+      `no recipients for failed backup job ${failure.namespace}/${failure.name} (tenantId=${failure.tenantId ?? 'admin'})`,
     );
     return;
   }

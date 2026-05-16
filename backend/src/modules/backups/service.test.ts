@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { createBackup, listBackups, deleteBackup } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
-vi.mock('../clients/service.js', () => ({
-  getClientById: vi.fn().mockResolvedValue({ id: 'c1', companyName: 'Acme' }),
+vi.mock('../tenants/service.js', () => ({
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', name: 'Acme' }),
 }));
 
 function createMockDb(selectResult: unknown[] = []) {
@@ -28,7 +28,7 @@ function createMockDb(selectResult: unknown[] = []) {
 
 describe('createBackup', () => {
   it('should insert and return created backup', async () => {
-    const created = { id: 'b1', clientId: 'c1', backupType: 'manual', status: 'pending' };
+    const created = { id: 'b1', tenantId: 'c1', backupType: 'manual', status: 'pending' };
 
     const insertValues = vi.fn().mockResolvedValue(undefined);
     const insertFn = vi.fn().mockReturnValue({ values: insertValues });
@@ -69,7 +69,7 @@ describe('deleteBackup', () => {
   });
 
   it('should delete when backup exists', async () => {
-    const backup = { id: 'b1', clientId: 'c1' };
+    const backup = { id: 'b1', tenantId: 'c1' };
     const whereFn = vi.fn().mockResolvedValue([backup]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });

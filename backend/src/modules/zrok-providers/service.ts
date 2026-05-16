@@ -1,5 +1,5 @@
 /**
- * Zrok provider service — per-client zrok controller registry.
+ * Zrok provider service — per-tenant zrok controller registry.
  *
  * Used by the deployment-level Network Access feature (mode C: zrok
  * private share). Stores controller URL (BYO — defaults to public
@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, and, sql } from 'drizzle-orm';
 import {
-  clientZrokAccounts,
+  tenantZrokAccounts,
   deploymentNetworkAccessConfigs,
 } from '../../db/schema.js';
 import { encrypt } from '../oidc/crypto.js';
@@ -23,24 +23,24 @@ import type {
 
 export async function listProviders(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<ZrokProviderResponse>> {
   const rows = await db
     .select({
-      id: clientZrokAccounts.id,
-      name: clientZrokAccounts.name,
-      controllerUrl: clientZrokAccounts.controllerUrl,
-      accountEmail: clientZrokAccounts.accountEmail,
-      accountTokenEncrypted: clientZrokAccounts.accountTokenEncrypted,
-      createdAt: clientZrokAccounts.createdAt,
-      updatedAt: clientZrokAccounts.updatedAt,
+      id: tenantZrokAccounts.id,
+      name: tenantZrokAccounts.name,
+      controllerUrl: tenantZrokAccounts.controllerUrl,
+      accountEmail: tenantZrokAccounts.accountEmail,
+      accountTokenEncrypted: tenantZrokAccounts.accountTokenEncrypted,
+      createdAt: tenantZrokAccounts.createdAt,
+      updatedAt: tenantZrokAccounts.updatedAt,
       consumerCount: sql<number>`(
         SELECT COUNT(*)::int FROM ${deploymentNetworkAccessConfigs}
-        WHERE ${deploymentNetworkAccessConfigs.zrokProviderId} = ${clientZrokAccounts.id}
+        WHERE ${deploymentNetworkAccessConfigs.zrokProviderId} = ${tenantZrokAccounts.id}
       )`,
     })
-    .from(clientZrokAccounts)
-    .where(eq(clientZrokAccounts.clientId, clientId));
+    .from(tenantZrokAccounts)
+    .where(eq(tenantZrokAccounts.tenantId, tenantId));
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -56,7 +56,7 @@ export async function listProviders(
 export async function createProvider(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   input: ZrokProviderInput,
 ): Promise<ZrokProviderResponse> {
   if (!input.accountToken) {
@@ -67,15 +67,15 @@ export async function createProvider(
     );
   }
   const id = randomUUID();
-  await db.insert(clientZrokAccounts).values({
+  await db.insert(tenantZrokAccounts).values({
     id,
-    clientId,
+    tenantId,
     name: input.name,
     controllerUrl: input.controllerUrl,
     accountEmail: input.accountEmail,
     accountTokenEncrypted: encrypt(input.accountToken, encryptionKey),
   });
-  const all = await listProviders(db, clientId);
+  const all = await listProviders(db, tenantId);
   const created = all.find((p) => p.id === id);
   if (!created) {
     throw new ApiError('INTERNAL_ERROR', 'provider disappeared after insert', 500);
@@ -86,19 +86,19 @@ export async function createProvider(
 export async function updateProvider(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   input: Partial<ZrokProviderInput>,
 ): Promise<ZrokProviderResponse> {
   const [existing] = await db
     .select()
-    .from(clientZrokAccounts)
-    .where(and(eq(clientZrokAccounts.id, providerId), eq(clientZrokAccounts.clientId, clientId)));
+    .from(tenantZrokAccounts)
+    .where(and(eq(tenantZrokAccounts.id, providerId), eq(tenantZrokAccounts.tenantId, tenantId)));
   if (!existing) {
     throw new ApiError('NOT_FOUND', 'Zrok provider not found', 404);
   }
   await db
-    .update(clientZrokAccounts)
+    .update(tenantZrokAccounts)
     .set({
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.controllerUrl !== undefined ? { controllerUrl: input.controllerUrl } : {}),
@@ -108,8 +108,8 @@ export async function updateProvider(
         : {}),
       updatedAt: new Date(),
     })
-    .where(eq(clientZrokAccounts.id, providerId));
-  const all = await listProviders(db, clientId);
+    .where(eq(tenantZrokAccounts.id, providerId));
+  const all = await listProviders(db, tenantId);
   const updated = all.find((p) => p.id === providerId);
   if (!updated) {
     throw new ApiError('INTERNAL_ERROR', 'provider disappeared after update', 500);
@@ -119,7 +119,7 @@ export async function updateProvider(
 
 export async function deleteProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
 ): Promise<void> {
   const consumers = await db
@@ -134,6 +134,6 @@ export async function deleteProvider(
     );
   }
   await db
-    .delete(clientZrokAccounts)
-    .where(and(eq(clientZrokAccounts.id, providerId), eq(clientZrokAccounts.clientId, clientId)));
+    .delete(tenantZrokAccounts)
+    .where(and(eq(tenantZrokAccounts.id, providerId), eq(tenantZrokAccounts.tenantId, tenantId)));
 }

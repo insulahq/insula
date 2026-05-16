@@ -1,28 +1,28 @@
 /**
  * HTTP routes for per-client mTLS provider CRUD + cert lifecycle.
  *
- *   GET    /api/v1/clients/:clientId/mtls-providers
- *   POST   /api/v1/clients/:clientId/mtls-providers                       (upload OR generate)
- *   PATCH  /api/v1/clients/:clientId/mtls-providers/:pid
- *   DELETE /api/v1/clients/:clientId/mtls-providers/:pid
- *   POST   /api/v1/clients/:clientId/mtls-providers/:pid/issue-cert
- *   GET    /api/v1/clients/:clientId/mtls-providers/:pid/certificates
- *   GET    /api/v1/clients/:clientId/mtls-providers/:pid/certificates/:certId
- *   GET    /api/v1/clients/:clientId/mtls-providers/:pid/certificates/:certId/pem
- *   POST   /api/v1/clients/:clientId/mtls-providers/:pid/certificates/:certId/revoke
- *   GET    /api/v1/clients/:clientId/mtls-providers/:pid/crl              → metadata JSON
- *   GET    /api/v1/clients/:clientId/mtls-providers/:pid/crl.pem          → CRL body (text)
+ *   GET    /api/v1/tenants/:tenantId/mtls-providers
+ *   POST   /api/v1/tenants/:tenantId/mtls-providers                       (upload OR generate)
+ *   PATCH  /api/v1/tenants/:tenantId/mtls-providers/:pid
+ *   DELETE /api/v1/tenants/:tenantId/mtls-providers/:pid
+ *   POST   /api/v1/tenants/:tenantId/mtls-providers/:pid/issue-cert
+ *   GET    /api/v1/tenants/:tenantId/mtls-providers/:pid/certificates
+ *   GET    /api/v1/tenants/:tenantId/mtls-providers/:pid/certificates/:certId
+ *   GET    /api/v1/tenants/:tenantId/mtls-providers/:pid/certificates/:certId/pem
+ *   POST   /api/v1/tenants/:tenantId/mtls-providers/:pid/certificates/:certId/revoke
+ *   GET    /api/v1/tenants/:tenantId/mtls-providers/:pid/crl              → metadata JSON
+ *   GET    /api/v1/tenants/:tenantId/mtls-providers/:pid/crl.pem          → CRL body (text)
  *
  * Auth + tenancy: every request is gated by `authenticate` + `requireRole`
- * (admin / super_admin / client_admin) + `requireClientAccess`. The last
- * one reads `:clientId` from the URL and enforces it matches the JWT's
- * `clientId` claim — without it, a client_admin for tenant A could call
- * /clients/<tenant-B>/... and read tenant B's CA / certs (IDOR).
+ * (admin / super_admin / tenant_admin) + `requireTenantAccess`. The last
+ * one reads `:tenantId` from the URL and enforces it matches the JWT's
+ * `tenantId` claim — without it, a tenant_admin for tenant A could call
+ * /tenants/<tenant-B>/... and read tenant B's CA / certs (IDOR).
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import {
@@ -51,7 +51,7 @@ import { ingressMtlsConfigs } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { domains as domainsTable } from '../../db/schema.js';
-import { clients } from '../../db/schema.js';
+import { tenants } from '../../db/schema.js';
 import type { ZodError } from 'zod';
 
 function zodMessage(err: ZodError): string {
@@ -82,16 +82,16 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
   }
 
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'client_admin'));
-  // requireClientAccess gates every URL with a :clientId param so a
-  // client_admin JWT for tenant A cannot pivot to tenant B. Admin /
-  // super_admin tokens (no clientId claim) bypass this check and can
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
+  // requireTenantAccess gates every URL with a :tenantId param so a
+  // tenant_admin JWT for tenant A cannot pivot to tenant B. Admin /
+  // super_admin tokens (no tenantId claim) bypass this check and can
   // operate on any tenant — that's the platform-operator escape hatch.
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantAccess());
 
   // Public base URL for the CRL distribution point. Derived from
   // configuration, NOT request headers — trusting X-Forwarded-Host
-  // would let a hostile client return an attacker-controlled URL to
+  // would let a hostile tenant return an attacker-controlled URL to
   // the next caller of GET /crl, which the UI displays as a copyable
   // link. Falls back to the request's own scheme+host only when no
   // PUBLIC_URL is configured (dev/local).
@@ -101,89 +101,89 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
     ?? process.env.PUBLIC_BASE_URL
     ?? null;
 
-  function crlPublicUrl(clientId: string, providerId: string, request: FastifyRequest): string {
+  function crlPublicUrl(tenantId: string, providerId: string, request: FastifyRequest): string {
     if (publicBaseUrl) {
-      return `${publicBaseUrl.replace(/\/$/, '')}/api/v1/clients/${clientId}/mtls-providers/${providerId}/crl.pem`;
+      return `${publicBaseUrl.replace(/\/$/, '')}/api/v1/tenants/${tenantId}/mtls-providers/${providerId}/crl.pem`;
     }
     // Dev fallback. Logged once at startup below.
     const proto = request.protocol;
     const host = request.headers.host ?? 'localhost';
-    return `${proto}://${host}/api/v1/clients/${clientId}/mtls-providers/${providerId}/crl.pem`;
+    return `${proto}://${host}/api/v1/tenants/${tenantId}/mtls-providers/${providerId}/crl.pem`;
   }
   if (!publicBaseUrl) {
     app.log.warn('PUBLIC_URL is not set — CRL distribution URLs will be derived from the request Host header. This is OK for local dev only.');
   }
 
-  app.get('/clients/:clientId/mtls-providers', async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const rows = await listProviders(app.db, clientId);
+  app.get('/tenants/:tenantId/mtls-providers', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const rows = await listProviders(app.db, tenantId);
     return success(rows);
   });
 
-  app.post('/clients/:clientId/mtls-providers', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  app.post('/tenants/:tenantId/mtls-providers', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = mtlsProviderInputSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const created = await createProvider(app.db, encryptionKey, clientId, parsed.data);
+    const created = await createProvider(app.db, encryptionKey, tenantId, parsed.data);
     return success(created);
   });
 
-  app.patch('/clients/:clientId/mtls-providers/:pid', async (request) => {
-    const { clientId, pid } = request.params as { clientId: string; pid: string };
+  app.patch('/tenants/:tenantId/mtls-providers/:pid', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const parsed = mtlsProviderUpdateSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const updated = await updateProvider(app.db, encryptionKey, clientId, pid, parsed.data);
+    const updated = await updateProvider(app.db, encryptionKey, tenantId, pid, parsed.data);
     return success(updated);
   });
 
-  app.delete('/clients/:clientId/mtls-providers/:pid', async (request) => {
-    const { clientId, pid } = request.params as { clientId: string; pid: string };
-    await deleteProvider(app.db, clientId, pid);
+  app.delete('/tenants/:tenantId/mtls-providers/:pid', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
+    await deleteProvider(app.db, tenantId, pid);
     return success({ deleted: true });
   });
 
   // Issue a fresh user cert from this provider's CA. The cert + key
   // are returned ONCE; the private key is never persisted server-side.
   // The cert itself is now persisted (as of v2) for audit + revocation.
-  app.post('/clients/:clientId/mtls-providers/:pid/issue-cert', async (request) => {
-    const { clientId, pid } = request.params as { clientId: string; pid: string };
+  app.post('/tenants/:tenantId/mtls-providers/:pid/issue-cert', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const parsed = mtlsIssueCertInputSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const issued = await issueUserCert(app.db, encryptionKey, clientId, pid, parsed.data);
+    const issued = await issueUserCert(app.db, encryptionKey, tenantId, pid, parsed.data);
     return success(issued);
   });
 
-  app.get('/clients/:clientId/mtls-providers/:pid/certificates', async (request) => {
-    const { clientId, pid } = request.params as { clientId: string; pid: string };
+  app.get('/tenants/:tenantId/mtls-providers/:pid/certificates', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const parsed = listCertificatesQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const result = await listCertificates(app.db, clientId, pid, parsed.data);
+    const result = await listCertificates(app.db, tenantId, pid, parsed.data);
     return success(result);
   });
 
-  app.get('/clients/:clientId/mtls-providers/:pid/certificates/:certId', async (request) => {
-    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
-    const row = await getCertificate(app.db, clientId, pid, certId);
+  app.get('/tenants/:tenantId/mtls-providers/:pid/certificates/:certId', async (request) => {
+    const { tenantId, pid, certId } = request.params as { tenantId: string; pid: string; certId: string };
+    const row = await getCertificate(app.db, tenantId, pid, certId);
     return success(row);
   });
 
-  app.get('/clients/:clientId/mtls-providers/:pid/certificates/:certId/pem', async (request, reply) => {
-    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
+  app.get('/tenants/:tenantId/mtls-providers/:pid/certificates/:certId/pem', async (request, reply) => {
+    const { tenantId, pid, certId } = request.params as { tenantId: string; pid: string; certId: string };
     const { certPem, serialHex, subjectCn } =
-      await getCertificatePem(app.db, encryptionKey, clientId, pid, certId);
+      await getCertificatePem(app.db, encryptionKey, tenantId, pid, certId);
     // RFC 8555 — application/x-pem-file is the canonical type. Use a
     // Content-Disposition so browsers offer a clean filename.
     // Cache-Control: private,no-store because the response body is a
     // user-scoped credential — must not be cached by intermediaries.
-    const safeCn = subjectCn.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 64) || 'client';
+    const safeCn = subjectCn.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 64) || 'tenant';
     reply
       .header('Content-Type', 'application/x-pem-file')
       .header('Cache-Control', 'private, no-store')
@@ -194,12 +194,12 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
   // Fan out annotation-sync to every route that consumes this provider
   // so the freshly-regenerated CRL lands in each route-mtls-* Secret
   // immediately. The service layer can't do this directly (no K8s
-  // client by design — avoids cyclic deps). Used by revoke / unrevoke
+  // tenant by design — avoids cyclic deps). Used by revoke / unrevoke
   // / delete-cert: all three change the CRL membership and need to be
   // pushed to NGINX in the same request. Best-effort: K8s errors are
   // logged but don't fail the API call; the periodic reconciler will
   // pick up any laggards.
-  async function fanOutCrlReconcile(clientId: string, providerId: string, action: string): Promise<void> {
+  async function fanOutCrlReconcile(tenantId: string, providerId: string, action: string): Promise<void> {
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
@@ -214,10 +214,10 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
         .from(ingressMtlsConfigs)
         .where(eq(ingressMtlsConfigs.providerId, providerId));
       if (consumers.length === 0) return;
-      const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
-      if (!client?.kubernetesNamespace) return;
+      const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId));
+      if (!tenant?.kubernetesNamespace) return;
       try {
-        await reconcileIngress(app.db, k8s, clientId, client.kubernetesNamespace);
+        await reconcileIngress(app.db, k8s, tenantId, tenant.kubernetesNamespace);
       } catch (err) {
         app.log.warn({ err, providerId, action }, `mtls-${action}: failed to push CRL via reconcile`);
       }
@@ -226,55 +226,55 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
       // ever wants to log per-route results.
       void domainsTable;
     } catch (err) {
-      // K8s client unavailable (no kubeconfig in tests / local dev).
+      // K8s tenant unavailable (no kubeconfig in tests / local dev).
       app.log.debug({ err, action }, `mtls-${action}: K8s reconcile skipped`);
     }
   }
 
-  app.post('/clients/:clientId/mtls-providers/:pid/certificates/:certId/revoke', async (request) => {
-    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
+  app.post('/tenants/:tenantId/mtls-providers/:pid/certificates/:certId/revoke', async (request) => {
+    const { tenantId, pid, certId } = request.params as { tenantId: string; pid: string; certId: string };
     const parsed = revokeCertificateInputSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
     const result = await revokeCertificate(
       app.db,
-      clientId,
+      tenantId,
       pid,
       certId,
       parsed.data.reason,
       actingUserId(request),
     );
-    await fanOutCrlReconcile(clientId, pid, 'revoke');
+    await fanOutCrlReconcile(tenantId, pid, 'revoke');
     return success(result);
   });
 
-  app.post('/clients/:clientId/mtls-providers/:pid/certificates/:certId/unrevoke', async (request) => {
-    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
-    const result = await unrevokeCertificate(app.db, clientId, pid, certId);
-    await fanOutCrlReconcile(clientId, pid, 'unrevoke');
+  app.post('/tenants/:tenantId/mtls-providers/:pid/certificates/:certId/unrevoke', async (request) => {
+    const { tenantId, pid, certId } = request.params as { tenantId: string; pid: string; certId: string };
+    const result = await unrevokeCertificate(app.db, tenantId, pid, certId);
+    await fanOutCrlReconcile(tenantId, pid, 'unrevoke');
     return success(result);
   });
 
-  app.delete('/clients/:clientId/mtls-providers/:pid/certificates/:certId', async (request, reply) => {
-    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
-    await deleteCertificate(app.db, clientId, pid, certId);
-    await fanOutCrlReconcile(clientId, pid, 'delete');
+  app.delete('/tenants/:tenantId/mtls-providers/:pid/certificates/:certId', async (request, reply) => {
+    const { tenantId, pid, certId } = request.params as { tenantId: string; pid: string; certId: string };
+    await deleteCertificate(app.db, tenantId, pid, certId);
+    await fanOutCrlReconcile(tenantId, pid, 'delete');
     reply.status(204);
     return null;
   });
 
   // CRL metadata (JSON). The /crl.pem sibling below serves the raw body.
-  app.get('/clients/:clientId/mtls-providers/:pid/crl', async (request) => {
-    const { clientId, pid } = request.params as { clientId: string; pid: string };
-    const meta = await getCrlMetadata(app.db, clientId, pid, crlPublicUrl(clientId, pid, request));
+  app.get('/tenants/:tenantId/mtls-providers/:pid/crl', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
+    const meta = await getCrlMetadata(app.db, tenantId, pid, crlPublicUrl(tenantId, pid, request));
     return success(meta);
   });
 
-  app.get('/clients/:clientId/mtls-providers/:pid/crl.pem', async (request, reply) => {
-    const { clientId, pid } = request.params as { clientId: string; pid: string };
+  app.get('/tenants/:tenantId/mtls-providers/:pid/crl.pem', async (request, reply) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const { crlPem, crlNumber, lastGeneratedAt } =
-      await getOrGenerateCrl(app.db, encryptionKey, clientId, pid);
+      await getOrGenerateCrl(app.db, encryptionKey, tenantId, pid);
     // Cache for 1 minute — long enough to absorb burst lookups, short
     // enough that a revocation propagates within the next reconcile
     // sweep (annotation-sync runs every 30s by default). ETag keys on

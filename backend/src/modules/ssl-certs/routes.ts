@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { uploadSslCertSchema } from '@k8s-hosting/api-contracts';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
@@ -9,13 +9,13 @@ export async function sslCertRoutes(app: FastifyInstance): Promise<void> {
   const encryptionKey = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
 
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantAccess());
 
-  // POST /api/v1/clients/:clientId/domains/:domainId/ssl-cert
-  app.post('/clients/:clientId/domains/:domainId/ssl-cert', {
-    onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+  // POST /api/v1/tenants/:tenantId/domains/:domainId/ssl-cert
+  app.post('/tenants/:tenantId/domains/:domainId/ssl-cert', {
+    onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
   }, async (request, reply) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
 
     const parsed = uploadSslCertSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -28,27 +28,27 @@ export async function sslCertRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const cert = await service.uploadCert(app.db, clientId, domainId, parsed.data, encryptionKey);
+    const cert = await service.uploadCert(app.db, tenantId, domainId, parsed.data, encryptionKey);
     reply.status(201).send(success(cert));
   });
 
-  // GET /api/v1/clients/:clientId/domains/:domainId/ssl-cert
-  app.get('/clients/:clientId/domains/:domainId/ssl-cert', {
-    onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin')],
+  // GET /api/v1/tenants/:tenantId/domains/:domainId/ssl-cert
+  app.get('/tenants/:tenantId/domains/:domainId/ssl-cert', {
+    onRequest: [requireRole('super_admin', 'admin', 'support', 'tenant_admin')],
   }, async (request) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
 
-    const cert = await service.getCert(app.db, clientId, domainId);
+    const cert = await service.getCert(app.db, tenantId, domainId);
     return success(cert);
   });
 
-  // DELETE /api/v1/clients/:clientId/domains/:domainId/ssl-cert
-  app.delete('/clients/:clientId/domains/:domainId/ssl-cert', {
-    onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+  // DELETE /api/v1/tenants/:tenantId/domains/:domainId/ssl-cert
+  app.delete('/tenants/:tenantId/domains/:domainId/ssl-cert', {
+    onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
   }, async (request, reply) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
 
-    await service.deleteCert(app.db, clientId, domainId);
+    await service.deleteCert(app.db, tenantId, domainId);
     reply.status(204).send();
   });
 }

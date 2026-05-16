@@ -29,7 +29,7 @@ import {
   restoreItems,
   backupJobs,
   backupConfigurations,
-  clients,
+  tenants,
   type NewRestoreJob,
   type NewRestoreItem,
   type RestoreJob,
@@ -53,7 +53,7 @@ import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
 import { execDomainsByIdItem } from './executors/domains-by-id.js';
 import { execFilesPathsItem } from './executors/files-paths.js';
 import { execMailboxesByAddressItem } from './executors/mailboxes-by-address.js';
-import { snapshotClient, rollbackToSnapshot } from '../storage-lifecycle/service.js';
+import { snapshotTenant, rollbackToSnapshot } from '../storage-lifecycle/service.js';
 import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -64,15 +64,15 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /api/v1/admin/restores/carts ───────────────────────────────
   // List recent carts so operators can see + resume failed ones
-  // without remembering cart IDs. Filterable by clientId + status,
+  // without remembering cart IDs. Filterable by tenantId + status,
   // ordered newest first.
   app.get('/admin/restores/carts', {
     schema: { tags: ['Restore'], summary: 'List recent restore carts', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const q = request.query as { clientId?: string; status?: string; limit?: string };
+    const q = request.query as { tenantId?: string; status?: string; limit?: string };
     const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 200);
     const conditions = [];
-    if (q.clientId) conditions.push(eq(restoreJobs.clientId, q.clientId));
+    if (q.tenantId) conditions.push(eq(restoreJobs.tenantId, q.tenantId));
     if (q.status) conditions.push(eq(restoreJobs.status, q.status as RestoreJob['status']));
     const where = conditions.length === 0
       ? undefined
@@ -92,20 +92,20 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
     }
     const input = parsed.data;
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, input.clientId)).limit(1);
-    if (!client) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
 
     const initiatorUserId = (request as { user?: { sub?: string } }).user?.sub ?? null;
     const id = `rstr-${randomUUID()}`;
     const row: NewRestoreJob = {
       id,
-      clientId: input.clientId,
+      tenantId: input.tenantId,
       initiatorUserId,
       status: 'draft',
       description: input.description ?? null,
     };
     await app.db.insert(restoreJobs).values(row);
-    reply.status(201).send(success({ id, clientId: input.clientId, status: 'draft' }));
+    reply.status(201).send(success({ id, tenantId: input.tenantId, status: 'draft' }));
   });
 
   // ── GET /api/v1/admin/restores/carts/:id ───────────────────────────
@@ -146,8 +146,8 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     // Verify the bundle exists.
     const [bundle] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, input.bundleId)).limit(1);
     if (!bundle) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
-    if (bundle.clientId !== job.clientId) {
-      throw new ApiError('VALIDATION_ERROR', 'Bundle belongs to a different client than the cart', 400);
+    if (bundle.tenantId !== job.tenantId) {
+      throw new ApiError('VALIDATION_ERROR', 'Bundle belongs to a different tenant than the cart', 400);
     }
 
     // Atomic next-seq insert via subquery. Postgres serialises this
@@ -233,9 +233,9 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
           refId: cartId,
           scope: 'admin',
           userId: job.initiatorUserId,
-          clientId: job.clientId,
-          label: toSafeText(`Restore cart (${job.clientId.slice(0, 8)})`),
-          target: { type: 'route', href: `/clients/${job.clientId}?tab=backups` },
+          tenantId: job.tenantId,
+          label: toSafeText(`Restore cart (${job.tenantId.slice(0, 8)})`),
+          target: { type: 'route', href: `/tenants/${job.tenantId}?tab=backups` },
           details: { cartId },
         });
       } catch (err) {
@@ -263,21 +263,21 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
           ?? createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
         const store = await resolveSnapshotStore(app.db, app.config as Record<string, unknown>);
         const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
-        const snap = await snapshotClient(
+        const snap = await snapshotTenant(
           { db: app.db, k8s, store, platformNamespace },
-          job.clientId,
+          job.tenantId,
           { kind: 'pre-restore', label: `restore-cart ${cartId}`, retentionDays: 7 },
         );
         await app.db.update(restoreJobs)
           .set({ preRestoreSnapshotId: snap.id })
           .where(eq(restoreJobs.id, cartId));
-        app.log.info({ cartId, snapshotId: snap.id, clientId: job.clientId }, 'tenant-backup-restore: pre-restore snapshot created');
+        app.log.info({ cartId, snapshotId: snap.id, tenantId: job.tenantId }, 'tenant-backup-restore: pre-restore snapshot created');
       } catch (err) {
         // Snapshot failure is fatal for the cart — proceeding without
         // a rollback target on a files-paths item would violate the
         // ADR's safety guarantee. Mark the cart failed and surface a
         // clear error.
-        app.log.error({ err, cartId, clientId: job.clientId }, 'tenant-backup-restore: pre-restore snapshot failed');
+        app.log.error({ err, cartId, tenantId: job.tenantId }, 'tenant-backup-restore: pre-restore snapshot failed');
         await app.db.update(restoreJobs)
           .set({ status: 'failed', finishedAt: new Date(), lastError: 'PRE_RESTORE_SNAPSHOT_FAILED: see server logs' })
           .where(eq(restoreJobs.id, cartId));
@@ -366,7 +366,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
         await notifyUsers(app.db, recipients, {
           type: 'error',
           title: 'Restore cart failed',
-          message: `Restore cart ${cartId} for client ${job.clientId} stopped at a failed item. ${firstFailureMsg}. Re-invoke /execute to retry from the failed item, or roll back via the cart's pre-restore snapshot.`,
+          message: `Restore cart ${cartId} for tenant ${job.tenantId} stopped at a failed item. ${firstFailureMsg}. Re-invoke /execute to retry from the failed item, or roll back via the cart's pre-restore snapshot.`,
           resourceType: 'restore-cart',
           resourceId: cartId,
         });
@@ -433,7 +433,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
       const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
       const result = await rollbackToSnapshot(
         { db: app.db, k8s, store, platformNamespace },
-        job.clientId,
+        job.tenantId,
         job.preRestoreSnapshotId,
         { triggeredByUserId },
       );
@@ -444,7 +444,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
         snapshotId: result.snapshotId,
       }));
     } catch (err) {
-      app.log.error({ err, cartId, clientId: job.clientId }, 'tenant-backup-restore: rollback dispatch failed');
+      app.log.error({ err, cartId, tenantId: job.tenantId }, 'tenant-backup-restore: rollback dispatch failed');
       if (err instanceof ApiError) throw err;
       throw new ApiError('ROLLBACK_FAILED', `Rollback dispatch failed: ${(err as Error).message}`, 500);
     }
@@ -559,7 +559,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
 function toJobSummary(j: RestoreJob): RestoreJobSummary {
   return {
     id: j.id,
-    clientId: j.clientId,
+    tenantId: j.tenantId,
     initiatorUserId: j.initiatorUserId,
     status: j.status,
     preRestoreSnapshotId: j.preRestoreSnapshotId,

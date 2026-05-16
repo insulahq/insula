@@ -14,37 +14,37 @@ vi.mock('../hooks/use-audit-logs', () => ({
 const SEED_ENTRIES = [
   {
     id: 'a1',
-    clientId: 'c1',
+    tenantId: 'c1',
     actionType: 'create',
-    resourceType: 'client',
+    resourceType: 'tenant',
     resourceId: 'c1',
     actorId: 'admin-1',
     actorType: 'user' as const,
     httpMethod: 'POST',
-    httpPath: '/api/v1/clients',
+    httpPath: '/api/v1/tenants',
     httpStatus: 201,
-    changes: { companyName: 'Acme' },
+    changes: { name: 'Acme' },
     ipAddress: '10.0.0.1',
     createdAt: '2026-04-09T10:00:00.000Z',
   },
   {
     id: 'a2',
-    clientId: 'c1',
+    tenantId: 'c1',
     actionType: 'update',
     resourceType: 'user',
     resourceId: 'u1',
     actorId: 'admin-1',
     actorType: 'user' as const,
     httpMethod: 'PATCH',
-    httpPath: '/api/v1/clients/c1/users/u1',
+    httpPath: '/api/v1/tenants/c1/users/u1',
     httpStatus: 200,
-    changes: { role_name: 'client_admin' },
+    changes: { role_name: 'tenant_admin' },
     ipAddress: '10.0.0.1',
     createdAt: '2026-04-09T11:00:00.000Z',
   },
   {
     id: 'a3',
-    clientId: null,
+    tenantId: null,
     actionType: 'delete',
     resourceType: 'admin_user',
     resourceId: 'au1',
@@ -100,7 +100,7 @@ describe('AuditLogs page', () => {
     expect(screen.getByTestId('filter-search')).toBeInTheDocument();
     expect(screen.getByTestId('filter-from')).toBeInTheDocument();
     expect(screen.getByTestId('filter-to')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-client-id')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-tenant-id')).toBeInTheDocument();
     expect(screen.getByTestId('filter-actor-id')).toBeInTheDocument();
   });
 
@@ -129,7 +129,7 @@ describe('AuditLogs page', () => {
     render(wrap(<AuditLogs />));
     await user.click(screen.getByTestId('audit-log-row-a1'));
     expect(screen.getByTestId('audit-log-details-a1')).toBeInTheDocument();
-    expect(screen.getByText(/"companyName"/)).toBeInTheDocument();
+    expect(screen.getByText(/"name"/)).toBeInTheDocument();
     expect(screen.getByText(/"Acme"/)).toBeInTheDocument();
   });
 
@@ -162,9 +162,9 @@ describe('AuditLogs page', () => {
   it('applies the search filter', async () => {
     const user = userEvent.setup();
     render(wrap(<AuditLogs />));
-    await user.type(screen.getByTestId('filter-search'), '/clients');
+    await user.type(screen.getByTestId('filter-search'), '/tenants');
     const lastCall = useAuditLogsMock.mock.calls.at(-1)?.[0];
-    expect(lastCall).toMatchObject({ search: '/clients' });
+    expect(lastCall).toMatchObject({ search: '/tenants' });
   });
 
   it('shows and hides the Clear filters button based on active filters', async () => {

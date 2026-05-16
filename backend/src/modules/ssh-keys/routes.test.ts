@@ -6,7 +6,7 @@ import { registerAuth } from '../../middleware/auth.js';
 
 const mockKey = {
   id: 'key-1',
-  clientId: 'c1',
+  tenantId: 'c1',
   name: 'My Key',
   publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA test@example',
   keyFingerprint: 'SHA256:abc123',
@@ -47,14 +47,14 @@ describe('ssh-key routes', () => {
   // ─── Auth ────────────────────────────────────────────────────────────────
 
   it('GET ssh-keys should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/ssh-keys' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/ssh-keys' });
     expect(res.statusCode).toBe(401);
   });
 
   it('GET ssh-keys should reject read_only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/ssh-keys',
+      url: '/api/v1/tenants/c1/ssh-keys',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -65,7 +65,7 @@ describe('ssh-key routes', () => {
   it('GET ssh-keys should return list for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/ssh-keys',
+      url: '/api/v1/tenants/c1/ssh-keys',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -77,7 +77,7 @@ describe('ssh-key routes', () => {
   it('POST ssh-keys should reject empty body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/ssh-keys',
+      url: '/api/v1/tenants/c1/ssh-keys',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
@@ -87,7 +87,7 @@ describe('ssh-key routes', () => {
   it('POST ssh-keys should create with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/ssh-keys',
+      url: '/api/v1/tenants/c1/ssh-keys',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'My Key',
@@ -103,7 +103,7 @@ describe('ssh-key routes', () => {
   it('DELETE ssh-keys/:keyId should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/ssh-keys/key-1',
+      url: '/api/v1/tenants/c1/ssh-keys/key-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

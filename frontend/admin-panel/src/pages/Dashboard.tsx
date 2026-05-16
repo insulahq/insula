@@ -2,22 +2,22 @@ import { Link } from 'react-router-dom';
 import { Users, Globe, Server, Archive, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useClients } from '@/hooks/use-clients';
+import { useTenants } from '@/hooks/use-tenants';
 import { usePlatformStatus, useDashboardMetrics } from '@/hooks/use-dashboard';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function Dashboard() {
-  const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
+  const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useTenants({ limit: 5 });
   const { data: statusData } = usePlatformStatus();
   const { data: metricsData, isLoading: metricsLoading } = useDashboardMetrics();
   const { data: nodesData, isLoading: nodesLoading } = useClusterNodes();
   const nodes = nodesData?.data ?? [];
 
-  const clients = clientsData?.data ?? [];
+  const tenants = clientsData?.data ?? [];
   const metrics = metricsData?.data;
-  const { sortedData: sortedClients, sortKey, sortDirection, onSort } = useSortable(clients, 'companyName');
+  const { sortedData: sortedTenants, sortKey, sortDirection, onSort } = useSortable(tenants, 'name');
   const platformStatus = statusData?.data?.status ?? 'unknown';
 
   return (
@@ -57,7 +57,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-4">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recent Clients</h2>
           <Link
-            to="/clients"
+            to="/tenants"
             className="text-sm font-medium text-brand-500 hover:text-brand-600"
           >
             View all
@@ -72,50 +72,50 @@ export default function Dashboard() {
 
         {clientsError && (
           <div className="px-5 py-10 text-center text-sm text-red-500 dark:text-red-400">
-            {clientsError instanceof Error ? clientsError.message : 'Failed to load clients'}
+            {clientsError instanceof Error ? clientsError.message : 'Failed to load tenants'}
           </div>
         )}
 
         {!clientsLoading && !clientsError && (
           <div className="overflow-x-auto">
-            <table className="w-full" data-testid="clients-table">
+            <table className="w-full" data-testid="tenants-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <SortableHeader label="Name" sortKey="companyName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <SortableHeader label="Namespace" sortKey="kubernetesNamespace" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                   <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {sortedClients.map((client) => (
-                  <tr key={client.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                {sortedTenants.map((tenant) => (
+                  <tr key={tenant.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     <td className="px-5 py-3.5">
                       <Link
-                        to={`/clients/${client.id}`}
+                        to={`/tenants/${tenant.id}`}
                         className="font-medium text-gray-900 dark:text-gray-100 hover:text-brand-500"
                       >
-                        {client.companyName}
+                        {tenant.name}
                       </Link>
                       <div className="text-xs text-gray-500 dark:text-gray-400">
-                        {client.companyEmail}
+                        {tenant.primaryEmail}
                       </div>
                     </td>
                     <td className="px-5 py-3.5">
-                      <StatusBadge status={client.status} />
+                      <StatusBadge status={tenant.status} />
                     </td>
                     <td className="hidden px-5 py-3.5 text-xs font-mono text-gray-500 dark:text-gray-400 md:table-cell">
-                      {client.kubernetesNamespace ?? '—'}
+                      {tenant.kubernetesNamespace ?? '—'}
                     </td>
                     <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
-                      {(client.createdAt ?? client.createdAt) ? new Date(client.createdAt ?? client.createdAt!).toLocaleDateString() : '—'}
+                      {(tenant.createdAt ?? tenant.createdAt) ? new Date(tenant.createdAt ?? tenant.createdAt!).toLocaleDateString() : '—'}
                     </td>
                   </tr>
                 ))}
-                {clients.length === 0 && (
+                {tenants.length === 0 && (
                   <tr>
                     <td colSpan={4} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-                      No clients yet. Create your first client to get started.
+                      No tenants yet. Create your first tenant to get started.
                     </td>
                   </tr>
                 )}

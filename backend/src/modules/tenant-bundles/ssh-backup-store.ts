@@ -124,7 +124,7 @@ export class SshBackupStore implements BackupStore {
   // ─── connection helpers ────────────────────────────────────────
 
   /**
-   * Run `fn` against a connected SFTP client. Connection is opened
+   * Run `fn` against a connected SFTP tenant. Connection is opened
    * fresh on every call and closed on completion (success or error).
    * Yes, this is per-call latency in the hundreds-of-ms range; for
    * Phase 2 components (~tens of KB) that's fine. Phase 3 mailbox
@@ -140,7 +140,7 @@ export class SshBackupStore implements BackupStore {
       readyTimeout: 15_000,
       keepaliveInterval: 5_000,
       // Trust-on-first-use is intentional for an operator-configured
-      // backup target — TOFU is the standard SFTP-client posture
+      // backup target — TOFU is the standard SFTP-tenant posture
       // and the operator already enrolled the host's pubkey at
       // setup time. Strict host-key checking belongs in a future
       // hardening pass when we add a known_hosts column to
@@ -209,10 +209,10 @@ export class SshBackupStore implements BackupStore {
 
   // ─── BackupStore implementation ────────────────────────────────
 
-  async reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle> {
+  async reserveBundle(input: { backupId: string; tenantId: string }): Promise<BundleHandle> {
     const bundlePath = this.bundlePath(input.backupId);
     this.config.logFn?.('info',
-      { bundleId: input.backupId, clientId: input.clientId, host: this.config.host, bundlePath },
+      { bundleId: input.backupId, tenantId: input.tenantId, host: this.config.host, bundlePath },
       'tenant-bundles: ssh reserveBundle');
     await this.withSftp(async (sftp) => {
       // Pre-create the four component subdirs so component writers

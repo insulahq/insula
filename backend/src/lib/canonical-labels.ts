@@ -23,10 +23,10 @@
  * Labels
  * ──────
  * - platform/role           required — what kind of PVC this is
- * - platform/owner          required — who owns it (system | client-<id8> | mail).
+ * - platform/owner          required — who owns it (system | tenant-<id8> | mail).
  *                           NB: `:` is invalid in K8s label values — separator
  *                           is `-`, not `:`. The string still parses two-fold
- *                           (`client-` prefix + 8-hex id) for filtering.
+ *                           (`tenant-` prefix + 8-hex id) for filtering.
  * - platform/canonical-name optional — the PVC name for self-describing
  *                           filters; omit for CNPG-instance PVCs that
  *                           inherit one set of labels but have per-instance
@@ -47,12 +47,12 @@ export const PLATFORM_API_MANAGER = 'platform-api';
 export type PvcRole =
   | 'system-db'
   | 'mail-db'
-  | 'client-storage'
+  | 'tenant-storage'
   | 'mail-blob-store';
 
 export interface CanonicalLabelInput {
   readonly role: PvcRole;
-  /** 'system' | 'mail' | `client-${shortId}` */
+  /** 'system' | 'mail' | `tenant-${shortId}` */
   readonly owner: string;
   /** Omit for CNPG-instance PVCs (system-db-1/2/3 share one label set). */
   readonly canonicalName?: string;
@@ -73,47 +73,47 @@ export function buildCanonicalLabels(
 }
 
 /**
- * `client-abc12345` — first 8 hex chars of the client UUID. Stable per
- * client; matches the convention `<namespace>-storage` uses for the
- * tenant namespace name (`client-<slug>-<8chars>`).
+ * `tenant-abc12345` — first 8 hex chars of the tenant UUID. Stable per
+ * tenant; matches the convention `<namespace>-storage` uses for the
+ * tenant namespace name (`tenant-<slug>-<8chars>`).
  *
  * NB: separator is `-` not `:` because K8s rejects `:` in label values
  * with HTTP 422 (regex `^([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$`).
  */
-export function clientOwnerLabel(clientUuid: string): string {
-  return `client-${clientUuid.replace(/-/g, '').slice(0, 8)}`;
+export function tenantOwnerLabel(tenantUuid: string): string {
+  return `tenant-${tenantUuid.replace(/-/g, '').slice(0, 8)}`;
 }
 
 /**
- * Build the canonical label set for a tenant client-storage PVC.
+ * Build the canonical label set for a tenant tenant-storage PVC.
  * Used at PVC creation and at destructive-resize PVC recreate.
  */
-export function clientStoragePvcLabels(
-  clientUuid: string,
+export function tenantStoragePvcLabels(
+  tenantUuid: string,
   namespace: string,
 ): Record<string, string> {
   return buildCanonicalLabels({
-    role: 'client-storage',
-    owner: clientOwnerLabel(clientUuid),
+    role: 'tenant-storage',
+    owner: tenantOwnerLabel(tenantUuid),
     canonicalName: `${namespace}-storage`,
   });
 }
 
 /**
- * Same as `clientStoragePvcLabels` but derives the owner short-id from
+ * Same as `tenantStoragePvcLabels` but derives the owner short-id from
  * the namespace itself. Tenant namespaces follow the canonical form
- * `client-<slug>-<8hex>` (see k8s-provisioner.namespaceFor); the trailing
- * 8 hex chars are the shortened client UUID. Used at call sites that
+ * `tenant-<slug>-<8hex>` (see k8s-provisioner.namespaceFor); the trailing
+ * 8 hex chars are the shortened tenant UUID. Used at call sites that
  * have only the namespace string in scope (applyPVC, applyPVCMib).
  */
-export function clientStoragePvcLabelsFromNamespace(
+export function tenantStoragePvcLabelsFromNamespace(
   namespace: string,
 ): Record<string, string> {
   const match = namespace.match(/-([0-9a-f]{8})$/);
   const shortId = match ? match[1] : 'unknown';
   return buildCanonicalLabels({
-    role: 'client-storage',
-    owner: `client-${shortId}`,
+    role: 'tenant-storage',
+    owner: `tenant-${shortId}`,
     canonicalName: `${namespace}-storage`,
   });
 }

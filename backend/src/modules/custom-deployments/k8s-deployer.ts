@@ -21,7 +21,7 @@
 //
 // Storage layout (matches catalog convention):
 //   PVC: `{namespace}-storage`   (shared tenant PVC)
-//   Mount name: `client-storage`
+//   Mount name: `tenant-storage`
 //   subPath per volume: `custom/{deploymentName}/{volumeName}`
 //
 // Re-apply semantics: createOrReplace per resource. Idempotent.
@@ -35,7 +35,7 @@ import type {
 } from './schema.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
-const CLIENT_PVC_VOLUME_NAME = 'client-storage';
+const CLIENT_PVC_VOLUME_NAME = 'tenant-storage';
 
 /**
  * Platform-reserved label-key prefix. Tenants cannot stamp labels
@@ -69,7 +69,7 @@ export interface DeployCustomInput {
   /** When provided, used for hard nodeSelector pin (local tier) or
    *  soft preferredAffinity (HA tier) — matching the catalog
    *  deployer's behaviour for tenant pod placement. */
-  readonly workerNodeName?: string | null;
+  readonly nodeName?: string | null;
   readonly storageTier?: 'local' | 'ha' | null;
 }
 
@@ -246,7 +246,7 @@ async function applyDeployment(
       : {}),
   };
 
-  if (input.workerNodeName) {
+  if (input.nodeName) {
     if (input.storageTier === 'ha') {
       podSpec.affinity = {
         nodeAffinity: {
@@ -256,14 +256,14 @@ async function applyDeployment(
               matchExpressions: [{
                 key: 'kubernetes.io/hostname',
                 operator: 'In',
-                values: [input.workerNodeName],
+                values: [input.nodeName],
               }],
             },
           }],
         },
       };
     } else {
-      podSpec.nodeSelector = { 'kubernetes.io/hostname': input.workerNodeName };
+      podSpec.nodeSelector = { 'kubernetes.io/hostname': input.nodeName };
     }
   }
 

@@ -1,7 +1,7 @@
 // Re-export shared contract types (single source of truth)
 export type {
-  ClientResponse as Client,
-  ClientListResponse,
+  TenantResponse as Tenant,
+  TenantListResponse,
   DomainResponse as Domain,
   DomainListResponse,
   PaginationMeta,

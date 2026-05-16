@@ -8,14 +8,14 @@
 //   - `parseResultSchema` is the response from /validate
 //   - `composeSchemaResponseSchema` is the JSON-schema document
 //     served at GET /custom-deployments/compose-schema (consumed by
-//     monaco-yaml in the client panel)
+//     monaco-yaml in the tenant panel)
 
 import { z } from 'zod';
 import { validateCustomDeploymentResultSchema } from './custom-deployments.js';
 
 // ─── /validate request ──────────────────────────────────────────────────────
 
-/** Body posted to `POST /clients/:cid/custom-deployments/validate`
+/** Body posted to `POST /tenants/:cid/custom-deployments/validate`
  *  when the user is in the compose editor. Mirror of the compose
  *  fields on `createCustomDeploymentComposeSchema` but without `name`
  *  (validate can be called before naming). */
@@ -35,7 +35,7 @@ export const composeParseResultSchema = validateCustomDeploymentResultSchema;
 // ─── Compose JSON-Schema endpoint ───────────────────────────────────────────
 
 /** Served at GET /custom-deployments/compose-schema; consumed by
- *  monaco-yaml in the client panel for inline schema-aware completion
+ *  monaco-yaml in the tenant panel for inline schema-aware completion
  *  and red-squiggle on rejected fields. JSON Schema draft-07 shape
  *  (the format monaco-yaml expects). */
 export const composeSchemaResponseSchema = z.object({

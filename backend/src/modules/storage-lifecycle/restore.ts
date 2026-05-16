@@ -21,7 +21,7 @@ export async function restoreTenantPVC(
   opts: {
     readonly namespace: string;
     readonly pvcName: string;
-    readonly clientId: string;
+    readonly tenantId: string;
     readonly snapshotId: string;
     readonly archivePath: string;
     readonly store: SnapshotStore;
@@ -64,17 +64,17 @@ export async function restoreTenantPVC(
   const script = baseScript.join('\n');
 
   const jobBody = {
-    metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/client-id': opts.clientId } },
+    metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId } },
     spec: {
       backoffLimit: 0,
       ttlSecondsAfterFinished: 600,
       template: {
-        metadata: { labels: { 'platform.io/component': 'restore', 'platform.io/client-id': opts.clientId } },
+        metadata: { labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId } },
         spec: {
           restartPolicy: 'Never',
-          // Restore Jobs MUST run in the client namespace because they
+          // Restore Jobs MUST run in the tenant namespace because they
           // mount the tenant PVC. Tag with the overhead priority class
-          // so they don't count against the client's ResourceQuota.
+          // so they don't count against the tenant's ResourceQuota.
           priorityClassName: 'platform-tenant-overhead',
           containers: [{
             name: 'tar',

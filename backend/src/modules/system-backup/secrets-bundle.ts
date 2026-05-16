@@ -154,7 +154,7 @@ export async function buildSecretsTar(
   manifestText.push('');
   manifestText.push('contents:');
 
-  // Pull every Secret. The Kube client may return 404 for absent
+  // Pull every Secret. The Kube tenant may return 404 for absent
   // ones (older cluster missing a recently-added Secret type) —
   // those are skipped, never fatal.
   const core = k8s.core as unknown as {
@@ -202,7 +202,7 @@ export async function buildSecretsTar(
   return { tarBytes: Buffer.concat(chunks), manifest };
 }
 
-/** Serialise a Secret returned by the Kube client to YAML. We only
+/** Serialise a Secret returned by the Kube tenant to YAML. We only
  * include the fields needed for `kubectl apply -f` to recreate the
  * Secret on a fresh cluster — everything else (status, managedFields,
  * resourceVersion, uid) is stripped so bundles are diffable. */

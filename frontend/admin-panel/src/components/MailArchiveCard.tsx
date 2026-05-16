@@ -330,7 +330,7 @@ export default function MailArchiveCard() {
                 </ol>
                 <p className="mt-2 text-amber-600 dark:text-amber-400 text-xs">
                   <strong>~60–120s of mail downtime is expected.</strong> SMTP retries from senders will
-                  resume delivery; IMAP/JMAP clients will reconnect automatically.
+                  resume delivery; IMAP/JMAP tenants will reconnect automatically.
                 </p>
               </>
             )

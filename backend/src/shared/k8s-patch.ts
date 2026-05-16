@@ -253,14 +253,14 @@ export function strategicMergePatch(fieldManager: string): SDKOverride {
  *     --field-manager=$fieldManager -f -
  *
  * Caller passes a typed `KubeConfig` so we can extract the apiserver
- * URL + auth (Bearer token OR client cert). Body is plain JSON with
+ * URL + auth (Bearer token OR tenant cert). Body is plain JSON with
  * apiVersion + kind + metadata.{name,namespace}, exactly as you'd
  * write the YAML.
  *
  * Returns the apiserver's response body on 2xx; throws on non-2xx.
  *
  * The fetch goes through Node's native fetch (Node 18+), so this
- * helper is dependency-free and doesn't introduce a new client.
+ * helper is dependency-free and doesn't introduce a new tenant.
  */
 export interface RawApplyTarget {
   apiVersion: string;
@@ -316,7 +316,7 @@ export async function applyRaw(
     throw new Error(
       'k8s-patch.applyRaw: no Bearer token in KubeConfig.user nor at '
       + '/var/run/secrets/kubernetes.io/serviceaccount/token. '
-      + 'exec-plugin / client-cert auth not yet supported via this raw path.',
+      + 'exec-plugin / tenant-cert auth not yet supported via this raw path.',
     );
   }
 

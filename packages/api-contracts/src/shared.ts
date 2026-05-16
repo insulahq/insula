@@ -40,20 +40,20 @@ export function dataResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 
 // ─── Common Fields ───────────────────────────────────────────────────────────
 
-// Client lifecycle status. `archived` means the client was off-boarded:
+// Tenant lifecycle status. `archived` means the tenant was off-boarded:
 // PVC destroyed, snapshot retained for the configured grace period, but
 // the account still exists so it can be restored. See storage-lifecycle/.
 //
 // The terminal operation is "delete" — a verb, not a persistent state —
-// which hard-removes the client row from the database. There is no
-// `deleted` value in the enum; a deleted client simply doesn't exist.
-export const statusEnum = z.enum(['active', 'suspended', 'pending', 'archived']);
-export type Status = z.infer<typeof statusEnum>;
+// which hard-removes the tenant row from the database. There is no
+// `deleted` value in the enum; a deleted tenant simply doesn't exist.
+export const tenantStatusEnum = z.enum(['active', 'suspended', 'pending', 'archived']);
+export type TenantStatus = z.infer<typeof tenantStatusEnum>;
 
-// Storage lifecycle state machine — orthogonal to client.status.
-// Lives on `clients.storage_lifecycle_state`. Callers should treat any
+// Storage lifecycle state machine — orthogonal to tenant.status.
+// Lives on `tenants.storage_lifecycle_state`. Callers should treat any
 // value other than `idle` as "an orchestrator is currently operating
-// on this client's PVC; UI should disable destructive actions."
+// on this tenant's PVC; UI should disable destructive actions."
 export const storageLifecycleStateEnum = z.enum([
   'idle',
   'snapshotting',

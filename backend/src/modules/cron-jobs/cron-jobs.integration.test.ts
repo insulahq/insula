@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { buildTestApp, generateToken } from '../../test-helpers/app.js';
-import { seedRegion, seedPlan, seedClient } from '../../test-helpers/fixtures.js';
+import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { cronJobs } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
@@ -11,7 +11,7 @@ const dbAvailable = await isDbAvailable();
 describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
   let app: FastifyInstance;
   let adminToken: string;
-  let clientId: string;
+  let tenantId: string;
 
   beforeAll(async () => {
     await runMigrations();
@@ -29,14 +29,14 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     const db = getTestDb();
     const region = await seedRegion(db);
     const plan = await seedPlan(db);
-    const client = await seedClient(db, region.id, plan.id);
-    clientId = client.id;
+    const tenant = await seedTenant(db, region.id, plan.id);
+    tenantId = tenant.id;
   });
 
   it('POST -- creates webcron job with 201', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'Daily ping',
@@ -57,7 +57,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
   it('POST -- creates deployment cron job with 201', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'Daily cleanup',
@@ -79,7 +79,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     const db = getTestDb();
     await db.insert(cronJobs).values({
       id: crypto.randomUUID(),
-      clientId,
+      tenantId,
       name: 'Job 1',
       type: 'webcron',
       schedule: '* * * * *',
@@ -87,7 +87,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     });
     await db.insert(cronJobs).values({
       id: crypto.randomUUID(),
-      clientId,
+      tenantId,
       name: 'Job 2',
       type: 'webcron',
       schedule: '0 * * * *',
@@ -96,7 +96,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
 
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -108,7 +108,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     const id = crypto.randomUUID();
     await db.insert(cronJobs).values({
       id,
-      clientId,
+      tenantId,
       name: 'Old name',
       type: 'webcron',
       schedule: '* * * * *',
@@ -117,7 +117,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
 
     const res = await app.inject({
       method: 'PATCH',
-      url: `/api/v1/clients/${clientId}/cron-jobs/${id}`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs/${id}`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { name: 'New name', enabled: false },
     });
@@ -131,7 +131,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     const id = crypto.randomUUID();
     await db.insert(cronJobs).values({
       id,
-      clientId,
+      tenantId,
       name: 'Webcron job',
       type: 'webcron',
       schedule: '* * * * *',
@@ -140,7 +140,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
 
     const res = await app.inject({
       method: 'PATCH',
-      url: `/api/v1/clients/${clientId}/cron-jobs/${id}`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs/${id}`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { url: 'https://example.com/new', http_method: 'POST' },
     });
@@ -154,7 +154,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     const id = crypto.randomUUID();
     await db.insert(cronJobs).values({
       id,
-      clientId,
+      tenantId,
       name: 'To delete',
       type: 'webcron',
       schedule: '* * * * *',
@@ -163,7 +163,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
 
     const res = await app.inject({
       method: 'DELETE',
-      url: `/api/v1/clients/${clientId}/cron-jobs/${id}`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs/${id}`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);
@@ -176,7 +176,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
   it('returns 404 for nonexistent cron job', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/clients/${clientId}/cron-jobs/nonexistent`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs/nonexistent`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(404);
@@ -186,7 +186,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
   it('rejects invalid cron schedule', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'Bad schedule',
@@ -201,7 +201,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
   it('rejects webcron without url', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'No URL',
@@ -215,7 +215,7 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
   it('rejects deployment without command and deployment_id', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      url: `/api/v1/tenants/${tenantId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'No command',

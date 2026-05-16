@@ -37,7 +37,7 @@ describe('generateSecurePassword', () => {
 describe('listSftpUsers', () => {
   const mockRow = {
     id: 'sftp-1',
-    clientId: 'c1',
+    tenantId: 'c1',
     username: 'testuser',
     passwordHash: '$2b$10$hash',
     description: 'Test user',
@@ -62,7 +62,7 @@ describe('listSftpUsers', () => {
     listSftpUsers = mod.listSftpUsers;
   });
 
-  it('should return mapped users for a client', async () => {
+  it('should return mapped users for a tenant', async () => {
     const mockLimit = vi.fn().mockResolvedValue([mockRow]);
     const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
     // Support both direct .where() and .innerJoin().where() chains
@@ -80,7 +80,7 @@ describe('listSftpUsers', () => {
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
       id: 'sftp-1',
-      clientId: 'c1',
+      tenantId: 'c1',
       username: 'testuser',
       description: 'Test user',
       enabled: true,
@@ -140,7 +140,7 @@ describe('createSftpUser', () => {
 
   it('should auto-generate username and return password', async () => {
     const createdRow = {
-      id: 'new-id', clientId: 'c1', username: 'a3f7c2e1',
+      id: 'new-id', tenantId: 'c1', username: 'a3f7c2e1',
       passwordHash: '$2b$10$hash', description: null, enabled: 1,
       homePath: '/', allowWrite: 1, allowDelete: 0, ipWhitelist: null,
       maxConcurrentSessions: 3, lastLoginAt: null, lastLoginIp: null,

@@ -2,32 +2,32 @@ import { useState, type FormEvent } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { useCreateDomain } from '@/hooks/use-domains';
 import { useDeployments } from '@/hooks/use-deployments';
-import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
+import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 
 interface CreateDomainModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly clientId?: string | null;
+  readonly tenantId?: string | null;
 }
 
-export default function CreateDomainModal({ open, onClose, clientId }: CreateDomainModalProps) {
+export default function CreateDomainModal({ open, onClose, tenantId }: CreateDomainModalProps) {
   const [domainName, setDomainName] = useState('');
   const [dnsMode, setDnsMode] = useState<'cname' | 'primary' | 'secondary'>('cname');
   const [deploymentId, setDeploymentId] = useState<string>('');
-  const [internalClientId, setInternalClientId] = useState<string | null>(clientId ?? null);
+  const [internalTenantId, setInternalTenantId] = useState<string | null>(tenantId ?? null);
 
-  const effectiveClientId = clientId ?? internalClientId;
+  const effectiveTenantId = tenantId ?? internalTenantId;
 
-  const createDomain = useCreateDomain(effectiveClientId ?? undefined);
-  const { data: deploymentsResponse } = useDeployments(effectiveClientId ?? undefined);
+  const createDomain = useCreateDomain(effectiveTenantId ?? undefined);
+  const { data: deploymentsResponse } = useDeployments(effectiveTenantId ?? undefined);
   const deployments = deploymentsResponse?.data ?? [];
 
   const resetForm = () => {
     setDomainName('');
     setDnsMode('cname');
     setDeploymentId('');
-    if (!clientId) {
-      setInternalClientId(null);
+    if (!tenantId) {
+      setInternalTenantId(null);
     }
     createDomain.reset();
   };
@@ -39,7 +39,7 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!effectiveClientId) return;
+    if (!effectiveTenantId) return;
     try {
       await createDomain.mutateAsync({
         domain_name: domainName,
@@ -76,15 +76,15 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-domain-form">
-          {!clientId && (
+          {!tenantId && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Client *
               </label>
-              <SearchableClientSelect
-                selectedClientId={internalClientId}
-                onSelect={setInternalClientId}
-                placeholder="Search for a client..."
+              <SearchableTenantSelect
+                selectedTenantId={internalTenantId}
+                onSelect={setInternalTenantId}
+                placeholder="Search for a tenant..."
               />
             </div>
           )}
@@ -123,7 +123,7 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
             </select>
           </div>
 
-          {effectiveClientId && (
+          {effectiveTenantId && (
             <div>
               <label htmlFor="deployment-id" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Route to Deployment
@@ -166,7 +166,7 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
             </button>
             <button
               type="submit"
-              disabled={createDomain.isPending || !effectiveClientId}
+              disabled={createDomain.isPending || !effectiveTenantId}
               className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
               data-testid="submit-domain-button"
             >

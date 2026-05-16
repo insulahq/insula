@@ -6,7 +6,7 @@ import { registerAuth } from '../../middleware/auth.js';
 
 const mockBackup = {
   id: 'b1',
-  clientId: 'c1',
+  tenantId: 'c1',
   backupType: 'manual',
   status: 'completed',
 };
@@ -44,14 +44,14 @@ describe('backup routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/backups' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/backups' });
     expect(res.statusCode).toBe(401);
   });
 
   it('GET should return paginated backups', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/backups',
+      url: '/api/v1/tenants/c1/backups',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -61,7 +61,7 @@ describe('backup routes', () => {
   it('POST should reject invalid backup_type', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/backups',
+      url: '/api/v1/tenants/c1/backups',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { backup_type: 'invalid' },
     });
@@ -71,7 +71,7 @@ describe('backup routes', () => {
   it('POST should create backup with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/backups',
+      url: '/api/v1/tenants/c1/backups',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { backup_type: 'manual' },
     });
@@ -81,7 +81,7 @@ describe('backup routes', () => {
   it('DELETE should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/backups/b1',
+      url: '/api/v1/tenants/c1/backups/b1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

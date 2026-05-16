@@ -3,7 +3,7 @@
  *
  * Each tenant ingress can opt into OIDC-gated access via a single
  * config row keyed on `ingressRouteId`. The platform manages a
- * per-client oauth2-proxy + claim-validator behind the scenes.
+ * per-tenant oauth2-proxy + claim-validator behind the scenes.
  */
 import { z } from 'zod';
 
@@ -51,11 +51,11 @@ export const claimRuleSchema = z.object({
 export type ClaimRule = z.infer<typeof claimRuleSchema>;
 
 /**
- * Per-client reusable OIDC provider config.
+ * Per-tenant reusable OIDC provider config.
  *
- * Stored in client_oidc_providers; referenced by zero or more
+ * Stored in tenant_oidc_providers; referenced by zero or more
  * ingress_auth_configs.providerId. Operators manage these via the
- * /clients/:cid/oidc-providers endpoints.
+ * /tenants/:tid/oidc-providers endpoints.
  */
 export const oidcProviderInputSchema = z.object({
   name: z.string().min(1).max(120),
@@ -89,7 +89,7 @@ export type OidcProviderResponse = z.infer<typeof oidcProviderResponseSchema>;
 
 /**
  * Per-ingress access policy. Two write paths:
- *   - providerId: pick an existing provider for this client (preferred)
+ *   - providerId: pick an existing provider for this tenant (preferred)
  *   - inline OIDC fields: auto-create a provider on first write
  *
  * The inline path preserves the v1 UX where operators type credentials

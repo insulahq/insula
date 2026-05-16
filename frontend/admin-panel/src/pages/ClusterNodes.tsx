@@ -100,7 +100,7 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Cluster Nodes</h1>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Every node in the k3s cluster, with platform-managed role + host-client-workloads state.
+              Every node in the k3s cluster, with platform-managed role + host-tenant-workloads state.
               Labels on the k8s node are authoritative; edits here write the label first then refresh.
             </p>
           </div>
@@ -374,7 +374,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
                   {health.severity === 'critical' ? '⚠ critical' : '! warning'}
                 </span>
               )}
-              {node.canHostClientWorkloads ? (
+              {node.canHostTenantWorkloads ? (
                 <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
                   hosts tenants
                 </span>
@@ -395,7 +395,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
               {node.drained && (
                 <span
                   className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:bg-purple-900/40 dark:text-purple-300"
-                  title="Node is fully drained — cordoned + no client workloads + no Longhorn replicas. Safe to delete."
+                  title="Node is fully drained — cordoned + no tenant workloads + no Longhorn replicas. Safe to delete."
                   data-testid={`node-drained-tag-${node.name}`}
                 >
                   Drained

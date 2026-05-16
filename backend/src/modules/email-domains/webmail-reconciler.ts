@@ -27,7 +27,7 @@
  */
 
 import { eq, inArray } from 'drizzle-orm';
-import { emailDomains, domains, clients } from '../../db/schema.js';
+import { emailDomains, domains, tenants } from '../../db/schema.js';
 import { certificateNameFor } from '../certificates/service.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -103,13 +103,13 @@ export async function reconcileWebmailCertificates(
     .select({
       id: emailDomains.id,
       domainName: domains.domainName,
-      clientNamespace: clients.kubernetesNamespace,
+      tenantNamespace: tenants.kubernetesNamespace,
       webmailStatus: emailDomains.webmailStatus,
       webmailEnabled: emailDomains.webmailEnabled,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
-    .innerJoin(clients, eq(emailDomains.clientId, clients.id))
+    .innerJoin(tenants, eq(emailDomains.tenantId, tenants.id))
     .where(inArray(emailDomains.webmailStatus, ['pending', 'ready_no_tls']));
 
   let promoted = 0;
@@ -119,7 +119,7 @@ export async function reconcileWebmailCertificates(
     if (row.webmailEnabled !== 1) continue;
     const hostname = `webmail.${row.domainName}`;
     try {
-      const ready = await readCertReadyStatus(k8s, row.clientNamespace, hostname);
+      const ready = await readCertReadyStatus(k8s, row.tenantNamespace, hostname);
       if (ready?.status === 'True') {
         await db
           .update(emailDomains)

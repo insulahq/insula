@@ -49,9 +49,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: frontend/client-panel/Dockerfile
+          file: frontend/tenant-panel/Dockerfile
           push: true
-          tags: ${{ env.IMAGE_PREFIX }}/client-panel:${{ steps.version.outputs.version }}
+          tags: ${{ env.IMAGE_PREFIX }}/tenant-panel:${{ steps.version.outputs.version }}
 
       # Create GitHub Release
       - uses: softprops/action-gh-release@v2
@@ -85,7 +85,7 @@ jobs:
           # Update each image tag individually to avoid clobbering comments
           sed -i '/\/backend$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
           sed -i '/\/admin-panel$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
-          sed -i '/\/client-panel$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
+          sed -i '/\/tenant-panel$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
 
           # Pin the exposed platform-version ConfigMap to the same semver
           # so the Admin Panel's "Current Version" field shows the real
@@ -119,7 +119,7 @@ jobs:
             Updates all platform images to `v${{ steps.version.outputs.version }}`:
             - `backend:${{ steps.version.outputs.version }}`
             - `admin-panel:${{ steps.version.outputs.version }}`
-            - `client-panel:${{ steps.version.outputs.version }}`
+            - `tenant-panel:${{ steps.version.outputs.version }}`
 
             Merge this PR to deploy to production. The production Flux
             Kustomization watches the `stable` branch and will reconcile

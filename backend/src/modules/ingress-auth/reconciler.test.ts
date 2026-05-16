@@ -4,17 +4,17 @@ vi.mock('./providers-service.js', () => ({
   decryptProviderSecret: vi.fn(() => 'plaintext-secret'),
 }));
 vi.mock('./service.js', () => ({
-  getOrCreateClientCookieSecret: vi.fn().mockResolvedValue('cookie-secret-32-bytes-long-fake_'),
-  listEnabledForClient: vi.fn(),
+  getOrCreateTenantCookieSecret: vi.fn().mockResolvedValue('cookie-secret-32-bytes-long-fake_'),
+  listEnabledForTenant: vi.fn(),
 }));
 
-import { reconcileClient } from './reconciler.js';
-import { listEnabledForClient } from './service.js';
+import { reconcileTenant } from './reconciler.js';
+import { listEnabledForTenant } from './service.js';
 
-const listEnabledMock = listEnabledForClient as unknown as ReturnType<typeof vi.fn>;
+const listEnabledMock = listEnabledForTenant as unknown as ReturnType<typeof vi.fn>;
 
 const CLIENT_ID = 'c-1';
-const NAMESPACE = 'client-c1';
+const NAMESPACE = 'tenant-c1';
 
 const ENABLED_ROW = {
   cfg: {
@@ -43,10 +43,10 @@ const ENABLED_ROW = {
   },
   provider: {
     id: 'p-1',
-    clientId: CLIENT_ID,
+    tenantId: CLIENT_ID,
     name: 'Test provider',
     issuerUrl: 'https://idp.example.com/',
-    oauthClientId: 'oauth-client-id',
+    oauthClientId: 'oauth-tenant-id',
     oauthClientSecretEncrypted: 'enc:secret',
     authMethod: 'client_secret_basic',
     responseType: 'code',
@@ -76,12 +76,12 @@ function makeMocks(opts: {
     read: [],
   };
 
-  // Mocked listEnabledForClient → return canned set.
+  // Mocked listEnabledForTenant → return canned set.
   listEnabledMock.mockResolvedValue(opts.enabled);
 
   // Drizzle DB. Sequence:
-  //   1. clients select → namespace
-  //   2. clientOauth2ProxyState (only on teardown path)
+  //   1. tenants select → namespace
+  //   2. tenantOauth2ProxyState (only on teardown path)
   let selectCalls = 0;
   const db = {
     select: vi.fn(() => {
@@ -163,7 +163,7 @@ function makeMocks(opts: {
   const networking = {
     // Kept for type compatibility; the reconciler no longer touches
     // Ingress objects (Phase 2 part 5 migrated the passthrough Ingress
-    // to a Traefik IngressRoute on the `custom` API client).
+    // to a Traefik IngressRoute on the `custom` API tenant).
     readNamespacedIngress: vi.fn(async () => { throw notFound(); }),
     createNamespacedIngress: vi.fn(),
     replaceNamespacedIngress: vi.fn(),
@@ -201,7 +201,7 @@ function makeMocks(opts: {
   return { db, k8s: { core, apps, networking, custom }, calls } as never;
 }
 
-describe('reconcileClient — provisioning path', () => {
+describe('reconcileTenant — provisioning path', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -213,7 +213,7 @@ describe('reconcileClient — provisioning path', () => {
       deploymentExists: false,
       serviceExists: false,
     });
-    const result = await reconcileClient(
+    const result = await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -234,7 +234,7 @@ describe('reconcileClient — provisioning path', () => {
       secretExists: true,
       passthroughIngressExists: true,
     });
-    const result = await reconcileClient(
+    const result = await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -250,7 +250,7 @@ describe('reconcileClient — provisioning path', () => {
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -268,7 +268,7 @@ describe('reconcileClient — provisioning path', () => {
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -281,8 +281,8 @@ describe('reconcileClient — provisioning path', () => {
     expect(cfg).toContain('pass_authorization_header=true');
     expect(cfg).toContain('set_xauthrequest=true');
     expect(cfg).toContain('reverse_proxy=true');
-    expect(cfg).toContain('client_id="oauth-client-id"');
-    expect(cfg).toContain('client_secret="plaintext-secret"');
+    expect(cfg).toContain('tenant_id="oauth-tenant-id"');
+    expect(cfg).toContain('tenant_secret="plaintext-secret"');
     // Trailing slash must be stripped from issuer URL.
     expect(cfg).toContain('oidc_issuer_url="https://idp.example.com"');
     expect(cfg).not.toContain('oidc_issuer_url="https://idp.example.com/"');
@@ -296,7 +296,7 @@ describe('reconcileClient — provisioning path', () => {
       serviceExists: false,
       tenantTls: { 'tls-app-example': ['app.example.com'] },
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -317,7 +317,7 @@ describe('reconcileClient — provisioning path', () => {
     expect(route.services[0]).toEqual({ name: 'oauth2-proxy', port: 4180 });
   });
 
-  it('passthrough IngressRoute lists every protected hostname when client has multiple', async () => {
+  it('passthrough IngressRoute lists every protected hostname when tenant has multiple', async () => {
     const secondRow = {
       ...ENABLED_ROW,
       cfg: { ...ENABLED_ROW.cfg, id: 'cfg-2', ingressRouteId: 'ir-2' },
@@ -333,7 +333,7 @@ describe('reconcileClient — provisioning path', () => {
         'tls-admin-example': ['admin.example.com'],
       },
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -363,7 +363,7 @@ describe('reconcileClient — provisioning path', () => {
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient({ db: m.db, k8s: m.k8s, encryptionKey: 'k' }, CLIENT_ID);
+    await reconcileTenant({ db: m.db, k8s: m.k8s, encryptionKey: 'k' }, CLIENT_ID);
     const cm = (m.calls.create as Array<{ kind: string; args: { body: { data: Record<string, string> } } }>).find(
       (c) => c.kind === 'configmap',
     )!;
@@ -371,7 +371,7 @@ describe('reconcileClient — provisioning path', () => {
   });
 });
 
-describe('reconcileClient — teardown path', () => {
+describe('reconcileTenant — teardown path', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -381,7 +381,7 @@ describe('reconcileClient — teardown path', () => {
       enabled: [],
       proxyState: { provisioned: true },
     });
-    const result = await reconcileClient(
+    const result = await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -395,7 +395,7 @@ describe('reconcileClient — teardown path', () => {
       enabled: [],
       proxyState: { provisioned: false },
     });
-    const result = await reconcileClient(
+    const result = await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -404,7 +404,7 @@ describe('reconcileClient — teardown path', () => {
   });
 });
 
-describe('reconcileClient — claim-validator sidecar is conditional on claim rules', () => {
+describe('reconcileTenant — claim-validator sidecar is conditional on claim rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -421,7 +421,7 @@ describe('reconcileClient — claim-validator sidecar is conditional on claim ru
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -443,7 +443,7 @@ describe('reconcileClient — claim-validator sidecar is conditional on claim ru
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -464,7 +464,7 @@ describe('reconcileClient — claim-validator sidecar is conditional on claim ru
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );
@@ -491,7 +491,7 @@ describe('reconcileClient — claim-validator sidecar is conditional on claim ru
       deploymentExists: false,
       serviceExists: false,
     });
-    await reconcileClient(
+    await reconcileTenant(
       { db: m.db, k8s: m.k8s, encryptionKey: 'k' },
       CLIENT_ID,
     );

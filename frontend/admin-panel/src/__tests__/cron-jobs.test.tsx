@@ -24,15 +24,15 @@ describe('CronJobs page', () => {
     expect(screen.getByText('Cron Jobs')).toBeInTheDocument();
   });
 
-  it('renders searchable client selector', () => {
+  it('renders searchable tenant selector', () => {
     render(<CronJobs />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Search clients...')).toBeInTheDocument();
+    expect(screen.getByTestId('tenant-search-select')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search tenants...')).toBeInTheDocument();
   });
 
-  it('shows all clients by default without a prompt to select', () => {
+  it('shows all tenants by default without a prompt to select', () => {
     render(<CronJobs />, { wrapper: createWrapper() });
-    expect(screen.queryByTestId('select-client-prompt')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('select-tenant-prompt')).not.toBeInTheDocument();
   });
 
   it('renders Add Cron Job button', () => {
@@ -41,7 +41,7 @@ describe('CronJobs page', () => {
     expect(screen.getByText('Add Cron Job')).toBeInTheDocument();
   });
 
-  it('disables Add Cron Job button when no client selected', () => {
+  it('disables Add Cron Job button when no tenant selected', () => {
     render(<CronJobs />, { wrapper: createWrapper() });
     expect(screen.getByTestId('add-cron-job-button')).toBeDisabled();
   });
@@ -50,7 +50,7 @@ describe('CronJobs page', () => {
 describe('CreateCronJobModal', () => {
   it('renders form fields when open', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('create-cron-job-modal')).toBeInTheDocument();
@@ -64,7 +64,7 @@ describe('CreateCronJobModal', () => {
 
   it('is hidden when closed', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={false} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={false} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.queryByTestId('create-cron-job-modal')).not.toBeInTheDocument();
@@ -72,7 +72,7 @@ describe('CreateCronJobModal', () => {
 
   it('has required name field', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('cron-job-name-input')).toBeRequired();
@@ -80,7 +80,7 @@ describe('CreateCronJobModal', () => {
 
   it('has required schedule field', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('cron-job-schedule-input')).toBeRequired();
@@ -88,7 +88,7 @@ describe('CreateCronJobModal', () => {
 
   it('has required URL field for webcron type', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('cron-job-url-input')).toBeRequired();
@@ -96,7 +96,7 @@ describe('CreateCronJobModal', () => {
 
   it('defaults enabled checkbox to checked', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     const checkbox = screen.getByTestId('cron-job-enabled-checkbox') as HTMLInputElement;
@@ -105,7 +105,7 @@ describe('CreateCronJobModal', () => {
 
   it('has submit and cancel buttons', () => {
     const onClose = vi.fn();
-    render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateCronJobModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('submit-cron-job-button')).toBeInTheDocument();

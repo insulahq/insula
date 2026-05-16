@@ -43,7 +43,7 @@ export const SYSTEM_NAMESPACES = Object.freeze([
 ] as const);
 
 export const NODE_ROLE_LABEL = 'platform.phoenix-host.net/node-role';
-export const HOST_CLIENT_WORKLOADS_LABEL = 'platform.phoenix-host.net/host-client-workloads';
+export const HOST_CLIENT_WORKLOADS_LABEL = 'platform.phoenix-host.net/host-tenant-workloads';
 export const SERVER_ONLY_TAINT_KEY = 'platform.phoenix-host.net/server-only';
 // M-NS-1: ingress-mode label. The ingress-nginx DaemonSet's
 // nodeSelector excludes nodes carrying `ingress-mode=none`.
@@ -70,7 +70,7 @@ export async function listNodesEnriched(
   k8s: K8sClients | null,
 ): Promise<Array<ClusterNode & { cordoned: boolean; drained: boolean; existsInKubernetes: boolean }>> {
   const rows = await listNodes(db);
-  // No K8s client → we can't tell orphan from healthy, so don't lie.
+  // No K8s tenant → we can't tell orphan from healthy, so don't lie.
   // `existsInKubernetes: true` preserves the previous UI (no orphan pill,
   // normal Drain/Delete). Orphan detection requires a live cluster read.
   if (!k8s) return rows.map((r) => ({ ...r, cordoned: false, drained: false, existsInKubernetes: true }));
@@ -158,7 +158,7 @@ export async function getNode(db: Database, name: string): Promise<ClusterNode |
 export interface ObservedNode {
   name: string;
   role: NodeRole;
-  canHostClientWorkloads: boolean;
+  canHostTenantWorkloads: boolean;
   ingressMode: NodeIngressMode;
   publicIp: string | null;
   kubeletVersion: string | null;
@@ -177,7 +177,7 @@ export interface ObservedNode {
 
 /**
  * Upsert an observation from the k8s-sync reconciler. The k8s label is
- * authoritative for role + canHostClientWorkloads — if an operator
+ * authoritative for role + canHostTenantWorkloads — if an operator
  * `kubectl label`s a node by hand, the next sync tick reflects that
  * into the DB. The reconciler never writes labels on its own; PATCH
  * /api/v1/admin/nodes/:name does, via service.updateNode below.
@@ -196,7 +196,7 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
   await db.insert(clusterNodes).values({
     name: observed.name,
     role: observed.role,
-    canHostClientWorkloads: observed.canHostClientWorkloads,
+    canHostTenantWorkloads: observed.canHostTenantWorkloads,
     ingressMode: observed.ingressMode,
     publicIp: observed.publicIp,
     kubeletVersion: observed.kubeletVersion,
@@ -219,7 +219,7 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
     target: clusterNodes.name,
     set: {
       role: observed.role,
-      canHostClientWorkloads: observed.canHostClientWorkloads,
+      canHostTenantWorkloads: observed.canHostTenantWorkloads,
       ingressMode: observed.ingressMode,
       publicIp: observed.publicIp,
       kubeletVersion: observed.kubeletVersion,
@@ -288,7 +288,7 @@ export async function updateNode(
   }
 
   const targetRole: NodeRole = patch.role ?? existing.role;
-  const targetCanHost = patch.canHostClientWorkloads ?? existing.canHostClientWorkloads;
+  const targetCanHost = patch.canHostTenantWorkloads ?? existing.canHostTenantWorkloads;
   const targetIngressMode: NodeIngressMode = patch.ingressMode ?? existing.ingressMode;
 
   // Safety check: block server→worker demotion if system pods would be
@@ -349,7 +349,7 @@ export async function updateNode(
   // canHost, or ingressMode), since each maps to a label.
   const k8sFieldsChanged =
     patch.role !== undefined
-    || patch.canHostClientWorkloads !== undefined
+    || patch.canHostTenantWorkloads !== undefined
     || patch.ingressMode !== undefined;
   if (k8sFieldsChanged) {
     const existingTaints = Array.isArray(existing.taints) ? existing.taints : [];
@@ -359,7 +359,7 @@ export async function updateNode(
       ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
       : withoutOurs;
 
-    // Single atomic patch. The library's auto-generated client picks
+    // Single atomic patch. The library's auto-generated tenant picks
     // Content-Type = application/json-patch+json by default; pass a
     // STRATEGIC_MERGE_PATCH middleware override so our object-shaped
     // body is interpreted correctly. Merge `cordoned` into the same
@@ -429,7 +429,7 @@ interface PodLite {
   readonly name: string;
   readonly nodeName: string | undefined;
   readonly ownerKind: string | undefined;
-  readonly clientId: string | null;
+  readonly tenantId: string | null;
   readonly hasNodeAffinityToThisNode: boolean;
 }
 
@@ -447,7 +447,7 @@ function isUnevictable(pod: PodLite, thisNode: string): { skip: boolean; reason:
  * Check whether a Pod template (or live Pod) is pinned to one specific
  * node via nodeSelector or nodeAffinity. We accept both forms because:
  *   - The platform's k8s-deployer sets `nodeSelector: kubernetes.io/hostname=<name>`
- *     when a tenant deployment has `clients.workerNodeName` populated.
+ *     when a tenant deployment has `tenants.nodeName` populated.
  *   - Operators may also use nodeAffinity for more complex pinning.
  * Returns the pin kind so the UI can label rows accurately.
  */
@@ -502,13 +502,13 @@ interface RawPod {
  * drain. Three primary kinds of resources are surfaced:
  *
  *  1. nonSystemPods   — live Pods on this node that will be evicted
- *  2. pinnedClients   — tenant clients with pinned workloads OR PVCs on
- *                       this node, aggregated by client (the unit of
+ *  2. pinnedTenants   — tenant tenants with pinned workloads OR PVCs on
+ *                       this node, aggregated by tenant (the unit of
  *                       re-pinning per the lifecycle architecture)
  *  3. longhornReplicas — every Longhorn replica record on this node,
  *                       used for platform last-replica risk surfacing
  *
- * `db` is required for the client lookup; pass app.db.
+ * `db` is required for the tenant lookup; pass app.db.
  */
 export async function buildDrainImpact(
   k8s: K8sClients,
@@ -520,13 +520,13 @@ export async function buildDrainImpact(
   systemPods: Array<{ namespace: string; name: string; reason: string }>;
   nonSystemPods: Array<{
     namespace: string; name: string;
-    clientId: string | null; clientName: string | null;
+    tenantId: string | null; tenantName: string | null;
     pinnedToThisNode: boolean;
     workloadKind: string | null; workloadName: string | null;
   }>;
-  pinnedClients: Array<{
-    clientId: string;
-    clientName: string;
+  pinnedTenants: Array<{
+    tenantId: string;
+    tenantName: string;
     namespace: string;
     storageTier: 'local' | 'ha';
     currentWorkerNodeName: string | null;
@@ -551,8 +551,8 @@ export async function buildDrainImpact(
     isLastReplica: boolean;
     namespace: string | null;
     pvcName: string | null;
-    clientId: string | null;
-    clientName: string | null;
+    tenantId: string | null;
+    tenantName: string | null;
     ownerLabel: string;
   }>;
 }> {
@@ -568,29 +568,29 @@ export async function buildDrainImpact(
     throw err;
   }
 
-  // 2) Cluster-wide client lookup table (namespace → {id, name, tier, pin}).
+  // 2) Cluster-wide tenant lookup table (namespace → {id, name, tier, pin}).
   //    Single SELECT covers every tenant; cheaper than per-namespace queries.
-  //    storageTier and workerNodeName are needed by the pinnedClients
-  //    aggregation to render the per-client expand view + show the
+  //    storageTier and nodeName are needed by the pinnedTenants
+  //    aggregation to render the per-tenant expand view + show the
   //    operator the current pin (so they know what they're changing).
-  const { clients: clientsTbl } = await import('../../db/schema.js');
-  const clientRows = await db.select({
+  const { tenants: clientsTbl } = await import('../../db/schema.js');
+  const tenantRows = await db.select({
     id: clientsTbl.id,
-    name: clientsTbl.companyName,
+    name: clientsTbl.name,
     ns: clientsTbl.kubernetesNamespace,
     tier: clientsTbl.storageTier,
-    pin: clientsTbl.workerNodeName,
+    pin: clientsTbl.nodeName,
   }).from(clientsTbl);
-  type ClientLite = {
+  type TenantLite = {
     id: string;
     name: string;
     tier: 'local' | 'ha';
     pin: string | null;
   };
-  const clientByNs = new Map<string, ClientLite>();
-  for (const c of clientRows) {
+  const tenantByNs = new Map<string, TenantLite>();
+  for (const c of tenantRows) {
     if (c.ns) {
-      clientByNs.set(c.ns, {
+      tenantByNs.set(c.ns, {
         id: c.id,
         name: c.name,
         tier: (c.tier as 'local' | 'ha') ?? 'local',
@@ -606,7 +606,7 @@ export async function buildDrainImpact(
   const systemPods: Array<{ namespace: string; name: string; reason: string }> = [];
   const nonSystemPods: Array<{
     namespace: string; name: string;
-    clientId: string | null; clientName: string | null;
+    tenantId: string | null; tenantName: string | null;
     pinnedToThisNode: boolean;
     workloadKind: string | null; workloadName: string | null;
   }> = [];
@@ -624,7 +624,7 @@ export async function buildDrainImpact(
       name: podName,
       nodeName: raw.spec?.nodeName,
       ownerKind: isMirror ? 'Node' : ownerKind,
-      clientId: raw.metadata?.labels?.['platform.phoenix-host.net/client-id'] ?? null,
+      tenantId: raw.metadata?.labels?.['platform.phoenix-host.net/tenant-id'] ?? null,
       hasNodeAffinityToThisNode: detectNodePin(raw.spec, name) !== null,
     };
     const verdict = isUnevictable(lite, name);
@@ -636,13 +636,13 @@ export async function buildDrainImpact(
       });
       continue;
     }
-    const clientLookup = clientByNs.get(ns);
+    const tenantLookup = tenantByNs.get(ns);
     const ownerRef = raw.metadata?.ownerReferences?.[0];
     nonSystemPods.push({
       namespace: ns,
       name: podName,
-      clientId: lite.clientId ?? clientLookup?.id ?? null,
-      clientName: clientLookup?.name ?? null,
+      tenantId: lite.tenantId ?? tenantLookup?.id ?? null,
+      tenantName: tenantLookup?.name ?? null,
       pinnedToThisNode: lite.hasNodeAffinityToThisNode,
       workloadKind: ownerRef?.kind ?? null,
       workloadName: ownerRef?.name ?? null,
@@ -655,7 +655,7 @@ export async function buildDrainImpact(
   //    filtered to those with kubernetes.io/hostname=<this node>.
   const pinnedWorkloads: Array<{
     namespace: string; kind: 'Deployment' | 'StatefulSet'; name: string;
-    clientId: string | null; clientName: string | null;
+    tenantId: string | null; tenantName: string | null;
     replicas: number;
     pinKind: 'nodeSelector' | 'nodeAffinity';
   }> = [];
@@ -677,13 +677,13 @@ export async function buildDrainImpact(
         if ((SYSTEM_NAMESPACES as readonly string[]).includes(ns)) continue;
         const pin = detectNodePin(w.spec?.template?.spec, name);
         if (!pin) continue;
-        const c = clientByNs.get(ns);
+        const c = tenantByNs.get(ns);
         pinnedWorkloads.push({
           namespace: ns,
           kind,
           name: w.metadata?.name ?? '',
-          clientId: c?.id ?? null,
-          clientName: c?.name ?? null,
+          tenantId: c?.id ?? null,
+          tenantName: c?.name ?? null,
           replicas: w.spec?.replicas ?? 0,
           pinKind: pin,
         });
@@ -699,7 +699,7 @@ export async function buildDrainImpact(
   //    replica for any volume. The custom resource list is best-effort:
   //    if the CRD is absent (cluster without Longhorn) we just skip it.
   //    Each entry is enriched with PVC namespace + name and resolved
-  //    owner (client name or "Platform System") so the UI's last-replica
+  //    owner (tenant name or "Platform System") so the UI's last-replica
   //    risk panel can label volumes for the operator.
   const longhornReplicas: Array<{
     volumeName: string;
@@ -707,8 +707,8 @@ export async function buildDrainImpact(
     isLastReplica: boolean;
     namespace: string | null;
     pvcName: string | null;
-    clientId: string | null;
-    clientName: string | null;
+    tenantId: string | null;
+    tenantName: string | null;
     ownerLabel: string;
   }> = [];
   try {
@@ -762,18 +762,18 @@ export async function buildDrainImpact(
       const meta = volumeMeta.get(vol);
       const ns = meta?.namespace || null;
       const pvcName = meta?.pvcName || null;
-      const client = ns ? clientByNs.get(ns) : undefined;
-      // "Platform System" covers everything not owned by a tenant client:
+      const tenant = ns ? tenantByNs.get(ns) : undefined;
+      // "Platform System" covers everything not owned by a tenant tenant:
       // longhorn-system, platform (postgres), monitoring, mail, etc.
-      const ownerLabel = client?.name ?? (ns ? `Platform System (${ns})` : 'Platform System');
+      const ownerLabel = tenant?.name ?? (ns ? `Platform System (${ns})` : 'Platform System');
       longhornReplicas.push({
         volumeName: vol,
         replicaName,
         isLastReplica,
         namespace: ns,
         pvcName,
-        clientId: client?.id ?? null,
-        clientName: client?.name ?? null,
+        tenantId: tenant?.id ?? null,
+        tenantName: tenant?.name ?? null,
         ownerLabel,
       });
     }
@@ -786,11 +786,11 @@ export async function buildDrainImpact(
 
   // 6) Tenant PVCs with a replica on this node. We list Longhorn Volumes
   //    cluster-wide once and join with PV → PVC namespace to produce
-  //    operator-friendly entries. Tenant = namespace IS in the clients
+  //    operator-friendly entries. Tenant = namespace IS in the tenants
   //    table (excluding platform / mail / etc).
   const tenantPvcs: Array<{
     namespace: string; pvcName: string; volumeName: string;
-    clientId: string | null; clientName: string | null;
+    tenantId: string | null; tenantName: string | null;
     sizeBytes: number; replicaCount: number;
     isLastReplica: boolean;
     currentNodeSelector: string[];
@@ -849,18 +849,18 @@ export async function buildDrainImpact(
       const k8sStatus = v.status?.kubernetesStatus;
       const ns = k8sStatus?.namespace ?? '';
       const pvcName = k8sStatus?.pvcName ?? '';
-      if (!ns || !clientByNs.has(ns)) continue; // tenant only
+      if (!ns || !tenantByNs.has(ns)) continue; // tenant only
       const allNodes = replicaNodes.get(volName) ?? [];
       if (!allNodes.includes(name)) continue;
       const healthy = healthyReplicaNodes.get(volName) ?? [];
-      const c = clientByNs.get(ns)!;
+      const c = tenantByNs.get(ns)!;
       const sizeBytes = Number(v.spec?.size ?? '0');
       tenantPvcs.push({
         namespace: ns,
         pvcName,
         volumeName: volName,
-        clientId: c.id,
-        clientName: c.name,
+        tenantId: c.id,
+        tenantName: c.name,
         sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
         replicaCount: healthy.length,
         isLastReplica: healthy.length <= 1,
@@ -874,14 +874,14 @@ export async function buildDrainImpact(
     }
   }
 
-  // 7) Aggregate tenant pinned workloads + PVCs by client so the modal
-  //    can offer ONE re-pin target per client (matching the lifecycle
-  //    architecture: pinning is a client-level property in
-  //    clients.worker_node_name, propagated to every workload + volume
+  // 7) Aggregate tenant pinned workloads + PVCs by tenant so the modal
+  //    can offer ONE re-pin target per tenant (matching the lifecycle
+  //    architecture: pinning is a tenant-level property in
+  //    tenants.node_name, propagated to every workload + volume
   //    in the namespace by the orchestrator).
-  type ClientAgg = {
-    clientId: string;
-    clientName: string;
+  type TenantAgg = {
+    tenantId: string;
+    tenantName: string;
     namespace: string;
     storageTier: 'local' | 'ha';
     currentWorkerNodeName: string | null;
@@ -900,27 +900,27 @@ export async function buildDrainImpact(
       currentNodeSelector: string[];
     }>;
   };
-  const byClient = new Map<string, ClientAgg>();
-  const ensureClient = (clientId: string, ns: string): ClientAgg | null => {
-    const existing = byClient.get(clientId);
+  const byTenant = new Map<string, TenantAgg>();
+  const ensureTenant = (tenantId: string, ns: string): TenantAgg | null => {
+    const existing = byTenant.get(tenantId);
     if (existing) return existing;
-    const c = clientByNs.get(ns);
+    const c = tenantByNs.get(ns);
     if (!c) return null;
-    const agg: ClientAgg = {
-      clientId,
-      clientName: c.name,
+    const agg: TenantAgg = {
+      tenantId,
+      tenantName: c.name,
       namespace: ns,
       storageTier: c.tier,
       currentWorkerNodeName: c.pin,
       workloads: [],
       pvcs: [],
     };
-    byClient.set(clientId, agg);
+    byTenant.set(tenantId, agg);
     return agg;
   };
   for (const w of pinnedWorkloads) {
-    if (!w.clientId) continue;
-    const agg = ensureClient(w.clientId, w.namespace);
+    if (!w.tenantId) continue;
+    const agg = ensureTenant(w.tenantId, w.namespace);
     if (!agg) continue;
     agg.workloads.push({
       kind: w.kind,
@@ -930,8 +930,8 @@ export async function buildDrainImpact(
     });
   }
   for (const p of tenantPvcs) {
-    if (!p.clientId) continue;
-    const agg = ensureClient(p.clientId, p.namespace);
+    if (!p.tenantId) continue;
+    const agg = ensureTenant(p.tenantId, p.namespace);
     if (!agg) continue;
     agg.pvcs.push({
       pvcName: p.pvcName,
@@ -942,15 +942,15 @@ export async function buildDrainImpact(
       currentNodeSelector: p.currentNodeSelector,
     });
   }
-  const pinnedClients = Array.from(byClient.values()).sort((a, b) =>
-    a.clientName.localeCompare(b.clientName));
+  const pinnedTenants = Array.from(byTenant.values()).sort((a, b) =>
+    a.tenantName.localeCompare(b.tenantName));
 
   return {
     nodeName: name,
     alreadyCordoned,
     systemPods,
     nonSystemPods,
-    pinnedClients,
+    pinnedTenants,
     longhornReplicas,
   };
 }
@@ -974,20 +974,20 @@ export async function drainNode(
     readonly forceLastReplica?: boolean;
     readonly gracePeriodSeconds?: number;
     /**
-     * Per-client re-pin instructions. Key = clientId. Values:
+     * Per-tenant re-pin instructions. Key = tenantId. Values:
      *   ""        → clear the pin (auto)
-     *   "<node>"  → re-pin the entire client (workloads + volumes) to <node>
+     *   "<node>"  → re-pin the entire tenant (workloads + volumes) to <node>
      *   "stay"    → keep the pin on the draining node (drain refuses
      *               unless forceLastReplica covers data risk)
-     * Any pinned client missing from the map defaults to "" (auto).
+     * Any pinned tenant missing from the map defaults to "" (auto).
      */
-    readonly clientPlacement?: Record<string, string>;
+    readonly tenantPlacement?: Record<string, string>;
   },
 ): Promise<{
   cordoned: boolean;
   evicted: number;
   failed: Array<{ namespace: string; name: string; error: string }>;
-  rePinnedClients: number;
+  rePinnedTenants: number;
   rePinnedWorkloads: number;
   rePinnedPvcs: number;
 }> {
@@ -1006,24 +1006,24 @@ export async function drainNode(
 
   // 1.5) Apply CLIENT-LEVEL re-pin instructions BEFORE cordoning.
   //
-  // Pinning is a client-level property — clients.worker_node_name in
+  // Pinning is a tenant-level property — tenants.node_name in
   // the platform DB is the source of truth, and the orchestrator is
   // responsible for ensuring every Deployment, StatefulSet, FM
-  // sidecar, and Longhorn volume in the client's namespace inherits
+  // sidecar, and Longhorn volume in the tenant's namespace inherits
   // that pin. The drain endpoint therefore takes one re-pin target
-  // per client and applies it consistently across the entire
+  // per tenant and applies it consistently across the entire
   // namespace, rather than letting the operator pick conflicting
   // targets per-workload (which would violate the lifecycle
   // architecture).
   //
-  // Auto-fill: any client present in pinnedClients but not in the
+  // Auto-fill: any tenant present in pinnedTenants but not in the
   // request gets "" (auto = clear pin → scheduler/Longhorn picks).
   // Without this, an API caller passing an empty map cordons the
   // node and evicts pods but leaves their nodeSelector pointing at
   // the cordoned host — pods come back Pending.
-  const clientPlacement: Record<string, string> = { ...(opts.clientPlacement ?? {}) };
-  for (const c of impact.pinnedClients) {
-    if (!(c.clientId in clientPlacement)) clientPlacement[c.clientId] = '';
+  const tenantPlacement: Record<string, string> = { ...(opts.tenantPlacement ?? {}) };
+  for (const c of impact.pinnedTenants) {
+    if (!(c.tenantId in tenantPlacement)) tenantPlacement[c.tenantId] = '';
   }
 
   // Validate target nodes referenced by the operator BEFORE doing any
@@ -1031,7 +1031,7 @@ export async function drainNode(
   // converted. We skip 'stay' and '' (auto) since they don't refer
   // to a target node.
   const referencedTargets = new Set<string>();
-  for (const t of Object.values(clientPlacement)) {
+  for (const t of Object.values(tenantPlacement)) {
     if (t && t !== 'stay') referencedTargets.add(t);
   }
   for (const target of referencedTargets) {
@@ -1054,7 +1054,7 @@ export async function drainNode(
   }
 
   // Per-host Longhorn tag tracking — we add the tag to the target
-  // Longhorn Node CR exactly once even when several clients are
+  // Longhorn Node CR exactly once even when several tenants are
   // re-pinned to it.
   const PER_HOST_TAG_PREFIX = 'node-';
   const taggedTargets = new Set<string>();
@@ -1078,46 +1078,46 @@ export async function drainNode(
     return hostTag;
   };
 
-  let rePinnedClients = 0;
+  let rePinnedTenants = 0;
   let rePinnedWorkloads = 0;
   let rePinnedPvcs = 0;
 
   // Lookup workloads + PVCs by namespace once — buildDrainImpact
-  // already has them grouped by client.
-  const clientById = new Map(impact.pinnedClients.map((c) => [c.clientId, c]));
+  // already has them grouped by tenant.
+  const tenantById = new Map(impact.pinnedTenants.map((c) => [c.tenantId, c]));
 
-  // Order of operations per client (matters for partial-failure recovery):
+  // Order of operations per tenant (matters for partial-failure recovery):
   //   (a) Pre-flight: ensure the target Longhorn Node CR carries the
   //       per-host tag. This is the most likely fail-fast step (CRD
   //       not installed, Longhorn API down, target node missing tag-
   //       management permission). Doing it first means a failure
-  //       leaves zero state mutated for this client.
+  //       leaves zero state mutated for this tenant.
   //   (b) Patch every Longhorn volume in the namespace.
   //   (c) Patch every Deployment + StatefulSet in the namespace.
-  //   (d) Update clients.worker_node_name in the DB so the next
+  //   (d) Update tenants.node_name in the DB so the next
   //       reconciler tick / next deploy doesn't snap back.
   //
   // If (b) or (c) partially fails, the orchestrator's next reconciler
-  // tick re-derives state from clients.worker_node_name (already
+  // tick re-derives state from tenants.node_name (already
   // updated in (d)) and brings the cluster back into shape. Doing
   // (d) last is therefore important — if it ran first and (b)/(c)
   // fully failed, the DB would advertise a pin the cluster never
   // accepted and the next deploy would inherit the wrong node.
-  for (const [clientId, target] of Object.entries(clientPlacement)) {
+  for (const [tenantId, target] of Object.entries(tenantPlacement)) {
     if (target === 'stay') continue;
-    const c = clientById.get(clientId);
-    if (!c) continue; // operator targeted a client that has no pins on this node — no-op
+    const c = tenantById.get(tenantId);
+    if (!c) continue; // operator targeted a tenant that has no pins on this node — no-op
     const ns = c.namespace;
 
     // (a) Resolve the Longhorn host-tag for the target. Failure here
-    //     skips the entire client — none of (b)/(c)/(d) run, so no
+    //     skips the entire tenant — none of (b)/(c)/(d) run, so no
     //     partial state.
     let nextSelector: string[] = [];
     if (target !== '') {
       try {
         nextSelector = [await ensureLonghornHostTag(target)];
       } catch (err) {
-        console.warn(`[nodes] re-pin client=${clientId} target tag step on ${target} failed (skipping client):`, (err as Error).message);
+        console.warn(`[nodes] re-pin tenant=${tenantId} target tag step on ${target} failed (skipping tenant):`, (err as Error).message);
         continue;
       }
     }
@@ -1133,7 +1133,7 @@ export async function drainNode(
           MERGE_PATCH);
         rePinnedPvcs += 1;
       } catch (err) {
-        console.warn(`[nodes] re-pin client=${clientId} volume=${p.volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
+        console.warn(`[nodes] re-pin tenant=${tenantId} volume=${p.volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
       }
     }
 
@@ -1163,7 +1163,7 @@ export async function drainNode(
         }
         rePinnedWorkloads += 1;
       } catch (err) {
-        console.warn(`[nodes] re-pin client=${clientId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
+        console.warn(`[nodes] re-pin tenant=${tenantId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
       }
     }
 
@@ -1172,14 +1172,14 @@ export async function drainNode(
     //     or (c) partially failed, the reconciler reads this row on
     //     its next tick and re-applies the patches.
     try {
-      const { clients: clientsTbl } = await import('../../db/schema.js');
+      const { tenants: clientsTbl } = await import('../../db/schema.js');
       await db.update(clientsTbl)
-        .set({ workerNodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
-        .where(eq(clientsTbl.id, clientId));
+        .set({ nodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
+        .where(eq(clientsTbl.id, tenantId));
     } catch (err) {
-      console.warn(`[nodes] platform pin DB sync failed for client=${clientId}:`, (err as Error).message);
+      console.warn(`[nodes] platform pin DB sync failed for tenant=${tenantId}:`, (err as Error).message);
     }
-    rePinnedClients += 1;
+    rePinnedTenants += 1;
   }
 
   // 2) Cordon (idempotent — patch unschedulable=true).
@@ -1195,8 +1195,8 @@ export async function drainNode(
 
   // 3) Evict non-system pods.
   //
-  // The TS client exposes evictions via createNamespacedPodEviction
-  // (kubernetes-client v1.x). Validate the method exists before
+  // The TS tenant exposes evictions via createNamespacedPodEviction
+  // (kubernetes-tenant v1.x). Validate the method exists before
   // entering the loop — if a future library upgrade renames or
   // removes it, the per-pod try/catch below would otherwise silently
   // count every eviction as a "failure" with `is not a function` and
@@ -1205,7 +1205,7 @@ export async function drainNode(
   if (typeof evictionMethod !== 'function') {
     throw new ApiError(
       'NODE_DRAIN_API_UNAVAILABLE',
-      'Pod eviction API not available on the kubernetes client. ' +
+      'Pod eviction API not available on the kubernetes tenant. ' +
       'Library upgrade may have changed the method signature; check service.ts drainNode.',
       500,
     );
@@ -1243,7 +1243,7 @@ export async function drainNode(
     }
   }
 
-  return { cordoned, evicted, failed, rePinnedClients, rePinnedWorkloads, rePinnedPvcs };
+  return { cordoned, evicted, failed, rePinnedTenants, rePinnedWorkloads, rePinnedPvcs };
 }
 
 /**

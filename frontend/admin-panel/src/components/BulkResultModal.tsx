@@ -2,10 +2,10 @@ import { X, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 /**
  * Result modal for bulk lifecycle actions (suspend / reactivate /
- * delete). The backend `/admin/clients/bulk` endpoint returns
+ * delete). The backend `/admin/tenants/bulk` endpoint returns
  * `{ succeeded: string[], failed: [{id, error}] }`. This component
  * renders that summary with a table of failures so operators can see
- * exactly which clients bounced and why.
+ * exactly which tenants bounced and why.
  */
 export interface BulkResult {
   readonly succeeded: readonly string[];

@@ -16,7 +16,7 @@ export default function SystemSettingsForm() {
 
   const [platformName, setPlatformName] = useState('Hosting Platform');
   const [adminPanelUrl, setAdminPanelUrl] = useState('');
-  const [clientPanelUrl, setClientPanelUrl] = useState('');
+  const [tenantPanelUrl, setTenantPanelUrl] = useState('');
   const [supportEmail, setSupportEmail] = useState('');
   const [supportUrl, setSupportUrl] = useState('');
   const [ingressBaseDomain, setIngressBaseDomain] = useState('');
@@ -31,7 +31,7 @@ export default function SystemSettingsForm() {
     if (settings) {
       setPlatformName(settings.platformName);
       setAdminPanelUrl(settings.adminPanelUrl ?? '');
-      setClientPanelUrl(settings.clientPanelUrl ?? '');
+      setTenantPanelUrl(settings.tenantPanelUrl ?? '');
       setSupportEmail(settings.supportEmail ?? '');
       setSupportUrl(settings.supportUrl ?? '');
       setIngressBaseDomain(settings.ingressBaseDomain ?? '');
@@ -49,7 +49,7 @@ export default function SystemSettingsForm() {
       {
         platformName,
         adminPanelUrl: adminPanelUrl || null,
-        clientPanelUrl: clientPanelUrl || null,
+        tenantPanelUrl: tenantPanelUrl || null,
         supportEmail: supportEmail || null,
         supportUrl: supportUrl || null,
         ingressBaseDomain: ingressBaseDomain || null,
@@ -136,15 +136,15 @@ export default function SystemSettingsForm() {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Client Panel URL
                 </label>
-                <UrlStatusBadges panel="client" health={health?.client} />
+                <UrlStatusBadges panel="tenant" health={health?.tenant} />
               </div>
               <input
                 type="url"
-                value={clientPanelUrl}
-                onChange={(e) => setClientPanelUrl(e.target.value)}
+                value={tenantPanelUrl}
+                onChange={(e) => setTenantPanelUrl(e.target.value)}
                 className={INPUT_CLASS}
                 placeholder="https://my.example.com"
-                data-testid="client-panel-url-input"
+                data-testid="tenant-panel-url-input"
               />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 Same routing semantics as Admin Panel URL.
@@ -288,7 +288,7 @@ export default function SystemSettingsForm() {
               System Timezone
             </label>
             <TimezoneSelect value={timezone} onChange={setTimezone} />
-            <p className="text-xs text-gray-400 mt-1">Default timezone for new clients. Clients can override in their settings.</p>
+            <p className="text-xs text-gray-400 mt-1">Default timezone for new tenants. Clients can override in their settings.</p>
           </div>
         </div>
       </div>

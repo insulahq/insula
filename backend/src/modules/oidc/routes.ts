@@ -74,7 +74,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/auth/oidc/status', async (request) => {
     const query = request.query as { panel?: string };
-    const panel = (query.panel === 'client' ? 'client' : 'admin') as 'admin' | 'client';
+    const panel = (query.panel === 'tenant' ? 'tenant' : 'admin') as 'admin' | 'tenant';
     const status = await service.getAuthStatus(app.db, panel);
     return success(status);
   });
@@ -85,9 +85,9 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   // `request.protocol` is unreliable here in Fastify v5 — even with
   // `trustProxy: true`, it returned 'http' on staging. Read
   // X-Forwarded-Proto directly (set by nginx-ingress to the actual
-  // client scheme via $pass_access_scheme) and fall back to
+  // tenant scheme via $pass_access_scheme) and fall back to
   // request.protocol only if the header is missing. Surfaced by
-  // integration-oidc-dex.sh: Dex's static client only allows https://
+  // integration-oidc-dex.sh: Dex's static tenant only allows https://
   // redirect_uris, so an http:// scheme produces "Unregistered
   // redirect_uri" and the entire auth flow breaks.
   const resolveScheme = (request: { headers: Record<string, string | string[] | undefined>; protocol: string; log?: { info: (obj: object, msg: string) => void } }): string => {
@@ -104,7 +104,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     // platform's admin/client panels always serve over HTTPS. If the
     // header is missing AND `request.protocol` falls back to "http"
     // (Fastify v5 quirk), force HTTPS for any non-localhost host so the
-    // OIDC redirect_uri Dex sees matches the registered staticClient.
+    // OIDC redirect_uri Dex sees matches the registered staticTenant.
     if (resolved !== 'https') {
       const host = (request.headers.host as string | undefined) ?? '';
       const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]');
@@ -178,7 +178,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       exp: Math.floor(Date.now() / 1000) + 86400, iat: Math.floor(Date.now() / 1000),
       jti: crypto.randomUUID(),
     };
-    if (user.clientId) jwtPayload.clientId = user.clientId;
+    if (user.tenantId) jwtPayload.tenantId = user.tenantId;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const token = app.jwt.sign(jwtPayload as any);
 
@@ -186,7 +186,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     const separator = frontendRedirect.includes('?') ? '&' : '?';
     const userJson = encodeURIComponent(JSON.stringify({
       id: user.id, email: user.email, fullName: user.fullName,
-      role: user.roleName, panel: user.panel ?? 'admin', clientId: user.clientId ?? null,
+      role: user.roleName, panel: user.panel ?? 'admin', tenantId: user.tenantId ?? null,
     }));
 
     return reply.redirect(`${frontendRedirect}${separator}token=${token}&user=${userJson}`);
@@ -242,8 +242,8 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
     const input = request.body as unknown as SaveProviderInput;
-    if (!input.display_name || !input.issuer_url || !input.client_id || !input.client_secret || !input.panel_scope) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, client_id, client_secret, and panel_scope are required', 400);
+    if (!input.display_name || !input.issuer_url || !input.tenant_id || !input.tenant_secret || !input.panel_scope) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, tenant_id, tenant_secret, and panel_scope are required', 400);
     }
     const provider = await service.createProvider(app.db, input, encryptionKey);
     reply.status(201).send(success(provider));
@@ -301,13 +301,13 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       const adminHost = extractHost(sysSettings.adminPanelUrl);
       await syncProxyIngressAnnotations(app.db, k8s, {
         protectAdminViaProxy: settings.protectAdminViaProxy,
-        protectClientViaProxy: settings.protectClientViaProxy,
+        protectTenantViaProxy: settings.protectTenantViaProxy,
         breakGlassPath: settings.breakGlassPath,
         adminHost,
       });
 
       // Sync cookie secret to K8s Secret if proxy is enabled
-      if (settings.protectAdminViaProxy || settings.protectClientViaProxy) {
+      if (settings.protectAdminViaProxy || settings.protectTenantViaProxy) {
         const cookieSecret = await service.getDecryptedCookieSecret(app.db, encryptionKey);
         if (cookieSecret) {
           await syncOAuth2ProxySecret(k8s, cookieSecret);
@@ -325,10 +325,10 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       await reconcileIngressHosts(
         {
           adminPanelUrl: sysSettings.adminPanelUrl ?? null,
-          clientPanelUrl: sysSettings.clientPanelUrl ?? null,
+          tenantPanelUrl: sysSettings.tenantPanelUrl ?? null,
           tlsSecretName,
           protectAdminViaProxy: settings.protectAdminViaProxy,
-          protectClientViaProxy: settings.protectClientViaProxy,
+          protectTenantViaProxy: settings.protectTenantViaProxy,
         },
         undefined,
         { kubeconfigPath, clusterIssuerName },
@@ -358,7 +358,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       const adminHost = extractHost(sysSettings.adminPanelUrl);
       await syncProxyIngressAnnotations(app.db, k8s, {
         protectAdminViaProxy: settings.protectAdminViaProxy,
-        protectClientViaProxy: settings.protectClientViaProxy,
+        protectTenantViaProxy: settings.protectTenantViaProxy,
         breakGlassPath: newPath,
         adminHost,
       });

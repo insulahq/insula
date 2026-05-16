@@ -4,7 +4,7 @@
 // Both backend and frontend import from here.
 //
 // Usage:
-//   import { createClientSchema, type ClientResponse } from '@k8s-hosting/api-contracts';
+//   import { createTenantSchema, type TenantResponse } from '@k8s-hosting/api-contracts';
 //
 // Rules:
 //   1. ALL API input/output types MUST be defined here
@@ -17,7 +17,7 @@ export * from './shared.js';
 export * from './cluster-network.js';
 export * from './operator-error.js';
 export * from './auth.js';
-export * from './clients.js';
+export * from './tenants.js';
 export * from './domains.js';
 export * from './backups.js';
 export * from './tenant-bundles.js';

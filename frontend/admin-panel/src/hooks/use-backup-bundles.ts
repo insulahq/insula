@@ -24,15 +24,15 @@ interface ListResponse {
 interface SingleResponse<T> { data: T }
 
 /**
- * List bundles. Optionally filter by clientId. Refetches every 30s
+ * List bundles. Optionally filter by tenantId. Refetches every 30s
  * so a freshly-created bundle shows up without manual refresh.
  */
-export function useBundles(clientId?: string) {
-  const path = clientId
-    ? `/api/v1/admin/tenant-bundles?clientId=${encodeURIComponent(clientId)}`
+export function useBundles(tenantId?: string) {
+  const path = tenantId
+    ? `/api/v1/admin/tenant-bundles?tenantId=${encodeURIComponent(tenantId)}`
     : '/api/v1/admin/tenant-bundles';
   return useQuery({
-    queryKey: ['backup-bundles', clientId ?? 'all'],
+    queryKey: ['backup-bundles', tenantId ?? 'all'],
     queryFn: () => apiFetch<ListResponse>(path),
     refetchInterval: 30_000,
   });
@@ -90,7 +90,7 @@ export function useCreateBundle() {
  * Trigger a browser download of the encrypted GDPR data-export
  * tarball. Uses fetch + Blob + URL.createObjectURL because <a
  * href> cannot carry the Authorization Bearer header. The blob
- * stays opaque ciphertext — the client decrypts locally with their
+ * stays opaque ciphertext — the tenant decrypts locally with their
  * passphrase.
  */
 export async function downloadDataExport(bundleId: string): Promise<void> {
@@ -194,66 +194,66 @@ export interface ImportBundleResult {
 /**
  * Format-detected import preview. Server inspects the uploaded
  * archive (without writing anything) and returns the parsed v2 meta
- * + a local-client lookup so the UI can pick the right downstream
+ * + a local-tenant lookup so the UI can pick the right downstream
  * flow:
- *   - localClientMatch.status='active'   → block ("use Restore Cart")
- *   - localClientMatch.status='archived' or null → unlock RestoreFromBundleModal
- *   - localClientMatch=null               → unlock the "create new tenant" path
+ *   - localTenantMatch.status='active'   → block ("use Restore Cart")
+ *   - localTenantMatch.status='archived' or null → unlock RestoreFromBundleModal
+ *   - localTenantMatch=null               → unlock the "create new tenant" path
  */
 export interface ImportPreviewResponse {
   readonly format: 'tar-encrypted' | 'tar-plain' | 'zip';
   readonly sourceMeta: {
     readonly schemaVersion: number | null;
     readonly backupId: string | null;
-    readonly clientId: string | null;
+    readonly tenantId: string | null;
     readonly capturedAt: string | null;
     readonly platformVersion: string | null;
     readonly label: string | null;
-    readonly client: import('@k8s-hosting/api-contracts').BackupMetaClient | null;
+    readonly tenant: import('@k8s-hosting/api-contracts').BackupMetaTenant | null;
     readonly domainsSummary: ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary>;
     readonly deploymentsSummary: ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary>;
   };
   readonly components: Record<string, { count: number; totalBytes: number }>;
-  readonly localClientMatch: {
+  readonly localTenantMatch: {
     readonly id: string;
     readonly status: string;
-    readonly companyName: string;
+    readonly name: string;
   } | null;
   readonly entryCount: number;
   readonly totalBytes: number;
 }
 
 export interface RestoreFromBundleResult {
-  readonly newClientId: string;
+  readonly newTenantId: string;
   readonly bundleId: string;
   readonly sizeBytes: number;
   readonly componentCount: number;
-  readonly clientUser?: {
+  readonly tenantUser?: {
     readonly email: string;
     readonly generatedPassword?: string;
   };
 }
 
 export interface RestoreFromBundleOverrides {
-  readonly company_name: string;
-  readonly company_email: string;
-  readonly contact_email?: string;
+  readonly name: string;
+  readonly primary_email: string;
+  readonly secondary_email?: string;
   readonly plan_id: string;
   readonly region_id: string;
   readonly timezone?: string;
-  readonly worker_node_name?: string;
+  readonly node_name?: string;
   readonly storage_tier?: 'local' | 'ha';
   readonly subscription_expires_at?: string;
 }
 
 /**
- * Restore-from-bundle: create a brand-new client + import the bundle
- * in one shot. Used for missing/deleted source clients where there's
+ * Restore-from-bundle: create a brand-new tenant + import the bundle
+ * in one shot. Used for missing/deleted source tenants where there's
  * nothing locally to attach the bundle to.
  *
- * Server creates the client via the standard createClient service
- * (auto-generates a client_admin user with one-shot password —
- * returned in `clientUser.generatedPassword` so the operator can
+ * Server creates the tenant via the standard createTenant service
+ * (auto-generates a tenant_admin user with one-shot password —
+ * returned in `tenantUser.generatedPassword` so the operator can
  * record it once before this dialog closes).
  */
 export async function restoreFromBundle(args: {
@@ -312,20 +312,20 @@ export async function previewImport(args: {
 
 /**
  * Multi-region import — multipart POST with the encrypted tarball
- * + passphrase + target clientId/targetConfigId. Server decrypts,
+ * + passphrase + target tenantId/targetConfigId. Server decrypts,
  * uploads each component to the local off-site target, registers a
  * fresh backup_jobs row.
  */
 export async function importBundle(args: {
   file: File;
   passphrase: string;
-  clientId: string;
+  tenantId: string;
   targetConfigId: string;
 }): Promise<ImportBundleResult> {
   const fd = new FormData();
   fd.append('bundle', args.file);
   fd.append('passphrase', args.passphrase);
-  fd.append('clientId', args.clientId);
+  fd.append('tenantId', args.tenantId);
   fd.append('targetConfigId', args.targetConfigId);
   const token = localStorage.getItem('auth_token');
   const r = await fetch('/api/v1/admin/tenant-bundles/import', {

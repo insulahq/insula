@@ -2,14 +2,14 @@
  * Manual DKIM rotation route.
  *
  * Endpoint:
- *   POST /api/v1/clients/:clientId/email-domains/:domainId/dkim/rotate
+ *   POST /api/v1/tenants/:tenantId/email-domains/:domainId/dkim/rotate
  *
- * Auth: client_admin (the owner of the client) OR platform admin.
+ * Auth: tenant_admin (the owner of the tenant) OR platform admin.
  * Audit: each rotation logs to the existing audit_log via the
  * standard request lifecycle hook.
  *
  * Idempotency: NOT idempotent — re-running creates a NEW DkimSignature
- * row each time. The client-panel UI requires a confirmation modal
+ * row each time. The tenant-panel UI requires a confirmation modal
  * to prevent accidental fan-out.
  */
 
@@ -24,20 +24,20 @@ import { emailDomains, domains, auditLogs } from '../../db/schema.js';
 import { rotateDkimKey, DkimRotationError } from './rotate.js';
 
 const paramsSchema = z.object({
-  clientId: z.string().uuid(),
+  tenantId: z.string().uuid(),
   domainId: z.string().uuid(),
 });
 
 interface RouteParams {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly domainId: string;
 }
 
 export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: RouteParams }>(
-    '/clients/:clientId/email-domains/:domainId/dkim/rotate',
+    '/tenants/:tenantId/email-domains/:domainId/dkim/rotate',
     {
-      onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin', 'support')],
+      onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin', 'support')],
     },
     async (request) => {
       // Defence-in-depth: validate UUID format on path params before
@@ -50,38 +50,38 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
           400,
         );
       }
-      const { clientId, domainId } = parsedParams.data;
+      const { tenantId, domainId } = parsedParams.data;
 
-      // Authorization: client_admin must own the client. The
+      // Authorization: tenant_admin must own the tenant. The
       // requireRole middleware lets all four through; we narrow with
-      // an explicit check here so client_admin from client A can't
-      // rotate keys for client B.
-      const userClientId = (request.user as { clientId?: string } | undefined)?.clientId;
+      // an explicit check here so tenant_admin from tenant A can't
+      // rotate keys for tenant B.
+      const userTenantId = (request.user as { tenantId?: string } | undefined)?.tenantId;
       const userRole = (request.user as { role?: string } | undefined)?.role;
-      if (userRole === 'client_admin' && userClientId !== clientId) {
+      if (userRole === 'tenant_admin' && userTenantId !== tenantId) {
         throw new ApiError(
           'FORBIDDEN',
-          'You can only rotate DKIM keys for your own client',
+          'You can only rotate DKIM keys for your own tenant',
           403,
         );
       }
 
-      // Verify the email-domain belongs to this client (via its parent
+      // Verify the email-domain belongs to this tenant (via its parent
       // domain). Otherwise an admin could mis-target a domain by ID.
       const [row] = await app.db
         .select({
           edId: emailDomains.id,
           domainName: domains.domainName,
-          parentClientId: domains.clientId,
+          parentTenantId: domains.tenantId,
         })
         .from(emailDomains)
         .innerJoin(domains, eq(domains.id, emailDomains.domainId))
-        .where(and(eq(emailDomains.id, domainId), eq(domains.clientId, clientId)));
+        .where(and(eq(emailDomains.id, domainId), eq(domains.tenantId, tenantId)));
 
       if (!row) {
         throw new ApiError(
           'EMAIL_DOMAIN_NOT_FOUND',
-          `Email domain '${domainId}' not found for client '${clientId}'`,
+          `Email domain '${domainId}' not found for tenant '${tenantId}'`,
           404,
         );
       }
@@ -110,7 +110,7 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
           resourceType: 'email_domain',
           resourceId: domainId,
           changes: {
-            clientId,
+            tenantId,
             domainName: row.domainName,
             newSelector: result.newSelector,
             stalwartDkimSignatureId: result.stalwartDkimSignatureId,

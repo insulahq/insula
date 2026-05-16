@@ -10,7 +10,7 @@
  *
  * Platform-api receives the body, pipes it straight into
  * `restic backup --stdin --stdin-filename archive.tar` against the
- * per-tenant repo (`<store>/restic-files/<clientId>/`). Snapshot id is
+ * per-tenant repo (`<store>/restic-files/<tenantId>/`). Snapshot id is
  * parsed from restic's --json summary line and returned to the Job
  * via the response. Tags carry the full multi-region metadata
  * (region, tenant-id, tenant-slug, bundle-version, platform-version).
@@ -71,7 +71,7 @@ export interface CaptureFilesComponentOpts {
   readonly k8s: K8sClients;
   readonly namespace: string;
   readonly pvcName: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly backupId: string;
   readonly platformApiUrl: string;
   readonly secretsKeyHex: string;
@@ -155,7 +155,7 @@ function buildScript(opts: { uploadUrlNoToken: string; bundleId: string }): stri
 
 /**
  * Build the K8s Job spec for the files-component capture. Pure
- * function — exposed for unit-testing the spec without a kube client.
+ * function — exposed for unit-testing the spec without a kube tenant.
  *
  * SECURITY NOTE (reviewer #5): the HMAC upload token is interpolated
  * into the shell script and stored in `spec.template.spec.containers[0].command`,
@@ -175,7 +175,7 @@ export function buildFilesComponentJobSpec(input: {
   jobName: string;
   namespace: string;
   pvcName: string;
-  clientId: string;
+  tenantId: string;
   backupId: string;
   jobImage: string;
   /** Upload URL WITHOUT the &token=... query param. The script
@@ -244,7 +244,7 @@ export function buildFilesComponentJobSpec(input: {
       metadata: {
         labels: {
           'platform.io/component': 'backup-files',
-          'platform.io/client-id': input.clientId,
+          'platform.io/tenant-id': input.tenantId,
           'platform.io/backup-id': input.backupId,
         },
       },
@@ -260,7 +260,7 @@ export function buildFilesComponentJobSpec(input: {
       namespace: input.namespace,
       labels: {
         'platform.io/component': 'backup-files',
-        'platform.io/client-id': input.clientId,
+        'platform.io/tenant-id': input.tenantId,
         'platform.io/backup-id': input.backupId,
       },
     },
@@ -274,7 +274,7 @@ export function buildFilesComponentJobSpec(input: {
  * the Job log line `FILES_DONE snapshot=<id>`.
  *
  * Pre-condition: orchestrator has already run preCaptureDatabaseDumps
- * for this client's database deployments (so dumps are on the PVC and
+ * for this tenant's database deployments (so dumps are on the PVC and
  * will be included in the tar stream).
  */
 export async function captureFilesComponent(
@@ -319,7 +319,7 @@ export async function captureFilesComponent(
     jobName,
     namespace: opts.namespace,
     pvcName: opts.pvcName,
-    clientId: opts.clientId,
+    tenantId: opts.tenantId,
     backupId: opts.backupId,
     jobImage: opts.jobImage ?? 'alpine:3.20',
     uploadUrlNoToken,
@@ -550,7 +550,7 @@ async function wireSecretOwnerRef(
   };
   // Use the project-wide STRATEGIC_MERGE_PATCH middleware shim — the
   // ci-k8s-patch-check audit enforces this pattern across all
-  // patchNamespaced* call sites (kubernetes-client v1.4 defaults to
+  // patchNamespaced* call sites (kubernetes-tenant v1.4 defaults to
   // json-patch+json which the apiserver rejects for merge objects).
   await (k8s.core as unknown as {
     patchNamespacedSecret: (

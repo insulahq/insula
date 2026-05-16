@@ -17,7 +17,7 @@ import { z } from 'zod';
  *     the primary message
  *
  * The ErrorPanel React component renders this consistently across
- * Storage Lifecycle, Deployments, Domain SSL, Drain modal, Client
+ * Storage Lifecycle, Deployments, Domain SSL, Drain modal, Tenant
  * provisioning, and File Manager — anywhere an operator sees a
  * failure.
  */

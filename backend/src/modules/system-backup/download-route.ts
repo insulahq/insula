@@ -54,7 +54,7 @@ export async function systemBackupDownloadRoutes(app: FastifyInstance): Promise<
         httpPath: '/api/v1/system-backup/secrets/download/[REDACTED]',
         httpStatus,
         changes: { code: errCode },
-        ipAddress: clientIp(request),
+        ipAddress: tenantIp(request),
       })
         .then(() => undefined)
         .catch((err) => app.log.error({ err }, '[system-backup] audit-log failed for failed download'));
@@ -81,7 +81,7 @@ export async function systemBackupDownloadRoutes(app: FastifyInstance): Promise<
       httpPath: '/api/v1/system-backup/secrets/download/[REDACTED]',
       httpStatus: 200,
       changes: { sha256: claim.sha256, sizeBytes: claim.sizeBytes },
-      ipAddress: clientIp(request),
+      ipAddress: tenantIp(request),
     }).catch((err) => app.log.error({ err }, '[system-backup] audit-log failed for successful download'));
 
     void reply
@@ -94,7 +94,7 @@ export async function systemBackupDownloadRoutes(app: FastifyInstance): Promise<
   });
 }
 
-function clientIp(request: { headers: Record<string, string | string[] | undefined>; ip?: string }): string | null {
+function tenantIp(request: { headers: Record<string, string | string[] | undefined>; ip?: string }): string | null {
   const xff = (request.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
   return xff || request.ip || null;
 }

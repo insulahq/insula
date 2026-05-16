@@ -27,7 +27,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
-import { restoreItems, restoreJobs, clients, type RestoreItem } from '../../../db/schema.js';
+import { restoreItems, restoreJobs, tenants, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { signUploadToken } from '../../tenant-bundles/upload-token.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
@@ -74,13 +74,13 @@ export async function execFilesPathsItem(args: {
     throw new Error(`files-paths: unsupported selector ${JSON.stringify(selector)}`);
   }
 
-  // Resolve the cart's client + tenant namespace + tenant PVC.
+  // Resolve the cart's tenant + tenant namespace + tenant PVC.
   const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
   if (!job) throw new ApiError('NOT_FOUND', `Restore job ${item.restoreJobId} not found`, 404);
-  const [client] = await app.db.select().from(clients).where(eq(clients.id, job.clientId)).limit(1);
-  if (!client) throw new ApiError('NOT_FOUND', `Client ${job.clientId} not found`, 404);
-  const namespace = client.kubernetesNamespace;
-  if (!namespace) throw new ApiError('CONFIG_INVALID', `Client ${job.clientId} has no kubernetes_namespace`, 400);
+  const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, job.tenantId)).limit(1);
+  if (!tenant) throw new ApiError('NOT_FOUND', `Client ${job.tenantId} not found`, 404);
+  const namespace = tenant.kubernetesNamespace;
+  if (!namespace) throw new ApiError('CONFIG_INVALID', `Client ${job.tenantId} has no kubernetes_namespace`, 400);
 
   // The tenant data PVC convention is `${namespace}-storage`,
   // matching tenant-bundles/orchestrator.ts.resolveTenantPvc. We mount
@@ -105,7 +105,7 @@ export async function execFilesPathsItem(args: {
     jobName,
     namespace,
     pvcName,
-    clientId: job.clientId,
+    tenantId: job.tenantId,
     cartId: item.restoreJobId,
     itemId: item.id,
     downloadUrl,
@@ -143,7 +143,7 @@ export function buildFilesPathsJobSpec(input: {
   jobName: string;
   namespace: string;
   pvcName: string;
-  clientId: string;
+  tenantId: string;
   cartId: string;
   itemId: string;
   downloadUrl: string;
@@ -161,7 +161,7 @@ export function buildFilesPathsJobSpec(input: {
         // restore-files matches the (now-tightened) NetworkPolicy
         // pod selector.
         'platform.io/component': 'restore-files',
-        'platform.io/client-id': input.clientId,
+        'platform.io/tenant-id': input.tenantId,
         'platform.io/restore-cart': input.cartId,
         'platform.io/restore-item': input.itemId,
       },
@@ -173,7 +173,7 @@ export function buildFilesPathsJobSpec(input: {
         metadata: {
           labels: {
             'platform.io/component': 'restore-files',
-            'platform.io/client-id': input.clientId,
+            'platform.io/tenant-id': input.tenantId,
             'platform.io/restore-cart': input.cartId,
             'platform.io/restore-item': input.itemId,
           },

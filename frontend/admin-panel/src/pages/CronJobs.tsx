@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Plus, Loader2, Clock, Play, Pause, RotateCw, Trash2, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
-import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
+import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import { useCronJobs, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
@@ -36,24 +36,24 @@ function formatDuration(ms: number | null | undefined): string | null {
 }
 
 export default function CronJobs() {
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'enable' | 'disable' | 'delete' | null>(null);
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
-  // Reset pagination when client selection changes
+  // Reset pagination when tenant selection changes
   useEffect(() => {
     pagination.resetPagination();
-  }, [selectedClientId]);
+  }, [selectedTenantId]);
 
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs({
-    clientId: selectedClientId ?? undefined,
+    tenantId: selectedTenantId ?? undefined,
     limit: pagination.limit,
     cursor: pagination.cursor,
   });
-  const updateCronJob = useUpdateCronJob(selectedClientId ?? undefined);
-  const runCronJob = useRunCronJob(selectedClientId ?? undefined);
-  const deleteCronJob = useDeleteCronJob(selectedClientId ?? undefined);
+  const updateCronJob = useUpdateCronJob(selectedTenantId ?? undefined);
+  const runCronJob = useRunCronJob(selectedTenantId ?? undefined);
+  const deleteCronJob = useDeleteCronJob(selectedTenantId ?? undefined);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const cronJobs = cronJobsData?.data ?? [];
@@ -98,10 +98,10 @@ export default function CronJobs() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          disabled={!selectedClientId}
+          disabled={!selectedTenantId}
           className={clsx(
             'inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors',
-            selectedClientId
+            selectedTenantId
               ? 'bg-brand-500 hover:bg-brand-600'
               : 'bg-gray-300 cursor-not-allowed',
           )}
@@ -113,9 +113,9 @@ export default function CronJobs() {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <SearchableClientSelect
-          selectedClientId={selectedClientId}
-          onSelect={setSelectedClientId}
+        <SearchableTenantSelect
+          selectedTenantId={selectedTenantId}
+          onSelect={setSelectedTenantId}
         />
       </div>
 
@@ -267,9 +267,9 @@ export default function CronJobs() {
                   {cronJobs.length === 0 && (
                     <tr>
                       <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-                        {selectedClientId
+                        {selectedTenantId
                           ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
-                          : 'No cron jobs found across any client.'}
+                          : 'No cron jobs found across any tenant.'}
                       </td>
                     </tr>
                   )}
@@ -354,11 +354,11 @@ export default function CronJobs() {
         </div>
       )}
 
-      {selectedClientId && (
+      {selectedTenantId && (
         <CreateCronJobModal
           open={showCreate}
           onClose={() => setShowCreate(false)}
-          clientId={selectedClientId}
+          tenantId={selectedTenantId}
         />
       )}
     </div>

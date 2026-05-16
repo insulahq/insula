@@ -2,11 +2,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { SubscriptionResponse } from '@/types/api';
 
-export function useSubscription(clientId: string | undefined) {
+export function useSubscription(tenantId: string | undefined) {
   return useQuery({
-    queryKey: ['subscription', clientId],
-    queryFn: () => apiFetch<{ data: SubscriptionResponse }>(`/api/v1/clients/${clientId}/subscription`),
-    enabled: Boolean(clientId),
+    queryKey: ['subscription', tenantId],
+    queryFn: () => apiFetch<{ data: SubscriptionResponse }>(`/api/v1/tenants/${tenantId}/subscription`),
+    enabled: Boolean(tenantId),
   });
 }
 
@@ -17,17 +17,17 @@ interface UpdateSubscriptionInput {
   readonly notes?: string;
 }
 
-export function useUpdateSubscription(clientId: string | undefined) {
+export function useUpdateSubscription(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: UpdateSubscriptionInput) =>
-      apiFetch<{ data: SubscriptionResponse }>(`/api/v1/clients/${clientId}/subscription`, {
+      apiFetch<{ data: SubscriptionResponse }>(`/api/v1/tenants/${tenantId}/subscription`, {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['subscription', clientId] });
-      queryClient.invalidateQueries({ queryKey: ['client', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['subscription', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['tenant', tenantId] });
     },
   });
 }

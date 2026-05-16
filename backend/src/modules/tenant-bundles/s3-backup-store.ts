@@ -83,7 +83,7 @@ export class S3BackupStore implements BackupStore {
     return `${prefix}/${componentDir(component)}/${name}`;
   }
 
-  async reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle> {
+  async reserveBundle(input: { backupId: string; tenantId: string }): Promise<BundleHandle> {
     // S3 has no directory concept — reservation is purely logical.
     return {
       bundleId: input.backupId,

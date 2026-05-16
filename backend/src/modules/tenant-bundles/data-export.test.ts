@@ -21,7 +21,7 @@ function makeMockStore(opts: {
   artifacts: Record<string, Buffer>;
   capturedWrite?: { content?: Buffer };
 }): BackupStore {
-  const handle: BundleHandle = { backupId: 'bkp-test', clientId: 'c1', root: 'mem://bkp-test' };
+  const handle: BundleHandle = { backupId: 'bkp-test', tenantId: 'c1', root: 'mem://bkp-test' };
   return {
     kind: 's3',
     reserveBundle: async () => handle,
@@ -56,10 +56,10 @@ describe('wrapBundleAsDataExport', () => {
     const meta: BackupMetaV1 = {
       schemaVersion: 1,
       backupId: 'bkp-test',
-      clientId: 'c1',
+      tenantId: 'c1',
       capturedAt: '2026-05-05T00:00:00.000Z',
       platformVersion: '0.0.0',
-      initiator: 'client',
+      initiator: 'tenant',
       systemTrigger: null,
       retentionDays: 7,
       label: null,
@@ -72,7 +72,7 @@ describe('wrapBundleAsDataExport', () => {
     };
     const captured: { content?: Buffer } = {};
     const store = makeMockStore({ meta, artifacts, capturedWrite: captured });
-    const handle: BundleHandle = { backupId: 'bkp-test', clientId: 'c1', root: 'mem://bkp-test' };
+    const handle: BundleHandle = { backupId: 'bkp-test', tenantId: 'c1', root: 'mem://bkp-test' };
 
     const result = await wrapBundleAsDataExport({
       store,
@@ -127,9 +127,9 @@ describe('wrapBundleAsDataExport', () => {
   });
 
   it('rejects passphrase shorter than 12 chars', async () => {
-    const meta = { schemaVersion: 1, backupId: 'x', clientId: 'c', capturedAt: '2026-01-01T00:00:00Z' } as BackupMetaV1;
+    const meta = { schemaVersion: 1, backupId: 'x', tenantId: 'c', capturedAt: '2026-01-01T00:00:00Z' } as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: {} });
-    const handle: BundleHandle = { backupId: 'x', clientId: 'c', root: 'mem://x' };
+    const handle: BundleHandle = { backupId: 'x', tenantId: 'c', root: 'mem://x' };
     await expect(wrapBundleAsDataExport({
       store,
       handle,
@@ -149,7 +149,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     const meta: BackupMetaV1 = {
       schemaVersion: 1,
       backupId: 'bkp-src',
-      clientId: 'src-tenant',
+      tenantId: 'src-tenant',
       capturedAt: '2026-05-07T00:00:00.000Z',
       platformVersion: '0.0.0',
       initiator: 'admin',
@@ -165,7 +165,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
       'secrets/tls.json.gz.enc': Buffer.from('ALREADY-INNER-ENCRYPTED'),
     };
     const store = makeMockStore({ meta, artifacts });
-    const handle: BundleHandle = { backupId: 'bkp-src', clientId: 'src-tenant', root: 'mem://bkp-src' };
+    const handle: BundleHandle = { backupId: 'bkp-src', tenantId: 'src-tenant', root: 'mem://bkp-src' };
 
     // Stream export → buffer.
     const stream = await streamEncryptedExport({
@@ -198,18 +198,18 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     // The 12-char minimum was removed; operator-chosen length is on
     // them. Empty string still means "plaintext" (separate test).
     const { streamEncryptedExport } = await import('./data-export.js');
-    const meta: BackupMetaV1 = { schemaVersion: 2, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
+    const meta: BackupMetaV1 = { schemaVersion: 2, backupId: 'b', tenantId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: {} });
-    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+    const handle: BundleHandle = { backupId: 'b', tenantId: 'c', root: 'mem://b' };
     const stream = await streamEncryptedExport({ store, handle, passphrase: 'short', components: [] });
     expect(stream).toBeDefined();
   });
 
   it('rejects a wrong passphrase on import', async () => {
     const { streamEncryptedExport, decryptImportTarball } = await import('./data-export.js');
-    const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
+    const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', tenantId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('x') } });
-    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+    const handle: BundleHandle = { backupId: 'b', tenantId: 'c', root: 'mem://b' };
     const stream = await streamEncryptedExport({ store, handle, passphrase: 'right-passphrase-12345', components: [{ component: 'config', name: 'db-rows.json.gz' }] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
@@ -231,7 +231,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
   it('streams a plain tar.gz when no passphrase is supplied', async () => {
     const { streamEncryptedExport } = await import('./data-export.js');
     const meta: BackupMetaV1 = {
-      schemaVersion: 1, backupId: 'bkp-plain', clientId: 'c1',
+      schemaVersion: 1, backupId: 'bkp-plain', tenantId: 'c1',
       capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
       initiator: 'admin', systemTrigger: null, retentionDays: 1,
       label: null, description: null, components: {},
@@ -240,7 +240,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
       meta,
       artifacts: { 'config/db-rows.json.gz': Buffer.from('PLAIN-CONFIG') },
     });
-    const handle: BundleHandle = { backupId: 'bkp-plain', clientId: 'c1', root: 'mem://bkp-plain' };
+    const handle: BundleHandle = { backupId: 'bkp-plain', tenantId: 'c1', root: 'mem://bkp-plain' };
 
     // No passphrase → plain gzip(tar)
     const stream = await streamEncryptedExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
@@ -279,13 +279,13 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     // string is treated as absent (no encryption).
     const { streamEncryptedExport } = await import('./data-export.js');
     const meta: BackupMetaV1 = {
-      schemaVersion: 1, backupId: 'b', clientId: 'c',
+      schemaVersion: 1, backupId: 'b', tenantId: 'c',
       capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
       initiator: 'admin', systemTrigger: null, retentionDays: 1,
       label: null, description: null, components: {},
     } as unknown as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: {} });
-    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+    const handle: BundleHandle = { backupId: 'b', tenantId: 'c', root: 'mem://b' };
 
     // Empty string → no encryption, no validation error.
     const stream = await streamEncryptedExport({ store, handle, passphrase: '', components: [] });
@@ -296,7 +296,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
   it('streams a plain ZIP', async () => {
     const { streamZipExport } = await import('./data-export.js');
     const meta: BackupMetaV1 = {
-      schemaVersion: 1, backupId: 'bkp-zip', clientId: 'c1',
+      schemaVersion: 1, backupId: 'bkp-zip', tenantId: 'c1',
       capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
       initiator: 'admin', systemTrigger: null, retentionDays: 1,
       label: null, description: null, components: {},
@@ -305,7 +305,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
       meta,
       artifacts: { 'config/db-rows.json.gz': Buffer.from('PLAIN-ZIP-PAYLOAD') },
     });
-    const handle: BundleHandle = { backupId: 'bkp-zip', clientId: 'c1', root: 'mem://bkp-zip' };
+    const handle: BundleHandle = { backupId: 'bkp-zip', tenantId: 'c1', root: 'mem://bkp-zip' };
     const stream = await streamZipExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
@@ -320,7 +320,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
 
 describe('detectImportFormat + extractImportArchive', () => {
   const meta: BackupMetaV1 = {
-    schemaVersion: 1, backupId: 'bkp-fmt', clientId: 'c1',
+    schemaVersion: 1, backupId: 'bkp-fmt', tenantId: 'c1',
     capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
     initiator: 'admin', systemTrigger: null, retentionDays: 1,
     label: null, description: null, components: {},
@@ -351,7 +351,7 @@ describe('detectImportFormat + extractImportArchive', () => {
     const store = makeMockStore({
       meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('TAR-PLAIN-CONFIG') },
     });
-    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const handle: BundleHandle = { backupId: 'bkp-fmt', tenantId: 'c1', root: 'mem://bkp-fmt' };
     const stream = await streamEncryptedExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
@@ -370,7 +370,7 @@ describe('detectImportFormat + extractImportArchive', () => {
     const store = makeMockStore({
       meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('TAR-ENC-CONFIG') },
     });
-    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const handle: BundleHandle = { backupId: 'bkp-fmt', tenantId: 'c1', root: 'mem://bkp-fmt' };
     const stream = await streamEncryptedExport({ store, handle, passphrase, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
@@ -390,7 +390,7 @@ describe('detectImportFormat + extractImportArchive', () => {
         'files/archive.tar.gz': Buffer.from('ZIP-FILES'),
       },
     });
-    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const handle: BundleHandle = { backupId: 'bkp-fmt', tenantId: 'c1', root: 'mem://bkp-fmt' };
     const stream = await streamZipExport({ store, handle, components: [
       { component: 'config', name: 'db-rows.json.gz' },
       { component: 'files', name: 'archive.tar.gz' },
@@ -410,7 +410,7 @@ describe('detectImportFormat + extractImportArchive', () => {
   it('rejects encrypted tar without a passphrase', async () => {
     const { streamEncryptedExport, extractImportArchive } = await import('./data-export.js');
     const store = makeMockStore({ meta, artifacts: {} });
-    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const handle: BundleHandle = { backupId: 'bkp-fmt', tenantId: 'c1', root: 'mem://bkp-fmt' };
     const stream = await streamEncryptedExport({ store, handle, passphrase: 'pw', components: [] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
@@ -460,7 +460,7 @@ describe('detectImportFormat + extractImportArchive', () => {
     // streamEncryptedExport must still pass the safe-path validator.
     const { streamEncryptedExport, extractImportArchive } = await import('./data-export.js');
     const meta: BackupMetaV1 = {
-      schemaVersion: 1, backupId: 'bkp-safe', clientId: 'c1',
+      schemaVersion: 1, backupId: 'bkp-safe', tenantId: 'c1',
       capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
       initiator: 'admin', systemTrigger: null, retentionDays: 1,
       label: null, description: null, components: {},
@@ -468,7 +468,7 @@ describe('detectImportFormat + extractImportArchive', () => {
     const store = makeMockStore({
       meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('OK') },
     });
-    const handle: BundleHandle = { backupId: 'bkp-safe', clientId: 'c1', root: 'mem://bkp-safe' };
+    const handle: BundleHandle = { backupId: 'bkp-safe', tenantId: 'c1', root: 'mem://bkp-safe' };
     const stream = await streamEncryptedExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
     const chunks: Buffer[] = [];
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));

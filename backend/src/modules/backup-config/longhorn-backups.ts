@@ -46,7 +46,7 @@ interface LonghornListResponse<T> {
   items?: T[];
 }
 
-export interface LonghornReadClients {
+export interface LonghornReadTenants {
   readonly custom: k8s.CustomObjectsApi;
 }
 
@@ -54,13 +54,13 @@ export interface LonghornReadClients {
  * List all Longhorn Backups visible to the cluster. Sorted by creation
  * time descending so the admin-panel can render recent-first.
  */
-export async function listBackups(clients: LonghornReadClients): Promise<BackupRecord[]> {
-  const resp = await clients.custom.listNamespacedCustomObject({
+export async function listBackups(tenants: LonghornReadTenants): Promise<BackupRecord[]> {
+  const resp = await tenants.custom.listNamespacedCustomObject({
     group: LONGHORN_GROUP,
     version: LONGHORN_VERSION,
     namespace: LONGHORN_NS,
     plural: 'backups',
-  } as Parameters<typeof clients.custom.listNamespacedCustomObject>[0]);
+  } as Parameters<typeof tenants.custom.listNamespacedCustomObject>[0]);
   const items = ((resp as LonghornListResponse<LonghornBackup>).items ?? []).map(toRecord);
   items.sort((a, b) => {
     if (!a.createdAt) return 1;
@@ -143,19 +143,19 @@ async function pollSnapshotReadyViaCR(
 }
 
 export async function triggerBackupNow(
-  clients: LonghornReadClients & { core?: k8s.CoreV1Api },
+  tenants: LonghornReadTenants & { core?: k8s.CoreV1Api },
   opts: { apiBase?: string; fetch?: typeof globalThis.fetch } = {},
 ): Promise<{ triggered: string[]; message: string }> {
   const apiBase = opts.apiBase ?? process.env.LONGHORN_API_BASE ?? DEFAULT_LONGHORN_API_BASE;
   const fetchFn = opts.fetch ?? globalThis.fetch;
 
-  const labeled = await clients.custom.listNamespacedCustomObject({
+  const labeled = await tenants.custom.listNamespacedCustomObject({
     group: LONGHORN_GROUP,
     version: LONGHORN_VERSION,
     namespace: LONGHORN_NS,
     plural: 'volumes',
     labelSelector: `${DEFAULT_GROUP_LABEL}=enabled`,
-  } as Parameters<typeof clients.custom.listNamespacedCustomObject>[0]);
+  } as Parameters<typeof tenants.custom.listNamespacedCustomObject>[0]);
 
   const volumes = ((labeled as LonghornListResponse<LonghornVolume>).items ?? [])
     .map((v) => v.metadata?.name)
@@ -200,7 +200,7 @@ export async function triggerBackupNow(
       // Wait for the Snapshot CR to be committed AND have
       // .status.readyToUse=true. See pollSnapshotReadyViaCR for why we
       // can't trust the Longhorn REST snapshotGet response alone.
-      const snapshotReady = await pollSnapshotReadyViaCR(clients.custom, snapName, 30_000);
+      const snapshotReady = await pollSnapshotReadyViaCR(tenants.custom, snapName, 30_000);
       if (!snapshotReady.ready) {
         errors.push(`${volumeName} (snapshot not ready in 30s): ${snapshotReady.reason ?? 'timeout'}`);
         continue;

@@ -26,7 +26,7 @@ export const userSchema = z.object({
   id: z.string(),
   email: z.string(),
   fullName: z.string(),
-  role: z.enum(['super_admin', 'admin', 'billing', 'support', 'read_only', 'client_admin', 'client_user']),
+  role: z.enum(['super_admin', 'admin', 'billing', 'support', 'read_only', 'tenant_admin', 'tenant_user']),
 });
 
 export const loginResponseSchema = z.object({
@@ -42,7 +42,7 @@ export const passkeyModeSchema = z.union([z.literal('alternative'), z.literal('s
 export type PasskeyMode = z.infer<typeof passkeyModeSchema>;
 
 // Per-passkey row returned to the UI. Never exposes credentialId or
-// publicKey — the client only needs display + lifecycle info.
+// publicKey — the panel only needs display + lifecycle info.
 export const passkeySummarySchema = z.object({
   id: z.string(),
   nickname: z.string(),
@@ -60,13 +60,13 @@ export const passkeyRegistrationCompleteSchema = z.object({
 export type PasskeyRegistrationCompleteInput = z.infer<typeof passkeyRegistrationCompleteSchema>;
 
 export const passkeyLoginOptionsRequestSchema = z.object({
-  panel: z.union([z.literal('admin'), z.literal('client')]).optional(),
+  panel: z.union([z.literal('admin'), z.literal('tenant')]).optional(),
   pre_auth_token: z.string().optional(),
 });
 export type PasskeyLoginOptionsRequest = z.infer<typeof passkeyLoginOptionsRequestSchema>;
 
 export const passkeyLoginVerifyRequestSchema = z.object({
-  panel: z.union([z.literal('admin'), z.literal('client')]).optional(),
+  panel: z.union([z.literal('admin'), z.literal('tenant')]).optional(),
   response: z.unknown(),
   pre_auth_token: z.string().optional(),
 });
@@ -93,7 +93,7 @@ export const loginPasskeyRequiredResponseSchema = z.object({
       fullName: z.string(),
       role: z.string(),
       panel: z.string().optional(),
-      clientId: z.string().nullable().optional(),
+      tenantId: z.string().nullable().optional(),
     }),
   }),
 });

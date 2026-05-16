@@ -58,7 +58,7 @@ const PROBE_TIMEOUT_MS = 5_000;
 // In-cluster Service for plain-TCP and TLS probes. This is what the
 // platform-api pod can reach without needing the mail-server's public
 // IP — and since the pod runs on a different node than Stalwart by
-// design, the probe still traverses the network like a real client.
+// design, the probe still traverses the network like a real tenant.
 const STALWART_SERVICE_HOST = 'stalwart-mail.mail.svc.cluster.local';
 
 // Mail ports we expect Stalwart to expose. Cert probe only hits the
@@ -541,7 +541,7 @@ function defaultTcpProbe(
 }
 
 /**
- * Cert probe — exec openssl s_client inside the Stalwart pod.
+ * Cert probe — exec openssl s_tenant inside the Stalwart pod.
  *
  * Same PROXY-v2-sniff rationale as probeJmap: a TLS handshake from
  * platform-api (cluster pod CIDR source IP) to Stalwart's :465/:993
@@ -551,7 +551,7 @@ function defaultTcpProbe(
  *
  * Loopback (127.0.0.1) bypasses the sniff, so we exec openssl inside
  * the Stalwart pod and connect to its own port. The cert returned is
- * the same one external clients would see (Stalwart serves a single
+ * the same one external tenants would see (Stalwart serves a single
  * cert per port regardless of source). What this probe DOESN'T cover:
  * "haproxy forwards correctly + serves the cert end-to-end" — that
  * lives in the integration harness Phase A5, which probes from a
@@ -621,7 +621,7 @@ async function probeCert(
 }
 
 /**
- * Default cert exec probe — runs `openssl s_client + x509` inside the
+ * Default cert exec probe — runs `openssl s_tenant + x509` inside the
  * Stalwart pod to extract subject + issuer + notAfter for the given
  * port.
  *
@@ -641,7 +641,7 @@ async function defaultCertExec(
   else kc.loadFromCluster();
   const exec = new k8s.Exec(kc);
 
-  // `echo | openssl s_client -connect 127.0.0.1:PORT -servername SNI 2>/dev/null | openssl x509 -noout -subject -issuer -dates`
+  // `echo | openssl s_tenant -connect 127.0.0.1:PORT -servername SNI 2>/dev/null | openssl x509 -noout -subject -issuer -dates`
   // We use sh -c so the pipe + redirect work. Output looks like:
   //   subject=CN=mail.example.com
   //   issuer=C=US, O=Let's Encrypt, CN=E8
@@ -649,7 +649,7 @@ async function defaultCertExec(
   //   notAfter=Aug 13 16:10:13 2026 GMT
   const cmd = [
     'sh', '-c',
-    `echo | timeout ${Math.floor(PROBE_TIMEOUT_MS / 1000)} openssl s_client `
+    `echo | timeout ${Math.floor(PROBE_TIMEOUT_MS / 1000)} openssl s_tenant `
     + `-connect 127.0.0.1:${port} -servername ${sni} 2>/dev/null `
     + `| openssl x509 -noout -subject -issuer -dates 2>&1 || echo "ERROR: cert probe failed"`,
   ];

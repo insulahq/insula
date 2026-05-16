@@ -22,12 +22,12 @@ describe('loadPasskeyConfig', () => {
   it('accepts subdomain origins of RP_ID', () => {
     const cfg = loadPasskeyConfig({
       PLATFORM_PASSKEY_RP_ID: 'phoenix-host.net',
-      PLATFORM_PASSKEY_ORIGINS: 'https://admin.phoenix-host.net,https://client.phoenix-host.net',
+      PLATFORM_PASSKEY_ORIGINS: 'https://admin.phoenix-host.net,https://tenant.phoenix-host.net',
     });
     expect(cfg.rpId).toBe('phoenix-host.net');
     expect(cfg.origins).toEqual([
       'https://admin.phoenix-host.net',
-      'https://client.phoenix-host.net',
+      'https://tenant.phoenix-host.net',
     ]);
   });
 

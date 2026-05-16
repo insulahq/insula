@@ -44,14 +44,14 @@ vi.mock('./email-sender.js', () => ({
 // Mock recipients helper so the fan-out path is deterministic.
 const recipientsMock = vi.fn().mockResolvedValue(['u1', 'u2']);
 vi.mock('./recipients.js', () => ({
-  getClientNotificationRecipients: recipientsMock,
+  getTenantNotificationRecipients: recipientsMock,
 }));
 
 const {
-  notifyClientMailboxLimitReached,
-  notifyClientDkimRotated,
-  notifyClientImapsyncTerminal,
-  notifyClientEmailBootstrapped,
+  notifyTenantMailboxLimitReached,
+  notifyTenantDkimRotated,
+  notifyTenantImapsyncTerminal,
+  notifyTenantEmailBootstrapped,
 } = await import('./events.js');
 
 describe('notification events', () => {
@@ -62,9 +62,9 @@ describe('notification events', () => {
     recipientsMock.mockResolvedValue(['u1', 'u2']);
   });
 
-  describe('notifyClientMailboxLimitReached', () => {
-    it('fans out to all client_admin users with an error-level notification', async () => {
-      await notifyClientMailboxLimitReached({} as never, 'c1', {
+  describe('notifyTenantMailboxLimitReached', () => {
+    it('fans out to all tenant_admin users with an error-level notification', async () => {
+      await notifyTenantMailboxLimitReached({} as never, 'c1', {
         limit: 10,
         current: 10,
         source: 'plan',
@@ -76,13 +76,13 @@ describe('notification events', () => {
       expect(firstCall.type).toBe('error');
       expect(firstCall.title).toMatch(/Mailbox limit/i);
       expect(firstCall.message).toContain('10');
-      expect(firstCall.resourceType).toBe('client');
+      expect(firstCall.resourceType).toBe('tenant');
       expect(firstCall.resourceId).toBe('c1');
     });
 
-    it('silently skips when the client has no admins', async () => {
+    it('silently skips when the tenant has no admins', async () => {
       recipientsMock.mockResolvedValue([]);
-      await notifyClientMailboxLimitReached({} as never, 'c1', {
+      await notifyTenantMailboxLimitReached({} as never, 'c1', {
         limit: 10,
         current: 10,
         source: 'plan',
@@ -91,9 +91,9 @@ describe('notification events', () => {
     });
   });
 
-  describe('notifyClientDkimRotated', () => {
+  describe('notifyTenantDkimRotated', () => {
     it('sends an info notification tagged with email_domain', async () => {
-      await notifyClientDkimRotated({} as never, 'c1', {
+      await notifyTenantDkimRotated({} as never, 'c1', {
         emailDomainId: 'ed1',
         domainName: 'example.com',
         selector: 'default',
@@ -108,9 +108,9 @@ describe('notification events', () => {
     });
   });
 
-  describe('notifyClientImapsyncTerminal', () => {
+  describe('notifyTenantImapsyncTerminal', () => {
     it('fires a success notification on completed status', async () => {
-      await notifyClientImapsyncTerminal({} as never, 'c1', {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', {
         jobId: 'j1',
         status: 'completed',
         messagesTransferred: 42,
@@ -124,7 +124,7 @@ describe('notification events', () => {
     });
 
     it('fires an error notification on failed status', async () => {
-      await notifyClientImapsyncTerminal({} as never, 'c1', {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', {
         jobId: 'j1',
         status: 'failed',
         errorMessage: 'auth failure',
@@ -135,7 +135,7 @@ describe('notification events', () => {
     });
 
     it('does not fire for non-terminal status', async () => {
-      await notifyClientImapsyncTerminal({} as never, 'c1', {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', {
         jobId: 'j1',
         status: 'running' as never,
       });
@@ -143,9 +143,9 @@ describe('notification events', () => {
     });
   });
 
-  describe('notifyClientEmailBootstrapped', () => {
+  describe('notifyTenantEmailBootstrapped', () => {
     it('sends a success notification with the domain name', async () => {
-      await notifyClientEmailBootstrapped({} as never, 'c1', {
+      await notifyTenantEmailBootstrapped({} as never, 'c1', {
         emailDomainId: 'ed1',
         domainName: 'example.com',
       });

@@ -119,7 +119,7 @@ export function parseDkimSelectorsFromZoneFile(zoneFile: string): {
 
 /**
  * Register the DKIM status read-only route.
- * Scoped to admin/support only — clients cannot see raw DNS zone data.
+ * Scoped to admin/support only — tenants cannot see raw DNS zone data.
  */
 export async function emailDkimStatusRoutes(app: FastifyInstance): Promise<void> {
   // GET /admin/email/domains/:domainId/dkim-status

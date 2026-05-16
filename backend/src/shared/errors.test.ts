@@ -4,7 +4,7 @@ import {
   invalidToken,
   missingToken,
   insufficientPermissions,
-  clientNotFound,
+  tenantNotFound,
   domainNotFound,
   invalidEmail,
   duplicateEntry,
@@ -50,11 +50,11 @@ describe('error factory functions', () => {
     expect(err.details?.required_role).toBe('admin');
   });
 
-  it('clientNotFound returns 404 with client_id', () => {
-    const err = clientNotFound('client-123');
+  it('tenantNotFound returns 404 with tenant_id', () => {
+    const err = tenantNotFound('tenant-123');
     expect(err.status).toBe(404);
     expect(err.code).toBe('CLIENT_NOT_FOUND');
-    expect(err.details?.client_id).toBe('client-123');
+    expect(err.details?.tenant_id).toBe('tenant-123');
   });
 
   it('domainNotFound returns 404', () => {
@@ -76,14 +76,14 @@ describe('error factory functions', () => {
   });
 
   it('missingRequiredField returns 400', () => {
-    const err = missingRequiredField('company_name');
+    const err = missingRequiredField('name');
     expect(err.status).toBe(400);
-    expect(err.details?.field).toBe('company_name');
+    expect(err.details?.field).toBe('name');
   });
 
   it('operationNotAllowed returns 403', () => {
-    const err = operationNotAllowed('Cannot delete active client');
+    const err = operationNotAllowed('Cannot delete active tenant');
     expect(err.status).toBe(403);
-    expect(err.message).toBe('Cannot delete active client');
+    expect(err.message).toBe('Cannot delete active tenant');
   });
 });

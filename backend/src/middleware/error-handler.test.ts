@@ -18,7 +18,7 @@ function createMockRequestReply() {
 describe('errorHandler', () => {
   it('should handle ApiError with correct status and envelope', () => {
     const { request, reply, statusFn, sendFn } = createMockRequestReply();
-    const err = new ApiError('CLIENT_NOT_FOUND', 'Not found', 404, { client_id: 'x' }, 'Check ID');
+    const err = new ApiError('CLIENT_NOT_FOUND', 'Not found', 404, { tenant_id: 'x' }, 'Check ID');
 
     errorHandler(err as unknown as FastifyError, request, reply);
 
@@ -28,7 +28,7 @@ describe('errorHandler', () => {
     expect(body.error.message).toBe('Not found');
     expect(body.error.status).toBe(404);
     expect(body.error.request_id).toBe('req-test-123');
-    expect(body.error.details).toEqual({ client_id: 'x' });
+    expect(body.error.details).toEqual({ tenant_id: 'x' });
     expect(body.error.remediation).toBe('Check ID');
   });
 

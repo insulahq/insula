@@ -27,7 +27,7 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
-  // K8s client for triggering Stalwart pod rollouts on hostname change.
+  // K8s tenant for triggering Stalwart pod rollouts on hostname change.
   // Created once at plugin registration; null in degraded mode (e.g.
   // no kubeconfig in unit-test runs).
   let k8s: K8sClients | undefined;
@@ -37,7 +37,7 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
       | undefined;
     k8s = createK8sClients(kubeconfigPath);
   } catch (err) {
-    app.log.warn({ err }, 'platform-urls: k8s client unavailable — Stalwart rollout disabled');
+    app.log.warn({ err }, 'platform-urls: k8s tenant unavailable — Stalwart rollout disabled');
     k8s = undefined;
   }
 

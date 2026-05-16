@@ -6,7 +6,7 @@
  */
 
 import { eq, inArray } from 'drizzle-orm';
-import { deployments, catalogEntries, clients } from '../../db/schema.js';
+import { deployments, catalogEntries, tenants } from '../../db/schema.js';
 import { getDeploymentStatus } from './k8s-deployer.js';
 import type { DeployComponentInput } from './k8s-deployer.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -107,15 +107,15 @@ export async function reconcileDeploymentStatuses(
     return { checked: 0, updated: 0, errors: [] };
   }
 
-  // Group deployments by client for namespace lookup
-  const clientIds = [...new Set(activeDeployments.map(d => d.clientId))];
-  const clientRows = await db
-    .select({ id: clients.id, kubernetesNamespace: clients.kubernetesNamespace })
-    .from(clients)
-    .where(inArray(clients.id, clientIds));
+  // Group deployments by tenant for namespace lookup
+  const tenantIds = [...new Set(activeDeployments.map(d => d.tenantId))];
+  const tenantRows = await db
+    .select({ id: tenants.id, kubernetesNamespace: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(inArray(tenants.id, tenantIds));
 
   const namespaceMap = new Map<string, string>();
-  for (const c of clientRows) {
+  for (const c of tenantRows) {
     if (c.kubernetesNamespace) {
       namespaceMap.set(c.id, c.kubernetesNamespace);
     }
@@ -142,7 +142,7 @@ export async function reconcileDeploymentStatuses(
   }
 
   for (const deployment of activeDeployments) {
-    const namespace = namespaceMap.get(deployment.clientId);
+    const namespace = namespaceMap.get(deployment.tenantId);
     if (!namespace) continue;
 
     // Custom deployments take a dedicated reconcile path that reads

@@ -11,27 +11,27 @@ vi.mock('../../db/schema.js', () => ({
     name: 'cluster_nodes.name',
     role: 'cluster_nodes.role',
   },
-  clients: {
-    id: 'clients.id',
-    companyName: 'clients.companyName',
-    kubernetesNamespace: 'clients.kubernetesNamespace',
-    storageTier: 'clients.storageTier',
-    workerNodeName: 'clients.workerNodeName',
+  tenants: {
+    id: 'tenants.id',
+    name: 'tenants.name',
+    kubernetesNamespace: 'tenants.kubernetesNamespace',
+    storageTier: 'tenants.storageTier',
+    nodeName: 'tenants.nodeName',
   },
 }));
 
-interface MockClientRow {
+interface MockTenantRow {
   id: string;
   name: string;
   ns: string | null;
   tier?: 'local' | 'ha';
   pin?: string | null;
 }
-function makeMockDb(clientRows: MockClientRow[]): Database {
+function makeMockDb(tenantRows: MockTenantRow[]): Database {
   return {
     select: () => ({
       from: () => Promise.resolve(
-        clientRows.map((r) => ({
+        tenantRows.map((r) => ({
           id: r.id,
           name: r.name,
           ns: r.ns,
@@ -72,7 +72,7 @@ function makeK8s(opts: {
 
 describe('buildDrainImpact', () => {
   it('surfaces a Deployment pinned via nodeSelector even when replicas=0', async () => {
-    // Real-world repro: client deployment scaled to 0 (e.g. as a workaround
+    // Real-world repro: tenant deployment scaled to 0 (e.g. as a workaround
     // for FM PVC contention) but its template still pins to the worker.
     // The previous version listed pods on the node and missed the Deployment
     // entirely — the operator would see "0 non-system pods" and drain
@@ -80,7 +80,7 @@ describe('buildDrainImpact', () => {
     const k8s = makeK8s({
       pods: [],
       deployments: [{
-        metadata: { name: 'nginx-php', namespace: 'client-foo' },
+        metadata: { name: 'nginx-php', namespace: 'tenant-foo' },
         spec: {
           replicas: 0,
           template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'worker' } } },
@@ -88,21 +88,21 @@ describe('buildDrainImpact', () => {
       }],
     });
     const db = makeMockDb([
-      { id: 'client-foo-id', name: 'Foo Co', ns: 'client-foo' },
+      { id: 'tenant-foo-id', name: 'Foo Co', ns: 'tenant-foo' },
     ]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
 
-    // Pinning is exposed as a per-client aggregate now — the modal
-    // shows clients (not workloads) and re-pins one client at a time.
-    expect(impact.pinnedClients).toHaveLength(1);
-    expect(impact.pinnedClients[0]).toMatchObject({
-      clientId: 'client-foo-id',
-      clientName: 'Foo Co',
-      namespace: 'client-foo',
+    // Pinning is exposed as a per-tenant aggregate now — the modal
+    // shows tenants (not workloads) and re-pins one tenant at a time.
+    expect(impact.pinnedTenants).toHaveLength(1);
+    expect(impact.pinnedTenants[0]).toMatchObject({
+      tenantId: 'tenant-foo-id',
+      tenantName: 'Foo Co',
+      namespace: 'tenant-foo',
     });
-    expect(impact.pinnedClients[0].workloads).toHaveLength(1);
-    expect(impact.pinnedClients[0].workloads[0]).toMatchObject({
+    expect(impact.pinnedTenants[0].workloads).toHaveLength(1);
+    expect(impact.pinnedTenants[0].workloads[0]).toMatchObject({
       kind: 'Deployment',
       name: 'nginx-php',
       pinKind: 'nodeSelector',
@@ -110,11 +110,11 @@ describe('buildDrainImpact', () => {
     });
   });
 
-  it('attributes pods to clients via namespace lookup when label is missing', async () => {
+  it('attributes pods to tenants via namespace lookup when label is missing', async () => {
     const k8s = makeK8s({
       pods: [{
         metadata: {
-          namespace: 'client-bar',
+          namespace: 'tenant-bar',
           name: 'web-1-abcde',
           ownerReferences: [{ kind: 'ReplicaSet', name: 'web-1' }],
         },
@@ -123,17 +123,17 @@ describe('buildDrainImpact', () => {
       }],
     });
     const db = makeMockDb([
-      { id: 'client-bar-id', name: 'Bar Co', ns: 'client-bar' },
+      { id: 'tenant-bar-id', name: 'Bar Co', ns: 'tenant-bar' },
     ]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
 
     expect(impact.nonSystemPods).toHaveLength(1);
     expect(impact.nonSystemPods[0]).toMatchObject({
-      namespace: 'client-bar',
+      namespace: 'tenant-bar',
       name: 'web-1-abcde',
-      clientId: 'client-bar-id',
-      clientName: 'Bar Co',
+      tenantId: 'tenant-bar-id',
+      tenantName: 'Bar Co',
       workloadKind: 'ReplicaSet',
       workloadName: 'web-1',
     });
@@ -143,7 +143,7 @@ describe('buildDrainImpact', () => {
     const k8s = makeK8s({
       pods: [],
       statefulsets: [{
-        metadata: { name: 'db', namespace: 'client-baz' },
+        metadata: { name: 'db', namespace: 'tenant-baz' },
         spec: {
           replicas: 1,
           template: {
@@ -166,13 +166,13 @@ describe('buildDrainImpact', () => {
         },
       }],
     });
-    const db = makeMockDb([{ id: 'client-baz-id', name: 'Baz Co', ns: 'client-baz' }]);
+    const db = makeMockDb([{ id: 'tenant-baz-id', name: 'Baz Co', ns: 'tenant-baz' }]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
-    expect(impact.pinnedClients).toHaveLength(1);
-    expect(impact.pinnedClients[0].workloads).toHaveLength(1);
-    expect(impact.pinnedClients[0].workloads[0].pinKind).toBe('nodeAffinity');
-    expect(impact.pinnedClients[0].workloads[0].kind).toBe('StatefulSet');
+    expect(impact.pinnedTenants).toHaveLength(1);
+    expect(impact.pinnedTenants[0].workloads).toHaveLength(1);
+    expect(impact.pinnedTenants[0].workloads[0].pinKind).toBe('nodeAffinity');
+    expect(impact.pinnedTenants[0].workloads[0].kind).toBe('StatefulSet');
   });
 
   it('flags tenant PVCs with a replica on the draining node', async () => {
@@ -181,24 +181,24 @@ describe('buildDrainImpact', () => {
       longhornVolumes: [{
         metadata: { name: 'pvc-foo' },
         spec: { size: String(10 * 1024 ** 3), numberOfReplicas: 1, nodeSelector: [] },
-        status: { kubernetesStatus: { pvcName: 'data', namespace: 'client-foo' } },
+        status: { kubernetesStatus: { pvcName: 'data', namespace: 'tenant-foo' } },
       }],
       longhornReplicas: [{
         spec: { volumeName: 'pvc-foo', nodeID: 'worker' },
         status: { currentState: 'running' },
       }],
     });
-    const db = makeMockDb([{ id: 'client-foo-id', name: 'Foo Co', ns: 'client-foo' }]);
+    const db = makeMockDb([{ id: 'tenant-foo-id', name: 'Foo Co', ns: 'tenant-foo' }]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
-    expect(impact.pinnedClients).toHaveLength(1);
-    expect(impact.pinnedClients[0]).toMatchObject({
-      clientId: 'client-foo-id',
-      clientName: 'Foo Co',
-      namespace: 'client-foo',
+    expect(impact.pinnedTenants).toHaveLength(1);
+    expect(impact.pinnedTenants[0]).toMatchObject({
+      tenantId: 'tenant-foo-id',
+      tenantName: 'Foo Co',
+      namespace: 'tenant-foo',
     });
-    expect(impact.pinnedClients[0].pvcs).toHaveLength(1);
-    expect(impact.pinnedClients[0].pvcs[0]).toMatchObject({
+    expect(impact.pinnedTenants[0].pvcs).toHaveLength(1);
+    expect(impact.pinnedTenants[0].pvcs[0]).toMatchObject({
       pvcName: 'data',
       volumeName: 'pvc-foo',
       replicaCount: 1,
@@ -244,16 +244,16 @@ describe('buildDrainImpact', () => {
     expect(sysNs).toEqual(['calico-system', 'cnpg-system', 'kube-system', 'tigera-operator']);
   });
 
-  it('enriches longhornReplicas with PVC + owner attribution (client + platform-system)', async () => {
+  it('enriches longhornReplicas with PVC + owner attribution (tenant + platform-system)', async () => {
     // Two replicas live on `worker`: one tenant volume (Acme/data) and one
     // platform volume (postgres-1 in cnpg-system). Both should land in
     // longhornReplicas with ownerLabel populated; the tenant replica also
-    // resolves clientId/clientName.
+    // resolves tenantId/tenantName.
     const k8s = makeK8s({
       longhornVolumes: [
         {
           metadata: { name: 'pvc-acme-data' },
-          status: { kubernetesStatus: { pvcName: 'data', namespace: 'client-acme' } },
+          status: { kubernetesStatus: { pvcName: 'data', namespace: 'tenant-acme' } },
         },
         {
           metadata: { name: 'pvc-postgres-1' },
@@ -265,7 +265,7 @@ describe('buildDrainImpact', () => {
         { metadata: { name: 'r-postgres-1-w' }, spec: { volumeName: 'pvc-postgres-1', nodeID: 'worker' }, status: { currentState: 'running' } },
       ],
     });
-    const db = makeMockDb([{ id: 'acme-id', name: 'Acme Co', ns: 'client-acme' }]);
+    const db = makeMockDb([{ id: 'acme-id', name: 'Acme Co', ns: 'tenant-acme' }]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
 
@@ -273,9 +273,9 @@ describe('buildDrainImpact', () => {
     const acme = impact.longhornReplicas.find((r) => r.volumeName === 'pvc-acme-data');
     expect(acme).toMatchObject({
       pvcName: 'data',
-      namespace: 'client-acme',
-      clientId: 'acme-id',
-      clientName: 'Acme Co',
+      namespace: 'tenant-acme',
+      tenantId: 'acme-id',
+      tenantName: 'Acme Co',
       ownerLabel: 'Acme Co',
       isLastReplica: true,
     });
@@ -283,8 +283,8 @@ describe('buildDrainImpact', () => {
     expect(pg).toMatchObject({
       pvcName: 'postgres-1',
       namespace: 'platform',
-      clientId: null,
-      clientName: null,
+      tenantId: null,
+      tenantName: null,
       ownerLabel: 'Platform System (platform)',
       isLastReplica: true,
     });
@@ -303,9 +303,9 @@ describe('buildDrainImpact', () => {
     const db = makeMockDb([]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
-    // No pinned tenant clients on the node — system-namespace
+    // No pinned tenant tenants on the node — system-namespace
     // workloads are filtered out before aggregation.
-    expect(impact.pinnedClients).toHaveLength(0);
+    expect(impact.pinnedTenants).toHaveLength(0);
   });
 });
 
@@ -365,7 +365,7 @@ describe('listNodesEnriched — orphan detection', () => {
     expect(byName.get('orphan-3')?.existsInKubernetes).toBe(false);
   });
 
-  it('treats every row as live when no K8s client is supplied (test/cold-start mode)', async () => {
+  it('treats every row as live when no K8s tenant is supplied (test/cold-start mode)', async () => {
     const db = makeListNodesDb([{ name: 'staging-1' }]);
     const enriched = await listNodesEnriched(db, null);
     expect(enriched[0].existsInKubernetes).toBe(true);

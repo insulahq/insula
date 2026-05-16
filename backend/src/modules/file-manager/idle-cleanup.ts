@@ -18,10 +18,10 @@ const lastAccessMap = new Map<string, number>();
 export function recordFileManagerAccess(namespace: string, k8s?: K8sClients): void {
   const now = Date.now();
   lastAccessMap.set(namespace, now);
-  // Wrap the k8s client call in a try block — a missing or partially
-  // mocked client (`k8s.apps` undefined) would otherwise throw
+  // Wrap the k8s tenant call in a try block — a missing or partially
+  // mocked tenant (`k8s.apps` undefined) would otherwise throw
   // synchronously, escaping the promise's `.catch`. Real callers
-  // pass a fully-shaped client; tests pass a mock that may not
+  // pass a fully-shaped tenant; tests pass a mock that may not
   // implement every nested property.
   if (!k8s?.apps?.patchNamespacedDeployment) return;
   try {
@@ -64,7 +64,7 @@ export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): 
       const namespaces = await k8s.core.listNamespace({});
       const nsList = ((namespaces as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [])
         .map(ns => ns.metadata?.name)
-        .filter((n): n is string => !!n && n.startsWith('client-'));
+        .filter((n): n is string => !!n && n.startsWith('tenant-'));
 
       for (const ns of nsList) {
         try {

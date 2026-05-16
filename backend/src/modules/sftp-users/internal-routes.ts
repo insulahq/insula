@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import net from 'net';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
-import { sftpUsers, sftpAuditLog, sftpUserSshKeys, clients, sshKeys } from '../../db/schema.js';
+import { sftpUsers, sftpAuditLog, sftpUserSshKeys, tenants, sshKeys } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { recordFileManagerAccess } from '../file-manager/idle-cleanup.js';
@@ -28,7 +28,7 @@ const keyAuthSchema = z.object({
 
 const auditEventSchema = z.object({
   sftp_user_id: z.string().optional(),
-  client_id: z.string().min(1),
+  tenant_id: z.string().min(1),
   event: z.string().min(1),
   source_ip: z.string().min(1),
   protocol: z.string().optional(),
@@ -132,40 +132,40 @@ function isIpAllowed(sourceIp: string, whitelist: string | null): boolean {
 
 // ─── Namespace Lookup ──────────────────────────────────────────────────────
 
-async function getClientNamespace(
+async function getTenantNamespace(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string | null> {
-  const [client] = await db
-    .select({ kubernetesNamespace: clients.kubernetesNamespace })
-    .from(clients)
-    .where(eq(clients.id, clientId));
-  return client?.kubernetesNamespace ?? null;
+  const [tenant] = await db
+    .select({ kubernetesNamespace: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  return tenant?.kubernetesNamespace ?? null;
 }
 
 /**
- * Returns the client's current lifecycle status so the auth routes can
- * refuse login for non-`active` clients. Suspended/archived clients
+ * Returns the tenant's current lifecycle status so the auth routes can
+ * refuse login for non-`active` tenants. Suspended/archived tenants
  * must NOT be able to SFTP in — their data may be mid-operation or
  * the account may be in collections.
  */
-async function getClientStatus(
+async function getTenantStatus(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string | null> {
-  const [client] = await db
-    .select({ status: clients.status })
-    .from(clients)
-    .where(eq(clients.id, clientId));
-  return client?.status ?? null;
+  const [tenant] = await db
+    .select({ status: tenants.status })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  return tenant?.status ?? null;
 }
 
 // ─── Internal Routes ───────────────────────────────────────────────────────
 
 export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
-  // Cache K8s client — created once per plugin registration, not per request.
+  // Cache K8s tenant — created once per plugin registration, not per request.
   const kubeconfigPath = process.env.KUBECONFIG;
-  const k8sClients = kubeconfigPath ? createK8sClients(kubeconfigPath) : null;
+  const k8sTenants = kubeconfigPath ? createK8sClients(kubeconfigPath) : null;
 
   // Verify X-Internal-Auth header matches PLATFORM_INTERNAL_SECRET
   app.addHook('onRequest', async (request, reply) => {
@@ -209,11 +209,11 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
       return success({ allowed: false });
     }
 
-    // Gate on client lifecycle status — suspended / archived clients
+    // Gate on tenant lifecycle status — suspended / archived tenants
     // must not be able to SFTP in. The response is a generic "not
     // allowed" with no explanation so the SFTP gateway doesn't surface
     // "your account is suspended" to a brute-force probe.
-    const status = await getClientStatus(app.db, user.clientId);
+    const status = await getTenantStatus(app.db, user.tenantId);
     if (status !== 'active') {
       return success({ allowed: false });
     }
@@ -224,12 +224,12 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
       return success({ allowed: false });
     }
 
-    const namespace = await getClientNamespace(app.db, user.clientId);
+    const namespace = await getTenantNamespace(app.db, user.tenantId);
 
     return success({
       allowed: true,
       sftp_user_id: user.id,
-      client_id: user.clientId,
+      tenant_id: user.tenantId,
       namespace,
       home_path: user.homePath,
       allow_write: user.allowWrite === 1,
@@ -242,7 +242,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
   app.post('/internal/sftp/auth-key', async (request) => {
     const { username, public_key_fingerprint, source_ip } = keyAuthSchema.parse(request.body);
 
-    // Look up SFTP user to get clientId
+    // Look up SFTP user to get tenantId
     const [user] = await app.db
       .select()
       .from(sftpUsers)
@@ -267,9 +267,9 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
       return success({ allowed: false });
     }
 
-    // Gate on client lifecycle status (see /auth for rationale).
+    // Gate on tenant lifecycle status (see /auth for rationale).
     {
-      const status = await getClientStatus(app.db, user.clientId);
+      const status = await getTenantStatus(app.db, user.tenantId);
       if (status !== 'active') {
         return success({ allowed: false });
       }
@@ -284,7 +284,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
         and(
           eq(sftpUserSshKeys.sftpUserId, user.id),
           eq(sshKeys.keyFingerprint, public_key_fingerprint),
-          eq(sshKeys.clientId, user.clientId),
+          eq(sshKeys.tenantId, user.tenantId),
         ),
       );
 
@@ -292,12 +292,12 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
       return success({ allowed: false });
     }
 
-    const namespace = await getClientNamespace(app.db, user.clientId);
+    const namespace = await getTenantNamespace(app.db, user.tenantId);
 
     return success({
       allowed: true,
       sftp_user_id: user.id,
-      client_id: user.clientId,
+      tenant_id: user.tenantId,
       namespace,
       home_path: user.homePath,
       allow_write: user.allowWrite === 1,
@@ -318,7 +318,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     const rows = events.map((e) => ({
       id: crypto.randomUUID(),
       sftpUserId: e.sftp_user_id ?? null,
-      clientId: e.client_id,
+      tenantId: e.tenant_id,
       event: e.event,
       sourceIp: e.source_ip,
       protocol: e.protocol ?? 'sftp',
@@ -336,16 +336,16 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
   app.post('/internal/sftp/ensure-file-manager', async (request, reply) => {
     const { namespace } = ensureFileManagerSchema.parse(request.body);
 
-    // Verify namespace belongs to an actual client (prevent arbitrary namespace access)
-    const [client] = await app.db
-      .select({ id: clients.id })
-      .from(clients)
-      .where(eq(clients.kubernetesNamespace, namespace));
-    if (!client) {
+    // Verify namespace belongs to an actual tenant (prevent arbitrary namespace access)
+    const [tenant] = await app.db
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.kubernetesNamespace, namespace));
+    if (!tenant) {
       return reply.status(403).send({ error: 'Unknown namespace' });
     }
 
-    const k8s = k8sClients ?? createK8sClients(process.env.KUBECONFIG);
+    const k8s = k8sTenants ?? createK8sClients(process.env.KUBECONFIG);
     const image = getFileManagerImage();
 
     await ensureFileManagerRunning(k8s, namespace, image);

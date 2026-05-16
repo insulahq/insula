@@ -5,7 +5,7 @@
  */
 
 import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { deployments, catalogEntries, catalogEntryVersions, clients, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
+import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 
@@ -31,7 +31,7 @@ function rethrowAsApiErrorIfBudget(err: unknown): never {
   throw err;
 }
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
-import { getClientById } from '../clients/service.js';
+import { getTenantById } from '../tenants/service.js';
 import { getSettings as getSystemSettings } from '../system-settings/service.js';
 import {
   deployCatalogEntry,
@@ -279,7 +279,7 @@ export function readEntryHostPorts(entry: typeof catalogEntries.$inferSelect): r
 }
 
 /**
- * Resolve the target node role for a deployment from the client's
+ * Resolve the target node role for a deployment from the tenant's
  * pinned worker. Defaults to 'worker' when no pin is set OR when the
  * pinned hostname doesn't have a cluster_nodes row yet (newly-joined
  * node, etc.) — worker is the safe default because:
@@ -289,13 +289,13 @@ export function readEntryHostPorts(entry: typeof catalogEntries.$inferSelect): r
  */
 async function resolveTargetNodeRole(
   db: Database,
-  workerNodeName: string | null | undefined,
+  nodeName: string | null | undefined,
 ): Promise<'server' | 'worker'> {
-  if (!workerNodeName) return 'worker';
+  if (!nodeName) return 'worker';
   const [node] = await db
     .select({ role: clusterNodes.role })
     .from(clusterNodes)
-    .where(eq(clusterNodes.name, workerNodeName));
+    .where(eq(clusterNodes.name, nodeName));
   return (node?.role ?? 'worker') as 'server' | 'worker';
 }
 
@@ -312,7 +312,7 @@ export async function enforceHostPortGate(
   db: Database,
   entry: typeof catalogEntries.$inferSelect,
   components: readonly DeployComponentInput[],
-  workerNodeName: string | null | undefined,
+  nodeName: string | null | undefined,
 ): Promise<ManifestFirewall | null> {
   const firewall = readEntryFirewall(entry);
   // Also detect literal hostPort declarations on container spec — these
@@ -324,7 +324,7 @@ export async function enforceHostPortGate(
 
   if (!firewall && !hasHostPort) return null;
 
-  const role = await resolveTargetNodeRole(db, workerNodeName);
+  const role = await resolveTargetNodeRole(db, nodeName);
   const settings = await getSystemSettings(db);
   const allowed = role === 'server'
     ? settings.allowHostPortsServer
@@ -368,12 +368,12 @@ function resolveIngressPorts(
 
 export async function createDeployment(
   db: Database,
-  clientId: string,
+  tenantId: string,
   input: CreateDeploymentInput,
   actorId: string,
   k8s?: K8sClients,
 ) {
-  const client = await getClientById(db, clientId);
+  const tenant = await getTenantById(db, tenantId);
 
   // Look up catalog entry
   const [entry] = await db
@@ -386,7 +386,7 @@ export async function createDeployment(
   // Resolve version-aware configuration: components, volumes, env vars
   const resolved = await resolveVersionAwareDeploymentConfig(db, entry, input.version);
   const { components, volumes, fixedEnvVars, generatedEnvKeys, configurableEnvKeys, installedVersion } = resolved;
-  const namespace = client.kubernetesNamespace;
+  const namespace = tenant.kubernetesNamespace;
 
   // Phase 3 firewall gate: reject the deploy BEFORE we touch the DB if
   // the catalog manifest declares host-network ports AND the per-role
@@ -395,7 +395,7 @@ export async function createDeployment(
   // message ("enable Allow Custom Host Ports on … in System Settings").
   // Returns the firewall block (or null) so we can pass it through to
   // deployCatalogEntry without re-parsing the manifest.
-  const firewall = await enforceHostPortGate(db, entry, components, client.workerNodeName);
+  const firewall = await enforceHostPortGate(db, entry, components, tenant.nodeName);
 
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
@@ -428,13 +428,13 @@ export async function createDeployment(
     : `${entry.type}/${entry.code}/${input.name}`;
 
   // Pre-flight: distinguish "active duplicate" from "soft-deleted with same name".
-  // Soft-deleted rows still hold the (client_id, name) slot deliberately so a
+  // Soft-deleted rows still hold the (tenant_id, name) slot deliberately so a
   // future restore flow can recover them. The UI needs to tell the user which
   // case they're hitting; otherwise both look like a generic 23505.
   const [existing] = await db
     .select({ id: deployments.id, status: deployments.status, deletedAt: deployments.deletedAt })
     .from(deployments)
-    .where(and(eq(deployments.clientId, clientId), eq(deployments.name, input.name)))
+    .where(and(eq(deployments.tenantId, tenantId), eq(deployments.name, input.name)))
     .limit(1);
   if (existing) {
     if (existing.status === 'deleted' || existing.deletedAt) {
@@ -447,7 +447,7 @@ export async function createDeployment(
     }
     throw new ApiError(
       'DUPLICATE_NAME',
-      `A deployment named '${input.name}' already exists for this client`,
+      `A deployment named '${input.name}' already exists for this tenant`,
       409,
       { name: input.name, conflicting_deployment_id: existing.id, conflict_kind: 'active' },
     );
@@ -456,7 +456,7 @@ export async function createDeployment(
   try {
     await db.insert(deployments).values({
       id,
-      clientId,
+      tenantId,
       catalogEntryId: input.catalog_entry_id,
       name: input.name,
       domainName: input.domain_name ?? null,
@@ -476,7 +476,7 @@ export async function createDeployment(
     if ((err as { code?: string }).code === '23505') {
       throw new ApiError(
         'DUPLICATE_NAME',
-        `A deployment named '${input.name}' already exists for this client`,
+        `A deployment named '${input.name}' already exists for this tenant`,
         409,
         { name: input.name, conflict_kind: 'race' },
       );
@@ -508,13 +508,13 @@ export async function createDeployment(
         reuseExistingData: input.storage_mode === 'custom',
         catalogCode: entry.code,
         passwordEnvVar,
-        timezone: client.timezone ?? undefined,
-        // M5: pin tenant pods to the client's assigned worker if one is
+        timezone: tenant.timezone ?? undefined,
+        // M5: pin tenant pods to the tenant's assigned worker if one is
         // set; undefined lets the default scheduler choose. Tier (local
         // vs ha) flips the pin between hard nodeSelector and soft
         // preferred affinity (so HA can fail over).
-        workerNodeName: client.workerNodeName ?? undefined,
-        storageTier: (client.storageTier ?? null) as 'local' | 'ha' | null,
+        nodeName: tenant.nodeName ?? undefined,
+        storageTier: (tenant.storageTier ?? null) as 'local' | 'ha' | null,
         // Phase 3: propagate the manifest's runtime-firewall block. The
         // deployer stamps it as Pod annotations which the
         // firewall-reconciler converges into the host's nft sets
@@ -537,7 +537,7 @@ export async function createDeployment(
       // flow is enough on its own.
       try {
         const { reconcileIngress } = await import('../domains/k8s-ingress.js');
-        await reconcileIngress(db, k8s, clientId, namespace);
+        await reconcileIngress(db, k8s, tenantId, namespace);
       } catch (err) {
         console.warn(`[deployments] reconcileIngress failed for ${input.name}: ${(err as Error).message}`);
       }
@@ -558,11 +558,11 @@ export async function createDeployment(
   return created;
 }
 
-export async function getDeploymentById(db: Database, clientId: string, deploymentId: string) {
+export async function getDeploymentById(db: Database, tenantId: string, deploymentId: string) {
   const [deployment] = await db
     .select()
     .from(deployments)
-    .where(and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId)));
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
 
   if (!deployment) throw deploymentNotFound(deploymentId);
   return deployment;
@@ -574,12 +574,12 @@ export async function clearDeploymentError(db: Database, deploymentId: string): 
 
 export async function listDeployments(
   db: Database,
-  clientId: string,
+  tenantId: string,
   params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; includeDeleted?: boolean },
 ): Promise<{ data: typeof deployments.$inferSelect[]; pagination: PaginationMeta }> {
   const { limit, cursor, sort, includeDeleted } = params;
 
-  const conditions = [eq(deployments.clientId, clientId)];
+  const conditions = [eq(deployments.tenantId, tenantId)];
 
   // Exclude soft-deleted deployments unless explicitly requested
   if (!includeDeleted) {
@@ -636,12 +636,12 @@ export async function listDeployments(
 
 export async function updateDeployment(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   input: UpdateDeploymentInput,
   k8s?: K8sClients,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
@@ -673,8 +673,8 @@ export async function updateDeployment(
 
   // Apply K8s changes for status transitions
   if (k8s && input.status) {
-    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-    const namespace = client?.kubernetesNamespace;
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
       const [entry] = await db
@@ -703,21 +703,21 @@ export async function updateDeployment(
     }
   }
 
-  return getDeploymentById(db, clientId, deploymentId);
+  return getDeploymentById(db, tenantId, deploymentId);
 }
 
 export async function deleteDeployment(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   k8s?: K8sClients,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   // Soft-delete: mark as deleted and scale K8s resources to 0
   if (k8s) {
-    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-    const namespace = client?.kubernetesNamespace;
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
       const [entry] = await db
@@ -752,11 +752,11 @@ export async function deleteDeployment(
   // this, the Ingress would keep a stale rule that 503's on every
   // request because the backing Service is gone.
   if (k8s) {
-    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-    if (client?.kubernetesNamespace) {
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    if (tenant?.kubernetesNamespace) {
       try {
         const { reconcileIngress } = await import('../domains/k8s-ingress.js');
-        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+        await reconcileIngress(db, k8s, tenantId, tenant.kubernetesNamespace);
       } catch (err) {
         console.warn(`[deployments] reconcileIngress on delete failed: ${(err as Error).message}`);
       }
@@ -793,11 +793,11 @@ export async function deleteDeployment(
 
 export async function restoreDeployment(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   k8s?: K8sClients,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   if (deployment.status !== 'deleted') {
     throw new ApiError(
@@ -811,8 +811,8 @@ export async function restoreDeployment(
 
   // Scale K8s resources back up
   if (k8s) {
-    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-    const namespace = client?.kubernetesNamespace;
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
       const [entry] = await db
@@ -836,22 +836,22 @@ export async function restoreDeployment(
     .set({ status: 'running', deletedAt: null, lastError: null })
     .where(eq(deployments.id, deploymentId));
 
-  return getDeploymentById(db, clientId, deploymentId);
+  return getDeploymentById(db, tenantId, deploymentId);
 }
 
 export async function hardDeleteDeployment(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   k8s?: K8sClients,
   deleteData?: boolean,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   // Hard-delete: destroy K8s resources + PVCs + DB row
   if (k8s) {
-    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-    const namespace = client?.kubernetesNamespace;
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
       const [entry] = await db
@@ -891,10 +891,10 @@ export async function hardDeleteDeployment(
 
 export async function getDeletePreview(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   // Find all ingress routes linked to this deployment
   const routes = await db
@@ -933,28 +933,28 @@ export async function getDeletePreview(
 // ─── Resource Adjustment + Restart (Issue 7) ────────────────────────────────
 
 /**
- * Get resource availability for a deployment — how much the client can allocate.
+ * Get resource availability for a deployment — how much the tenant can allocate.
  * Returns min (from catalog entry) and max (remaining plan capacity + current deployment alloc).
  */
 export async function getResourceAvailability(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
   const { parseResourceValue } = await import('../../shared/resource-parser.js');
 
   // Get plan limits (with overrides)
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
-  const cpuLimit = Number(client.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
-  const memoryLimitGi = Number(client.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
+  const cpuLimit = Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
+  const memoryLimitGi = Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
 
   // Sum all OTHER deployments' resource requests
   const allDeployments = await db.select().from(deployments)
     .where(and(
-      eq(deployments.clientId, clientId),
+      eq(deployments.tenantId, tenantId),
       ne(deployments.id, deploymentId),
       ne(deployments.status, 'deleted'),
     ));
@@ -991,25 +991,25 @@ export async function getResourceAvailability(
 
 export async function updateDeploymentResources(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   input: { cpu_request?: string; memory_request?: string },
   k8s?: K8sClients,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
   const { parseResourceValue } = await import('../../shared/resource-parser.js');
 
   // Validate against plan limits
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
-  const cpuLimit = Number(client.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
-  const memoryLimitGi = Number(client.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
+  const cpuLimit = Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
+  const memoryLimitGi = Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
 
   // Sum all OTHER deployments
   const allDeployments = await db.select().from(deployments)
     .where(and(
-      eq(deployments.clientId, clientId),
+      eq(deployments.tenantId, tenantId),
       ne(deployments.id, deploymentId),
       ne(deployments.status, 'deleted'),
     ));
@@ -1050,7 +1050,7 @@ export async function updateDeploymentResources(
 
   // Redeploy to K8s with updated resources
   if (k8s) {
-    const namespace = await getClientNamespace(db, clientId);
+    const namespace = await getTenantNamespace(db, tenantId);
     const [entry] = await db
       .select()
       .from(catalogEntries)
@@ -1088,7 +1088,7 @@ export async function updateDeploymentResources(
         });
         // Force pod restart by deleting existing pods — K8s recreates from updated spec.
         // The patchNamespacedDeployment annotation approach doesn't work reliably
-        // with this K8s client version due to content-type issues.
+        // with this K8s tenant version due to content-type issues.
         const baseName = deployment.name;
         try {
           const podList = await k8s.core.listNamespacedPod({
@@ -1113,7 +1113,7 @@ export async function updateDeploymentResources(
     }
   }
 
-  return getDeploymentById(db, clientId, deploymentId);
+  return getDeploymentById(db, tenantId, deploymentId);
 }
 
 // ─── Volume Path Computation (Issue 9) ──────────────────────────────────────
@@ -1138,10 +1138,10 @@ export function computeVolumePaths(
 
 export async function getDeploymentWithVolumePaths(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   const [entry] = await db
     .select()
@@ -1165,7 +1165,7 @@ export async function getDeploymentWithVolumePaths(
  */
 export async function getResourceBreakdown(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ): Promise<{
   total: { cpu: string; memory: string };
@@ -1173,7 +1173,7 @@ export async function getResourceBreakdown(
   warnings: string[];
   qosModel: { cpu: 'burstable'; memory: 'guaranteed' };
 }> {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
   if (deployment.source === 'custom') {
     throw new ApiError(
       'NOT_SUPPORTED_FOR_CUSTOM',
@@ -1295,7 +1295,7 @@ export async function redeployWithCurrentConfig(
 
   if (!entry) return;
 
-  const namespace = await getClientNamespace(db, deployment.clientId);
+  const namespace = await getTenantNamespace(db, deployment.tenantId);
   // Use version-aware resolver — respects per-version volume/env overrides
   const resolved = await resolveVersionAwareDeploymentConfig(db, entry, deployment.installedVersion);
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
@@ -1338,13 +1338,13 @@ export async function redeployWithCurrentConfig(
   } catch { /* best-effort */ }
 }
 
-export async function getClientNamespace(
+export async function getTenantNamespace(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string> {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
-  return client.kubernetesNamespace;
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  return tenant.kubernetesNamespace;
 }
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
@@ -1376,7 +1376,7 @@ function buildConnectionInfo(
   const componentName = components.length > 0 ? components[0].name : entry.code;
   const baseName = deployment.name;
   const componentSuffix = components.length > 1 ? `-${componentName}` : '';
-  const namespace = `client-${deployment.clientId}`;
+  const namespace = `tenant-${deployment.tenantId}`;
   const host = `${baseName}${componentSuffix}.${namespace}.svc.cluster.local`;
 
   return {
@@ -1395,10 +1395,10 @@ function buildConnectionInfo(
 
 export async function getDeploymentCredentials(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   // Catalog-only. Custom deployments expose their own credentials
   // model via the custom-deployments module (PR-2). Without this
@@ -1444,11 +1444,11 @@ export async function getDeploymentCredentials(
  */
 export async function regenerateDeploymentCredentials(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   keys?: string[],
 ) {
-  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
   // Catalog-only (and the route is 410'd anyway — defense in depth).
   if (deployment.source === 'custom') {
@@ -1517,7 +1517,7 @@ export async function regenerateDeploymentCredentials(
 
 export async function listStorageFolders(
   db: Database,
-  clientId: string,
+  tenantId: string,
   entryType: string,
   entryCode: string,
   k8s?: K8sClients,
@@ -1525,12 +1525,12 @@ export async function listStorageFolders(
 ) {
   const basePath = `${entryType}/${entryCode}`;
 
-  // Get existing deployments for this client to mark folders as "in use"
+  // Get existing deployments for this tenant to mark folders as "in use"
   const existingDeployments = await db
     .select({ name: deployments.name, storagePath: deployments.storagePath, status: deployments.status })
     .from(deployments)
     .where(and(
-      eq(deployments.clientId, clientId),
+      eq(deployments.tenantId, tenantId),
       ne(deployments.status, 'deleted'),
     ));
 
@@ -1546,7 +1546,7 @@ export async function listStorageFolders(
   const folders: Array<{ name: string; path: string; isEmpty: boolean; usedByDeployment: string | null }> = [];
 
   if (k8s) {
-    const namespace = await getClientNamespace(db, clientId);
+    const namespace = await getTenantNamespace(db, tenantId);
     try {
       const { fileManagerRequest } = await import('../file-manager/service.js');
       const { getFileManagerImage } = await import('../file-manager/image.js');

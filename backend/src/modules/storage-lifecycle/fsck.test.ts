@@ -81,9 +81,9 @@ describe('runFsck — Job placement', () => {
       },
     } as never;
     await runFsck(k8s, {
-      namespace: 'client-tester',
+      namespace: 'tenant-tester',
       volumeName: 'pvc-abc12345',
-      clientId: 'c-1',
+      tenantId: 'c-1',
       fsType: 'ext4',
       dryRun: true,
       nodeName: 'node-a',
@@ -91,8 +91,8 @@ describe('runFsck — Job placement', () => {
     const jobCall = calls.find((c) => c.kind === 'createJob');
     expect(jobCall).toBeDefined();
     expect(jobCall!.namespace).toBe('platform-tenant-ops');
-    expect(jobCall!.body!.metadata!.labels!['platform.io/client-id']).toBe('c-1');
-    expect(jobCall!.body!.metadata!.labels!['platform.io/client-namespace']).toBe('client-tester');
+    expect(jobCall!.body!.metadata!.labels!['platform.io/tenant-id']).toBe('c-1');
+    expect(jobCall!.body!.metadata!.labels!['platform.io/tenant-namespace']).toBe('tenant-tester');
     expect(jobCall!.body!.spec!.template!.spec!.priorityClassName).toBe('platform-storage-ops');
   });
 });
