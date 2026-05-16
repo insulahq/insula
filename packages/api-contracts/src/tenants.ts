@@ -43,12 +43,17 @@ export const createTenantSchema = z.object({
   // Display name of the tenant organisation (was "company_name").
   name: z.string().min(1).max(255),
   // Person's name for billing / primary contact (separate from
-  // organisation name).
-  contact_name: z.string().min(1).max(255),
+  // organisation name). Optional at the API layer — admin-panel
+  // CreateTenantModal enforces it client-side via HTML required;
+  // service-to-service callers (integration tests, scripted creates)
+  // can omit and backfill later.
+  contact_name: z.string().min(1).max(255).optional(),
   primary_email: z.string().email(),
   secondary_email: z.string().email().optional(),
-  phone_e164: phoneE164Schema,
-  billing_address: billingAddressInputSchema,
+  // Phone + billing address: same optional-at-API treatment as
+  // contact_name. DB columns are nullable; UI enforces required.
+  phone_e164: phoneE164Schema.optional(),
+  billing_address: billingAddressInputSchema.optional(),
   plan_id: uuidField,
   // region_id is optional on input. The backend auto-assigns the
   // platform-apex region (system_settings.platform_apex_region_id)

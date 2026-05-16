@@ -224,7 +224,7 @@ print(plans[0].get('id', '') if plans else '')
 
   # Create client
   local client_resp tenant_id ns
-  client_resp=$(api POST "/clients" \
+  client_resp=$(api POST "/tenants" \
     "{\"name\":\"catalog-${code}-${rand}\",\"primary_email\":\"${cname}@k8s-platform.test\",\"plan_id\":\"${PLAN_ID}\",\"region_id\":\"${REGION_ID}\",\"storage_tier\":\"local\"}")
   tenant_id=$(echo "$client_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id') or '')" 2>/dev/null)
   if [[ -z "$tenant_id" ]]; then
@@ -236,14 +236,14 @@ print(plans[0].get('id', '') if plans else '')
 
   # Wait for client provision
   if ! wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
-       "api GET '/clients/${tenant_id}'"; then
+       "api GET '/tenants/${tenant_id}'"; then
     fail "client never provisioned"
     local ev; ev=$(capture_evidence "$code" "client-${tenant_id}" "$EVIDENCE_DIR" 2>/dev/null || echo "-")
     [[ "$KEEP_ON_FAIL" == false ]] && tear_down_tenant "$tenant_id" ""
     echo -e "${code}\t${type}\tFAIL\t$(($(date +%s) - started_at))\tprovision\tProvision timeout\t${ev}" >> "$RESULTS_TSV"
     return 1
   fi
-  ns=$(api GET "/clients/${tenant_id}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('kubernetesNamespace',''))" 2>/dev/null)
+  ns=$(api GET "/tenants/${tenant_id}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('kubernetesNamespace',''))" 2>/dev/null)
   info "namespace=${ns}"
 
   # POST deployment. We pin generous CPU + memory (well above the
@@ -252,7 +252,7 @@ print(plans[0].get('id', '') if plans else '')
   # picked above caps these at the plan limit — but the API default of
   # 256Mi crashes mysql before it finishes InnoDB init.
   local depl_resp depl_id
-  depl_resp=$(api POST "/clients/${tenant_id}/deployments" \
+  depl_resp=$(api POST "/tenants/${tenant_id}/deployments" \
     "{\"catalog_entry_id\":\"${entry_id}\",\"name\":\"${depl_name}\",\"replica_count\":1,\"cpu_request\":\"1\",\"memory_request\":\"1Gi\"}")
   depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id') or '')" 2>/dev/null)
   if [[ -z "$depl_id" ]]; then
@@ -273,10 +273,10 @@ print(plans[0].get('id', '') if plans else '')
   # Wait for the platform's own status to reach 'running' (or 'failed').
   # 'running' is necessary but not sufficient — pods Ready ≠ app responding.
   if ! wait_for "$timeout" "deployment status=running" '"status":"running"' \
-       "api GET '/clients/${tenant_id}/deployments/${depl_id}'"; then
+       "api GET '/tenants/${tenant_id}/deployments/${depl_id}'"; then
     # Surface lastError to the report
     local last_err
-    last_err=$(api GET "/clients/${tenant_id}/deployments/${depl_id}" \
+    last_err=$(api GET "/tenants/${tenant_id}/deployments/${depl_id}" \
       | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('lastError','')[:500])")
     fail "deployment never reached running. lastError=${last_err}"
     local ev; ev=$(capture_evidence "$code" "$ns" "$EVIDENCE_DIR")

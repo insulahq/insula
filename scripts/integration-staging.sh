@@ -188,7 +188,7 @@ scenario_lifecycle() {
 
   local stamp; stamp=$(date +%s)
   local company="Integration Test $stamp"
-  local resp; resp=$(api POST "/clients" "{\"name\":\"$company\",\"primary_email\":\"int-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  local resp; resp=$(api POST "/tenants" "{\"name\":\"$company\",\"primary_email\":\"int-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "client create failed: $resp"; return 1; }
   ok "client created cid=$cid"
@@ -203,7 +203,7 @@ scenario_lifecycle() {
   # applied. Without this, the FM scenario fires /files/start before
   # the FM Deployment exists and races a half-provisioned namespace.
   wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/clients/$cid'" || return 1
+    "api GET '/tenants/$cid'" || return 1
 
   return 0
 }
@@ -214,10 +214,10 @@ scenario_fm() {
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null)
   [[ -n "$cid" ]] || { fail "lifecycle must run first"; return 1; }
 
-  api POST "/clients/$cid/files/start" "" >/dev/null
+  api POST "/tenants/$cid/files/start" "" >/dev/null
   wait_for 180 "FM ready=true" '"ready":true' \
-    "api GET '/clients/$cid/files/status'" || return 1
-  local list; list=$(api GET "/clients/$cid/files?path=/")
+    "api GET '/tenants/$cid/files/status'" || return 1
+  local list; list=$(api GET "/tenants/$cid/files?path=/")
   echo "$list" | python3 -c "import json,sys;d=json.load(sys.stdin);assert 'data' in d" 2>/dev/null \
     && ok "FM list / succeeded" || { fail "FM list failed: $list"; return 1; }
 
@@ -226,7 +226,7 @@ scenario_fm() {
   # endpoint deletes the FM Deployment; we wait for the pod to fully
   # terminate AND for Longhorn to detach the volume so the workload
   # we're about to create doesn't hit Multi-Attach.
-  api POST "/clients/$cid/files/stop" "" >/dev/null
+  api POST "/tenants/$cid/files/stop" "" >/dev/null
   local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
   # Wait up to 120s for the FM pod to terminate AND its volume to
   # detach. Pods take ~30s to gracefully shut down; Longhorn detach
@@ -270,7 +270,7 @@ scenario_https() {
   local domain="t${stamp}.${HTTPS_TEST_DOMAIN_BASE}"
 
   # 1. Deployment
-  local depl_resp; depl_resp=$(api POST "/clients/$cid/deployments" \
+  local depl_resp; depl_resp=$(api POST "/tenants/$cid/deployments" \
     "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}")
   local depl_id; depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$depl_id" ]] || { fail "deployment create failed: $(echo "$depl_resp" | head -c 300)"; return 1; }
@@ -279,11 +279,11 @@ scenario_https() {
   # Wait for deployment to be running (k8s pod Ready). 240s — first
   # pod pull from GHCR + Longhorn volume re-attach if FM held it.
   if ! wait_for 240 "deployment running" '"status":"running"' \
-    "api GET '/clients/$cid/deployments/$depl_id'"; then
+    "api GET '/tenants/$cid/deployments/$depl_id'"; then
     # Surface the deployment's lastError envelope so the operator
     # sees WHY (PVC Multi-Attach, ImagePull, OOM, etc.) instead of
     # only "timeout".
-    local diag; diag=$(api GET "/clients/$cid/deployments/$depl_id" \
+    local diag; diag=$(api GET "/tenants/$cid/deployments/$depl_id" \
       | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print('status=',d.get('status'),'lastError=',d.get('lastError','')[:300])" 2>/dev/null)
     fail "deployment diagnostic: $diag"
     return 1
@@ -292,7 +292,7 @@ scenario_https() {
   # 2. Domain bound to deployment in one call (atomic — closes the
   #    bug where adding domain first and deployment after left no
   #    Ingress because reconcileIngress wasn't triggered later).
-  local dom_resp; dom_resp=$(api POST "/clients/$cid/domains" \
+  local dom_resp; dom_resp=$(api POST "/tenants/$cid/domains" \
     "{\"domain_name\":\"$domain\",\"deployment_id\":\"$depl_id\",\"dns_mode\":\"cname\"}")
   local dom_id; dom_id=$(echo "$dom_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$dom_id" ]] || { fail "domain create failed: $(echo "$dom_resp" | head -c 300)"; return 1; }
@@ -457,7 +457,7 @@ scenario_reaper() {
 
   local stamp; stamp=$(date +%s)
   local company="Reaper Test $stamp"
-  local resp; resp=$(api POST "/clients" \
+  local resp; resp=$(api POST "/tenants" \
     "{\"name\":\"$company\",\"primary_email\":\"reaper-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "reaper: client create failed"; return 1; }
@@ -475,11 +475,11 @@ scenario_reaper() {
   wait_for 90 "reaper: namespace provisioned" "Active" \
     "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1
   wait_for 180 "reaper: client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/clients/$cid'" || return 1
+    "api GET '/tenants/$cid'" || return 1
 
   # Deploy nginx-php
   local depl_name="reaper-${stamp}"
-  local depl_resp; depl_resp=$(api POST "/clients/$cid/deployments" \
+  local depl_resp; depl_resp=$(api POST "/tenants/$cid/deployments" \
     "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}")
   local depl_id; depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$depl_id" ]] || { fail "reaper: deployment create failed: $(echo "$depl_resp" | head -c 300)"; return 1; }
@@ -487,7 +487,7 @@ scenario_reaper() {
 
   # Wait for pod to be running (image must be pulled)
   wait_for 240 "reaper: deployment running" '"status":"running"' \
-    "api GET '/clients/$cid/deployments/$depl_id'" || return 1
+    "api GET '/tenants/$cid/deployments/$depl_id'" || return 1
 
   # Find the namespace and the node the pod landed on
   local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
@@ -510,12 +510,12 @@ scenario_reaper() {
   else
     fail "reaper: image not found on node $node_name before delete — pull may have failed"
     # Clean up and exit scenario (don't false-pass the post-delete check)
-    api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+    api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
     return 1
   fi
 
   # Delete the deployment
-  local del_resp; del_resp=$(api DELETE "/clients/$cid/deployments/$depl_id" 2>/dev/null)
+  local del_resp; del_resp=$(api DELETE "/tenants/$cid/deployments/$depl_id" 2>/dev/null)
   # Accept 200 or 204
   ok "reaper: deployment deleted (response: $(echo "$del_resp" | head -c 80))"
 
@@ -531,7 +531,7 @@ scenario_reaper() {
   fi
 
   # Clean up the test client
-  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+  api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
 }
 
 # ─── scenario: backup bundle (Phase 2 / ADR-032) ─────────────────
@@ -577,14 +577,14 @@ print(json.dumps(out))
   [[ -n "$plan_id" && -n "$region_id" ]] || { fail "bundle: could not resolve plan/region"; return 1; }
 
   local stamp; stamp=$(date +%s)
-  local resp; resp=$(api POST "/clients" \
+  local resp; resp=$(api POST "/tenants" \
     "{\"name\":\"Bundle Test $stamp\",\"primary_email\":\"bundle-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "bundle: client create failed"; return 1; }
   ok "bundle: client created cid=$cid"
 
   wait_for 120 "bundle: client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/clients/$cid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    "api GET '/tenants/$cid'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
   # Iterate each active target and run create + verify round-trip.
   local target_ids; target_ids=$(echo "$targets_json" | python3 -c "import json,sys;print(' '.join(t['id'] for t in json.load(sys.stdin)))")
@@ -607,8 +607,8 @@ print(json.dumps(out))
     local bundle_id status
     bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
     status=$(echo "$b_resp"   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-    [[ -n "$bundle_id" ]] || { fail "bundle/$kind: create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-    [[ "$status" == "completed" ]] || { fail "bundle/$kind: status=$status (expected completed) — $(echo "$b_resp" | head -c 400)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ -n "$bundle_id" ]] || { fail "bundle/$kind: create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ "$status" == "completed" ]] || { fail "bundle/$kind: status=$status (expected completed) — $(echo "$b_resp" | head -c 400)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "bundle/$kind: created $bundle_id status=$status"
 
     # Per-component detail check.
@@ -658,7 +658,7 @@ print(json.dumps({
   done
 
   # Final cleanup
-  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+  api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
   ok "bundle: all $target_count target(s) round-trip verified end-to-end"
 }
 
@@ -710,19 +710,19 @@ for c in (items if isinstance(items, list) else []):
   [[ -n "$plan_id" && -n "$region_id" ]] || { fail "restore: could not resolve plan/region"; return 1; }
 
   local stamp; stamp=$(date +%s)
-  local resp; resp=$(api POST "/clients" \
+  local resp; resp=$(api POST "/tenants" \
     "{\"name\":\"Restore Test $stamp\",\"primary_email\":\"restore-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "restore: client create failed"; return 1; }
   ok "restore: client created cid=$cid"
   wait_for 120 "restore: client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/clients/$cid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    "api GET '/tenants/$cid'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
   # Create a domain we can later delete + restore.
   local hostname="restore-${stamp}.${HTTPS_TEST_DOMAIN_BASE}"
-  local d_resp; d_resp=$(api POST "/clients/$cid/domains" "{\"domain_name\":\"$hostname\"}")
+  local d_resp; d_resp=$(api POST "/tenants/$cid/domains" "{\"domain_name\":\"$hostname\"}")
   local domain_id; domain_id=$(echo "$d_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-  [[ -n "$domain_id" ]] || { fail "restore: domain create failed: $(echo "$d_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ -n "$domain_id" ]] || { fail "restore: domain create failed: $(echo "$d_resp" | head -c 300)"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: domain created id=$domain_id hostname=$hostname"
 
   # Create a bundle (config component captures the domains row).
@@ -730,29 +730,29 @@ for c in (items if isinstance(items, list) else []):
   local b_resp; b_resp=$(api POST "/admin/tenant-bundles" "$body")
   local bundle_id; bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
   local b_status; b_status=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-  [[ "$b_status" == "completed" && -n "$bundle_id" ]] || { fail "restore: bundle create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ "$b_status" == "completed" && -n "$bundle_id" ]] || { fail "restore: bundle create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: bundle created $bundle_id"
 
   # Browse the bundle — domain id must be present.
   local browse; browse=$(api GET "/admin/tenant-bundles/$bundle_id/browse/domains")
-  echo "$browse" | grep -q "$domain_id" || { fail "restore: bundle browse missing domain $domain_id: $(echo "$browse" | head -c 300)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  echo "$browse" | grep -q "$domain_id" || { fail "restore: bundle browse missing domain $domain_id: $(echo "$browse" | head -c 300)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: bundle browse confirms domain in dump"
 
   # Delete the live domain row.
-  api DELETE "/clients/$cid/domains/$domain_id" >/dev/null 2>&1 || true
-  local d_check; d_check=$(api GET "/clients/$cid/domains" 2>/dev/null)
-  ! echo "$d_check" | grep -q "$domain_id" || { fail "restore: domain still present after DELETE"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  api DELETE "/tenants/$cid/domains/$domain_id" >/dev/null 2>&1 || true
+  local d_check; d_check=$(api GET "/tenants/$cid/domains" 2>/dev/null)
+  ! echo "$d_check" | grep -q "$domain_id" || { fail "restore: domain still present after DELETE"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: domain deleted from live DB"
 
   # Create cart + add domains-by-id item.
   local cart_resp; cart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E restore test $stamp\"}")
   local cart_id; cart_id=$(echo "$cart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-  [[ -n "$cart_id" ]] || { fail "restore: cart create failed: $(echo "$cart_resp" | head -c 300)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ -n "$cart_id" ]] || { fail "restore: cart create failed: $(echo "$cart_resp" | head -c 300)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: cart created $cart_id"
 
   local item_body="{\"bundleId\":\"$bundle_id\",\"type\":\"domains-by-id\",\"selector\":{\"kind\":\"ids\",\"domainIds\":[\"$domain_id\"]},\"label\":\"restore-domain\"}"
   local item_resp; item_resp=$(api POST "/admin/restores/carts/$cart_id/items" "$item_body")
-  echo "$item_resp" | grep -q '"id"' || { fail "restore: cart add-item failed: $(echo "$item_resp" | head -c 400)"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  echo "$item_resp" | grep -q '"id"' || { fail "restore: cart add-item failed: $(echo "$item_resp" | head -c 400)"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: cart item added (domains-by-id)"
 
   # Execute. The cart endpoint runs the items synchronously; on the
@@ -760,12 +760,12 @@ for c in (items if isinstance(items, list) else []):
   # needed for in-process executors today.)
   local exec_resp; exec_resp=$(api POST "/admin/restores/carts/$cart_id/execute" "{}")
   local cart_status; cart_status=$(echo "$exec_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-  [[ "$cart_status" == "done" ]] || { fail "restore: cart execute returned status=$cart_status (expected done): $(echo "$exec_resp" | head -c 600)"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ "$cart_status" == "done" ]] || { fail "restore: cart execute returned status=$cart_status (expected done): $(echo "$exec_resp" | head -c 600)"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: cart executed status=done"
 
   # Verify the domain row is BACK.
-  local d_back; d_back=$(api GET "/clients/$cid/domains" 2>/dev/null)
-  echo "$d_back" | grep -q "$domain_id" || { fail "restore: domain $domain_id NOT restored after cart execute"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  local d_back; d_back=$(api GET "/tenants/$cid/domains" 2>/dev/null)
+  echo "$d_back" | grep -q "$domain_id" || { fail "restore: domain $domain_id NOT restored after cart execute"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: domain id=$domain_id restored to live DB ✓"
 
   # ─── files-paths sub-test (RESTORE_INCLUDE_FILES=1) ───
@@ -777,7 +777,7 @@ for c in (items if isinstance(items, list) else []):
     local marker_path="restore-marker-${stamp}.txt"
     local marker_content="restore-test-content-${stamp}"
     local fns; fns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
-    [[ -n "$fns" ]] || { fail "restore/files: could not resolve client namespace"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ -n "$fns" ]] || { fail "restore/files: could not resolve client namespace"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     local pv_name; pv_name=$(ssh_cp "kubectl -n $fns get pvc ${fns}-storage -o jsonpath='{.spec.volumeName}'" 2>/dev/null | tr -d '[:space:]')
 
     # Wait for the tenant Longhorn volume to detach. Up to ${1}s.
@@ -794,15 +794,15 @@ for c in (items if isinstance(items, list) else []):
     }
 
     log "restore/files: starting FM to seed marker file..."
-    api POST "/clients/$cid/files/start" "" >/dev/null
+    api POST "/tenants/$cid/files/start" "" >/dev/null
     wait_for 180 "restore/files: FM ready" '"ready":true' \
-      "api GET '/clients/$cid/files/status'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-    api POST "/clients/$cid/files/write" "{\"path\":\"/$marker_path\",\"content\":\"$marker_content\"}" >/dev/null \
-      || { fail "restore/files: write marker failed"; api POST "/clients/$cid/files/stop" "" >/dev/null; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+      "api GET '/tenants/$cid/files/status'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
+    api POST "/tenants/$cid/files/write" "{\"path\":\"/$marker_path\",\"content\":\"$marker_content\"}" >/dev/null \
+      || { fail "restore/files: write marker failed"; api POST "/tenants/$cid/files/stop" "" >/dev/null; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/files: marker written at /$marker_path"
 
     # Stop FM so the capture Job's RWO mount doesn't race.
-    api POST "/clients/$cid/files/stop" "" >/dev/null
+    api POST "/tenants/$cid/files/stop" "" >/dev/null
     local fns; fns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
     local fi=0 fpods=999
     while (( fi < 120 )); do
@@ -810,14 +810,14 @@ for c in (items if isinstance(items, list) else []):
       [[ "${fpods:-0}" -eq 0 ]] && break
       sleep 4; fi=$((fi+4))
     done
-    [[ "${fpods:-0}" -eq 0 ]] || { fail "restore/files: FM pod still around after 120s"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ "${fpods:-0}" -eq 0 ]] || { fail "restore/files: FM pod still around after 120s"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
     # Capture a NEW bundle that includes files.
     local fbody; fbody="{\"tenantId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-files-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":true,\"mailboxes\":false,\"config\":false,\"secrets\":false}}"
     local fb_resp; fb_resp=$(api POST "/admin/tenant-bundles" "$fbody")
     local fbundle_id; fbundle_id=$(echo "$fb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
     local fb_status; fb_status=$(echo "$fb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-    [[ "$fb_status" == "completed" && -n "$fbundle_id" ]] || { fail "restore/files: bundle create failed: $(echo "$fb_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ "$fb_status" == "completed" && -n "$fbundle_id" ]] || { fail "restore/files: bundle create failed: $(echo "$fb_resp" | head -c 400)"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/files: bundle $fbundle_id captured with files component"
 
     # The capture Job has ttlSecondsAfterFinished=600 — its pod
@@ -847,7 +847,7 @@ for c in (items if isinstance(items, list) else []):
 
     # Browse the file tree, confirm marker is in the dump.
     local tree; tree=$(api GET "/admin/tenant-bundles/$fbundle_id/browse/files/tree?limit=2000")
-    echo "$tree" | grep -q "$marker_path" || { fail "restore/files: marker $marker_path not in bundle tree: $(echo "$tree" | head -c 400)"; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    echo "$tree" | grep -q "$marker_path" || { fail "restore/files: marker $marker_path not in bundle tree: $(echo "$tree" | head -c 400)"; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/files: bundle browse confirms marker in dump"
 
     # Modify the marker via a one-off pod. This is what the restore
@@ -865,7 +865,7 @@ for c in (items if isinstance(items, list) else []):
     else
       fail "restore/files: modify pod failed: $(echo "$mod_out" | head -c 400)"
       api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true
-      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
       return 1
     fi
     _wait_lh_detach 60 || true
@@ -877,12 +877,12 @@ for c in (items if isinstance(items, list) else []):
     local cart_path="$marker_path"
     local fcart_resp; fcart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E files restore $stamp\"}")
     local fcart_id; fcart_id=$(echo "$fcart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-    [[ -n "$fcart_id" ]] || { fail "restore/files: cart create failed: $(echo "$fcart_resp" | head -c 300)"; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ -n "$fcart_id" ]] || { fail "restore/files: cart create failed: $(echo "$fcart_resp" | head -c 300)"; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/files: cart $fcart_id created"
 
     local fitem_body="{\"bundleId\":\"$fbundle_id\",\"type\":\"files-paths\",\"selector\":{\"kind\":\"paths\",\"paths\":[\"$cart_path\"]},\"label\":\"restore-marker\"}"
     local fitem_resp; fitem_resp=$(api POST "/admin/restores/carts/$fcart_id/items" "$fitem_body")
-    echo "$fitem_resp" | grep -q '"id"' || { fail "restore/files: add-item failed: $(echo "$fitem_resp" | head -c 400)"; api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    echo "$fitem_resp" | grep -q '"id"' || { fail "restore/files: add-item failed: $(echo "$fitem_resp" | head -c 400)"; api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/files: cart item added"
 
     # Execute. Files restore spawns a Job; the API waits up to 30 min.
@@ -897,7 +897,7 @@ for c in (items if isinstance(items, list) else []):
       ssh_cp "kubectl -n $fns logs -l platform.io/component=restore-files --tail=80 2>&1" 2>&1 | sed 's/^/    /' | head -40
       api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true
       api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true
-      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
       return 1
     fi
     ok "restore/files: cart executed status=done"
@@ -921,7 +921,7 @@ for c in (items if isinstance(items, list) else []):
       fail "restore/files: marker NOT restored to original content. verify-pod out=$(echo "$ver_out" | head -c 400)"
       api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true
       api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true
-      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
       return 1
     fi
 
@@ -944,20 +944,20 @@ for c in (items if isinstance(items, list) else []):
   #      cluster against Stalwart, not just against greenmail).
   if [[ "${RESTORE_INCLUDE_MAILBOXES:-}" == "1" ]]; then
     # Promote the existing domain to email-enabled.
-    local ed_resp; ed_resp=$(api POST "/clients/$cid/email/domains/$domain_id/enable" "{\"selector\":\"e2e-${stamp}\"}")
+    local ed_resp; ed_resp=$(api POST "/tenants/$cid/email/domains/$domain_id/enable" "{\"selector\":\"e2e-${stamp}\"}")
     local edid; edid=$(echo "$ed_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-    [[ -n "$edid" ]] || { fail "restore/mbox: email-domain enable failed: $(echo "$ed_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ -n "$edid" ]] || { fail "restore/mbox: email-domain enable failed: $(echo "$ed_resp" | head -c 300)"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/mbox: email-domain enabled edid=$edid"
 
     local mb_local="rm${stamp}"
     local mb_pass="MailRest!${stamp}x"
-    local mb_resp; mb_resp=$(api POST "/clients/$cid/email/domains/$edid/mailboxes" "{\"local_part\":\"$mb_local\",\"password\":\"$mb_pass\",\"quota_mb\":50}")
+    local mb_resp; mb_resp=$(api POST "/tenants/$cid/email/domains/$edid/mailboxes" "{\"local_part\":\"$mb_local\",\"password\":\"$mb_pass\",\"quota_mb\":50}")
     local mbid; mbid=$(echo "$mb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-    [[ -n "$mbid" ]] || { fail "restore/mbox: mailbox create failed: $(echo "$mb_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ -n "$mbid" ]] || { fail "restore/mbox: mailbox create failed: $(echo "$mb_resp" | head -c 300)"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     local mb_addr="${mb_local}@${hostname}"
     ok "restore/mbox: mailbox $mb_addr created"
     wait_for 60 "restore/mbox: status=active" '"status":"active"' \
-      "api GET '/clients/$cid/mailboxes/$mbid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+      "api GET '/tenants/$cid/mailboxes/$mbid'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
     # ── Seed: APPEND a unique message via IMAP master-user proxy ─
     # Spawns a one-shot pod in mail ns using mail-backup-tools image
@@ -1110,7 +1110,7 @@ EOF
         log "restore/mbox: ↓ Job log evidence ↓"; echo "$mbox_pod_log" | tail -5 | sed 's/^/    /'
         ok "restore/mbox: mbsync capture Job spawn + IMAPS+AUTH-PLAIN code path verified end-to-end (deferred: Stalwart-side master-account auth fix)"
         [[ -n "$mbundle_id" ]] && api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true
-        api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+        api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
         return 0
       fi
       fail "restore/mbox: bundle create returned status=$mb_b_status — resp: $(echo "$mb_b_resp" | head -c 400)"
@@ -1125,37 +1125,37 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
       log "restore/mbox: mbsync Job pod logs ↓"
       echo "$mbox_pod_log" | sed 's/^/    /' | head -40
       [[ -n "$mbundle_id" ]] && api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true
-      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
       return 1
     fi
     ok "restore/mbox: bundle $mbundle_id captured with mailboxes component"
 
     # Browse the mailboxes component, confirm address is present.
     local browse; browse=$(api GET "/admin/tenant-bundles/$mbundle_id/browse/mailboxes")
-    echo "$browse" | grep -q "$mb_addr" || { fail "restore/mbox: address $mb_addr not in bundle browse: $(echo "$browse" | head -c 300)"; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    echo "$browse" | grep -q "$mb_addr" || { fail "restore/mbox: address $mb_addr not in bundle browse: $(echo "$browse" | head -c 300)"; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/mbox: bundle browse confirms $mb_addr in dump"
 
     # Build a cart with mailboxes-by-address.
     local mcart_resp; mcart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E mbox restore $stamp\"}")
     local mcart_id; mcart_id=$(echo "$mcart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-    [[ -n "$mcart_id" ]] || { fail "restore/mbox: cart create failed"; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ -n "$mcart_id" ]] || { fail "restore/mbox: cart create failed"; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/mbox: cart $mcart_id created"
 
     local mitem; mitem="{\"bundleId\":\"$mbundle_id\",\"type\":\"mailboxes-by-address\",\"selector\":{\"kind\":\"addresses\",\"addresses\":[\"$mb_addr\"]},\"label\":\"restore-mbox\"}"
     api POST "/admin/restores/carts/$mcart_id/items" "$mitem" >/dev/null \
-      || { fail "restore/mbox: add-item failed"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+      || { fail "restore/mbox: add-item failed"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/mbox: cart item added (mailboxes-by-address)"
 
     # ── Wipe INBOX before restore so we can prove restore re-populated it.
     if (( imap_probes_ok )); then
       log "restore/mbox: wiping INBOX so restore is observable..."
       local wipe_out; wipe_out=$(mb_imap_op wipe "wipe-${stamp}")
-      echo "$wipe_out" | grep -q "WIPED" || { fail "restore/mbox: wipe failed: $(echo "$wipe_out" | head -c 400)"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+      echo "$wipe_out" | grep -q "WIPED" || { fail "restore/mbox: wipe failed: $(echo "$wipe_out" | head -c 400)"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
       # Sanity: confirm INBOX no longer contains the seeded Message-ID.
       local pre_count_out; pre_count_out=$(mb_imap_op count "pre-${stamp}")
       local pre_count; pre_count=$(echo "$pre_count_out" | sed -n 's/.*HITS \([0-9]*\).*/\1/p' | tail -1)
-      [[ "$pre_count" == "0" ]] || { fail "restore/mbox: pre-restore HITS=${pre_count}, expected 0 (wipe failed?)"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+      [[ "$pre_count" == "0" ]] || { fail "restore/mbox: pre-restore HITS=${pre_count}, expected 0 (wipe failed?)"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
       ok "restore/mbox: pre-restore Message-ID hits=0 (wipe confirmed)"
     fi
 
@@ -1170,7 +1170,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
       ssh_cp "kubectl -n mail logs -l platform.io/component=restore-files --tail=80 2>&1" 2>&1 | sed 's/^/    /' | head -50
       api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
       api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true
-      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
       return 1
     fi
     ok "restore/mbox: cart executed status=done — restore-mailbox.py via Job ✓"
@@ -1184,7 +1184,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
         log "restore/mbox: probe output ↓"; echo "$post_count_out" | sed 's/^/    /' | head -20
         api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
         api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true
-        api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+        api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
         return 1
       fi
       ok "restore/mbox: Message-ID round-trip ✓ (seeded → captured → wiped → restored)"
@@ -1217,7 +1217,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
   # Cleanup.
   api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true
   api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true
-  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+  api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
   ok "restore: full round-trip OK ✓"
 }
 
@@ -1262,10 +1262,10 @@ scenario_mail() {
   local mail_box_pass="MailTest!${stamp}x"
 
   cleanup_mail() {
-    [[ -n "$mail_mbid" ]] && api DELETE "/clients/$mail_cid/mailboxes/$mail_mbid" >/dev/null 2>&1 || true
-    [[ -n "$mail_edid" ]] && api DELETE "/clients/$mail_cid/email/domains/$mail_did/disable" >/dev/null 2>&1 || true
-    [[ -n "$mail_did" ]]  && api DELETE "/clients/$mail_cid/domains/$mail_did" >/dev/null 2>&1 || true
-    [[ -n "$mail_cid" ]]  && api DELETE "/clients/$mail_cid" >/dev/null 2>&1 || true
+    [[ -n "$mail_mbid" ]] && api DELETE "/tenants/$mail_cid/mailboxes/$mail_mbid" >/dev/null 2>&1 || true
+    [[ -n "$mail_edid" ]] && api DELETE "/tenants/$mail_cid/email/domains/$mail_did/disable" >/dev/null 2>&1 || true
+    [[ -n "$mail_did" ]]  && api DELETE "/tenants/$mail_cid/domains/$mail_did" >/dev/null 2>&1 || true
+    [[ -n "$mail_cid" ]]  && api DELETE "/tenants/$mail_cid" >/dev/null 2>&1 || true
   }
 
   # HIGH fix from review: persist mail_cid to the same /tmp file the outer
@@ -1286,7 +1286,7 @@ scenario_mail() {
   region_id=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);items=d.get('data',d) if isinstance(d,dict) else d;items=items if isinstance(items,list) else items.get('items',[]);print(items[0]['id'] if items else '')" 2>/dev/null)
   [[ -n "$plan_id" && -n "$region_id" ]] || { fail "mail: could not resolve plan/region"; cleanup_mail; return 1; }
 
-  local c_resp; c_resp=$(api POST "/clients" \
+  local c_resp; c_resp=$(api POST "/tenants" \
     "{\"name\":\"Mail E2E $stamp\",\"primary_email\":\"mail-e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   mail_cid=$(echo "$c_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_cid" ]] || { fail "mail: client create failed: $(echo "$c_resp" | head -c 300)"; cleanup_mail; return 1; }
@@ -1294,11 +1294,11 @@ scenario_mail() {
   ok "mail/client: created cid=$mail_cid"
 
   wait_for 120 "mail/client: provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/clients/$mail_cid'" || { cleanup_mail; return 1; }
+    "api GET '/tenants/$mail_cid'" || { cleanup_mail; return 1; }
 
   # ── Step 3: create test domain ──────────────────────────────────
   local test_domain="mail-e2e-${stamp}.${mail_domain_apex}"
-  local d_resp; d_resp=$(api POST "/clients/$mail_cid/domains" \
+  local d_resp; d_resp=$(api POST "/tenants/$mail_cid/domains" \
     "{\"domain_name\":\"$test_domain\",\"dns_mode\":\"cname\"}")
   mail_did=$(echo "$d_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_did" ]] || { fail "mail: domain create failed: $(echo "$d_resp" | head -c 300)"; cleanup_mail; return 1; }
@@ -1308,12 +1308,12 @@ scenario_mail() {
   # poll up to 60s but accept 'pending' as the staging state — the
   # email_domain enable path does not gate on DNS verification status.
   local dom_status
-  dom_status=$(api GET "/clients/$mail_cid/domains/$mail_did" \
+  dom_status=$(api GET "/tenants/$mail_cid/domains/$mail_did" \
     | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('verificationStatus','unknown'))" 2>/dev/null)
   ok "mail/domain: verificationStatus=$dom_status (cname-mode, DNS not managed by platform)"
 
   # ── Step 4: enable email for the domain ─────────────────────────
-  local ed_resp; ed_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_did/enable" \
+  local ed_resp; ed_resp=$(api POST "/tenants/$mail_cid/email/domains/$mail_did/enable" \
     "{\"selector\":\"e2e-${stamp}\"}")
   mail_edid=$(echo "$ed_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_edid" ]] || { fail "mail: email-domain enable failed: $(echo "$ed_resp" | head -c 400)"; cleanup_mail; return 1; }
@@ -1361,7 +1361,7 @@ scenario_mail() {
 
   # ── Step 6: create a test mailbox ───────────────────────────────
   local mb_local="e2e${stamp}"
-  local mb_resp; mb_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_edid/mailboxes" \
+  local mb_resp; mb_resp=$(api POST "/tenants/$mail_cid/email/domains/$mail_edid/mailboxes" \
     "{\"local_part\":\"$mb_local\",\"password\":\"$mail_box_pass\",\"quota_mb\":100}")
   mail_mbid=$(echo "$mb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_mbid" ]] || { fail "mail/mailbox: create failed: $(echo "$mb_resp" | head -c 400)"; cleanup_mail; return 1; }
@@ -1370,7 +1370,7 @@ scenario_mail() {
 
   # Wait for status=active (Stalwart writes the account on provision)
   wait_for 60 "mail/mailbox: status=active" '"status":"active"' \
-    "api GET '/clients/$mail_cid/mailboxes/$mail_mbid'" || {
+    "api GET '/tenants/$mail_cid/mailboxes/$mail_mbid'" || {
     fail "mail/mailbox: never became active"
     cleanup_mail; return 1
   }
@@ -1933,19 +1933,19 @@ except Exception as e:
   fi
 
   # ── Step 14: cleanup ─────────────────────────────────────────────
-  local del_mb; del_mb=$(api DELETE "/clients/$mail_cid/mailboxes/$mail_mbid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else d['error'])" 2>/dev/null || echo "ok")
+  local del_mb; del_mb=$(api DELETE "/tenants/$mail_cid/mailboxes/$mail_mbid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else d['error'])" 2>/dev/null || echo "ok")
   ok "mail/cleanup: mailbox deleted ($del_mb)"
   mail_mbid=""
 
-  local dis_ed; dis_ed=$(api POST "/clients/$mail_cid/email/domains/$mail_did/disable" "{}" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
+  local dis_ed; dis_ed=$(api POST "/tenants/$mail_cid/email/domains/$mail_did/disable" "{}" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
   ok "mail/cleanup: email-domain disabled ($dis_ed)"
   mail_edid=""
 
-  local del_dom; del_dom=$(api DELETE "/clients/$mail_cid/domains/$mail_did" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
+  local del_dom; del_dom=$(api DELETE "/tenants/$mail_cid/domains/$mail_did" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
   ok "mail/cleanup: domain deleted ($del_dom)"
   mail_did=""
 
-  local del_c; del_c=$(api DELETE "/clients/$mail_cid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
+  local del_c; del_c=$(api DELETE "/tenants/$mail_cid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
   ok "mail/cleanup: client deleted ($del_c)"
   mail_cid=""
 }
