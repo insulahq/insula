@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
 import { useUrlHealth } from '@/hooks/use-url-health';
+import { COMMON_CURRENCIES, formatCurrency } from '@/lib/format-currency';
 import TimezoneSelect from './TimezoneSelect';
 import UrlStatusBadges from './UrlStatusBadges';
 
@@ -22,6 +23,7 @@ export default function SystemSettingsForm() {
   const [ingressBaseDomain, setIngressBaseDomain] = useState('');
   const [apiRateLimit, setApiRateLimit] = useState(100);
   const [timezone, setTimezone] = useState('UTC');
+  const [currency, setCurrency] = useState('USD');
   const [allowHostPortsServer, setAllowHostPortsServer] = useState(false);
   const [allowHostPortsWorker, setAllowHostPortsWorker] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -37,6 +39,7 @@ export default function SystemSettingsForm() {
       setIngressBaseDomain(settings.ingressBaseDomain ?? '');
       setApiRateLimit(settings.apiRateLimit);
       setTimezone(settings.timezone ?? 'UTC');
+      setCurrency(settings.currency ?? 'USD');
       setAllowHostPortsServer(settings.allowHostPortsServer ?? false);
       setAllowHostPortsWorker(settings.allowHostPortsWorker ?? false);
     }
@@ -55,6 +58,7 @@ export default function SystemSettingsForm() {
         ingressBaseDomain: ingressBaseDomain || null,
         apiRateLimit,
         timezone,
+        currency,
         allowHostPortsServer,
         allowHostPortsWorker,
       },
@@ -289,6 +293,35 @@ export default function SystemSettingsForm() {
             </label>
             <TimezoneSelect value={timezone} onChange={setTimezone} />
             <p className="text-xs text-gray-400 mt-1">Default timezone for new tenants. Clients can override in their settings.</p>
+          </div>
+          <div>
+            <label
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+              htmlFor="currency-select"
+            >
+              Currency
+            </label>
+            <select
+              id="currency-select"
+              value={COMMON_CURRENCIES.some((c) => c.code === currency) ? currency : '__custom__'}
+              onChange={(e) => {
+                if (e.target.value !== '__custom__') setCurrency(e.target.value);
+              }}
+              className={INPUT_CLASS}
+              data-testid="currency-select"
+            >
+              {COMMON_CURRENCIES.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.label}
+                </option>
+              ))}
+              {!COMMON_CURRENCIES.some((c) => c.code === currency) && (
+                <option value="__custom__">{currency} — Custom</option>
+              )}
+            </select>
+            <p className="text-xs text-gray-400 mt-1">
+              ISO 4217 code used for every monetary amount shown in both panels. Example: {formatCurrency(1234.5, currency)} per month.
+            </p>
           </div>
         </div>
       </div>

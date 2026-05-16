@@ -8,6 +8,8 @@ export interface SystemInfo {
   readonly supportUrl: string | null;
   readonly adminPanelUrl: string | null;
   readonly tenantPanelUrl: string | null;
+  // ISO 4217 currency code used for any monetary amount display.
+  readonly currency: string;
 }
 
 interface SystemInfoResponse {

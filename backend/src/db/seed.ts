@@ -83,10 +83,23 @@ await db.insert(regions).values([
 console.log('  Seeded regions');
 
 // Hosting Plans
+//
+// Defaults shipped to fresh installs only — the ON CONFLICT clause below
+// keeps existing rows untouched (operators can edit live plans via the
+// admin UI without re-seeding clobbering them).
+//
+// Resources:                CPU   RAM     Disk   Users  Mailboxes  AI/wk
+//   Starter                 0.25  256 MB  2 GB   1       5         —
+//   Business                1.00  1 GB    5 GB   3      10         $3
+//   Premium                 2.00  2 GB    10 GB  10     10         $10
+//
+// `weekly_ai_budget_cents` stores AI-Editor weekly spend cap in cents
+// (1 AI Unit = $1/week = 100 cents). Storage units are GB; memory units
+// are GB (0.25 == 256 MiB).
 await db.insert(hostingPlans).values([
-  { id: crypto.randomUUID(), code: 'starter', name: 'Starter', description: 'Shared hosting for small sites', cpuLimit: '0.50', memoryLimit: '1.00', storageLimit: '10.00', monthlyPriceUsd: '5.00', features: { shared_pod: true, ssl: true, backups: 'daily' }, status: 'active' },
-  { id: crypto.randomUUID(), code: 'business', name: 'Business', description: 'Dedicated pod with more resources', cpuLimit: '2.00', memoryLimit: '4.00', storageLimit: '50.00', monthlyPriceUsd: '15.00', features: { dedicated_pod: true, ssl: true, backups: 'daily', waf: true }, status: 'active' },
-  { id: crypto.randomUUID(), code: 'premium', name: 'Premium', description: 'Maximum resources with priority support', cpuLimit: '4.00', memoryLimit: '8.00', storageLimit: '200.00', monthlyPriceUsd: '40.00', features: { dedicated_pod: true, ssl: true, backups: 'hourly', waf: true, priority_support: true }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'starter', name: 'Starter', description: 'Shared hosting for small sites', cpuLimit: '0.25', memoryLimit: '0.25', storageLimit: '2.00', monthlyPriceUsd: '5.00', maxSubUsers: 1, maxMailboxes: 5, weeklyAiBudgetCents: 0, features: { shared_pod: true, ssl: true, backups: 'daily' }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'business', name: 'Business', description: 'Dedicated pod with more resources', cpuLimit: '1.00', memoryLimit: '1.00', storageLimit: '5.00', monthlyPriceUsd: '15.00', maxSubUsers: 3, maxMailboxes: 10, weeklyAiBudgetCents: 300, features: { dedicated_pod: true, ssl: true, backups: 'daily', waf: true }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'premium', name: 'Premium', description: 'Maximum resources with priority support', cpuLimit: '2.00', memoryLimit: '2.00', storageLimit: '10.00', monthlyPriceUsd: '40.00', maxSubUsers: 10, maxMailboxes: 10, weeklyAiBudgetCents: 1000, features: { dedicated_pod: true, ssl: true, backups: 'hourly', waf: true, priority_support: true }, status: 'active' },
 ]).onConflictDoUpdate({ target: hostingPlans.code, set: { name: sql`excluded.name` } });
 console.log('  Seeded hosting plans');
 
