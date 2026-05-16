@@ -21,7 +21,7 @@ console.log('Seeding database...');
 // populated from env. Admin-configured values (non-NULL) are always
 // preserved; re-seeding never clobbers them.
 const adminPanelUrl = process.env.ADMIN_PANEL_URL ?? null;
-const tenantPanelUrl = process.env.CLIENT_PANEL_URL ?? null;
+const tenantPanelUrl = process.env.TENANT_PANEL_URL ?? null;
 const supportEmail = process.env.SUPPORT_EMAIL ?? null;
 const supportUrl = process.env.SUPPORT_URL ?? null;
 const ingressBaseDomain = process.env.INGRESS_BASE_DOMAIN ?? null;
