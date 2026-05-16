@@ -3882,12 +3882,14 @@ generate_platform_secrets() {
 # admin panel before going to production.
 STALWART_ADMIN_USER=admin
 STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
-# Stalwart 0.16 IMAP master-auth requires the FQDN form
-# (verified empirically 2026-05-07: short 'master' returns
-# AUTHENTICATIONFAILED; 'master@master.local' succeeds). The master
-# Account is provisioned by provision_stalwart_master_user() in the
-# 'master.local' synthetic Domain.
-STALWART_MASTER_USER=master@master.local
+# Stalwart 0.16 IMAP master-auth requires the FQDN form (verified
+# empirically 2026-05-07: short 'master' returns AUTHENTICATIONFAILED).
+# 2026-05-16: also CONFIRMED that Stalwart 0.16 blocks the .local TLD
+# entirely on auth (`AUTHENTICATIONFAILED master.local` even with
+# correct password + Admin role) — anchor the master Account under
+# the platform's base domain instead, which is always a real TLD.
+# The master Account is provisioned by provision_stalwart_master_user().
+STALWART_MASTER_USER=master@${PLATFORM_DOMAIN}
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
     chmod 600 /etc/platform/stalwart-credentials
@@ -4029,7 +4031,7 @@ STALWART016_EOF
     kctl create secret generic roundcube-secrets \
       --namespace=mail \
       --from-literal=JWT_AUTH_SECRET="$rc_jwt" \
-      --from-literal=STALWART_MASTER_USER="master@master.local" \
+      --from-literal=STALWART_MASTER_USER="master@${PLATFORM_DOMAIN}" \
       --from-literal=STALWART_MASTER_PASSWORD="$rc_master_pw" \
       --from-literal=ROUNDCUBEMAIL_DES_KEY="$rc_des" \
       --from-literal=ROUNDCUBEMAIL_DB_HOST="system-db-rw.platform.svc.cluster.local" \
@@ -4120,7 +4122,7 @@ BWEOF
     kctl create secret generic bulwark-impersonator-secrets \
       --namespace=mail \
       --from-literal=JWT_SECRET="$bw_jwt" \
-      --from-literal=STALWART_MASTER_USER="master@master.local" \
+      --from-literal=STALWART_MASTER_USER="master@${PLATFORM_DOMAIN}" \
       --from-literal=STALWART_MASTER_PASSWORD="$bw_master_pw" \
       --from-literal=IMPERSONATOR_ADMIN_TOKEN="$bw_admin_token"
     log "bulwark-impersonator-secrets created."
@@ -4583,9 +4585,16 @@ provision_stalwart_master_user() {
   kctl delete pod -n mail "$job_name" --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
   # Write MASTER_PW to a Secret so it never appears in pod spec env.
+  # Also stamp MASTER_DOMAIN here so the provisioning pod knows which
+  # Stalwart Domain to anchor the master Account in. 2026-05-16:
+  # changed from the synthetic `master.local` to the platform's
+  # base domain because Stalwart 0.16 hard-blocks the .local TLD on
+  # auth (AUTHENTICATIONFAILED master.local regardless of password).
+  # The platform base domain is always a real TLD so it works.
   kctl create secret generic "${params_secret}" \
     --namespace=mail \
     --from-literal=MASTER_PW="${master_pw}" \
+    --from-literal=MASTER_DOMAIN="${PLATFORM_DOMAIN}" \
     --dry-run=client -o yaml | kctl apply -n mail -f - >/dev/null
 
   cat <<EOF | kctl apply -n mail -f - >/dev/null
@@ -4637,30 +4646,56 @@ spec:
           -H 'Content-Type: application/json' --max-time 30 -d "\$1"
       }
 
-      # Step 1: ensure master.local Domain exists
+      # Step 1: ensure the master domain exists (PLATFORM_DOMAIN,
+      # injected via the params_secret). 2026-05-16: was master.local
+      # but Stalwart 0.16 hard-rejects auth from .local accounts.
       DOM_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
         '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
           methodCalls:[["x:Domain/get",{accountId:\$a,ids:null},"c0"]]}')")
-      DOMAIN_ID=\$(echo "\$DOM_RESP" | jq -r \
-        '.methodResponses[0][1].list[] | select(.name == "master.local") | .id' | head -1)
+      DOMAIN_ID=\$(echo "\$DOM_RESP" | jq -r --arg dn "\$MASTER_DOMAIN" \
+        '.methodResponses[0][1].list[] | select(.name == \$dn) | .id' | head -1)
       if [ -z "\$DOMAIN_ID" ]; then
-        CREATE_DOM=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
+        CREATE_DOM=\$(jmap_call "\$(jq -n --arg a "\$ACCT" --arg dn "\$MASTER_DOMAIN" \
           '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
             methodCalls:[["x:Domain/set",
-              {accountId:\$a,create:{"ml":{"name":"master.local"}}},
+              {accountId:\$a,create:{"ml":{"name":\$dn}}},
               "c0"]]}')")
         DOMAIN_ID=\$(echo "\$CREATE_DOM" | jq -r \
           '.methodResponses[0][1].created["ml"].id // empty' | head -1)
       fi
-      [ -n "\$DOMAIN_ID" ] || { echo "ERROR: no master.local domain id" >&2; exit 1; }
-      echo "domain id=\${DOMAIN_ID}"
+      [ -n "\$DOMAIN_ID" ] || { echo "ERROR: no \$MASTER_DOMAIN domain id" >&2; exit 1; }
+      echo "domain=\$MASTER_DOMAIN id=\${DOMAIN_ID}"
 
-      # Step 2: ensure master@master.local Account exists
+      # Step 2: ensure master Account exists IN THE TARGET DOMAIN.
+      # Upgrade path 2026-05-16: older bootstrap runs anchored master
+      # in `master.local`, which Stalwart 0.16 hard-rejects on auth.
+      # If we find a stale `master` Account in a different domain,
+      # destroy it so the create below puts a fresh one in the right
+      # domain. We also destroy the stale master.local Domain since
+      # nothing else uses it.
       ACCT_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
         '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
-          methodCalls:[["x:Account/get",{accountId:\$a,ids:null},"c0"]]}')")
-      ACCOUNT_ID=\$(echo "\$ACCT_RESP" | jq -r \
-        '.methodResponses[0][1].list[] | select(.name == "master") | .id' | head -1)
+          methodCalls:[["x:Account/get",
+            {accountId:\$a,ids:null,properties:["id","name","domainId"]},
+            "c0"]]}')")
+      ACCOUNT_ID=\$(echo "\$ACCT_RESP" | jq -r --arg d "\$DOMAIN_ID" \
+        '.methodResponses[0][1].list[] | select(.name == "master" and .domainId == \$d) | .id' | head -1)
+      STALE_ACCT=\$(echo "\$ACCT_RESP" | jq -r --arg d "\$DOMAIN_ID" \
+        '.methodResponses[0][1].list[] | select(.name == "master" and .domainId != \$d) | .id' | head -1)
+      if [ -n "\$STALE_ACCT" ]; then
+        echo "stale master Account \$STALE_ACCT in wrong domain — destroying"
+        jmap_call "\$(jq -n --arg a "\$ACCT" --arg id "\$STALE_ACCT" \
+          '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+            methodCalls:[["x:Account/set",{accountId:\$a,destroy:[\$id]},"c0"]]}')" >/dev/null
+        STALE_DOM=\$(echo "\$DOM_RESP" | jq -r \
+          '.methodResponses[0][1].list[] | select(.name == "master.local") | .id' | head -1)
+        if [ -n "\$STALE_DOM" ]; then
+          echo "destroying stale master.local Domain \$STALE_DOM"
+          jmap_call "\$(jq -n --arg a "\$ACCT" --arg id "\$STALE_DOM" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Domain/set",{accountId:\$a,destroy:[\$id]},"c0"]]}')" >/dev/null
+        fi
+      fi
       if [ -z "\$ACCOUNT_ID" ]; then
         CREATE_ACCT=\$(jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\$DOMAIN_ID" --arg desc "\$MASTER_DESC" \
           '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
