@@ -50,18 +50,32 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   app.post('/tenants', {
     onRequest: [requireRole('super_admin', 'admin')],
     schema: {
-      tags: ['Clients'],
+      tags: ['Tenants'],
       summary: 'Create a new tenant',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
-        required: ['name', 'primary_email', 'plan_id', 'region_id'],
+        required: ['name', 'contact_name', 'primary_email', 'phone_e164', 'billing_address', 'plan_id'],
         properties: {
           name: { type: 'string', minLength: 1, maxLength: 255 },
+          contact_name: { type: 'string', minLength: 1, maxLength: 255 },
           primary_email: { type: 'string', format: 'email' },
           secondary_email: { type: 'string', format: 'email' },
+          phone_e164: { type: 'string', pattern: '^\\+[1-9]\\d{1,14}$' },
+          billing_address: {
+            type: 'object',
+            required: ['street_address', 'postal_address', 'city', 'country'],
+            properties: {
+              street_address: { type: 'string', minLength: 1, maxLength: 500 },
+              postal_address: { type: 'string', minLength: 1, maxLength: 500 },
+              city: { type: 'string', minLength: 1, maxLength: 200 },
+              country: { type: 'string', minLength: 2, maxLength: 100 },
+            },
+          },
           plan_id: { type: 'string', format: 'uuid' },
           region_id: { type: 'string', format: 'uuid' },
+          node_name: { type: 'string', minLength: 1, maxLength: 253 },
+          storage_tier: { type: 'string', enum: ['local', 'ha'] },
           subscription_expires_at: { type: 'string', format: 'date-time' },
         },
       },
