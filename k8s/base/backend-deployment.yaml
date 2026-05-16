@@ -129,7 +129,7 @@ spec:
                   key: ingress-base-domain
                   optional: true
             # Canonical apex domain. Prefer this over INGRESS_BASE_DOMAIN on
-            # new deploys. Subdomains (admin, client, dex, webmail, mail,
+            # new deploys. Subdomains (admin, tenant, dex, webmail, mail,
             # stalwart) derive from this via config/domains.ts.
             - name: PLATFORM_BASE_DOMAIN
               valueFrom:
@@ -159,7 +159,7 @@ spec:
                   key: version
                   optional: true
             # Build branch (main, staging, stable). Surfaced under the
-            # admin/client panel sidebar title via /auth/runtime-info so
+            # admin/tenant panel sidebar title via /auth/runtime-info so
             # operators can tell at a glance which lane the running
             # build came from. CI writes this to the platform-version
             # ConfigMap alongside `version` (see build-deploy.yml).
@@ -182,7 +182,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             # PLATFORM_ENV is defined further down — don't redeclare.
-            # Per-client sidecar image (optional — default baked into code
+            # Per-tenant sidecar image (optional — default baked into code
             # for local-dev uses the bare name imported into DinD containerd).
             - name: FILE_MANAGER_IMAGE
               valueFrom:
@@ -219,11 +219,11 @@ spec:
                   name: platform-config
                   key: admin-url
                   optional: true
-            - name: CLIENT_PANEL_URL
+            - name: TENANT_PANEL_URL
               valueFrom:
                 configMapKeyRef:
                   name: platform-config
-                  key: client-url
+                  key: tenant-url
                   optional: true
             - name: SUPPORT_EMAIL
               valueFrom:
@@ -247,7 +247,7 @@ spec:
             # Ingress. Dev uses a self-signed cert in `platform-dev-tls`;
             # prod uses cert-manager-issued `platform-tls`. The ingress
             # reconciler stamps this into spec.tls[0].secretName when
-            # rebuilding Ingress rules from admin/client panel URLs.
+            # rebuilding Ingress rules from admin/tenant panel URLs.
             - name: PLATFORM_TLS_SECRET_NAME
               valueFrom:
                 configMapKeyRef:
@@ -277,9 +277,9 @@ spec:
                   optional: true
             # Passkey (WebAuthn) RP configuration. RP_ID must be the
             # registrable suffix shared by both panel domains (e.g.
-            # phoenix-host.net for admin.phoenix-host.net + client.X).
+            # phoenix-host.net for admin.phoenix-host.net + tenant.X).
             # ORIGINS is a CSV of fully-qualified panel origins; both
-            # admin and client panel URLs MUST be included.
+            # admin and tenant panel URLs MUST be included.
             # See: backend/src/modules/auth/passkey-service.ts → loadPasskeyConfig
             - name: PLATFORM_PASSKEY_RP_ID
               valueFrom:

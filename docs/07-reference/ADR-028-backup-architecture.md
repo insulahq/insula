@@ -75,7 +75,7 @@ backup. Restore = extract PVC contents, restart the DB pod.
 
 **Rationale.** The shared-global-database concept that would have required
 per-database `mysqldump` was dropped earlier in the platform's evolution.
-With per-client DB pods, logical dumps add no capability and several
+With per-tenant DB pods, logical dumps add no capability and several
 problems: datadir consistency races, extra Job latency, surface area
 for bugs when DB version changes. File-level capture is both simpler
 and more faithful to what's actually running.
@@ -160,7 +160,7 @@ for data that is already encrypted in transit and restricted at rest.
 A full platform backup (platform DB via `pg_dump`, Stalwart PVC, Dex,
 Roundcube, Harbor, cert-manager, Flux state) is operator-initiated DR
 and is implemented via **Velero** (or an equivalent k8s-native tool), not
-the per-client bundle pipeline. It does not appear in the admin or
+the per-tenant bundle pipeline. It does not appear in the admin or
 client panel.
 
 **Rationale.** Cluster DR is about bootstrapping a fresh cluster from

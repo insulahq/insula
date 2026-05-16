@@ -10,17 +10,17 @@ data:
   ingress-base-domain: "${DOMAIN}"
   cluster-issuer-name: "letsencrypt-prod-http01"
   admin-url: "https://admin.${DOMAIN}"
-  client-url: "https://client.${DOMAIN}"
+  tenant-url: "https://tenant.${DOMAIN}"
   # Canonical public URL used to mint CRL distribution URLs in mTLS
   # provider metadata. Set to the admin host so the CRL endpoint
   # matches the JWT-scoped API surface.
   public-url: "https://admin.${DOMAIN}"
-  cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
-  # Per-client sidecar image — pull from GHCR on real clusters.
+  cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
+  # Per-tenant sidecar image — pull from GHCR on real clusters.
   file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager:latest"
   # Private Worker — clients dial in to this WSS host with their token.
   # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
-  # ingress (set up at install time, no per-client DNS work needed).
+  # ingress (set up at install time, no per-tenant DNS work needed).
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.62.1"
   private-worker-agent-image: "ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest"
@@ -40,4 +40,4 @@ data:
   # in the overlay for clusters running Flux.
   passkey-rp-id: "${DOMAIN}"
   passkey-rp-name: "Phoenix Hosting (staging)"
-  passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
+  passkey-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"

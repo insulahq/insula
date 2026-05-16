@@ -137,7 +137,7 @@ CREATE TRIGGER clients_conflict_resolution
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` | Primary key |
-| `client_id` | `UUID` | References `clients.id` |
+| `tenant_id` | `UUID` | References `clients.id` |
 | `domain` | `TEXT UNIQUE` | Fully-qualified domain name |
 | `status` | `TEXT` | `active`, `suspended`, `deleted` |
 | `ssl_cert_path` | `TEXT` | Path to TLS certificate in Secrets store |
@@ -218,7 +218,7 @@ CREATE TRIGGER domains_conflict_resolution
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` | Primary key |
-| `client_id` | `UUID` | References `clients.id` |
+| `tenant_id` | `UUID` | References `clients.id` |
 | `domain_id` | `UUID` | References `domains.id` |
 | `username` | `TEXT` | Local part of the email address (e.g. `alice` for `alice@domain.com`) |
 | `password_hash` | `TEXT` | argon2id hash of the mailbox password (or null if OIDC-only) |
@@ -283,7 +283,7 @@ CREATE TRIGGER email_accounts_conflict_resolution
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` | Primary key |
-| `client_id` | `UUID` | References `clients.id` |
+| `tenant_id` | `UUID` | References `clients.id` |
 | `db_name` | `TEXT` | Database name (e.g. `client_abc_wp1`) |
 | `db_type` | `TEXT` | `mariadb` or `postgresql` |
 | `owner_password_hash` | `TEXT` | Hash of the DB owner user password |
@@ -342,7 +342,7 @@ CREATE TRIGGER databases_conflict_resolution
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` | Primary key |
-| `client_id` | `UUID` | References `clients.id` |
+| `tenant_id` | `UUID` | References `clients.id` |
 | `domain_id` | `UUID` | References `domains.id` |
 | `app_type` | `TEXT` | Application type slug (e.g. `wordpress`, `nextcloud`); immutable after creation |
 | `status` | `TEXT` | `running`, `stopped`, `error`, `deleted` |
@@ -405,7 +405,7 @@ CREATE TRIGGER websites_conflict_resolution
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` | Primary key (UUID v4, globally unique) |
-| `client_id` | `UUID` | References `clients.id` |
+| `tenant_id` | `UUID` | References `clients.id` |
 | `backup_type` | `TEXT` | `files`, `database`, `email`, `full` |
 | `status` | `TEXT` | `running`, `complete`, `failed` |
 | `size_bytes` | `BIGINT` | Backup archive size |
@@ -436,7 +436,7 @@ CREATE TRIGGER websites_conflict_resolution
 | `event_type` | `TEXT` | Event code (e.g. `CLIENT_CREATED`, `DOMAIN_DELETED`) |
 | `actor_id` | `UUID` | Admin or client who performed the action |
 | `actor_type` | `TEXT` | `admin`, `client`, `system` |
-| `client_id` | `UUID` | Affected client (nullable for platform-level events) |
+| `tenant_id` | `UUID` | Affected client (nullable for platform-level events) |
 | `resource_type` | `TEXT` | `client`, `domain`, `email`, `database`, `backup`, etc. |
 | `resource_id` | `UUID` | ID of the affected resource |
 | `payload` | `JSONB` | Before/after snapshot of changed fields |
@@ -462,7 +462,7 @@ CREATE TRIGGER websites_conflict_resolution
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` | Primary key |
-| `client_id` | `UUID` | References `clients.id` |
+| `tenant_id` | `UUID` | References `clients.id` |
 | `amount_usd` | `NUMERIC(10,2)` | Invoice total |
 | `status` | `TEXT` | `draft`, `sent`, `paid`, `overdue`, `cancelled` |
 | `due_at` | `TIMESTAMPTZ` | Payment due date |
@@ -685,7 +685,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "Plan ID conflicts detected on clients table"
+            summary: "Plan ID conflicts detected on tenants table"
             description: "Two regions assigned different plans to the same client. Investigate immediately."
 
         # Alert if replication lag exceeds 60 seconds

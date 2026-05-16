@@ -25,7 +25,7 @@ How platform-level secrets are generated, stored, retrieved, rotated, restored.
 | Tier | Examples | Cadence after install | Coverage |
 |---|---|---|---|
 | **1 — Bootstrap-time** | operator-age private key, admin seed pwd, JWT signing key, postgres root pwd, S3 access keys, Dex client secret, oauth2-proxy cookie, sftp host keys, stalwart secrets | Once at install. Rotated only intentionally. | Captured by the bootstrap bundle (P1) AND by the daily backup CronJob (P3). |
-| **2 — Runtime-issued** | Per-tenant DB passwords, per-client SFTP keys, mailbox app secrets | Continuous (every new client) | Captured by postgres pg_dump + Longhorn S3 backups + the daily secrets CronJob (every Secret in `client-*` namespaces). |
+| **2 — Runtime-issued** | Per-tenant DB passwords, per-tenant SFTP keys, mailbox app secrets | Continuous (every new client) | Captured by postgres pg_dump + Longhorn S3 backups + the daily secrets CronJob (every Secret in `client-*` namespaces). |
 | **3 — Operator-rotated** | Admin password rotation, JWT secret rotation, S3 credential rotation | Rare (monthly-quarterly) | Captured by the daily secrets CronJob within ≤24h of rotation. For zero-RPO, run `make secrets-fetch` after every rotation. |
 
 ## Bootstrap output

@@ -105,7 +105,7 @@ Is the domain in Primary or Secondary DNS mode?
 
 ### Subdomain Certificate Assignment
 
-When a subdomain is added to a domain that already has a wildcard certificate, the subdomain **inherits the parent wildcard** by default. The customer can override this in the Client Panel.
+When a subdomain is added to a domain that already has a wildcard certificate, the subdomain **inherits the parent wildcard** by default. The customer can override this in the Tenant Panel.
 
 | Subdomain scenario | Default | Customer can change to |
 |-------------------|---------|----------------------|
@@ -216,22 +216,22 @@ Customers who need certificates from a commercial CA (DigiCert, Sectigo, etc.) o
 ### Workflow
 
 ```
-1. Customer: Client Panel → Domains → {domain} → SSL → "Request Custom Certificate"
+1. Customer: Tenant Panel → Domains → {domain} → SSL → "Request Custom Certificate"
    └── Selects: key type (RSA 2048 / RSA 4096 / ECDSA P-256), SANs to include
 
 2. Platform: Generates RSA/ECDSA keypair + CSR
-   └── Private key stored as Sealed Secret in client namespace
+   └── Private key stored as Sealed Secret in tenant namespace
    └── CSR displayed in panel + available for download as .csr file
 
 3. Customer: Takes CSR to their chosen CA
    └── Submits CSR, completes CA validation (DV/OV/EV per CA requirements)
    └── Downloads signed certificate chain (.crt / .pem)
 
-4. Customer: Client Panel → Domains → {domain} → SSL → "Install Certificate"
+4. Customer: Tenant Panel → Domains → {domain} → SSL → "Install Certificate"
    └── Pastes or uploads: certificate + intermediate chain (or full chain bundle)
    └── Platform validates: certificate matches the stored private key, not expired
 
-5. Platform: Stores cert + chain as a Kubernetes TLS Secret in client namespace
+5. Platform: Stores cert + chain as a Kubernetes TLS Secret in tenant namespace
    └── cert-manager annotation set to unmanaged (platform will NOT auto-renew this cert)
    └── Ingress updated to reference the new secret
    └── Expiry date stored in database for monitoring and renewal reminder alerts
@@ -326,9 +326,9 @@ Filterable table of all certificates across all clients:
 - **Download cert** — downloads `.pem` bundle (cert + chain + private key); download is logged in the audit trail with a `private_key_downloaded` flag on the certificate record
 - **Switch cert type** — convert between wildcard and single-domain (triggers re-issuance)
 
-### Client Panel — Certificate Information
+### Tenant Panel — Certificate Information
 
-**Client Panel → Domains → {domain} → SSL Certificate**
+**Tenant Panel → Domains → {domain} → SSL Certificate**
 
 | Field | Visible to customer |
 |-------|-------------------|
@@ -353,7 +353,7 @@ Filterable table of all certificates across all clients:
 
 ### Domain List — Certificate Status Column
 
-Both Admin and Client Panel domain list views show a compact certificate status badge per domain:
+Both Admin and Tenant Panel domain list views show a compact certificate status badge per domain:
 
 | Badge | Meaning |
 |-------|---------|
@@ -376,7 +376,7 @@ For CI/CD pipelines, deployment scripts, and external servers that need to fetch
 
 #### Token Management
 
-Tokens are managed in **Client Panel → Domains → {domain} → SSL Certificate → API Access**.
+Tokens are managed in **Tenant Panel → Domains → {domain} → SSL Certificate → API Access**.
 
 | Field | Notes |
 |-------|-------|
@@ -465,7 +465,7 @@ fi
 CREATE TABLE cert_download_tokens (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   domain_id     UUID NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
-  client_id     UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  tenant_id     UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   name          VARCHAR(255) NOT NULL,
   token_hash    VARCHAR(255) NOT NULL UNIQUE,  -- bcrypt hash; plaintext shown once at creation
   expires_at    TIMESTAMPTZ,                   -- NULL = never expires
@@ -479,7 +479,7 @@ CREATE TABLE cert_download_log (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   domain_id     UUID NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
   cert_id       UUID NOT NULL REFERENCES domain_certificates(id),
-  client_id     UUID REFERENCES clients(id),
+  tenant_id     UUID REFERENCES clients(id),
   admin_id      UUID REFERENCES admins(id),
   token_id      UUID NOT NULL REFERENCES cert_download_tokens(id),
   ip_address    INET,
@@ -495,7 +495,7 @@ ALTER TABLE domain_certificates
 
 ### Implementation Checklist
 
-- [ ] Add `cert:read` scoped token generation to Client Panel SSL section
+- [ ] Add `cert:read` scoped token generation to Tenant Panel SSL section
 - [ ] Add token management UI: create, list (name + last used + expiry), revoke
 - [ ] Implement `GET /api/v1/certs/{domain}/download` — authenticate via Bearer token, return PEM bundle
 - [ ] Build PEM bundle assembler: read `tls.key` + `tls.crt` from Kubernetes Secret, concatenate in correct order
@@ -531,7 +531,7 @@ groups:
       severity: warning
     annotations:
       summary: "Certificate expiring in {{ $value }} days"
-      description: "Domain {{ $labels.domain }} (client {{ $labels.client_id }})"
+      description: "Domain {{ $labels.domain }} (client {{ $labels.tenant_id }})"
 
   - alert: CertExpiryCritical
     expr: platform_cert_expiry_days < 7
@@ -623,10 +623,10 @@ CREATE TABLE cert_renewal_history (
 
 - [ ] Admin Panel: Certificate global list view with filters and bulk actions
 - [ ] Admin Panel: Per-domain SSL detail panel (all fields listed above)
-- [ ] Client Panel: Per-domain SSL section (all fields listed above)
-- [ ] Client Panel: "Request custom certificate" — keypair generation + CSR display
-- [ ] Client Panel: "Install certificate" — paste/upload signed cert, validate against stored key
-- [ ] Client Panel: Per-subdomain cert toggle (use parent wildcard / use own cert)
+- [ ] Tenant Panel: Per-domain SSL section (all fields listed above)
+- [ ] Tenant Panel: "Request custom certificate" — keypair generation + CSR display
+- [ ] Tenant Panel: "Install certificate" — paste/upload signed cert, validate against stored key
+- [ ] Tenant Panel: Per-subdomain cert toggle (use parent wildcard / use own cert)
 - [ ] Store CSR and custom cert metadata in `domain_certificates` table
 - [ ] Implement custom cert monitoring and renewal reminder alerts
 
@@ -635,7 +635,7 @@ CREATE TABLE cert_renewal_history (
 - [ ] Expose `platform_cert_expiry_days` and `platform_cert_renewal_failures_total` Prometheus metrics
 - [ ] Deploy PrometheusRules for all alert thresholds defined above
 - [ ] Connect custom cert expiry to notification system (email + panel notification)
-- [ ] Add certificate status badge to domain list in both Admin and Client Panel
+- [ ] Add certificate status badge to domain list in both Admin and Tenant Panel
 
 ---
 
@@ -645,6 +645,6 @@ CREATE TABLE cert_renewal_history (
 - **DNS_MODE_SELECTION.md** — DNS mode per domain and its impact on ACME challenge method
 - **POWERDNS_INTEGRATION.md** — DNS-01 ACME challenge record management via PowerDNS API
 - **ADMIN_PANEL_REQUIREMENTS.md** — Admin Panel SSL certificate management UI (section ND.2)
-- **CLIENT_PANEL_FEATURES.md** — Client Panel SSL certificate UI
+- **CLIENT_PANEL_FEATURES.md** — Tenant Panel SSL certificate UI
 - **MONITORING_OBSERVABILITY.md** — Certificate expiry alerts
 - **DEPLOYMENT_PROCESS.md** — Certificate provisioning during client onboarding

@@ -3,7 +3,7 @@
 > **SUPERSEDED by ADR-024 (2026-03-27)**
 
 This document previously described the shared pod architecture where multiple Starter
-clients were co-located in a single NGINX + PHP-FPM pod with per-client PHP-FPM pools,
+clients were co-located in a single NGINX + PHP-FPM pod with per-tenant PHP-FPM pools,
 `open_basedir` isolation, and server block routing.
 
 **That model has been removed.** All clients now receive a dedicated pod in their own

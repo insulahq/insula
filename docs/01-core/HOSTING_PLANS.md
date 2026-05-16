@@ -2,7 +2,7 @@
 
 ## Overview
 
-The platform supports a **flexible, fully customizable hosting plan system** with three default tiers (Starter, Business, Premium) and the ability to create unlimited custom plans. Every parameter can be overridden on a per-client basis, allowing both standardized offerings and fine-tuned configurations.
+The platform supports a **flexible, fully customizable hosting plan system** with three default tiers (Starter, Business, Premium) and the ability to create unlimited custom plans. Every parameter can be overridden on a per-tenant basis, allowing both standardized offerings and fine-tuned configurations.
 
 ## Business Model & Positioning
 
@@ -30,7 +30,7 @@ Every client gets their own dedicated pod in a `client-{id}` namespace with full
 - Database available as premium add-on (not included in base plans)
 
 **Isolation:**
-- Full pod-level isolation with namespace-per-client
+- Full pod-level isolation with namespace-per-tenant
 - ResourceQuota limits per plan
 - NetworkPolicy enforcement (default-deny + allow ingress controller)
 - No shared resources between clients
@@ -107,11 +107,11 @@ These are the **starting templates with recommended pricing** for premium positi
 | Scale-to-zero | Optional | Optional | No (always on) |
 | Custom PHP config | Full control | Full control | Full control |
 
-> **Any of the above can be changed per-client.** For example, a Starter client could be given a database add-on, or a Business client could be given higher resource limits — all via per-client overrides without changing their plan.
+> **Any of the above can be changed per-tenant.** For example, a Starter client could be given a database add-on, or a Business client could be given higher resource limits — all via per-tenant overrides without changing their plan.
 
 ## Configurable Plan Parameters
 
-Every parameter below is set at the **plan level** (global default) and can be **overridden per-client** by the admin via the management panel.
+Every parameter below is set at the **plan level** (global default) and can be **overridden per-tenant** by the admin via the management panel.
 
 | Parameter | Description | Example Values |
 | --- | --- | --- |
@@ -124,10 +124,10 @@ Every parameter below is set at the **plan level** (global default) and can be *
 | `memory_request` | Memory request (dedicated pods only) | `128Mi` / `256Mi` / `512Mi` |
 | `memory_limit` | Memory limit (dedicated pods only) | `512Mi` / `1Gi` / `4Gi` |
 | `storage` | PersistentVolume size | `5Gi` / `20Gi` / `50Gi` |
-| `database_mode` | Database add-on (dedicated per-client StatefulSet) | `none` / `dedicated` |
+| `database_mode` | Database add-on (dedicated per-tenant StatefulSet) | `none` / `dedicated` |
 | `database_engine` | MariaDB or PostgreSQL | `mysql` / `postgresql` |
 | `database_storage` | DB storage (dedicated only) | `5Gi` / `20Gi` |
-| `cache_mode` | Redis add-on (dedicated per-client pod) or none | `dedicated` / `none` |
+| `cache_mode` | Redis add-on (dedicated per-tenant pod) or none | `dedicated` / `none` |
 | `cache_memory` | Redis memory (dedicated only) | `64Mi` / `256Mi` / `1Gi` |
 | `scale_to_zero` | Enable scale-to-zero (dedicated only) | `true` / `false` |
 | `backup_retention_days` | How many days to retain backups | `7` / `14` / `30` / `90` |
@@ -156,7 +156,7 @@ Every parameter below is set at the **plan level** (global default) and can be *
 
 ## How Plan Customization Works
 
-**Design Principle:** All hosting plans are **fully customizable templates**. Admin defines global plan defaults, but **every setting can be overridden on a per-client basis** via the management panel. This allows maximum flexibility — standard plans for most clients, fine-tuned settings for specific clients when needed.
+**Design Principle:** All hosting plans are **fully customizable templates**. Admin defines global plan defaults, but **every setting can be overridden on a per-tenant basis** via the management panel. This allows maximum flexibility — standard plans for most clients, fine-tuned settings for specific clients when needed.
 
 ### Management API Logic
 
@@ -165,7 +165,7 @@ Every parameter below is set at the **plan level** (global default) and can be *
 - The effective configuration is: `plan_defaults MERGED WITH client_overrides`
 - Any parameter not in overrides inherits the plan default
 - Admin can override any client setting without changing their plan
-- Client plan changes apply all new defaults, but preserve explicit per-client overrides
+- Client plan changes apply all new defaults, but preserve explicit per-tenant overrides
 
 ### Example Scenario
 
@@ -189,7 +189,7 @@ The admin panel provides full CRUD for plans:
 | **Delete plan** | Remove plan (only if 0 clients assigned) |
 | **View clients on plan** | List all clients using this plan |
 | **Override client settings** | Edit any parameter for a specific client |
-| **Reset client overrides** | Clear per-client overrides, revert to plan defaults |
+| **Reset client overrides** | Clear per-tenant overrides, revert to plan defaults |
 | **Bulk update** | Change a setting across all clients on a plan |
 
 ## Cost Implications

@@ -6,7 +6,7 @@ This document covers database strategy, caching layer, persistent storage, and b
 
 ## Database Strategy — Dedicated Per-Client (ADR-024)
 
-**Design Principle:** Every client gets their own dedicated database instance in their `client-{id}` namespace. Database is a **premium add-on** — not included in base plans. This aligns with the dedicated-pod-per-client model where all isolation is at the namespace level.
+**Design Principle:** Every client gets their own dedicated database instance in their `client-{id}` namespace. Database is a **premium add-on** — not included in base plans. This aligns with the dedicated-pod-per-tenant model where all isolation is at the namespace level.
 
 ### Database Provisioning
 
@@ -29,7 +29,7 @@ When the database add-on is enabled for a client:
 
 ### PostgreSQL Support (Phase 2)
 
-PostgreSQL 16 will be available as an alternative database type in Phase 2, using the same dedicated-per-client model.
+PostgreSQL 16 will be available as an alternative database type in Phase 2, using the same dedicated-per-tenant model.
 
 ### Database as Add-On
 
@@ -77,7 +77,7 @@ Automated daily captures of all client data, included in all plans, not counted 
 | Capture frequency (mailboxes component) | Daily (per-mailbox Stalwart CLI export) |
 | Capture frequency (config + secrets components) | Daily (inline in backend) |
 | Cluster DR (Tier 4) | Velero (future) — separate from per-tenant pipeline |
-| Retention period | Configurable per plan (global default + per-client override) |
+| Retention period | Configurable per plan (global default + per-tenant override) |
 | Capture tool (files) | Short-lived Kubernetes Job — `tar cf - . \| gzip > archive.tar.gz` + `tree.jsonl.gz` sidecar |
 | Capture tool (mailboxes) | Job running `stalwart-cli account export` per mailbox |
 | Storage backend | One of `hostpath`, `s3`, `ssh` (all mandatory, operator-configured) |
@@ -106,7 +106,7 @@ All cluster-managed backups are written directly to an external backup server mo
 
 ### Starter Plan
 - No database included (available as add-on)
-- Shared Redis (with per-client ACL/key prefix)
+- Shared Redis (with per-tenant ACL/key prefix)
 - 7-day backup retention
 
 ### Business Plan

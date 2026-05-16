@@ -90,11 +90,11 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 log "── creating client ──"
 STAMP=$(date +%s)
 COMPANY="Lifecycle E2E $STAMP"
-RESP=$(api POST "/clients" "{\"company_name\":\"$COMPANY\",\"company_email\":\"lifecycle-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"lifecycle-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
-cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
+cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 log "── waiting for full provisioning ──"
@@ -221,7 +221,7 @@ ARCH_SNAP_ID=$(echo "$ARCH_FINAL" | python3 -c "import json,sys;print(json.load(
   || fail "no snapshotId on archive op (no rollback insurance)"
 
 # Snapshot row should be 'ready'.
-SNAP_STATUS=$(api GET "/admin/clients/$CID/storage/snapshots" 2>/dev/null \
+SNAP_STATUS=$(api GET "/admin/tenants/$CID/storage/snapshots" 2>/dev/null \
   | python3 -c "
 import json,sys
 data=json.load(sys.stdin).get('data',[])
@@ -314,7 +314,7 @@ PSQL() {
 if [[ -z "$PG_POD" ]]; then
   fail "could not locate cnpg postgres pod for transitions probe"
 else
-  TRANSITIONS_JSON=$(PSQL "SELECT id, transition_kind, state FROM client_lifecycle_transitions WHERE client_id='$CID' ORDER BY started_at")
+  TRANSITIONS_JSON=$(PSQL "SELECT id, transition_kind, state FROM client_lifecycle_transitions WHERE tenant_id='$CID' ORDER BY started_at")
   KINDS=$(echo "$TRANSITIONS_JSON" | awk -F'|' '{print $2}' | sort -u | paste -sd,)
   ALL_TERMINAL=$(echo "$TRANSITIONS_JSON" | awk -F'|' 'NF>=3 && $3!="completed" && $3!="failed_partial" {bad++} END {print bad+0}')
   for want in suspended active archived; do
@@ -329,7 +329,7 @@ else
 
   # Hook_runs check — count rows per transition_id and assert all are
   # ok/noop. A failed/pending row indicates a registered hook regressed.
-  HOOK_RUNS=$(PSQL "SELECT t.transition_kind, h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$CID' ORDER BY t.started_at, h.hook_order")
+  HOOK_RUNS=$(PSQL "SELECT t.transition_kind, h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$CID' ORDER BY t.started_at, h.hook_order")
   if [[ -z "$HOOK_RUNS" ]]; then
     fail "no hook_runs rows for client $CID — Phase 3 hooks are not running"
   else
@@ -349,7 +349,7 @@ fi
 log "── Scenario 9: orphan-prevention hooks fire on client delete ──"
 
 DEL_NAME="lifecycle-del-$(date +%s)"
-DEL_RESP=$(api POST "/clients" "{\"company_name\":\"$DEL_NAME\",\"company_email\":\"$DEL_NAME@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+DEL_RESP=$(api POST "/clients" "{\"name\":\"$DEL_NAME\",\"primary_email\":\"$DEL_NAME@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 DEL_CID=$(echo "$DEL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
 if [[ -z "$DEL_CID" ]]; then
   fail "could not provision throwaway client for delete-cleanup scenario — body: $(echo "$DEL_RESP" | head -c 200)"
@@ -370,22 +370,22 @@ else
   # row — exactly the duplicate-transition bug an earlier run of this
   # harness exposed.
   curl -sk --max-time 240 -X DELETE \
-    "$ADMIN_HOST/api/v1/clients/$DEL_CID" \
+    "$ADMIN_HOST/api/v1/tenants/$DEL_CID" \
     -H "Authorization: Bearer $TOKEN" >/dev/null
-  ok "DELETE /clients/$DEL_CID returned"
+  ok "DELETE /tenants/$DEL_CID returned"
 
   # Poll for the transition(s) to finish (hooks may take a few seconds).
   # NOTE: there can be MORE THAN ONE 'deleted' transition row for the
-  # same client_id when an upstream auto-archive/cron also drove a
+  # same tenant_id when an upstream auto-archive/cron also drove a
   # delete (lifecycle-collapse). Accept that and assert every row
   # reached a terminal state.
   for i in $(seq 1 30); do
-    PENDING=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted'" \
+    PENDING=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted'" \
       | awk 'NF>0 && $1!="completed" && $1!="failed_partial" && $1!="failed_blocking" {n++} END {print n+0}')
     [[ "$PENDING" == "0" ]] && break
     sleep 2
   done
-  DEL_STATES=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted'" | tr '\n' ',')
+  DEL_STATES=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted'" | tr '\n' ',')
   if [[ "$PENDING" == "0" ]]; then
     ok "every deleted transition reached a terminal state (states=$DEL_STATES)"
   else
@@ -395,7 +395,7 @@ else
   # Confirm hook_runs for the deleted transition(s) include the Phase 4
   # hooks. With no domains/backup_bundles attached, dns-zone-cleanup +
   # tenant-bundles-bundle-cleanup return noop — both states are acceptable.
-  DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
+  DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
   for hook in dns-zone-cleanup tenant-bundles-bundle-cleanup cluster-scoped-refs-cleanup; do
     if echo "$DEL_HOOKS" | grep -q "^$hook|"; then
       ok "hook_run row for $hook recorded"
@@ -405,7 +405,7 @@ else
   done
 
   # Phase A1: namespace must be persisted on the transition row.
-  DEL_NS_FROM_TX=$(PSQL "SELECT namespace FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted' LIMIT 1")
+  DEL_NS_FROM_TX=$(PSQL "SELECT namespace FROM client_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted' LIMIT 1")
   if [[ -n "$DEL_NS_FROM_TX" ]]; then
     ok "namespace persisted on transitions row: $DEL_NS_FROM_TX"
   else
@@ -417,7 +417,7 @@ else
   # returning retry on a fast-create-then-delete client) takes one
   # tick to drain. Wait up to 4 min before declaring failure.
   for i in $(seq 1 80); do
-    DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
+    DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
     BAD_HOOKS=$(echo "$DEL_HOOKS" | awk -F'|' 'NF>=2 && $2!="ok" && $2!="noop"')
     [[ -z "$BAD_HOOKS" ]] && break
     sleep 3
@@ -452,7 +452,7 @@ RETRY_404_CODE=$(echo "$RETRY_404" | python3 -c "import json,sys;d=json.load(sys
   || fail "retry on missing runId returned code=$RETRY_404_CODE (expected NOT_FOUND)"
 
 # Also confirm the GET listing endpoint responds.
-TX_RESP=$(api GET "/admin/clients/$CID/lifecycle/transitions")
+TX_RESP=$(api GET "/admin/tenants/$CID/lifecycle/transitions")
 TX_COUNT=$(echo "$TX_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('data',{}).get('transitions',[])))" 2>/dev/null || echo "0")
 [[ "$TX_COUNT" -ge 3 ]] \
   && ok "GET .../clients/$CID/lifecycle/transitions returned $TX_COUNT rows" \
@@ -464,7 +464,7 @@ TX_COUNT=$(echo "$TX_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);
 # was archived then restored in Scenario 5 — assert there's at least
 # one transition row of kind=restored for it.
 log "── Scenario 11: explicit 'restored' transition row exists ──"
-RESTORED_COUNT=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE client_id='$CID' AND transition_kind='restored'")
+RESTORED_COUNT=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE tenant_id='$CID' AND transition_kind='restored'")
 [[ "$RESTORED_COUNT" -ge 1 ]] \
   && ok "client has $RESTORED_COUNT restored transition row(s)" \
   || fail "no 'restored' transition row for $CID (Phase A1 wiring missing)"
@@ -475,7 +475,7 @@ BULK_NAMES=()
 BULK_IDS=()
 for i in 1 2; do
   BN="lifecycle-bulk-$(date +%s)-$i"
-  BR=$(api POST "/clients" "{\"company_name\":\"$BN\",\"company_email\":\"$BN@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+  BR=$(api POST "/clients" "{\"name\":\"$BN\",\"primary_email\":\"$BN@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
   BID=$(echo "$BR" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   [[ -n "$BID" ]] && BULK_NAMES+=("$BN") && BULK_IDS+=("$BID")
 done
@@ -484,7 +484,7 @@ if [[ ${#BULK_IDS[@]} -lt 2 ]]; then
 else
   ok "provisioned ${#BULK_IDS[@]} throwaway clients"
   IDS_JSON=$(printf '"%s",' "${BULK_IDS[@]}" | sed 's/,$//')
-  BULK_RESP=$(curl -sk --max-time 240 -X DELETE "$ADMIN_HOST/api/v1/admin/clients/bulk" -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d "{\"client_ids\":[$IDS_JSON]}")
+  BULK_RESP=$(curl -sk --max-time 240 -X DELETE "$ADMIN_HOST/api/v1/admin/tenants/bulk" -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d "{\"client_ids\":[$IDS_JSON]}")
   BULK_OP_ID=$(echo "$BULK_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bulkOpId',''))" 2>/dev/null || echo "")
   [[ -n "$BULK_OP_ID" ]] \
     && ok "bulk DELETE returned bulkOpId=$BULK_OP_ID" \

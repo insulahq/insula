@@ -194,7 +194,7 @@ export const updateClient = async (clientId: string, updates: any) => {
 // Log event asynchronously, update cache immediately
 export const logEvent = async (event: any) => {
   // Update cache immediately
-  const cacheKey = `events:${event.client_id}`;
+  const cacheKey = `events:${event.tenant_id}`;
   await redis.lpush(cacheKey, JSON.stringify(event));
   await redis.ltrim(cacheKey, 0, 99);  // Keep latest 100
 
@@ -302,7 +302,7 @@ const getCachedWorkloads = async (clientId: string, filters: any) => {
   if (cached) return JSON.parse(cached);
 
   // Execute query
-  const query = db.workloads.where({ client_id: clientId });
+  const query = db.workloads.where({ tenant_id: clientId });
   if (filters.status) query = query.where({ status: filters.status });
   
   const workloads = await query.toArray();
@@ -321,10 +321,10 @@ const getCachedWorkloads = async (clientId: string, filters: any) => {
 import DataLoader from 'dataloader';
 
 const workloadLoader = new DataLoader(async (clientIds) => {
-  const workloads = await db.workloads.whereIn('client_id', clientIds);
+  const workloads = await db.workloads.whereIn('tenant_id', clientIds);
   
   return clientIds.map(clientId =>
-    workloads.filter(w => w.client_id === clientId)
+    workloads.filter(w => w.tenant_id === clientId)
   );
 });
 

@@ -255,7 +255,7 @@ The panel enforces limits; WHMCS tracks usage and bills. Metric billing reads ac
 
 **Implementation approach:**
 - Define plan tiers as K8s ResourceQuota templates (already have `hosting_plans` DB table)
-- Enforce via ResourceQuota per client namespace
+- Enforce via ResourceQuota per tenant namespace
 - Integrate with Stripe subscriptions + metered billing API directly (skip WHMCS — PHP/legacy)
 - Admin panel: plan management, usage reports
 - Client panel: current usage vs. plan limits, upgrade prompt

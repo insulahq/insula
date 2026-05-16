@@ -30,7 +30,7 @@ Three static clients are baked into `config.yaml` with hardcoded secrets.
 These are **dev/staging-only credentials**, intentionally simple so the
 integration harness can authenticate without out-of-band setup:
 
-| client_id | client_secret | redirect_uri | Used by |
+| tenant_id | client_secret | redirect_uri | Used by |
 |-----------|---------------|--------------|---------|
 | `hosting-platform-admin` | `staging-secret-admin` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Admin panel SSO via platform `/auth/oidc/*` |
 | `hosting-platform-client` | `staging-secret-client` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Client panel SSO via platform `/auth/oidc/*` |
@@ -43,12 +43,12 @@ integration harness can authenticate without out-of-band setup:
 | email | password | userID | Typical use |
 |-------|----------|--------|-------------|
 | `admin@k8s-platform.test` | `admin` | `00000000-0000-0000-0000-000000000001` | Drives the admin-panel OIDC flow in `integration-oidc-dex.sh` |
-| `user@k8s-platform.test` | `user` | `00000000-0000-0000-0000-000000000003` | Drives the client-panel OIDC flow in `integration-oidc-dex.sh` |
+| `user@k8s-platform.test` | `user` | `00000000-0000-0000-0000-000000000003` | Drives the tenant-panel OIDC flow in `integration-oidc-dex.sh` |
 
 These users are **only valid against Dex** — the platform-api auto-
 provisions them on first login through `findOrCreateOidcUser()` and
 assigns the OIDC provider's `default_role` (typically `read_only` for
-admin and `client_admin` for client). Behaviour is intentional security
+admin and `tenant_admin` for client). Behaviour is intentional security
 default; do not rebind them to `admin` without an explicit operator
 action.
 

@@ -138,7 +138,7 @@ For the first staging bootstrap, **hostpath is acceptable** — archives land at
 
 ```
   Developer push to main
-    └─> ci-backend / ci-admin-panel / ci-client-panel / ci-infrastructure
+    └─> ci-backend / ci-admin-panel / ci-tenant-panel / ci-infrastructure
     └─> build-deploy.yml — builds + pushes images to GHCR with tags:
           SHA, latest, YYYYMMDDHHmmss-SHA
     └─> Flux on DEV cluster picks up `latest`
@@ -315,10 +315,10 @@ If every state transition works and the snapshot tarball lands at `/var/lib/plat
 Before the first deploy, confirm:
 
 - [x] `ci-backend.yml` — lint + typecheck + test with postgres+redis services
-- [x] `ci-admin-panel.yml`, `ci-client-panel.yml` — lint + typecheck + test + build
+- [x] `ci-admin-panel.yml`, `ci-tenant-panel.yml` — lint + typecheck + test + build
 - [x] `ci-api-contracts.yml` — build + typecheck
 - [x] `ci-infrastructure.yml` — **now builds all three overlays (base, dev, staging, production)** + shellcheck + catalog image builds
-- [x] `build-deploy.yml` — publishes backend, admin-panel, client-panel to GHCR with `<sha>`, `latest`, and `<timestamp>-<sha>` tags on `main`
+- [x] `build-deploy.yml` — publishes backend, admin-panel, tenant-panel to GHCR with `<sha>`, `latest`, and `<timestamp>-<sha>` tags on `main`
 - [x] `ci-sftp-gateway.yml` + `ci-file-manager.yml` — publish their own images with Trivy scans
 - [x] `release.yml` — on `v*.*.*` tag: publishes semver-tagged images, creates GitHub Release, opens PR to `stable` branch
 

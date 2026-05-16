@@ -201,7 +201,7 @@ Applications can be offered as **add-ons** to hosting plans:
 | **Business** | Nextcloud, Gitea | 2 | No |
 | **Premium** | All | Unlimited | Yes |
 
-> **Note:** Like all plan parameters, these can be **overridden per-client**.
+> **Note:** Like all plan parameters, these can be **overridden per-tenant**.
 
 ## Admin Application Management UI
 

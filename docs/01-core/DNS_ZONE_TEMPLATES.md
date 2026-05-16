@@ -573,7 +573,7 @@ Changes to the template take effect for **new domains** automatically. Admins ca
 Once a domain is provisioned, all its DNS records are fully editable — by admins and by the domain owner in the client panel. The template has no ongoing authority over the zone.
 
 **Admin:** Admin Panel → Client → Domains → [domain] → DNS Records  
-**Customer:** Client Panel → Domains → [domain] → DNS Records
+**Customer:** Tenant Panel → Domains → [domain] → DNS Records
 
 Both interfaces provide full CRUD on all record types: A, AAAA, CNAME, MX, TXT, SRV, CAA, NS, and any other standard type supported by the external PowerDNS API. There is no concept of "template-locked" or "platform-managed" records — everything is editable.
 
@@ -697,10 +697,10 @@ All DNS records on a domain are fully editable after provisioning. There are no 
 
 ```bash
 # List all DNS records for a domain
-GET /api/v1/clients/{client_id}/domains/{domain_id}/records
+GET /api/v1/tenants/{tenant_id}/domains/{domain_id}/records
 
 # Add a new record
-POST /api/v1/clients/{client_id}/domains/{domain_id}/records
+POST /api/v1/tenants/{tenant_id}/domains/{domain_id}/records
 {
   "name": "shop.acme.com.",
   "type": "CNAME",
@@ -709,14 +709,14 @@ POST /api/v1/clients/{client_id}/domains/{domain_id}/records
 }
 
 # Update an existing record
-PUT /api/v1/clients/{client_id}/domains/{domain_id}/records/{record_id}
+PUT /api/v1/tenants/{tenant_id}/domains/{domain_id}/records/{record_id}
 {
   "ttl": 600,
   "content": "203.0.113.20"
 }
 
 # Delete a record
-DELETE /api/v1/clients/{client_id}/domains/{domain_id}/records/{record_id}
+DELETE /api/v1/tenants/{tenant_id}/domains/{domain_id}/records/{record_id}
 ```
 
 ---
@@ -834,7 +834,7 @@ Both endpoints must be served by the Management API or a dedicated autodiscovery
 - [ ] Implement admin API: POST `/admin/dns-template/reapply` (non-destructive, domain list or "all")
 - [ ] Add template application step to domain provisioning workflow in Management API
 
-### Phase 2 — Per-Domain DNS Editor (Admin + Client Panel)
+### Phase 2 — Per-Domain DNS Editor (Admin + Tenant Panel)
 
 - [ ] Admin panel: per-domain DNS records page (full CRUD — add, edit, delete any record type)
 - [ ] Client panel: per-domain DNS records page (full CRUD — add, edit, delete any record type)

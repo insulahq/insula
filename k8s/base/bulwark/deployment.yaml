@@ -6,7 +6,7 @@
 #
 # Pairs with:
 #   - bulwark-impersonator/ — sidecar Deployment in front of this one
-#     that handles JWT-signed client-panel handoffs
+#     that handles JWT-signed tenant-panel handoffs
 #   - secret/bulwark-secrets — ADMIN_PASSWORD, SESSION_SECRET
 #
 # Image is pinned by digest. Bump via the procedure documented in
@@ -97,7 +97,7 @@ spec:
           env:
             # JMAP server URL — must be browser-reachable because
             # Bulwark's SPA fetches `${JMAP_SERVER_URL}/.well-known/jmap`
-            # client-side after login. In production this is the
+            # tenant-side after login. In production this is the
             # public mail server hostname. Overlays override via env
             # patch.
             - name: JMAP_SERVER_URL

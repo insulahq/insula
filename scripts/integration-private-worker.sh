@@ -170,7 +170,7 @@ phase1_provision() {
     --arg email "pw-e2e-$stamp@phoenix-host.net" \
     --arg plan "$plan_id" \
     --arg region "$region_id" \
-    '{company_name:$name, company_email:$email, plan_id:$plan, region_id:$region, storage_tier:"local"}')")
+    '{name:$name, primary_email:$email, plan_id:$plan, region_id:$region, storage_tier:"local"}')")
   cid=$(echo "$resp" | jq -r '.data.id // empty')
   if [[ -z "$cid" ]]; then
     fail "client create failed: $(echo "$resp" | head -c 300)"
@@ -561,7 +561,7 @@ phase5_cleanup() {
   if [[ -n "$cid" && -n "$wid" ]]; then
     local del_resp del_code
     del_resp=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 30 \
-      -X DELETE "$ADMIN_HOST/api/v1/clients/$cid/private-workers/$wid" \
+      -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid/private-workers/$wid" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
     del_code="$del_resp"
     if [[ "$del_code" == "200" || "$del_code" == "204" ]]; then
@@ -611,7 +611,7 @@ phase5_cleanup() {
 
   # Finally delete the client (cascade handles audit + remaining rows).
   if [[ -n "$cid" ]]; then
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" \
+    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
       -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
     ok "deleted client $cid (best effort)"
   fi

@@ -34,12 +34,12 @@ The following resource budget validates that all platform services fit on a sing
 | **Calico** | 150m | 128Mi | 300m | 256Mi | CNI + NetworkPolicy enforcement |
 | **cert-manager** | 50m | 64Mi | 200m | 128Mi | |
 | **Sealed Secrets** | 50m | 32Mi | 100m | 64Mi | |
-| **MariaDB (platform only)** | 100m | 256Mi | 500m | 1Gi | Platform admin data only; client DBs are per-client StatefulSets (add-on). See ADR-024. |
+| **MariaDB (platform only)** | 100m | 256Mi | 500m | 1Gi | Platform admin data only; client DBs are per-tenant StatefulSets (add-on). See ADR-024. |
 | **PostgreSQL (platform)** | 100m | 128Mi | 500m | 512Mi | Platform metadata only |
-| **Redis (platform)** | 50m | 64Mi | 200m | 256Mi | Platform cache + fail2ban bans only. Client Redis is per-client add-on. |
+| **Redis (platform)** | 50m | 64Mi | 200m | 256Mi | Platform cache + fail2ban bans only. Client Redis is per-tenant add-on. |
 | **Management API** | 100m | 128Mi | 500m | 512Mi | Node.js Fastify |
 | **Admin Panel** | 50m | 64Mi | 200m | 128Mi | Static React SPA |
-| **Client Panel** | 50m | 64Mi | 200m | 128Mi | Static React SPA |
+| **Tenant Panel** | 50m | 64Mi | 200m | 128Mi | Static React SPA |
 | **Prometheus + Alertmanager** | 100m | 256Mi | 500m | 512Mi | 7-day retention |
 | **Loki** | 100m | 128Mi | 300m | 256Mi | 14-day retention |
 | **Grafana** | 50m | 64Mi | 200m | 256Mi | |
@@ -110,7 +110,7 @@ Enable incrementally as the business grows or cost justifies investment. For ste
 | **DNS (external)** | **External PowerDNS API** (configurable endpoint in admin panel; see ADR-022) |
 | DNS (internal/cluster) | CoreDNS (Kubernetes default, built-in to k3s) |
 | **Traffic routing** | **DNS-based ingress routing** — NGINX DaemonSet + PowerDNS multi-A records (no Floating IP / MetalLB). See ADR-014. |
-| Network policies | Default-deny per client namespace; explicit allow for ingress controller and shared services |
+| Network policies | Default-deny per tenant namespace; explicit allow for ingress controller and shared services |
 | Pod-to-pod across clients | Denied — NetworkPolicy blocks all cross-namespace client traffic |
 
 ## Cost Optimization Strategies
@@ -192,7 +192,7 @@ Because all clients use images from the same catalog:
 | **Loki over ELK** | 10x less memory than Elasticsearch |
 | **Prometheus with retention limits** | 15-day local retention; long-term to offsite backup server if needed |
 | **Alpine-based images** | 5-50MB vs. 200-800MB for Debian/Ubuntu-based |
-| **Redis as add-on only** | Platform Redis ~50Mi; per-client Redis only for Premium/add-on clients |
+| **Redis as add-on only** | Platform Redis ~50Mi; per-tenant Redis only for Premium/add-on clients |
 
 ## Cost Estimation Framework
 
@@ -234,7 +234,7 @@ All clients get the same resource stack structure. Plan differentiation is via r
 | **Ingress rules** | Per-domain routing with TLS certificates |
 | **ResourceQuota** | CPU, memory, storage limits per hosting plan |
 | **NetworkPolicy** | Default-deny + allow ingress controller + platform services |
-| **ServiceAccount** | Scoped to client namespace only |
+| **ServiceAccount** | Scoped to tenant namespace only |
 | **ConfigMap** | Client-specific config (PHP settings, vhost overrides) |
 | **Secret** | SFTP credentials (auto-generated); DB credentials if add-on enabled |
 | **Optional: MariaDB StatefulSet** | Database add-on (~100m CPU, ~150Mi RAM). Included in Premium; paid add-on for Starter/Business. |

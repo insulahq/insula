@@ -477,7 +477,7 @@ def handle_billing_webhook():
 
 **Handling:**
 ```python
-# PATCH /api/v1/clients/{id}/subscription (manual)
+# PATCH /api/v1/tenants/{id}/subscription (manual)
 # OR webhook handler (gateway payment)
 def update_subscription():
     # Reset all reminder flags whenever subscription is extended

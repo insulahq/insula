@@ -43,7 +43,7 @@ export default function(data) {
   const endpoints = [
     { name: 'status', path: '/api/v1/admin/status', cached: true },
     { name: 'dashboard', path: '/api/v1/admin/dashboard', cached: true },
-    { name: 'clients', path: '/api/v1/clients?limit=20' },
+    { name: 'clients', path: '/api/v1/tenants?limit=20' },
     { name: 'plans', path: '/api/v1/plans', cached: true },
     { name: 'regions', path: '/api/v1/regions', cached: true },
     { name: 'container-images', path: '/api/v1/container-images', cached: true },

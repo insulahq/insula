@@ -8,10 +8,10 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 |---|---|---|---|
 | Longhorn volumes (postgres + stalwart) | 1 replica | 3 replicas, spread across nodes | ✓ (extra replicas deleted) |
 | Postgres CNPG `Cluster` `spec.instances` | 1 | 3 (sync replication) | ✓ (replicas removed; primary keeps data) |
-| `admin-panel`, `client-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 2 replicas | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
+| `admin-panel`, `tenant-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 2 replicas | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
 
 What `Apply HA` does NOT do:
-- Per-tenant client workloads (separate per-client storage tier)
+- Per-tenant client workloads (separate per-tenant storage tier)
 - Stalwart-mail StatefulSet — stays at `replicas=1`. Failover handled by Longhorn HA volume rebind to a new node (~30-60s recovery time)
 - Redis was removed in M14 — replaced by per-pod in-memory LRU. No HA concern.
 - ingress-nginx — already a DaemonSet (one pod per node)
@@ -77,7 +77,7 @@ Reverting does NOT lose data anywhere. CNPG drops the standby pods cleanly; Long
 Two cooperating mechanisms keep Apply HA's imperative scale
 operations from being reverted by Flux SSA:
 
-1. **Stateless Deployments** (admin-panel, client-panel, platform-
+1. **Stateless Deployments** (admin-panel, tenant-panel, platform-
    api, oauth2-proxy, dex) have NO `replicas:` field in their
    manifests. Flux doesn't claim ownership of the field. The
    platform-storage-policy reconciler writes it via the `/scale`

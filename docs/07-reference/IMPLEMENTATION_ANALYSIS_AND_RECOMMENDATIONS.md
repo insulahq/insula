@@ -138,7 +138,7 @@ Create DATABASE_SCHEMA.md with:
 
 **Example:**
 ```
-GET /admin/clients
+GET /admin/tenants
   Returns: List of 248 clients
   Pagination: ???
   - Offset/limit?
@@ -594,7 +594,7 @@ info:
   version: "1.0.0"
 
 paths:
-  /admin/clients:
+  /admin/tenants:
     get:
       summary: "List clients"
       parameters:
@@ -648,8 +648,8 @@ paths:
 
 ```
 API Versioning: URL-based
-├── /api/v1/admin/clients (current)
-├── /api/v2/admin/clients (future)
+├── /api/v1/admin/tenants (current)
+├── /api/v2/admin/tenants (future)
 └── Deprecation policy: 2 major versions back
 
 Deprecation Timeline:
@@ -767,7 +767,7 @@ Webhook Payload:
     ├── name (string)
     ├── provider_type (enum: google, apple, github, keycloak, auth0, custom)
     ├── discovery_url (string)
-    ├── client_id (string)
+    ├── tenant_id (string)
     ├── client_secret (encrypted)
     ├── scopes (jsonb array)
     ├── enabled (boolean)
@@ -978,7 +978,7 @@ Phase 2 (Growth):
 
 Phase 3 (Scale):
 ├── Database sharding by tenant
-│   ├── Shard key: client_id
+│   ├── Shard key: tenant_id
 │   ├── 10 shards initial
 │   ├── Hash-based routing
 │   └── Resharding plan for future

@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: client-panel
+  name: tenant-panel
   namespace: platform
   labels:
-    app: client-panel
+    app: tenant-panel
     app.kubernetes.io/part-of: hosting-platform
 spec:
   # M14: replicas owned by platform-storage-policy reconciler.
   selector:
     matchLabels:
-      app: client-panel
+      app: tenant-panel
   template:
     metadata:
       labels:
-        app: client-panel
+        app: tenant-panel
     spec:
       # 2026-05-11: DoNotSchedule for strict one-per-server placement.
-      # In HA mode every server runs a client-panel pod, so node loss =
+      # In HA mode every server runs a tenant-panel pod, so node loss =
       # lose 1 of N; survivors already serve, no rescheduling needed.
       # Failover headroom (see backend/src/modules/platform-storage-policy/
       # failover-headroom.ts) prevents this from wedging Pending pods.
@@ -27,10 +27,10 @@ spec:
           whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
-              app: client-panel
+              app: tenant-panel
       containers:
         - name: client
-          image: ghcr.io/phoenixtechnam/hosting-platform/client-panel:latest
+          image: ghcr.io/phoenixtechnam/hosting-platform/tenant-panel:latest
           ports:
             - containerPort: 80
               protocol: TCP
@@ -57,13 +57,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: client-panel
+  name: tenant-panel
   namespace: platform
   labels:
-    app: client-panel
+    app: tenant-panel
 spec:
   selector:
-    app: client-panel
+    app: tenant-panel
   ports:
     - port: 80
       targetPort: 80

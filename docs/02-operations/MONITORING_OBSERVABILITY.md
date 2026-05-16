@@ -8,7 +8,7 @@ The platform implements a complete observability system for metrics, logs, dashb
 | --- | --- | --- |
 | **Metrics** | **Prometheus** (via kube-prometheus-stack) | Cluster, node, pod, and app metrics |
 | **Logs** | **Loki** + **Promtail** | Centralized log aggregation |
-| **Dashboards** | **Grafana** | Platform ops + per-client dashboards |
+| **Dashboards** | **Grafana** | Platform ops + per-tenant dashboards |
 | **Alerting** | **Alertmanager** | Integrated with Prometheus |
 | **Traces** | **Tempo** (Phase 2 — planned post-MVP) | Low resource usage, Loki integration, deferred for Phase 2 |
 

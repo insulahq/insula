@@ -353,7 +353,7 @@ When user first logs in to that domain:
 
 ### Email & Webmail Section
 
-**Location:** Client Panel > Email > Webmail Access
+**Location:** Tenant Panel > Email > Webmail Access
 
 #### Webmail Domains List
 

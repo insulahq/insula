@@ -28,7 +28,7 @@ Frontend Application
 │   ├── Support
 │   └── ... (all admin routes)
 │
-├── /client/*                   → Client Panel (40+ features)
+├── /client/*                   → Tenant Panel (40+ features)
 │   ├── Dashboard
 │   ├── Domains
 │   ├── Databases
@@ -634,7 +634,7 @@ fastify.register(fastifyCors, {
 
 ## Access Control Matrix
 
-| Access Method | Admin Panel | Client Panel | Root Redirect |
+| Access Method | Admin Panel | Tenant Panel | Root Redirect |
 |---|---|---|---|
 | `https://panel.platform.com/admin/` | ✅ Yes | ❌ No | ❌ No |
 | `https://panel.platform.com/client/` | ❌ No | ✅ Yes | ❌ No |

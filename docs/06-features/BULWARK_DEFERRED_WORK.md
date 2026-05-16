@@ -8,7 +8,7 @@ The Bulwark integration M0 (ADR-039 Phases 0–6, 9, 10, 11) ships:
 - `bulwark-impersonator` sidecar with HS256 JWT verify + master-auth
   injection + jti replay protection + audit logging (Phase 4).
 - Platform-api `POST /api/v1/email/webmail-token` engine-aware
-  (Phase 5) + client-panel hook engine override (Phase 6).
+  (Phase 5) + tenant-panel hook engine override (Phase 6).
 - `scripts/integration-bulwark-e2e.sh` (27 phases) (Phase 9).
 - `platform_config.default_webmail_engine` (Phase 10).
 - Docs + ADR-039 (Phase 11).
@@ -52,7 +52,7 @@ feedback demands it.
 ## Phase 8 — Lifecycle hook for Bulwark settings purge on `archived` transition
 
 **What's missing:**
-When a client transitions to `archived` (`client_lifecycle/cascades.applyArchived`),
+When a client transitions to `archived` (`tenant_lifecycle/cascades.applyArchived`),
 all Stalwart accounts under the client's email domains are destroyed.
 The orphaned Bulwark `/app/data/settings/<destroyed-account>.enc`
 files remain on disk.

@@ -79,7 +79,7 @@ When a catalog image reaches end-of-life:
 
 ## Client Site Deployment — Three Methods
 
-Clients deploy code by placing files in their PersistentVolume. The dedicated container serves whatever files are in the volume. **No container builds happen per-client.** See **ADR-016** for the full architectural decision and canonical file path layout.
+Clients deploy code by placing files in their PersistentVolume. The dedicated container serves whatever files are in the volume. **No container builds happen per-tenant.** See **ADR-016** for the full architectural decision and canonical file path layout.
 
 All three methods work identically for all clients — every client has a dedicated pod in their `client-{id}` namespace (ADR-024). All methods access the same underlying filesystem:
 
@@ -168,7 +168,7 @@ When a new client is provisioned via the management panel, the Management API or
 7. Create cert-manager Certificate resource — strategy depends on DNS mode:
    - **Primary or Secondary DNS mode** → create **wildcard** `Certificate` via `letsencrypt-wildcard` ClusterIssuer (DNS-01); covers `*.domain` + apex `domain`; secret: `{client-id}-{domain-slug}-wildcard-tls`
    - **CNAME mode** → create **single-domain** `Certificate` via `letsencrypt-prod` ClusterIssuer (HTTP-01) per hostname; secret: `{client-id}-{hostname-slug}-tls`
-   - Subdomains default to inheriting the parent wildcard (Primary/Secondary) or getting their own single-domain cert (CNAME); customer can override per-subdomain in Client Panel
+   - Subdomains default to inheriting the parent wildcard (Primary/Secondary) or getting their own single-domain cert (CNAME); customer can override per-subdomain in Tenant Panel
    - See `03-security/TLS_CERTIFICATE_MANAGEMENT.md` for full cert selection logic and YAML templates
 8. Create DNS records via DNS controller
 9. Generate SFTP credentials, store in namespace Secret
@@ -184,8 +184,8 @@ When a new client is provisioned via the management panel, the Management API or
 13. Apply ResourceQuota and LimitRange based on hosting plan
 14. Create ServiceAccount with namespace-scoped RBAC
 15. Deploy dedicated web pod using **client-selected catalog image**
-16. _(Premium only)_ Provision dedicated Redis pod in client namespace
-17. _(Premium/Custom only)_ Optional: provision dedicated MariaDB StatefulSet in client namespace (database is a premium add-on)
+16. _(Premium only)_ Provision dedicated Redis pod in tenant namespace
+17. _(Premium/Custom only)_ Optional: provision dedicated MariaDB StatefulSet in tenant namespace (database is a premium add-on)
 
 ## GitOps for Platform
 
@@ -194,7 +194,7 @@ The platform deployment process uses **GitOps principles** for all infrastructur
 | Decision | Value |
 | --- | --- |
 | GitOps controller | **Flux v2** (lightweight, GitOps-native, more flexible than ArgoCD) |
-| Repository structure | Monorepo with per-service Helm charts + per-client overlays |
+| Repository structure | Monorepo with per-service Helm charts + per-tenant overlays |
 | Deployment method | Helm charts for platform services; Kustomize overlays for client namespaces |
 | Rollback mechanism | Flux auto-sync rollback or manual Git revert |
 

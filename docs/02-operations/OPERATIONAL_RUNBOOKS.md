@@ -84,7 +84,7 @@ mkdir -p /mnt/backup
 sshfs backup@storagebox:/backups /mnt/backup -o IdentityFile=~/.ssh/backup_key
 
 # Navigate to customer's backup
-ls /mnt/backup/customers/{client_id}/
+ls /mnt/backup/customers/{tenant_id}/
 # Expected: files/ databases/ email/ config/
 ```
 

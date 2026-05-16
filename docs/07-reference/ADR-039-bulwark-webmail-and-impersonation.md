@@ -1,11 +1,11 @@
 # ADR-039 — Bulwark Webmail Integration + JWT-Signed Impersonation Flow
 
 **Status:** Accepted · 2026-05-15
-**Supersedes / related:** Co-exists with `k8s/base/roundcube/` until Phase 10 of the integration roadmap retires it. Companion to ADR-030 (mail-server-selection-and-swappable-architecture), ADR-033 (client-lifecycle-hook-registry).
+**Supersedes / related:** Co-exists with `k8s/base/roundcube/` until Phase 10 of the integration roadmap retires it. Companion to ADR-030 (mail-server-selection-and-swappable-architecture), ADR-033 (tenant-lifecycle-hook-registry).
 
 ## Context
 
-The platform ships Roundcube as its webmail of record. Roundcube is a PHP application with an in-cluster `jwt_auth` plugin that allows the client-panel to mint short-lived JWTs and hand a user into any mailbox in their tenant without re-prompting for a password (impersonation via Stalwart's master-user feature, IMAP path).
+The platform ships Roundcube as its webmail of record. Roundcube is a PHP application with an in-cluster `jwt_auth` plugin that allows the tenant-panel to mint short-lived JWTs and hand a user into any mailbox in their tenant without re-prompting for a password (impersonation via Stalwart's master-user feature, IMAP path).
 
 Two real shortcomings of the Roundcube path drove a webmail re-evaluation:
 
@@ -35,9 +35,9 @@ Two distinct user paths:
 | Path | Who | How |
 |---|---|---|
 | **Direct mailbox login** | The mailbox owner | Browser → `https://webmail.${DOMAIN}/` → Bulwark login form → email + password → Bulwark `/api/auth/stalwart-context` → Stalwart JMAP basic-auth → session cookie set |
-| **Client-panel impersonation** | `client_admin` of the tenant that owns the target mailbox (or `super_admin`) | Client-panel → platform-api `POST /api/v1/webmail/impersonate { mailboxId }` → JWT minted → browser redirect to `https://webmail.${DOMAIN}/_impersonate?token=...` → `bulwark-impersonator` sidecar verifies JWT → injects `target%master:masterpwd` master-auth header → server-side POST to Bulwark's `/api/auth/stalwart-context` → session cookie forwarded to browser → 302 to `/` |
+| **Client-panel impersonation** | `tenant_admin` of the tenant that owns the target mailbox (or `super_admin`) | Client-panel → platform-api `POST /api/v1/webmail/impersonate { mailboxId }` → JWT minted → browser redirect to `https://webmail.${DOMAIN}/_impersonate?token=...` → `bulwark-impersonator` sidecar verifies JWT → injects `target%master:masterpwd` master-auth header → server-side POST to Bulwark's `/api/auth/stalwart-context` → session cookie forwarded to browser → 302 to `/` |
 
-Platform users (admin / client panel auth) and mailbox users (Stalwart accounts) remain **separate identity domains**. The impersonation flow's permission check is `client_admin` of the tenant that owns the mailbox; the JWT carries `{ target_mailbox, tenant_id, actor_user_id, exp:+60s, jti:<uuid> }` signed with the platform `JWT_SECRET`. This mirrors the existing Roundcube `jwt_auth.php` model — only the verifying component moves from a PHP plugin to a Node.js sidecar.
+Platform users (admin / client panel auth) and mailbox users (Stalwart accounts) remain **separate identity domains**. The impersonation flow's permission check is `tenant_admin` of the tenant that owns the mailbox; the JWT carries `{ target_mailbox, tenant_id, actor_user_id, exp:+60s, jti:<uuid> }` signed with the platform `JWT_SECRET`. This mirrors the existing Roundcube `jwt_auth.php` model — only the verifying component moves from a PHP plugin to a Node.js sidecar.
 
 ### Why Stalwart master-user auth (and not OIDC)
 
@@ -108,5 +108,5 @@ The integration tracks Bulwark v1.6.x, current `v1.6.5` (May 13, 2026). Image di
 - Roundcube's existing pattern: `k8s/base/roundcube/jwt_auth.php` + `k8s/base/roundcube/secret.example.yaml`
 - ADR-022: external IAM consumption
 - ADR-030: mail-server-selection-and-swappable-architecture
-- ADR-033: client-lifecycle hook registry (impersonator settings purge wires through here)
+- ADR-033: tenant-lifecycle hook registry (impersonator settings purge wires through here)
 - `project_bulwark_eval_2026_05_15.md`: 14 findings from the local DinD evaluation (rewriter quirks, CORS, gzip, hostname JMAP property, etc.)

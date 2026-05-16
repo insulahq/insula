@@ -248,7 +248,7 @@ Recommendation: DMARC policy for example.com is ready to tighten.
 
 The recommendation appears in:
 - Admin Panel → Domains → {domain} → DMARC (admin sees all domains)
-- Client Panel → Domains → {domain} → Email → DMARC (customer sees own domains)
+- Tenant Panel → Domains → {domain} → Email → DMARC (customer sees own domains)
 
 **Policy advancement path:**
 
@@ -384,7 +384,7 @@ When external relay is enabled for a domain, the management API:
    ```
    example.com    smtp:[smtp.sendgrid.net]:587
    ```
-2. Stores relay credentials (SMTP username/password or API key) as a Kubernetes Secret in the client namespace.
+2. Stores relay credentials (SMTP username/password or API key) as a Kubernetes Secret in the tenant namespace.
 3. Updates the domain's SPF record to include the relay provider's sender mechanism:
    ```
    "v=spf1 include:mail.platform.com include:sendgrid.net ~all"
@@ -418,7 +418,7 @@ This relay account is separate from any customer relay configuration.
 | SMTP host | Provider endpoint (e.g. `smtp.sendgrid.net`) |
 | SMTP port | 587 (STARTTLS) or 465 (implicit TLS) |
 | Username | Provider SMTP username or `apikey` (SendGrid) |
-| Password / API key | Stored as Sealed Secret in client namespace |
+| Password / API key | Stored as Sealed Secret in tenant namespace |
 | From domain | Must match the domain being configured |
 
 Admin-only: enable/disable external relay per domain. Customers cannot self-configure relay credentials — they provide credentials to support, who configures via Admin Panel.
@@ -482,7 +482,7 @@ When a complaint arrives at `fbl@platform.com`:
 CREATE TABLE email_fbl_complaints (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   domain_id       UUID REFERENCES domains(id) ON DELETE SET NULL,
-  client_id       UUID REFERENCES clients(id) ON DELETE SET NULL,
+  tenant_id       UUID REFERENCES clients(id) ON DELETE SET NULL,
   received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   provider        VARCHAR(50) NOT NULL,     -- microsoft / yahoo / other
   sending_ip      INET NOT NULL,
@@ -518,7 +518,7 @@ groups:
       severity: warning
     annotations:
       summary: "FBL complaint rate exceeded for {{ $labels.domain }}"
-      description: "Domain {{ $labels.domain }} (client {{ $labels.client_id }}) complaint rate is {{ $value | humanizePercentage }}"
+      description: "Domain {{ $labels.domain }} (client {{ $labels.tenant_id }}) complaint rate is {{ $value | humanizePercentage }}"
 
   - alert: CustomerFBLSuspend
     expr: platform_email_complaint_rate_7d > 0.003   # > 0.3%
@@ -633,7 +633,7 @@ Checks run **hourly** against all pool IPs. If any IP is listed:
 ### Phase 4 — Admin Panel
 
 - [ ] Build Deliverability Dashboard (IP pool status, blacklist, FBL, DMARC overview)
-- [ ] Add DMARC tightening recommendation display (Admin + Client Panel)
+- [ ] Add DMARC tightening recommendation display (Admin + Tenant Panel)
 - [ ] Add one-click "Apply recommended DMARC policy" (admin) — updates PowerDNS via DNS controller
 - [ ] Build FBL complaints table view (filterable by domain, date, provider)
 - [ ] Build domain reputation table with status badges
@@ -643,7 +643,7 @@ Checks run **hourly** against all pool IPs. If any IP is listed:
 - [ ] Build Admin Panel external relay configuration form (per domain)
 - [ ] Implement transport_maps update and Postfix reload on relay enable/disable
 - [ ] Implement SPF record update on relay enable/disable (add/remove provider include)
-- [ ] Store relay credentials as Sealed Secrets in client namespace
+- [ ] Store relay credentials as Sealed Secrets in tenant namespace
 - [ ] Configure platform notification relay (Management API SMTP env vars)
 - [ ] Test platform notification emails route through external relay, not pool IPs
 

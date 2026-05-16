@@ -235,9 +235,9 @@ CREATE TABLE email_messages (
 );
 ```
 
-### Client Panel: Email Statistics Dashboard
+### Tenant Panel: Email Statistics Dashboard
 
-**Location:** Client Panel > Email > Sending Statistics
+**Location:** Tenant Panel > Email > Sending Statistics
 
 #### Summary Widget
 
@@ -1179,7 +1179,7 @@ groups:
   - [ ] Parse DSN (Delivery Status Notification) for bounce reasons
   - [ ] Clean up old records (>90 days)
 
-- [ ] **Client Panel Features**
+- [ ] **Tenant Panel Features**
   - [ ] Email statistics dashboard
   - [ ] Email messages list (searchable/filterable)
   - [ ] Bounce analysis and recommendations

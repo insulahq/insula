@@ -24,7 +24,7 @@ Client and admin authentication for the management panel and related services us
 
 1. Client visits management panel
 2. Redirected to OIDC provider (Google/Apple sign-in)
-3. On success, JWT issued with claims: `role`, `client_id`, `namespace`
+3. On success, JWT issued with claims: `role`, `tenant_id`, `namespace`
 4. Management API validates JWT on every request
 5. API enforces namespace-scoped access based on claims
 
@@ -42,7 +42,7 @@ Every API request must include a valid JWT in the `Authorization: Bearer <token>
 | **Expiration (`exp`)** | Token must not be expired. Clock skew tolerance: 30 seconds | `401 Unauthorized` |
 | **Not Before (`nbf`)** | Token must be active (if present) | `401 Unauthorized` |
 | **Required Claims** | `sub` (subject), `role`, `exp`, `iat` must be present | `401 Unauthorized` |
-| **Role Claim** | `role` must be one of: `admin`, `billing`, `support`, `read-only`, `client_admin`, `client_user` | `403 Forbidden` |
+| **Role Claim** | `role` must be one of: `admin`, `billing`, `support`, `read-only`, `tenant_admin`, `tenant_user` | `403 Forbidden` |
 
 **JWKS Configuration:**
 - JWKS endpoint: `{oidc_issuer_url}/.well-known/openid-configuration` → `jwks_uri`
@@ -120,7 +120,7 @@ An optional WAF layer at the ingress controller to protect client sites from com
 | Rule set | OWASP Core Rule Set (CRS) v4 |
 | Mode | Detection-only initially; switch to blocking after tuning |
 | Per-client toggle | Clients can enable/disable WAF via management panel |
-| Custom rules | Admin-defined global rules + per-client overrides |
+| Custom rules | Admin-defined global rules + per-tenant overrides |
 | Logging | WAF events logged to Loki, visible in Grafana |
 
 ## Kubernetes RBAC & Access Management
@@ -146,7 +146,7 @@ An optional WAF layer at the ingress controller to protect client sites from com
 
 ## Network Security
 
-- [ ] **Default-deny NetworkPolicy** in every client namespace
+- [ ] **Default-deny NetworkPolicy** in every tenant namespace
 - [ ] **Ingress controller** is the **only** external HTTP entry point to client pods
 - [ ] **Cross-namespace client traffic blocked** — client-a cannot reach client-b
 - [ ] **Client pods → shared services** allowed (specific ports only) via explicit NetworkPolicy rules

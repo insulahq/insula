@@ -590,14 +590,14 @@ test_8_ha_deployments() {
   # ConfigMap directly added no information beyond the live spec, so
   # we just look at .spec.replicas across the system Deployments.
   local expected=2
-  for d in admin-panel client-panel platform-api oauth2-proxy dex; do
+  for d in admin-panel tenant-panel platform-api oauth2-proxy dex; do
     local r
     r=$(kubectl -n platform get deploy "$d" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
     [[ "$r" -gt "$expected" ]] && expected=$r
   done
 
   local total=0 ok=0
-  for d in admin-panel client-panel platform-api oauth2-proxy dex; do
+  for d in admin-panel tenant-panel platform-api oauth2-proxy dex; do
     total=$((total+1))
     local ready_replicas nodes_count
     ready_replicas=$(kubectl -n platform get deploy "$d" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)

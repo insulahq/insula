@@ -988,11 +988,11 @@ For customers preferring to manually migrate:
 
 ---
 
-## Client Panel Features
+## Tenant Panel Features
 
 ### Cron Jobs Management Dashboard
 
-**Location:** Client Panel > Website & Services > Cron Jobs
+**Location:** Tenant Panel > Website & Services > Cron Jobs
 
 #### List View
 
@@ -1208,7 +1208,7 @@ Dashboard widgets showing:
 - [ ] Add webhook notification logic
 - [ ] Test with live k3s cluster (50+ concurrent jobs)
 
-### Phase 3: Client Panel UI (Weeks 3-4)
+### Phase 3: Tenant Panel UI (Weeks 3-4)
 
 - [ ] Design Figma mockups for all screens
 - [ ] Implement cron jobs list view

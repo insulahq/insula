@@ -84,16 +84,16 @@ SFTP_KEY="${SFTP_KEY:-$HOME/hosting-platform.key}"
 # ─── HKDF helper (Node, matches the production restic-driver derivation) ───
 # Production code in backend/src/modules/tenant-bundles/restic-driver.ts will
 # use crypto.hkdfSync('sha256', secret, salt, info, length). Here we replicate
-# in a one-shot Node invocation; assertion: deterministic given clientId.
+# in a one-shot Node invocation; assertion: deterministic given tenantId.
 hkdf_password() {
-  local secret_hex="$1" client_id="$2"
+  local secret_hex="$1" tenant_id="$2"
   node -e '
     const c = require("crypto");
     const secret = Buffer.from(process.argv[1], "hex");
     const out = c.hkdfSync("sha256", secret, Buffer.alloc(0),
       Buffer.from("restic-tenant-" + process.argv[2]), 32);
     process.stdout.write(Buffer.from(out).toString("hex"));
-  ' "$secret_hex" "$client_id"
+  ' "$secret_hex" "$tenant_id"
 }
 
 # Synthetic PLATFORM_ENCRYPTION_KEY for spike (NOT a production key).
@@ -104,8 +104,8 @@ SPIKE_OIDC_KEY=$(openssl rand -hex 32)
 # Use random suffix (not date) so concurrent runs cannot collide on the
 # remote SFTP path or on each other's S3 prefixes.
 SUFFIX=$(openssl rand -hex 4)
-CLIENT_A="spike-client-a-$SUFFIX"
-CLIENT_B="spike-client-b-$SUFFIX"
+CLIENT_A="spike-tenant-a-$SUFFIX"
+CLIENT_B="spike-tenant-b-$SUFFIX"
 PASS_A=$(hkdf_password "$SPIKE_OIDC_KEY" "$CLIENT_A")
 PASS_B=$(hkdf_password "$SPIKE_OIDC_KEY" "$CLIENT_B")
 
@@ -116,10 +116,10 @@ PASS_A2=$(hkdf_password "$SPIKE_OIDC_KEY" "$CLIENT_A")
 echo "✓ HKDF derivation: deterministic + per-tenant unique"
 
 # Test vector for Phase 1: backend/src/modules/tenant-bundles/restic-driver.ts
-# MUST produce the same hex output for the same (key, clientId). This line
+# MUST produce the same hex output for the same (key, tenantId). This line
 # emits one fixture so the production unit test can assert against it.
 FIXTURE_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-FIXTURE_CLIENT="fixture-client-001"
+FIXTURE_CLIENT="fixture-tenant-001"
 FIXTURE_OUT=$(hkdf_password "$FIXTURE_KEY" "$FIXTURE_CLIENT")
 echo "  HKDF test vector (lock for Phase 1):"
 echo "    key=$FIXTURE_KEY"

@@ -1,7 +1,7 @@
 # SFTP Gateway — K8s Exec-based architecture (ADR-027)
 #
 # Accepts SFTP/SCP/rsync/FTPS connections, authenticates against the
-# platform backend, then execs sftp-server inside the client's
+# platform backend, then execs sftp-server inside the tenant's
 # file-manager pod via the K8s API. No PVC mounts needed — fully
 # multi-node compatible.
 ---
@@ -13,9 +13,9 @@ metadata:
   labels:
     app: sftp-gateway
 ---
-# Read-only ClusterRole: list/get pods across client-* namespaces to find
+# Read-only ClusterRole: list/get pods across tenant-* namespaces to find
 # file-manager pods. Does NOT grant exec — that is scoped per-namespace
-# via Roles created by the provisioner when a client namespace is set up.
+# via Roles created by the provisioner when a tenant namespace is set up.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -39,7 +39,7 @@ subjects:
     namespace: platform-system
 ---
 # Per-namespace exec Role — created automatically by the backend provisioner
-# in k8s-lifecycle.ts when ensureFileManagerRunning() is called. Each client
+# in k8s-lifecycle.ts when ensureFileManagerRunning() is called. Each tenant
 # namespace gets its own Role+RoleBinding scoping pod/exec to that namespace
 # only. No cluster-wide exec ClusterRole exists.
 ---

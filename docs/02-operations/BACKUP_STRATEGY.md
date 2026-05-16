@@ -52,7 +52,7 @@ Bundles are organized by client, containing:
 | --- | --- | --- |
 | `files`    | Daily (03:00 UTC) | Full tenant PVC contents (includes WordPress files, DB datadirs, uploads, file-manager home) |
 | `mailboxes`| Daily (04:00 UTC) | Per-mailbox exports via `stalwart-cli account export` — one `.mbox.tar.gz` per address |
-| `config`   | Daily (03:00 UTC) | All platform-DB rows with `client_id` FK (~29 tables) |
+| `config`   | Daily (03:00 UTC) | All platform-DB rows with `tenant_id` FK (~29 tables) |
 | `secrets`  | Daily (03:00 UTC) | TLS Secrets in tenant namespace, encrypted at bundle time with `PLATFORM_ENCRYPTION_KEY` |
 
 Every daily run produces **one bundle per active client**, directory-structured on the configured backup target. Retention + expiry are enforced by the storage-lifecycle scheduler.
@@ -63,7 +63,7 @@ Every daily run produces **one bundle per active client**, directory-structured 
 | --- | --- |
 | **PVC capture** | Short-lived Kubernetes Job (`snapshotTenantPVC` — see BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md) |
 | **Mailbox capture** | Job running `stalwart-cli account export` against Stalwart admin API |
-| **Platform-DB export** | `client-lifecycle/backup-db.ts` SELECT → gzipped JSON |
+| **Platform-DB export** | `tenant-lifecycle/backup-db.ts` SELECT → gzipped JSON |
 | **TLS capture** | List Secrets in tenant namespace → AES-256-GCM encrypt → write sidecar |
 | **Storage backends** | `hostpath` (default local), `s3` (S3 / S3-compatible), `ssh` (remote via SSH + `tar`/`sftp`) — all three are first-class |
 
@@ -71,7 +71,7 @@ Stalwart DKIM keys live on the Stalwart PVC AND as rows in `email_dkim_keys`. Th
 
 ### Retention Periods (Cluster Backups)
 
-Configurable per plan with per-client overrides:
+Configurable per plan with per-tenant overrides:
 
 | Plan | Default Retention | Maximum | Notes |
 | --- | --- | --- | --- |
@@ -122,7 +122,7 @@ Same four components as Tier 1 (files, mailboxes, config, secrets). Admin can om
 
 | Dimension | Value |
 |---|---|
-| Actor | Client user (panel: client-panel) |
+| Actor | Client user (panel: tenant-panel) |
 | Scope | The client's own data only |
 | Storage | Platform snapshot store, plus optional client-supplied S3 or SSH destination (config in client panel Settings → Backups) |
 | Quota | **Counts against plan** — `max_backups` (number) and `max_backup_size_gb` (bytes) on hosting plan |
@@ -144,7 +144,7 @@ Incremental / differential backup modes are **not** currently supported. See [AD
 
 **Manual (on-demand):**
 ```
-Client Panel: Backups → Create Now
+Tenant Panel: Backups → Create Now
 ├─ Choose mode (full / files-only / data export)
 ├─ Optional: custom label
 ├─ Optional: destination (platform default / client-configured S3 / SSH)
@@ -153,7 +153,7 @@ Client Panel: Backups → Create Now
 
 **Scheduled:**
 ```
-Client Panel: Backups → Schedule
+Tenant Panel: Backups → Schedule
 ├─ Frequency: daily / weekly / monthly
 ├─ Mode: full / files-only
 ├─ Retention: days, bounded by plan maximum
@@ -206,7 +206,7 @@ Per-Backup Listing:
 
 ## Backup Destinations (Storage Backends)
 
-All three initiators (system, admin, client) write to the same bundle format on any of three first-class storage backends. Destinations are configured per-initiator or per-client in `platform_settings`. See [BACKUP_COMPONENT_MODEL.md § Storage targets](../06-features/BACKUP_COMPONENT_MODEL.md#storage-targets) for the `BackupStore` interface.
+All three initiators (system, admin, client) write to the same bundle format on any of three first-class storage backends. Destinations are configured per-initiator or per-tenant in `platform_settings`. See [BACKUP_COMPONENT_MODEL.md § Storage targets](../06-features/BACKUP_COMPONENT_MODEL.md#storage-targets) for the `BackupStore` interface.
 
 | Backend | Use case | Path shape |
 |---|---|---|
@@ -234,7 +234,7 @@ For **customer-downloadable bundles** (GDPR Art. 20 export), the entire bundle i
 
 ## Tier 4: Cluster Disaster Recovery (Velero)
 
-**Not per-client. Operator-facing full-platform DR for rebuilding a cluster from zero.**
+**Not per-tenant. Operator-facing full-platform DR for rebuilding a cluster from zero.**
 
 Tier 4 runs a fundamentally different pipeline and is **not** accessible through the admin or client panel. It captures:
 
@@ -358,7 +358,7 @@ Each customer folder contains:
     {
       "email": "admin@acme.com",
       "name": "John Doe",
-      "roles": ["client_admin"]
+      "roles": ["tenant_admin"]
     }
   ],
   "backup_info": {

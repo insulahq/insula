@@ -18,9 +18,9 @@
 #     the sidecar, and the body is an opaque binary blob — pattern
 #     matching on it would be noise anyway.
 #
-# Hosts are pinned to the dev admin/client hostnames; for production
+# Hosts are pinned to the dev admin/tenant hostnames; for production
 # the reconciler will emit this IngressRoute per the configured
-# admin/client panel URLs alongside the main platform-ingress (Phase 2).
+# admin/tenant panel URLs alongside the main platform-ingress (Phase 2).
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -43,7 +43,7 @@ spec:
       kind: Rule
       priority: 100
       services:
-        - name: client-panel
+        - name: tenant-panel
           port: 80
   tls:
     secretName: platform-dev-tls

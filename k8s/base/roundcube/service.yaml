@@ -2,7 +2,7 @@
 # Roundcube Service.
 #
 # Production: ClusterIP, fronted by an Ingress (the default per-platform
-# webmail hostname like webmail.platform.com PLUS any per-client custom
+# webmail hostname like webmail.platform.com PLUS any per-tenant custom
 # hostnames provisioned via the webmail_domains backend module).
 #
 # Dev overlay: patched to NodePort 30017 so docker-compose can map host

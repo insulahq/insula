@@ -3,7 +3,7 @@
 # platform ingress listener on :2011/:443 so the URL works the same in dev
 # and prod (only the port differs).
 #
-# Browser-facing redirect target for both admin-panel and client-panel
+# Browser-facing redirect target for both admin-panel and tenant-panel
 # OIDC login buttons. The internal URL
 # dex.platform.svc.cluster.local:5556 is still used by oauth2-proxy for
 # token redemption (where the cluster-internal path is faster + skips the

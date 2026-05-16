@@ -2,7 +2,7 @@
 
 **Document Version:** 2.0
 **Last Updated:** 2026-04-09
-**Status:** ACTIVE — Phases 1 → 5 complete (backend); client-panel email UI is the next milestone
+**Status:** ACTIVE — Phases 1 → 5 complete (backend); tenant-panel email UI is the next milestone
 **Audience:** Backend, frontend, and DevOps engineers working on the platform's email subsystem
 **Architecture reference:** [ADR-026 — Email System](../07-reference/ADR-026-EMAIL-SYSTEM.md)
 
@@ -18,7 +18,7 @@
 |---|---|---|
 | `email_domains` | Per-domain email enable flag, DKIM keypair (private encrypted), max mailboxes/quota, catch-all, spam thresholds, DNS provisioning flags | Single DKIM key per domain (no rotation history) |
 | `mailboxes` | Mail accounts: `local_part`, `full_address`, bcrypt `password_hash`, quota, status, auto-reply | `used_mb` not currently populated |
-| `mailbox_access` | Sub-user → mailbox grants (`full` / `read_only`) | Used for client_user role |
+| `mailbox_access` | Sub-user → mailbox grants (`full` / `read_only`) | Used for tenant_user role |
 | `email_aliases` | `source_address` → `destination_addresses[]` forwarding | JSONB destinations |
 | `smtp_relay_configs` | Outbound relay configs (direct / mailgun / postmark) with encrypted credentials | Adapter pattern, has default-flag |
 
@@ -38,7 +38,7 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 | File | Coverage |
 |---|---|
 | `frontend/admin-panel/src/pages/EmailManagement.tsx` | Tabs: email domains list (DKIM/SPF/MX/DMARC status badges), SMTP relay CRUD + test |
-| `frontend/client-panel/src/pages/Email.tsx` | Tabs: mailboxes (create / delete / open webmail), aliases & forwarding |
+| `frontend/tenant-panel/src/pages/Email.tsx` | Tabs: mailboxes (create / delete / open webmail), aliases & forwarding |
 | `frontend/admin-panel/src/hooks/use-email.ts` (and client equivalent) | TanStack Query hooks for all email endpoints |
 
 ### 1.4 Kubernetes manifests (`k8s/base/`)
@@ -193,7 +193,7 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 - `expand` query has a hardcoded `LIMIT 50` that silently truncates large mailing lists.
 
 ### Phase 2b — Webmail SSO + Custom Webmail Domains ✅ *Complete (2026-04-08)*
-**Goal:** Click "Open webmail" on any mailbox in the client panel → land inside Roundcube authenticated as that mailbox, with no password prompt, using either the shared platform webmail hostname or a per-client custom hostname.
+**Goal:** Click "Open webmail" on any mailbox in the client panel → land inside Roundcube authenticated as that mailbox, with no password prompt, using either the shared platform webmail hostname or a per-tenant custom hostname.
 
 **Delivered:**
 - `k8s/base/roundcube/` — standalone Roundcube deployment in the `mail` namespace: Deployment, Service, PVC (1Gi RWO for SQLite sessions), ConfigMap for extra config, ConfigMap-from-file for the jwt_auth plugin source, secret.example.yaml template. Uses the official `roundcube/roundcubemail:1.6.10-apache` image; the plugin is copied into the install dir asynchronously by a wrapper script, and the startupProbe blocks Pod Ready until `/var/www/html/plugins/jwt_auth/jwt_auth.php` exists (closes the emptyDir race).
@@ -203,7 +203,7 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
   - Mirrors index.php's post-login sequence: `session->remove('temp')`, `regenerate_id(false)`, `set_auth_cookie()`, `log_login()`, `login_after` hook, then 302 → `/?_task=mail`
   - Displays the clean mailbox address in the Roundcube UI via `on_logged_in` hook (strips the `%master` Stalwart suffix)
 - `k8s/overlays/dev/roundcube/` — standalone dev overlay (independent of the auto-generated dev overlay): NodePort patch 30017, plaintext dev secrets matching the backend `JWT_SECRET` and Stalwart master password.
-- `backend/src/db/migrations/0005_webmail_domains.sql` + `backend/src/db/schema.ts` — `webmail_domains` table with unique indexes on `client_id` and `hostname`, tracking Ingress + Certificate provisioning state.
+- `backend/src/db/migrations/0005_webmail_domains.sql` + `backend/src/db/schema.ts` — `webmail_domains` table with unique indexes on `tenant_id` and `hostname`, tracking Ingress + Certificate provisioning state.
 - `backend/src/modules/webmail-domains/` — CRUD service + routes:
   - Provisions a k8s Ingress + cert-manager Certificate pointing at the shared Roundcube Service when a client adds a custom webmail hostname
   - Deletes Ingress + Certificate + TLS secret on removal, attempts all three teardown steps even if one fails (so operators aren't left with orphans)
@@ -223,17 +223,17 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 - `docker-compose.local.yml` — host port 2017 → k3s NodePort 30017
 - `scripts/local.sh` — `webmail-up`, `webmail-down`, `webmail-status`, `webmail-logs` commands
 - `scripts/smoke-test.sh` — new `WEBMAIL_E2E=1` block that provisions a client/user/mailbox chain, exercises `POST /email/webmail-token`, verifies the JWT shape and 30s lifetime, then hits the real Roundcube container through its NodePort to confirm the SSO flow ends on `/?_task=mail`
-- `frontend/client-panel/src/pages/Email.tsx` — fixed the stale `${webmailUrl}/sso.php?token=...` format (no such endpoint); now opens `result.data.webmailUrl` directly with `noopener,noreferrer`
+- `frontend/tenant-panel/src/pages/Email.tsx` — fixed the stale `${webmailUrl}/sso.php?token=...` format (no such endpoint); now opens `result.data.webmailUrl` directly with `noopener,noreferrer`
 
 **Verification:**
 - **1016 backend unit tests pass** (108 files) including 34 new webmail-domains tests and 8 extended generateWebmailToken tests
-- **Full backend + client-panel + admin-panel typecheck clean**
+- **Full backend + tenant-panel + admin-panel typecheck clean**
 - **38 smoke tests pass** against live local stack with `MAIL_E2E_SQL=1 WEBMAIL_E2E=1` — the 5 new webmail assertions prove end-to-end: `POST /email/webmail-token` returns a well-formed URL, the JWT decodes with correct claims and 30s lifetime, and a GET to the Roundcube NodePort authenticates via the jwt_auth plugin and lands on `/?_task=mail` with `roundcube_sessid` + `roundcube_sessauth` cookies set
-- Manually verified via curl: a client_user with mailbox access → webmail-token → Roundcube SSO → authenticated mail UI (title `Roundcube Webmail :: Inbox`, 36 KB HTML with `compose`, `logout`, `inbox` markers)
+- Manually verified via curl: a tenant_user with mailbox access → webmail-token → Roundcube SSO → authenticated mail UI (title `Roundcube Webmail :: Inbox`, 36 KB HTML with `compose`, `logout`, `inbox` markers)
 
 ### Phase 2c — Unified certificate strategy + derived webmail ✅ *Complete (2026-04-08)*
 
-**Architectural pivot.** Phase 2b introduced a per-client custom
+**Architectural pivot.** Phase 2b introduced a per-tenant custom
 `webmail_domains` CRUD (users pick an arbitrary hostname like
 `webmail.acme-corp.com`). On reflection this was the wrong abstraction
 for the project's scale: it added hostname validation, CRUD state
@@ -485,4 +485,4 @@ These decisions were made during Phase 1 planning. Future engineers should under
 | 2026-04-08 | **Phase 2b complete.** Webmail SSO via custom Roundcube `jwt_auth` plugin (HS256 + constant-time HMAC + dedicated `WEBMAIL_JWT_SECRET`). Custom webmail-domain CRUD shipped, then reverted in 2c.1 — see Phase 2c. |
 | 2026-04-08 | **Phase 2c complete.** Architectural pivot: webmail-domains CRUD removed in favor of derived `webmail.<domain>` Ingresses; unified certificates module routes all cert provisioning through one path; Phase 2b webmail_domains table dropped. |
 | 2026-04-08 | **Phase 3 complete.** Outbound hardening (`email-outbound` queue.outbound + queue.throttle reconciler), DKIM key rotation with mode-aware DNS publishing (`email-dkim`), per-customer sendmail compat via PVC mount (`mail-submit`), IMAPSync job runner (`mail-imapsync`), Stalwart backup CronJob, Postgres TLS production overlay, quota threshold notifications, autodiscover + MTA-STS endpoints, suspend enforcement (migrations 0009/0010/0017). |
-| 2026-04-09 | **Phase 5 (post-Phase-3 hardening) complete.** Stalwart cert reload CronJob — daily `stalwart-cli server reload-certificates` so cert-manager renewals don't break mail. `ADMIN_SECRET_PLAIN` added to the dev secret so in-pod CronJobs can authenticate. Bounce + suspend smoke tests added (G2/G7) — the suspend test caught a missing client-status filter in `stalwart.principals`, fixed via migration 0017. Effective rate-limit inspection endpoint (`GET /admin/clients/:id/mail/rate-limit` + client-scoped variant). Documented spam scoring choice (Stalwart built-in classifier, no public DNSBL — explicit fix for the Hetzner DNSBL risk in §5). Lightweight metrics proxy (`GET /admin/mail/metrics`) and queue inspection (`GET /admin/mail/queue` via `stalwart-cli queue list` exec — k8s service-proxy strips Authorization headers, so the metrics-style proxy can't carry Stalwart Basic Auth). Tighter `stalwart.principals` view via migration 0017 (suspended clients can no longer pass AUTH). 1103/1103 backend tests, 33/33 smoke with `MAIL_E2E_SQL=1`. |
+| 2026-04-09 | **Phase 5 (post-Phase-3 hardening) complete.** Stalwart cert reload CronJob — daily `stalwart-cli server reload-certificates` so cert-manager renewals don't break mail. `ADMIN_SECRET_PLAIN` added to the dev secret so in-pod CronJobs can authenticate. Bounce + suspend smoke tests added (G2/G7) — the suspend test caught a missing client-status filter in `stalwart.principals`, fixed via migration 0017. Effective rate-limit inspection endpoint (`GET /admin/tenants/:id/mail/rate-limit` + client-scoped variant). Documented spam scoring choice (Stalwart built-in classifier, no public DNSBL — explicit fix for the Hetzner DNSBL risk in §5). Lightweight metrics proxy (`GET /admin/mail/metrics`) and queue inspection (`GET /admin/mail/queue` via `stalwart-cli queue list` exec — k8s service-proxy strips Authorization headers, so the metrics-style proxy can't carry Stalwart Basic Auth). Tighter `stalwart.principals` view via migration 0017 (suspended clients can no longer pass AUTH). 1103/1103 backend tests, 33/33 smoke with `MAIL_E2E_SQL=1`. |

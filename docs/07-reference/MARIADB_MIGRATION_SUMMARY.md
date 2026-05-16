@@ -79,7 +79,7 @@ ORDER BY login_count DESC;
 
 ```sql
 WITH recent_events AS (
-  SELECT * FROM audit_logs WHERE client_id = 'client-123'
+  SELECT * FROM audit_logs WHERE tenant_id = 'client-123'
 )
 SELECT re.*, u.email as actor_email
 FROM recent_events re

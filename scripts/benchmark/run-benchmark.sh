@@ -88,7 +88,7 @@ echo ""
 
 benchmark_endpoint "GET /admin/status"      "/api/v1/admin/status"
 benchmark_endpoint "GET /admin/dashboard"   "/api/v1/admin/dashboard"
-benchmark_endpoint "GET /clients"           "/api/v1/clients?limit=20"
+benchmark_endpoint "GET /clients"           "/api/v1/tenants?limit=20"
 benchmark_endpoint "GET /plans (cached)"    "/api/v1/plans"
 benchmark_endpoint "GET /regions (cached)"  "/api/v1/regions"
 benchmark_endpoint "GET /images (cached)"   "/api/v1/container-images"

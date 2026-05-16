@@ -14,7 +14,7 @@
 #         - HA    tier client → soft pin to W (preferred affinity), 2
 #           Longhorn replicas, scheduler may place pods elsewhere.
 #        For HA we still verify the tenant Deployment lands on W via the
-#        worker_node_name pin so the drain has something concrete to
+#        node_name pin so the drain has something concrete to
 #        move.
 #     3. Deploy one nginx-php workload per tenant + start FM (so a real
 #        attached volume exists on W).
@@ -114,7 +114,7 @@ cleanup() {
     log "  uncordoned $WORKER_NODE + canHost=true"
   fi
   for cid in "$LOCAL_CID" "$HA_CID"; do
-    [[ -n "$cid" ]] && curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" \
+    [[ -n "$cid" ]] && curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
       -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
   done
 }
@@ -189,7 +189,7 @@ except Exception:
 fi
 
 # ─── Helper: provision client + deploy + start FM, all pinned to W ──
-# Uses worker_node_name on create so the orchestrator's first-deploy
+# Uses node_name on create so the orchestrator's first-deploy
 # pin lands on W deterministically (matches the UI "advanced → pin to
 # node" flow).
 provision_on_worker() {
@@ -198,12 +198,12 @@ provision_on_worker() {
   local stamp; stamp=$(date +%s%N)
   local resp cid
   resp=$(api POST "/clients" "{
-    \"company_name\":\"$company\",
-    \"company_email\":\"drain-$tier-$stamp@phoenix-host.net\",
+    \"name\":\"$company\",
+    \"primary_email\":\"drain-$tier-$stamp@phoenix-host.net\",
     \"plan_id\":\"$PLAN_ID\",
     \"region_id\":\"$REGION_ID\",
     \"storage_tier\":\"$tier\",
-    \"worker_node_name\":\"$WORKER_NODE\"
+    \"node_name\":\"$WORKER_NODE\"
   }")
   cid=$(echo "$resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null) \
     || { echo "create failed: $resp" >&2; return 1; }
@@ -291,7 +291,7 @@ LOCAL_LAST_REPL=$(echo "$IMPACT" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
 for c in d['pinnedClients']:
-    if c['clientId'] == '$LOCAL_CID':
+    if c['tenantId'] == '$LOCAL_CID':
         for p in c['pvcs']:
             if p['volumeName'] == '$LOCAL_PV': print(p['isLastReplica']); break
         break
@@ -300,7 +300,7 @@ HA_LAST_REPL=$(echo "$IMPACT" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
 for c in d['pinnedClients']:
-    if c['clientId'] == '$HA_CID':
+    if c['tenantId'] == '$HA_CID':
         for p in c['pvcs']:
             if p['volumeName'] == '$HA_PV': print(p['isLastReplica']); break
         break
@@ -312,7 +312,7 @@ for c in d['pinnedClients']:
 LOCAL_CUR_PIN=$(echo "$IMPACT" | python3 -c "
 import json, sys
 for c in json.load(sys.stdin)['data']['pinnedClients']:
-    if c['clientId'] == '$LOCAL_CID': print(c['currentWorkerNodeName']); break
+    if c['tenantId'] == '$LOCAL_CID': print(c['currentWorkerNodeName']); break
 " 2>/dev/null)
 [[ "$LOCAL_CUR_PIN" == "$WORKER_NODE" ]] && ok "LOCAL client's currentWorkerNodeName=$LOCAL_CUR_PIN" \
   || fail "LOCAL currentWorkerNodeName=$LOCAL_CUR_PIN (expected $WORKER_NODE)"
@@ -446,18 +446,18 @@ else
 fi
 
 # ─── Client-level pin: DB row reflects new state ─────────────────────
-# The drain endpoint now updates clients.worker_node_name in the
+# The drain endpoint now updates clients.node_name in the
 # platform DB (the source of truth for "this client is pinned to
 # node X") so subsequent deploys / orchestrator reconciles inherit
 # the new pin. With auto-fill (target=""), both clients should land
-# on worker_node_name=null.
-log "── client-level pin propagation ──"
+# on node_name=null.
+log "── tenant-level pin propagation ──"
 LOCAL_DB_PIN=$(api GET "/clients/$LOCAL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
 HA_DB_PIN=$(api GET "/clients/$HA_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
-[[ "$LOCAL_DB_PIN" == "NULL" ]] && ok "LOCAL clients.worker_node_name cleared (auto-pin propagated to DB)" \
-  || fail "LOCAL clients.worker_node_name=$LOCAL_DB_PIN (expected NULL after auto re-pin)"
-[[ "$HA_DB_PIN"    == "NULL" ]] && ok "HA clients.worker_node_name cleared" \
-  || fail "HA clients.worker_node_name=$HA_DB_PIN (expected NULL after auto re-pin)"
+[[ "$LOCAL_DB_PIN" == "NULL" ]] && ok "LOCAL clients.node_name cleared (auto-pin propagated to DB)" \
+  || fail "LOCAL clients.node_name=$LOCAL_DB_PIN (expected NULL after auto re-pin)"
+[[ "$HA_DB_PIN"    == "NULL" ]] && ok "HA clients.node_name cleared" \
+  || fail "HA clients.node_name=$HA_DB_PIN (expected NULL after auto re-pin)"
 
 # ─── HTTP probe — Service still answers after drain ──────────────────
 log "── HTTP smoke through tenant Service (post-drain) ──"

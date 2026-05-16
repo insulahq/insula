@@ -1461,7 +1461,7 @@ Body: Standard GitHub/GitLab webhook payload
 CREATE TABLE git_deploy_configs (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   domain_id VARCHAR(36) NOT NULL UNIQUE,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   repository_url VARCHAR(500) NOT NULL,
   branch VARCHAR(255) DEFAULT 'main',
   deploy_path VARCHAR(500) DEFAULT 'public_html/',
@@ -1474,18 +1474,18 @@ CREATE TABLE git_deploy_configs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_webhook_secret (webhook_secret),
   
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Deployment history log
 CREATE TABLE deployment_history (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   domain_id VARCHAR(36) NOT NULL,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   deploy_method ENUM('git_pull', 'sftp', 'filebrowser', 'api') NOT NULL,
   git_commit_sha VARCHAR(40),
   git_branch VARCHAR(255),
@@ -1498,12 +1498,12 @@ CREATE TABLE deployment_history (
   completed_at TIMESTAMP,
   
   KEY idx_domain_id (domain_id),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_status (status),
   KEY idx_created_at (created_at),
   
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
@@ -2068,15 +2068,15 @@ Additionally, the platform already documents zero-downtime web server switching 
 
 ### Context
 
-The original architecture used a **hybrid workload model**: Starter-plan clients shared NGINX+PHP-FPM pods (20-50 clients per pod) with application-level isolation, while Business/Premium clients got dedicated pods with full namespace isolation. Database services (MariaDB, PostgreSQL, Redis) were shared instances with per-client database/user isolation and ProxySQL connection pooling.
+The original architecture used a **hybrid workload model**: Starter-plan clients shared NGINX+PHP-FPM pods (20-50 clients per pod) with application-level isolation, while Business/Premium clients got dedicated pods with full namespace isolation. Database services (MariaDB, PostgreSQL, Redis) were shared instances with per-tenant database/user isolation and ProxySQL connection pooling.
 
 This hybrid model optimized for density but introduced significant complexity:
 
 1. **Two provisioning paths** — shared pod assignment vs. dedicated namespace creation
-2. **Application-level isolation** for shared pods — PHP-FPM `open_basedir`, `chroot`, `disable_functions`, POSIX permissions, per-client FPM pools, ConfigMap-based VirtualHost management
+2. **Application-level isolation** for shared pods — PHP-FPM `open_basedir`, `chroot`, `disable_functions`, POSIX permissions, per-tenant FPM pools, ConfigMap-based VirtualHost management
 3. **Explicit security risk acceptance** — a kernel-level container escape in a shared pod would expose all co-tenant clients
 4. **ProxySQL connection pooling** — 10:1 multiplexing layer between application pods and shared MariaDB
-5. **Redis ACL management** — per-client key prefix restrictions on shared Redis
+5. **Redis ACL management** — per-tenant key prefix restrictions on shared Redis
 6. **Complex plan upgrade path** — migrating a client from a shared pod to a dedicated pod required multi-step orchestration (provision new pod → remount PV → remove VirtualHost → update Ingress)
 7. **Shared pod rebalancing** — monitoring client density, migrating clients between pools at capacity
 8. **Two namespace strategies** — Starter clients in shared `hosting` namespace vs. Business/Premium in `client-{id}` namespaces
@@ -2119,7 +2119,7 @@ Additionally, real-world client data shows that **~90% of clients (45/50) do not
 - Simpler monitoring (per-namespace metrics)
 
 **Negative:**
-- Higher per-client resource consumption (~128Mi per web pod vs. near-zero marginal cost in shared pod)
+- Higher per-tenant resource consumption (~128Mi per web pod vs. near-zero marginal cost in shared pod)
 - Starter plan marginal cost increases (dedicated pod vs. shared resource slice)
 - More Kubernetes objects to manage (50 namespaces × ~8 objects each vs. 1 shared namespace)
 - Database is no longer "included" in all plans — clients who assumed they'd get a database may need education
@@ -2139,7 +2139,7 @@ Additionally, real-world client data shows that **~90% of clients (45/50) do not
 | `INFRASTRUCTURE_SIZING.md` | Remove `hosting` namespace; all clients get `client-{id}`; revise resource budget and cost estimates |
 | `SHARED_POD_IMPLEMENTATION.md` | Mark as **SUPERSEDED** by this ADR (retain as historical reference) |
 | `STORAGE_DATABASES.md` | Simplify — remove shared DB user hierarchy, ProxySQL, Redis ACL sections |
-| `DATABASE_ACCESS_CONTROL.md` | Simplify — per-client dedicated DB model replaces shared privilege matrix |
+| `DATABASE_ACCESS_CONTROL.md` | Simplify — per-tenant dedicated DB model replaces shared privilege matrix |
 
 ### Alternatives Considered
 
@@ -2152,7 +2152,7 @@ Additionally, real-world client data shows that **~90% of clients (45/50) do not
 ### Related ADRs
 
 - **ADR-001:** Multi-Tenancy via Kubernetes Namespaces — now applies uniformly to all clients, not just Business/Premium
-- **ADR-003:** Database Selection — MariaDB remains the primary database engine, but deployment model changes from shared instance to per-client StatefulSet
+- **ADR-003:** Database Selection — MariaDB remains the primary database engine, but deployment model changes from shared instance to per-tenant StatefulSet
 - **ADR-023:** NGINX Default, Apache Optional — still applies; shared pod references in ADR-023 consequences are superseded
 
 ---

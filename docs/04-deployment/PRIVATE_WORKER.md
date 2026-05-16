@@ -4,7 +4,7 @@ Per-client tunnel agents that let a client expose a service running outside the 
 
 ## What it is
 
-A **single Docker container** the client runs anywhere they have outbound HTTPS, plus a **per-client cluster-side proxy pod** that terminates the tunnel inside the client's namespace and exposes the remote service via a normal `Service` that ingress routes can target.
+A **single Docker container** the client runs anywhere they have outbound HTTPS, plus a **per-tenant cluster-side proxy pod** that terminates the tunnel inside the client's namespace and exposes the remote service via a normal `Service` that ingress routes can target.
 
 Not a Kubernetes node. Not a catalog entry. A standalone platform feature, sibling to `sftp-users`, `domains`, `mailboxes`.
 
@@ -130,7 +130,7 @@ The earlier two-token model (single-use enrollment + persistent auth) assumed th
 | Storage at rest | Plaintext in DB (DB is encrypted at rest); SHA-256 hash also stored on each `private_workers` row for forward compat with future per-worker auth via frps webhook plugin |
 | Display | Once, on creation; never re-shown |
 | Per-worker revocation | DB row marked `revoked` → reconciler removes the worker's port from frps `allowPorts` → frpc proxy registration is rejected within ~30s |
-| Per-worker rotation | **v1 limitation**: rotates the shared per-client secret, invalidating every sibling worker. UI shows a warning before confirming. v2 will add per-worker tokens via frps webhook plugin. |
+| Per-worker rotation | **v1 limitation**: rotates the shared per-tenant secret, invalidating every sibling worker. UI shows a warning before confirming. v2 will add per-worker tokens via frps webhook plugin. |
 
 ### Defense in depth
 
@@ -157,7 +157,7 @@ CREATE TYPE private_worker_status AS ENUM ('pending','active','revoked','suspend
 
 CREATE TABLE private_workers (
   id                 varchar(36) PRIMARY KEY,
-  client_id          varchar(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  tenant_id          varchar(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   name               varchar(120) NOT NULL,
   slug               varchar(60) NOT NULL UNIQUE,
   worker_token_hash  varchar(64) NOT NULL,           -- SHA-256 of secret portion
@@ -174,8 +174,8 @@ CREATE TABLE private_workers (
   revoked_by         varchar(36),
   updated_at         timestamp NOT NULL DEFAULT now()
 );
-CREATE INDEX private_workers_client_id_idx ON private_workers(client_id);
-CREATE UNIQUE INDEX private_workers_client_name_uq ON private_workers(client_id, name);
+CREATE INDEX private_workers_client_id_idx ON private_workers(tenant_id);
+CREATE UNIQUE INDEX private_workers_client_name_uq ON private_workers(tenant_id, name);
 
 CREATE TABLE private_worker_audit (
   id                 bigserial PRIMARY KEY,
@@ -213,19 +213,19 @@ ALTER TABLE ingress_routes
 | File | Responsibility |
 |---|---|
 | `service.ts` | `createPrivateWorker`, `listPrivateWorkers`, `getPrivateWorker`, `rotatePrivateWorker`, `revokePrivateWorker`, `freezePrivateWorker`. Token mint, hash (SHA-256), audit-log writes. Throws `ApiError` on validation failures. |
-| `routes.ts` | `/api/v1/clients/:clientId/private-workers` — CRUD + rotate + revoke + freeze. Auth via existing `authenticate + requireClientRoleByMethod + requireClientAccess` chain. |
+| `routes.ts` | `/api/v1/tenants/:clientId/private-workers` — CRUD + rotate + revoke + freeze. Auth via existing `authenticate + requireClientRoleByMethod + requireClientAccess` chain. |
 | `internal-routes.ts` | `/api/v1/internal/private-workers/connect-event` — frps server posts connect/disconnect events here for telemetry (`last_seen_at`, `last_used_ip`, audit). Internal auth shared-secret. |
-| `reconciler.ts` | Per-client K8s materialisation. Idempotent. Ref-counted on `private_workers` rows for that client. Creates: ConfigMap (frps.toml), Secret (per-worker tokens), ClusterIP Service per worker, Deployment for the frps pod, ExternalName Service in `platform-system`, per-client Ingress with path rule. Mirrors `deployment-network-access/reconciler.ts` upsert helpers. |
+| `reconciler.ts` | Per-client K8s materialisation. Idempotent. Ref-counted on `private_workers` rows for that client. Creates: ConfigMap (frps.toml), Secret (per-worker tokens), ClusterIP Service per worker, Deployment for the frps pod, ExternalName Service in `platform-system`, per-tenant Ingress with path rule. Mirrors `deployment-network-access/reconciler.ts` upsert helpers. |
 
 ### Lifecycle hook
 
-`backend/src/modules/client-lifecycle/hooks/db-private-workers.ts`:
+`backend/src/modules/tenant-lifecycle/hooks/db-private-workers.ts`:
 
 | Transition | Action |
 |---|---|
 | `suspended` | Set all rows `status='suspended'`. Reconciler scales frps Deployment to 0 replicas. Existing connection drops; agent retries fail. |
 | `restored` | Set rows back to `status='active'`. Reconciler scales replicas to 1. |
-| `archived` | Tear down per-client Ingress + ExternalName + frps Deployment. Rows kept for restore. |
+| `archived` | Tear down per-tenant Ingress + ExternalName + frps Deployment. Rows kept for restore. |
 | `deleted` | Hard-delete `private_workers` rows. Cluster cleanup via `registerClusterScopedRefsCleanupHook` extension. |
 
 ### Cluster-side artefacts
@@ -266,7 +266,7 @@ Image runs as non-root (uid 1000), no persistent volume needed, exposes `:7400` 
 
 ### Frontend
 
-**Client panel** — `frontend/client-panel/src/pages/PrivateWorkers.tsx`:
+**Client panel** — `frontend/tenant-panel/src/pages/PrivateWorkers.tsx`:
 - Table list (name, slug, status, last seen, exposed port)
 - Create modal (name + exposed port + optional description)
 - One-time token modal (token shown once + "Copy docker-compose snippet" + "Copy `docker run` command")
@@ -299,10 +299,10 @@ The platform-api itself has no new CI flow — backend changes ride the existing
 Phase 1 — provision
   1. Login as admin
   2. Create client, wait for namespace ready
-  3. POST /api/v1/clients/:cid/private-workers {name, exposed_port}
+  3. POST /api/v1/tenants/:cid/private-workers {name, exposed_port}
   4. Capture token from response (one-time)
   5. Verify reconciler created: ConfigMap, Secret, Deployment, Service in client ns
-  6. Verify per-client Ingress + ExternalName in platform-system
+  6. Verify per-tenant Ingress + ExternalName in platform-system
 
 Phase 2 — agent dial-in
   7. Spawn local docker container with PRIVATE_WORKER_TOKEN env (sample echo HTTP server bundled)
@@ -316,7 +316,7 @@ Phase 3 — user-visible traffic
   13. openssl s_client -connect pw-{slug}.${TENANT_BASE}:443 → assert cert CN matches host
 
 Phase 4 — revoke
-  14. POST /api/v1/clients/:cid/private-workers/:wid/revoke
+  14. POST /api/v1/tenants/:cid/private-workers/:wid/revoke
   15. Wait until home agent's connection drops (poll docker logs for disconnect)
   16. curl https://pw-{slug}.${TENANT_BASE}/healthz → assert 502 Bad Gateway
 
@@ -398,6 +398,6 @@ Multiple workers per client share the same frps pod via multi-proxy frpc/frps co
 
 - [ADR-022 — DNS, NetBird, IAM are external](../07-reference/ARCHITECTURE_DECISION_RECORDS.md)
 - [ADR-025 / ADR-026 — Catalog scope](../07-reference/ARCHITECTURE_DECISION_RECORDS.md) (private worker is deliberately *not* a catalog entry)
-- [ADR-033 — Client lifecycle hook registry](../07-reference/ADR-033-client-lifecycle-hook-registry.md)
+- [ADR-033 — Client lifecycle hook registry](../07-reference/ADR-033-tenant-lifecycle-hook-registry.md)
 - [Cluster firewall](./CLUSTER_NETWORK.md) — peer-IP allowlist; tunnel-server pod inherits client-namespace policy
 - [Network access modes](./NETWORK_ACCESS.md) — orthogonal to private worker; composes via `target_type` polymorphism

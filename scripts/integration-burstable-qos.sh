@@ -75,23 +75,23 @@ fi
 TENANT_NAME="qos-test-$(date +%s)"
 echo "→ Creating test tenant '$TENANT_NAME' with 2-CPU plan..."
 
-CLIENT_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/clients" \
+CLIENT_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/tenants" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{\"company_name\":\"$TENANT_NAME\",\"email\":\"$TENANT_NAME@example.test\",\"cpu_limit\":2,\"memory_limit\":4}")
-CLIENT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id')
+  -d "{\"name\":\"$TENANT_NAME\",\"email\":\"$TENANT_NAME@example.test\",\"cpu_limit\":2,\"memory_limit\":4}")
+TENANT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id')
 NAMESPACE=$(echo "$CLIENT_RESP" | jq -r '.data.kubernetesNamespace')
 
-if [[ -z "$CLIENT_ID" || "$CLIENT_ID" == "null" ]]; then
+if [[ -z "$TENANT_ID" || "$TENANT_ID" == "null" ]]; then
   echo "ERROR: client create failed: $CLIENT_RESP" >&2
   exit 1
 fi
-echo "  Client ID: $CLIENT_ID, namespace: $NAMESPACE"
+echo "  Client ID: $TENANT_ID, namespace: $NAMESPACE"
 
 cleanup() {
-  if [[ -n "$CLIENT_ID" && "$CLIENT_ID" != "null" ]]; then
-    echo "→ Cleanup: deleting client $CLIENT_ID"
-    curl -fsSL -X DELETE "$ADMIN_HOST/api/v1/clients/$CLIENT_ID" \
+  if [[ -n "$TENANT_ID" && "$TENANT_ID" != "null" ]]; then
+    echo "→ Cleanup: deleting client $TENANT_ID"
+    curl -fsSL -X DELETE "$ADMIN_HOST/api/v1/tenants/$TENANT_ID" \
       -H "Authorization: Bearer $TOKEN" >/dev/null || true
   fi
 }
@@ -143,7 +143,7 @@ if [[ -z "$NC_ID" ]]; then
   fail "Neither Nextcloud nor WordPress in catalog — can't test multi-component"
 else
   echo "→ Deploying multi-component app with cpu=1 (was failing before ADR-037)..."
-  DEPLOY_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/clients/$CLIENT_ID/deployments" \
+  DEPLOY_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments" \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"catalog_entry_id\":\"$NC_ID\",\"name\":\"qos-app\",\"cpu_request\":\"1\",\"memory_request\":\"1Gi\"}")
@@ -191,7 +191,7 @@ else
 
     # ─── Assertion 6: /resource-breakdown endpoint ────────────────────────
     echo "→ Verifying /resource-breakdown API..."
-    BREAKDOWN=$(curl -fsSL "$ADMIN_HOST/api/v1/clients/$CLIENT_ID/deployments/$DEP_ID/resource-breakdown" \
+    BREAKDOWN=$(curl -fsSL "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments/$DEP_ID/resource-breakdown" \
       -H "Authorization: Bearer $TOKEN")
     COMP_COUNT=$(echo "$BREAKDOWN" | jq -r '.data.components | length')
     QOS_CPU=$(echo "$BREAKDOWN" | jq -r '.data.qosModel.cpu')
@@ -216,7 +216,7 @@ if [[ -n "$DEP_ID" ]]; then
   echo "→ Asserting plan cap rejects over-allocation..."
   # Try a deploy that exceeds the plan — cpu_request = 5 (plan is 2).
   if [[ -n "$NC_ID" ]]; then
-    OVER_RESP=$(curl -sS -X POST "$ADMIN_HOST/api/v1/clients/$CLIENT_ID/deployments" \
+    OVER_RESP=$(curl -sS -X POST "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments" \
       -H "Authorization: Bearer $TOKEN" \
       -H 'Content-Type: application/json' \
       -d "{\"catalog_entry_id\":\"$NC_ID\",\"name\":\"qos-over\",\"cpu_request\":\"5\",\"memory_request\":\"1Gi\"}" \

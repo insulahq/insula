@@ -99,7 +99,7 @@ and retention will GC it after the in-flight TTL.
 |---|---|
 | `backup_jobs` | One row per bundle. Status (`pending`/`running`/`completed`/`failed`/`expired`), initiator, system_trigger, target_id, expires_at. Source of truth for the admin UI list. |
 | `backup_components` | One row per component-artifact. Status, sha256, sizeBytes, started_at, finished_at, error. Lets the orchestrator retry a single component without redoing the bundle. |
-| `backups` | **Read-only.** Existing rows preserved for the placeholder client-panel page; no new writes. Removed in a future migration. |
+| `backups` | **Read-only.** Existing rows preserved for the placeholder tenant-panel page; no new writes. Removed in a future migration. |
 | `client_backup_schedules` | Per-client cron + retention bounded by `hosting_plans.max_backup_retention_days`. |
 
 **Rationale.** Component-level rows let Phase 3 retry stuck mailbox exports

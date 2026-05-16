@@ -307,8 +307,8 @@ These examples illustrate how application-level conflict resolution works when t
 
 **What happens:**
 ```
-Frankfurt write:  { client_id: "acme", plan: "premium", updated_at: 14:00:01.001 }
-Strasbourg write: { client_id: "acme", cpu_quota: 4000m, updated_at: 14:00:01.003 }
+Frankfurt write:  { tenant_id: "acme", plan: "premium", updated_at: 14:00:01.001 }
+Strasbourg write: { tenant_id: "acme", cpu_quota: 4000m, updated_at: 14:00:01.003 }
                   (Business-plan quota — stale, based on pre-upgrade plan)
 ```
 
@@ -330,9 +330,9 @@ The Management API conflict resolver, on detecting the concurrent writes:
 
 **What happens:**
 ```
-Frankfurt write:  { client_id: "acme", storage_quota_gb: 150, updated_at: 14:05:10.010 }
+Frankfurt write:  { tenant_id: "acme", storage_quota_gb: 150, updated_at: 14:05:10.010 }
                   (manual admin override — intentional)
-Strasbourg write: { client_id: "acme", storage_quota_gb: 100, updated_at: 14:05:10.015 }
+Strasbourg write: { tenant_id: "acme", storage_quota_gb: 100, updated_at: 14:05:10.015 }
                   (background sync — automated, lower timestamp)
 ```
 
@@ -353,8 +353,8 @@ The conflict resolver:
 
 **What happens:**
 ```
-Frankfurt write:  { client_id: "acme", status: "deleted", deleted_at: 14:10:00 }
-Strasbourg write: { client_id: "acme", subscription_expires_at: "2027-03-08" }
+Frankfurt write:  { tenant_id: "acme", status: "deleted", deleted_at: 14:10:00 }
+Strasbourg write: { tenant_id: "acme", subscription_expires_at: "2027-03-08" }
                   (update on a client about to be deleted)
 ```
 

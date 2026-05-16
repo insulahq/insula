@@ -6,7 +6,7 @@
 
 ## Context
 
-Tenant Bundles (per-client off-site backups, see ADR-028 / ADR-032)
+Tenant Bundles (per-tenant off-site backups, see ADR-028 / ADR-032)
 are forward-only: every component (`files`, `mailboxes`, `config`,
 `secrets`) hard-codes which DB tables, PVCs, Secrets, and external
 resources it captures. When a developer extends tenant-facing
@@ -46,7 +46,7 @@ Tables and Secret types are matched by exact value; PVCs accept a
 
 Two pre-merge audits, both wired into `Backend CI`:
 
-- **schema-audit** — fails when a new `client_id`-FK'd table lands
+- **schema-audit** — fails when a new `tenant_id`-FK'd table lands
   in `db/schema.ts` without being added to `CONFIG_DUMP_TABLES` or
   `CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES`.
 - **resource-audit** — fails when a new
@@ -59,7 +59,7 @@ Both audits run on every PR.
 ### 3. Runtime drift report (`GET /admin/tenant-bundles/coverage`)
 
 Returns the static registry plus a runtime diff: every
-`information_schema` table with a `client_id` column that no component
+`information_schema` table with a `tenant_id` column that no component
 claims surfaces as an `orphanTable` in the response. Operator UI
 (`/tenant-backup?tab=coverage`) renders this with a red callout.
 

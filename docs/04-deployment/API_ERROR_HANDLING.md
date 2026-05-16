@@ -31,7 +31,7 @@ All error responses must follow this structure:
     "request_id": "req-abc-12345",
     "details": {
       "workload_id": "workload-123",
-      "client_id": "client-456"
+      "tenant_id": "client-456"
     }
   }
 }
@@ -124,7 +124,7 @@ All error responses must follow this structure:
 
 | Code | HTTP | Message | Remediation |
 | --- | --- | --- | --- |
-| `CLIENT_NOT_FOUND` | 404 | Client '{client_id}' not found | Verify client_id |
+| `CLIENT_NOT_FOUND` | 404 | Client '{tenant_id}' not found | Verify tenant_id |
 | `WORKLOAD_NOT_FOUND` | 404 | Workload '{workload_id}' not found | Verify workload_id exists in your client |
 | `DOMAIN_NOT_FOUND` | 404 | Domain '{domain_name}' not found | Verify domain exists |
 | `DATABASE_NOT_FOUND` | 404 | Database '{database_name}' not found | Verify database exists |
@@ -229,8 +229,8 @@ POST /api/clients HTTP/1.1
 Content-Type: application/json
 
 {
-  "company_name": "Acme Corp",
-  "company_email": "invalid-email"
+  "name": "Acme Corp",
+  "primary_email": "invalid-email"
 }
 ```
 
@@ -246,7 +246,7 @@ HTTP/1.1 400 Bad Request
     "timestamp": "2026-01-15T10:30:45.123Z",
     "request_id": "req-12345-abcde",
     "details": {
-      "field": "company_email",
+      "field": "primary_email",
       "value": "invalid-email"
     },
     "remediation": "Provide valid email address (e.g., admin@example.com)"
@@ -299,7 +299,7 @@ HTTP/1.1 404 Not Found
     "request_id": "req-12345-abcde",
     "details": {
       "workload_id": "invalid-id",
-      "client_id": "client-123"
+      "tenant_id": "client-123"
     },
     "remediation": "Verify workload_id exists in your client"
   }
@@ -436,7 +436,7 @@ app.setErrorHandler((error, request, reply) => {
 app.get('/api/workloads/:id', async (request, reply) => {
   const workload = await db.workloads.findOne({
     id: request.params.id,
-    client_id: request.user.tenant_id
+    tenant_id: request.user.tenant_id
   });
 
   if (!workload) {
@@ -591,8 +591,8 @@ describe('Error Handling', () => {
       .post('/api/clients')
       .set('Authorization', `Bearer ${validToken}`)
       .send({
-        company_name: 'Test',
-        company_email: 'invalid-email'
+        name: 'Test',
+        primary_email: 'invalid-email'
       });
 
     expect(res.status).toBe(400);

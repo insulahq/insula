@@ -325,7 +325,7 @@ async function createProtectedDirectory(customerId, dirName, users) {
 ```sql
 CREATE TABLE protected_directories (
   id VARCHAR(36) PRIMARY KEY,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   domain_id VARCHAR(36) NOT NULL,
   path VARCHAR(255) NOT NULL,           -- /admin/, /staging/, etc.
   realm VARCHAR(100) NOT NULL,          -- "Admin Panel", "Staging", etc.
@@ -334,9 +334,9 @@ CREATE TABLE protected_directories (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  UNIQUE KEY unique_path (client_id, domain_id, path)
+  UNIQUE KEY unique_path (tenant_id, domain_id, path)
 );
 ```
 
@@ -386,7 +386,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 1. Create Protected Directory
 
-**POST** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories`
+**POST** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories`
 
 **Description:** Create a new password-protected directory
 
@@ -408,7 +408,7 @@ CREATE TABLE protected_directory_audit (
   "success": true,
   "data": {
     "id": "protdir_001",
-    "client_id": "client_001",
+    "tenant_id": "client_001",
     "domain_id": "domain_042",
     "path": "/admin/",
     "realm": "Admin Panel",
@@ -432,7 +432,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 2. List Protected Directories
 
-**GET** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories`
+**GET** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories`
 
 **Query Parameters:**
 - `status` (optional) — `active`, `disabled`, `deleted`
@@ -469,7 +469,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 3. Get Protected Directory Details
 
-**GET** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}`
+**GET** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}`
 
 **Response:**
 ```json
@@ -510,7 +510,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 4. Update Protected Directory
 
-**PATCH** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}`
+**PATCH** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}`
 
 **Request Body:**
 ```json
@@ -550,7 +550,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 5. Delete Protected Directory
 
-**DELETE** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}`
+**DELETE** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}`
 
 **Query Parameters:**
 - `force` (optional, default: false) — Force delete even if active
@@ -577,7 +577,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 6. Create User
 
-**POST** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
+**POST** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
 
 **Request Body:**
 ```json
@@ -623,7 +623,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 7. List Users (Protected Directory)
 
-**GET** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
+**GET** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
 
 **Query Parameters:**
 - `include_expired` (default: false) — Include expired users
@@ -653,7 +653,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 8. Change Password
 
-**POST** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/change-password`
+**POST** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/change-password`
 
 **Request Body:**
 ```json
@@ -683,7 +683,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 9. Disable User
 
-**POST** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/disable`
+**POST** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/disable`
 
 **Response:**
 ```json
@@ -706,7 +706,7 @@ CREATE TABLE protected_directory_audit (
 
 #### 10. Delete User
 
-**DELETE** `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}`
+**DELETE** `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}`
 
 **Response:**
 ```json
@@ -726,11 +726,11 @@ CREATE TABLE protected_directory_audit (
 
 ---
 
-## Client Panel Features
+## Tenant Panel Features
 
 ### Protected Directories Section
 
-New section in Client Panel: **Sites & Hosting → Protected Directories**
+New section in Tenant Panel: **Sites & Hosting → Protected Directories**
 
 #### Features List
 
@@ -1062,7 +1062,7 @@ test('expired users are excluded from htpasswd', async () => {
 
 ```bash
 # 1. Create protected directory
-curl -X POST /api/v1/clients/client_001/domains/domain_042/protected-directories \
+curl -X POST /api/v1/tenants/client_001/domains/domain_042/protected-directories \
   -d '{"path": "/admin/", "realm": "Admin"}'
 
 # 2. Verify NGINX config updated
@@ -1119,7 +1119,7 @@ ab -n 10000 -c 100 -A user_500:pass_500 http://acme.com/admin/
 
 ```
 # Prometheus metrics
-protected_directories_count{client_id, status}       # Total count
+protected_directories_count{tenant_id, status}       # Total count
 protected_directory_users_count{protected_dir_id}   # Users per dir
 protected_directory_auth_failures_total             # Failed login attempts
 protected_directory_auth_latency_ms                 # Auth check latency

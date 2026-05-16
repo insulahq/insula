@@ -554,7 +554,7 @@ curl -X PATCH $API/api/v1/admin/webmail-settings \
 Per-customer override:
 
 ```bash
-curl -X PATCH $API/api/v1/clients/$CLIENT_ID \
+curl -X PATCH $API/api/v1/tenants/$CLIENT_ID \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"email_send_rate_limit": 5000}'
@@ -570,7 +570,7 @@ of their `email_send_rate_limit` value. See §7.4.
 ### 7.4 Suspend a customer's mail access (Phase 3.C.3)
 
 Suspending a client (via the admin panel or via
-`PATCH /api/v1/clients/:id {"status": "suspended"}`) blocks **all**
+`PATCH /api/v1/tenants/:id {"status": "suspended"}`) blocks **all**
 mail access paths while keeping data intact:
 
 - IMAP / POP / SMTP-auth login fails (stalwart.principals view
@@ -582,7 +582,7 @@ mail access paths while keeping data intact:
 To unsuspend:
 
 ```bash
-curl -X PATCH $API/api/v1/clients/$CLIENT_ID \
+curl -X PATCH $API/api/v1/tenants/$CLIENT_ID \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "active"}'

@@ -284,7 +284,7 @@ CREATE TABLE composer_vulnerabilities (
 
 ### Composer Management Section
 
-**Location:** Client Panel > Website & Services > Composer
+**Location:** Tenant Panel > Website & Services > Composer
 
 #### Dashboard View
 

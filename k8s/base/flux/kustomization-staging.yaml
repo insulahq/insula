@@ -37,6 +37,6 @@ spec:
       namespace: platform
     - apiVersion: apps/v1
       kind: Deployment
-      name: client-panel
+      name: tenant-panel
       namespace: platform
   timeout: 5m

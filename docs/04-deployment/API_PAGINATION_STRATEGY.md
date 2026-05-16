@@ -123,7 +123,7 @@ GET /api/clients?
 **Allowed sort fields** (per endpoint):
 
 ```
-Clients:     created_at, updated_at, company_name, status
+Clients:     created_at, updated_at, name, status
 Workloads:   created_at, updated_at, name, status
 Domains:     created_at, domain_name, status
 Backups:     created_at, size_bytes, status
@@ -138,7 +138,7 @@ AuditLogs:   timestamp, action_type, resource_type
 
 ```
 GET /api/clients?filter[status]=active
-GET /api/workloads?filter[status]=running&filter[client_id]=client-123
+GET /api/workloads?filter[status]=running&filter[tenant_id]=client-123
 ```
 
 ### Advanced Filters (Optional)
@@ -258,7 +258,7 @@ app.get('/api/clients', async (req, reply) => {
   const sort = req.query.sort || 'created_at:desc';
 
   // Decode cursor
-  let whereClause: any = { client_id: tenantId };
+  let whereClause: any = { tenant_id: tenantId };
   if (cursor) {
     const decodedCursor = decodeCursor(cursor);
     // Apply cursor filtering (greater than / less than based on sort direction)
@@ -358,7 +358,7 @@ Response:
   "data": [
     {
       "id": "client-123",
-      "company_name": "Acme Corp",
+      "name": "Acme Corp",
       "workloads": [
         { "id": "workload-1", "name": "Web App" }
       ],
@@ -444,7 +444,7 @@ GET /api/users/roles    # Small set of roles, no pagination needed
 ```sql
 -- Indexed for cursor pagination
 SELECT * FROM clients
-WHERE client_id = $1
+WHERE tenant_id = $1
   AND created_at < $2  -- Cursor filter
   AND status = $3      -- Additional filter
 ORDER BY created_at DESC
@@ -459,13 +459,13 @@ Use eager loading for `include` parameters:
 // Bad: N+1 queries
 const clients = await db.clients.find().limit(20);
 const withWorkloads = await Promise.all(
-  clients.map(c => db.workloads.find({ client_id: c.id }))
+  clients.map(c => db.workloads.find({ tenant_id: c.id }))
 );
 
 // Good: Single batch query
 const clients = await db.clients.find().limit(20);
 const workloads = await db.workloads.find({
-  client_id: { $in: clients.map(c => c.id) }
+  tenant_id: { $in: clients.map(c => c.id) }
 });
 ```
 

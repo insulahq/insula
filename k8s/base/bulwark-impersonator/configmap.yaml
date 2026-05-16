@@ -8,8 +8,8 @@
 #   1. Client-panel asks platform-api `POST /api/v1/webmail/impersonate`
 #   2. platform-api verifies caller is client_admin of the mailbox's
 #      tenant, mints HS256 JWT signed with the shared JWT_SECRET,
-#      returns the impersonation URL to client-panel.
-#   3. client-panel `window.location = <url>`.
+#      returns the impersonation URL to tenant-panel.
+#   3. tenant-panel `window.location = <url>`.
 #   4. Browser GET https://webmail.$${DOMAIN}/_impersonate?token=<JWT>
 #      → Traefik → this proxy.
 #   5. Proxy verifies JWT (HS256 signature, exp, nbf, iat clock-skew,
@@ -304,7 +304,7 @@ data:
     /**
      * Proxy a request transparently to Bulwark, streaming body + headers.
      *
-     * Strips client-supplied `authorization` header before forwarding
+     * Strips tenant-supplied `authorization` header before forwarding
      * upstream (review finding M2) — Bulwark only authenticates via
      * cookies (`jmap_session` / `jmap_session_<slot>`), never
      * bearer/basic auth from the browser. Defense-in-depth in case

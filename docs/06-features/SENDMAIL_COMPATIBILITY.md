@@ -27,9 +27,9 @@ to:
 The platform backend owns a new module at
 `backend/src/modules/mail-submit/`:
 
-- `service.ts` — generate/rotate/load per-client submission credentials
+- `service.ts` — generate/rotate/load per-tenant submission credentials
 - `pvc-writer.ts` — write `.platform/sendmail-auth` to the client's PVC
-- `routes.ts` — admin + client_admin endpoints to manage credentials
+- `routes.ts` — admin + tenant_admin endpoints to manage credentials
 
 ### Data model
 
@@ -38,8 +38,8 @@ Table `mail_submit_credentials` (migration 0013):
 | column | notes |
 |--------|-------|
 | `id` | uuid |
-| `client_id` | FK to `clients.id` ON DELETE CASCADE |
-| `username` | `submit-<client_id>` (deterministic, unique among active) |
+| `tenant_id` | FK to `clients.id` ON DELETE CASCADE |
+| `username` | `submit-<tenant_id>` (deterministic, unique among active) |
 | `password_encrypted` | cleartext encrypted via `PLATFORM_ENCRYPTION_KEY` |
 | `password_hash` | bcrypt hash, consumed by Stalwart |
 | `revoked_at` | null for active rows |
@@ -76,7 +76,7 @@ Format is msmtprc-compatible:
     auth on
     tls on
     tls_starttls on
-    user submit-<client_id>
+    user submit-<tenant_id>
     password <plain>
 
 The file-manager sidecar hides everything under `.platform/` from
@@ -161,7 +161,7 @@ PVC's gid to `fsGroup` in the pod spec.
 
 Operators can rotate at any time via:
 
-    POST /api/v1/clients/:clientId/mail/submit-credential/rotate
+    POST /api/v1/tenants/:clientId/mail/submit-credential/rotate
 
 The response includes:
 
@@ -175,7 +175,7 @@ If the PVC write fails (file-manager unreachable, namespace missing),
 the credential is still active in the DB. The admin can retry the
 write via:
 
-    POST /api/v1/clients/:clientId/mail/submit-credential/push-to-pvc
+    POST /api/v1/tenants/:clientId/mail/submit-credential/push-to-pvc
 
 This endpoint decrypts the stored password and re-writes the file.
 
@@ -214,7 +214,7 @@ End-to-end (local dev):
 ```bash
 # 1. Rotate a credential
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://admin.k8s-platform.test:2010/api/v1/clients/$CLIENT_ID/mail/submit-credential/rotate
+  http://admin.k8s-platform.test:2010/api/v1/tenants/$CLIENT_ID/mail/submit-credential/rotate
 
 # 2. Verify the auth file was written
 #    (admin can peek via kubectl exec inside the file-manager pod)
@@ -223,6 +223,6 @@ kubectl exec -n client-$CLIENT_ID deploy/file-manager -- \
 
 # 3. Verify the file does NOT show up in the customer file manager UI
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://admin.k8s-platform.test:2010/api/v1/clients/$CLIENT_ID/file-manager/ls?path=/"
+  "http://admin.k8s-platform.test:2010/api/v1/tenants/$CLIENT_ID/file-manager/ls?path=/"
 # The response should NOT contain .platform in its entries.
 ```

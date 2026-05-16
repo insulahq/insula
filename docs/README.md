@@ -310,7 +310,7 @@ Complete CI/CD pipeline specification for development and production deployment.
 
 **Monitoring, Logging & Alerts:**
 - ✅ Prometheus metrics (CPU, memory, disk, network)
-- ✅ Grafana dashboards (cluster, per-client, per-node)
+- ✅ Grafana dashboards (cluster, per-tenant, per-node)
 - ✅ Loki log aggregation & search
 - ✅ Alertmanager configuration
 - ✅ Health scoring & anomaly detection
@@ -469,7 +469,7 @@ Complete CI/CD pipeline specification for development and production deployment.
 - ✅ Business: 10 jobs, 15-min timeout, 90-day history
 - ✅ Premium: Unlimited jobs, 30-min timeout, 365-day history
 
-**Client Panel Features:**
+**Tenant Panel Features:**
 - ✅ Cron jobs dashboard with list view
 - ✅ Create/edit form with schedule builder and crontab validation
 - ✅ Execution history with pagination and filtering
@@ -1943,7 +1943,7 @@ See: `./INFRASTRUCTURE_PLAN.md` Section 14 → "Cost Analysis"
 | File | Description |
 |------|-------------|
 | `COMPLIANCE_MATRIX.md` | GDPR, SOC 2, ISO 27001 control mapping; data residency requirements |
-| `DATABASE_ACCESS_CONTROL.md` | Database user roles, NetworkPolicy rules, per-client credential isolation |
+| `DATABASE_ACCESS_CONTROL.md` | Database user roles, NetworkPolicy rules, per-tenant credential isolation |
 | `SECURITY_ARCHITECTURE.md` | Platform-wide security model; threat model; attack surface analysis |
 | `TLS_CERTIFICATE_MANAGEMENT.md` | cert-manager setup; DNS-01 and HTTP-01 challenge flows; wildcard cert policy |
 
@@ -1982,7 +1982,7 @@ See: `./INFRASTRUCTURE_PLAN.md` Section 14 → "Cost Analysis"
 | `EMAIL_ENHANCEMENTS_SPECIFICATION.md` | Advanced email features — aliases, catch-all, autoresponders, filters |
 | `EMAIL_SENDING_LIMITS_AND_MONITORING.md` | Per-account hourly/daily sending limits; abuse detection; Postfix integration |
 | `EMAIL_SERVICES.md` | Docker-Mailserver architecture; Dovecot/Postfix config; Roundcube integration |
-| `FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md` | SFTP/FTPS file transfer feature spec; per-client isolation; key auth |
+| `FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md` | SFTP/FTPS file transfer feature spec; per-tenant isolation; key auth |
 | `HOSTING_SETTINGS_SPECIFICATION.md` | Client-configurable hosting settings — .htaccess, PHP ini, redirects, GZip |
 | `MAILBOX_IMPORT_EXPORT_SPECIFICATION.md` | Mailbox migration import/export — MBOX, EML formats; IMAP migration |
 | `PASSWORD_PROTECTED_DIRECTORIES.md` | HTTP Basic Auth directory protection — htpasswd management; admin and client UI |

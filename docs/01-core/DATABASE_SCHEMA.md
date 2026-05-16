@@ -20,7 +20,7 @@ The schema supports multi-tenant architecture (one namespace per client) with pr
 ## Architecture Principles
 
 ### Multi-Tenancy Design
-- **Tenant Isolation:** Each client is assigned a unique `client_id` used as a partition key
+- **Tenant Isolation:** Each client is assigned a unique `tenant_id` used as a partition key
 - **Namespace Per Client:** Kubernetes namespace matches database tenant_id
 - **Cross-Tenant Queries:** Prevented through row-level security and application-level filters
 - **Shared Infrastructure Tables:** Admin, regions, plans, and audit tables are shared
@@ -219,7 +219,7 @@ spec:
        │    │ user_id (FK)     │
        │    │ role_id (FK)     │
        │    │ scope_type       │ ← 'global', 'region', 'client'
-       │    │ scope_id         │ ← region_id or client_id
+       │    │ scope_id         │ ← region_id or tenant_id
        │    └──────────────────┘
        │
 ┌──────┴──────────┐
@@ -332,8 +332,8 @@ spec:
 │                  │
 │ id (PK)          │
 │ region_id (FK)   │
-│ company_name     │
-│ company_email    │
+│ name     │
+│ primary_email    │
 │ status           │ ← 'active', 'suspended', 'terminated'
 │ namespace        │ ← K8s namespace name
 │ plan_id (FK)     │
@@ -341,7 +341,7 @@ spec:
 │ created_at       │
 │ subscription_    │
 │  expires_at      │
-│ contact_email    │
+│ secondary_email    │
 └──────────────────┘
        │
        ├──────────────────────────┐
@@ -351,7 +351,7 @@ spec:
 │   workloads      │    │    domains       │
 │                  │    │                  │
 │ id (PK)          │    │ id (PK)          │
-│ client_id (FK)   │    │ client_id (FK)   │
+│ tenant_id (FK)   │    │ tenant_id (FK)   │
 │ name             │    │ domain_name (UQ) │
 │ container_       │    │ workload_id (FK) │
 │  image_id (FK)   │    │ status           │
@@ -380,7 +380,7 @@ spec:
 │ databases        │    │  ssh_keys        │
 │                  │    │                  │
 │ id (PK)          │    │ id (PK)          │
-│ client_id (FK)   │    │ client_id (FK)   │
+│ tenant_id (FK)   │    │ tenant_id (FK)   │
 │ name (UQ)        │    │ name             │
 │ type             │    │ public_key       │
 │ workload_id (FK) │    │ fingerprint (UQ) │
@@ -394,7 +394,7 @@ spec:
 │   backups        │
 │                  │
 │ id (PK)          │
-│ client_id (FK)   │
+│ tenant_id (FK)   │
 │ backup_type      │ ← 'auto', 'manual'
 │ resource_type    │ ← 'workload', 'database'
 │ resource_id      │
@@ -410,7 +410,7 @@ spec:
 │  instances       │
 │                  │
 │ id (PK)          │
-│ client_id (FK)   │
+│ tenant_id (FK)   │
 │ app_catalog_     │
 │  id (FK)         │
 │ name             │
@@ -474,7 +474,7 @@ spec:
 │                      │
 │ id (PK)              │
 │ domain_id (FK)       │ → domains.id
-│ client_id (FK)       │ → clients.id
+│ tenant_id (FK)       │ → clients.id
 │ enabled              │
 │ dkim_selector        │
 │ dkim_private_key_enc │
@@ -498,7 +498,7 @@ spec:
 │                      │       │                      │
 │ id (PK)              │       │ id (PK)              │
 │ email_domain_id (FK) │       │ email_domain_id (FK) │
-│ client_id (FK)       │       │ client_id (FK)       │
+│ tenant_id (FK)       │       │ tenant_id (FK)       │
 │ local_part           │       │ source_address (UQ)  │
 │ full_address (UQ)    │       │ destination_addresses│ ← JSON array
 │ password_hash        │       │ enabled              │
@@ -552,7 +552,7 @@ spec:
 │                      │
 │ id (PK)              │
 │ domain_id (FK)       │ → domains.id
-│ client_id (FK)       │ → clients.id
+│ tenant_id (FK)       │ → clients.id
 │ issuer               │ ← 'letsencrypt'
 │ cert_type            │ ← 'auto', 'custom'
 │ status               │ ← 'pending', 'active', 'expired', 'failed', 'revoked'
@@ -573,7 +573,7 @@ spec:
 │ (time-series)    │
 │                  │
 │ id (PK)          │
-│ client_id (FK)   │
+│ tenant_id (FK)   │
 │ metric_type      │ ← 'cpu', 'memory', 'storage'
 │ workload_id      │ ← NULL for client-level
 │ value            │
@@ -587,7 +587,7 @@ spec:
 │ billing_cycles       │
 │                      │
 │ id (PK)              │
-│ client_id (FK)       │
+│ tenant_id (FK)       │
 │ billing_cycle_start  │
 │ billing_cycle_end    │
 │ plan_id (FK)         │
@@ -604,7 +604,7 @@ spec:
 │ resource_quotas      │
 │                      │
 │ id (PK)              │
-│ client_id (FK)       │
+│ tenant_id (FK)       │
 │ resource_type        │ ← 'cpu', 'memory', 'storage'
 │ limit_value          │
 │ current_usage        │
@@ -619,10 +619,10 @@ spec:
 ┌──────────────────────┐
 │ audit_logs           │
 │ (partitioned by      │
-│  client_id & date)   │
+│  tenant_id & date)   │
 │                      │
 │ id (PK)              │
-│ client_id (FK)       │ ← Partition key
+│ tenant_id (FK)       │ ← Partition key
 │ action_type          │ ← 'create', 'update', 'delete'
 │ resource_type        │ ← 'client', 'workload', 'domain'
 │ resource_id          │
@@ -640,10 +640,10 @@ spec:
 ┌──────────────────────┐
 │ api_request_logs     │
 │ (partitioned by      │
-│  client_id & date)   │
+│  tenant_id & date)   │
 │                      │
 │ id (PK)              │
-│ client_id (FK)       │
+│ tenant_id (FK)       │
 │ endpoint             │
 │ method               │
 │ status_code          │
@@ -660,7 +660,7 @@ spec:
 │ id (PK)              │
 │ event_type           │ ← 'failed_auth', 'privilege_escalation'
 │ severity             │ ← 'info', 'warning', 'critical'
-│ client_id (FK)       │
+│ tenant_id (FK)       │
 │ user_id (FK)         │
 │ description          │
 │ remediation          │
@@ -721,7 +721,7 @@ CREATE TABLE user_roles (
   user_id VARCHAR(36) NOT NULL,
   role_id VARCHAR(36) NOT NULL,
   scope_type ENUM('global', 'region', 'client') DEFAULT 'global',
-  scope_id VARCHAR(36) COMMENT 'region_id or client_id when scope is not global',
+  scope_id VARCHAR(36) COMMENT 'region_id or tenant_id when scope is not global',
   assigned_by VARCHAR(36),
   assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   
@@ -866,9 +866,9 @@ CREATE TABLE application_catalog (
 CREATE TABLE clients (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   region_id VARCHAR(36) NOT NULL,
-  company_name VARCHAR(255) NOT NULL,
-  company_email VARCHAR(255) NOT NULL,
-  contact_email VARCHAR(255),
+  name VARCHAR(255) NOT NULL,
+  primary_email VARCHAR(255) NOT NULL,
+  secondary_email VARCHAR(255),
   contact_phone VARCHAR(20),
   kubernetes_namespace VARCHAR(63) NOT NULL UNIQUE COMMENT 'K8s namespace name',
   plan_id VARCHAR(36) NOT NULL,
@@ -892,7 +892,7 @@ CREATE TABLE clients (
 
 CREATE TABLE workloads (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   name VARCHAR(255) NOT NULL,
   container_image_id VARCHAR(36) NOT NULL,
   replica_count INT DEFAULT 1,
@@ -904,18 +904,18 @@ CREATE TABLE workloads (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  UNIQUE KEY uk_client_name (client_id, name),
-  KEY idx_client_id (client_id),
+  UNIQUE KEY uk_client_name (tenant_id, name),
+  KEY idx_client_id (tenant_id),
   KEY idx_status (status),
   KEY idx_container_image_id (container_image_id),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (container_image_id) REFERENCES container_images(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE domains (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   domain_name VARCHAR(253) NOT NULL UNIQUE,
   workload_id VARCHAR(36),
   status ENUM('active', 'pending_verification', 'inactive') DEFAULT 'active',
@@ -925,11 +925,11 @@ CREATE TABLE domains (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
   UNIQUE KEY uk_domain (domain_name),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_workload_id (workload_id),
   KEY idx_status (status),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (workload_id) REFERENCES workloads(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -953,7 +953,7 @@ CREATE TABLE dns_records (
 
 CREATE TABLE databases (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   name VARCHAR(64) NOT NULL,
   database_type ENUM('mysql', 'postgresql') NOT NULL,
   workload_id VARCHAR(36) COMMENT 'NULL if standalone',
@@ -967,33 +967,33 @@ CREATE TABLE databases (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  UNIQUE KEY uk_client_db_name (client_id, name),
-  KEY idx_client_id (client_id),
+  UNIQUE KEY uk_client_db_name (tenant_id, name),
+  KEY idx_client_id (tenant_id),
   KEY idx_workload_id (workload_id),
   KEY idx_status (status),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (workload_id) REFERENCES workloads(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE ssh_keys (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   name VARCHAR(255) NOT NULL,
   public_key TEXT NOT NULL,
   key_fingerprint VARCHAR(255) NOT NULL UNIQUE,
   key_algorithm VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   
-  UNIQUE KEY uk_client_name (client_id, name),
-  KEY idx_client_id (client_id),
+  UNIQUE KEY uk_client_name (tenant_id, name),
+  KEY idx_client_id (tenant_id),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE backups (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   backup_type ENUM('auto', 'manual', 'scheduled') DEFAULT 'auto',
   resource_type ENUM('workload', 'database', 'filesystem') NOT NULL,
   resource_id VARCHAR(36) NOT NULL,
@@ -1006,17 +1006,17 @@ CREATE TABLE backups (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   expires_at TIMESTAMP NULL,
   
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_resource (resource_type, resource_id),
   KEY idx_status (status),
   KEY idx_expires_at (expires_at),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE application_instances (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   app_catalog_id VARCHAR(36) NOT NULL,
   name VARCHAR(255) NOT NULL,
   configuration JSON,
@@ -1025,11 +1025,11 @@ CREATE TABLE application_instances (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  UNIQUE KEY uk_client_app_name (client_id, name),
-  KEY idx_client_id (client_id),
+  UNIQUE KEY uk_client_app_name (tenant_id, name),
+  KEY idx_client_id (tenant_id),
   KEY idx_app_catalog_id (app_catalog_id),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (app_catalog_id) REFERENCES application_catalog(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1041,7 +1041,7 @@ CREATE TABLE application_instances (
 CREATE TABLE git_deploy_configs (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   domain_id VARCHAR(36) NOT NULL UNIQUE,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   repository_url VARCHAR(500) NOT NULL COMMENT 'Git repo URL (HTTPS or SSH)',
   branch VARCHAR(255) DEFAULT 'main' COMMENT 'Branch to pull from',
   deploy_path VARCHAR(500) DEFAULT 'public_html/' COMMENT 'Relative path within domain directory to sync files into',
@@ -1054,18 +1054,18 @@ CREATE TABLE git_deploy_configs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_webhook_secret (webhook_secret),
   
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Deployment history log (see ADR-016)
 CREATE TABLE deployment_history (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   domain_id VARCHAR(36) NOT NULL,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   deploy_method ENUM('git_pull', 'sftp', 'filebrowser', 'api') NOT NULL,
   git_commit_sha VARCHAR(40) COMMENT 'Git commit SHA (only for git_pull deployments)',
   git_branch VARCHAR(255) COMMENT 'Git branch (only for git_pull deployments)',
@@ -1078,12 +1078,12 @@ CREATE TABLE deployment_history (
   completed_at TIMESTAMP,
   
   KEY idx_domain_id (domain_id),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_status (status),
   KEY idx_created_at (created_at),
   
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================
@@ -1092,7 +1092,7 @@ CREATE TABLE deployment_history (
 
 CREATE TABLE usage_metrics (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   metric_type ENUM('cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb') NOT NULL,
   workload_id VARCHAR(36) COMMENT 'NULL for client-level metrics',
   value DECIMAL(10,4),
@@ -1100,11 +1100,11 @@ CREATE TABLE usage_metrics (
   measurement_timestamp TIMESTAMP NOT NULL COMMENT 'Hourly aggregation',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   
-  KEY idx_client_metric (client_id, metric_type, measurement_timestamp),
+  KEY idx_client_metric (tenant_id, metric_type, measurement_timestamp),
   KEY idx_measurement (measurement_timestamp),
   KEY idx_workload (workload_id),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Partition by month for better performance
@@ -1117,7 +1117,7 @@ PARTITION BY RANGE (YEAR_MONTH(measurement_timestamp)) (
 
 CREATE TABLE subscription_billing_cycles (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   billing_cycle_start DATE NOT NULL,
   billing_cycle_end DATE NOT NULL,
   plan_id VARCHAR(36) NOT NULL,
@@ -1132,18 +1132,18 @@ CREATE TABLE subscription_billing_cycles (
   invoiced_at TIMESTAMP NULL,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  UNIQUE KEY uk_client_cycle (client_id, billing_cycle_start),
-  KEY idx_client_id (client_id),
+  UNIQUE KEY uk_client_cycle (tenant_id, billing_cycle_start),
+  KEY idx_client_id (tenant_id),
   KEY idx_status (status),
   KEY idx_billing_cycle (billing_cycle_start, billing_cycle_end),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (plan_id) REFERENCES hosting_plans(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE resource_quotas (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL UNIQUE,
+  tenant_id VARCHAR(36) NOT NULL UNIQUE,
   cpu_cores_limit DECIMAL(5,2),
   memory_gb_limit INT,
   storage_gb_limit INT,
@@ -1156,7 +1156,7 @@ CREATE TABLE resource_quotas (
   storage_warning_threshold INT DEFAULT 80,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================
@@ -1165,7 +1165,7 @@ CREATE TABLE resource_quotas (
 
 CREATE TABLE audit_logs (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   action_type VARCHAR(50) NOT NULL COMMENT 'create, update, delete, start, stop',
   resource_type VARCHAR(100) NOT NULL COMMENT 'client, workload, domain, database',
   resource_id VARCHAR(36),
@@ -1181,13 +1181,13 @@ CREATE TABLE audit_logs (
   timestamp TIMESTAMP NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_resource (resource_type, resource_id),
   KEY idx_actor_id (actor_id),
   KEY idx_timestamp (timestamp),
   KEY idx_action (action_type),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1201,7 +1201,7 @@ PARTITION BY RANGE (YEAR_MONTH(timestamp)) (
 
 CREATE TABLE api_request_logs (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  client_id VARCHAR(36),
+  tenant_id VARCHAR(36),
   endpoint VARCHAR(500) NOT NULL,
   http_method ENUM('GET', 'POST', 'PUT', 'PATCH', 'DELETE') NOT NULL,
   status_code INT,
@@ -1214,19 +1214,19 @@ CREATE TABLE api_request_logs (
   timestamp TIMESTAMP NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_endpoint (endpoint),
   KEY idx_timestamp (timestamp),
   KEY idx_status_code (status_code),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE security_events (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   event_type VARCHAR(100) NOT NULL COMMENT 'failed_auth, privilege_escalation, suspicious_api_usage',
   severity ENUM('info', 'warning', 'critical') DEFAULT 'info',
-  client_id VARCHAR(36),
+  tenant_id VARCHAR(36),
   user_id VARCHAR(36),
   description TEXT,
   remediation TEXT,
@@ -1237,10 +1237,10 @@ CREATE TABLE security_events (
   
   KEY idx_event_type (event_type),
   KEY idx_severity (severity),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_timestamp (timestamp),
   
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE SET NULL,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1251,7 +1251,7 @@ CREATE TABLE security_events (
 -- Email accounts (mailboxes, aliases, forwarding)
 CREATE TABLE email_accounts (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  client_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
   domain_id BIGINT UNSIGNED NOT NULL,
   email_address VARCHAR(255) NOT NULL UNIQUE,
   account_type ENUM('mailbox', 'alias', 'forwarding') NOT NULL DEFAULT 'mailbox',
@@ -1264,11 +1264,11 @@ CREATE TABLE email_accounts (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_domain_id (domain_id),
   UNIQUE KEY idx_email (email_address),
 
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1276,7 +1276,7 @@ CREATE TABLE email_accounts (
 CREATE TABLE ssl_certificates (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   domain_id BIGINT UNSIGNED NOT NULL,
-  client_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
   issuer VARCHAR(255) NOT NULL DEFAULT 'letsencrypt',
   cert_type ENUM('auto', 'custom') NOT NULL DEFAULT 'auto',
   status ENUM('pending', 'active', 'expired', 'failed', 'revoked') NOT NULL DEFAULT 'pending',
@@ -1287,23 +1287,23 @@ CREATE TABLE ssl_certificates (
   serial_number VARCHAR(255) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_domain_id (domain_id),
   KEY idx_expires_at (expires_at),
   KEY idx_status (status),
 
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- NOTE: shared_pod_assignments table removed per ADR-024.
 -- All clients now get dedicated pods in client-{id} namespaces.
--- Pod assignment is implicit: one pod per client namespace.
+-- Pod assignment is implicit: one pod per tenant namespace.
 
 -- Per-client hosting plan overrides
 CREATE TABLE hosting_plan_overrides (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  client_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
   parameter_name VARCHAR(100) NOT NULL COMMENT 'e.g., storage_gb, bandwidth_gb, max_domains',
   override_value VARCHAR(255) NOT NULL,
   reason VARCHAR(500) DEFAULT NULL,
@@ -1311,15 +1311,15 @@ CREATE TABLE hosting_plan_overrides (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-  UNIQUE KEY idx_client_param (client_id, parameter_name),
+  UNIQUE KEY idx_client_param (tenant_id, parameter_name),
 
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Customer cron jobs
 CREATE TABLE cron_jobs (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  client_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
   domain_id BIGINT UNSIGNED DEFAULT NULL,
   name VARCHAR(100) NOT NULL,
   schedule VARCHAR(100) NOT NULL COMMENT 'Cron expression, e.g., */5 * * * *',
@@ -1332,17 +1332,17 @@ CREATE TABLE cron_jobs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_is_active (is_active),
 
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- SFTP user accounts
 CREATE TABLE sftp_users (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  client_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
   username VARCHAR(64) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL COMMENT 'Argon2id hash',
   ssh_public_key TEXT DEFAULT NULL,
@@ -1352,10 +1352,10 @@ CREATE TABLE sftp_users (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   UNIQUE KEY idx_username (username),
 
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================
@@ -1417,7 +1417,7 @@ CREATE TABLE backup_configurations (
 CREATE TABLE email_domains (
   id VARCHAR(36) PRIMARY KEY,
   domain_id VARCHAR(36) NOT NULL,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   enabled INT NOT NULL DEFAULT 1,
   dkim_selector VARCHAR(63) NOT NULL DEFAULT 'default',
   dkim_private_key_encrypted TEXT DEFAULT NULL,
@@ -1435,17 +1435,17 @@ CREATE TABLE email_domains (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
   UNIQUE KEY uk_domain (domain_id),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
 
   FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Mailboxes — individual email accounts
 CREATE TABLE mailboxes (
   id VARCHAR(36) PRIMARY KEY,
   email_domain_id VARCHAR(36) NOT NULL,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   local_part VARCHAR(64) NOT NULL,
   full_address VARCHAR(255) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
@@ -1461,11 +1461,11 @@ CREATE TABLE mailboxes (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
   UNIQUE KEY uk_full_address (full_address),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_email_domain_id (email_domain_id),
 
   FOREIGN KEY (email_domain_id) REFERENCES email_domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Mailbox access grants — allows panel users to manage specific mailboxes
@@ -1488,7 +1488,7 @@ CREATE TABLE mailbox_access (
 CREATE TABLE email_aliases (
   id VARCHAR(36) PRIMARY KEY,
   email_domain_id VARCHAR(36) NOT NULL,
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   source_address VARCHAR(255) NOT NULL UNIQUE,
   destination_addresses JSON NOT NULL COMMENT 'Array of target email addresses',
   enabled INT NOT NULL DEFAULT 1,
@@ -1496,11 +1496,11 @@ CREATE TABLE email_aliases (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
   UNIQUE KEY uk_source (source_address),
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_email_domain_id (email_domain_id),
 
   FOREIGN KEY (email_domain_id) REFERENCES email_domains(id) ON DELETE CASCADE,
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- SMTP relay configuration — outbound email relay services
@@ -1550,13 +1550,13 @@ CREATE TABLE application_repositories (
 
 ### Performance Indexes
 
-| Table | Column(s) | Type | Reason |\n| --- | --- | --- | --- |\n| `clients` | `(region_id, status, created_at)` | Composite | Dashboard queries filtered by region/status |\n| `workloads` | `(client_id, status, created_at)` | Composite | List workloads per client |\n| `domains` | `(client_id, domain_name)` | Composite | Domain lookup per client |\n| `audit_logs` | `(client_id, timestamp DESC)` | Composite | Audit trail queries |\n| `usage_metrics` | `(client_id, metric_type, measurement_timestamp DESC)` | Composite | Usage reports |\n| `subscription_billing_cycles` | `(client_id, billing_cycle_start DESC)` | Composite | Current billing cycle lookup |\n\n### Foreign Key Indexes
+| Table | Column(s) | Type | Reason |\n| --- | --- | --- | --- |\n| `clients` | `(region_id, status, created_at)` | Composite | Dashboard queries filtered by region/status |\n| `workloads` | `(tenant_id, status, created_at)` | Composite | List workloads per client |\n| `domains` | `(tenant_id, domain_name)` | Composite | Domain lookup per client |\n| `audit_logs` | `(tenant_id, timestamp DESC)` | Composite | Audit trail queries |\n| `usage_metrics` | `(tenant_id, metric_type, measurement_timestamp DESC)` | Composite | Usage reports |\n| `subscription_billing_cycles` | `(tenant_id, billing_cycle_start DESC)` | Composite | Current billing cycle lookup |\n\n### Foreign Key Indexes
 
 All foreign keys automatically indexed by InnoDB.
 
 ### Full-Text Search (Future)
 
-When implementing search across domains, workload names, etc., add:\n\n```sql\nALTER TABLE workloads ADD FULLTEXT INDEX ft_name_description (name);\nALTER TABLE domains ADD FULLTEXT INDEX ft_domain_name (domain_name);\n```\n\n---\n\n## Data Migration & Versioning\n\n### Migration Framework\n\nUse Flyway or Liquibase for schema versioning:\n\n```\nmigrations/\n├── V1__initial_schema.sql\n├── V2__add_audit_logs.sql\n├── V3__partition_audit_logs.sql\n├── V4__add_resource_quotas.sql\n└── ...\n```\n\n### Key Migrations\n\n1. **V1** - Initial schema with core tables (users, regions, clients, workloads, domains)\n2. **V2** - Add audit_logs, api_request_logs (Phase 1)\n3. **V3** - Add partitioning for audit_logs and usage_metrics\n4. **V4** - Add resource_quotas, security_events\n5. **V5** - Phase 2: Add advanced features (webhooks, custom OIDC, etc.)\n\n### Backfilling Data\n\nFor existing deployments:\n\n```sql\n-- Example: Backfill initial audit logs\nINSERT INTO audit_logs (client_id, action_type, resource_type, resource_id, actor_type, status, timestamp)\nSELECT id, 'create', 'client', id, 'system', 'success', created_at\nFROM clients\nWHERE id NOT IN (SELECT DISTINCT client_id FROM audit_logs);\n```\n\n---\n\n## Data Retention & Archival\n\n### Retention Policy\n\n| Table | Retention | Archive Strategy |\n| --- | --- | --- |\n| `audit_logs` | 7 years (GDPR/SOC2) | Monthly backups to offsite server |\n| `api_request_logs` | 90 days | Monthly aggregate summaries |\n| `usage_metrics` | 24 months | Monthly roll-ups |\n| `security_events` | 1 year | Cold storage after 90 days |\n| `backups` | Custom per client | Automatic deletion by `expires_at` |\n\n### Archive Job (Cron)\n\n```sql\n-- Run monthly on 1st of month\nEVENT archive_old_api_logs\nON SCHEDULE EVERY 1 MONTH\nSTARTS '2026-04-01 02:00:00'\nDO\nBEGIN\n  -- Move logs older than 90 days to archive table\n  INSERT INTO api_request_logs_archive\n  SELECT * FROM api_request_logs\n  WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY);\n  \n  DELETE FROM api_request_logs\n  WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY);\nEND;\n```\n\n---\n\n## Row-Level Security (RLS)\n\n### Application-Level Enforcement\n\nDatabases alone cannot enforce multi-tenancy. Backend API MUST:\n\n1. **Extract tenant from JWT token** - Set via middleware on every request\n2. **Filter all queries** - WHERE clause always includes `client_id = $tenant`\n3. **Prevent cross-tenant access** - Deny any query without `client_id` filter\n4. **Audit failed attempts** - Log to `security_events`\n\n### Query Example\n\n```typescript\n// Bad - vulnerable to cross-tenant data leaks\nconst workloads = await db.query(\n  'SELECT * FROM workloads WHERE id = $1',\n  [workloadId]\n);\n\n// Good - tenant-aware query\nconst workloads = await db.query(\n  'SELECT * FROM workloads WHERE id = $1 AND client_id = $2',\n  [workloadId, req.user.tenant_id]\n);\n```\n\n---\n\n## Sample Data & Seeding\n\n### Development Seeds\n\nFile: `seeds/dev-seed.sql`\n\n```sql\n-- Create test admin user\nINSERT INTO users (id, email, full_name, status)\nVALUES ('admin-001', 'admin@k8s-platform.test', 'Admin User', 'active');\n\n-- Create test regions\nINSERT INTO regions (code, name, provider, primary_dns_server, status)\nVALUES \n  ('us-east-1', 'US East (N. Virginia)', 'aws', '1.1.1.1', 'active'),\n  ('eu-west-1', 'EU (Ireland)', 'aws', '1.1.1.1', 'active');\n\n-- Create hosting plans\nINSERT INTO hosting_plans (code, name, cpu_limit, memory_limit, storage_limit, monthly_price_usd)\nVALUES \n  ('starter', 'Starter', 1, 1, 10, 5.99),\n  ('business', 'Business', 4, 8, 100, 29.99),\n  ('premium', 'Premium', 8, 32, 500, 99.99);\n\n-- Create test client\nINSERT INTO clients (company_name, company_email, kubernetes_namespace, plan_id, region_id, status)\nVALUES ('Test Corp', 'admin@testcorp.local', 'testcorp', (SELECT id FROM hosting_plans WHERE code='starter'), \n        (SELECT id FROM regions WHERE code='us-east-1'), 'active');\n```\n\n---\n\n## Performance Optimization Tips\n\n### Connection Pooling\n\n- Use HikariCP (Java) or equivalent\n- Pool size: 20-50 connections\n- Max lifetime: 30 minutes\n\n### Query Optimization\n\n1. **Use EXPLAIN** to analyze slow queries\n2. **Avoid SELECT *** - specify needed columns only\n3. **Batch updates** - UPDATE multiple rows in one transaction\n4. **Use prepared statements** - Prevent SQL injection, improve performance\n\n### Caching Strategy\n\nSee `CACHING_STRATEGY.md` for three-layer caching (Redis, query cache, HTTP cache).\n\n---\n\n## Disaster Recovery\n\n### Backup Strategy\n\n1. **Daily incremental backups** to offsite server (SSHFS mount)\n2. **Weekly full backups** with 30-day retention\n3. **Monthly snapshots** with 1-year retention\n4. **Test restores quarterly** to validate backup integrity\n\n### Recovery Time Objectives\n\n- **RTO (Recovery Time Objective):** 1 hour\n- **RPO (Recovery Point Objective):** 15 minutes\n\nFor detailed backup strategy, see `02-operations/BACKUP_STRATEGY.md`.\n\n---\n\n## Next Steps\n\n1. **Review schema** with backend team and database architect\n2. **Finalize column data types** and constraints\n3. **Create migration scripts** using Flyway/Liquibase\n4. **Implement row-level security** in backend code\n5. **Load test** with production-like data volumes\n6. **Set up automated backups** before Phase 1 begins\n
+When implementing search across domains, workload names, etc., add:\n\n```sql\nALTER TABLE workloads ADD FULLTEXT INDEX ft_name_description (name);\nALTER TABLE domains ADD FULLTEXT INDEX ft_domain_name (domain_name);\n```\n\n---\n\n## Data Migration & Versioning\n\n### Migration Framework\n\nUse Flyway or Liquibase for schema versioning:\n\n```\nmigrations/\n├── V1__initial_schema.sql\n├── V2__add_audit_logs.sql\n├── V3__partition_audit_logs.sql\n├── V4__add_resource_quotas.sql\n└── ...\n```\n\n### Key Migrations\n\n1. **V1** - Initial schema with core tables (users, regions, clients, workloads, domains)\n2. **V2** - Add audit_logs, api_request_logs (Phase 1)\n3. **V3** - Add partitioning for audit_logs and usage_metrics\n4. **V4** - Add resource_quotas, security_events\n5. **V5** - Phase 2: Add advanced features (webhooks, custom OIDC, etc.)\n\n### Backfilling Data\n\nFor existing deployments:\n\n```sql\n-- Example: Backfill initial audit logs\nINSERT INTO audit_logs (tenant_id, action_type, resource_type, resource_id, actor_type, status, timestamp)\nSELECT id, 'create', 'client', id, 'system', 'success', created_at\nFROM clients\nWHERE id NOT IN (SELECT DISTINCT tenant_id FROM audit_logs);\n```\n\n---\n\n## Data Retention & Archival\n\n### Retention Policy\n\n| Table | Retention | Archive Strategy |\n| --- | --- | --- |\n| `audit_logs` | 7 years (GDPR/SOC2) | Monthly backups to offsite server |\n| `api_request_logs` | 90 days | Monthly aggregate summaries |\n| `usage_metrics` | 24 months | Monthly roll-ups |\n| `security_events` | 1 year | Cold storage after 90 days |\n| `backups` | Custom per client | Automatic deletion by `expires_at` |\n\n### Archive Job (Cron)\n\n```sql\n-- Run monthly on 1st of month\nEVENT archive_old_api_logs\nON SCHEDULE EVERY 1 MONTH\nSTARTS '2026-04-01 02:00:00'\nDO\nBEGIN\n  -- Move logs older than 90 days to archive table\n  INSERT INTO api_request_logs_archive\n  SELECT * FROM api_request_logs\n  WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY);\n  \n  DELETE FROM api_request_logs\n  WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY);\nEND;\n```\n\n---\n\n## Row-Level Security (RLS)\n\n### Application-Level Enforcement\n\nDatabases alone cannot enforce multi-tenancy. Backend API MUST:\n\n1. **Extract tenant from JWT token** - Set via middleware on every request\n2. **Filter all queries** - WHERE clause always includes `tenant_id = $tenant`\n3. **Prevent cross-tenant access** - Deny any query without `tenant_id` filter\n4. **Audit failed attempts** - Log to `security_events`\n\n### Query Example\n\n```typescript\n// Bad - vulnerable to cross-tenant data leaks\nconst workloads = await db.query(\n  'SELECT * FROM workloads WHERE id = $1',\n  [workloadId]\n);\n\n// Good - tenant-aware query\nconst workloads = await db.query(\n  'SELECT * FROM workloads WHERE id = $1 AND tenant_id = $2',\n  [workloadId, req.user.tenant_id]\n);\n```\n\n---\n\n## Sample Data & Seeding\n\n### Development Seeds\n\nFile: `seeds/dev-seed.sql`\n\n```sql\n-- Create test admin user\nINSERT INTO users (id, email, full_name, status)\nVALUES ('admin-001', 'admin@k8s-platform.test', 'Admin User', 'active');\n\n-- Create test regions\nINSERT INTO regions (code, name, provider, primary_dns_server, status)\nVALUES \n  ('us-east-1', 'US East (N. Virginia)', 'aws', '1.1.1.1', 'active'),\n  ('eu-west-1', 'EU (Ireland)', 'aws', '1.1.1.1', 'active');\n\n-- Create hosting plans\nINSERT INTO hosting_plans (code, name, cpu_limit, memory_limit, storage_limit, monthly_price_usd)\nVALUES \n  ('starter', 'Starter', 1, 1, 10, 5.99),\n  ('business', 'Business', 4, 8, 100, 29.99),\n  ('premium', 'Premium', 8, 32, 500, 99.99);\n\n-- Create test client\nINSERT INTO clients (name, primary_email, kubernetes_namespace, plan_id, region_id, status)\nVALUES ('Test Corp', 'admin@testcorp.local', 'testcorp', (SELECT id FROM hosting_plans WHERE code='starter'), \n        (SELECT id FROM regions WHERE code='us-east-1'), 'active');\n```\n\n---\n\n## Performance Optimization Tips\n\n### Connection Pooling\n\n- Use HikariCP (Java) or equivalent\n- Pool size: 20-50 connections\n- Max lifetime: 30 minutes\n\n### Query Optimization\n\n1. **Use EXPLAIN** to analyze slow queries\n2. **Avoid SELECT *** - specify needed columns only\n3. **Batch updates** - UPDATE multiple rows in one transaction\n4. **Use prepared statements** - Prevent SQL injection, improve performance\n\n### Caching Strategy\n\nSee `CACHING_STRATEGY.md` for three-layer caching (Redis, query cache, HTTP cache).\n\n---\n\n## Disaster Recovery\n\n### Backup Strategy\n\n1. **Daily incremental backups** to offsite server (SSHFS mount)\n2. **Weekly full backups** with 30-day retention\n3. **Monthly snapshots** with 1-year retention\n4. **Test restores quarterly** to validate backup integrity\n\n### Recovery Time Objectives\n\n- **RTO (Recovery Time Objective):** 1 hour\n- **RPO (Recovery Point Objective):** 15 minutes\n\nFor detailed backup strategy, see `02-operations/BACKUP_STRATEGY.md`.\n\n---\n\n## Next Steps\n\n1. **Review schema** with backend team and database architect\n2. **Finalize column data types** and constraints\n3. **Create migration scripts** using Flyway/Liquibase\n4. **Implement row-level security** in backend code\n5. **Load test** with production-like data volumes\n6. **Set up automated backups** before Phase 1 begins\n
 ---
 
 ## MariaDB 10.6+ Advanced Features
@@ -1598,7 +1598,7 @@ WITH recent_events AS (
     actor_id,
     changes
   FROM audit_logs
-  WHERE client_id = 'client-123'
+  WHERE tenant_id = 'client-123'
     AND timestamp > NOW() - INTERVAL 7 DAY
 ),
 with_actors AS (
@@ -1644,7 +1644,7 @@ ALGORITHM=INSTANT;
 ```sql
 -- Store complex changes with better JSON support
 INSERT INTO audit_logs (
-  client_id,
+  tenant_id,
   action_type,
   resource_type,
   resource_id,
@@ -1730,7 +1730,7 @@ export async function getClientAuditTrail(clientId: string) {
     WITH recent_events AS (
       SELECT *
       FROM audit_logs
-      WHERE client_id = ?
+      WHERE tenant_id = ?
         AND timestamp > NOW() - INTERVAL 7 DAY
     )
     SELECT re.*, u.email as actor_email

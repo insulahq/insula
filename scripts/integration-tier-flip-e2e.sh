@@ -2,11 +2,11 @@
 # End-to-end test for the user-reported tier-flip silent revert.
 #
 # Reproduces the manual UI flow:
-#   1. Create a client (mirrors POST /clients from the admin panel)
+#   1. Create a client (mirrors POST /tenants from the admin panel)
 #   2. Wait for full provisioning (orchestrator complete)
 #   3. PATCH storage_tier=ha (mirrors the Save button in PlacementCard)
 #   4. Assert the API RESPONSE body has storageTier="ha"
-#   5. Re-fetch GET /clients/:id (mirrors UI page reload)
+#   5. Re-fetch GET /tenants/:id (mirrors UI page reload)
 #   6. Assert the persisted storageTier is STILL "ha"
 #   7. Assert Longhorn Volume.spec.numberOfReplicas == 2
 #   8. Assert /clients/:id/storage-placement returns sizeBytes > 0 AND has usedBytes field
@@ -84,11 +84,11 @@ fi
 log "── creating client (mirrors UI: New Client) ──"
 STAMP=$(date +%s)
 COMPANY="Tier Flip E2E $STAMP"
-RESP=$(api POST "/clients" "{\"company_name\":\"$COMPANY\",\"company_email\":\"tier-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"tier-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
-cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
+cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 log "── waiting for full provisioning ──"
@@ -109,8 +109,8 @@ FLIP=$(api PATCH "/clients/$CID" '{"storage_tier":"ha"}')
 RESPONSE_TIER=$(echo "$FLIP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('storageTier') or 'MISSING')" 2>/dev/null)
 [[ "$RESPONSE_TIER" == "ha" ]] && ok "PATCH response storageTier=ha" || fail "PATCH response storageTier=$RESPONSE_TIER (expected ha) — body: $(echo "$FLIP" | head -c 300)"
 
-# ─── reload page (GET /clients/:id again) ────────────────────────────
-log "── GET /clients/:id (UI reload) ──"
+# ─── reload page (GET /tenants/:id again) ────────────────────────────
+log "── GET /tenants/:id (UI reload) ──"
 RELOAD=$(api GET "/clients/$CID")
 PERSISTED_TIER=$(echo "$RELOAD" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageTier') or 'MISSING')" 2>/dev/null)
 [[ "$PERSISTED_TIER" == "ha" ]] && ok "GET after reload: storageTier=ha (THIS IS THE BUG THE USER REPORTED)" || fail "GET after reload: storageTier=$PERSISTED_TIER (regression — silent revert)"
@@ -193,7 +193,7 @@ for _ in $(seq 1 30); do
   sleep 3
 done
 log "── POST /storage/fsck (dry-run on healthy XFS volume) ──"
-FSCK_RESP=$(api POST "/admin/clients/$CID/storage/fsck" "")
+FSCK_RESP=$(api POST "/admin/tenants/$CID/storage/fsck" "")
 FSCK_OP_ID=$(echo "$FSCK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
 if [[ -n "$FSCK_OP_ID" ]]; then
   ok "fsck operation queued opId=${FSCK_OP_ID:0:8}"

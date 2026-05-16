@@ -26,7 +26,7 @@ spec:
       services:
         # Route through the impersonator Service — it transparently
         # proxies all traffic to Bulwark + intercepts /_impersonate
-        # for the client-panel JWT handoff (ADR-039). The Service
+        # for the tenant-panel JWT handoff (ADR-039). The Service
         # selects the bulwark Pod and targets its impersonator
         # sidecar container's :8081 (named port `imp-http`).
         - name: bulwark-impersonator

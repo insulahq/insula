@@ -67,7 +67,7 @@ fi
 
 # Defaults — all host ports in 2010-2030 range
 #
-# PLATFORM_BASE_DOMAIN is the apex for all user-facing URLs (admin, client,
+# PLATFORM_BASE_DOMAIN is the apex for all user-facing URLs (admin, tenant,
 # dex, webmail, mail, stalwart subdomains derive from it). The operator's
 # internal DNS must resolve *.<base> to the cluster LB — no /etc/hosts
 # entries required. Dev default: k8s-platform.test.
@@ -86,7 +86,7 @@ DOCKER_HOST_NAME="${DIND_INTERNAL_HOST}"
 PORT_INGRESS_HTTP="${PORT_INGRESS_HTTP:-2010}"
 PORT_INGRESS_HTTPS="${PORT_INGRESS_HTTPS:-2011}"
 # Backend API is not published — reach it via /api/* through the admin or
-# client panel ingress (http://admin.k8s-platform.test:${PORT_INGRESS_HTTP}).
+# tenant panel ingress (http://admin.k8s-platform.test:${PORT_INGRESS_HTTP}).
 PORT_DB="${PORT_DB:-2013}"
 PORT_REDIS="${PORT_REDIS:-2014}"
 PORT_DEX="${PORT_DEX:-2015}"
@@ -168,7 +168,7 @@ _image_input_hash() {
            "${PROJECT_DIR}/.dockerignore" \
            -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
       ;;
-    admin-panel|client-panel)
+    admin-panel|tenant-panel)
       local panel="$name"
       find "${PROJECT_DIR}/frontend/${panel}" "${PROJECT_DIR}/packages/api-contracts/src" \
            "${PROJECT_DIR}/packages/api-contracts/package.json" \
@@ -263,8 +263,8 @@ _build_all_images() {
   # same containerd socket race during k3s warmup — we lost three consecutive
   # `./scripts/local.sh reset` + `up` runs to transient import errors. A
   # ~3s speedup on cold start isn't worth the flakiness.
-  local names=("backend" "admin-panel" "client-panel")
-  local dockerfiles=("backend/Dockerfile" "frontend/admin-panel/Dockerfile" "frontend/client-panel/Dockerfile")
+  local names=("backend" "admin-panel" "tenant-panel")
+  local dockerfiles=("backend/Dockerfile" "frontend/admin-panel/Dockerfile" "frontend/tenant-panel/Dockerfile")
   local i
   for i in "${!names[@]}"; do
     if ! _build_and_import "${names[$i]}" "." "${dockerfiles[$i]}"; then
@@ -556,7 +556,7 @@ _run_migrations_and_seed() {
   k3s_exec kubectl exec -n platform deploy/platform-api -- sh -c "
     export PLATFORM_BASE_DOMAIN='${base}'
     export ADMIN_PANEL_URL='http://admin.${base}:${http_port}'
-    export CLIENT_PANEL_URL='http://client.${base}:${http_port}'
+    export TENANT_PANEL_URL='http://tenant.${base}:${http_port}'
     export SUPPORT_EMAIL='admin@${base}'
     export INGRESS_BASE_DOMAIN='${base}'
     export PLATFORM_NAME='Hosting Platform (local dev)'
@@ -604,11 +604,11 @@ _generate_stalwart_secret() {
 _cleanup_stale_namespaces() {
   local orphan_count
   orphan_count=$(k3s_exec kubectl get ns --no-headers 2>/dev/null \
-    | awk '/^client-smoke-test-/ {n++} END {print n+0}')
+    | awk '/^tenant-smoke-test-/ {n++} END {print n+0}')
   if (( orphan_count > 5 )); then
     echo "  Cleaning up $orphan_count stale smoke-test namespaces..."
     k3s_exec kubectl get ns --no-headers 2>/dev/null \
-      | awk '/^client-smoke-test-/ {print $1}' \
+      | awk '/^tenant-smoke-test-/ {print $1}' \
       | while read -r ns; do
           k3s_exec kubectl delete ns "$ns" --wait=false >/dev/null 2>&1 || true
         done
@@ -661,8 +661,8 @@ cmd_up() {
   if grep -q '^HP_IMAGE_CHANGED_admin-panel=' "$state_file" 2>/dev/null; then
     changed_deploys+=(deploy/admin-panel)
   fi
-  if grep -q '^HP_IMAGE_CHANGED_client-panel=' "$state_file" 2>/dev/null; then
-    changed_deploys+=(deploy/client-panel)
+  if grep -q '^HP_IMAGE_CHANGED_tenant-panel=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/tenant-panel)
   fi
   if (( ${#changed_deploys[@]} > 0 )); then
     _phase "rollout restart (changed images)"
@@ -708,7 +708,7 @@ cmd_dev() {
   _apply_dev_overlay
   _phase "scale down app pods"
   echo "Scaling down app pods (running on host instead)..."
-  k3s_exec kubectl scale deploy platform-api admin-panel client-panel -n platform --replicas=0 2>/dev/null
+  k3s_exec kubectl scale deploy platform-api admin-panel tenant-panel -n platform --replicas=0 2>/dev/null
   _phase "wait for infra pods"
   echo "Waiting for infrastructure pods..."
   k3s_exec kubectl wait --for=condition=Ready pod -l app=postgres -n platform --timeout=120s 2>/dev/null || true
@@ -735,7 +735,7 @@ cmd_dev() {
   echo "      npm run dev"
   echo ""
   echo "    cd frontend/admin-panel && npm run dev"
-  echo "    cd frontend/client-panel && npm run dev"
+  echo "    cd frontend/tenant-panel && npm run dev"
   echo ""
   echo "  Access:"
   echo "    Backend:      http://localhost:3000"
@@ -775,8 +775,8 @@ cmd_rebuild() {
   if grep -q '^HP_IMAGE_CHANGED_admin-panel=' "$state_file" 2>/dev/null; then
     changed_deploys+=(deploy/admin-panel)
   fi
-  if grep -q '^HP_IMAGE_CHANGED_client-panel=' "$state_file" 2>/dev/null; then
-    changed_deploys+=(deploy/client-panel)
+  if grep -q '^HP_IMAGE_CHANGED_tenant-panel=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/tenant-panel)
   fi
 
   if (( ${#changed_deploys[@]} == 0 )); then
@@ -836,7 +836,7 @@ cmd_status() {
     echo ""
     echo "  Endpoints:"
     echo "    Admin Panel:    http://admin.${base}:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
-    echo "    Client Panel:   http://client.${base}:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
+    echo "    Client Panel:   http://tenant.${base}:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
     echo "    PostgreSQL:     postgres.${base}:${PORT_DB}"
     echo "    Redis:          redis.${base}:${PORT_REDIS}"
     echo "    Dex OIDC:       https://dex.${base}:${PORT_INGRESS_HTTPS}/dex"

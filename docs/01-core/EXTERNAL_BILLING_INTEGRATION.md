@@ -77,7 +77,7 @@ Admin processes payment in the external gateway and records the result in the pl
 #### 2b. Admin Sends Payment Link
 Admin clicks **Send Payment Link** in the Admin Panel. The platform generates a once-off payment link via the assigned gateway and sends it to the customer by email. On successful payment, a webhook updates the subscription automatically.
 
-#### 2c. Customer Pays via Client Panel
+#### 2c. Customer Pays via Tenant Panel
 Customer sees a **Renew Now** button in their client panel when their subscription is expiring (or expired, within the grace period). Customer clicks, is redirected to the gateway checkout, pays the once-off renewal amount, and the subscription is updated via webhook.
 
 > **Note:** Once-off (single payment) checkout is used for all gateway-based renewals. Recurring/automatic subscription billing via the gateway is also supported where desired, but is not required.
@@ -155,7 +155,7 @@ Each gateway is configured once at the platform level and can then be assigned t
   "display_name": "PayPal",
   "enabled": true,
   "config": {
-    "client_id": "...",                // stored as Kubernetes Secret
+    "tenant_id": "...",                // stored as Kubernetes Secret
     "client_secret": "...",            // stored as Kubernetes Secret
     "mode": "live"                     // "sandbox" or "live"
   }
@@ -187,7 +187,7 @@ kubectl create secret generic gateway-stripe \
   -n platform
 
 kubectl create secret generic gateway-paypal \
-  --from-literal=client_id=... \
+  --from-literal=tenant_id=... \
   --from-literal=client_secret=... \
   -n platform
 
@@ -236,7 +236,7 @@ Expiry approaches (Day 30 alert)
 
 **API:**
 ```bash
-PATCH /api/v1/clients/{id}/subscription
+PATCH /api/v1/tenants/{id}/subscription
 {
   "expiry_date": "2027-03-01",
   "status": "active",
@@ -261,7 +261,7 @@ Expiry approaches (Day 7 alert)
 
 **API:**
 ```bash
-POST /api/v1/clients/{id}/subscription/send-payment-link
+POST /api/v1/tenants/{id}/subscription/send-payment-link
 {
   "amount": 19.99,
   "currency": "USD",
@@ -278,10 +278,10 @@ POST /api/v1/clients/{id}/subscription/send-payment-link
 }
 ```
 
-### Scenario C: Customer Pays via Client Panel
+### Scenario C: Customer Pays via Tenant Panel
 
 ```
-Customer logs into Client Panel
+Customer logs into Tenant Panel
   → Sees "Subscription expires in 7 days — Renew Now"
   → Clicks "Renew Now"
   → Shown renewal amount and currency
@@ -291,7 +291,7 @@ Customer logs into Client Panel
   → Customer sees "Subscription renewed until [new date]"
 ```
 
-**Client Panel API:**
+**Tenant Panel API:**
 ```bash
 POST /api/v1/client/subscription/initiate-payment
 {
@@ -451,7 +451,7 @@ app.post('/webhooks/billing/dpo', async (req, res) => {
 });
 ```
 
-**DPO Token Creation (for Payment Link / Client Panel Checkout):**
+**DPO Token Creation (for Payment Link / Tenant Panel Checkout):**
 
 ```typescript
 async function createDpoPaymentToken(customer: Customer, months: number): Promise<string> {
@@ -543,7 +543,7 @@ Default grace period after expiry: **7 days** (configurable in platform settings
 ### Workflow 1: Create Customer (Manual — No Gateway)
 
 ```bash
-POST /api/v1/clients
+POST /api/v1/tenants
 {
   "name": "Acme Corp",
   "email": "admin@acme.com",
@@ -559,7 +559,7 @@ POST /api/v1/clients
 ### Workflow 2: Create Customer (With Gateway)
 
 ```bash
-POST /api/v1/clients
+POST /api/v1/tenants
 {
   "name": "Beta Ltd",
   "email": "admin@beta.co.ke",
@@ -578,7 +578,7 @@ POST /api/v1/clients
 ### Workflow 3: Manual Renewal (Admin Panel)
 
 ```bash
-PATCH /api/v1/clients/{id}/subscription
+PATCH /api/v1/tenants/{id}/subscription
 {
   "expiry_date": "2027-03-01",
   "status": "active",
@@ -590,7 +590,7 @@ PATCH /api/v1/clients/{id}/subscription
 ### Workflow 4: Send Payment Link to Customer
 
 ```bash
-POST /api/v1/clients/{id}/subscription/send-payment-link
+POST /api/v1/tenants/{id}/subscription/send-payment-link
 {
   "amount": 19.99,
   "currency": "USD",
@@ -605,19 +605,19 @@ POST /api/v1/clients/{id}/subscription/send-payment-link
 
 ```bash
 # Option A: Renew manually
-PATCH /api/v1/clients/{id}/subscription
+PATCH /api/v1/tenants/{id}/subscription
 { "expiry_date": "2027-03-01", "status": "active" }
 
 # Option B: Send payment link (customer pays online)
-POST /api/v1/clients/{id}/subscription/send-payment-link
+POST /api/v1/tenants/{id}/subscription/send-payment-link
 { "amount": 19.99, "currency": "USD", "renewal_period_months": 12 }
 
 # Option C: Suspend
-PATCH /api/v1/clients/{id}
+PATCH /api/v1/tenants/{id}
 { "status": "suspended" }
 
 # Option D: Cancel
-PATCH /api/v1/clients/{id}
+PATCH /api/v1/tenants/{id}
 { "status": "cancelled" }
 ```
 
@@ -640,7 +640,7 @@ for customer in $(get_customers_with_recurring_billing); do
   if billing_sub.expiry != customer.subscription.expiry_date \
     OR billing_sub.status != customer.subscription.status; then
 
-    PATCH /api/v1/clients/$customer.id/subscription \
+    PATCH /api/v1/tenants/$customer.id/subscription \
       --data "{
         'expiry_date': '$billing_sub.expiry',
         'status': '$billing_sub.status',

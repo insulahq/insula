@@ -24,7 +24,7 @@ The Management API is the core RESTful interface for **admin-only** operations:
 - Response Format: JSON
 - Versioning: `/api/v1/`
 
-**Path Convention:** All client-scoped endpoints use `/api/v1/clients/{id}/` where `{id}` is the client identifier.
+**Path Convention:** All client-scoped endpoints use `/api/v1/tenants/{id}/` where `{id}` is the client identifier.
 
 ---
 
@@ -100,7 +100,7 @@ Authorization: Bearer <JWT_TOKEN>
 ```json
 {
   "id": "domain_042",
-  "client_id": "client_001",
+  "tenant_id": "client_001",
   "name": "www.acme.com",
   "tld": "com",
   "registrar": "namecheap",
@@ -184,7 +184,7 @@ Authorization: Bearer <JWT_TOKEN>
 ```json
 {
   "id": "db_128",
-  "client_id": "client_001",
+  "tenant_id": "client_001",
   "type": "mysql",
   "version": "8.0",
   "engine": "percona",
@@ -207,7 +207,7 @@ Authorization: Bearer <JWT_TOKEN>
 
 ### 1. Client Management
 
-#### GET `/api/v1/clients`
+#### GET `/api/v1/tenants`
 List all clients (paginated).
 
 **Query Parameters:**
@@ -238,7 +238,7 @@ List all clients (paginated).
 
 ---
 
-#### POST `/api/v1/clients`
+#### POST `/api/v1/tenants`
 Create a new client **(Admin only)**.
 
 **Request Body:**
@@ -315,7 +315,7 @@ Create a new client **(Admin only)**.
 
 ---
 
-#### GET `/api/v1/clients/{id}`
+#### GET `/api/v1/tenants/{id}`
 Get a specific client.
 
 **Response:**
@@ -330,7 +330,7 @@ Get a specific client.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}`
+#### PATCH `/api/v1/tenants/{id}`
 Update client settings **(Admin only)**.
 
 **Request Body (all optional):**
@@ -379,7 +379,7 @@ Update client settings **(Admin only)**.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}`
+#### DELETE `/api/v1/tenants/{id}`
 Delete a client (hard delete).
 
 **Query Parameters:**
@@ -414,7 +414,7 @@ Delete a client (hard delete).
 
 ### 2. Subscription Management
 
-#### GET `/api/v1/clients/{id}/subscription`
+#### GET `/api/v1/tenants/{id}/subscription`
 Get subscription details for a client.
 
 **Response:**
@@ -437,7 +437,7 @@ Get subscription details for a client.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/subscription`
+#### PATCH `/api/v1/tenants/{id}/subscription`
 Update subscription details **(Admin only)**.
 
 **Request Body:**
@@ -485,13 +485,13 @@ Update subscription details **(Admin only)**.
 
 The `plan` field on a client is **immutable** — it cannot be changed via PATCH. To change a customer's plan, the admin must:
 
-1. **Create a new client** with the target plan (`POST /api/v1/clients/`)
+1. **Create a new client** with the target plan (`POST /api/v1/tenants/`)
 2. **Migrate data** from the old client (domains, databases, files, email) using backup/restore
 3. **Update external billing** to reflect the new plan
-4. **Suspend** the old client (`PATCH /api/v1/clients/{old_id}` → `status: suspended`)
-5. **Delete** the old client once migration is verified (`DELETE /api/v1/clients/{old_id}`)
+4. **Suspend** the old client (`PATCH /api/v1/tenants/{old_id}` → `status: suspended`)
+5. **Delete** the old client once migration is verified (`DELETE /api/v1/tenants/{old_id}`)
 
-> **Future improvement:** A dedicated `POST /api/v1/clients/{id}/plan-change` endpoint could automate this workflow, handling ResourceQuota changes and feature flag updates in a single operation. Since all clients use dedicated pods (ADR-024), plan upgrades only require ResourceQuota edits — no pod migration. This is deferred to Phase 2.
+> **Future improvement:** A dedicated `POST /api/v1/tenants/{id}/plan-change` endpoint could automate this workflow, handling ResourceQuota changes and feature flag updates in a single operation. Since all clients use dedicated pods (ADR-024), plan upgrades only require ResourceQuota edits — no pod migration. This is deferred to Phase 2.
 
 **Downgrade considerations:**
 - If the new plan has lower limits (storage, domains, databases), the admin must ensure the customer's current usage fits within the new plan's limits before migration
@@ -502,7 +502,7 @@ The `plan` field on a client is **immutable** — it cannot be changed via PATCH
 
 ### 3. Domain Management
 
-#### GET `/api/v1/clients/{id}/domains`
+#### GET `/api/v1/tenants/{id}/domains`
 List domains for a client.
 
 **Query Parameters:** Same as `/clients` (limit, offset, search)
@@ -520,7 +520,7 @@ List domains for a client.
 
 ---
 
-#### POST `/api/v1/clients/{id}/domains`
+#### POST `/api/v1/tenants/{id}/domains`
 Create a new domain for a client with configurable DNS mode.
 
 **Request Body (Primary Mode - Full Delegation):**
@@ -641,7 +641,7 @@ Create a new domain for a client with configurable DNS mode.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/domains/{domain_id}`
+#### PATCH `/api/v1/tenants/{id}/domains/{domain_id}`
 Update domain settings and DNS configuration.
 
 **Request Body (optional — SSL/Routing):**
@@ -708,7 +708,7 @@ Update domain settings and DNS configuration.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}/domains/{domain_id}`
+#### DELETE `/api/v1/tenants/{id}/domains/{domain_id}`
 Delete a domain.
 
 **Query Parameters:**
@@ -720,7 +720,7 @@ Delete a domain.
 
 ### 3a. Protected Directories (Password-Protected Paths)
 
-#### POST `/api/v1/clients/{id}/domains/{domain_id}/protected-directories`
+#### POST `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories`
 Create a new password-protected directory.
 
 **Request Body:**
@@ -760,7 +760,7 @@ Create a new password-protected directory.
 
 ---
 
-#### GET `/api/v1/clients/{id}/domains/{domain_id}/protected-directories`
+#### GET `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories`
 List all protected directories for a domain.
 
 **Query Parameters:**
@@ -788,7 +788,7 @@ List all protected directories for a domain.
 
 ---
 
-#### GET `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}`
+#### GET `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}`
 Get protected directory details including users.
 
 **Response:**
@@ -819,7 +819,7 @@ Get protected directory details including users.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}`
+#### PATCH `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}`
 Update protected directory settings.
 
 **Request Body:**
@@ -843,7 +843,7 @@ Update protected directory settings.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}`
+#### DELETE `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}`
 Delete a protected directory.
 
 **Query Parameters:**
@@ -859,7 +859,7 @@ Delete a protected directory.
 
 ---
 
-#### POST `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
+#### POST `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
 Create a new user for protected directory.
 
 **Request Body:**
@@ -903,7 +903,7 @@ Create a new user for protected directory.
 
 ---
 
-#### GET `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
+#### GET `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users`
 List users for protected directory.
 
 **Query Parameters:**
@@ -914,7 +914,7 @@ List users for protected directory.
 
 ---
 
-#### POST `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/change-password`
+#### POST `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/change-password`
 Change user password.
 
 **Request Body:**
@@ -934,7 +934,7 @@ Change user password.
 
 ---
 
-#### POST `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/disable`
+#### POST `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}/disable`
 Disable user access.
 
 **Status Codes:** 200, 401, 403, 404
@@ -947,7 +947,7 @@ Disable user access.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}`
+#### DELETE `/api/v1/tenants/{id}/domains/{domain_id}/protected-directories/{dir_id}/users/{user_id}`
 Delete user.
 
 **Status Codes:** 200, 401, 403, 404
@@ -967,9 +967,9 @@ Manages per-domain hosting behavior: WWW/HTTPS redirects, external forwarding, w
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/clients/{id}/domains/{domain_id}/hosting-settings` | Get current hosting settings |
-| `PATCH` | `/api/v1/clients/{id}/domains/{domain_id}/hosting-settings` | Update hosting settings (partial) |
-| `POST` | `/api/v1/clients/{id}/domains/{domain_id}/hosting-settings/rollback` | Rollback to previous config |
+| `GET` | `/api/v1/tenants/{id}/domains/{domain_id}/hosting-settings` | Get current hosting settings |
+| `PATCH` | `/api/v1/tenants/{id}/domains/{domain_id}/hosting-settings` | Update hosting settings (partial) |
+| `POST` | `/api/v1/tenants/{id}/domains/{domain_id}/hosting-settings/rollback` | Rollback to previous config |
 
 **Configurable Settings:**
 - `redirect_www` — `"to_www"`, `"to_non_www"`, or `"disabled"`
@@ -984,7 +984,7 @@ See **HOSTING_SETTINGS_SPECIFICATION.md** for complete endpoint schemas, conflic
 
 ### 3c. Web Server & PHP Version Switching
 
-#### GET `/api/v1/clients/{id}/catalog`
+#### GET `/api/v1/tenants/{id}/catalog`
 Get available catalog images for this client.
 
 **Query Parameters:**
@@ -1028,7 +1028,7 @@ Get available catalog images for this client.
 
 ---
 
-#### POST `/api/v1/clients/{id}/catalog/{image_id}/compatibility-check`
+#### POST `/api/v1/tenants/{id}/catalog/{image_id}/compatibility-check`
 Run pre-flight compatibility checks before switching.
 
 **Request Body:**
@@ -1071,7 +1071,7 @@ Run pre-flight compatibility checks before switching.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/catalog_image`
+#### PATCH `/api/v1/tenants/{id}/catalog_image`
 Switch to a new catalog image (web server / PHP version).
 
 **Request Body:**
@@ -1125,7 +1125,7 @@ Switch to a new catalog image (web server / PHP version).
 
 ---
 
-#### GET `/api/v1/clients/{id}/catalog_image/{switch_id}`
+#### GET `/api/v1/tenants/{id}/catalog_image/{switch_id}`
 Get status of an in-progress or completed switch.
 
 **Response:**
@@ -1172,7 +1172,7 @@ Get status of an in-progress or completed switch.
 
 ---
 
-#### POST `/api/v1/clients/{id}/catalog_image/{switch_id}/cancel`
+#### POST `/api/v1/tenants/{id}/catalog_image/{switch_id}/cancel`
 Cancel an in-progress switch.
 
 **Response:**
@@ -1192,7 +1192,7 @@ Cancel an in-progress switch.
 
 ---
 
-#### POST `/api/v1/clients/{id}/catalog_image/rollback`
+#### POST `/api/v1/tenants/{id}/catalog_image/rollback`
 Rollback to the previous catalog image.
 
 **Request Body:**
@@ -1219,7 +1219,7 @@ Rollback to the previous catalog image.
 
 ---
 
-#### GET `/api/v1/clients/{id}/catalog_image/history`
+#### GET `/api/v1/tenants/{id}/catalog_image/history`
 View switch history with timeline and outcomes.
 
 **Query Parameters:**
@@ -1255,7 +1255,7 @@ View switch history with timeline and outcomes.
 
 ### 3d. Database Management
 
-#### GET `/api/v1/clients/{id}/databases`
+#### GET `/api/v1/tenants/{id}/databases`
 List databases for a client.
 
 **Response:**
@@ -1271,7 +1271,7 @@ List databases for a client.
 
 ---
 
-#### POST `/api/v1/clients/{id}/databases`
+#### POST `/api/v1/tenants/{id}/databases`
 Create a new database.
 
 **Request Body:**
@@ -1323,7 +1323,7 @@ Create a new database.
 
 ---
 
-#### GET `/api/v1/clients/{id}/databases/{db_id}`
+#### GET `/api/v1/tenants/{id}/databases/{db_id}`
 Get database details including credentials.
 
 **Response:**
@@ -1338,7 +1338,7 @@ Get database details including credentials.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/databases/{db_id}/credentials`
+#### PATCH `/api/v1/tenants/{id}/databases/{db_id}/credentials`
 Rotate database password.
 
 **Request Body:**
@@ -1370,7 +1370,7 @@ Rotate database password.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}/databases/{db_id}`
+#### DELETE `/api/v1/tenants/{id}/databases/{db_id}`
 Delete a database.
 
 **Query Parameters:**
@@ -1384,7 +1384,7 @@ Delete a database.
 
 Manage customer cron jobs — recurring scheduled tasks executed on Kubernetes CronJob resources. See **CUSTOMER_CRON_JOBS.md** for detailed architecture, database schema, and implementation guide.
 
-#### GET `/api/v1/clients/{id}/cron-jobs`
+#### GET `/api/v1/tenants/{id}/cron-jobs`
 
 List all cron jobs for a customer.
 
@@ -1432,7 +1432,7 @@ List all cron jobs for a customer.
 
 ---
 
-#### GET `/api/v1/clients/{id}/cron-jobs/{job_id}`
+#### GET `/api/v1/tenants/{id}/cron-jobs/{job_id}`
 
 Get details of a specific cron job.
 
@@ -1476,7 +1476,7 @@ Get details of a specific cron job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/cron-jobs`
+#### POST `/api/v1/tenants/{id}/cron-jobs`
 
 Create a new cron job for a customer.
 
@@ -1538,7 +1538,7 @@ Create a new cron job for a customer.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/cron-jobs/{job_id}`
+#### PATCH `/api/v1/tenants/{id}/cron-jobs/{job_id}`
 
 Update a cron job configuration.
 
@@ -1564,8 +1564,8 @@ Update a cron job configuration.
 
 ---
 
-#### POST `/api/v1/clients/{id}/cron-jobs/{job_id}/enable`
-#### POST `/api/v1/clients/{id}/cron-jobs/{job_id}/disable`
+#### POST `/api/v1/tenants/{id}/cron-jobs/{job_id}/enable`
+#### POST `/api/v1/tenants/{id}/cron-jobs/{job_id}/disable`
 
 Enable or disable a cron job without deleting it.
 
@@ -1584,7 +1584,7 @@ Enable or disable a cron job without deleting it.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}/cron-jobs/{job_id}`
+#### DELETE `/api/v1/tenants/{id}/cron-jobs/{job_id}`
 
 Permanently delete a cron job (soft delete; data retained 30 days).
 
@@ -1592,7 +1592,7 @@ Permanently delete a cron job (soft delete; data retained 30 days).
 
 ---
 
-#### GET `/api/v1/clients/{id}/cron-jobs/{job_id}/runs`
+#### GET `/api/v1/tenants/{id}/cron-jobs/{job_id}/runs`
 
 Retrieve execution history for a cron job.
 
@@ -1636,7 +1636,7 @@ Retrieve execution history for a cron job.
 
 ---
 
-#### GET `/api/v1/clients/{id}/cron-jobs/{job_id}/last-run`
+#### GET `/api/v1/tenants/{id}/cron-jobs/{job_id}/last-run`
 
 Quick endpoint to get only the most recent execution (for monitoring/dashboards).
 
@@ -1663,7 +1663,7 @@ Quick endpoint to get only the most recent execution (for monitoring/dashboards)
 
 ---
 
-#### POST `/api/v1/clients/{id}/cron-jobs/{job_id}/trigger`
+#### POST `/api/v1/tenants/{id}/cron-jobs/{job_id}/trigger`
 
 Immediately execute a cron job, regardless of schedule (manual trigger).
 
@@ -1684,7 +1684,7 @@ Immediately execute a cron job, regardless of schedule (manual trigger).
 
 ---
 
-#### POST `/api/v1/clients/{id}/cron-jobs/validate-schedule`
+#### POST `/api/v1/tenants/{id}/cron-jobs/validate-schedule`
 
 Validate a crontab schedule string without creating a job.
 
@@ -1778,7 +1778,7 @@ Disable all cron jobs for a customer.
 
 Manage customer FTP/SFTP users for file access and transfers. See **FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md** for detailed architecture, database schema, security model, and implementation guide.
 
-#### GET `/api/v1/clients/{id}/ftp/users`
+#### GET `/api/v1/tenants/{id}/ftp/users`
 
 List all FTP/SFTP users for a customer.
 
@@ -1824,7 +1824,7 @@ List all FTP/SFTP users for a customer.
 
 ---
 
-#### POST `/api/v1/clients/{id}/ftp/users`
+#### POST `/api/v1/tenants/{id}/ftp/users`
 
 Create a new FTP/SFTP user for a customer.
 
@@ -1874,7 +1874,7 @@ Create a new FTP/SFTP user for a customer.
 
 ---
 
-#### GET `/api/v1/clients/{id}/ftp/users/{user_id}`
+#### GET `/api/v1/tenants/{id}/ftp/users/{user_id}`
 
 Get details of a specific FTP/SFTP user.
 
@@ -1916,7 +1916,7 @@ Get details of a specific FTP/SFTP user.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/ftp/users/{user_id}`
+#### PATCH `/api/v1/tenants/{id}/ftp/users/{user_id}`
 
 Update an FTP/SFTP user.
 
@@ -1941,7 +1941,7 @@ Update an FTP/SFTP user.
 
 ---
 
-#### POST `/api/v1/clients/{id}/ftp/users/{user_id}/rotate-password`
+#### POST `/api/v1/tenants/{id}/ftp/users/{user_id}/rotate-password`
 
 Rotate (change) the password for an FTP/SFTP user.
 
@@ -1971,7 +1971,7 @@ Rotate (change) the password for an FTP/SFTP user.
 
 ---
 
-#### DELETE `/api/v1/clients/{id}/ftp/users/{user_id}`
+#### DELETE `/api/v1/tenants/{id}/ftp/users/{user_id}`
 
 Delete an FTP/SFTP user.
 
@@ -1996,7 +1996,7 @@ Delete an FTP/SFTP user.
 
 ---
 
-#### GET `/api/v1/clients/{id}/ftp/users/{user_id}/audit-log`
+#### GET `/api/v1/tenants/{id}/ftp/users/{user_id}/audit-log`
 
 View audit log for a specific FTP/SFTP user's file operations.
 
@@ -2035,7 +2035,7 @@ View audit log for a specific FTP/SFTP user's file operations.
 
 ---
 
-#### GET `/api/v1/clients/{id}/ftp/users/{user_id}/bandwidth`
+#### GET `/api/v1/tenants/{id}/ftp/users/{user_id}/bandwidth`
 
 Get monthly bandwidth usage for an FTP/SFTP user.
 
@@ -2065,7 +2065,7 @@ Get monthly bandwidth usage for an FTP/SFTP user.
 
 ---
 
-#### GET `/api/v1/clients/{id}/ftp/connection-info`
+#### GET `/api/v1/tenants/{id}/ftp/connection-info`
 
 Get FTP/FTPS/SFTP connection information and recommended protocols.
 
@@ -2103,7 +2103,7 @@ Get FTP/FTPS/SFTP connection information and recommended protocols.
 
 ---
 
-#### PATCH `/api/v1/clients/{id}/ftp/settings`
+#### PATCH `/api/v1/tenants/{id}/ftp/settings`
 
 Configure FTP/FTPS/SFTP protocols for customer.
 
@@ -2128,7 +2128,7 @@ Configure FTP/FTPS/SFTP protocols for customer.
 
 Manage customer mailbox imports and exports via IMAP protocol. Supports migration from legacy platforms, email consolidation, and scheduled backups. See **MAILBOX_IMPORT_EXPORT_SPECIFICATION.md** for detailed architecture, deduplication strategy, credential management, and implementation guide.
 
-#### POST `/api/v1/clients/{id}/email/import-jobs`
+#### POST `/api/v1/tenants/{id}/email/import-jobs`
 
 Create a new import job to import emails from external IMAP server.
 
@@ -2177,7 +2177,7 @@ Create a new import job to import emails from external IMAP server.
 
 ---
 
-#### GET `/api/v1/clients/{id}/email/import-jobs`
+#### GET `/api/v1/tenants/{id}/email/import-jobs`
 
 List all import jobs for a customer.
 
@@ -2218,7 +2218,7 @@ List all import jobs for a customer.
 
 ---
 
-#### GET `/api/v1/clients/{id}/email/import-jobs/{job_id}`
+#### GET `/api/v1/tenants/{id}/email/import-jobs/{job_id}`
 
 Get details of a specific import job.
 
@@ -2248,7 +2248,7 @@ Get details of a specific import job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/import-jobs/{job_id}/pause`
+#### POST `/api/v1/tenants/{id}/email/import-jobs/{job_id}/pause`
 
 Pause an in-progress import job. Can be resumed later from the same position.
 
@@ -2270,7 +2270,7 @@ Pause an in-progress import job. Can be resumed later from the same position.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/import-jobs/{job_id}/resume`
+#### POST `/api/v1/tenants/{id}/email/import-jobs/{job_id}/resume`
 
 Resume a paused import job from the last position.
 
@@ -2291,7 +2291,7 @@ Resume a paused import job from the last position.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/import-jobs/{job_id}/cancel`
+#### POST `/api/v1/tenants/{id}/email/import-jobs/{job_id}/cancel`
 
 Cancel an import job.
 
@@ -2316,7 +2316,7 @@ Cancel an import job.
 
 ---
 
-#### GET `/api/v1/clients/{id}/email/import-jobs/{job_id}/audit-log`
+#### GET `/api/v1/tenants/{id}/email/import-jobs/{job_id}/audit-log`
 
 View audit log for an import job.
 
@@ -2355,7 +2355,7 @@ View audit log for an import job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/test-imap-connection`
+#### POST `/api/v1/tenants/{id}/email/test-imap-connection`
 
 Test connection to external IMAP server before creating import job.
 
@@ -2400,7 +2400,7 @@ Test connection to external IMAP server before creating import job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/export-jobs`
+#### POST `/api/v1/tenants/{id}/email/export-jobs`
 
 Create a new export job to export emails to external IMAP server.
 
@@ -2436,7 +2436,7 @@ Create a new export job to export emails to external IMAP server.
 
 ---
 
-#### GET `/api/v1/clients/{id}/email/export-jobs`
+#### GET `/api/v1/tenants/{id}/email/export-jobs`
 
 List all export jobs for a customer.
 
@@ -2448,7 +2448,7 @@ List all export jobs for a customer.
 
 ---
 
-#### GET `/api/v1/clients/{id}/email/export-jobs/{job_id}`
+#### GET `/api/v1/tenants/{id}/email/export-jobs/{job_id}`
 
 Get details of a specific export job.
 
@@ -2458,7 +2458,7 @@ Get details of a specific export job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/export-jobs/{job_id}/pause`
+#### POST `/api/v1/tenants/{id}/email/export-jobs/{job_id}/pause`
 
 Pause an in-progress export job.
 
@@ -2468,7 +2468,7 @@ Pause an in-progress export job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/export-jobs/{job_id}/resume`
+#### POST `/api/v1/tenants/{id}/email/export-jobs/{job_id}/resume`
 
 Resume a paused export job.
 
@@ -2478,7 +2478,7 @@ Resume a paused export job.
 
 ---
 
-#### POST `/api/v1/clients/{id}/email/export-jobs/{job_id}/cancel`
+#### POST `/api/v1/tenants/{id}/email/export-jobs/{job_id}/cancel`
 
 Cancel an export job.
 
@@ -2490,7 +2490,7 @@ Cancel an export job.
 
 ### 4. Backup & Restore
 
-#### GET `/api/v1/clients/{id}/backups`
+#### GET `/api/v1/tenants/{id}/backups`
 List backups for a client.
 
 **Query Parameters:**
@@ -2520,7 +2520,7 @@ List backups for a client.
 
 ---
 
-#### POST `/api/v1/clients/{id}/backups`
+#### POST `/api/v1/tenants/{id}/backups`
 Trigger a manual backup.
 
 **Request Body:**
@@ -2547,7 +2547,7 @@ Trigger a manual backup.
 
 ---
 
-#### POST `/api/v1/clients/{id}/backups/{backup_id}/restore`
+#### POST `/api/v1/tenants/{id}/backups/{backup_id}/restore`
 Restore from a backup.
 
 **Request Body:**
@@ -2586,7 +2586,7 @@ Restore from a backup.
 
 ### 5. Monitoring & Status
 
-#### GET `/api/v1/clients/{id}/metrics`
+#### GET `/api/v1/tenants/{id}/metrics`
 Get resource usage metrics for a client.
 
 **Query Parameters:**
@@ -2786,7 +2786,7 @@ API rate limiting protects against abuse and ensures fair usage. Implemented via
 | **Global (per IP)** | 100 requests | 1 minute | All endpoints |
 | **Authentication** | 10 requests | 1 minute | `/auth/*`, failed login attempts |
 | **Write operations** | 30 requests | 1 minute | POST, PATCH, DELETE |
-| **Backup/restore** | 5 requests | 10 minutes | `/api/v1/clients/{id}/backups/*` |
+| **Backup/restore** | 5 requests | 10 minutes | `/api/v1/tenants/{id}/backups/*` |
 
 **Response headers:**
 - `X-RateLimit-Limit` — Maximum requests in window
@@ -2819,7 +2819,7 @@ fastify.register(rateLimit, {
 
 ### Performance
 - Cache GET responses for 5 minutes (except metrics)
-- Index database queries on `client_id`, `created_at`
+- Index database queries on `tenant_id`, `created_at`
 - Pagination required for list endpoints
 - Async operations (backups, restores) return 202 status
 
@@ -2843,7 +2843,7 @@ fastify.register(rateLimit, {
 # 1. Create client with subscription
 # Admin creates new customer in external billing platform first,
 # gets subscription ID, then provisions here
-POST /api/v1/clients
+POST /api/v1/tenants
 {
   "name": "Acme Corp",
   "email": "admin@acme.com",
@@ -2857,11 +2857,11 @@ POST /api/v1/clients
 # Response: id=client_001
 
 # 2. Check subscription status
-GET /api/v1/clients/client_001/subscription
+GET /api/v1/tenants/client_001/subscription
 # Response: expiry_date=2026-03-01, status=active, days_until_expiry=365
 
 # 3. Create domain
-POST /api/v1/clients/client_001/domains
+POST /api/v1/tenants/client_001/domains
 { "name": "www.acme.com", "registrar": "namecheap", "registrar_api_key": "..." }
 # Response: id=domain_042, status=pending_dns
 
@@ -2869,7 +2869,7 @@ POST /api/v1/clients/client_001/domains
 #    ns1.k8s.local, ns2.k8s.local
 
 # 5. Verify domain is live
-GET /api/v1/clients/client_001/domains/domain_042
+GET /api/v1/tenants/client_001/domains/domain_042
 # Response: status=active (once DNS propagates, ~5-30 minutes)
 ```
 
@@ -2880,14 +2880,14 @@ GET /api/v1/clients/client_001/domains/domain_042
 # Admin updates subscription in platform API
 
 # 1. Check current subscription
-GET /api/v1/clients/client_001/subscription
+GET /api/v1/tenants/client_001/subscription
 # Response: expiry_date=2025-03-01, days_until_expiry=10
 
 # 2. Customer renews via external billing (e.g., Stripe)
 # External platform sends webhook with new sub ID
 
 # 3. Admin updates subscription in platform
-PATCH /api/v1/clients/client_001/subscription
+PATCH /api/v1/tenants/client_001/subscription
 {
   "expiry_date": "2027-03-01",
   "external_billing_id": "sub_stripe_renewal_67890",
@@ -2923,7 +2923,7 @@ in `docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md`.
 ### Mail PVC Storage
 
 Online-resize the `mail-pg-1` PVC backing the platform mail database.
-Single-tenant — operator-driven; the per-client storage policy is
+Single-tenant — operator-driven; the per-tenant storage policy is
 unrelated.
 
 #### GET `/api/v1/admin/mail/pvc/storage`

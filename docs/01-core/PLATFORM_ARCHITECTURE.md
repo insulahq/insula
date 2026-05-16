@@ -146,13 +146,13 @@ automation.
 | ------------------- | -------------------------------------------------- |
 | Hosting panel       | Custom management API + web UI                     |
 | Server management   | Declarative, automated via Kubernetes              |
-| Client isolation    | Namespace-per-client with resource quotas + network policies |
+| Client isolation    | Namespace-per-tenant with resource quotas + network policies |
 | Workload model      | **Dedicated pods for all clients** — every client gets their own pod in a `client-{id}` namespace. NGINX+PHP-FPM default, Apache+PHP-FPM available per domain. See ADR-024. |
 | Container catalog   | Centrally managed, standardized images — admin controls lifecycle |
 | Scaling             | Horizontal (add nodes), auto-scaling workloads     |
-| Deployment          | SFTP, Git-based file sync, web file manager (no per-client builds) |
+| Deployment          | SFTP, Git-based file sync, web file manager (no per-tenant builds) |
 | Monitoring          | Prometheus + Grafana + Loki                        |
-| Backup              | Velero + per-client DB/file backups                |
+| Backup              | Velero + per-tenant DB/file backups                |
 | SSL                 | cert-manager + Let's Encrypt (fully automated)     |
 | Email               | Hybrid (self-hosted + external provider support); Roundcube webmail with OIDC + app passwords |
 | HA strategy         | **All HA features optional** — start minimal, upgrade as needed |
@@ -160,7 +160,7 @@ automation.
 ### 1.4 Key Objectives
 
 - [ ] Eliminate manual server provisioning — all client onboarding automated
-- [ ] Namespace-per-client isolation with enforced resource quotas — every client gets a `client-{id}` namespace (ADR-024)
+- [ ] Namespace-per-tenant isolation with enforced resource quotas — every client gets a `client-{id}` namespace (ADR-024)
 - [ ] Centrally managed workload container catalog — admin controls all available runtime images
 - [ ] Clients select from pre-approved containers only (e.g., "NGINX PHP 8.4")
 - [ ] Admin can publish new container versions, deprecate old ones, and migrate clients
@@ -221,7 +221,7 @@ hardened, tested runtime image maintained by the platform admin.
 **Workload types (ADR-026):**
 - **Runtimes** — Generic web server environments (PHP, Node.js, Python, static). Clients upload their own application files via SFTP/Git Deploy and manage their software manually.
 - **Databases** — Dedicated database instances (MariaDB, PostgreSQL). Multiple runtimes can share one database. The platform manages database/user creation and credential injection.
-- **Services** — Supporting infrastructure (Redis). Shared across workloads within a client namespace.
+- **Services** — Supporting infrastructure (Redis). Shared across workloads within a tenant namespace.
 
 Workloads are deployed by the platform as Kubernetes Deployments or StatefulSets (not Helm charts) because they need shared resource management — e.g., two runtimes sharing one database instance. See ADR-026 for the rationale.
 
@@ -240,7 +240,7 @@ Every client — regardless of plan — gets a **dedicated pod** in their own `c
 - **Simplicity**: Single provisioning path for all plans — no shared pod management
 - **Lower resource usage**: Shared base layers across clients (Docker layer caching on nodes)
 - **Simplified support**: Known environments reduce debugging complexity
-- **No build infrastructure needed**: Eliminates per-client CI/CD pipelines
+- **No build infrastructure needed**: Eliminates per-tenant CI/CD pipelines
 
 ### 2.2 Catalog Structure
 
@@ -558,7 +558,7 @@ Applications can be offered as **add-ons** to hosting plans:
 | Business| Nextcloud, Gitea      | 2             | No           |
 | Premium | All                   | Unlimited     | Yes          |
 
-> Like all plan parameters, these can be **overridden per-client**.
+> Like all plan parameters, these can be **overridden per-tenant**.
 
 ---
 

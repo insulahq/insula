@@ -138,7 +138,7 @@ tigera-operator
 
 Tenant namespaces (`client-*`) and CNPG instance pods (label
 `cnpg.io/instance`) are **always** refused regardless of any other
-condition. Use the per-client / CNPG-failover flows for those.
+condition. Use the per-tenant / CNPG-failover flows for those.
 
 ### Audit log
 

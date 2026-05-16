@@ -1,7 +1,7 @@
 # ADR-036 — Custom Deployments (Bring-Your-Own Container / Compose)
 
 **Status:** Accepted · 2026-05-11 (PR-1) — 2026-05-12 (PRs 2–5 shipped)
-**Supersedes / related:** ADR-025 (Workload Catalog), ADR-026 (Application Catalog), ADR-033 (Client Lifecycle Hooks), ADR-035 (Tenant Backup Coverage Contract)
+**Supersedes / related:** ADR-025 (Workload Catalog), ADR-026 (Application Catalog), ADR-033 (Tenant Lifecycle Hooks), ADR-035 (Tenant Backup Coverage Contract)
 
 ## Context
 
@@ -60,7 +60,7 @@ Five PRs land the feature end-to-end:
 | #10 (PR-1) | Substrate: shared Zod schemas, DB schema + 2 migrations, PSS labels in `applyNamespace`, backfill script. | `packages/api-contracts/src/custom-deployments.ts` + `compose.ts`, `backend/src/db/migrations/0098,0099`, `backend/src/modules/k8s-provisioner/service.ts`, `scripts/backfill-tenant-namespace-pss.sh` |
 | #11 (PR-2) | Simple-mode runtime: validator, image-reference parser, semver, PAT store, update-checker, image-audit, k8s-deployer (single service), reconcile integration, service + routes. | `backend/src/modules/custom-deployments/{validator,image-reference,semver-compare,pat-store,update-checker,image-audit,k8s-deployer,reconcile,service,routes,role-types}.ts` |
 | #12 (PR-3) | Compose parser + multi-service runtime: hand-written compose 3.7–3.9 parser, JSON Schema export, k8s-deployer multi-service refactor (depends_on initContainers, healthcheck→probe rendering, per-service Deployments). | `backend/src/modules/custom-deployments/{compose-parser,compose-schema-export}.ts`, edits to `k8s-deployer.ts` + `service.ts` + `routes.ts` |
-| #13 (PR-4) | UI: client-panel "Custom Containers" tab with simple wizard + compose editor (textarea + JSON-schema served, Monaco follow-up) + updates pill + PAT modal; admin-panel source filter chip + per-row badge. | `frontend/client-panel/src/components/custom-deployments/*`, `frontend/client-panel/src/hooks/use-custom-deployments.ts`, edits to `Applications.tsx` + admin-panel `ClientDetail.tsx` + `use-deployments.ts` |
+| #13 (PR-4) | UI: tenant-panel "Custom Containers" tab with simple wizard + compose editor (textarea + JSON-schema served, Monaco follow-up) + updates pill + PAT modal; admin-panel source filter chip + per-row badge. | `frontend/tenant-panel/src/components/custom-deployments/*`, `frontend/tenant-panel/src/hooks/use-custom-deployments.ts`, edits to `Applications.tsx` + admin-panel `ClientDetail.tsx` + `use-deployments.ts` |
 | this PR (PR-5) | Integration harness, lifecycle/bundle verification, operator + tenant docs, this ADR. | `scripts/integration-custom-deployments.sh`, `docs/02-operations/CUSTOM_DEPLOYMENTS.md`, `docs/03-features/CUSTOM_CONTAINERS_USER_GUIDE.md`, this file |
 
 ## Consequences

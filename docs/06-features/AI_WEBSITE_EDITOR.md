@@ -70,7 +70,7 @@ Step 2 (per file — sequential):
 
 ---
 
-## Surface 2: AI Website Editor (Client Panel — Phase 4+)
+## Surface 2: AI Website Editor (Tenant Panel — Phase 4+)
 
 **Status:** Design complete, implementation deferred to post-Phase 3.
 
@@ -241,7 +241,7 @@ CREATE TABLE IF NOT EXISTS ai_models (
 ```sql
 CREATE TABLE IF NOT EXISTS ai_token_usage (
   id              VARCHAR(36) PRIMARY KEY,
-  client_id       VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  tenant_id       VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   deployment_id   VARCHAR(36) REFERENCES deployments(id) ON DELETE SET NULL,
   model_id        VARCHAR(100) NOT NULL REFERENCES ai_models(id),
   mode            VARCHAR(20) NOT NULL,
@@ -251,7 +251,7 @@ CREATE TABLE IF NOT EXISTS ai_token_usage (
   created_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS ai_token_usage_client_idx ON ai_token_usage(client_id, created_at);
+CREATE INDEX IF NOT EXISTS ai_token_usage_client_idx ON ai_token_usage(tenant_id, created_at);
 ```
 
 ---

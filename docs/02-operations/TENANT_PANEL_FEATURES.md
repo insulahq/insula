@@ -1,4 +1,4 @@
-# Client Panel Features
+# Tenant Panel Features
 
 ## Overview
 
@@ -88,7 +88,7 @@ Per-domain TLS certificate management. Customers can view certificate status, ru
 
 ### Certificate Detail View
 
-**Client Panel → Domains → {domain} → SSL Certificate**
+**Tenant Panel → Domains → {domain} → SSL Certificate**
 
 | Field | Visible to customer |
 |-------|-------------------|
@@ -122,7 +122,7 @@ Certificate files are available via API only — there is no panel download butt
 
 For CI/CD pipelines, deploy scripts, and external servers that need to fetch the certificate automatically — especially when it renews every 90 days.
 
-**Client Panel → Domains → {domain} → SSL Certificate → API Access**
+**Tenant Panel → Domains → {domain} → SSL Certificate → API Access**
 
 | Field | Notes |
 |-------|-------|
@@ -314,7 +314,7 @@ Multiple ways to deploy code and manage files. All methods access the **same und
 
 ## AI Website Editor
 
-A no-code website creation and editing tool for customers who are not comfortable working with HTML or files directly. Accessed via Client Panel → AI Website Editor. Operates on the same `public_html/` directory as FileBrowser and SFTP — both paths can be used for the same domain.
+A no-code website creation and editing tool for customers who are not comfortable working with HTML or files directly. Accessed via Tenant Panel → AI Website Editor. Operates on the same `public_html/` directory as FileBrowser and SFTP — both paths can be used for the same domain.
 
 **What it produces:** Static HTML/CSS websites with optional contact-form-to-email. No frameworks, no databases, no server-side logic beyond a fixed contact form handler.
 
@@ -443,7 +443,7 @@ Schedule recurring tasks (cron jobs) to execute scripts on a defined schedule. C
 
 ### Cron Jobs Management Dashboard
 
-**Location:** Client Panel > Website & Services > Cron Jobs
+**Location:** Tenant Panel > Website & Services > Cron Jobs
 
 #### List View
 
@@ -799,7 +799,7 @@ The client panel is driven by a **REST API** (or GraphQL alternative) that serve
 | **Login method** | OIDC (Google/Apple) via Dex + email/password fallback |
 | **Session management** | JWT tokens (access + refresh), httpOnly cookies |
 | **Logout** | Clear session, revoke refresh token |
-| **Role-based access** | Admin role (full access), Client role (scoped to client namespace) |
+| **Role-based access** | Admin role (full access), Client role (scoped to tenant namespace) |
 | **MFA** | Delegated to OIDC provider (Google Authenticator, Face ID, etc.) |
 | **Session timeout** | Configurable (default 4 hours); refresh token valid for 30 days |
 | **Remember me** | Persistent login via refresh token (browser local storage) |

@@ -139,9 +139,9 @@ Permissions:
 **Permissions:** Full access to own client resources
 
 ```yaml
-Role: client_admin
+Role: tenant_admin
 Description: Full access to own client's resources - workloads, domains, etc.
-Scope: client_id (their own tenant)
+Scope: tenant_id (their own tenant)
 Permissions:
   - clients:read:own                    # Read own client details
   - clients:update:own                  # Update own client settings
@@ -178,7 +178,7 @@ Permissions:
   - monitoring:export:own               # Export metrics/logs
   - users:read:own                      # List own team members
   - users:invite                        # Invite team members
-  - users:manage_rbac:own               # Grant client_user role to team
+  - users:manage_rbac:own               # Grant tenant_user role to team
   - audit:read:own                      # Read own audit logs
   - settings:update:own                 # Update client settings
   - branding:read:own                   # View branding customization
@@ -195,9 +195,9 @@ Permissions:
 **Permissions:** Limited to operational tasks, no destructive actions by default
 
 ```yaml
-Role: client_user
+Role: tenant_user
 Description: Limited access for team members - deploy, monitor, read-only settings
-Scope: client_id (their assigned tenant)
+Scope: tenant_id (their assigned tenant)
 Permissions:
   - clients:read:own                    # Read client info
   - workloads:read:own
@@ -261,7 +261,7 @@ Permissions:
 ```yaml
 Role: viewer
 Description: Read-only access - no modification capabilities
-Scope: client_id (their assigned tenant)
+Scope: tenant_id (their assigned tenant)
 Permissions:
   - clients:read:own
   - workloads:read:own
@@ -321,14 +321,14 @@ clients:create:
 
 clients:read:
   description: Read client details
-  role: platform_admin, region_admin, client_admin (own)
+  role: platform_admin, region_admin, tenant_admin (own)
   fields_visible:
     - public: id, name, plan, status, created_at
     - admin: password_reset_token, api_keys, internal_notes
 
 clients:update:
   description: Update client settings
-  role: platform_admin, region_admin, client_admin (own)
+  role: platform_admin, region_admin, tenant_admin (own)
   protected_fields:
     - plan: platform_admin, region_admin only
     - status: platform_admin, region_admin only
@@ -352,44 +352,44 @@ clients:suspend:
 ```yaml
 workloads:create:
   description: Create new workload
-  role: client_admin, client_user (limited)
+  role: tenant_admin, tenant_user (limited)
   limits:
-    - client_user: respects quota
-    - client_admin: can exceed quota with approval
+    - tenant_user: respects quota
+    - tenant_admin: can exceed quota with approval
 
 workloads:read:
   description: Read workload details and status
   role: all (own-scoped)
   fields_hidden:
-    - environment_variables (values)  # Only keys visible to client_user
+    - environment_variables (values)  # Only keys visible to tenant_user
     - private_keys
     - api_credentials
 
 workloads:update:
   description: Update workload configuration
-  role: client_admin, client_user
+  role: tenant_admin, tenant_user
   protected_fields:
-    - cpu_request: client_admin only (if exceeds quota)
-    - memory_request: client_admin only (if exceeds quota)
+    - cpu_request: tenant_admin only (if exceeds quota)
+    - memory_request: tenant_admin only (if exceeds quota)
 
 workloads:delete:
   description: Delete workload
-  role: client_admin only
+  role: tenant_admin only
   requires_running_stop: true
 
 workloads:start:
   description: Start workload
-  role: client_admin, client_user
+  role: tenant_admin, tenant_user
   quota_check: true
 
 workloads:stop:
   description: Stop workload
-  role: client_admin, client_user
+  role: tenant_admin, tenant_user
   grace_period: 30 seconds
 
 workloads:view_logs:
   description: View workload logs
-  role: client_admin, client_user
+  role: tenant_admin, tenant_user
   log_retention: 7 days
 ```
 
@@ -398,23 +398,23 @@ workloads:view_logs:
 ```yaml
 backups:create:
   description: Create backup
-  role: system (automatic), client_admin (manual)
+  role: system (automatic), tenant_admin (manual)
   quota_check: true
 
 backups:read:
   description: List and view backups
-  role: client_admin, client_user
+  role: tenant_admin, tenant_user
 
 backups:restore:
   description: Restore from backup
-  role: client_admin, client_user
+  role: tenant_admin, tenant_user
   notification: "Restore will overwrite current data"
   requires_confirmation: true
   audit_required: true
 
 backups:delete:
   description: Delete backup
-  role: client_admin
+  role: tenant_admin
   prevents: preventing accidental loss
 ```
 
@@ -423,13 +423,13 @@ backups:delete:
 ```yaml
 audit:read:
   description: Read audit logs
-  role: platform_admin (all), region_admin (region), client_admin (own), client_user (own actions only)
+  role: platform_admin (all), region_admin (region), tenant_admin (own), tenant_user (own actions only)
   retention: 7 years
   fields_hidden_from_client_user: ip_address (for privacy)
 
 audit:export:
   description: Export audit logs
-  role: platform_admin, region_admin, client_admin
+  role: platform_admin, region_admin, tenant_admin
   formats: csv, json, pdf
   requires_reason: true
 ```
@@ -439,7 +439,7 @@ audit:export:
 ```yaml
 users:create:
   description: Invite new user
-  role: platform_admin, region_admin, client_admin
+  role: platform_admin, region_admin, tenant_admin
 
 users:read:
   description: List users
@@ -447,7 +447,7 @@ users:read:
   
 users:update:
   description: Update user details
-  role: platform_admin, client_admin (own team only)
+  role: platform_admin, tenant_admin (own team only)
 
 users:delete:
   description: Delete user
@@ -455,11 +455,11 @@ users:delete:
 
 users:manage_rbac:
   description: Assign/modify user roles
-  role: platform_admin, region_admin (limited), client_admin (limited)
+  role: platform_admin, region_admin (limited), tenant_admin (limited)
   constraints:
-    - client_admin: can only assign client_user role
-    - client_admin: cannot assign client_admin role
-    - region_admin: can assign client_admin to clients in region
+    - tenant_admin: can only assign tenant_user role
+    - tenant_admin: cannot assign tenant_admin role
+    - region_admin: can assign tenant_admin to clients in region
 ```
 
 ### Billing Permissions
@@ -467,20 +467,20 @@ users:manage_rbac:
 ```yaml
 billing:read:
   description: Read billing information
-  role: platform_admin, region_admin, client_admin (own)
+  role: platform_admin, region_admin, tenant_admin (own)
   fields_hidden:
-    - payment_method_tokens (from client_user)
-    - per_unit_costs (from client_user)
+    - payment_method_tokens (from tenant_user)
+    - per_unit_costs (from tenant_user)
 
 billing:manage:
   description: Update billing, change plans, payment method
-  role: platform_admin, client_admin (own)
+  role: platform_admin, tenant_admin (own)
   requires_mfa: true
   audit_required: true
 
 subscription:manage:
   description: Manage subscription (upgrade/downgrade/cancel)
-  role: client_admin (own)
+  role: tenant_admin (own)
   downgrade_notice_period: 30 days
 ```
 
@@ -507,7 +507,7 @@ CREATE TABLE user_roles (
   user_id VARCHAR(36) NOT NULL,
   role_id VARCHAR(36) NOT NULL,
   scope_type ENUM('global', 'region', 'client') DEFAULT 'global',
-  scope_id VARCHAR(36),  -- region_id or client_id
+  scope_id VARCHAR(36),  -- region_id or tenant_id
   assigned_at TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (role_id) REFERENCES rbac_roles(id)
@@ -573,7 +573,7 @@ const checkPermission = (
         }
         // CRITICAL: 'own' scope requires resource ownership validation.
         // The permission check alone is NOT sufficient — the calling code
-        // MUST verify resource.client_id === context.tenantId before proceeding.
+        // MUST verify resource.tenant_id === context.tenantId before proceeding.
         // This function only confirms the role grants 'own' scope access;
         // actual ownership is verified by requireOwnership() below.
         if (permScope === 'own' && reqScope === 'own') {
@@ -600,7 +600,7 @@ const requireOwnership = async (
   if (!resource) {
     throw new NotFoundError(`${resourceType} not found`);
   }
-  if (resource.client_id !== context.tenantId) {
+  if (resource.tenant_id !== context.tenantId) {
     throw new ForbiddenError('Access denied: resource belongs to another client');
   }
 };
@@ -613,7 +613,7 @@ app.delete('/api/workloads/:id', authorize('workloads:delete:own'), async (req, 
 
 app.post('/api/workloads', authorize('workloads:create:own'), (req, reply) => {
   // Create operations: tenantId is set from authContext, not from request body
-  // ... create workload with client_id = req.authContext.tenantId
+  // ... create workload with tenant_id = req.authContext.tenantId
 });
 ```
 
@@ -684,7 +684,7 @@ Every role assignment change must be logged:
 
 ```sql
 INSERT INTO audit_logs (
-  client_id, action_type, resource_type, resource_id,
+  tenant_id, action_type, resource_type, resource_id,
   actor_id, changes, timestamp
 ) VALUES (
   NULL,
@@ -693,8 +693,8 @@ INSERT INTO audit_logs (
   'user-123',
   'admin-456',
   JSON_OBJECT(
-    'before', JSON_OBJECT('role', 'client_user'),
-    'after', JSON_OBJECT('role', 'client_admin')
+    'before', JSON_OBJECT('role', 'tenant_user'),
+    'after', JSON_OBJECT('role', 'tenant_admin')
   ),
   NOW()
 );
@@ -734,7 +734,7 @@ describe('Authorization', () => {
     expect(result).toBe(true);
   });
 
-  it('client_user should not be able to delete workload', async () => {
+  it('tenant_user should not be able to delete workload', async () => {
     const result = await checkPermission(
       'workloads:delete:own',
       clientUserRolePermissions,
@@ -749,7 +749,7 @@ describe('Authorization', () => {
       .toBe(true);
   });
 
-  it('client_admin should not manage other client', async () => {
+  it('tenant_admin should not manage other client', async () => {
     const response = await updateClient(
       otherClientId,
       clientAdminContext

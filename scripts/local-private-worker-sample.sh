@@ -153,7 +153,7 @@ phase1_provision() {
     --arg email "pw-local-$stamp@phoenix-host.net" \
     --arg plan "$plan_id" \
     --arg region "$region_id" \
-    '{company_name:$name, company_email:$email, plan_id:$plan, region_id:$region, storage_tier:"local"}')")
+    '{name:$name, primary_email:$email, plan_id:$plan, region_id:$region, storage_tier:"local"}')")
   cid=$(echo "$resp" | jq -r '.data.id // empty')
   if [[ -z "$cid" ]]; then
     fail "client create failed: $(echo "$resp" | head -c 300)"
@@ -451,7 +451,7 @@ phase5_cleanup() {
   fi
 
   if [[ -n "$cid" && -n "$wid" ]]; then
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid/private-workers/$wid" \
+    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid/private-workers/$wid" \
       -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
     ok "deleted private-worker $wid (best effort)"
   fi
@@ -469,7 +469,7 @@ phase5_cleanup() {
   ok "local docker fixtures torn down"
 
   if [[ -n "$cid" ]]; then
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" \
+    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
       -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
     ok "deleted client $cid (best effort)"
   fi

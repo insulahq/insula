@@ -7,9 +7,9 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
 ## Glossary
 
 - **Server**: k3s control plane node. Runs etcd, platform-api,
-  admin/client-panel, Postgres, Stalwart. Carries the
+  admin/tenant-panel, Postgres, Stalwart. Carries the
   `platform.phoenix-host.net/node-role=server` label.
-- **Worker**: tenant workload node. Runs the per-client pods,
+- **Worker**: tenant workload node. Runs the per-tenant pods,
   ingress-nginx DaemonSet, Longhorn replica.
 - **Quorum**: etcd requires a majority of servers to accept writes.
   3 servers tolerate 1 failure; 5 servers tolerate 2. Never run an

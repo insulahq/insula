@@ -201,10 +201,10 @@ The platform injects environment variables using individual `env[].valueFrom` en
 
 ### Customer-Defined Variables
 
-Customers can add additional environment variables via the Client Panel:
+Customers can add additional environment variables via the Tenant Panel:
 
-- **Client Panel → Environment → Add Variable**
-- Stored as a Sealed Secret in the client namespace
+- **Tenant Panel → Environment → Add Variable**
+- Stored as a Sealed Secret in the tenant namespace
 - Injected into the pod via additional `env[].valueFrom.secretKeyRef` entries
 - Pod is restarted when variables change
 
@@ -262,7 +262,7 @@ Node.js pods use longer initial delays than platform-internal services because a
 
 | Deployment Method | npm install | Notes |
 |-------------------|-------------|-------|
-| **Git Deploy** | Runs as post-deploy hook (after rsync) | Enable "Run npm install after deploy" in Client Panel → Git Deploy settings |
+| **Git Deploy** | Runs as post-deploy hook (after rsync) | Enable "Run npm install after deploy" in Tenant Panel → Git Deploy settings |
 | **SFTP Upload** | Customer responsibility | Upload a complete `node_modules/` directory, or upload without it and trigger manual hook |
 | **FileBrowser** | Not available automatically | Customer must upload complete `node_modules/` |
 
@@ -278,7 +278,7 @@ npm install --omit=dev --ignore-scripts
 
 - `--omit=dev` installs production dependencies only
 - `--ignore-scripts` prevents lifecycle scripts from running arbitrary commands
-- Output is captured to deployment logs (visible in Client Panel → Deployments)
+- Output is captured to deployment logs (visible in Tenant Panel → Deployments)
 
 ### Important Notes
 
@@ -508,9 +508,9 @@ spec:
 
 Node.js catalog images are available on **Business and Premium plans only**.
 
-### Switching to Node.js via Client Panel
+### Switching to Node.js via Tenant Panel
 
-1. Client Panel → **Settings → Runtime**
+1. Tenant Panel → **Settings → Runtime**
 2. Select **Node.js 22** or **Node.js 20** from the catalog dropdown
 3. Review the compatibility notice (Node.js requires Business/Premium)
 4. Click **Apply** — platform triggers zero-downtime pod replacement
@@ -518,7 +518,7 @@ Node.js catalog images are available on **Business and Premium plans only**.
 ### Switching via Management API
 
 ```http
-PATCH /api/v1/clients/{client-id}
+PATCH /api/v1/tenants/{client-id}
 Content-Type: application/json
 
 {
@@ -537,13 +537,13 @@ Content-Type: application/json
 }
 ```
 
-Poll `GET /api/v1/clients/{client-id}/jobs/job-abc123` for completion status.
+Poll `GET /api/v1/tenants/{client-id}/jobs/job-abc123` for completion status.
 
 ### Plan Enforcement
 
 If a Starter plan customer attempts to select a Node.js image:
 
-- **Client Panel:** The Node.js options are grayed out with tooltip: _"Node.js requires Business or Premium plan."_
+- **Tenant Panel:** The Node.js options are grayed out with tooltip: _"Node.js requires Business or Premium plan."_
 - **API:** Returns `HTTP 422 Unprocessable Entity` with `error: "catalog_image_not_available_on_plan"`
 
 ---
@@ -610,7 +610,7 @@ module.exports = {
 
 ### Step 2: Switch Catalog Image
 
-1. Client Panel → **Settings → Runtime → Node.js 22**
+1. Tenant Panel → **Settings → Runtime → Node.js 22**
 2. Click **Apply**
 3. Wait for pod replacement to complete (approximately 1–3 minutes)
 4. Confirm runtime shows **Node.js 22** in the panel
@@ -621,22 +621,22 @@ module.exports = {
 
 **Via Git Deploy (recommended):**
 
-1. Client Panel → **Domains → {domain} → Git Deploy → Configure**
+1. Tenant Panel → **Domains → {domain} → Git Deploy → Configure**
 2. Set repository URL, branch (`main`), and SSH key
 3. Enable **"Run npm install after deploy"**
 4. Click **Deploy Now** or push to your branch
-5. Monitor progress in Client Panel → **Deployments**
+5. Monitor progress in Tenant Panel → **Deployments**
 
 **Via SFTP:**
 
 1. Connect via SFTP to `sftp.platform.com` with your credentials
 2. Navigate to `domains/{domain}/public_html/`
 3. Upload all application files **including `node_modules/`**
-   - Or upload without `node_modules/` and trigger npm install manually via Client Panel → Deployments → **Run Hooks**
+   - Or upload without `node_modules/` and trigger npm install manually via Tenant Panel → Deployments → **Run Hooks**
 
 **Via FileBrowser:**
 
-1. Client Panel → **Files → File Manager**
+1. Tenant Panel → **Files → File Manager**
 2. Navigate to `domains/{domain}/public_html/`
 3. Upload application files including `node_modules/`
 
@@ -673,7 +673,7 @@ kubectl logs -f deployment/web -n client-{client-id}
 
 For database connections and other config:
 
-1. Client Panel → **Settings → Environment Variables**
+1. Tenant Panel → **Settings → Environment Variables**
 2. Click **Add Variable** — enter key and value
 3. Click **Save** — pod restarts automatically
 
@@ -722,7 +722,7 @@ app.get('/healthz', (req, res) => res.status(200).json({ status: 'ok' }));
 
 ### npm install fails in post-deploy hook
 
-Check deployment logs in Client Panel → **Deployments → [deployment] → Logs** for the full npm error output.
+Check deployment logs in Tenant Panel → **Deployments → [deployment] → Logs** for the full npm error output.
 
 Common issues:
 - `package.json` not present in `public_html/` — ensure it is committed to the repo root
@@ -734,7 +734,7 @@ Common issues:
 `DATABASE_URL` is injected automatically. If the app cannot connect:
 
 1. Verify the app reads `process.env.DATABASE_URL` (not a hardcoded connection string)
-2. Check the database is provisioned: Client Panel → **Databases**
+2. Check the database is provisioned: Tenant Panel → **Databases**
 3. Contact support if `DATABASE_URL` appears incorrect
 
 ---
@@ -744,6 +744,6 @@ Common issues:
 - **WORKLOAD_DEPLOYMENT.md** — Container catalog overview and shared/dedicated pod architecture
 - **HOSTING_PLANS.md** — Plan definitions and resource limits
 - **DEPLOYMENT_PROCESS.md** — Git Deploy, SFTP, and FileBrowser deployment methods
-- **CLIENT_PANEL_FEATURES.md** — Client Panel UI for runtime switching and environment variables
+- **CLIENT_PANEL_FEATURES.md** — Tenant Panel UI for runtime switching and environment variables
 - **FRONTEND_DEPLOYMENT_ARCHITECTURE.md** — Platform port/health check conventions (reference)
 - **STORAGE_DATABASES.md** — Database provisioning per plan

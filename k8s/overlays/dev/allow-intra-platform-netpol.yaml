@@ -1,7 +1,7 @@
 # Dev overlay: allow intra-namespace traffic within `platform`.
 #
 # Base net-policies apply `default-deny-ingress` to the platform namespace
-# and only permit traffic from ingress-nginx to platform-api/admin/client/
+# and only permit traffic from ingress-nginx to platform-api/admin/tenant/
 # oauth2-proxy. This blocks same-namespace flows that the app needs:
 #   - platform-api -> redis, postgres
 #   - oauth2-proxy -> dex

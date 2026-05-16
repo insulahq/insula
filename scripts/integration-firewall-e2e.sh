@@ -83,7 +83,7 @@ log "original allowHostPortsWorker=$ORIG_WORKER allowHostPortsServer=$ORIG_SERVE
 
 cleanup() {
   if [[ -n "${CID:-}" ]]; then
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
+    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
   fi
   # Restore both toggles so the staging cluster ends in the same state
   # we found it in. Skip if we never managed to read the original value
@@ -116,7 +116,7 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 # ─── Create test client ────────────────────────────────────────────────────
 STAMP=$(date +%s)
 log "── creating client ──"
-RESP=$(api POST "/clients" "{\"company_name\":\"Firewall E2E $STAMP\",\"company_email\":\"firewall-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+RESP=$(api POST "/clients" "{\"name\":\"Firewall E2E $STAMP\",\"primary_email\":\"firewall-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 

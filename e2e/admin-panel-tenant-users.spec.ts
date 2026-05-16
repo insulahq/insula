@@ -13,21 +13,21 @@ async function resolveClientId(): Promise<string> {
   const API_BASE = process.env.API_URL ?? 'http://admin.k8s-platform.test:2010';
   const authPath = path.join(__dirname, '.auth/admin-auth.json');
   const adminAuth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
-  const res = await fetch(`${API_BASE}/api/v1/clients?limit=100`, {
+  const res = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, {
     headers: { 'Authorization': `Bearer ${adminAuth.token}` },
   });
   const body = await res.json() as { data: { id: string; companyEmail: string }[] };
   const e2eClient = body.data?.find((c) => c.companyEmail === 'e2e-test@k8s-platform.test');
-  const clientId = e2eClient?.id ?? body.data?.[0]?.id;
-  if (!clientId) throw new Error('No clients exist — cannot resolve a client id for this test');
-  return clientId;
+  const tenantId = e2eClient?.id ?? body.data?.[0]?.id;
+  if (!tenantId) throw new Error('No clients exist — cannot resolve a client id for this test');
+  return tenantId;
 }
 
 test.describe('Admin Panel — Client Users Tab (Phase 5)', () => {
   test.beforeEach(async ({ page }) => {
     await injectAdminAuth(page);
-    const clientId = await resolveClientId();
-    await page.goto(`/clients/${clientId}`);
+    const tenantId = await resolveClientId();
+    await page.goto(`/clients/${tenantId}`);
     // Wait for the page to settle — the client detail page has multiple tabs
     await expect(page.getByTestId('resource-tabs')).toBeVisible({ timeout: 5000 });
   });

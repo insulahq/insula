@@ -68,7 +68,7 @@
 
 ### Q: Can clients access their databases directly?
 
-**A:** Yes. Shared MariaDB/PostgreSQL instances provide per-client users with credentials. Access via standard clients (phpMyAdmin, pgAdmin, etc.). Dedicated databases available for Premium clients.
+**A:** Yes. Shared MariaDB/PostgreSQL instances provide per-tenant users with credentials. Access via standard clients (phpMyAdmin, pgAdmin, etc.). Dedicated databases available for Premium clients.
 
 ### Q: How many databases can a client have?
 
@@ -87,7 +87,7 @@
 
 ### Q: Can I customize plans?
 
-**A:** Yes, fully. Every parameter (CPU, memory, storage, backup retention, features) is configurable per-client via overrides, without changing their plan.
+**A:** Yes, fully. Every parameter (CPU, memory, storage, backup retention, features) is configurable per-tenant via overrides, without changing their plan.
 
 ### Q: Do all clients get their own pod?
 
@@ -95,7 +95,7 @@
 
 ### Q: Can a client upgrade/downgrade?
 
-**A:** Yes. Changing plans applies new defaults but preserves per-client overrides. Upgrade/downgrade happens immediately with zero downtime (for web, zero downtime; for databases, brief connection interrupt if migrating data).
+**A:** Yes. Changing plans applies new defaults but preserves per-tenant overrides. Upgrade/downgrade happens immediately with zero downtime (for web, zero downtime; for databases, brief connection interrupt if migrating data).
 
 ### Q: What are the total costs for 100 clients?
 

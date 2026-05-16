@@ -129,7 +129,7 @@ Each restorable object has a **complete history of all snapshots**:
 
 ### 3.1 Website Restore Flow (UI)
 
-**Client Panel → Backups → Global Backups → [select website] → Restore**
+**Tenant Panel → Backups → Global Backups → [select website] → Restore**
 
 1. **Select object** — User chooses the domain/workload to restore (e.g. `acme.com / WordPress`).
 2. **Choose backup version** — `BackupVersionSelector` modal shows list of all available snapshots (date, size, type). User selects one.
@@ -304,7 +304,7 @@ Restoring a whole client applies every component in the bundle: `files` (PVC con
 
 ### 4.1 Flow (Admin Panel)
 
-1. **Pick backup** — Admin opens Backups view, filters by client (or finds deleted client via the `backup_jobs.client_id` history), clicks a backup row.
+1. **Pick backup** — Admin opens Backups view, filters by client (or finds deleted client via the `backup_jobs.tenant_id` history), clicks a backup row.
 2. **Choose restore mode:**
    - `Existing client, same node` (default when the client row still exists). No node prompt.
    - `Recreate deleted client` (shown only when the client row is absent). Admin picks the target node from the registered-nodes dropdown; `meta.json.nodePlacement.preferredNode` preselects the original node if it's still in the list.
@@ -378,7 +378,7 @@ Every whole-client restore takes a pre-restore snapshot in step 2 (existing-clie
 
 ### 5.1 Mail Account Restore Flow (UI)
 
-**Client Panel → Email → [select mailbox] → Restore from backup**
+**Tenant Panel → Email → [select mailbox] → Restore from backup**
 **Admin Panel → Clients → [select client] → Backups → [select backup] → Mailboxes → pick N mailboxes → Restore**
 
 1. **Select mailbox(es)** — Either from the Email page (single mailbox) or from a backup's mailbox list (multi-select).
@@ -441,7 +441,7 @@ Every whole-client restore takes a pre-restore snapshot in step 2 (existing-clie
 
 **Most Important Feature for Users** — Files are constantly modified and accidentally deleted.
 
-**Client Panel → Files → Restore from backup** or **Client Panel → Backups → [select snapshot] → Browse files**
+**Tenant Panel → Files → Restore from backup** or **Tenant Panel → Backups → [select snapshot] → Browse files**
 
 1. **Choose backup version** — `BackupVersionSelector` shows all available file backup snapshots (date, total file count, total size).
 2. **Browse or search** — User lands on the `FileTreeBrowser` component (see §7.2):
@@ -731,7 +731,7 @@ Displayed after restore is confirmed. Subscribes to WebSocket at `/ws/restores/{
 
 **Component:** `RestoreHistoryTable`
 
-Available at: **Client Panel → Backups → Restore history** and **Admin Panel → Backup → Restores** (admin sees all clients).
+Available at: **Tenant Panel → Backups → Restore history** and **Admin Panel → Backup → Restores** (admin sees all clients).
 
 **Columns:**
 
@@ -810,7 +810,7 @@ If a restore fails **after modifications**:
 | GET | `/api/v1/backups/{id}/files/search` | Search for files in backup |
 | POST | `/api/v1/restores/start` | Initiate a restore operation |
 | GET | `/api/v1/restores/{id}` | Get restore status/result |
-| GET | `/api/v1/restores?client_id=X` | List all restores for a client (admin) |
+| GET | `/api/v1/restores?tenant_id=X` | List all restores for a client (admin) |
 | DELETE | `/api/v1/restores/{id}` | Cancel a restore (if in_progress) |
 | WS | `/ws/restores/{id}` | WebSocket for real-time progress |
 
@@ -897,7 +897,7 @@ Every restore operation logs the following fields to `audit_logs` (using `action
 
 | Field | Value |
 |-------|-------|
-| `client_id` | Client namespace being restored |
+| `tenant_id` | Client namespace being restored |
 | `action_type` | `RESTORE_START` / `RESTORE_COMPLETE` / `RESTORE_FAILED` |
 | `resource_type` | `website` / `database` / `mail_account` / `files` |
 | `resource_id` | Object ID being restored (workload ID, DB ID, mailbox address) |
@@ -943,7 +943,7 @@ The `restore_jobs` and related tables are **not yet present in `DATABASE_SCHEMA.
 ```sql
 CREATE TABLE restore_jobs (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  client_id VARCHAR(36) NOT NULL,
+  tenant_id VARCHAR(36) NOT NULL,
   object_type ENUM('whole_client', 'website', 'mail_account', 'files') NOT NULL,
   object_id VARCHAR(255) NOT NULL,
   backup_id VARCHAR(36) NOT NULL,
@@ -967,18 +967,18 @@ CREATE TABLE restore_jobs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-  KEY idx_client_id (client_id),
+  KEY idx_client_id (tenant_id),
   KEY idx_object (object_type, object_id),
   KEY idx_status (status),
   KEY idx_created_at (created_at),
 
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE,
   FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
 - [ ] Restore audit events use the existing `audit_logs` table (no separate `restore_audit_log` table required — action_types `RESTORE_START`, `RESTORE_COMPLETE`, `RESTORE_FAILED` are sufficient)
-- [ ] Add indexes on `restore_jobs`: `client_id`, `object_type + object_id`, `status`, `created_at`
+- [ ] Add indexes on `restore_jobs`: `tenant_id`, `object_type + object_id`, `status`, `created_at`
 
 ### Backend APIs
 

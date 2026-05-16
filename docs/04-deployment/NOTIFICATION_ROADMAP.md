@@ -15,7 +15,7 @@ refactor and the label-driven backup-health module.
 - `backup-health/` module — discovers Jobs cluster-wide via the
   `platform.phoenix-host.net/backup-health-watch=true` label; emits one
   notification per failed Job UID (deduplicated via
-  `notifications.resourceId=<uid>`); routes admin or client_admin recipients
+  `notifications.resourceId=<uid>`); routes admin or tenant_admin recipients
   per the optional `client-id` label.
 - `longhorn-reconciler.ts` — refactored to discover the suspend-list via
   `platform.phoenix-host.net/depends-on=backup-credentials` (replaces the

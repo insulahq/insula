@@ -106,7 +106,7 @@ xdg-open "admin-panel-interactive.html"
 **Status:** ✅ Complete, Interactive
 - 4 metric cards
 - Cluster status table (3 clusters)
-- Recent clients table (5 clients)
+- Recent tenants table (5 clients)
 - Clickable rows for navigation
 
 ### 2. Clients Management

@@ -8,7 +8,7 @@
 #
 # Static OIDC clients:
 #   - hosting-platform-admin   (admin panel SSO)
-#   - hosting-platform-client  (client panel SSO)
+#   - hosting-platform-client  (tenant panel SSO)
 #   - hosting-platform-oauth2-proxy (OAuth2 Proxy session)
 #
 # IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
@@ -51,7 +51,7 @@ staticClients:
       # backend/src/modules/system-settings/ingress-reconciler.ts for
       # the /oauth2 path rule that makes this work.
       - https://admin.${DOMAIN}:2011/oauth2/callback
-      - https://client.${DOMAIN}:2011/oauth2/callback
+      - https://tenant.${DOMAIN}:2011/oauth2/callback
 
 connectors: []
 

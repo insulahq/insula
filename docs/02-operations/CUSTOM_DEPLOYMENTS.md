@@ -64,7 +64,7 @@ A NULL `resolved_digest` means "kubelet has not yet finished pulling"
 ```sql
 SELECT id, name, status, source, custom_spec->'services' AS services
 FROM deployments
-WHERE client_id = '<client-id>' AND source = 'custom';
+WHERE tenant_id = '<client-id>' AND source = 'custom';
 ```
 
 Or via the admin panel: Client detail → Deployments tab → switch the
@@ -156,7 +156,7 @@ Either:
 
 ```bash
 # API path (preferred — also deletes the k8s Secret):
-curl -X DELETE /api/v1/clients/<cid>/custom-deployments/<id>/pull-credentials \
+curl -X DELETE /api/v1/tenants/<cid>/custom-deployments/<id>/pull-credentials \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -198,13 +198,13 @@ exception via the admin-only endpoint:
 
 ```bash
 # Grant
-curl -X PATCH /api/v1/admin/clients/<cid>/custom-deployments/<id>/allow-root \
+curl -X PATCH /api/v1/admin/tenants/<cid>/custom-deployments/<id>/allow-root \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"allowRoot": true}'
 
 # Revoke
-curl -X PATCH /api/v1/admin/clients/<cid>/custom-deployments/<id>/allow-root \
+curl -X PATCH /api/v1/admin/tenants/<cid>/custom-deployments/<id>/allow-root \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"allowRoot": false}'

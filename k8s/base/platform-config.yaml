@@ -19,23 +19,23 @@ data:
   default-storage-class: "longhorn"
 
   # Frontend URLs — API is same-origin (empty = proxied by frontend nginx).
-  # client-url is only needed by admin panel for impersonation links.
+  # tenant-url is only needed by admin panel for impersonation links.
   admin-url: "https://admin.${DOMAIN}"
-  client-url: "https://client.${DOMAIN}"
+  tenant-url: "https://tenant.${DOMAIN}"
 
   # CORS — with same-origin proxy, CORS is not strictly needed for browser
   # requests. Kept for API consumers like Swagger UI or external tools.
-  cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
+  cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
 
-  # Per-client sidecar images. local.sh imports these into DinD's
+  # Per-tenant sidecar images. local.sh imports these into DinD's
   # containerd with the bare names (matching this default). Staging
   # and production overlays swap to the GHCR paths so the pods can
   # pull from a real registry.
   file-manager-image: "file-manager:latest"
 
-  # Private Worker — per-client tunnel agent the client runs at home.
+  # Private Worker — per-tenant tunnel agent the tenant runs at home.
   # tunnel-base-url is the dial-in FQDN. Cluster-side frps image is the
-  # upstream frp server; agent docker image is what clients run at home.
+  # upstream frp server; agent docker image is what tenants run at home.
   # Overlays MUST patch tunnel-base-url with the real public hostname
   # (the wildcard DNS entry must point at cluster ingress).
   tunnel-base-url: "wss://tunnels.${DOMAIN}"

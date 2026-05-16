@@ -73,12 +73,12 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
   };
 
   // Check if test client already exists
-  const clientsRes = await fetch(`${API_BASE}/api/v1/clients?limit=100`, { headers });
+  const clientsRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
   const clientsData = await clientsRes.json() as { data: { id: string; companyEmail: string }[] };
-  let clientId = clientsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
+  let tenantId = clientsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
 
   // Create test client if not exists
-  if (!clientId) {
+  if (!tenantId) {
     // Get first available plan and region
     const [plansRes, regionsRes] = await Promise.all([
       fetch(`${API_BASE}/api/v1/plans`, { headers }),
@@ -89,26 +89,26 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
     const planId = plansData.data?.[0]?.id;
     const regionId = regionsData.data?.[0]?.id;
 
-    const createRes = await fetch(`${API_BASE}/api/v1/clients`, {
+    const createRes = await fetch(`${API_BASE}/api/v1/tenants`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        company_name: 'E2E Test Client',
-        company_email: 'e2e-test@k8s-platform.test',
+        name: 'E2E Test Client',
+        primary_email: 'e2e-test@k8s-platform.test',
         plan_id: planId,
         region_id: regionId,
       }),
     });
     const createData = await createRes.json() as { data: { id: string } };
     if (createData.data?.id) {
-      clientId = createData.data.id;
+      tenantId = createData.data.id;
     } else {
       // Race condition: another worker created the client — retry search
       await new Promise(r => setTimeout(r, 1000));
-      const retryRes = await fetch(`${API_BASE}/api/v1/clients?limit=100`, { headers });
+      const retryRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
       const retryData = await retryRes.json() as { data: { id: string; companyEmail: string }[] };
-      clientId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
-      if (!clientId) {
+      tenantId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
+      if (!tenantId) {
         throw new Error(`Failed to create or find test client: ${JSON.stringify(createData)}`);
       }
     }
@@ -120,7 +120,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
   // up to 10s, which comfortably covers the worker's post-create hook.
   let impersonateData: Record<string, unknown> = {};
   for (let i = 0; i < 20; i++) {
-    const impersonateRes = await fetch(`${API_BASE}/api/v1/admin/impersonate/${clientId}`, {
+    const impersonateRes = await fetch(`${API_BASE}/api/v1/admin/impersonate/${tenantId}`, {
       method: 'POST',
       headers: { 'Authorization': headers['Authorization'] },
     });
@@ -133,7 +133,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
   }
 
   if (!impersonateData.data || !(impersonateData.data as Record<string, unknown>).token) {
-    throw new Error(`Failed to impersonate client ${clientId}: ${JSON.stringify(impersonateData)}`);
+    throw new Error(`Failed to impersonate client ${tenantId}: ${JSON.stringify(impersonateData)}`);
   }
 
   const impData = impersonateData.data as { token: string; user: Record<string, unknown> };

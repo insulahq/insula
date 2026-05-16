@@ -16,12 +16,12 @@ The platform uses a role-based access control (RBAC) model with **panel-level en
 | `support` | Read clients + assist (domains, databases, backups) | Yes | No |
 | `read_only` | Dashboard, metrics, status only | No | No |
 
-### Client Panel Roles (Customers)
+### Tenant Panel Roles (Customers)
 
 | Role | Access Level | Manage Sub-Users |
 |------|-------------|------------------|
-| `client_admin` | Full access to own client account | Yes |
-| `client_user` | View-only access to own client resources | No |
+| `tenant_admin` | Full access to own client account | Yes |
+| `tenant_user` | View-only access to own client resources | No |
 
 ## JWT Claims
 
@@ -39,7 +39,7 @@ The platform uses a role-based access control (RBAC) model with **panel-level en
 // Client panel JWT
 {
   sub: string,           // User ID
-  role: string,          // client_admin | client_user
+  role: string,          // tenant_admin | tenant_user
   panel: "client",       // Panel enforcement
   clientId: string,      // Which client account this user belongs to
   exp: number,
@@ -50,7 +50,7 @@ The platform uses a role-based access control (RBAC) model with **panel-level en
 // Impersonation JWT (admin acting as client)
 {
   sub: string,           // Client user ID (not admin's ID)
-  role: "client_admin",
+  role: "tenant_admin",
   panel: "client",
   clientId: string,
   impersonatedBy: string, // Admin user ID (for audit trail)
@@ -71,7 +71,7 @@ The platform uses a role-based access control (RBAC) model with **panel-level en
 ## Client User Auto-Creation
 
 When a client account is created via the admin panel:
-1. A `client_admin` user is automatically created with `companyEmail`
+1. A `tenant_admin` user is automatically created with `companyEmail`
 2. A strong password (20 chars, mixed case + digits + symbols) is generated
 3. The password is returned **once** in the API response — never stored in plaintext
 4. The user's `clientId` is set to the new client's ID
@@ -80,7 +80,7 @@ When a client account is created via the admin panel:
 ## Sub-User Management
 
 - Client admins can create sub-users from the client panel
-- Sub-users get role `client_user` (view-only)
+- Sub-users get role `tenant_user` (view-only)
 - Maximum sub-users is controlled by the hosting plan's `max_sub_users` field
 - Sub-users inherit the parent's `clientId`
 
@@ -92,8 +92,8 @@ When a client account is created via the admin panel:
 1. Admin clicks "Login as Client" on the ClientDetail page
 2. Backend `POST /api/v1/admin/impersonate/:clientId`:
    - Verifies caller has impersonation permission
-   - Finds the `client_admin` user for that client
-   - Issues a client-panel JWT with `impersonatedBy` claim
+   - Finds the `tenant_admin` user for that client
+   - Issues a tenant-panel JWT with `impersonatedBy` claim
    - JWT has 1-hour expiry (shorter than normal 24h)
 3. Frontend opens client panel in a new tab with the token
 4. All actions during impersonation are logged with `impersonatedBy` in the audit trail
@@ -105,7 +105,7 @@ When a client account is created via the admin panel:
 | Column | Type | Description |
 |--------|------|-------------|
 | `panel` | `'admin' \| 'client'` | Which panel this user belongs to |
-| `client_id` | `varchar(36)` nullable | FK to clients — set for client users |
+| `tenant_id` | `varchar(36)` nullable | FK to clients — set for client users |
 
 ### Hosting Plans Table (updated)
 
@@ -122,8 +122,8 @@ When a client account is created via the admin panel:
 | `billing` | `["clients:read","subscriptions:*","billing:*"]` | admin |
 | `support` | `["clients:read","domains:*","databases:*","backups:*","impersonate"]` | admin |
 | `read_only` | `["clients:read","metrics:read","status:read"]` | admin |
-| `client_admin` | `["own:*"]` | client |
-| `client_user` | `["own:read"]` | client |
+| `tenant_admin` | `["own:*"]` | client |
+| `tenant_user` | `["own:read"]` | client |
 
 ## Middleware Stack
 
