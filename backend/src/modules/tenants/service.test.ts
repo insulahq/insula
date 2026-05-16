@@ -102,6 +102,9 @@ describe('createTenant', () => {
     await createTenant(db, {
       name: 'NC',
       primary_email: 'admin@nc.com',
+      contact_name: 'Test Contact',
+      phone_e164: '+14155552671',
+      billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '550e8400-e29b-41d4-a716-446655440000',
       region_id: '550e8400-e29b-41d4-a716-446655440001',
     }, 'creator');
@@ -138,6 +141,9 @@ describe('createTenant', () => {
     await createTenant(db, {
       name: 'NC',
       primary_email: 'admin@nc.com',
+      contact_name: 'Test Contact',
+      phone_e164: '+14155552671',
+      billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '550e8400-e29b-41d4-a716-446655440000',
       region_id: '550e8400-e29b-41d4-a716-446655440001',
       timezone: 'America/Los_Angeles',
@@ -178,6 +184,9 @@ describe('createTenant', () => {
     const input = {
       name: 'New Corp',
       primary_email: 'admin@newcorp.com',
+      contact_name: 'Test Contact',
+      phone_e164: '+14155552671',
+      billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '550e8400-e29b-41d4-a716-446655440000',
       region_id: '550e8400-e29b-41d4-a716-446655440001',
     };
@@ -203,6 +212,9 @@ describe('createTenant', () => {
     const db = { select: selectFn, insert: vi.fn() } as unknown as Parameters<typeof createTenant>[0];
     await expect(createTenant(db, {
       name: 'X', primary_email: 'x@x.test',
+      contact_name: 'Test Contact',
+      phone_e164: '+14155552671',
+      billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '00000000-0000-0000-0000-000000000000',
       region_id: '00000000-0000-0000-0000-000000000001',
     }, 'creator')).rejects.toMatchObject({ code: 'INVALID_PLAN_ID' });
@@ -222,6 +234,9 @@ describe('createTenant', () => {
     const db = { select: selectFn, insert: vi.fn() } as unknown as Parameters<typeof createTenant>[0];
     await expect(createTenant(db, {
       name: 'X', primary_email: 'x@x.test',
+      contact_name: 'Test Contact',
+      phone_e164: '+14155552671',
+      billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '00000000-0000-0000-0000-000000000000',
       region_id: '00000000-0000-0000-0000-000000000001',
     }, 'creator')).rejects.toMatchObject({ code: 'INVALID_REGION_ID' });
@@ -247,6 +262,9 @@ describe('createTenant', () => {
     const db = { select: selectFn, insert: insertFn, delete: deleteFn } as unknown as Parameters<typeof createTenant>[0];
     await expect(createTenant(db, {
       name: 'X', primary_email: 'taken@x.test',
+      contact_name: 'Test Contact',
+      phone_e164: '+14155552671',
+      billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '00000000-0000-0000-0000-000000000000',
       region_id: '00000000-0000-0000-0000-000000000001',
     }, 'creator')).rejects.toMatchObject({ code: 'EMAIL_IN_USE' });

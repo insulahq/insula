@@ -253,7 +253,7 @@ export default function TenantDetail() {
               const tenantPanelUrl = (rawFromDb.trim() || config.CLIENT_PANEL_URL).replace(/\/+$/, '');
               if (!tenantPanelUrl) {
                 // Neither source populated — bail before opening a broken tab.
-                alert('Client Panel URL is not configured. Set it in System Settings before using "Login as Client".');
+                alert('Tenant Panel URL is not configured. Set it in System Settings before using "Login as Tenant".');
                 return;
               }
               try {
@@ -268,7 +268,7 @@ export default function TenantDetail() {
             data-testid="impersonate-button"
           >
             {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
-            <span className="hidden sm:inline">Login as Client</span>
+            <span className="hidden sm:inline">Login as Tenant</span>
           </button>
           {(tenant as Record<string, unknown>).provisioningStatus === 'unprovisioned' || (tenant as Record<string, unknown>).provisioningStatus === 'failed' ? (
             <button
@@ -371,7 +371,7 @@ export default function TenantDetail() {
               disabled={updateTenant.isPending}
               className="inline-flex items-center gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 shadow-sm hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
               data-testid="archive-button"
-              title="Take a final snapshot, then delete PVC/workloads/mailboxes. Client row + snapshot retained for the configured retention window. Restorable."
+              title="Take a final snapshot, then delete PVC/workloads/mailboxes. Tenant row + snapshot retained for the configured retention window. Restorable."
             >
               {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <ServerCrash size={14} />}
               <span className="hidden sm:inline">Archive</span>
@@ -507,7 +507,7 @@ export default function TenantDetail() {
             <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
               <FolderOpen size={32} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
               <p>File browser available in the tenant panel.</p>
-              <p className="mt-1 text-xs">Use "Login as Client" to access the file manager.</p>
+              <p className="mt-1 text-xs">Use "Login as Tenant" to access the file manager.</p>
             </div>
           )}
           {activeTab === 'email' && <EmailTab tenantId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
@@ -2143,7 +2143,7 @@ function DecommissionConfirmDialog({
             <ServerCrash size={20} className="text-red-600 dark:text-red-400" />
           </div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Decommission Client
+            Decommission Tenant
           </h2>
         </div>
 

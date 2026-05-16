@@ -205,7 +205,7 @@ describe('TenantDetail impersonation', () => {
 
   it('opens the impersonation tab at the URL configured in System Settings, not the build-time env', async () => {
     // /system-info returns an admin-chosen tenantPanelUrl. The
-    // "Login as Client" button must use THIS value, not the runtime-config
+    // "Login as Tenant" button must use THIS value, not the runtime-config
     // fallback. A trailing slash on the configured URL must be stripped
     // so we don't produce "https://x//login".
     mockApiFetch.mockImplementation((path: string, options?: { method?: string }) => {

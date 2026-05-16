@@ -138,7 +138,7 @@ const DEFAULT_BACKUP_TIMEOUT_MS = 60 * 60 * 1000;
  * Lock vector (Phase 0 spike):
  *   key    = 0123…cdef (32 bytes hex)
  *   tenant = "fixture-tenant-001"
- *   ⇒ password = 9cc1efeff2216dd12759fb93b3b3948f830036b87f5d6a29f8470108dc4d39a8
+ *   ⇒ password = 3e161d93045adabc875c3004158fccfccdcd7c4c9159d13af1703d5df86e0fc4
  *
  * This is asserted in restic-driver.test.ts.
  */

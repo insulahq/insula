@@ -29,7 +29,7 @@ vi.mock('../../db/schema.js', () => ({
 const mockGetJmapSession = vi.fn();
 const mockPrincipalGet = vi.fn();
 
-vi.mock('./tenant.js', () => ({
+vi.mock('./client.js', () => ({
   getJmapSession: (...args: unknown[]) => mockGetJmapSession(...args),
   principalGet: (...args: unknown[]) => mockPrincipalGet(...args),
 }));
