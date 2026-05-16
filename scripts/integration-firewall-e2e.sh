@@ -116,7 +116,7 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 # ─── Create test client ────────────────────────────────────────────────────
 STAMP=$(date +%s)
 log "── creating client ──"
-RESP=$(api POST "/clients" "{\"name\":\"Firewall E2E $STAMP\",\"primary_email\":\"firewall-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+RESP=$(api POST "/tenants" "{\"name\":\"Firewall E2E $STAMP\",\"primary_email\":\"firewall-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
@@ -128,7 +128,7 @@ CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['dat
 # pin, so wait on provisioningStatus, not status.
 log "── waiting for provisioningStatus=provisioned (≤5min) ──"
 for i in $(seq 1 150); do
-  PSTATUS=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus',''))" 2>/dev/null)
+  PSTATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus',''))" 2>/dev/null)
   [[ "$PSTATUS" == "provisioned" ]] && break
   if [[ "$PSTATUS" == "failed" ]]; then
     fail "provisioningStatus=failed — see backend logs"; exit 1
@@ -138,8 +138,8 @@ for i in $(seq 1 150); do
 done
 [[ "$PSTATUS" == "provisioned" ]] && ok "namespace provisioned" || { fail "client never reached provisioned (provisioningStatus=$PSTATUS)"; exit 1; }
 
-NAMESPACE=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('kubernetesNamespace',''))" 2>/dev/null)
-WORKER_NODE=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName',''))" 2>/dev/null)
+NAMESPACE=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('kubernetesNamespace',''))" 2>/dev/null)
+WORKER_NODE=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName',''))" 2>/dev/null)
 log "namespace=$NAMESPACE worker=$WORKER_NODE"
 
 # ─── Phase 1: gate REJECTS deploy when toggle is OFF ───────────────────────
@@ -148,8 +148,8 @@ api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":false,\"allowHostP
 sleep 7  # cache TTL is 5s and PATCH only invalidates the pod that handled it
 
 DEPLOY_BODY="{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"coturn-fw-blocked-$STAMP\"}"
-HTTP_CODE=$(api_status POST "/clients/$CID/deployments" "$DEPLOY_BODY")
-RESP_BLOCKED=$(api POST "/clients/$CID/deployments" "$DEPLOY_BODY")
+HTTP_CODE=$(api_status POST "/tenants/$CID/deployments" "$DEPLOY_BODY")
+RESP_BLOCKED=$(api POST "/tenants/$CID/deployments" "$DEPLOY_BODY")
 ERR_CODE=$(echo "$RESP_BLOCKED" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('error') or {}).get('code',''))" 2>/dev/null)
 
 if [[ "$HTTP_CODE" == "403" && "$ERR_CODE" == "HOST_PORTS_DISABLED" ]]; then
@@ -172,7 +172,7 @@ sleep 7  # let the 5s cache invalidate on the other replicas
 
 DEPLOY_NAME="coturn-fw-ok-$STAMP"
 log "── deploying $CATALOG_CODE ──"
-DEPLOY_RESP=$(api POST "/clients/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"$DEPLOY_NAME\"}")
+DEPLOY_RESP=$(api POST "/tenants/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"$DEPLOY_NAME\"}")
 DEP_ID=$(echo "$DEPLOY_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('id',''))" 2>/dev/null)
 if [[ -n "$DEP_ID" ]]; then ok "deployment created id=$DEP_ID"; else fail "deployment create failed: $DEPLOY_RESP"; exit 1; fi
 
@@ -303,7 +303,7 @@ TCP_RES=$(stun_probe tcp "$NODE_IP" 3478)
 
 # ─── Phase 5: deletion closes the ports (reconciler diff path) ────────────
 log "── phase 5: delete deployment, expect ports to be removed within 60s ──"
-api DELETE "/clients/$CID/deployments/$DEP_ID" >/dev/null 2>&1 || true
+api DELETE "/tenants/$CID/deployments/$DEP_ID" >/dev/null 2>&1 || true
 
 # Wait for pod gone, then for the reconciler to converge.
 for _ in $(seq 1 30); do

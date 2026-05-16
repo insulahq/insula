@@ -55,7 +55,11 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
-        required: ['name', 'contact_name', 'primary_email', 'phone_e164', 'billing_address', 'plan_id'],
+        // contact_name + phone_e164 + billing_address are optional at the
+        // API layer — admin-panel CreateTenantModal enforces them via
+        // HTML required, service-to-service callers (integration tests)
+        // can omit and backfill later. DB columns are nullable.
+        required: ['name', 'primary_email', 'plan_id'],
         properties: {
           name: { type: 'string', minLength: 1, maxLength: 255 },
           contact_name: { type: 'string', minLength: 1, maxLength: 255 },
