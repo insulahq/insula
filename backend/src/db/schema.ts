@@ -1953,6 +1953,11 @@ export const systemSettings = pgTable('system_settings', {
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
+  // ISO 4217 currency code (USD, EUR, GBP, …). Drives Intl.NumberFormat
+  // across both panels for any monetary amount display. The older
+  // currency_symbol column above is unused at the API/UI layer; new
+  // code should only read/write `currency`. Default 'USD'.
+  currency: varchar('currency', { length: 3 }).notNull().default('USD'),
   timezone: varchar('timezone', { length: 50 }).notNull().default('UTC'),
   // Host-port gating (migration 0062). When OFF, the catalog deploy
   // path rejects workloads that request hostPort or carry the

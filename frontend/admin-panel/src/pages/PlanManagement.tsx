@@ -3,6 +3,8 @@ import { CreditCard, Plus, Loader2, AlertCircle, Trash2, Edit, X, Save } from 'l
 import clsx from 'clsx';
 import { usePlans } from '@/hooks/use-plans';
 import { useCreatePlan, useUpdatePlan, useDeletePlan } from '@/hooks/use-plan-management';
+import { useSystemSettings } from '@/hooks/use-system-settings';
+import { formatCurrency } from '@/lib/format-currency';
 
 const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -60,6 +62,8 @@ export default function PlanManagement() {
 function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly initial?: PlanRow }) {
   const create = useCreatePlan();
   const update = useUpdatePlan();
+  const { data: sysResp } = useSystemSettings();
+  const currency = sysResp?.data?.currency ?? 'USD';
   const isEdit = Boolean(initial);
 
   const [form, setForm] = useState({
@@ -94,7 +98,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Code</label><input type="text" className={INPUT_CLASS} placeholder="starter" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required disabled={isEdit} data-testid="plan-code-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Name</label><input type="text" className={INPUT_CLASS} placeholder="Starter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required data-testid="plan-name-input" /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Price (USD/mo)</label><input type="text" className={INPUT_CLASS} placeholder="5.00" value={form.monthly_price_usd} onChange={(e) => setForm({ ...form, monthly_price_usd: e.target.value })} required data-testid="plan-price-input" /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Price ({currency}/mo)</label><input type="text" className={INPUT_CLASS} placeholder="5.00" value={form.monthly_price_usd} onChange={(e) => setForm({ ...form, monthly_price_usd: e.target.value })} required data-testid="plan-price-input" /></div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU Limit (cores)</label><input type="text" className={INPUT_CLASS} value={form.cpu_limit} onChange={(e) => setForm({ ...form, cpu_limit: e.target.value })} required /></div>
@@ -125,7 +129,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
             value={form.weekly_ai_budget_cents}
             onChange={(e) => setForm({ ...form, weekly_ai_budget_cents: e.target.value })}
           />
-          <p className="text-[10px] text-gray-400 mt-0.5">${(Number(form.weekly_ai_budget_cents) / 100).toFixed(2)}/week</p>
+          <p className="text-[10px] text-gray-400 mt-0.5">{formatCurrency(Number(form.weekly_ai_budget_cents) / 100, currency)}/week</p>
         </div>
       </div>
       <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Description</label><input type="text" className={INPUT_CLASS} placeholder="Optional description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
@@ -141,6 +145,8 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
 function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
   const update = useUpdatePlan();
   const del = useDeletePlan();
+  const { data: sysResp } = useSystemSettings();
+  const currency = sysResp?.data?.currency ?? 'USD';
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
 
@@ -159,13 +165,13 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           </div>
         </div>
         <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-          <span>${plan.monthlyPriceUsd}/mo</span>
+          <span>{formatCurrency(plan.monthlyPriceUsd, currency)}/mo</span>
           <span>{plan.cpuLimit} CPU</span>
           <span>{plan.memoryLimit}GB RAM</span>
           <span>{plan.storageLimit}GB disk</span>
           <span>{plan.maxSubUsers} users</span>
           <span>{plan.maxMailboxes} mailboxes</span>
-          <span>${((plan as unknown as Record<string, unknown>).weeklyAiBudgetCents as number ?? 100) / 100}/wk AI</span>
+          <span>{formatCurrency(((plan as unknown as Record<string, unknown>).weeklyAiBudgetCents as number ?? 0) / 100, currency)}/wk AI</span>
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`edit-plan-${plan.id}`}><Edit size={12} /></button>
             {confirmDel ? (

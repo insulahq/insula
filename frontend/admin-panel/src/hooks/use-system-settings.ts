@@ -14,6 +14,9 @@ export interface SystemSettings {
   readonly apiRateLimit: number;
   readonly timezone: string;
   readonly currencySymbol: string;
+  // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat in
+  // both panels for every monetary amount display.
+  readonly currency: string;
   // Runtime-firewall toggles (migration 0062). Default false — host-port
   // apps (COTURN, BBB media servers) refuse to deploy on the matching
   // node role until the operator flips the toggle in System Settings.
