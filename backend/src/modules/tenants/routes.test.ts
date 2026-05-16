@@ -200,7 +200,15 @@ describe('tenant routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'New Corp',
+        contact_name: 'Jane Doe',
         primary_email: 'admin@newcorp.com',
+        phone_e164: '+14155552671',
+        billing_address: {
+          street_address: '123 Main St',
+          postal_address: 'PO Box 1',
+          city: 'San Francisco',
+          country: 'US',
+        },
         plan_id: '550e8400-e29b-41d4-a716-446655440000',
         region_id: '550e8400-e29b-41d4-a716-446655440001',
       },

@@ -279,7 +279,7 @@ export async function signTenantCert(input: SignCertInput): Promise<SignedTenant
     await writeFile(extPath,
       'basicConstraints=critical,CA:FALSE\n' +
       'keyUsage=critical,digitalSignature,keyEncipherment\n' +
-      'extendedKeyUsage=tenantAuth\n',
+      'extendedKeyUsage=clientAuth\n',
       { mode: 0o600 },
     );
 

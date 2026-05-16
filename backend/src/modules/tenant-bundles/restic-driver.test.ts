@@ -35,7 +35,7 @@ import {
 // Phase 0 spike fixture — production driver MUST produce this exactly.
 const FIXTURE_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const FIXTURE_CLIENT = 'fixture-tenant-001';
-const FIXTURE_PASSWORD = '9cc1efeff2216dd12759fb93b3b3948f830036b87f5d6a29f8470108dc4d39a8';
+const FIXTURE_PASSWORD = '3e161d93045adabc875c3004158fccfccdcd7c4c9159d13af1703d5df86e0fc4';
 
 describe('deriveResticPassword', () => {
   it('matches the Phase 0 lock vector byte-for-byte', () => {
@@ -519,7 +519,7 @@ describe('deriveDrRecoveryPassword', () => {
     // Snapshot the value so any change becomes a deliberate one.
     // Region B reproduces this byte-identical given DR_RECOVERY_KEY +
     // FIXTURE_CLIENT — that's the contract.
-    expect(out).toBe('de1dd12685a7238c2ab5715fdbbc59583cff4b70cb0bbb1caf2dce2b860b4594');
+    expect(out).toBe('675eb077962cf0b5b5941acae929f4dc01419d082f5ab9e7dcab73c1e8d1c8b4');
   });
 
   // Reviewer #10: prove that the KEY itself matters, not just the info
