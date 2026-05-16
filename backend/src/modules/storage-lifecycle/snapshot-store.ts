@@ -27,7 +27,7 @@ export interface SnapshotStore {
    * Implementations must NOT create the object yet — the snapshot Job
    * writes to it. This call is a pure naming operation.
    */
-  reservePath(clientId: string, snapshotId: string): string;
+  reservePath(tenantId: string, snapshotId: string): string;
 
   /**
    * Absolute mount/path that a K8s Job should write its tarball to.
@@ -69,7 +69,7 @@ export interface SnapshotStore {
  * Snapshots as tarballs on a hostPath mounted into the k3s node at
  * `/var/lib/platform/snapshots`. File layout:
  *
- *     /var/lib/platform/snapshots/<client-id>/<snapshot-id>.tar.gz
+ *     /var/lib/platform/snapshots/<tenant-id>/<snapshot-id>.tar.gz
  *
  * Two distinct paths at play:
  *   - `hostRoot` — path on the k3s node that backs the hostPath volume.
@@ -90,10 +90,10 @@ export interface SnapshotStore {
 export class LocalHostPathStore implements SnapshotStore {
   constructor(private readonly hostRoot: string, private readonly localRoot: string = hostRoot) {}
 
-  reservePath(clientId: string, snapshotId: string): string {
+  reservePath(tenantId: string, snapshotId: string): string {
     // The filename is the single source of truth — no directory prefix
     // on the object side so that restores can find it with just the id.
-    return `${clientId}/${snapshotId}.tar.gz`;
+    return `${tenantId}/${snapshotId}.tar.gz`;
   }
 
   mountTarget(archivePath: string): {
@@ -190,9 +190,9 @@ export class S3Store implements SnapshotStore {
     readonly pathPrefix?: string;
   }) {}
 
-  /** Return an S3 client. Lazy-loaded so the AWS SDK isn't imported on
+  /** Return an S3 tenant. Lazy-loaded so the AWS SDK isn't imported on
    *  every server boot when only LocalHostPathStore is used. */
-  private async client() {
+  private async tenant() {
     const { S3Client } = await import('@aws-sdk/client-s3');
     return new S3Client({
       region: this.config.region,
@@ -213,8 +213,8 @@ export class S3Store implements SnapshotStore {
     return prefix ? `${prefix}/${path}` : path;
   }
 
-  reservePath(clientId: string, snapshotId: string): string {
-    return `${clientId}/${snapshotId}.tar.gz`;
+  reservePath(tenantId: string, snapshotId: string): string {
+    return `${tenantId}/${snapshotId}.tar.gz`;
   }
 
   /**
@@ -240,7 +240,7 @@ export class S3Store implements SnapshotStore {
   async getUploadUrls(archivePath: string): Promise<{ archiveUrl: string; sha256Url: string }> {
     const { PutObjectCommand } = await import('@aws-sdk/client-s3');
     const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
-    const c = await this.client();
+    const c = await this.tenant();
     const archiveCmd = new PutObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath), ContentType: 'application/gzip' });
     const sha256Cmd = new PutObjectCommand({ Bucket: this.config.bucket, Key: this.key(`${archivePath}.sha256`), ContentType: 'text/plain' });
     const [archiveUrl, sha256Url] = await Promise.all([
@@ -253,13 +253,13 @@ export class S3Store implements SnapshotStore {
   async getDownloadUrl(archivePath: string): Promise<string> {
     const { GetObjectCommand } = await import('@aws-sdk/client-s3');
     const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
-    const c = await this.client();
+    const c = await this.tenant();
     return getSignedUrl(c, new GetObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }), { expiresIn: 3600 });
   }
 
   async stat(archivePath: string): Promise<{ sizeBytes: number } | null> {
     const { HeadObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
-    const c = await this.client();
+    const c = await this.tenant();
     try {
       const r = await c.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }));
       return { sizeBytes: Number(r.ContentLength ?? 0) };
@@ -271,7 +271,7 @@ export class S3Store implements SnapshotStore {
 
   async delete(archivePath: string): Promise<boolean> {
     const { DeleteObjectCommand, HeadObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
-    const c = await this.client();
+    const c = await this.tenant();
     let existed = false;
     try {
       await c.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }));
@@ -290,7 +290,7 @@ export class S3Store implements SnapshotStore {
 
   async readSidecar(archivePath: string, suffix: string): Promise<string | null> {
     const { GetObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
-    const c = await this.client();
+    const c = await this.tenant();
     try {
       const r = await c.send(new GetObjectCommand({ Bucket: this.config.bucket, Key: this.key(`${archivePath}${suffix}`) }));
       const text = await r.Body?.transformToString();
@@ -309,8 +309,8 @@ export class AzureBlobStore implements SnapshotStore {
     readonly connectionString: string;
   }) {}
 
-  reservePath(clientId: string, snapshotId: string): string {
-    return `${clientId}/${snapshotId}.tar.gz`;
+  reservePath(tenantId: string, snapshotId: string): string {
+    return `${tenantId}/${snapshotId}.tar.gz`;
   }
 
   mountTarget(_archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {

@@ -15,7 +15,7 @@ import { z } from 'zod';
 const updateSchema = z.object({
   platformName: z.string().min(1).max(255).optional(),
   adminPanelUrl: z.string().url().max(500).optional().nullable(),
-  clientPanelUrl: z.string().url().max(500).optional().nullable(),
+  tenantPanelUrl: z.string().url().max(500).optional().nullable(),
   supportEmail: z.string().email().max(255).optional().nullable(),
   supportUrl: z.string().url().max(500).optional().nullable(),
   ingressBaseDomain: z.string().max(255).optional().nullable(),
@@ -30,7 +30,7 @@ describe('system-settings PATCH schema', () => {
     const result = updateSchema.safeParse({
       platformName: 'Acme Host',
       adminPanelUrl: 'https://admin.acme.test',
-      clientPanelUrl: 'https://my.acme.test',
+      tenantPanelUrl: 'https://my.acme.test',
       supportEmail: 'help@acme.test',
       supportUrl: 'https://docs.acme.test',
       ingressBaseDomain: 'routing.acme.test',

@@ -6,8 +6,8 @@ import { z } from 'zod';
 // the provider.
 const s3BucketRegex = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 // http or https only. Rejects file://, s3://, bare hostnames etc. HeadBucket
-// via @aws-sdk/client-s3 needs a full URL anyway; enforcing it at the
-// contract makes client-side form validation stricter.
+// via @aws-sdk/tenant-s3 needs a full URL anyway; enforcing it at the
+// contract makes tenant-side form validation stricter.
 const httpUrl = z.string().url().refine(
   (v) => v.startsWith('http://') || v.startsWith('https://'),
   { message: 'must be http:// or https:// URL' },

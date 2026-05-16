@@ -22,9 +22,9 @@ const REASON_LABELS: Record<OrphanReason, { label: string; explainer: string; to
     explainer: 'The PV references a namespace that no longer exists.',
     tone: 'red',
   },
-  client_record_deleted: {
+  tenant_record_deleted: {
     label: 'Client deleted',
-    explainer: 'A client-* namespace exists but no matching client row in the platform DB.',
+    explainer: 'A tenant-* namespace exists but no matching tenant row in the platform DB.',
     tone: 'red',
   },
   pv_released_stale: {
@@ -39,7 +39,7 @@ const REASON_LABELS: Record<OrphanReason, { label: string; explainer: string; to
   },
   namespace_orphaned: {
     label: 'Namespace orphaned',
-    explainer: 'A client-* namespace with no matching client row and no backing volume — typically a deprovision that left the namespace standing.',
+    explainer: 'A tenant-* namespace with no matching tenant row and no backing volume — typically a deprovision that left the namespace standing.',
     tone: 'red',
   },
 };

@@ -2,21 +2,21 @@
 //
 // PR-2 scope: simple-mode CRUD + validation + update-check batch
 // + PAT attach/revoke + one-click tag upgrade. The compose-mode
-// endpoints are reserved here (POST /clients/:cid/custom-deployments
+// endpoints are reserved here (POST /tenants/:cid/custom-deployments
 // with mode='compose' returns 405) and will be wired up in PR-3.
 //
 // Auth: every route requires authentication + the tenant-access
-// hook (clients can only touch their own deployments) +
-// `requireClientRoleByMethod` (read for any client role, writes only
-// for client_admin + staff). Admin-only fields (`allowRoot`) are
+// hook (tenants can only touch their own deployments) +
+// `requireTenantRoleByMethod` (read for any tenant role, writes only
+// for tenant_admin + staff). Admin-only fields (`allowRoot`) are
 // gated inside the validator at the service layer — the routes are
 // agnostic to that.
 
 import type { FastifyInstance } from 'fastify';
 import {
   authenticate,
-  requireClientAccess,
-  requireClientRoleByMethod,
+  requireTenantAccess,
+  requireTenantRoleByMethod,
   requireRole,
 } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
@@ -36,8 +36,8 @@ import type { CallerRole } from './role-types.js';
 
 export async function customDeploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireClientRoleByMethod());
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantRoleByMethod());
+  app.addHook('onRequest', requireTenantAccess());
 
   const getK8s = () => {
     try {
@@ -62,23 +62,23 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
 
   // ─── List / Get ──────────────────────────────────────────────────────────
 
-  app.get('/clients/:clientId/custom-deployments', async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const rows = await service.listCustomDeployments(app.db, clientId);
+  app.get('/tenants/:tenantId/custom-deployments', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const rows = await service.listCustomDeployments(app.db, tenantId);
     return success(rows);
   });
 
-  app.get('/clients/:clientId/custom-deployments/:id', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const row = await service.getCustomDeployment(app.db, clientId, id);
+  app.get('/tenants/:tenantId/custom-deployments/:id', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const row = await service.getCustomDeployment(app.db, tenantId, id);
     return success(row);
   });
 
   // ─── Validate (preview) ──────────────────────────────────────────────────
 
-  app.post('/clients/:clientId/custom-deployments/validate', async (request) => {
-    // clientId on the path is used only by the auth hook
-    // (requireClientAccess); validation itself is tenant-agnostic.
+  app.post('/tenants/:tenantId/custom-deployments/validate', async (request) => {
+    // tenantId on the path is used only by the auth hook
+    // (requireTenantAccess); validation itself is tenant-agnostic.
     const parsed = createCustomDeploymentSchema.safeParse(request.body);
     if (!parsed.success) {
       // Zod-level errors surface as a single issue list. The UI
@@ -128,8 +128,8 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
 
   // ─── Create ──────────────────────────────────────────────────────────────
 
-  app.post('/clients/:clientId/custom-deployments', async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+  app.post('/tenants/:tenantId/custom-deployments', async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = createCustomDeploymentSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -145,14 +145,14 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
       ? await service.createComposeDeployment(
         app.db,
         k8s,
-        clientId,
+        tenantId,
         parsed.data,
         { role: roleOf(request) },
       )
       : await service.createSimpleDeployment(
         app.db,
         k8s,
-        clientId,
+        tenantId,
         parsed.data,
         { role: roleOf(request) },
       );
@@ -161,8 +161,8 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
 
   // ─── Update ──────────────────────────────────────────────────────────────
 
-  app.patch('/clients/:clientId/custom-deployments/:id', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.patch('/tenants/:tenantId/custom-deployments/:id', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const parsed = updateCustomDeploymentSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -177,15 +177,15 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     const row = await service.updateCustomDeployment(
       app.db,
       k8s,
-      clientId,
+      tenantId,
       id,
       parsed.data,
     );
     return success(row);
   });
 
-  app.put('/clients/:clientId/custom-deployments/:id/upgrade-tag', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.put('/tenants/:tenantId/custom-deployments/:id/upgrade-tag', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = request.body as { image?: unknown };
     // Mirror the 500-char cap on `image` enforced by
     // createCustomDeploymentSimpleSchema. Without this the bare
@@ -201,23 +201,23 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
       );
     }
     const k8s = requireK8s();
-    const row = await service.upgradeTag(app.db, k8s, clientId, id, body.image);
+    const row = await service.upgradeTag(app.db, k8s, tenantId, id, body.image);
     return success(row);
   });
 
   // ─── Delete ──────────────────────────────────────────────────────────────
 
-  app.delete('/clients/:clientId/custom-deployments/:id', async (request, reply) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.delete('/tenants/:tenantId/custom-deployments/:id', async (request, reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const k8s = requireK8s();
-    await service.deleteCustomDeploymentRow(app.db, k8s, clientId, id);
+    await service.deleteCustomDeploymentRow(app.db, k8s, tenantId, id);
     reply.status(204).send();
   });
 
   // ─── Update checker (batch) ──────────────────────────────────────────────
 
-  app.post('/clients/:clientId/custom-deployments/check-updates-batch', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  app.post('/tenants/:tenantId/custom-deployments/check-updates-batch', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = checkUpdatesBatchSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('INVALID_FIELD_VALUE', 'deployment_ids must be an array of UUIDs', 400);
@@ -233,7 +233,7 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     const results: Record<string, unknown> = {};
     const probe = async (id: string): Promise<void> => {
       try {
-        const dep = await service.getCustomDeployment(app.db, clientId, id);
+        const dep = await service.getCustomDeployment(app.db, tenantId, id);
         const serviceName = Object.keys(dep.customSpec.services)[0];
         const image = dep.customSpec.services[serviceName]?.image;
         if (!image) {
@@ -286,9 +286,9 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
 
   // ─── Pull credentials (PAT) ──────────────────────────────────────────────
 
-  app.get('/clients/:clientId/custom-deployments/:id/pull-credentials', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const rec = await service.readPullCredentialPublic(app.db, clientId, id);
+  app.get('/tenants/:tenantId/custom-deployments/:id/pull-credentials', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const rec = await service.readPullCredentialPublic(app.db, tenantId, id);
     if (!rec) return success(null);
     return success({
       id: rec.id,
@@ -301,8 +301,8 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     });
   });
 
-  app.put('/clients/:clientId/custom-deployments/:id/pull-credentials', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.put('/tenants/:tenantId/custom-deployments/:id/pull-credentials', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const parsed = submitPullCredentialSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -325,7 +325,7 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     const rec = await service.attachPullCredential(
       app.db,
       k8s,
-      clientId,
+      tenantId,
       id,
       {
         registryHost: parsed.data.registry_host,
@@ -345,10 +345,10 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     });
   });
 
-  app.delete('/clients/:clientId/custom-deployments/:id/pull-credentials', async (request, reply) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
+  app.delete('/tenants/:tenantId/custom-deployments/:id/pull-credentials', async (request, reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
     const k8s = requireK8s();
-    await service.revokePullCredential(app.db, k8s, clientId, id);
+    await service.revokePullCredential(app.db, k8s, tenantId, id);
     reply.status(204).send();
   });
 }
@@ -356,7 +356,7 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
 /**
  * Admin-only routes for custom deployments.
  *
- *   PATCH /api/v1/admin/clients/:clientId/custom-deployments/:id/allow-root
+ *   PATCH /api/v1/admin/tenants/:tenantId/custom-deployments/:id/allow-root
  *
  * Requires `super_admin` role. Flips the `allowRoot` flag on a custom
  * deployment without triggering a re-deploy (the tenant must restart
@@ -367,9 +367,9 @@ export async function customDeploymentAdminRoutes(app: FastifyInstance): Promise
   app.addHook('onRequest', requireRole('super_admin'));
 
   app.patch(
-    '/admin/clients/:clientId/custom-deployments/:id/allow-root',
+    '/admin/tenants/:tenantId/custom-deployments/:id/allow-root',
     async (request) => {
-      const { clientId, id } = request.params as { clientId: string; id: string };
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
       const parsed = setAllowRootSchema.safeParse(request.body);
       if (!parsed.success) {
         const firstError = parsed.error.issues[0];
@@ -380,7 +380,7 @@ export async function customDeploymentAdminRoutes(app: FastifyInstance): Promise
           { field: firstError.path.join('.') },
         );
       }
-      const row = await service.setAllowRoot(app.db, clientId, id, parsed.data.allowRoot);
+      const row = await service.setAllowRoot(app.db, tenantId, id, parsed.data.allowRoot);
       return success(row);
     },
   );
@@ -391,17 +391,17 @@ export async function customDeploymentAdminRoutes(app: FastifyInstance): Promise
 function roleOf(request: { user: { role?: string } }): CallerRole {
   const raw = request.user?.role;
   if (raw === 'super_admin' || raw === 'admin') return raw;
-  if (raw === 'client_admin' || raw === 'client_user') return raw;
+  if (raw === 'tenant_admin' || raw === 'tenant_user') return raw;
   // Catalog routes are reachable by other roles too (billing, support
   // etc.) — for our purposes treat anything else as the most-restricted
   // tenant role.
-  return 'client_user';
+  return 'tenant_user';
 }
 
 /**
  * Resolve the decrypted PAT for use in an update-check call against
  * a private registry. Ownership is verified by the caller via
- * `getCustomDeployment(db, clientId, id)` before this helper runs;
+ * `getCustomDeployment(db, tenantId, id)` before this helper runs;
  * we don't re-check here. The decrypted cleartext exists only for
  * the duration of one HTTP call to the registry.
  */

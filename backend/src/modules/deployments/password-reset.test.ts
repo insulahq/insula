@@ -4,7 +4,7 @@ import { buildPasswordResetInitContainer } from './password-reset.js';
 describe('buildPasswordResetInitContainer', () => {
   const baseArgs = {
     storagePath: 'database/mariadb/my-db',
-    volumeMountName: 'client-storage',
+    volumeMountName: 'tenant-storage',
   };
 
   describe('MariaDB', () => {

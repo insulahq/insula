@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { getMetrics } from './service.js';
 
-vi.mock('../clients/service.js', () => ({
-  getClientById: vi.fn().mockResolvedValue({ id: 'c1', companyName: 'Acme' }),
+vi.mock('../tenants/service.js', () => ({
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', name: 'Acme' }),
 }));
 
 function createMockDb(rows: Array<{ metricType: string; value: string }> = []) {
@@ -19,7 +19,7 @@ describe('getMetrics', () => {
     const db = createMockDb([]);
 
     const result = await getMetrics(db, 'c1', { period: '24h' });
-    expect(result.client_id).toBe('c1');
+    expect(result.tenant_id).toBe('c1');
     expect(result.period).toBe('24h');
     expect(result.data_points).toBe(0);
     expect(result.metrics).toEqual({});

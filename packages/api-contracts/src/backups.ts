@@ -14,7 +14,7 @@ export const createBackupSchema = z.object({
 
 export const backupResponseSchema = z.object({
   id: uuidField,
-  clientId: uuidField,
+  tenantId: uuidField,
   backupType: z.string(),
   resourceType: z.string(),
   resourceId: z.string().nullable(),

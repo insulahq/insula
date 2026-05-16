@@ -7,7 +7,7 @@ import { registerAuth } from '../../middleware/auth.js';
 const mockEmailDomain = {
   id: 'ed-1',
   domainId: 'd1',
-  clientId: 'c1',
+  tenantId: 'c1',
   domainName: 'example.com',
   enabled: 1,
   // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
@@ -41,7 +41,7 @@ describe('email-domain routes', () => {
   let adminToken: string;
   let readOnlyToken: string;
   let supportToken: string;
-  let clientUserToken: string;
+  let tenantUserToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -56,7 +56,7 @@ describe('email-domain routes', () => {
     adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
-    clientUserToken = app.jwt.sign({ sub: 'cu-1', role: 'client_user', panel: 'client', clientId: 'c1', iat: Math.floor(Date.now() / 1000) });
+    tenantUserToken = app.jwt.sign({ sub: 'cu-1', role: 'tenant_user', panel: 'tenant', tenantId: 'c1', iat: Math.floor(Date.now() / 1000) });
   });
 
   afterAll(async () => {
@@ -94,16 +94,16 @@ describe('email-domain routes', () => {
   it('POST enable should require auth', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      url: '/api/v1/tenants/c1/email/domains/d1/enable',
     });
     expect(res.statusCode).toBe(401);
   });
 
-  it('POST enable should reject client_user role', async () => {
+  it('POST enable should reject tenant_user role', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/d1/enable',
-      headers: { authorization: `Bearer ${clientUserToken}` },
+      url: '/api/v1/tenants/c1/email/domains/d1/enable',
+      headers: { authorization: `Bearer ${tenantUserToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -111,14 +111,14 @@ describe('email-domain routes', () => {
   it('POST enable should create with valid/empty body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      url: '/api/v1/tenants/c1/email/domains/d1/enable',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
     expect(res.statusCode).toBe(201);
   });
 
-  // Phase 2 round-3 regression guard: the client-panel was throwing
+  // Phase 2 round-3 regression guard: the tenant-panel was throwing
   // "Failed to execute 'json' on 'Response': Unexpected end of JSON input"
   // for this endpoint. Confirm the response body is non-empty JSON that
   // parses to the expected shape so that apiFetch's JSON.parse never
@@ -126,7 +126,7 @@ describe('email-domain routes', () => {
   it('POST enable should return a non-empty JSON body with the created email domain', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      url: '/api/v1/tenants/c1/email/domains/d1/enable',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
@@ -141,7 +141,7 @@ describe('email-domain routes', () => {
   it('POST enable should emit a Content-Length header (non-empty body)', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      url: '/api/v1/tenants/c1/email/domains/d1/enable',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
@@ -153,7 +153,7 @@ describe('email-domain routes', () => {
   it('POST enable should reject invalid catch_all_address', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      url: '/api/v1/tenants/c1/email/domains/d1/enable',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { catch_all_address: 'not-an-email' },
     });
@@ -166,7 +166,7 @@ describe('email-domain routes', () => {
   it('DELETE disable should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/email/domains/d1/disable',
+      url: '/api/v1/tenants/c1/email/domains/d1/disable',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);
@@ -174,10 +174,10 @@ describe('email-domain routes', () => {
 
   // ── Client-scoped: list ──
 
-  it('GET client email domains should allow support', async () => {
+  it('GET tenant email domains should allow support', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/email/domains',
+      url: '/api/v1/tenants/c1/email/domains',
       headers: { authorization: `Bearer ${supportToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -188,7 +188,7 @@ describe('email-domain routes', () => {
   it('GET single email domain should return data', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/email/domains/ed-1',
+      url: '/api/v1/tenants/c1/email/domains/ed-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -199,7 +199,7 @@ describe('email-domain routes', () => {
   it('PATCH should reject invalid catch_all_address', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/email/domains/ed-1',
+      url: '/api/v1/tenants/c1/email/domains/ed-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { catch_all_address: 'not-an-email' },
     });
@@ -210,7 +210,7 @@ describe('email-domain routes', () => {
   it('PATCH should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/email/domains/ed-1',
+      url: '/api/v1/tenants/c1/email/domains/ed-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { catch_all_address: 'postmaster@example.com' },
     });

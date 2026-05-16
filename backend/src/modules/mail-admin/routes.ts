@@ -172,7 +172,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       return success(result);
     } catch (err) {
       // Log full error server-side; return a fixed generic message
-      // to the client so we don't leak pod names, exec args,
+      // to the tenant so we don't leak pod names, exec args,
       // cluster addressing, or stalwart-cli internals.
       app.log.warn({ err }, 'mail-admin: metrics fetch failed');
       throw new ApiError(

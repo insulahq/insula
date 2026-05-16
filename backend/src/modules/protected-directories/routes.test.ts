@@ -40,7 +40,7 @@ describe('protected-directory routes', () => {
   let adminToken: string;
   let readOnlyToken: string;
 
-  const base = '/api/v1/clients/c1/domains/d1/protected-directories';
+  const base = '/api/v1/tenants/c1/domains/d1/protected-directories';
 
   beforeAll(async () => {
     app = Fastify();

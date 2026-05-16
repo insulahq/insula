@@ -2,7 +2,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 /**
  * Quiesce / unquiesce helpers — scale every platform-managed workload
- * in a client namespace to 0 (and back) so that we can safely destroy
+ * in a tenant namespace to 0 (and back) so that we can safely destroy
  * and recreate the PVC without races against mid-write workloads.
  *
  * Scope: `label platform.io/managed=true`. This matches what the deployer
@@ -32,7 +32,7 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
   const cronJobs: Array<{ name: string; wasSuspended: boolean }> = [];
 
   // Scale every Deployment in the tenant namespace — tenant namespaces
-  // are single-client dedicated, and every Deployment there
+  // are single-tenant dedicated, and every Deployment there
   // (`platform.io/managed` workloads, `platform.io/system` sidecars
   // like file-manager, etc.) can hold the tenant PVC's RWO lock. An
   // earlier revision narrowed this to `platform.io/managed=true` only,
@@ -50,7 +50,7 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     const replicas = d.spec?.replicas ?? 0;
     deployments.push({ name, replicas });
     if (replicas > 0) {
-      // read-modify-replace instead of patch — some k8s clients
+      // read-modify-replace instead of patch — some k8s tenants
       // default to JSON-patch content-type which fails with merge-
       // shaped bodies (400 "cannot unmarshal object into []jsonPatchOp").
       const current = await (k8s.apps as unknown as {
@@ -138,7 +138,7 @@ export async function waitForQuiesced(
 ): Promise<number> {
   const start = Date.now();
   const listPods = async (): Promise<number> => {
-    // Tenant namespaces are single-client dedicated — every non-Job
+    // Tenant namespaces are single-tenant dedicated — every non-Job
     // pod here could hold the PVC's RWO lock. The earlier label
     // filter (`platform.io/managed=true`) excluded system sidecars
     // like file-manager, which made waitForQuiesced return 0 even

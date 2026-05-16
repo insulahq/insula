@@ -15,7 +15,7 @@ export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
     const { limit, cursor } = parsePaginationParams(query);
 
     const conditions = [];
-    if (query.client_id) conditions.push(eq(auditLogs.clientId, query.client_id));
+    if (query.tenant_id) conditions.push(eq(auditLogs.tenantId, query.tenant_id));
     if (query.action_type) conditions.push(eq(auditLogs.actionType, query.action_type));
     if (query.resource_type) conditions.push(eq(auditLogs.resourceType, query.resource_type));
     if (query.actor_id) conditions.push(eq(auditLogs.actorId, query.actor_id));

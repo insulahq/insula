@@ -1,7 +1,7 @@
 import { eq, and, asc } from 'drizzle-orm';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { oidcProviders, oidcGlobalSettings, users, clients } from '../../db/schema.js';
+import { oidcProviders, oidcGlobalSettings, users, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from './crypto.js';
 import type { Database } from '../../db/index.js';
@@ -50,32 +50,32 @@ export async function getGlobalSettings(db: Database) {
   if (rows.length === 0) {
     return {
       disableLocalAuthAdmin: false,
-      disableLocalAuthClient: false,
+      disableLocalAuthTenant: false,
       hasBreakGlassSecret: false,
       protectAdminViaProxy: false,
-      protectClientViaProxy: false,
+      protectTenantViaProxy: false,
       breakGlassPath: null as string | null,
     };
   }
   const row = rows[0];
   return {
     disableLocalAuthAdmin: Boolean(row.disableLocalAuthAdmin),
-    disableLocalAuthClient: Boolean(row.disableLocalAuthClient),
+    disableLocalAuthTenant: Boolean(row.disableLocalAuthTenant),
     hasBreakGlassSecret: Boolean(row.breakGlassSecretHash),
     protectAdminViaProxy: row.protectAdminViaProxy === 1,
-    protectClientViaProxy: row.protectClientViaProxy === 1,
+    protectTenantViaProxy: row.protectTenantViaProxy === 1,
     breakGlassPath: row.breakGlassPath ?? null,
   };
 }
 
 export interface SaveGlobalSettingsInput {
   readonly disable_local_auth_admin?: boolean;
-  readonly disable_local_auth_client?: boolean;
+  readonly disable_local_auth_tenant?: boolean;
   readonly break_glass_secret?: string;
   readonly protect_admin_via_proxy?: boolean;
   readonly protect_client_via_proxy?: boolean;
   readonly proxy_protect_admin?: boolean;
-  readonly proxy_protect_client?: boolean;
+  readonly proxy_protect_tenant?: boolean;
   readonly break_glass_path?: string | null;
 }
 
@@ -84,17 +84,17 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
 
   const updateValues: Record<string, unknown> = {};
   if (input.disable_local_auth_admin !== undefined) updateValues.disableLocalAuthAdmin = input.disable_local_auth_admin ? 1 : 0;
-  if (input.disable_local_auth_client !== undefined) updateValues.disableLocalAuthClient = input.disable_local_auth_client ? 1 : 0;
+  if (input.disable_local_auth_tenant !== undefined) updateValues.disableLocalAuthTenant = input.disable_local_auth_tenant ? 1 : 0;
   if (input.break_glass_secret) updateValues.breakGlassSecretHash = await bcrypt.hash(input.break_glass_secret, 12);
 
   // Handle proxy protection fields (accept both naming conventions)
   const adminProxy = input.protect_admin_via_proxy ?? input.proxy_protect_admin;
-  const clientProxy = input.protect_client_via_proxy ?? input.proxy_protect_client;
+  const tenantProxy = input.protect_client_via_proxy ?? input.proxy_protect_tenant;
   if (adminProxy !== undefined) {
     updateValues.protectAdminViaProxy = adminProxy ? 1 : 0;
   }
-  if (clientProxy !== undefined) {
-    updateValues.protectClientViaProxy = clientProxy ? 1 : 0;
+  if (tenantProxy !== undefined) {
+    updateValues.protectTenantViaProxy = tenantProxy ? 1 : 0;
   }
   if (input.break_glass_path !== undefined) {
     updateValues.breakGlassPath = input.break_glass_path;
@@ -116,7 +116,7 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
 
   // Validate: can't enable proxy protection without at least one OIDC provider for that panel
   const wantsAdminProxy = adminProxy ?? (rows[0]?.protectAdminViaProxy === 1);
-  const wantsClientProxy = clientProxy ?? (rows[0]?.protectClientViaProxy === 1);
+  const wantsTenantProxy = tenantProxy ?? (rows[0]?.protectTenantViaProxy === 1);
 
   if (wantsAdminProxy) {
     const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
@@ -124,9 +124,9 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
       throw new ApiError('NO_ADMIN_PROVIDER', 'At least one enabled admin OIDC provider is required before enabling proxy protection for admin panel', 400);
     }
   }
-  if (wantsClientProxy) {
-    const clientProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'client'), eq(oidcProviders.enabled, 1)));
-    if (clientProviders.length === 0) {
+  if (wantsTenantProxy) {
+    const tenantProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'tenant'), eq(oidcProviders.enabled, 1)));
+    if (tenantProviders.length === 0) {
       throw new ApiError('NO_CLIENT_PROVIDER', 'At least one enabled client OIDC provider is required before enabling proxy protection for client panel', 400);
     }
   }
@@ -140,7 +140,7 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   }
 
   // Auto-generate cookie secret when proxy is enabled and none exists yet
-  if (wantsAdminProxy || wantsClientProxy) {
+  if (wantsAdminProxy || wantsTenantProxy) {
     const existingSecret = rows[0]?.oauth2ProxyCookieSecretEncrypted;
     if (!existingSecret) {
       updateValues.oauth2ProxyCookieSecretEncrypted = encrypt(generateCookieSecret(), encryptionKey);
@@ -164,7 +164,7 @@ export async function listProviders(db: Database) {
     id: p.id,
     displayName: p.displayName,
     issuerUrl: p.issuerUrl,
-    clientId: p.clientId,
+    tenantId: p.tenantId,
     panelScope: p.panelScope,
     enabled: Boolean(p.enabled),
     backchannelLogoutEnabled: Boolean(p.backchannelLogoutEnabled),
@@ -187,9 +187,9 @@ export async function getProviderById(db: Database, id: string) {
 export interface SaveProviderInput {
   readonly display_name: string;
   readonly issuer_url: string;
-  readonly client_id: string;
-  readonly client_secret: string;
-  readonly panel_scope: 'admin' | 'client';
+  readonly tenant_id: string;
+  readonly tenant_secret: string;
+  readonly panel_scope: 'admin' | 'tenant';
   readonly enabled?: boolean;
   readonly backchannel_logout_enabled?: boolean;
   readonly display_order?: number;
@@ -200,14 +200,14 @@ export interface SaveProviderInput {
 
 export async function createProvider(db: Database, input: SaveProviderInput, encryptionKey: string) {
   const discovery = await fetchDiscovery(input.issuer_url);
-  const encryptedSecret = encrypt(input.client_secret, encryptionKey);
+  const encryptedSecret = encrypt(input.tenant_secret, encryptionKey);
   const id = crypto.randomUUID();
 
   await db.insert(oidcProviders).values({
     id,
     displayName: input.display_name,
     issuerUrl: input.issuer_url,
-    clientId: input.client_id,
+    tenantId: input.tenant_id,
     clientSecretEncrypted: encryptedSecret,
     panelScope: input.panel_scope,
     enabled: input.enabled ? 1 : 0,
@@ -228,8 +228,8 @@ export async function updateProvider(db: Database, id: string, input: Partial<Sa
   const updateValues: Record<string, unknown> = {};
   if (input.display_name !== undefined) updateValues.displayName = input.display_name;
   if (input.issuer_url !== undefined) updateValues.issuerUrl = input.issuer_url;
-  if (input.client_id !== undefined) updateValues.clientId = input.client_id;
-  if (input.client_secret) updateValues.clientSecretEncrypted = encrypt(input.client_secret, encryptionKey);
+  if (input.tenant_id !== undefined) updateValues.tenantId = input.tenant_id;
+  if (input.tenant_secret) updateValues.clientSecretEncrypted = encrypt(input.tenant_secret, encryptionKey);
   if (input.panel_scope !== undefined) updateValues.panelScope = input.panel_scope;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
   if (input.backchannel_logout_enabled !== undefined) updateValues.backchannelLogoutEnabled = input.backchannel_logout_enabled ? 1 : 0;
@@ -298,7 +298,7 @@ export async function buildAuthorizationUrl(
 
   const params = new URLSearchParams({
     response_type: 'code',
-    client_id: provider.clientId,
+    tenant_id: provider.tenantId,
     redirect_uri: callbackUrl,
     scope: 'openid email profile',
     state,
@@ -339,7 +339,7 @@ export async function exchangeCodeForTokens(
   encryptionKey: string,
 ): Promise<{ idToken: IdTokenClaims; rawIdToken: string; provider: typeof oidcProviders.$inferSelect }> {
   const provider = await getProviderById(db, providerId);
-  const clientSecret = decrypt(provider.clientSecretEncrypted, encryptionKey);
+  const tenantSecret = decrypt(provider.clientSecretEncrypted, encryptionKey);
 
   let discovery = provider.discoveryMetadata as OidcDiscovery | null;
   if (!discovery?.token_endpoint) {
@@ -350,8 +350,8 @@ export async function exchangeCodeForTokens(
     grant_type: 'authorization_code',
     code,
     redirect_uri: callbackUrl,
-    client_id: provider.clientId,
-    client_secret: clientSecret,
+    tenant_id: provider.tenantId,
+    tenant_secret: tenantSecret,
     code_verifier: codeVerifier,
   });
 
@@ -381,7 +381,7 @@ export async function findOrCreateOidcUser(
   claims: IdTokenClaims,
   provider: typeof oidcProviders.$inferSelect,
 ): Promise<typeof users.$inferSelect> {
-  const panelScope = provider.panelScope as 'admin' | 'client';
+  const panelScope = provider.panelScope as 'admin' | 'tenant';
 
   // Match by OIDC subject + issuer
   const [existingByOidc] = await db.select().from(users)
@@ -412,21 +412,21 @@ export async function findOrCreateOidcUser(
   // No existing user found — check autoProvision setting
   const autoProvision = Boolean(provider.autoProvision);
 
-  // For client-scoped providers: match email to client account first
-  if (panelScope === 'client' && email) {
-    const [matchingClient] = await db.select().from(clients)
-      .where(eq(clients.companyEmail, email));
+  // For tenant-scoped providers: match email to tenant account first
+  if (panelScope === 'tenant' && email) {
+    const [matchingTenant] = await db.select().from(tenants)
+      .where(eq(tenants.primaryEmail, email));
 
-    if (matchingClient) {
+    if (matchingTenant) {
       const id = crypto.randomUUID();
       await db.insert(users).values({
         id,
         email,
         fullName: claims.name ?? claims.preferred_username ?? 'Client User',
         passwordHash: null,
-        roleName: 'client_admin',
-        panel: 'client',
-        clientId: matchingClient.id,
+        roleName: 'tenant_admin',
+        panel: 'tenant',
+        tenantId: matchingTenant.id,
         status: 'active',
         oidcIssuer: claims.iss,
         oidcSubject: claims.sub,
@@ -437,7 +437,7 @@ export async function findOrCreateOidcUser(
       return created;
     }
 
-    // No existing client — check if auto-provisioning is allowed
+    // No existing tenant — check if auto-provisioning is allowed
     if (!autoProvision) {
       throw new ApiError(
         'OIDC_USER_NOT_FOUND',
@@ -446,15 +446,15 @@ export async function findOrCreateOidcUser(
       );
     }
 
-    // Auto-create a new client and client_admin user
-    const clientId = crypto.randomUUID();
-    const companyName = claims.name ?? email.split('@')[0];
-    await db.insert(clients).values({
-      id: clientId,
-      companyName,
-      companyEmail: email,
+    // Auto-create a new tenant and tenant_admin user
+    const tenantId = crypto.randomUUID();
+    const name = claims.name ?? email.split('@')[0];
+    await db.insert(tenants).values({
+      id: tenantId,
+      name,
+      primaryEmail: email,
       regionId: 'default',
-      kubernetesNamespace: `ns-${clientId.slice(0, 8)}`,
+      kubernetesNamespace: `ns-${tenantId.slice(0, 8)}`,
       planId: 'default',
       status: 'pending',
       provisioningStatus: 'unprovisioned',
@@ -466,9 +466,9 @@ export async function findOrCreateOidcUser(
       email,
       fullName: claims.name ?? claims.preferred_username ?? 'Client User',
       passwordHash: null,
-      roleName: 'client_admin',
-      panel: 'client',
-      clientId,
+      roleName: 'tenant_admin',
+      panel: 'tenant',
+      tenantId,
       status: 'active',
       oidcIssuer: claims.iss,
       oidcSubject: claims.sub,
@@ -586,19 +586,19 @@ export async function regenerateCookieSecret(db: Database, encryptionKey: string
 
 // ─── Auth Status Checks ──────────────────────────────────────────────────────
 
-export async function isLocalAuthDisabled(db: Database, panel: 'admin' | 'client' = 'admin'): Promise<boolean> {
+export async function isLocalAuthDisabled(db: Database, panel: 'admin' | 'tenant' = 'admin'): Promise<boolean> {
   const settings = await getGlobalSettings(db);
-  return panel === 'admin' ? settings.disableLocalAuthAdmin : settings.disableLocalAuthClient;
+  return panel === 'admin' ? settings.disableLocalAuthAdmin : settings.disableLocalAuthTenant;
 }
 
-export async function getAuthStatus(db: Database, panel: 'admin' | 'client') {
+export async function getAuthStatus(db: Database, panel: 'admin' | 'tenant') {
   const globalSettings = await getGlobalSettings(db);
   const providers = await db.select().from(oidcProviders)
     .where(and(eq(oidcProviders.panelScope, panel), eq(oidcProviders.enabled, 1)))
     .orderBy(asc(oidcProviders.displayOrder));
 
-  const localAuthDisabled = panel === 'admin' ? globalSettings.disableLocalAuthAdmin : globalSettings.disableLocalAuthClient;
-  const proxyProtected = panel === 'admin' ? globalSettings.protectAdminViaProxy : globalSettings.protectClientViaProxy;
+  const localAuthDisabled = panel === 'admin' ? globalSettings.disableLocalAuthAdmin : globalSettings.disableLocalAuthTenant;
+  const proxyProtected = panel === 'admin' ? globalSettings.protectAdminViaProxy : globalSettings.protectTenantViaProxy;
 
   return {
     localAuthEnabled: !localAuthDisabled,
@@ -644,6 +644,6 @@ export async function breakGlassLogin(db: Database, email: string, password: str
     fullName: user.fullName,
     role: user.roleName,
     panel: user.panel,
-    clientId: user.clientId,
+    tenantId: user.tenantId,
   };
 }

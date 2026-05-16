@@ -1,7 +1,7 @@
 import { eq, and } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { hostingPlans, clients } from '../../db/schema.js';
+import { hostingPlans, tenants } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
@@ -89,34 +89,34 @@ export async function planRoutes(app: FastifyInstance) {
 
     const [updated] = await app.db.select().from(hostingPlans).where(eq(hostingPlans.id, id));
 
-    // Cascade K8s ResourceQuota to all provisioned clients on this plan
-    // (only those without per-client overrides — overrides take precedence)
+    // Cascade K8s ResourceQuota to all provisioned tenants on this plan
+    // (only those without per-tenant overrides — overrides take precedence)
     if (parsed.data.cpu_limit !== undefined || parsed.data.memory_limit !== undefined || parsed.data.storage_limit !== undefined) {
       try {
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const { applyResourceQuota } = await import('../k8s-provisioner/service.js');
         const k8s = createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
 
-        // Find all provisioned clients on this plan without resource overrides
-        const affectedClients = await app.db.select().from(clients)
+        // Find all provisioned tenants on this plan without resource overrides
+        const affectedTenants = await app.db.select().from(tenants)
           .where(and(
-            eq(clients.planId, id),
-            eq(clients.provisioningStatus, 'provisioned'),
+            eq(tenants.planId, id),
+            eq(tenants.provisioningStatus, 'provisioned'),
           ));
 
-        for (const client of affectedClients) {
+        for (const tenant of affectedTenants) {
           try {
-            await applyResourceQuota(k8s, client.kubernetesNamespace, {
-              cpu: String(client.cpuLimitOverride ?? updated.cpuLimit),
-              memory: String(client.memoryLimitOverride ?? updated.memoryLimit),
-              storage: String(client.storageLimitOverride ?? updated.storageLimit),
+            await applyResourceQuota(k8s, tenant.kubernetesNamespace, {
+              cpu: String(tenant.cpuLimitOverride ?? updated.cpuLimit),
+              memory: String(tenant.memoryLimitOverride ?? updated.memoryLimit),
+              storage: String(tenant.storageLimitOverride ?? updated.storageLimit),
             });
           } catch (err) {
-            console.warn(`[plans] Failed to sync quota for client ${client.id}:`, err instanceof Error ? err.message : String(err));
+            console.warn(`[plans] Failed to sync quota for tenant ${tenant.id}:`, err instanceof Error ? err.message : String(err));
           }
         }
 
-        console.log(`[plans] Synced ResourceQuota for ${affectedClients.length} clients on plan ${id}`);
+        console.log(`[plans] Synced ResourceQuota for ${affectedTenants.length} tenants on plan ${id}`);
       } catch (err) {
         console.warn('[plans] Failed to cascade quota update:', err instanceof Error ? err.message : String(err));
       }

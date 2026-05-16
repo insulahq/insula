@@ -62,7 +62,7 @@ export const taskStatusEnum = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof taskStatusEnum>;
 
-export const taskScopeEnum = z.enum(['admin', 'client', 'system']);
+export const taskScopeEnum = z.enum(['admin', 'tenant', 'system']);
 export type TaskScope = z.infer<typeof taskScopeEnum>;
 
 // `kind` is open-ended (any 64-char string) but we maintain a registry
@@ -70,12 +70,12 @@ export type TaskScope = z.infer<typeof taskScopeEnum>;
 // magic numbers. Adding a new kind requires a PR touching this file —
 // that's the intended friction.
 export const TASK_KIND_REGISTRY = [
-  'client.suspend.bulk',
-  'client.reactivate.bulk',
-  'client.delete.bulk',
-  'client.transition',
-  'client.provision',
-  'client.deprovision',
+  'tenant.suspend.bulk',
+  'tenant.reactivate.bulk',
+  'tenant.delete.bulk',
+  'tenant.transition',
+  'tenant.provision',
+  'tenant.deprovision',
   'storage.grow',
   'storage.shrink',
   'storage.snapshot',
@@ -125,7 +125,7 @@ export const taskRowSchema = z.object({
   refId: z.string().min(1).max(64).nullable(),
   scope: taskScopeEnum,
   userId: z.string().uuid().nullable(),
-  clientId: z.string().uuid().nullable(),
+  tenantId: z.string().uuid().nullable(),
   label: z.string().min(1),
   status: taskStatusEnum,
   progressPct: z.number().int().min(0).max(100).nullable(),
@@ -158,7 +158,7 @@ export const MAX_TASK_ROWS = 100;
 export const meTasksSnapshotResponseSchema = z.object({
   data: z.object({
     tasks: z.array(taskRowSchema).max(MAX_TASK_ROWS),
-    /** Server's "now" — clients pass back as `since` on the next poll. */
+    /** Server's "now" — tenants pass back as `since` on the next poll. */
     serverTime: z.string(),
   }),
 });

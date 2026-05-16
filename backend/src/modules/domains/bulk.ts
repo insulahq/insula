@@ -3,7 +3,7 @@ import { domains } from '../../db/schema.js';
 import { verifyDomain, getPlatformConfig } from './verification.js';
 import { setDomainVerificationStatus } from './service.js';
 import { reconcileIngress } from './k8s-ingress.js';
-import { getClientById } from '../clients/service.js';
+import { getTenantById } from '../tenants/service.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -74,9 +74,9 @@ export async function bulkDeleteDomains(
       // Best-effort Ingress reconciliation
       if (k8s) {
         try {
-          const client = await getClientById(db, domain.clientId);
-          if (client.kubernetesNamespace) {
-            await reconcileIngress(db, k8s, domain.clientId, client.kubernetesNamespace);
+          const tenant = await getTenantById(db, domain.tenantId);
+          if (tenant.kubernetesNamespace) {
+            await reconcileIngress(db, k8s, domain.tenantId, tenant.kubernetesNamespace);
           }
         } catch {
           // Non-blocking

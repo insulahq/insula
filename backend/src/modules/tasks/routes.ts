@@ -26,8 +26,8 @@ import * as service from './service.js';
 interface JwtPayload {
   readonly sub: string;
   readonly role?: string;
-  readonly panel?: 'admin' | 'client';
-  readonly clientId?: string | null;
+  readonly panel?: 'admin' | 'tenant';
+  readonly tenantId?: string | null;
 }
 
 export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
@@ -50,7 +50,7 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
 
     const tasks = await service.snapshot(app.db, {
       userId: payload.sub,
-      clientId: payload.clientId ?? null,
+      tenantId: payload.tenantId ?? null,
       since,
     });
 
@@ -63,7 +63,7 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
   // ─── SSE stream ────────────────────────────────────────────────────
   //
   // One PG connection per SSE connection running LISTEN tasks_user_<id>.
-  // Heartbeat every 25 s. Hard timeout at 5 minutes — clients reconnect.
+  // Heartbeat every 25 s. Hard timeout at 5 minutes — tenants reconnect.
   // The chip falls back to polling (snapshot endpoint) when SSE is
   // unavailable, so the worst-case behavior is a 30 s perceived delay,
   // not a broken UI.
@@ -96,7 +96,7 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
     // is sufficient.
     const channelQuoted = `"${channel}"`;
 
-    // Acquire a dedicated pg client (NOT shared with Drizzle queries —
+    // Acquire a dedicated pg tenant (NOT shared with Drizzle queries —
     // LISTEN holds it for the lifetime of the SSE connection). On drop,
     // release gracefully so we don't leak.
     let pool: pg.Pool | null = null;
@@ -115,7 +115,7 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
     let closed = false;
     let heartbeatTimer: NodeJS.Timeout | null = null;
     let hardTimeout: NodeJS.Timeout | null = null;
-    let pgClient: pg.PoolClient | null = null;
+    let pgTenant: pg.PoolClient | null = null;
 
     const writeEvent = (event: string, data: string, id?: string): void => {
       if (closed) return;
@@ -137,14 +137,14 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
       closed = true;
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (hardTimeout) clearTimeout(hardTimeout);
-      if (pgClient) {
+      if (pgTenant) {
         try {
-          pgClient.removeAllListeners('notification');
-          pgClient.query(`UNLISTEN ${channelQuoted}`).catch(() => undefined);
+          pgTenant.removeAllListeners('notification');
+          pgTenant.query(`UNLISTEN ${channelQuoted}`).catch(() => undefined);
         } finally {
-          pgClient.release();
+          pgTenant.release();
         }
-        pgClient = null;
+        pgTenant = null;
       }
       try {
         reply.raw.end();
@@ -166,7 +166,7 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
       }
     }, 25_000);
 
-    // Hard 5-minute timeout — client reconnects with Last-Event-ID, no UX impact.
+    // Hard 5-minute timeout — tenant reconnects with Last-Event-ID, no UX impact.
     hardTimeout = setTimeout(() => {
       writeEvent('reconnect', JSON.stringify({ reason: 'idle-rotate' }));
       cleanup();
@@ -181,8 +181,8 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      pgClient = await pool.connect();
-      pgClient.on('notification', (msg) => {
+      pgTenant = await pool.connect();
+      pgTenant.on('notification', (msg) => {
         if (msg.channel !== channel || !msg.payload) return;
         try {
           const parsed = taskSseEventSchema.safeParse(JSON.parse(msg.payload));
@@ -192,15 +192,15 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
           // Malformed payload from PG — drop quietly.
         }
       });
-      pgClient.on('error', () => cleanup());
-      await pgClient.query(`LISTEN ${channelQuoted}`);
+      pgTenant.on('error', () => cleanup());
+      await pgTenant.query(`LISTEN ${channelQuoted}`);
 
-      // Initial snapshot so the client doesn't need a separate poll on
+      // Initial snapshot so the tenant doesn't need a separate poll on
       // open. Cap small to avoid a large opening payload.
       const initial = await service.snapshot(app.db, { userId, limit: 50 });
       writeEvent('snapshot', JSON.stringify({ tasks: initial }));
     } catch (err) {
-      request.log.warn({ err }, 'tasks-sse: setup failed, falling back to client poll');
+      request.log.warn({ err }, 'tasks-sse: setup failed, falling back to tenant poll');
       writeEvent('error', JSON.stringify({ reason: 'listen-failed' }));
       cleanup();
     }

@@ -1,27 +1,27 @@
 import { eq } from 'drizzle-orm';
-import { clients, hostingPlans } from '../../db/schema.js';
-import { clientNotFound } from '../../shared/errors.js';
+import { tenants, hostingPlans } from '../../db/schema.js';
+import { tenantNotFound } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { UpdateSubscriptionInput } from './schema.js';
 
-export async function getSubscription(db: Database, clientId: string) {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client) throw clientNotFound(clientId);
+export async function getSubscription(db: Database, tenantId: string) {
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant) throw tenantNotFound(tenantId);
 
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
 
   return {
-    client_id: client.id,
+    tenant_id: tenant.id,
     plan: plan ?? null,
-    status: client.status,
-    subscription_expires_at: client.subscriptionExpiresAt,
-    created_at: client.createdAt,
+    status: tenant.status,
+    subscription_expires_at: tenant.subscriptionExpiresAt,
+    created_at: tenant.createdAt,
   };
 }
 
-export async function updateSubscription(db: Database, clientId: string, input: UpdateSubscriptionInput) {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client) throw clientNotFound(clientId);
+export async function updateSubscription(db: Database, tenantId: string, input: UpdateSubscriptionInput) {
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant) throw tenantNotFound(tenantId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.plan_id !== undefined) updateValues.planId = input.plan_id;
@@ -31,8 +31,8 @@ export async function updateSubscription(db: Database, clientId: string, input: 
   }
 
   if (Object.keys(updateValues).length > 0) {
-    await db.update(clients).set(updateValues).where(eq(clients.id, clientId));
+    await db.update(tenants).set(updateValues).where(eq(tenants.id, tenantId));
   }
 
-  return getSubscription(db, clientId);
+  return getSubscription(db, tenantId);
 }

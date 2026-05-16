@@ -13,7 +13,7 @@ vi.mock('./service.js', () => ({
     provider: { panelScope: 'admin' },
   }),
   findOrCreateOidcUser: vi.fn().mockResolvedValue({
-    id: 'u1', email: 'a@b.com', fullName: 'User', roleName: 'admin', panel: 'admin', clientId: null,
+    id: 'u1', email: 'a@b.com', fullName: 'User', roleName: 'admin', panel: 'admin', tenantId: null,
   }),
   handleBackchannelLogout: vi.fn().mockResolvedValue({ loggedOutUsers: 1 }),
   breakGlassLogin: vi.fn().mockResolvedValue({ id: 'u1', role: 'admin' }),

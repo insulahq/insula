@@ -43,15 +43,15 @@ const adminCtx: ValidatorContext = {
   warnUnpinnedTags: true,
   singleServiceOnly: true,
 };
-const clientCtx: ValidatorContext = {
-  callerRole: 'client_admin',
+const tenantCtx: ValidatorContext = {
+  callerRole: 'tenant_admin',
   warnUnpinnedTags: true,
   singleServiceOnly: true,
 };
 
 describe('validateCustomSpec — happy path', () => {
   it('accepts a minimal pinned spec', () => {
-    const r = validateCustomSpec(spec(), clientCtx);
+    const r = validateCustomSpec(spec(), tenantCtx);
     expect(r.ok).toBe(true);
     expect(r.issues.filter((i) => i.severity === 'error')).toHaveLength(0);
   });
@@ -61,7 +61,7 @@ describe('validateCustomSpec — Phase-1 service count', () => {
   it('rejects multi-service in simple-only mode', () => {
     const r = validateCustomSpec(
       spec({ services: { web: {}, db: {} } }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.ok).toBe(false);
     expect(r.issues.find((i) => i.code === 'COMPOSE_NOT_SUPPORTED_YET')).toBeDefined();
@@ -69,7 +69,7 @@ describe('validateCustomSpec — Phase-1 service count', () => {
   it('accepts multi-service when singleServiceOnly=false', () => {
     const r = validateCustomSpec(
       spec({ services: { web: {}, db: {} } }),
-      { ...clientCtx, singleServiceOnly: false },
+      { ...tenantCtx, singleServiceOnly: false },
     );
     expect(r.issues.find((i) => i.code === 'COMPOSE_NOT_SUPPORTED_YET')).toBeUndefined();
   });
@@ -79,7 +79,7 @@ describe('validateCustomSpec — allowRoot', () => {
   it('rejects runAsUser:0 without allowRoot', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { runAsUser: 0 } } }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.ok).toBe(false);
     expect(r.issues.find((i) => i.code === 'ROOT_REQUIRES_ALLOW_ROOT')).toBeDefined();
@@ -94,7 +94,7 @@ describe('validateCustomSpec — allowRoot', () => {
   it('rejects allowRoot=true when caller is not admin', () => {
     const r = validateCustomSpec(
       spec({ allowRoot: true }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'ALLOW_ROOT_REQUIRES_ADMIN')).toBeDefined();
   });
@@ -115,7 +115,7 @@ describe('validateCustomSpec — reference integrity', () => {
           web: { volumeMounts: [{ kind: 'volume' as const, name: 'orphan', containerPath: '/data', readOnly: false }] },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'VOLUME_NOT_DECLARED')).toBeDefined();
   });
@@ -127,7 +127,7 @@ describe('validateCustomSpec — reference integrity', () => {
         },
         volumes: { data: {} },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.ok).toBe(true);
   });
@@ -138,7 +138,7 @@ describe('validateCustomSpec — reference integrity', () => {
           web: { env: [{ name: 'PW', valueFromSecret: 'creds' }] },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'ENV_SECRET_NOT_DECLARED')).toBeDefined();
   });
@@ -149,7 +149,7 @@ describe('validateCustomSpec — reference integrity', () => {
           web: { env: [{ name: 'CFG', valueFromConfigMap: 'app-cfg' }] },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'ENV_CONFIGMAP_NOT_DECLARED')).toBeDefined();
   });
@@ -159,14 +159,14 @@ describe('validateCustomSpec — depends_on', () => {
   it('rejects depends_on to undeclared service (multi-service)', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { dependsOn: ['ghost'] } } }),
-      { ...clientCtx, singleServiceOnly: false },
+      { ...tenantCtx, singleServiceOnly: false },
     );
     expect(r.issues.find((i) => i.code === 'DEPENDS_ON_UNKNOWN_SERVICE')).toBeDefined();
   });
   it('rejects self-dependency', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { dependsOn: ['web'] } } }),
-      { ...clientCtx, singleServiceOnly: false },
+      { ...tenantCtx, singleServiceOnly: false },
     );
     expect(r.issues.find((i) => i.code === 'DEPENDS_ON_SELF')).toBeDefined();
   });
@@ -178,7 +178,7 @@ describe('validateCustomSpec — depends_on', () => {
           db: { dependsOn: ['web'] },
         },
       }),
-      { ...clientCtx, singleServiceOnly: false },
+      { ...tenantCtx, singleServiceOnly: false },
     );
     expect(r.issues.find((i) => i.code === 'DEPENDS_ON_CYCLE')).toBeDefined();
   });
@@ -191,7 +191,7 @@ describe('validateCustomSpec — depends_on', () => {
           db: {},
         },
       }),
-      { ...clientCtx, singleServiceOnly: false },
+      { ...tenantCtx, singleServiceOnly: false },
     );
     expect(r.issues.find((i) => i.code === 'DEPENDS_ON_CYCLE')).toBeUndefined();
   });
@@ -210,7 +210,7 @@ describe('validateCustomSpec — port rules', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'PORT_NAME_DUPLICATE')).toBeDefined();
   });
@@ -226,7 +226,7 @@ describe('validateCustomSpec — port rules', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'TOO_MANY_INGRESS_ELIGIBLE_PORTS')).toBeUndefined();
     expect(r.ok).toBe(true);
@@ -240,7 +240,7 @@ describe('validateCustomSpec — port rules', () => {
       exposeAsService: true,
       ingressEligible: true,
     }));
-    const r = validateCustomSpec(spec({ services: { web: { ports } } }), clientCtx);
+    const r = validateCustomSpec(spec({ services: { web: { ports } } }), tenantCtx);
     const warn = r.issues.find((i) => i.code === 'MANY_INGRESS_ELIGIBLE_PORTS');
     expect(warn).toBeDefined();
     expect(warn?.severity).toBe('warning');
@@ -258,7 +258,7 @@ describe('validateCustomSpec — resource limits', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'CPU_LIMIT_BELOW_REQUEST')).toBeDefined();
   });
@@ -271,7 +271,7 @@ describe('validateCustomSpec — resource limits', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'MEMORY_LIMIT_BELOW_REQUEST')).toBeDefined();
   });
@@ -284,7 +284,7 @@ describe('validateCustomSpec — resource limits', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.ok).toBe(true);
   });
@@ -297,7 +297,7 @@ describe('validateCustomSpec — resource limits', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'CPU_LIMIT_BELOW_REQUEST')).toBeDefined();
   });
@@ -318,7 +318,7 @@ describe('validateCustomSpec — Service-name length cap', () => {
           },
         },
       }),
-      { ...clientCtx, deploymentName: longName },
+      { ...tenantCtx, deploymentName: longName },
     );
     expect(r.ok).toBe(false);
     expect(r.issues.find((i) => i.code === 'DEPLOYMENT_NAME_TOO_LONG_FOR_SERVICE')).toBeDefined();
@@ -333,7 +333,7 @@ describe('validateCustomSpec — Service-name length cap', () => {
           },
         },
       }),
-      { ...clientCtx, deploymentName: okName },
+      { ...tenantCtx, deploymentName: okName },
     );
     expect(r.issues.find((i) => i.code === 'DEPLOYMENT_NAME_TOO_LONG_FOR_SERVICE')).toBeUndefined();
   });
@@ -341,7 +341,7 @@ describe('validateCustomSpec — Service-name length cap', () => {
     const longName = 'a' + 'b'.repeat(60); // 61 chars, no ports
     const r = validateCustomSpec(
       spec({ services: { web: { ports: [] } } }),
-      { ...clientCtx, deploymentName: longName },
+      { ...tenantCtx, deploymentName: longName },
     );
     expect(r.issues.find((i) => i.code === 'DEPLOYMENT_NAME_TOO_LONG_FOR_SERVICE')).toBeUndefined();
   });
@@ -354,7 +354,7 @@ describe('validateCustomSpec — Service-name length cap', () => {
           },
         },
       }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'DEPLOYMENT_NAME_TOO_LONG_FOR_SERVICE')).toBeUndefined();
   });
@@ -373,7 +373,7 @@ describe('validateCustomSpec — multi-service Service-name length cap (PR-3)', 
           tiny: {},
         },
       }),
-      { ...clientCtx, singleServiceOnly: false, deploymentName: 'app-with-long-name-x' },
+      { ...tenantCtx, singleServiceOnly: false, deploymentName: 'app-with-long-name-x' },
     );
     expect(r.issues.find((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG')).toBeDefined();
   });
@@ -385,7 +385,7 @@ describe('validateCustomSpec — multi-service Service-name length cap (PR-3)', 
           'second-very-long-service-name-bbbb': { ports: [{ containerPort: 80, name: 'http', protocol: 'TCP', exposeAsService: true, ingressEligible: false }] },
         },
       }),
-      { ...clientCtx, singleServiceOnly: false, deploymentName: 'my-deployment-name' },
+      { ...tenantCtx, singleServiceOnly: false, deploymentName: 'my-deployment-name' },
     );
     const offenders = r.issues.filter((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG');
     expect(offenders).toHaveLength(2);
@@ -398,14 +398,14 @@ describe('validateCustomSpec — multi-service Service-name length cap (PR-3)', 
           db: { ports: [] },
         },
       }),
-      { ...clientCtx, singleServiceOnly: false, deploymentName: 'my-app' },
+      { ...tenantCtx, singleServiceOnly: false, deploymentName: 'my-app' },
     );
     expect(r.issues.find((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG')).toBeUndefined();
   });
   it('skips the check when the service does not expose any port', () => {
     const r = validateCustomSpec(
       spec({ services: { 'a-very-long-service-name-bbbbbbbbbbb': { ports: [] }, other: {} } }),
-      { ...clientCtx, singleServiceOnly: false, deploymentName: 'a-really-long-deployment-name' },
+      { ...tenantCtx, singleServiceOnly: false, deploymentName: 'a-really-long-deployment-name' },
     );
     expect(r.issues.find((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG')).toBeUndefined();
   });
@@ -415,7 +415,7 @@ describe('validateCustomSpec — unpinned tag advisory', () => {
   it('warns on :latest', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { image: 'nginx:latest' } } }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.ok).toBe(true); // warning, not error
     expect(r.issues.find((i) => i.code === 'UNPINNED_TAG_ADVISORY')).toBeDefined();
@@ -423,21 +423,21 @@ describe('validateCustomSpec — unpinned tag advisory', () => {
   it('warns on missing tag', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { image: 'nginx' } } }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'UNPINNED_TAG_ADVISORY')).toBeDefined();
   });
   it('suppresses warning when operator disabled it', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { image: 'nginx:latest' } } }),
-      { ...clientCtx, warnUnpinnedTags: false },
+      { ...tenantCtx, warnUnpinnedTags: false },
     );
     expect(r.issues.find((i) => i.code === 'UNPINNED_TAG_ADVISORY')).toBeUndefined();
   });
   it('does not warn on a digest-pinned image', () => {
     const r = validateCustomSpec(
       spec({ services: { web: { image: `nginx@sha256:${'a'.repeat(64)}` } } }),
-      clientCtx,
+      tenantCtx,
     );
     expect(r.issues.find((i) => i.code === 'UNPINNED_TAG_ADVISORY')).toBeUndefined();
   });

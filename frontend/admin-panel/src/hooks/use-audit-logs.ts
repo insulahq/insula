@@ -4,7 +4,7 @@ import type { PaginatedResponse } from '@/types/api';
 
 export interface AuditLogEntry {
   readonly id: string;
-  readonly clientId: string | null;
+  readonly tenantId: string | null;
   readonly actionType: string;
   readonly resourceType: string;
   readonly resourceId: string | null;
@@ -21,7 +21,7 @@ export interface AuditLogEntry {
 export interface ListAuditLogsParams {
   readonly limit?: number;
   readonly cursor?: string;
-  readonly client_id?: string;
+  readonly tenant_id?: string;
   readonly action_type?: string;
   readonly resource_type?: string;
   readonly actor_id?: string;
@@ -37,7 +37,7 @@ export function useAuditLogs(params: ListAuditLogsParams = {}) {
   const searchParams = new URLSearchParams();
   if (params.limit) searchParams.set('limit', String(params.limit));
   if (params.cursor) searchParams.set('cursor', params.cursor);
-  if (params.client_id) searchParams.set('client_id', params.client_id);
+  if (params.tenant_id) searchParams.set('tenant_id', params.tenant_id);
   if (params.action_type) searchParams.set('action_type', params.action_type);
   if (params.resource_type) searchParams.set('resource_type', params.resource_type);
   if (params.actor_id) searchParams.set('actor_id', params.actor_id);

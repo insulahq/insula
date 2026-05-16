@@ -7,7 +7,7 @@
  *
  *   components/export/<backupId>.tar.gz.enc
  *
- * containing every other component artifact + meta.json. The client
+ * containing every other component artifact + meta.json. The tenant
  * downloads this file via the data-export download endpoint and
  * decrypts locally with the passphrase they supplied at create time.
  *
@@ -20,7 +20,7 @@
  *     about per-component download URLs or stitch tarballs back
  *     together.
  *   - AES-256-CBC + PBKDF2 (100k rounds, sha256) matches `openssl enc
- *     -aes-256-cbc -pbkdf2 -iter 100000` so the client can decrypt
+ *     -aes-256-cbc -pbkdf2 -iter 100000` so the tenant can decrypt
  *     with stock openssl on any platform:
  *
  *       openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
@@ -34,7 +34,7 @@
  * sha256, 48 bytes) split into 32-byte key and 16-byte IV.
  *
  * Ciphertext stays opaque — the platform cannot read its contents
- * without re-deriving the key from the passphrase the client
+ * without re-deriving the key from the passphrase the tenant
  * supplied at create time.
  */
 

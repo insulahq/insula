@@ -4,14 +4,14 @@ import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { UpdateHostingSettingsInput } from './schema.js';
 
-async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
+async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for client`, 404);
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for tenant`, 404);
   }
   return domain;
 }
@@ -25,8 +25,8 @@ function settingsToResponse(s: typeof hostingSettings.$inferSelect) {
   };
 }
 
-export async function getHostingSettings(db: Database, clientId: string, domainId: string) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function getHostingSettings(db: Database, tenantId: string, domainId: string) {
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [settings] = await db
     .select()
@@ -49,14 +49,14 @@ export async function getHostingSettings(db: Database, clientId: string, domainI
 
 export async function updateHostingSettings(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   input: UpdateHostingSettingsInput,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   // Ensure settings exist
-  await getHostingSettings(db, clientId, domainId);
+  await getHostingSettings(db, tenantId, domainId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.redirect_www !== undefined) updateValues.redirectWww = input.redirect_www ? 1 : 0;
@@ -72,5 +72,5 @@ export async function updateHostingSettings(
       .where(eq(hostingSettings.domainId, domainId));
   }
 
-  return getHostingSettings(db, clientId, domainId);
+  return getHostingSettings(db, tenantId, domainId);
 }

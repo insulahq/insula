@@ -122,38 +122,38 @@ export async function getStorageInventory(db?: Database): Promise<StorageInvento
     backupTarget: { url: '', available: false, message: 'unknown' },
   };
 
-  let clients: ReturnType<typeof createK8sClients>;
+  let tenants: ReturnType<typeof createK8sClients>;
   try {
-    clients = createK8sClients(process.env.KUBECONFIG_PATH);
+    tenants = createK8sClients(process.env.KUBECONFIG_PATH);
   } catch (err) {
-    return { ...empty, message: err instanceof Error ? err.message : 'k8s client unavailable' };
+    return { ...empty, message: err instanceof Error ? err.message : 'k8s tenant unavailable' };
   }
 
   try {
     const [nodesResp, volumesResp, targetResp, orphansResp] = await Promise.allSettled([
-      clients.custom.listNamespacedCustomObject({
+      tenants.custom.listNamespacedCustomObject({
         group: LONGHORN_GROUP,
         version: LONGHORN_VERSION,
         namespace: LONGHORN_NS,
         plural: 'nodes',
-      } as Parameters<typeof clients.custom.listNamespacedCustomObject>[0]),
-      clients.custom.listNamespacedCustomObject({
+      } as Parameters<typeof tenants.custom.listNamespacedCustomObject>[0]),
+      tenants.custom.listNamespacedCustomObject({
         group: LONGHORN_GROUP,
         version: LONGHORN_VERSION,
         namespace: LONGHORN_NS,
         plural: 'volumes',
-      } as Parameters<typeof clients.custom.listNamespacedCustomObject>[0]),
-      clients.custom.getNamespacedCustomObject({
+      } as Parameters<typeof tenants.custom.listNamespacedCustomObject>[0]),
+      tenants.custom.getNamespacedCustomObject({
         group: LONGHORN_GROUP,
         version: LONGHORN_VERSION,
         namespace: LONGHORN_NS,
         plural: 'backuptargets',
         name: 'default',
-      } as Parameters<typeof clients.custom.getNamespacedCustomObject>[0]),
-      // Orphan classifier needs db for client-row lookup; skip when caller
+      } as Parameters<typeof tenants.custom.getNamespacedCustomObject>[0]),
+      // Orphan classifier needs db for tenant-row lookup; skip when caller
       // didn't pass it (older code paths). Result tile shows 0/0 in that
       // case rather than failing the whole inventory.
-      db ? detectOrphans(db, clients) : Promise.resolve(null),
+      db ? detectOrphans(db, tenants) : Promise.resolve(null),
     ]);
 
     const nodeItems = nodesResp.status === 'fulfilled'

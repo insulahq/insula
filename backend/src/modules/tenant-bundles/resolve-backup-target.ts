@@ -10,7 +10,7 @@
  *     consume directly (no further coercion needed)
  *
  * Pulled out of internal-upload-route.ts so it can be unit-tested
- * without spinning up Fastify or registering a kube client.
+ * without spinning up Fastify or registering a kube tenant.
  */
 
 import { decrypt } from '../oidc/crypto.js';

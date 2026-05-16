@@ -8,7 +8,7 @@ import {
   getTestDb,
 } from '../../test-helpers/db.js';
 import { buildTestApp, generateToken } from '../../test-helpers/app.js';
-import { seedRegion, seedPlan, seedClient, seedDomain } from '../../test-helpers/fixtures.js';
+import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
 import {
   emailDomains,
   mailboxes,
@@ -24,11 +24,11 @@ const dbAvailable = await isDbAvailable();
 
 // Helpers to seed the child tree. These would fit in fixtures.ts but
 // are local because they're only used here.
-async function seedEmailDomain(db: Database, clientId: string, domainId: string, id: string) {
+async function seedEmailDomain(db: Database, tenantId: string, domainId: string, id: string) {
   await db.insert(emailDomains).values({
     id,
     domainId,
-    clientId,
+    tenantId,
     enabled: 1,
     webmailEnabled: 1,
     // M13: dkimSelector column dropped (migration 0075).
@@ -37,7 +37,7 @@ async function seedEmailDomain(db: Database, clientId: string, domainId: string,
 
 async function seedMailbox(
   db: Database,
-  clientId: string,
+  tenantId: string,
   emailDomainId: string,
   localPart: string,
   fullAddress: string,
@@ -46,7 +46,7 @@ async function seedMailbox(
   await db.insert(mailboxes).values({
     id,
     emailDomainId,
-    clientId,
+    tenantId,
     localPart,
     fullAddress,
     passwordHash: 'x',
@@ -57,7 +57,7 @@ async function seedMailbox(
 
 async function seedAlias(
   db: Database,
-  clientId: string,
+  tenantId: string,
   emailDomainId: string,
   sourceAddress: string,
 ) {
@@ -65,7 +65,7 @@ async function seedAlias(
   await db.insert(emailAliases).values({
     id,
     emailDomainId,
-    clientId,
+    tenantId,
     sourceAddress,
     destinationAddresses: ['target@example.com'],
     enabled: 1,
@@ -101,7 +101,7 @@ async function seedIngressRoute(db: Database, domainId: string, hostname: string
 describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
   let app: FastifyInstance;
   let adminToken: string;
-  let clientId: string;
+  let tenantId: string;
 
   beforeAll(async () => {
     await runMigrations();
@@ -119,18 +119,18 @@ describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
     const db = getTestDb();
     const region = await seedRegion(db);
     const plan = await seedPlan(db);
-    const client = await seedClient(db, region.id, plan.id);
-    clientId = client.id;
+    const tenant = await seedTenant(db, region.id, plan.id);
+    tenantId = tenant.id;
   });
 
   it('CASCADE: deleting a domain removes its email_domain, mailboxes, aliases, dns_records, ingress_routes', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId);
+    const domain = await seedDomain(db, tenantId);
     const edId = crypto.randomUUID();
-    await seedEmailDomain(db, clientId, domain.id, edId);
-    await seedMailbox(db, clientId, edId, 'alice', `alice@${domain.domainName}`);
-    await seedMailbox(db, clientId, edId, 'bob', `bob@${domain.domainName}`);
-    await seedAlias(db, clientId, edId, `alias@${domain.domainName}`);
+    await seedEmailDomain(db, tenantId, domain.id, edId);
+    await seedMailbox(db, tenantId, edId, 'alice', `alice@${domain.domainName}`);
+    await seedMailbox(db, tenantId, edId, 'bob', `bob@${domain.domainName}`);
+    await seedAlias(db, tenantId, edId, `alias@${domain.domainName}`);
     await seedDnsRecord(db, domain.id);
     await seedDnsRecord(db, domain.id, 'MX');
     await seedIngressRoute(db, domain.id, domain.domainName);
@@ -150,10 +150,10 @@ describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
     expect(pre.dns_records).toBe(2);
     expect(pre.ingress_routes).toBe(1);
 
-    // Delete the domain via the service (no k8s client — we're only
+    // Delete the domain via the service (no k8s tenant — we're only
     // testing the DB cascade behaviour, the k8s path is tested with
     // mocks in unit tests).
-    const result = await deleteDomain(db as never, clientId, domain.id);
+    const result = await deleteDomain(db as never, tenantId, domain.id);
 
     // Assert the cascade counts are accurate
     expect(result.deleted.emailDomains).toBe(1);
@@ -180,11 +180,11 @@ describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
 
   it('CASCADE: deleting a domain with no email config still removes DNS records and ingress routes', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId);
+    const domain = await seedDomain(db, tenantId);
     await seedDnsRecord(db, domain.id);
     await seedIngressRoute(db, domain.id, domain.domainName);
 
-    const result = await deleteDomain(db as never, clientId, domain.id);
+    const result = await deleteDomain(db as never, tenantId, domain.id);
 
     expect(result.deleted.emailDomains).toBe(0);
     expect(result.deleted.mailboxes).toBe(0);
@@ -195,15 +195,15 @@ describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
 
   it('preview: enumerates every resource that will be removed', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, { domainName: 'cascade.example.com' });
+    const domain = await seedDomain(db, tenantId, { domainName: 'cascade.example.com' });
     const edId = crypto.randomUUID();
-    await seedEmailDomain(db, clientId, domain.id, edId);
-    await seedMailbox(db, clientId, edId, 'alice', 'alice@cascade.example.com');
-    await seedAlias(db, clientId, edId, 'bot@cascade.example.com');
+    await seedEmailDomain(db, tenantId, domain.id, edId);
+    await seedMailbox(db, tenantId, edId, 'alice', 'alice@cascade.example.com');
+    await seedAlias(db, tenantId, edId, 'bot@cascade.example.com');
     await seedDnsRecord(db, domain.id, 'TXT');
     await seedIngressRoute(db, domain.id, 'cascade.example.com');
 
-    const preview = await getDomainDeletePreview(db as never, clientId, domain.id);
+    const preview = await getDomainDeletePreview(db as never, tenantId, domain.id);
 
     expect(preview.domainName).toBe('cascade.example.com');
     expect(preview.dnsRecords.length).toBe(1);
@@ -221,10 +221,10 @@ describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
 
   it('preview: returns null emailDomain when no email config exists', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId);
+    const domain = await seedDomain(db, tenantId);
     await seedDnsRecord(db, domain.id);
 
-    const preview = await getDomainDeletePreview(db as never, clientId, domain.id);
+    const preview = await getDomainDeletePreview(db as never, tenantId, domain.id);
 
     expect(preview.emailDomain).toBeNull();
     expect(preview.webmailIngressHostname).toBeNull();
@@ -233,14 +233,14 @@ describe.skipIf(!dbAvailable)('Domain delete cascade (integration)', () => {
 
   it('route: GET delete-preview returns the full cascade list', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, { domainName: 'api-preview.example.com' });
+    const domain = await seedDomain(db, tenantId, { domainName: 'api-preview.example.com' });
     const edId = crypto.randomUUID();
-    await seedEmailDomain(db, clientId, domain.id, edId);
-    await seedMailbox(db, clientId, edId, 'x', 'x@api-preview.example.com');
+    await seedEmailDomain(db, tenantId, domain.id, edId);
+    await seedMailbox(db, tenantId, edId, 'x', 'x@api-preview.example.com');
 
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/clients/${clientId}/domains/${domain.id}/delete-preview`,
+      url: `/api/v1/tenants/${tenantId}/domains/${domain.id}/delete-preview`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
 

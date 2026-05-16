@@ -54,7 +54,7 @@ export function usePasskey() {
         refreshToken: string;
         user: {
           id: string; email: string; fullName: string; role: string;
-          panel?: string; clientId?: string | null;
+          panel?: string; tenantId?: string | null;
         };
       };
     }>('/api/v1/auth/passkey/login/verify', {
@@ -78,7 +78,7 @@ export function usePasskey() {
         refreshToken: string;
         user: {
           id: string; email: string; fullName: string; role: string;
-          panel?: string; clientId?: string | null;
+          panel?: string; tenantId?: string | null;
         };
       };
     }>('/api/v1/auth/passkey/login/verify', {

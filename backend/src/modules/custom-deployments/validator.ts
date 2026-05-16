@@ -42,7 +42,7 @@ const MAX_DEPLOYMENT_NAME_WITH_SERVICES = 47;
 
 export interface ValidatorContext {
   /** Role of the API caller. `allowRoot` is admin-only. */
-  readonly callerRole: 'super_admin' | 'admin' | 'client_admin' | 'client_user';
+  readonly callerRole: 'super_admin' | 'admin' | 'tenant_admin' | 'tenant_user';
   /** `system_settings.custom_deployments_warn_unpinned_tags`. */
   readonly warnUnpinnedTags: boolean;
   /** Phase 1 simple-mode: enforce exactly one service. Phase 2 compose

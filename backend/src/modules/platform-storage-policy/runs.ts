@@ -202,7 +202,7 @@ export async function computeConvergence(
     const deps = await (k8s.apps as unknown as {
       listNamespacedDeployment: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string; namespace?: string }; spec?: { replicas?: number }; status?: { readyReplicas?: number } }> }>;
     }).listNamespacedDeployment({ namespace: 'platform' });
-    const tracked = new Set(['admin-panel', 'client-panel', 'platform-api', 'oauth2-proxy', 'dex']);
+    const tracked = new Set(['admin-panel', 'tenant-panel', 'platform-api', 'oauth2-proxy', 'dex']);
     for (const d of deps.items ?? []) {
       const name = d.metadata?.name ?? '';
       if (!tracked.has(name)) continue;

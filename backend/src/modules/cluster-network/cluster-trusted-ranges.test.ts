@@ -7,7 +7,7 @@ import {
 } from './cluster-trusted-ranges.js';
 import type { ClusterNetworkClients } from './k8s-client.js';
 
-function fakeClients(custom: Record<string, unknown>): ClusterNetworkClients {
+function fakeTenants(custom: Record<string, unknown>): ClusterNetworkClients {
   return {
     core: {} as ClusterNetworkClients['core'],
     custom: custom as ClusterNetworkClients['custom'],
@@ -30,7 +30,7 @@ describe('listTrustedRanges', () => {
         },
       ],
     });
-    const out = await listTrustedRanges({}, fakeClients({ listClusterCustomObject: list }));
+    const out = await listTrustedRanges({}, fakeTenants({ listClusterCustomObject: list }));
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
       name: 'office',
@@ -43,20 +43,20 @@ describe('listTrustedRanges', () => {
 
   it('handles empty items', async () => {
     const list = vi.fn().mockResolvedValue({});
-    const out = await listTrustedRanges({}, fakeClients({ listClusterCustomObject: list }));
+    const out = await listTrustedRanges({}, fakeTenants({ listClusterCustomObject: list }));
     expect(out).toEqual([]);
   });
 
   it('maps RBAC failure to CLUSTER_NETWORK_FORBIDDEN', async () => {
     const list = vi.fn().mockRejectedValue({ statusCode: 403, message: 'forbidden' });
     await expect(
-      listTrustedRanges({}, fakeClients({ listClusterCustomObject: list })),
+      listTrustedRanges({}, fakeTenants({ listClusterCustomObject: list })),
     ).rejects.toMatchObject({ code: 'CLUSTER_NETWORK_FORBIDDEN', status: 503 });
   });
 });
 
 describe('createTrustedRange', () => {
-  it('writes addedBy from caller, never client-supplied', async () => {
+  it('writes addedBy from caller, never tenant-supplied', async () => {
     const create = vi.fn().mockResolvedValue({
       metadata: { name: 'office', creationTimestamp: '2026-05-08T12:00:00Z' },
       spec: { cidr: '10.0.0.0/16', description: '', addedBy: 'admin@x' },
@@ -66,7 +66,7 @@ describe('createTrustedRange', () => {
       { name: 'office', cidr: '10.0.0.0/16', description: '' },
       'admin@x',
       {},
-      fakeClients({ createClusterCustomObject: create }),
+      fakeTenants({ createClusterCustomObject: create }),
     );
     expect(create).toHaveBeenCalledTimes(1);
     const callArg = (create.mock.calls[0]?.[0] ?? {}) as { body?: { spec?: { addedBy?: string } } };
@@ -80,7 +80,7 @@ describe('createTrustedRange', () => {
         { name: 'dup', cidr: '10.0.0.0/16', description: '' },
         'admin',
         {},
-        fakeClients({ createClusterCustomObject: create }),
+        fakeTenants({ createClusterCustomObject: create }),
       ),
     ).rejects.toMatchObject({ code: 'TRUSTED_RANGE_EXISTS', status: 409 });
   });
@@ -95,7 +95,7 @@ describe('createTrustedRange', () => {
         { name: 'bad', cidr: '999.999.999.999', description: '' },
         'admin',
         {},
-        fakeClients({ createClusterCustomObject: create }),
+        fakeTenants({ createClusterCustomObject: create }),
       ),
     ).rejects.toMatchObject({ code: 'TRUSTED_RANGE_INVALID', status: 400 });
   });
@@ -112,7 +112,7 @@ describe('updateTrustedRangeDescription', () => {
       'office',
       { description: 'updated' },
       {},
-      fakeClients({ patchClusterCustomObject: patch }),
+      fakeTenants({ patchClusterCustomObject: patch }),
     );
     const callArg = (patch.mock.calls[0]?.[0] ?? {}) as { body?: unknown };
     expect(callArg.body).toEqual({ spec: { description: 'updated' } });
@@ -125,7 +125,7 @@ describe('updateTrustedRangeDescription', () => {
         'gone',
         { description: 'x' },
         {},
-        fakeClients({ patchClusterCustomObject: patch }),
+        fakeTenants({ patchClusterCustomObject: patch }),
       ),
     ).rejects.toMatchObject({ code: 'TRUSTED_RANGE_NOT_FOUND', status: 404 });
   });
@@ -135,13 +135,13 @@ describe('deleteTrustedRange', () => {
   it('translates 404 into TRUSTED_RANGE_NOT_FOUND', async () => {
     const del = vi.fn().mockRejectedValue({ statusCode: 404 });
     await expect(
-      deleteTrustedRange('gone', {}, fakeClients({ deleteClusterCustomObject: del })),
+      deleteTrustedRange('gone', {}, fakeTenants({ deleteClusterCustomObject: del })),
     ).rejects.toMatchObject({ code: 'TRUSTED_RANGE_NOT_FOUND', status: 404 });
   });
 
   it('returns void on success', async () => {
     const del = vi.fn().mockResolvedValue({});
-    const result = await deleteTrustedRange('office', {}, fakeClients({ deleteClusterCustomObject: del }));
+    const result = await deleteTrustedRange('office', {}, fakeTenants({ deleteClusterCustomObject: del }));
     expect(result).toBeUndefined();
     expect(del).toHaveBeenCalledTimes(1);
   });

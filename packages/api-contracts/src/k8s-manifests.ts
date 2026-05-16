@@ -17,7 +17,7 @@ export const manifestFileSchema = z.object({
 });
 
 export const manifestResponseSchema = z.object({
-  clientId: z.string(),
+  tenantId: z.string(),
   namespace: z.string(),
   manifests: z.array(manifestFileSchema),
 });

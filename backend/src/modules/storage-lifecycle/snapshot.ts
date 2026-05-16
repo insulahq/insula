@@ -9,7 +9,7 @@ import type { SnapshotStore } from './snapshot-store.js';
  *   - Caller has already quiesced the namespace (pods no longer hold the
  *     PVC's RWO lock). `snapshotTenantPVC` itself does NOT quiesce.
  *   - Returns when the Job completes — or throws if it failed / timed out.
- *   - The archive path in the store is `store.reservePath(clientId, snapId)`.
+ *   - The archive path in the store is `store.reservePath(tenantId, snapId)`.
  *     The archive is written from inside the Job via a second volume mount.
  *   - Size + sha256 of the resulting archive are reported in the return.
  */
@@ -28,7 +28,7 @@ export async function snapshotTenantPVC(
   opts: {
     readonly namespace: string;
     readonly pvcName: string;
-    readonly clientId: string;
+    readonly tenantId: string;
     readonly snapshotId: string;
     readonly store: SnapshotStore;
     readonly jobImage?: string;
@@ -40,7 +40,7 @@ export async function snapshotTenantPVC(
     readonly onProgress?: (msg: string) => Promise<void> | void;
   },
 ): Promise<SnapshotResult> {
-  const archivePath = opts.store.reservePath(opts.clientId, opts.snapshotId);
+  const archivePath = opts.store.reservePath(opts.tenantId, opts.snapshotId);
   const mount = opts.store.mountTarget(archivePath);
   const jobName = `snap-${opts.snapshotId}`.slice(0, 63);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
@@ -92,17 +92,17 @@ export async function snapshotTenantPVC(
   const script = [...baseScript, ...s3Upload].join('\n');
 
   const jobBody = {
-    metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'snapshot', 'platform.io/client-id': opts.clientId } },
+    metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'snapshot', 'platform.io/tenant-id': opts.tenantId } },
     spec: {
       backoffLimit: 0, // don't retry on failure — fail fast, orchestrator decides
       ttlSecondsAfterFinished: 600, // auto-delete after 10 min regardless of outcome
       template: {
-        metadata: { labels: { 'platform.io/component': 'snapshot', 'platform.io/client-id': opts.clientId } },
+        metadata: { labels: { 'platform.io/component': 'snapshot', 'platform.io/tenant-id': opts.tenantId } },
         spec: {
           restartPolicy: 'Never',
-          // Snapshot Jobs MUST run in the client namespace because they
+          // Snapshot Jobs MUST run in the tenant namespace because they
           // mount the tenant PVC. Tag with the overhead priority class
-          // so they don't count against the client's ResourceQuota.
+          // so they don't count against the tenant's ResourceQuota.
           priorityClassName: 'platform-tenant-overhead',
           containers: [{
             name: 'tar',

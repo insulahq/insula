@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 // max_mailboxes + max_quota_mb removed in round-2 refactor. Total
 // mailbox count is now capped at the plan level via
-// hosting_plans.max_mailboxes + clients.max_mailboxes_override.
+// hosting_plans.max_mailboxes + tenants.max_mailboxes_override.
 // See backend/src/modules/mailboxes/limit.ts.
 
 export const enableEmailDomainSchema = z.object({
@@ -29,7 +29,7 @@ export type WebmailStatus = z.infer<typeof webmailStatusEnum>;
 export const emailDomainResponseSchema = z.object({
   id: z.string(),
   domainId: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   domainName: z.string(),
   enabled: z.number(),
   webmailEnabled: z.number().optional(),
@@ -56,8 +56,8 @@ export type EmailDomainResponse = z.infer<typeof emailDomainResponseSchema>;
 
 // Round-4 Phase 1: disable preview. Returns the exact set of
 // mailboxes, aliases, DNS records, and DKIM keys that would be
-// removed when the client calls `DELETE .../disable` for this
-// email domain. Used by the client panel to render a complete
+// removed when the tenant calls `DELETE .../disable` for this
+// email domain. Used by the tenant panel to render a complete
 // confirmation warning.
 export const emailDomainDisablePreviewSchema = z.object({
   emailDomainId: z.string(),

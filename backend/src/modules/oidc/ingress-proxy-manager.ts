@@ -1,7 +1,7 @@
 /**
  * OAuth2 Proxy admin-panel gating via Traefik ForwardAuth Middleware.
  *
- * When proxy protection is enabled for a panel (admin/client), this
+ * When proxy protection is enabled for a panel (admin/tenant), this
  * module:
  *   1. Creates / updates a ForwardAuth Middleware named
  *      `platform-oauth2-proxy-auth` in the `platform` namespace. The
@@ -15,7 +15,7 @@
  *
  * The platform-ingress IngressRoute itself is owned by
  * system-settings/ingress-reconciler.ts — that reconciler reads the
- * `protectAdminViaProxy` / `protectClientViaProxy` flags from
+ * `protectAdminViaProxy` / `protectTenantViaProxy` flags from
  * system_settings and attaches the Middleware reference to the panel
  * routes by name. So we only need to ensure the Middleware EXISTS
  * here; the reconciler owns the spec.routes[].middlewares wiring.
@@ -52,7 +52,7 @@ const OAUTH2_PROXY_PORT = 4180;
 
 /**
  * Stable Middleware name the platform-ingress reconciler references
- * when `protectAdminViaProxy` / `protectClientViaProxy` is true.
+ * when `protectAdminViaProxy` / `protectTenantViaProxy` is true.
  * Kept here so both modules share one literal.
  */
 export const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
@@ -69,7 +69,7 @@ function isK8s404(err: unknown): boolean {
 
 export interface ProxySettings {
   readonly protectAdminViaProxy: boolean;
-  readonly protectClientViaProxy: boolean;
+  readonly protectTenantViaProxy: boolean;
   readonly breakGlassPath: string | null;
   readonly adminHost?: string | null;
 }
@@ -93,7 +93,7 @@ export async function syncProxyIngressAnnotations(
   k8s: K8sClients,
   settings: ProxySettings,
 ): Promise<void> {
-  const anyProtected = settings.protectAdminViaProxy || settings.protectClientViaProxy;
+  const anyProtected = settings.protectAdminViaProxy || settings.protectTenantViaProxy;
 
   if (anyProtected) {
     // Create / update the ForwardAuth Middleware. The platform-ingress
@@ -106,7 +106,7 @@ export async function syncProxyIngressAnnotations(
       spec: forwardAuthSpec({
         address: `http://${OAUTH2_PROXY_HOST}:${OAUTH2_PROXY_PORT}/oauth2/auth`,
         // Inherit forwardAuthSpec safe default (false). oauth2-proxy's
-        // auth check is cookie-based, doesn't need the client IP.
+        // auth check is cookie-based, doesn't need the tenant IP.
         // Entrypoint trustedIPs=127.0.0.1/32 already strips spoofed XFF.
         authResponseHeaders: [
           'X-Auth-Request-User',

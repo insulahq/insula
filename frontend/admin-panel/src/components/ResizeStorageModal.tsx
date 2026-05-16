@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Loader2, X, AlertTriangle } from 'lucide-react';
-import { useResizeDryRun, useResizeClient, type ResizeDryRun } from '@/hooks/use-storage-lifecycle';
+import { useResizeDryRun, useResizeTenant, type ResizeDryRun } from '@/hooks/use-storage-lifecycle';
 
 /**
  * Resize storage modal — replaces the legacy `prompt()` + `confirm()`
@@ -16,21 +16,21 @@ import { useResizeDryRun, useResizeClient, type ResizeDryRun } from '@/hooks/use
  */
 
 interface ResizeStorageModalProps {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly open: boolean;
   readonly initialMib: number;
   readonly onClose: () => void;
   readonly onStarted: (operationId: string) => void;
 }
 
-export default function ResizeStorageModal({ clientId, open, initialMib, onClose, onStarted }: ResizeStorageModalProps) {
+export default function ResizeStorageModal({ tenantId, open, initialMib, onClose, onStarted }: ResizeStorageModalProps) {
   // Display in MB (1 MB here = 1 MiB for resize purposes). Users type
   // plain numbers; we pass that as newMib.
   const [mibStr, setMibStr] = useState(String(initialMib));
   const [dryRun, setDryRun] = useState<ResizeDryRun | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const dry = useResizeDryRun();
-  const resize = useResizeClient();
+  const resize = useResizeTenant();
 
   useEffect(() => {
     if (open) {
@@ -49,7 +49,7 @@ export default function ResizeStorageModal({ clientId, open, initialMib, onClose
     if (!mibIsValid) return;
     setApiError(null);
     try {
-      const res = await dry.mutateAsync({ clientId, newMib: parsedMib });
+      const res = await dry.mutateAsync({ tenantId, newMib: parsedMib });
       setDryRun(res.data);
     } catch (err) {
       setApiError(err instanceof Error ? err.message : String(err));
@@ -60,7 +60,7 @@ export default function ResizeStorageModal({ clientId, open, initialMib, onClose
     if (!dryRun || !dryRun.willFit) return;
     setApiError(null);
     try {
-      const res = await resize.mutateAsync({ clientId, newMib: parsedMib });
+      const res = await resize.mutateAsync({ tenantId, newMib: parsedMib });
       onStarted(res.data.operationId);
       onClose();
     } catch (err) {

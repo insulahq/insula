@@ -28,11 +28,11 @@ const bytea = customType<{ data: Buffer; default: false }>({
 
 // ─── Enums ───
 
-export const panelEnum = pgEnum('panel', ['admin', 'client']);
+export const panelEnum = pgEnum('panel', ['admin', 'tenant']);
 export const userStatusEnum = pgEnum('user_status', ['active', 'disabled', 'pending']);
 export const regionStatusEnum = pgEnum('region_status', ['active', 'maintenance', 'offline']);
 export const planStatusEnum = pgEnum('plan_status', ['active', 'deprecated']);
-// Client lifecycle states:
+// Tenant lifecycle states:
 //   active     — running normally
 //   pending    — provisioned but not yet migrated / payment pending
 //   suspended  — admin paused: workloads scaled to 0, quota near-zero,
@@ -41,12 +41,12 @@ export const planStatusEnum = pgEnum('plan_status', ['active', 'deprecated']);
 //                retained per snapshot_retention_days. Reversible via
 //                restore (new PVC from snapshot).
 //   cancelled  — hard terminated, snapshot also released. Not reversible.
-export const clientStatusEnum = pgEnum('client_status', ['active', 'suspended', 'archived', 'pending']);
-export const clientStorageTierEnum = pgEnum('client_storage_tier', ['local', 'ha']);
+export const tenantStatusEnum = pgEnum('tenant_status', ['active', 'suspended', 'archived', 'pending']);
+export const tenantStorageTierEnum = pgEnum('tenant_storage_tier', ['local', 'ha']);
 // Active storage-lifecycle operation (null when idle). Separate from
-// client.status so the UI can show both "active & resizing" without
+// tenants.status so the UI can show both "active & resizing" without
 // losing the underlying state. Mirrors storage_operations.state for the
-// operation currently owning this client.
+// operation currently owning this tenant.
 export const storageLifecycleStateEnum = pgEnum('storage_lifecycle_state', [
   'idle', 'snapshotting', 'quiescing', 'resizing', 'replacing', 'restoring', 'unquiescing', 'archiving', 'failed',
 ]);
@@ -104,7 +104,7 @@ export const lastRunStatusEnum = pgEnum('last_run_status', ['success', 'failed',
 export const actorTypeEnum = pgEnum('actor_type', ['user', 'system', 'webhook']);
 export const provTaskTypeEnum = pgEnum('prov_task_type', ['provision_namespace', 'deploy_workload', 'deprovision']);
 export const provTaskStatusEnum = pgEnum('prov_task_status', ['pending', 'running', 'completed', 'failed']);
-export const scopeTypeEnum = pgEnum('scope_type', ['global', 'region', 'client']);
+export const scopeTypeEnum = pgEnum('scope_type', ['global', 'region', 'tenant']);
 export const dnsRecordTypeEnum = pgEnum('dns_record_type', ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'CAA', 'PTR', 'SOA', 'ALIAS', 'DNAME']);
 export const tlsModeEnum = pgEnum('tls_mode', ['auto', 'custom', 'none']);
 export const ingressStatusEnum = pgEnum('ingress_status', ['active', 'pending', 'error']);
@@ -119,7 +119,7 @@ export const upgradeStatusEnum = pgEnum('upgrade_status', [
 ]);
 export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'batch', 'forced']);
 export const catalogVersionStatusEnum = pgEnum('catalog_version_status', ['available', 'deprecated', 'eol']);
-export const panelScopeEnum = pgEnum('panel_scope', ['admin', 'client']);
+export const panelScopeEnum = pgEnum('panel_scope', ['admin', 'tenant']);
 export const wwwRedirectEnum = pgEnum('www_redirect', ['none', 'add-www', 'remove-www']);
 
 // ─── Admin & Shared Tables ───
@@ -131,8 +131,8 @@ export const users = pgTable('users', {
   fullName: varchar('full_name', { length: 255 }).notNull(),
   roleName: varchar('role_name', { length: 50 }).notNull().default('read_only'),
   panel: panelEnum().notNull().default('admin'),
-  clientId: varchar('client_id', { length: 36 })
-    .references(() => clients.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   status: userStatusEnum().notNull().default('pending'),
   emailVerifiedAt: timestamp('email_verified_at'),
   lastLoginAt: timestamp('last_login_at'),
@@ -161,7 +161,7 @@ export const oidcProviders = pgTable('oidc_providers', {
   id: varchar('id', { length: 36 }).primaryKey(),
   displayName: varchar('display_name', { length: 255 }).notNull(),
   issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
-  clientId: varchar('client_id', { length: 255 }).notNull(),
+  tenantId: varchar('tenant_id', { length: 255 }).notNull(),
   clientSecretEncrypted: varchar('client_secret_encrypted', { length: 500 }).notNull(),
   panelScope: panelScopeEnum().notNull(),
   enabled: integer('enabled').notNull().default(0),
@@ -178,10 +178,10 @@ export const oidcProviders = pgTable('oidc_providers', {
 export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   id: varchar('id', { length: 36 }).primaryKey(),
   disableLocalAuthAdmin: integer('disable_local_auth_admin').notNull().default(0),
-  disableLocalAuthClient: integer('disable_local_auth_client').notNull().default(0),
+  disableLocalAuthTenant: integer('disable_local_auth_tenant').notNull().default(0),
   breakGlassSecretHash: varchar('break_glass_secret_hash', { length: 255 }),
   protectAdminViaProxy: integer('protect_admin_via_proxy').notNull().default(0),
-  protectClientViaProxy: integer('protect_client_via_proxy').notNull().default(0),
+  protectTenantViaProxy: integer('protect_tenant_via_proxy').notNull().default(0),
   breakGlassPath: varchar('break_glass_path', { length: 100 }),
   oauth2ProxyCookieSecretEncrypted: text('oauth2_proxy_cookie_secret_encrypted'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -234,9 +234,9 @@ export const hostingPlans = pgTable('hosting_plans', {
   storageLimit: numeric('storage_limit', { precision: 10, scale: 2 }).notNull(),
   monthlyPriceUsd: numeric('monthly_price_usd', { precision: 10, scale: 2 }).notNull(),
   maxSubUsers: integer('max_sub_users').notNull().default(3),
-  // Plan-level cap on total mailboxes across all the client's
-  // email domains. Can be overridden per-client via
-  // clients.max_mailboxes_override.
+  // Plan-level cap on total mailboxes across all the tenant
+  // email domains. Can be overridden per-tenant via
+  // tenants.max_mailboxes_override.
   maxMailboxes: integer('max_mailboxes').notNull().default(50),
   weeklyAiBudgetCents: integer('weekly_ai_budget_cents').notNull().default(100),
   // Backup quota — see migration 0066 / ADR-032.
@@ -253,17 +253,29 @@ export const hostingPlans = pgTable('hosting_plans', {
 
 // ─── Tenant Tables ───
 
-export const clients = pgTable('clients', {
+export const tenants = pgTable('tenants', {
   id: varchar('id', { length: 36 }).primaryKey(),
   regionId: varchar('region_id', { length: 36 }).notNull(),
-  companyName: varchar('company_name', { length: 255 }).notNull(),
-  companyEmail: varchar('company_email', { length: 255 }).notNull(),
-  contactEmail: varchar('contact_email', { length: 255 }),
-  status: clientStatusEnum().notNull().default('pending'),
+  // Tenant organisation display name (was company_name).
+  name: varchar('name', { length: 255 }).notNull(),
+  // Primary billing / contact person name (separate from organisation).
+  contactName: varchar('contact_name', { length: 255 }),
+  primaryEmail: varchar('primary_email', { length: 255 }).notNull(),
+  secondaryEmail: varchar('secondary_email', { length: 255 }),
+  // ITU-T E.164 (e.g. +14155552671). Required.
+  phoneE164: varchar('phone_e164', { length: 16 }),
+  // Billing address. Physical (street) and postal (mailing) addresses
+  // are tracked separately — many tenants have a P.O. Box for mail
+  // and a physical site / registered office for visit / VAT.
+  billingStreetAddress: varchar('billing_street_address', { length: 500 }),
+  billingPostalAddress: varchar('billing_postal_address', { length: 500 }),
+  billingCity: varchar('billing_city', { length: 200 }),
+  billingCountry: varchar('billing_country', { length: 100 }),
+  status: tenantStatusEnum().notNull().default('pending'),
   kubernetesNamespace: varchar('kubernetes_namespace', { length: 63 }).notNull(),
-  // Migration 0077 — per-client shared auth secret for private-worker frps.
+  // Migration 0077 — per-tenant shared auth secret for private-worker frps.
   // Generated on first worker mint, re-used across all workers in this
-  // client (frps 0.62 = one auth.token per server). Per-worker revocation
+  // tenant (frps 0.62 = one auth.token per server). Per-worker revocation
   // happens via frps `allowPorts` rendered from active workers' ports.
   privateWorkerSharedSecret: varchar('private_worker_shared_secret', { length: 64 }),
   planId: varchar('plan_id', { length: 36 }).notNull(),
@@ -272,29 +284,29 @@ export const clients = pgTable('clients', {
   storageLimitOverride: numeric('storage_limit_override', { precision: 10, scale: 2 }),
   maxSubUsersOverride: integer('max_sub_users_override'),
   monthlyPriceOverride: numeric('monthly_price_override', { precision: 10, scale: 2 }),
-  // Phase 1 (client-panel email parity round 2): per-customer
+  // Phase 1 (tenant-panel email parity round 2): per-customer
   // mailbox count override. null = inherit from the plan's
   // max_mailboxes. Used by the limit check in mailboxes/service.ts.
   maxMailboxesOverride: integer('max_mailboxes_override'),
   // Phase 3.B.3: per-customer email send rate limit (messages/hour).
   // null = inherit the global default from platform_settings key
-  // `email_send_rate_limit_default`. Suspended clients are forced to
+  // `email_send_rate_limit_default`. Suspended tenant are forced to
   // rate=0 at the Stalwart level regardless of this value.
   emailSendRateLimit: integer('email_send_rate_limit'),
   timezone: varchar('timezone', { length: 50 }),
-  // M5: per-client worker pinning. NULL = default scheduler picks a
+  // M5: per-tenant worker pinning. NULL = default scheduler picks a
   // node that matches the (implicit) worker constraints (anti-affinity
   // with system pods via the server-only taint). When set, the
   // k8s-deployer passes this through to deployK8sDeployment's
-  // workerNodeName parameter (M3), producing a
+  // nodeName parameter (M3), producing a
   // kubernetes.io/hostname nodeSelector.
-  workerNodeName: varchar('worker_node_name', { length: 253 }),
+  nodeName: varchar('node_name', { length: 253 }),
   // M7: tenant storage tier. 'local' = longhorn-tenant-local (1 replica);
   // 'ha' = longhorn-tenant-ha (2 replicas). Default 'local' matches
   // migration 0048 and preserves pre-M7 scheduling.
-  storageTier: clientStorageTierEnum('storage_tier').notNull().default('local'),
+  storageTier: tenantStorageTierEnum('storage_tier').notNull().default('local'),
   provisioningStatus: provisioningStatusEnum().notNull().default('unprovisioned'),
-  // Active storage-lifecycle op (null when the client isn't being
+  // Active storage-lifecycle op (null when the tenant isn't being
   // resized/suspended/archived/restored). The storage_operations row
   // carrying full state is referenced by activeStorageOpId.
   storageLifecycleState: storageLifecycleStateEnum('storage_lifecycle_state').notNull().default('idle'),
@@ -303,23 +315,23 @@ export const clients = pgTable('clients', {
   subscriptionExpiresAt: timestamp('subscription_expires_at'),
   // Stamped ONLY by the lifecycle cascades (applySuspended / applyArchived)
   // — used by the auto-archive / auto-delete crons so unrelated admin
-  // edits to the client row don't reset the clock. See migration 0044.
+  // edits to the tenant row don't reset the clock. See migration 0044.
   suspendedAt: timestamp('suspended_at'),
   archivedAt: timestamp('archived_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  uniqueIndex('clients_namespace_unique').on(table.kubernetesNamespace),
-  index('clients_region_idx').on(table.regionId),
-  index('clients_plan_idx').on(table.planId),
-  index('clients_status_idx').on(table.status),
+  uniqueIndex('tenants_namespace_unique').on(table.kubernetesNamespace),
+  index('tenants_region_idx').on(table.regionId),
+  index('tenants_plan_idx').on(table.planId),
+  index('tenants_status_idx').on(table.status),
 ]);
 
 export const domains = pgTable('domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   domainName: varchar('domain_name', { length: 255 }).notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
   dnsGroupId: varchar('dns_group_id', { length: 36 }),
@@ -341,7 +353,7 @@ export const domains = pgTable('domains', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('domains_name_unique').on(table.domainName),
-  index('domains_client_idx').on(table.clientId),
+  index('domains_tenant_idx').on(table.tenantId),
   index('domains_status_idx').on(table.status),
 ]);
 
@@ -464,9 +476,9 @@ export const catalogEntries = pgTable('catalog_entries', {
 
 export const deployments = pgTable('deployments', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   // ADR-036: nullable when `source = 'custom'`. The XOR is enforced
   // by the CHECK constraint in migration 0098_custom_deployments.sql.
   catalogEntryId: varchar('catalog_entry_id', { length: 36 }),
@@ -523,8 +535,8 @@ export const deployments = pgTable('deployments', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  uniqueIndex('deployments_client_name_unique').on(table.clientId, table.name),
-  index('deployments_client_idx').on(table.clientId),
+  uniqueIndex('deployments_tenant_name_unique').on(table.tenantId, table.name),
+  index('deployments_tenant_idx').on(table.tenantId),
   index('deployments_catalog_entry_idx').on(table.catalogEntryId),
   index('deployments_status_idx').on(table.status),
   index('deployments_source_idx').on(table.source),
@@ -546,7 +558,7 @@ export const deployments = pgTable('deployments', {
 //
 //  custom_deployment_image_check_cache — 60-minute cache of the
 //    Docker Registry V2 update checker. Keyed on
-//    (image_reference, registry_host, current_tag); the client panel's
+//    (image_reference, registry_host, current_tag); the tenant panel's
 //    lazy-load "Updates available?" pill reads this. Stale rows are
 //    served immediately and a background refresh fires.
 
@@ -574,7 +586,7 @@ export const customDeploymentImageCredentials = pgTable('custom_deployment_image
   rotatedAt: timestamp('rotated_at', { withTimezone: true }),
 }, (table) => [
   // One credential per deployment in Phase 1. Phase 2 introduces a
-  // client-scoped shared-credential table; this row is overridden by
+  // tenant-scoped shared-credential table; this row is overridden by
   // a per-deployment one when present.
   uniqueIndex('custom_deployment_image_credentials_deployment_unique')
     .on(table.deploymentId),
@@ -696,9 +708,9 @@ export const backupConfigurations = pgTable('backup_configurations', {
 
 export const backups = pgTable('backups', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   backupType: backupTypeEnum().notNull().default('manual'),
   resourceType: varchar('resource_type', { length: 50 }).notNull().default('full'),
   resourceId: varchar('resource_id', { length: 36 }),
@@ -710,21 +722,21 @@ export const backups = pgTable('backups', {
   notes: text('notes'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
-  index('backups_client_idx').on(table.clientId),
+  index('backups_tenant_idx').on(table.tenantId),
   index('backups_status_idx').on(table.status),
 ]);
 
 export const usageMetrics = pgTable('usage_metrics', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   metricType: metricTypeEnum().notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
   value: numeric('value', { precision: 10, scale: 4 }).notNull(),
   measurementTimestamp: timestamp('measurement_timestamp').notNull().defaultNow(),
 }, (table) => [
-  index('usage_metrics_client_idx').on(table.clientId),
+  index('usage_metrics_tenant_idx').on(table.tenantId),
   index('usage_metrics_type_idx').on(table.metricType),
   index('usage_metrics_ts_idx').on(table.measurementTimestamp),
 ]);
@@ -734,9 +746,9 @@ export const usageMetrics = pgTable('usage_metrics', {
 
 export const cronJobs = pgTable('cron_jobs', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   type: cronJobTypeEnum().notNull().default('webcron'),
   schedule: varchar('schedule', { length: 100 }).notNull(),
@@ -753,12 +765,12 @@ export const cronJobs = pgTable('cron_jobs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('cron_jobs_client_idx').on(table.clientId),
+  index('cron_jobs_tenant_idx').on(table.tenantId),
 ]);
 
 export const auditLogs = pgTable('audit_logs', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }),
+  tenantId: varchar('tenant_id', { length: 36 }),
   actionType: varchar('action_type', { length: 50 }).notNull(),
   resourceType: varchar('resource_type', { length: 50 }).notNull(),
   resourceId: varchar('resource_id', { length: 36 }),
@@ -771,7 +783,7 @@ export const auditLogs = pgTable('audit_logs', {
   ipAddress: varchar('ip_address', { length: 45 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
-  index('audit_logs_client_idx').on(table.clientId),
+  index('audit_logs_tenant_idx').on(table.tenantId),
   index('audit_logs_actor_idx').on(table.actorId),
   index('audit_logs_action_idx').on(table.actionType),
   index('audit_logs_created_idx').on(table.createdAt),
@@ -802,8 +814,8 @@ export const refreshTokens = pgTable('refresh_tokens', {
   familyId: varchar('family_id', { length: 36 }).notNull(),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
   panel: panelEnum().notNull(),
-  clientId: varchar('client_id', { length: 36 })
-    .references(() => clients.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   userAgent: varchar('user_agent', { length: 500 }),
   ipAddress: varchar('ip_address', { length: 64 }),
   issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
@@ -822,9 +834,9 @@ export const refreshTokens = pgTable('refresh_tokens', {
 
 export const provisioningTasks = pgTable('provisioning_tasks', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   type: provTaskTypeEnum().notNull(),
   status: provTaskStatusEnum().notNull().default('pending'),
   currentStep: varchar('current_step', { length: 100 }),
@@ -838,7 +850,7 @@ export const provisioningTasks = pgTable('provisioning_tasks', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('provisioning_tasks_client_idx').on(table.clientId),
+  index('provisioning_tasks_tenant_idx').on(table.tenantId),
   index('provisioning_tasks_status_idx').on(table.status),
 ]);
 
@@ -1013,9 +1025,9 @@ export const wafLogs = pgTable('waf_logs', {
   routeId: varchar('route_id', { length: 36 })
     .notNull()
     .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   ruleId: varchar('rule_id', { length: 50 }).notNull(),
   severity: varchar('severity', { length: 20 }).notNull(),
   message: text('message').notNull(),
@@ -1026,7 +1038,7 @@ export const wafLogs = pgTable('waf_logs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   index('waf_logs_route_idx').on(table.routeId),
-  index('waf_logs_client_idx').on(table.clientId),
+  index('waf_logs_tenant_idx').on(table.tenantId),
   index('waf_logs_created_idx').on(table.createdAt),
 ]);
 
@@ -1034,9 +1046,9 @@ export const wafLogs = pgTable('waf_logs', {
 
 export const sshKeys = pgTable('ssh_keys', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   publicKey: text('public_key').notNull(),
   keyFingerprint: varchar('key_fingerprint', { length: 255 }).notNull(),
@@ -1044,17 +1056,17 @@ export const sshKeys = pgTable('ssh_keys', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('ssh_keys_fingerprint_unique').on(table.keyFingerprint),
-  uniqueIndex('ssh_keys_client_name_unique').on(table.clientId, table.name),
-  index('ssh_keys_client_idx').on(table.clientId),
+  uniqueIndex('ssh_keys_tenant_name_unique').on(table.tenantId, table.name),
+  index('ssh_keys_tenant_idx').on(table.tenantId),
 ]);
 
 // ─── SFTP Users ───
 
 export const sftpUsers = pgTable('sftp_users', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   username: varchar('username', { length: 100 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }),
   description: varchar('description', { length: 255 }),
@@ -1071,7 +1083,7 @@ export const sftpUsers = pgTable('sftp_users', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('sftp_users_username_unique').on(table.username),
-  index('sftp_users_client_idx').on(table.clientId),
+  index('sftp_users_tenant_idx').on(table.tenantId),
   index('sftp_users_expires_idx').on(table.expiresAt),
 ]);
 
@@ -1094,9 +1106,9 @@ export const sftpAuditLog = pgTable('sftp_audit_log', {
   id: varchar('id', { length: 36 }).primaryKey(),
   sftpUserId: varchar('sftp_user_id', { length: 36 })
     .references(() => sftpUsers.id, { onDelete: 'set null' }),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   event: varchar('event', { length: 50 }).notNull(), // CONNECT, DISCONNECT, FAILED_AUTH
   sourceIp: varchar('source_ip', { length: 45 }).notNull(),
   protocol: varchar('protocol', { length: 10 }).notNull().default('sftp'), // sftp, scp, rsync, ftps
@@ -1106,7 +1118,7 @@ export const sftpAuditLog = pgTable('sftp_audit_log', {
   errorMessage: varchar('error_message', { length: 512 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
-  index('sftp_audit_client_idx').on(table.clientId, table.createdAt),
+  index('sftp_audit_tenant_idx').on(table.tenantId, table.createdAt),
   index('sftp_audit_user_idx').on(table.sftpUserId, table.createdAt),
   index('sftp_audit_created_idx').on(table.createdAt),
 ]);
@@ -1115,9 +1127,9 @@ export const sftpAuditLog = pgTable('sftp_audit_log', {
 
 export const subscriptionBillingCycles = pgTable('subscription_billing_cycles', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   billingCycleStart: timestamp('billing_cycle_start').notNull(),
   billingCycleEnd: timestamp('billing_cycle_end').notNull(),
   planId: varchar('plan_id', { length: 36 }).notNull(),
@@ -1132,8 +1144,8 @@ export const subscriptionBillingCycles = pgTable('subscription_billing_cycles', 
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  uniqueIndex('uk_client_cycle').on(table.clientId, table.billingCycleStart),
-  index('billing_cycles_client_idx').on(table.clientId),
+  uniqueIndex('uk_tenant_cycle').on(table.tenantId, table.billingCycleStart),
+  index('billing_cycles_tenant_idx').on(table.tenantId),
   index('billing_cycles_status_idx').on(table.status),
 ]);
 
@@ -1141,9 +1153,9 @@ export const subscriptionBillingCycles = pgTable('subscription_billing_cycles', 
 
 export const resourceQuotas = pgTable('resource_quotas', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   cpuCoresLimit: numeric('cpu_cores_limit', { precision: 5, scale: 2 }),
   memoryGbLimit: integer('memory_gb_limit'),
   storageGbLimit: integer('storage_gb_limit'),
@@ -1157,7 +1169,7 @@ export const resourceQuotas = pgTable('resource_quotas', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  uniqueIndex('resource_quotas_client_unique').on(table.clientId),
+  uniqueIndex('resource_quotas_tenant_unique').on(table.tenantId),
 ]);
 
 // ─── Email System ───
@@ -1169,15 +1181,15 @@ export const emailDomains = pgTable('email_domains', {
   domainId: varchar('domain_id', { length: 36 })
     .notNull()
     .references(() => domains.id, { onDelete: 'cascade' }),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   enabled: integer('enabled').notNull().default(1),
   // Phase 2c: when true, the backend creates an Ingress for
-  // webmail.<domain> in the client's namespace pointing at the shared
+  // webmail.<domain> in the tenant namespace pointing at the shared
   // Roundcube Service via an ExternalName service (roundcube.mail).
   // Default true — every email domain gets webmail access out of the
-  // box; operators or client_admins can toggle it off per domain.
+  // box; operators or tenant_admins can toggle it off per domain.
   webmailEnabled: integer('webmail_enabled').notNull().default(1),
   // Round-4 Phase 2 — webmail provisioning lifecycle status.
   // Values: 'pending' | 'ready' | 'ready_no_tls' | 'failed'.
@@ -1190,7 +1202,7 @@ export const emailDomains = pgTable('email_domains', {
   // Columns dropped by migration 0075.
   // NOTE: max_mailboxes + max_quota_mb were removed in migration
   // 0019. Mailbox count is now capped at the plan level via
-  // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
+  // hosting_plans.max_mailboxes + tenants.max_mailboxes_override.
   catchAllAddress: varchar('catch_all_address', { length: 255 }),
   mxProvisioned: integer('mx_provisioned').notNull().default(0),
   spfProvisioned: integer('spf_provisioned').notNull().default(0),
@@ -1205,20 +1217,20 @@ export const emailDomains = pgTable('email_domains', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('email_domains_domain_unique').on(table.domainId),
-  index('email_domains_client_idx').on(table.clientId),
+  index('email_domains_tenant_idx').on(table.tenantId),
   index('email_domains_stalwart_domain_idx').on(table.stalwartDomainId).where(isNotNull(table.stalwartDomainId)),
 ]);
 
 export const mailboxes = pgTable('mailboxes', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  // Migration 0020 — CASCADE from email_domains and clients so
+  // Migration 0020 — CASCADE from email_domains and tenant so
   // mailboxes disappear atomically with their parent.
   emailDomainId: varchar('email_domain_id', { length: 36 })
     .notNull()
     .references(() => emailDomains.id, { onDelete: 'cascade' }),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   localPart: varchar('local_part', { length: 64 }).notNull(),
   fullAddress: varchar('full_address', { length: 255 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
@@ -1239,7 +1251,7 @@ export const mailboxes = pgTable('mailboxes', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('mailboxes_address_unique').on(table.fullAddress),
-  index('mailboxes_client_idx').on(table.clientId),
+  index('mailboxes_tenant_idx').on(table.tenantId),
   index('mailboxes_domain_idx').on(table.emailDomainId),
   index('mailboxes_stalwart_principal_idx').on(table.stalwartPrincipalId).where(isNotNull(table.stalwartPrincipalId)),
 ]);
@@ -1263,13 +1275,13 @@ export const mailboxAccess = pgTable('mailbox_access', {
 
 export const emailAliases = pgTable('email_aliases', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  // Migration 0020 — CASCADE from email_domains and clients.
+  // Migration 0020 — CASCADE from email_domains and tenants.
   emailDomainId: varchar('email_domain_id', { length: 36 })
     .notNull()
     .references(() => emailDomains.id, { onDelete: 'cascade' }),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   sourceAddress: varchar('source_address', { length: 255 }).notNull(),
   destinationAddresses: jsonb('destination_addresses').$type<string[]>().notNull(),
   enabled: integer('enabled').notNull().default(1),
@@ -1277,11 +1289,11 @@ export const emailAliases = pgTable('email_aliases', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('email_aliases_source_unique').on(table.sourceAddress),
-  index('email_aliases_client_idx').on(table.clientId),
+  index('email_aliases_tenant_idx').on(table.tenantId),
   index('email_aliases_domain_idx').on(table.emailDomainId),
 ]);
 
-// Phase 2b shipped a per-client custom webmail_domains table + CRUD. Phase
+// Phase 2b shipped a per-tenant custom webmail_domains table + CRUD. Phase
 // 2c reverted it in favour of a derived convention: every enabled email
 // domain gets webmail.<domain> automatically. See migration 0006 and
 // docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md (Phase 2c section).
@@ -1311,9 +1323,9 @@ export const mailboxQuotaEvents = pgTable('mailbox_quota_events', {
 // no mailbox cleartext password is required.
 export const imapSyncJobs = pgTable('imap_sync_jobs', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   mailboxId: varchar('mailbox_id', { length: 36 })
     .notNull()
     .references(() => mailboxes.id, { onDelete: 'cascade' }),
@@ -1348,19 +1360,19 @@ export const imapSyncJobs = pgTable('imap_sync_jobs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('imap_sync_jobs_client_idx').on(table.clientId),
+  index('imap_sync_jobs_tenant_idx').on(table.tenantId),
   index('imap_sync_jobs_mailbox_idx').on(table.mailboxId),
 ]);
 
-// Phase 3 T5.1 — per-client SMTP submission credentials used by
+// Phase 3 T5.1 — per-tenant SMTP submission credentials used by
 // sendmail-compatible wrappers in workload pods. Stored twice:
 // encrypted (for writing to the customer PVC) + bcrypt hash (for
 // Stalwart to verify via the directory view).
 export const mailSubmitCredentials = pgTable('mail_submit_credentials', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   username: varchar('username', { length: 128 }).notNull(),
   passwordEncrypted: text('password_encrypted').notNull(),
   passwordHash: text('password_hash').notNull(),
@@ -1369,7 +1381,7 @@ export const mailSubmitCredentials = pgTable('mail_submit_credentials', {
   revokedAt: timestamp('revoked_at'),
   lastUsedAt: timestamp('last_used_at'),
 }, (table) => [
-  index('mail_submit_credentials_client_idx').on(table.clientId),
+  index('mail_submit_credentials_tenant_idx').on(table.tenantId),
 ]);
 
 // emailDkimKeys table removed in M13 (migration 0075).
@@ -1451,9 +1463,9 @@ export const catalogEntryVersions = pgTable('catalog_entry_versions', {
 export const sslCertificates = pgTable('ssl_certificates', {
   id: varchar('id', { length: 36 }).primaryKey(),
   domainId: varchar('domain_id', { length: 36 }).notNull(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   certificate: text('certificate').notNull(),
   privateKeyEncrypted: text('private_key_encrypted').notNull(),
   caBundle: text('ca_bundle'),
@@ -1464,7 +1476,7 @@ export const sslCertificates = pgTable('ssl_certificates', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('ssl_certs_domain_unique').on(table.domainId),
-  index('ssl_certs_client_idx').on(table.clientId),
+  index('ssl_certs_tenant_idx').on(table.tenantId),
 ]);
 
 // ─── Platform Settings ───
@@ -1477,7 +1489,7 @@ export const platformSettings = pgTable('platform_settings', {
 
 // M13: platform-level storage replication policy. Controls the Longhorn
 // replica count for the platform's own StatefulSets (postgres,
-// stalwart-mail) — distinct from client_storage_tier (M7) which only
+// stalwart-mail) — distinct from tenant_storage_tier (M7) which only
 // touches tenant PVCs. Single-row table (id='singleton'). Reconciler
 // patches longhorn.io Volume CRs' .spec.numberOfReplicas to match.
 export const platformStorageTierEnum = pgEnum('platform_storage_tier', ['local', 'ha']);
@@ -1611,18 +1623,18 @@ export interface IngressClaimRule {
 }
 
 /**
- * Per-client reusable OIDC provider configuration. One row per
- * (clientId, IdP-OAuth-app); referenced by zero or more
+ * Per-tenant reusable OIDC provider configuration. One row per
+ * (tenantId, IdP-OAuth-app); referenced by zero or more
  * ingress_auth_configs via provider_id. ON DELETE RESTRICT ensures
  * a provider in active use cannot be removed silently — the routes
  * layer translates the FK violation into a 409 with the consumer
  * count so the operator can decide.
  */
-export const clientOidcProviders = pgTable('client_oidc_providers', {
+export const tenantOidcProviders = pgTable('tenant_oidc_providers', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 120 }).notNull(),
   issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
   oauthClientId: varchar('oauth_client_id', { length: 255 }).notNull(),
@@ -1635,8 +1647,8 @@ export const clientOidcProviders = pgTable('client_oidc_providers', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
-export type ClientOidcProvider = typeof clientOidcProviders.$inferSelect;
-export type NewClientOidcProvider = typeof clientOidcProviders.$inferInsert;
+export type TenantOidcProvider = typeof tenantOidcProviders.$inferSelect;
+export type NewTenantOidcProvider = typeof tenantOidcProviders.$inferInsert;
 
 export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -1650,7 +1662,7 @@ export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
   // by migration 0057 after backfill.
   providerId: varchar('provider_id', { length: 36 })
     .notNull()
-    .references(() => clientOidcProviders.id, { onDelete: 'restrict' }),
+    .references(() => tenantOidcProviders.id, { onDelete: 'restrict' }),
   // Optional override of the provider's default_scopes. NULL = use
   // provider's value. Allows one provider to serve ingresses with
   // different scope requirements (e.g. one ingress also wants
@@ -1683,28 +1695,28 @@ export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
 export type IngressAuthConfig = typeof ingressAuthConfigs.$inferSelect;
 export type NewIngressAuthConfig = typeof ingressAuthConfigs.$inferInsert;
 
-export const clientOauth2ProxyState = pgTable('client_oauth2_proxy_state', {
-  clientId: varchar('client_id', { length: 36 })
+export const tenantOauth2ProxyState = pgTable('tenant_oauth2_proxy_state', {
+  tenantId: varchar('tenant_id', { length: 36 })
     .primaryKey()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   cookieSecretEncrypted: text('cookie_secret_encrypted').notNull(),
   provisioned: boolean('provisioned').notNull().default(false),
   lastProvisionedAt: timestamp('last_provisioned_at'),
   lastError: text('last_error'),
 });
 
-export type ClientOauth2ProxyState = typeof clientOauth2ProxyState.$inferSelect;
-export type NewClientOauth2ProxyState = typeof clientOauth2ProxyState.$inferInsert;
+export type TenantOauth2ProxyState = typeof tenantOauth2ProxyState.$inferSelect;
+export type NewTenantOauth2ProxyState = typeof tenantOauth2ProxyState.$inferInsert;
 
 // ─── Multi-mode network access foundation (Phase 1 of OpenZiti integration) ───
 // See packages/api-contracts/src/{ingress-mtls,ziti-providers,zrok-providers,
 // deployment-network-access}.ts for the contract docs. Migration 0058.
 
-export const clientZitiProviders = pgTable('client_ziti_providers', {
+export const tenantZitiProviders = pgTable('tenant_ziti_providers', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 120 }).notNull(),
   controllerUrl: varchar('controller_url', { length: 500 }).notNull(),
   enrollmentJwtEncrypted: text('enrollment_jwt_encrypted'),
@@ -1712,17 +1724,17 @@ export const clientZitiProviders = pgTable('client_ziti_providers', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
-  clientIdx: index('client_ziti_providers_client_idx').on(table.clientId),
+  tenantIdx: index('tenant_ziti_providers_tenant_idx').on(table.tenantId),
 }));
 
-export type ClientZitiProvider = typeof clientZitiProviders.$inferSelect;
-export type NewClientZitiProvider = typeof clientZitiProviders.$inferInsert;
+export type TenantZitiProvider = typeof tenantZitiProviders.$inferSelect;
+export type NewTenantZitiProvider = typeof tenantZitiProviders.$inferInsert;
 
-export const clientZrokAccounts = pgTable('client_zrok_accounts', {
+export const tenantZrokAccounts = pgTable('tenant_zrok_accounts', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 120 }).notNull(),
   controllerUrl: varchar('controller_url', { length: 500 }).notNull(),
   accountEmail: varchar('account_email', { length: 255 }).notNull(),
@@ -1730,17 +1742,17 @@ export const clientZrokAccounts = pgTable('client_zrok_accounts', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
-  clientIdx: index('client_zrok_accounts_client_idx').on(table.clientId),
+  tenantIdx: index('tenant_zrok_accounts_tenant_idx').on(table.tenantId),
 }));
 
-export type ClientZrokAccount = typeof clientZrokAccounts.$inferSelect;
-export type NewClientZrokAccount = typeof clientZrokAccounts.$inferInsert;
+export type TenantZrokAccount = typeof tenantZrokAccounts.$inferSelect;
+export type NewTenantZrokAccount = typeof tenantZrokAccounts.$inferInsert;
 
-export const clientMtlsProviders = pgTable('client_mtls_providers', {
+export const tenantMtlsProviders = pgTable('tenant_mtls_providers', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 120 }).notNull(),
   caCertPemEncrypted: text('ca_cert_pem_encrypted').notNull(),
   caKeyPemEncrypted: text('ca_key_pem_encrypted'),
@@ -1759,20 +1771,20 @@ export const clientMtlsProviders = pgTable('client_mtls_providers', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
-  clientIdx: index('client_mtls_providers_client_idx').on(table.clientId),
+  tenantIdx: index('tenant_mtls_providers_tenant_idx').on(table.tenantId),
 }));
 
-export type ClientMtlsProvider = typeof clientMtlsProviders.$inferSelect;
-export type NewClientMtlsProvider = typeof clientMtlsProviders.$inferInsert;
+export type TenantMtlsProvider = typeof tenantMtlsProviders.$inferSelect;
+export type NewTenantMtlsProvider = typeof tenantMtlsProviders.$inferInsert;
 
-export const clientCertificates = pgTable('client_certificates', {
+export const tenantCertificates = pgTable('tenant_certificates', {
   id: varchar('id', { length: 36 }).primaryKey(),
   providerId: varchar('provider_id', { length: 36 })
     .notNull()
-    .references(() => clientMtlsProviders.id, { onDelete: 'cascade' }),
-  clientId: varchar('client_id', { length: 36 })
+    .references(() => tenantMtlsProviders.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   serialHex: varchar('serial_hex', { length: 64 }).notNull(),
   certPemEncrypted: text('cert_pem_encrypted').notNull(),
   certFingerprintSha256: varchar('cert_fingerprint_sha256', { length: 64 }).notNull(),
@@ -1785,15 +1797,15 @@ export const clientCertificates = pgTable('client_certificates', {
   revokedByUserId: varchar('revoked_by_user_id', { length: 36 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => ({
-  providerSerialUnique: uniqueIndex('client_certificates_provider_serial_unique')
+  providerSerialUnique: uniqueIndex('tenant_certificates_provider_serial_unique')
     .on(table.providerId, table.serialHex),
-  providerIdx: index('client_certificates_provider_idx').on(table.providerId),
-  clientIdx: index('client_certificates_client_idx').on(table.clientId),
-  expiresIdx: index('client_certificates_expires_idx').on(table.expiresAt),
+  providerIdx: index('tenant_certificates_provider_idx').on(table.providerId),
+  tenantIdx: index('tenant_certificates_tenant_idx').on(table.tenantId),
+  expiresIdx: index('tenant_certificates_expires_idx').on(table.expiresAt),
 }));
 
-export type ClientCertificate = typeof clientCertificates.$inferSelect;
-export type NewClientCertificate = typeof clientCertificates.$inferInsert;
+export type TenantCertificate = typeof tenantCertificates.$inferSelect;
+export type NewTenantCertificate = typeof tenantCertificates.$inferInsert;
 
 export const ingressMtlsConfigs = pgTable('ingress_mtls_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -1803,7 +1815,7 @@ export const ingressMtlsConfigs = pgTable('ingress_mtls_configs', {
     .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
   enabled: boolean('enabled').notNull().default(false),
   providerId: varchar('provider_id', { length: 36 })
-    .references(() => clientMtlsProviders.id, { onDelete: 'restrict' }),
+    .references(() => tenantMtlsProviders.id, { onDelete: 'restrict' }),
   caCertPemEncrypted: text('ca_cert_pem_encrypted'),
   caCertFingerprint: varchar('ca_cert_fingerprint', { length: 64 }),
   caCertSubject: varchar('ca_cert_subject', { length: 500 }),
@@ -1827,10 +1839,10 @@ export const deploymentNetworkAccessConfigs = pgTable('deployment_network_access
     .references(() => deployments.id, { onDelete: 'cascade' }),
   mode: varchar('mode', { length: 32 }).notNull().default('public'),
   zitiProviderId: varchar('ziti_provider_id', { length: 36 })
-    .references(() => clientZitiProviders.id, { onDelete: 'restrict' }),
+    .references(() => tenantZitiProviders.id, { onDelete: 'restrict' }),
   zitiServiceName: varchar('ziti_service_name', { length: 255 }),
   zrokProviderId: varchar('zrok_provider_id', { length: 36 })
-    .references(() => clientZrokAccounts.id, { onDelete: 'restrict' }),
+    .references(() => tenantZrokAccounts.id, { onDelete: 'restrict' }),
   zrokShareToken: varchar('zrok_share_token', { length: 255 }),
   passIdentityHeaders: boolean('pass_identity_headers').notNull().default(true),
   provisioned: boolean('provisioned').notNull().default(false),
@@ -1847,26 +1859,26 @@ export const deploymentNetworkAccessConfigs = pgTable('deployment_network_access
 export type DeploymentNetworkAccessConfig = typeof deploymentNetworkAccessConfigs.$inferSelect;
 export type NewDeploymentNetworkAccessConfig = typeof deploymentNetworkAccessConfigs.$inferInsert;
 
-export const clientMeshProxyState = pgTable('client_mesh_proxy_state', {
-  clientId: varchar('client_id', { length: 36 })
+export const tenantMeshProxyState = pgTable('tenant_mesh_proxy_state', {
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   kind: varchar('kind', { length: 32 }).notNull(),
   provisioned: boolean('provisioned').notNull().default(false),
   lastProvisionedAt: timestamp('last_provisioned_at'),
   lastError: text('last_error'),
 }, (table) => ({
-  pk: uniqueIndex('client_mesh_proxy_state_pk').on(table.clientId, table.kind),
+  pk: uniqueIndex('tenant_mesh_proxy_state_pk').on(table.tenantId, table.kind),
 }));
 
-export type ClientMeshProxyState = typeof clientMeshProxyState.$inferSelect;
-export type NewClientMeshProxyState = typeof clientMeshProxyState.$inferInsert;
+export type TenantMeshProxyState = typeof tenantMeshProxyState.$inferSelect;
+export type NewTenantMeshProxyState = typeof tenantMeshProxyState.$inferInsert;
 
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
-export type Client = typeof clients.$inferSelect;
-export type NewClient = typeof clients.$inferInsert;
+export type Tenant = typeof tenants.$inferSelect;
+export type NewTenant = typeof tenants.$inferInsert;
 export type Domain = typeof domains.$inferSelect;
 export type NewDomain = typeof domains.$inferInsert;
 export type HostingPlan = typeof hostingPlans.$inferSelect;
@@ -1928,7 +1940,7 @@ export const systemSettings = pgTable('system_settings', {
   id: varchar('id', { length: 36 }).primaryKey(),
   platformName: varchar('platform_name', { length: 255 }).notNull().default('Hosting Platform'),
   adminPanelUrl: varchar('admin_panel_url', { length: 500 }),
-  clientPanelUrl: varchar('client_panel_url', { length: 500 }),
+  tenantPanelUrl: varchar('tenant_panel_url', { length: 500 }),
   supportEmail: varchar('support_email', { length: 255 }),
   supportUrl: varchar('support_url', { length: 500 }),
   ingressBaseDomain: varchar('ingress_base_domain', { length: 255 }),
@@ -1949,12 +1961,12 @@ export const systemSettings = pgTable('system_settings', {
   allowHostPortsWorker: boolean('allow_host_ports_worker').notNull().default(false),
   // Node-defaults (migration 0063). Applied by the cluster-side node
   // reconciler (nodes/k8s-sync.ts) when a fresh SERVER node joins
-  // without an explicit `platform.example.test/host-client-workloads`
+  // without an explicit `platform.example.test/host-tenant-workloads`
   // label. Default TRUE preserves the historical behaviour where every
-  // server hosts client workloads. Operator-set bootstrap labels always
+  // server hosts tenant workloads. Operator-set bootstrap labels always
   // win — this only fills in the gap when bootstrap.sh ran with the
   // default flag and no explicit operator decision.
-  newServerHostsClientWorkloads: boolean('new_server_hosts_client_workloads').notNull().default(true),
+  newServerHostsTenantWorkloads: boolean('new_server_hosts_tenant_workloads').notNull().default(true),
   // ADR-036 custom-deployments toggles (migration 0099). All default
   // to permissive (enabled / on) so the feature ships usable out of
   // the box; operators tighten by flipping.
@@ -2120,7 +2132,7 @@ export type AiModel = typeof aiModels.$inferSelect;
 
 export const aiTokenUsage = pgTable('ai_token_usage', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull().references(() => clients.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   deploymentId: varchar('deployment_id', { length: 36 }).references(() => deployments.id, { onDelete: 'set null' }),
   modelId: varchar('model_id', { length: 100 }).notNull().references(() => aiModels.id),
   mode: varchar('mode', { length: 20 }).notNull(),
@@ -2147,7 +2159,7 @@ export const aiTokenUsage = pgTable('ai_token_usage', {
  */
 export const storageSnapshots = pgTable('storage_snapshots', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull().references(() => clients.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   kind: storageSnapshotKindEnum('kind').notNull(),
   status: storageSnapshotStatusEnum('status').notNull().default('creating'),
   // Opaque identifier in the SnapshotStore (dev: hostPath, prod: s3 key)
@@ -2166,7 +2178,7 @@ export const storageSnapshots = pgTable('storage_snapshots', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('storage_snapshots_client_idx').on(table.clientId),
+  index('storage_snapshots_tenant_idx').on(table.tenantId),
   index('storage_snapshots_status_idx').on(table.status),
   index('storage_snapshots_expires_idx').on(table.expiresAt),
 ]);
@@ -2174,12 +2186,12 @@ export const storageSnapshots = pgTable('storage_snapshots', {
 /**
  * An in-flight or completed lifecycle operation. The state machine is:
  *   pending → (op-specific states) → done | failed
- * All concurrent callers must check `clients.activeStorageOpId IS NULL`
+ * All concurrent callers must check `tenants.activeStorageOpId IS NULL`
  * before starting a new op (enforced by the orchestrator, not the DB).
  */
 export const storageOperations = pgTable('storage_operations', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull().references(() => clients.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   opType: storageOperationTypeEnum('op_type').notNull(),
   state: storageLifecycleStateEnum('state').notNull().default('idle'),
   // Progress percentage (0-100) for long-running ops — UI shows in a progress bar.
@@ -2199,22 +2211,22 @@ export const storageOperations = pgTable('storage_operations', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   completedAt: timestamp('completed_at'),
 }, (table) => [
-  index('storage_operations_client_idx').on(table.clientId),
+  index('storage_operations_tenant_idx').on(table.tenantId),
   index('storage_operations_state_idx').on(table.state),
   index('storage_operations_created_idx').on(table.createdAt),
 ]);
 
-// ─── Client lifecycle hook registry (migration 0069) ───
+// ─── Tenant lifecycle hook registry (migration 0069) ───
 //
 // One row per state transition the dispatcher kicks off + one row per
 // (transition, hook) it tries to run. Mirrors the storage_operations
 // shape so the existing progress-trail UI can render hook_runs once
 // Phase 5 wires it up.
 //
-// Intentionally NOT cascade-on-client-delete: keeps history available
+// Intentionally NOT cascade-on-tenant-delete: keeps history available
 // for audit. Storage cron may prune rows older than N days.
 
-export const clientLifecycleTransitionKindEnum = pgEnum('client_lifecycle_transition_kind', [
+export const tenantLifecycleTransitionKindEnum = pgEnum('tenant_lifecycle_transition_kind', [
   'active',
   'suspended',
   'archived',
@@ -2222,14 +2234,14 @@ export const clientLifecycleTransitionKindEnum = pgEnum('client_lifecycle_transi
   'deleted',
 ]);
 
-export const clientLifecycleTransitionStateEnum = pgEnum('client_lifecycle_transition_state', [
+export const tenantLifecycleTransitionStateEnum = pgEnum('tenant_lifecycle_transition_state', [
   'running',
   'completed',
   'failed_partial',
   'failed_blocking',
 ]);
 
-export const clientLifecycleHookRunStateEnum = pgEnum('client_lifecycle_hook_run_state', [
+export const tenantLifecycleHookRunStateEnum = pgEnum('tenant_lifecycle_hook_run_state', [
   'pending',
   'running',
   'ok',
@@ -2237,43 +2249,43 @@ export const clientLifecycleHookRunStateEnum = pgEnum('client_lifecycle_hook_run
   'failed',
 ]);
 
-export const clientLifecycleTransitions = pgTable('client_lifecycle_transitions', {
+export const tenantLifecycleTransitions = pgTable('tenant_lifecycle_transitions', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
-  transitionKind: clientLifecycleTransitionKindEnum('transition_kind').notNull(),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull(),
+  transitionKind: tenantLifecycleTransitionKindEnum('transition_kind').notNull(),
   fromStatus: varchar('from_status', { length: 32 }),
   toStatus: varchar('to_status', { length: 32 }).notNull(),
   triggeredByUserId: varchar('triggered_by_user_id', { length: 36 }),
-  state: clientLifecycleTransitionStateEnum('state').notNull().default('running'),
+  state: tenantLifecycleTransitionStateEnum('state').notNull().default('running'),
   startedAt: timestamp('started_at').notNull().defaultNow(),
   completedAt: timestamp('completed_at'),
   // Captured at dispatch time so the Phase 5 retry scheduler can
-  // re-run hooks even after the client row is gone (deleted transitions).
+  // re-run hooks even after the tenant row is gone (deleted transitions).
   namespace: varchar('namespace', { length: 63 }),
   detail: jsonb('detail').$type<Record<string, unknown> | null>(),
 }, (table) => [
-  index('client_lifecycle_transitions_client_idx').on(table.clientId, table.startedAt),
+  index('tenant_lifecycle_transitions_tenant_idx').on(table.tenantId, table.startedAt),
   // Partial index — Phase 5 scheduler scans for stuck transitions.
   // Drizzle's index().where() emits this as `WHERE …` in the
   // generated migration; we keep the migration SQL hand-written for
   // 0069 so this entry exists purely to keep `drizzle-kit` from
   // flagging schema drift.
-  index('client_lifecycle_transitions_state_idx')
+  index('tenant_lifecycle_transitions_state_idx')
     .on(table.state)
     .where(sql`state IN ('running', 'failed_blocking')`),
 ]);
 
-export const clientLifecycleHookRuns = pgTable('client_lifecycle_hook_runs', {
+export const tenantLifecycleHookRuns = pgTable('tenant_lifecycle_hook_runs', {
   id: varchar('id', { length: 36 }).primaryKey(),
   transitionId: varchar('transition_id', { length: 36 })
     .notNull()
-    .references(() => clientLifecycleTransitions.id, { onDelete: 'cascade' }),
+    .references(() => tenantLifecycleTransitions.id, { onDelete: 'cascade' }),
   hookName: varchar('hook_name', { length: 64 }).notNull(),
   hookOrder: integer('hook_order').notNull(),
   // 'abort' | 'continue' — declared by the hook, copied here at run time
   // so historical rows survive a hook re-classification.
   blocking: varchar('blocking', { length: 8 }).notNull(),
-  state: clientLifecycleHookRunStateEnum('state').notNull().default('pending'),
+  state: tenantLifecycleHookRunStateEnum('state').notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0),
   maxAttempts: integer('max_attempts').notNull().default(5),
   // OperatorError envelope on failure; UI parses + renders via <ErrorPanel>.
@@ -2283,11 +2295,11 @@ export const clientLifecycleHookRuns = pgTable('client_lifecycle_hook_runs', {
   // Set on retryable failure; scheduler picks rows where now() >= next_attempt_at.
   nextAttemptAt: timestamp('next_attempt_at'),
 }, (table) => [
-  index('client_lifecycle_hook_runs_transition_idx').on(table.transitionId, table.hookOrder),
-  uniqueIndex('client_lifecycle_hook_runs_uniq_idx').on(table.transitionId, table.hookName),
+  index('tenant_lifecycle_hook_runs_transition_idx').on(table.transitionId, table.hookOrder),
+  uniqueIndex('tenant_lifecycle_hook_runs_uniq_idx').on(table.transitionId, table.hookName),
   // Phase 5 retry tick scans this. Partial index avoids dragging
   // ok/noop rows into every retry pass.
-  index('client_lifecycle_hook_runs_retry_idx')
+  index('tenant_lifecycle_hook_runs_retry_idx')
     .on(table.nextAttemptAt)
     .where(sql`state = 'failed' AND next_attempt_at IS NOT NULL`),
 ]);
@@ -2296,7 +2308,7 @@ export const clientLifecycleHookRuns = pgTable('client_lifecycle_hook_runs', {
 //
 // Backend mirror of k8s node inventory with platform-specific role +
 // config annotations. Source of truth for platform-managed fields (role,
-// canHostClientWorkloads); k8s labels are the source of truth for
+// canHostTenantWorkloads); k8s labels are the source of truth for
 // operator-managed ad-hoc state and are captured in `labels`. The
 // node-sync reconciler upserts from `kubectl get nodes` every 60s.
 //
@@ -2323,7 +2335,7 @@ export const clusterNodes = pgTable('cluster_nodes', {
   // displayName when set. Migration 0052.
   displayName: varchar('display_name', { length: 253 }),
   role: nodeRoleEnum('role').notNull().default('worker'),
-  canHostClientWorkloads: boolean('can_host_client_workloads').notNull().default(true),
+  canHostTenantWorkloads: boolean('can_host_tenant_workloads').notNull().default(true),
   ingressMode: varchar('ingress_mode', { length: 8 }).$type<NodeIngressMode>().notNull().default('all'),
   publicIp: inet('public_ip'),
   kubeletVersion: varchar('kubelet_version', { length: 32 }),
@@ -2440,7 +2452,7 @@ export type NewAuthConsumedToken = typeof authConsumedTokens.$inferInsert;
 // ─── Backup Bundles v2 (ADR-032 / migration 0066) ───────────────────────────
 
 export const backupInitiatorEnum = pgEnum('backup_initiator', [
-  'client',
+  'tenant',
   'admin',
   'system',
   'cluster',
@@ -2483,7 +2495,7 @@ export const backupTargetKindEnum = pgEnum('backup_target_kind', [
   'ssh',
 ]);
 
-export const clientBackupScheduleFreqEnum = pgEnum('client_backup_schedule_freq', [
+export const tenantBackupScheduleFreqEnum = pgEnum('tenant_backup_schedule_freq', [
   'daily',
   'weekly',
   'monthly',
@@ -2491,9 +2503,9 @@ export const clientBackupScheduleFreqEnum = pgEnum('client_backup_schedule_freq'
 
 export const backupJobs = pgTable('backup_jobs', {
   id: varchar('id', { length: 64 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   initiator: backupInitiatorEnum('initiator').notNull(),
   systemTrigger: backupSystemTriggerEnum('system_trigger'),
   status: backupJobStatusEnum('status').notNull().default('pending'),
@@ -2514,7 +2526,7 @@ export const backupJobs = pgTable('backup_jobs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('backup_jobs_client_idx').on(table.clientId),
+  index('backup_jobs_tenant_idx').on(table.tenantId),
   index('backup_jobs_status_idx').on(table.status),
   index('backup_jobs_initiator_idx').on(table.initiator),
   index('backup_jobs_expires_idx').on(table.expiresAt),
@@ -2542,12 +2554,12 @@ export const backupComponents = pgTable('backup_components', {
   index('backup_components_status_idx').on(table.status),
 ]);
 
-export const clientBackupSchedules = pgTable('client_backup_schedules', {
-  clientId: varchar('client_id', { length: 36 })
+export const tenantBackupSchedules = pgTable('tenant_backup_schedules', {
+  tenantId: varchar('tenant_id', { length: 36 })
     .primaryKey()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   enabled: boolean('enabled').notNull().default(false),
-  frequency: clientBackupScheduleFreqEnum('frequency').notNull().default('weekly'),
+  frequency: tenantBackupScheduleFreqEnum('frequency').notNull().default('weekly'),
   hourOfDayUtc: integer('hour_of_day_utc').notNull().default(3),
   dayOfWeek: integer('day_of_week'),
   dayOfMonth: integer('day_of_month'),
@@ -2562,17 +2574,17 @@ export type BackupJob = typeof backupJobs.$inferSelect;
 export type NewBackupJob = typeof backupJobs.$inferInsert;
 export type BackupComponent = typeof backupComponents.$inferSelect;
 export type NewBackupComponent = typeof backupComponents.$inferInsert;
-export type ClientBackupSchedule = typeof clientBackupSchedules.$inferSelect;
-export type NewClientBackupSchedule = typeof clientBackupSchedules.$inferInsert;
+export type TenantBackupSchedule = typeof tenantBackupSchedules.$inferSelect;
+export type NewTenantBackupSchedule = typeof tenantBackupSchedules.$inferInsert;
 
 // ─── Tenant Backup v2 (ADR-036, migration 0093) ─────────────────────────
 // Per-tenant restic repository state + per-mailbox JMAP state + global
 // settings. See docs/07-reference/ADR-036-tenant-backup-restic-jmap.md.
 
 export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   // Component name matching backup_components.component. Today only
   // 'files' and 'mailboxes' use restic.
   component: varchar('component', { length: 32 }).notNull(),
@@ -2597,14 +2609,14 @@ export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  primaryKey({ columns: [table.clientId, table.component] }),
+  primaryKey({ columns: [table.tenantId, table.component] }),
   index('tenant_restic_repo_state_target_idx').on(table.targetConfigId),
 ]);
 
 export const tenantJmapState = pgTable('tenant_jmap_state', {
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   mailboxJmapId: varchar('mailbox_jmap_id', { length: 255 }).notNull(),
   mailboxAddress: varchar('mailbox_address', { length: 255 }).notNull(),
   // NULL = no prior state, do a full pull. Persisted ONLY after restic
@@ -2615,8 +2627,8 @@ export const tenantJmapState = pgTable('tenant_jmap_state', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  primaryKey({ columns: [table.clientId, table.mailboxJmapId] }),
-  index('tenant_jmap_state_client_idx').on(table.clientId, table.lastSyncedAt),
+  primaryKey({ columns: [table.tenantId, table.mailboxJmapId] }),
+  index('tenant_jmap_state_tenant_idx').on(table.tenantId, table.lastSyncedAt),
 ]);
 
 // Single-row global settings for tenant-backup v2. CHECK constraint in
@@ -2638,7 +2650,7 @@ export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
   // region id. NULL = use the derived value.
   regionIdOverride: varchar('region_id_override', { length: 63 }),
   // Encrypted-at-rest 32-byte secret used to derive per-tenant DR
-  // recovery passwords (HKDF info=`dr-recovery:${clientId}`). NULL
+  // recovery passwords (HKDF info=`dr-recovery:${tenantId}`). NULL
   // disables auto-add of the DR key — operator runs Option B
   // (one-shot migration keys) only.
   drRecoveryKeyEncrypted: text('dr_recovery_key_encrypted'),
@@ -2701,9 +2713,9 @@ export type ExternalBackupRepo = typeof externalBackupRepos.$inferSelect;
 export type NewExternalBackupRepo = typeof externalBackupRepos.$inferInsert;
 
 // ─── Private Workers (migration 0076) ─────────────────────────────────────
-// Per-client tunnel agents. A home box runs the private-worker-agent docker
+// Per-tenant tunnel agents. A home box runs the private-worker-agent docker
 // container which dials in over WSS to tunnels.${DOMAIN}/c/{slug}/. A frps pod
-// in the client namespace terminates the tunnel and exposes a Service that
+// in the tenant namespace terminates the tunnel and exposes a Service that
 // the existing ingressRoutes target. See docs/04-deployment/PRIVATE_WORKER.md.
 // (Enums for this feature are declared near the top of the file alongside
 // the other pgEnum declarations because ingressRoutes.targetType references
@@ -2711,9 +2723,9 @@ export type NewExternalBackupRepo = typeof externalBackupRepos.$inferInsert;
 
 export const privateWorkers = pgTable('private_workers', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 120 }).notNull(),
   slug: varchar('slug', { length: 60 }).notNull().unique(),
   workerTokenHash: varchar('worker_token_hash', { length: 64 }).notNull(),
@@ -2730,14 +2742,14 @@ export const privateWorkers = pgTable('private_workers', {
   revokedBy: varchar('revoked_by', { length: 36 }),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('private_workers_client_idx').on(table.clientId),
+  index('private_workers_tenant_idx').on(table.tenantId),
   index('private_workers_status_idx').on(table.status),
-  uniqueIndex('private_workers_client_name_uq').on(table.clientId, table.name),
+  uniqueIndex('private_workers_tenant_name_uq').on(table.tenantId, table.name),
   // Migration 0089 — backstop for service.ts::allocateExposedPort race.
   // Without this, two concurrent creates can pick the same lowest-free
   // port; with it, the second INSERT fails atomically and the caller
   // retries.
-  uniqueIndex('private_workers_client_port_uq').on(table.clientId, table.exposedPort),
+  uniqueIndex('private_workers_tenant_port_uq').on(table.tenantId, table.exposedPort),
 ]);
 
 export const privateWorkerAudit = pgTable('private_worker_audit', {
@@ -2787,9 +2799,9 @@ export const restoreItemStatusEnum = pgEnum('restore_item_status', [
 
 export const restoreJobs = pgTable('restore_jobs', {
   id: varchar('id', { length: 64 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 })
+  tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
-    .references(() => clients.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   initiatorUserId: varchar('initiator_user_id', { length: 36 })
     .references(() => users.id, { onDelete: 'set null' }),
   status: restoreJobStatusEnum('status').notNull().default('draft'),
@@ -2801,7 +2813,7 @@ export const restoreJobs = pgTable('restore_jobs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  index('restore_jobs_client_idx').on(table.clientId),
+  index('restore_jobs_tenant_idx').on(table.tenantId),
   index('restore_jobs_status_idx').on(table.status),
   index('restore_jobs_created_idx').on(table.createdAt),
 ]);
@@ -2840,7 +2852,7 @@ export type NewRestoreItem = typeof restoreItems.$inferInsert;
 // ─── Top-bar Task Tracker (migration 0090) ────────────────────────────
 //
 // UI-projection of long-running operations for the chip in the admin /
-// client panel header. Helper-only writes — see backend/src/modules/tasks/.
+// tenant panel header. Helper-only writes — see backend/src/modules/tasks/.
 // Idempotent on (kind, ref_id); pg_notify trigger emits deltas to
 // `tasks_user_<id>` channels for SSE consumers.
 
@@ -2850,7 +2862,7 @@ export const tasks = pgTable('tasks', {
   refId: varchar('ref_id', { length: 64 }),
   scope: varchar('scope', { length: 16 }).notNull(),
   userId: varchar('user_id', { length: 36 }),
-  clientId: varchar('client_id', { length: 36 }),
+  tenantId: varchar('tenant_id', { length: 36 }),
   label: text('label').notNull(),
   status: varchar('status', { length: 16 }).notNull(),
   progressPct: integer('progress_pct'),
@@ -2868,7 +2880,7 @@ export const tasks = pgTable('tasks', {
   // (0090_tasks.sql) declares the partial indexes directly. These are
   // covering indexes used by the schema dump only.
   index('tasks_user_updated_idx').on(table.userId, table.updatedAt),
-  index('tasks_client_updated_idx').on(table.clientId, table.updatedAt),
+  index('tasks_tenant_updated_idx').on(table.tenantId, table.updatedAt),
   index('tasks_parent_idx').on(table.parentTaskId),
 ]);
 

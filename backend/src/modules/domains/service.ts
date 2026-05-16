@@ -3,7 +3,7 @@ import { domains, dnsRecords, emailDomains, mailboxes, emailAliases, ingressRout
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
-import { getClientById } from '../clients/service.js';
+import { getTenantById } from '../tenants/service.js';
 import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
 import { reconcileIngress } from './k8s-ingress.js';
 import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
@@ -136,9 +136,9 @@ async function enrichWithCertInfo(
 }
 import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
 
-export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
-  // Verify client exists
-  await getClientById(db, clientId);
+export async function createDomain(db: Database, tenantId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
+  // Verify tenant exists
+  await getTenantById(db, tenantId);
 
   // Secondary DNS mode requires master_ip
   if (input.dns_mode === 'secondary' && !input.master_ip) {
@@ -173,7 +173,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
   const id = crypto.randomUUID();
   await db.insert(domains).values({
     id,
-    clientId,
+    tenantId,
     domainName: input.domain_name,
     dnsMode: input.dns_mode,
     masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
@@ -223,7 +223,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
     if (created) {
       try {
         const { syncRecordsFromProvider } = await import('../dns-records/service.js');
-        await syncRecordsFromProvider(db, clientId, created.id);
+        await syncRecordsFromProvider(db, tenantId, created.id);
       } catch {
         // Non-blocking — records can be synced later via Sync Records
       }
@@ -235,7 +235,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
   // Auto-create ingress route if workload was selected
   if (input.deployment_id && created) {
     try {
-      await createRoute(db, created.id, clientId, input.domain_name, input.deployment_id);
+      await createRoute(db, created.id, tenantId, input.domain_name, input.deployment_id);
     } catch (err) {
       // Route creation failure shouldn't block domain creation, but
       // MUST be logged. A silently-swallowed createRoute leaves the
@@ -248,16 +248,16 @@ export async function createDomain(db: Database, clientId: string, input: Create
 
   // Reconcile Ingress in k8s
   if (k8s) {
-    const client = await getClientById(db, clientId);
-    if (client.kubernetesNamespace) {
+    const tenant = await getTenantById(db, tenantId);
+    if (tenant.kubernetesNamespace) {
       try {
-        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+        await reconcileIngress(db, k8s, tenantId, tenant.kubernetesNamespace);
       } catch (err) {
         // Ingress reconciliation failure shouldn't block domain creation
         // BUT must be logged — silent swallowing was the root cause of
         // "domain shows OK in API but Ingress missing in K8s" bugs that
         // had operators add domains via UI and hit 404 + fake cert.
-        console.warn(`[domains.createDomain] reconcileIngress failed for ${client.kubernetesNamespace} (domain=${input.domain_name}): ${(err as Error).message}`);
+        console.warn(`[domains.createDomain] reconcileIngress failed for ${tenant.kubernetesNamespace} (domain=${input.domain_name}): ${(err as Error).message}`);
       }
     }
   }
@@ -290,11 +290,11 @@ export async function createDomain(db: Database, clientId: string, input: Create
   return created;
 }
 
-export async function getDomainById(db: Database, clientId: string, domainId: string) {
+export async function getDomainById(db: Database, tenantId: string, domainId: string) {
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
   if (!domain) throw domainNotFound(domainId);
   return domain;
 }
@@ -361,12 +361,12 @@ export async function listAllDomains(
 
 export async function listDomains(
   db: Database,
-  clientId: string,
+  tenantId: string,
   params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
 ): Promise<{ data: typeof domains.$inferSelect[]; pagination: PaginationMeta }> {
   const { limit, cursor, sort, search } = params;
 
-  const conditions = [eq(domains.clientId, clientId)];
+  const conditions = [eq(domains.tenantId, tenantId)];
   if (search) {
     conditions.push(like(domains.domainName, `%${search}%`));
   }
@@ -415,8 +415,8 @@ export async function listDomains(
   };
 }
 
-export async function updateDomain(db: Database, clientId: string, domainId: string, input: UpdateDomainInput & { dns_group_id?: string | null }, k8s?: K8sClients) {
-  await getDomainById(db, clientId, domainId);
+export async function updateDomain(db: Database, tenantId: string, domainId: string, input: UpdateDomainInput & { dns_group_id?: string | null }, k8s?: K8sClients) {
+  await getDomainById(db, tenantId, domainId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.dns_mode !== undefined) updateValues.dnsMode = input.dns_mode;
@@ -431,12 +431,12 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
 
   // Reconcile Ingress if workload mapping or DNS mode changed
   if (k8s && (input.deployment_id !== undefined || input.dns_mode !== undefined)) {
-    const client = await getClientById(db, clientId);
-    if (client.kubernetesNamespace) {
+    const tenant = await getTenantById(db, tenantId);
+    if (tenant.kubernetesNamespace) {
       try {
-        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+        await reconcileIngress(db, k8s, tenantId, tenant.kubernetesNamespace);
       } catch (err) {
-        console.warn(`[domains.updateDomain] reconcileIngress failed for ${client.kubernetesNamespace}: ${(err as Error).message}`);
+        console.warn(`[domains.updateDomain] reconcileIngress failed for ${tenant.kubernetesNamespace}: ${(err as Error).message}`);
       }
     }
   }
@@ -453,7 +453,7 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
     }
   }
 
-  return getDomainById(db, clientId, domainId);
+  return getDomainById(db, tenantId, domainId);
 }
 
 export interface DeleteDomainResult {
@@ -468,11 +468,11 @@ export interface DeleteDomainResult {
 
 export async function deleteDomain(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   k8s?: K8sClients,
 ): Promise<DeleteDomainResult> {
-  const domainRow = await getDomainById(db, clientId, domainId);
+  const domainRow = await getDomainById(db, tenantId, domainId);
 
   // Resolve DNS servers BEFORE deleting the domain (need dnsGroupId which is on the domain row)
   const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
@@ -538,7 +538,7 @@ export async function deleteDomain(
   }
 
   // Phase 2c: delete TLS cert before the domain row — deleteDomainCertificate
-  // reads the domain to resolve the client namespace and cert name.
+  // reads the domain to resolve the tenant namespace and cert name.
   if (k8s) {
     try {
       await deleteDomainCertificate(db, k8s, domainId);
@@ -565,10 +565,10 @@ export async function deleteDomain(
 
   // Reconcile Ingress after domain removal
   if (k8s) {
-    const client = await getClientById(db, clientId);
-    if (client.kubernetesNamespace) {
+    const tenant = await getTenantById(db, tenantId);
+    if (tenant.kubernetesNamespace) {
       try {
-        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+        await reconcileIngress(db, k8s, tenantId, tenant.kubernetesNamespace);
       } catch {
         // Non-blocking
       }
@@ -593,10 +593,10 @@ export async function deleteDomain(
 // truth in @k8s-hosting/api-contracts; see packages/api-contracts/src/domains.ts.
 export async function getDomainDeletePreview(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ): Promise<DomainDeletePreview> {
-  const domainRow = await getDomainById(db, clientId, domainId);
+  const domainRow = await getDomainById(db, tenantId, domainId);
 
   // DNS records for this domain
   const dnsRecordRows = await db
@@ -666,11 +666,11 @@ export async function getDomainDeletePreview(
  */
 export async function migrateDomainDns(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   targetGroupId: string,
 ) {
-  const domainRow = await getDomainById(db, clientId, domainId);
+  const domainRow = await getDomainById(db, tenantId, domainId);
   const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
   // Validate target group exists
@@ -679,7 +679,7 @@ export async function migrateDomainDns(
   // Sync records from old provider into local DB first (captures NS, SOA, etc.)
   try {
     const { syncRecordsFromProvider } = await import('../dns-records/service.js');
-    await syncRecordsFromProvider(db, clientId, domainId);
+    await syncRecordsFromProvider(db, tenantId, domainId);
     const synced = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
     console.log(`[dns-migrate] Synced ${synced.length} records from source provider for ${domainRow.domainName}`);
   } catch (err) {
@@ -768,5 +768,5 @@ export async function migrateDomainDns(
     }
   }
 
-  return getDomainById(db, clientId, domainId);
+  return getDomainById(db, tenantId, domainId);
 }

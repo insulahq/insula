@@ -7,7 +7,7 @@
  * Why this exists:
  *   When mailPortExposureMode flips to 'allServerNodes', haproxy pods on
  *   each server node accept mail connections, write a PROXY-v2 header
- *   carrying the real client IP, and forward to stalwart-mail.mail.svc.
+ *   carrying the real tenant IP, and forward to stalwart-mail.mail.svc.
  *   Stalwart must trust those source addresses to honor the PROXY-v2
  *   header — that trust list is `proxyTrustedNetworks` on the singleton
  *   SystemSettings record (applied to every mail listener uniformly;
@@ -297,7 +297,7 @@ export async function listServerNodeIps(
   // Push-down: ask the API server for server-role nodes only. This avoids
   // pulling worker nodes (and any future role labels) into the response,
   // which would over-fetch on larger clusters. We still re-check the label
-  // client-side below as a defense in depth.
+  // tenant-side below as a defense in depth.
   const list = (await core.listNode({
     labelSelector: `${SERVER_ROLE_LABEL_KEY}=${SERVER_ROLE_LABEL_VALUE}`,
   })) as { items?: NodeShape[] };

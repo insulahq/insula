@@ -25,7 +25,7 @@ function createMockDb(selectResult: unknown[] = []) {
   } as unknown as Parameters<typeof listDnsRecords>[0];
 }
 
-const DOMAIN = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+const DOMAIN = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 const RECORD = { id: 'r1', domainId: 'd1', recordType: 'A', recordName: '@', recordValue: '1.2.3.4', ttl: 3600, priority: null, weight: null, port: null, updatedAt: new Date() };
 
 describe('listDnsRecords', () => {

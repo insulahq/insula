@@ -5,7 +5,7 @@ import { useBulkOpProgress, type LifecycleTransitionRow, type LifecycleHookRunRo
 interface Props {
   readonly bulkOpId: string;
   readonly action: 'suspend' | 'reactivate' | 'delete';
-  readonly clientCount: number;
+  readonly tenantCount: number;
   readonly onClose: () => void;
 }
 
@@ -39,7 +39,7 @@ function summarise(transitions: LifecycleTransitionRow[], hookRuns: Record<strin
   return counts;
 }
 
-export default function BulkProgressModal({ bulkOpId, action, clientCount, onClose }: Props) {
+export default function BulkProgressModal({ bulkOpId, action, tenantCount, onClose }: Props) {
   const [paused, setPaused] = useState(false);
   const data = useBulkOpProgress(bulkOpId, 2000, paused);
   // Memoise the derived arrays so summarise's deps don't churn on
@@ -50,8 +50,8 @@ export default function BulkProgressModal({ bulkOpId, action, clientCount, onClo
 
   useEffect(() => {
     const stillActive = stats.running > 0 || stats.pendingHooks > 0 || stats.failedHooks > 0;
-    if (!stillActive && stats.total >= clientCount) setPaused(true);
-  }, [stats, clientCount]);
+    if (!stillActive && stats.total >= tenantCount) setPaused(true);
+  }, [stats, tenantCount]);
 
   return (
     <div
@@ -68,7 +68,7 @@ export default function BulkProgressModal({ bulkOpId, action, clientCount, onClo
         <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3 dark:border-gray-700">
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-              Bulk {action} — {clientCount} client{clientCount === 1 ? '' : 's'}
+              Bulk {action} — {tenantCount} tenant{tenantCount === 1 ? '' : 's'}
             </h2>
             <span className="font-mono text-[10px] text-gray-500 dark:text-gray-400">{bulkOpId.slice(0, 8)}…</span>
             {paused && (
@@ -99,7 +99,7 @@ export default function BulkProgressModal({ bulkOpId, action, clientCount, onClo
 
         {/* Aggregate stats strip */}
         <div className="flex flex-wrap items-center gap-3 border-b border-gray-200 px-5 py-2 text-xs dark:border-gray-700">
-          <span className="text-gray-500 dark:text-gray-400">{stats.total}/{clientCount} dispatched</span>
+          <span className="text-gray-500 dark:text-gray-400">{stats.total}/{tenantCount} dispatched</span>
           <span className="text-green-700 dark:text-green-300">{stats.completed} ok</span>
           {stats.partial > 0 && <span className="text-amber-700 dark:text-amber-300">{stats.partial} partial</span>}
           {stats.failed > 0 && <span className="text-red-700 dark:text-red-300">{stats.failed} failed</span>}
@@ -107,7 +107,7 @@ export default function BulkProgressModal({ bulkOpId, action, clientCount, onClo
           {stats.failedHooks > 0 && <span className="inline-flex items-center gap-1 text-red-700 dark:text-red-300"><AlertTriangle size={10} /> {stats.failedHooks} hook failure(s)</span>}
         </div>
 
-        {/* Per-client rows */}
+        {/* Per-tenant rows */}
         <div className="divide-y divide-gray-200 dark:divide-gray-700">
           {transitions.length === 0 && (
             <div className="px-5 py-6 text-sm text-gray-500 dark:text-gray-400">
@@ -129,7 +129,7 @@ export default function BulkProgressModal({ bulkOpId, action, clientCount, onClo
                 <summary className="flex cursor-pointer items-center gap-3">
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>{badge.label}</span>
                   <span className="font-mono text-gray-700 dark:text-gray-200">{t.transitionKind}</span>
-                  <span className="text-gray-500 dark:text-gray-400">client {t.clientId.slice(0, 8)}…</span>
+                  <span className="text-gray-500 dark:text-gray-400">tenant {t.tenantId.slice(0, 8)}…</span>
                   {t.namespace && <span className="text-gray-400 dark:text-gray-500">ns {t.namespace}</span>}
                   <span className="ml-auto text-gray-500 dark:text-gray-400">
                     {ok} ok{failed > 0 && <>, <span className="text-red-700 dark:text-red-300">{failed} failed</span></>}{pending > 0 && <>, <span className="text-blue-700 dark:text-blue-300">{pending} pending</span></>}

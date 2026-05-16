@@ -12,7 +12,7 @@ import {
 } from './service.js';
 
 interface ConsoleParams {
-  clientId: string;
+  tenantId: string;
   deploymentId: string;
 }
 
@@ -55,32 +55,32 @@ function authenticateWs(app: FastifyInstance, request: FastifyRequest): JwtPaylo
   }
 }
 
-function enforceTenantAccess(user: JwtPayload, clientId: string): void {
-  if (user.panel === 'client' && user.clientId && user.clientId !== clientId) {
-    throw new ApiError('FORBIDDEN', 'Access denied to this client', 403);
+function enforceTenantAccess(user: JwtPayload, tenantId: string): void {
+  if (user.panel === 'tenant' && user.tenantId && user.tenantId !== tenantId) {
+    throw new ApiError('FORBIDDEN', 'Access denied to this tenant', 403);
   }
 }
 
 export async function containerConsoleRoutes(app: FastifyInstance): Promise<void> {
 
-  // GET /api/v1/clients/:clientId/deployments/:deploymentId/components
-  app.get('/clients/:clientId/deployments/:deploymentId/components', {
+  // GET /api/v1/tenants/:tenantId/deployments/:deploymentId/components
+  app.get('/tenants/:tenantId/deployments/:deploymentId/components', {
     onRequest: [authenticate],
   }, async (request) => {
-    const { clientId, deploymentId } = request.params as ConsoleParams;
-    const deployment = await deploymentService.getDeploymentById(app.db, clientId, deploymentId);
-    const namespace = await deploymentService.getClientNamespace(app.db, clientId);
-    const k8sClients = getK8s(app);
-    if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    const { tenantId, deploymentId } = request.params as ConsoleParams;
+    const deployment = await deploymentService.getDeploymentById(app.db, tenantId, deploymentId);
+    const namespace = await deploymentService.getTenantNamespace(app.db, tenantId);
+    const k8sTenants = getK8s(app);
+    if (!k8sTenants) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
-    const pods = await fetchPods(k8sClients, namespace, deployment.name);
+    const pods = await fetchPods(k8sTenants, namespace, deployment.name);
     const components = listDeploymentComponents(pods);
 
     return { data: components };
   });
 
-  // WebSocket: /api/v1/clients/:clientId/deployments/:deploymentId/logs/stream
-  app.get('/clients/:clientId/deployments/:deploymentId/logs/stream', {
+  // WebSocket: /api/v1/tenants/:tenantId/deployments/:deploymentId/logs/stream
+  app.get('/tenants/:tenantId/deployments/:deploymentId/logs/stream', {
     websocket: true,
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
   }, (socket, request) => {
@@ -93,10 +93,10 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
       return;
     }
 
-    const { clientId, deploymentId } = request.params as ConsoleParams;
+    const { tenantId, deploymentId } = request.params as ConsoleParams;
 
     try {
-      enforceTenantAccess(user, clientId);
+      enforceTenantAccess(user, tenantId);
     } catch {
       socket.send(JSON.stringify({ type: 'error', message: 'Access denied' }));
       socket.close(4403, 'Forbidden');
@@ -120,10 +120,10 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
 
     (async () => {
       try {
-        const deployment = await deploymentService.getDeploymentById(app.db, clientId, deploymentId);
-        const namespace = await deploymentService.getClientNamespace(app.db, clientId);
-        const k8sClients = getK8s(app);
-        if (!k8sClients) {
+        const deployment = await deploymentService.getDeploymentById(app.db, tenantId, deploymentId);
+        const namespace = await deploymentService.getTenantNamespace(app.db, tenantId);
+        const k8sTenants = getK8s(app);
+        if (!k8sTenants) {
           socket.send(JSON.stringify({ type: 'error', message: 'K8s unavailable' }));
           socket.close(4503, 'K8s unavailable');
           return;
@@ -178,7 +178,7 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
         }
 
         // Initial pod discovery + attach
-        const initialPods = await fetchPods(k8sClients, namespace, deployment.name);
+        const initialPods = await fetchPods(k8sTenants, namespace, deployment.name);
         const initialComponents = listDeploymentComponents(initialPods);
 
         if (initialComponents.length === 0) {
@@ -208,11 +208,11 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
         }
 
         // Pod watcher: every 5s, check if pods changed (restart/scale).
-        // If new pods appear, attach log streams. If all pods gone, notify client.
+        // If new pods appear, attach log streams. If all pods gone, notify tenant.
         const podWatcher = setInterval(async () => {
           if (closed) { clearInterval(podWatcher); return; }
           try {
-            const currentPods = await fetchPods(k8sClients, namespace, deployment.name);
+            const currentPods = await fetchPods(k8sTenants, namespace, deployment.name);
             const currentComponents = listDeploymentComponents(currentPods);
 
             const applicableComponents = componentFilter && componentFilter !== '*'
@@ -267,8 +267,8 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
     })();
   });
 
-  // WebSocket: /api/v1/clients/:clientId/deployments/:deploymentId/terminal
-  app.get('/clients/:clientId/deployments/:deploymentId/terminal', {
+  // WebSocket: /api/v1/tenants/:tenantId/deployments/:deploymentId/terminal
+  app.get('/tenants/:tenantId/deployments/:deploymentId/terminal', {
     websocket: true,
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, (socket, request) => {
@@ -281,18 +281,18 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
       return;
     }
 
-    // Terminal access: platform staff + client admins (for their own deployments)
-    const terminalRoles = ['super_admin', 'admin', 'client_admin'];
+    // Terminal access: platform staff + tenant admins (for their own deployments)
+    const terminalRoles = ['super_admin', 'admin', 'tenant_admin'];
     if (!terminalRoles.includes(user.role)) {
       socket.send(JSON.stringify({ type: 'error', message: 'Terminal access denied' }));
       socket.close(4403, 'Forbidden');
       return;
     }
 
-    const { clientId, deploymentId } = request.params as ConsoleParams;
+    const { tenantId, deploymentId } = request.params as ConsoleParams;
 
     try {
-      enforceTenantAccess(user, clientId);
+      enforceTenantAccess(user, tenantId);
     } catch {
       socket.send(JSON.stringify({ type: 'error', message: 'Access denied' }));
       socket.close(4403, 'Forbidden');
@@ -311,16 +311,16 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
 
     (async () => {
       try {
-        const deployment = await deploymentService.getDeploymentById(app.db, clientId, deploymentId);
-        const namespace = await deploymentService.getClientNamespace(app.db, clientId);
-        const k8sClients = getK8s(app);
-        if (!k8sClients) {
+        const deployment = await deploymentService.getDeploymentById(app.db, tenantId, deploymentId);
+        const namespace = await deploymentService.getTenantNamespace(app.db, tenantId);
+        const k8sTenants = getK8s(app);
+        if (!k8sTenants) {
           socket.send(JSON.stringify({ type: 'error', message: 'K8s unavailable' }));
           socket.close(4503, 'K8s unavailable');
           return;
         }
 
-        const pods = await fetchPods(k8sClients, namespace, deployment.name);
+        const pods = await fetchPods(k8sTenants, namespace, deployment.name);
         const components = listDeploymentComponents(pods);
 
         const target = componentName

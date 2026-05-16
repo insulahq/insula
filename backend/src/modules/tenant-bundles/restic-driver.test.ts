@@ -4,7 +4,7 @@
  * Locked invariants from Phase 0 spike:
  *   - HKDF-SHA256 derivation is deterministic and matches the byte-level
  *     test vector recorded in docs/02-operations/TENANT_BACKUP_V2_ROADMAP.md.
- *   - The repo URI builder produces the canonical `restic-{component}/<clientId>/`
+ *   - The repo URI builder produces the canonical `restic-{component}/<tenantId>/`
  *     prefix for each backend (s3 / sftp / hostpath).
  *   - The semaphore caps concurrency at the configured limit.
  *
@@ -34,7 +34,7 @@ import {
 
 // Phase 0 spike fixture — production driver MUST produce this exactly.
 const FIXTURE_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-const FIXTURE_CLIENT = 'fixture-client-001';
+const FIXTURE_CLIENT = 'fixture-tenant-001';
 const FIXTURE_PASSWORD = '9cc1efeff2216dd12759fb93b3b3948f830036b87f5d6a29f8470108dc4d39a8';
 
 describe('deriveResticPassword', () => {
@@ -49,7 +49,7 @@ describe('deriveResticPassword', () => {
     expect(a).toBe(b);
   });
 
-  it('differs across clients with the same key', () => {
+  it('differs across tenants with the same key', () => {
     const a = deriveResticPassword(FIXTURE_KEY, 'tenant-a');
     const b = deriveResticPassword(FIXTURE_KEY, 'tenant-b');
     expect(a).not.toBe(b);
@@ -60,8 +60,8 @@ describe('deriveResticPassword', () => {
     expect(() => deriveResticPassword('zz'.repeat(32), 'x')).toThrow(/hex/i);
   });
 
-  it('rejects empty client ids', () => {
-    expect(() => deriveResticPassword(FIXTURE_KEY, '')).toThrow(/client/i);
+  it('rejects empty tenant ids', () => {
+    expect(() => deriveResticPassword(FIXTURE_KEY, '')).toThrow(/tenant/i);
   });
 });
 
@@ -91,34 +91,34 @@ describe('buildResticRepoUri', () => {
   };
 
   it('builds the s3 URI with the per-tenant component prefix', () => {
-    const uri = buildResticRepoUri(s3Target, 'client-abc', 'files');
-    expect(uri).toBe('s3:https://fsn1.your-objectstorage.com/k8s-staging/tenant-bundles/restic-files/client-abc');
+    const uri = buildResticRepoUri(s3Target, 'tenant-abc', 'files');
+    expect(uri).toBe('s3:https://fsn1.your-objectstorage.com/k8s-staging/tenant-bundles/restic-files/tenant-abc');
   });
 
   it('omits the optional prefix segment when not configured', () => {
     const stripped = { ...s3Target, s3Prefix: '' } satisfies BackupTarget;
-    const uri = buildResticRepoUri(stripped, 'client-abc', 'mailboxes');
-    expect(uri).toBe('s3:https://fsn1.your-objectstorage.com/k8s-staging/restic-mailboxes/client-abc');
+    const uri = buildResticRepoUri(stripped, 'tenant-abc', 'mailboxes');
+    expect(uri).toBe('s3:https://fsn1.your-objectstorage.com/k8s-staging/restic-mailboxes/tenant-abc');
   });
 
   it('builds the sftp URI with the user@host:path layout restic expects', () => {
-    const uri = buildResticRepoUri(sftpTarget, 'client-abc', 'files');
-    expect(uri).toBe('sftp:u335448-sub10@u335448-sub10.your-storagebox.de:platform-backups/restic-files/client-abc');
+    const uri = buildResticRepoUri(sftpTarget, 'tenant-abc', 'files');
+    expect(uri).toBe('sftp:u335448-sub10@u335448-sub10.your-storagebox.de:platform-backups/restic-files/tenant-abc');
   });
 
   it('builds an absolute hostpath repo URI', () => {
-    const uri = buildResticRepoUri(hostpathTarget, 'client-abc', 'files');
-    expect(uri).toBe('/var/lib/platform/backups/restic-files/client-abc');
+    const uri = buildResticRepoUri(hostpathTarget, 'tenant-abc', 'files');
+    expect(uri).toBe('/var/lib/platform/backups/restic-files/tenant-abc');
   });
 
   it('rejects component names that are not whitelisted (defence-in-depth)', () => {
-    expect(() => buildResticRepoUri(s3Target, 'client-abc', 'config' as never)).toThrow(/component/i);
-    expect(() => buildResticRepoUri(s3Target, 'client-abc', '../etc/passwd' as never)).toThrow(/component/i);
+    expect(() => buildResticRepoUri(s3Target, 'tenant-abc', 'config' as never)).toThrow(/component/i);
+    expect(() => buildResticRepoUri(s3Target, 'tenant-abc', '../etc/passwd' as never)).toThrow(/component/i);
   });
 
-  it('rejects clientIds with path-traversal-style characters', () => {
-    expect(() => buildResticRepoUri(s3Target, '../etc/passwd', 'files')).toThrow(/clientId/i);
-    expect(() => buildResticRepoUri(s3Target, 'a/b', 'files')).toThrow(/clientId/i);
+  it('rejects tenantIds with path-traversal-style characters', () => {
+    expect(() => buildResticRepoUri(s3Target, '../etc/passwd', 'files')).toThrow(/tenantId/i);
+    expect(() => buildResticRepoUri(s3Target, 'a/b', 'files')).toThrow(/tenantId/i);
   });
 });
 
@@ -238,7 +238,7 @@ describe('runResticBackup', () => {
 
     const result = await runResticBackup({
       target,
-      clientId: 'client-abc',
+      tenantId: 'tenant-abc',
       component: 'files',
       passwordHex: FIXTURE_PASSWORD,
       stdinFilename: 'archive.tar',
@@ -263,7 +263,7 @@ describe('runResticBackup', () => {
     expect(c.args).toContain('--json');
     expect(c.args).toContain('--repo');
     expect(c.args.find((a, i) => c.args[i - 1] === '--repo')).toBe(
-      's3:https://fsn1.your-objectstorage.com/k8s-staging/restic-files/client-abc',
+      's3:https://fsn1.your-objectstorage.com/k8s-staging/restic-files/tenant-abc',
     );
     // tags are passed via --tag (one per occurrence).
     expect(c.args.filter((a) => a === '--tag')).toHaveLength(2);
@@ -312,7 +312,7 @@ describe('runResticBackup', () => {
 
     await runResticBackup({
       target,
-      clientId: 'client-abc',
+      tenantId: 'tenant-abc',
       component: 'mailboxes',
       passwordHex: FIXTURE_PASSWORD,
       stdinFilename: 'maildir.tar',
@@ -355,7 +355,7 @@ describe('runResticBackup', () => {
     await expect(
       runResticBackup({
         target: { kind: 'hostpath', hostPath: '/tmp/r' },
-        clientId: 'c',
+        tenantId: 'c',
         component: 'files',
         passwordHex: FIXTURE_PASSWORD,
         stdinFilename: 'a.tar',
@@ -403,7 +403,7 @@ describe('runResticBackup', () => {
     const abortController = new AbortController();
     const target: BackupTarget = { kind: 'hostpath', hostPath: '/tmp/r' };
     // Source stream that never ends — simulates the tenant Job streaming
-    // a large tar that never completes because the client disconnected.
+    // a large tar that never completes because the tenant disconnected.
     let pushChunk: ((chunk: Buffer | null) => boolean) | undefined;
     const stdin = new Readable({
       read() { pushChunk = (c) => this.push(c); },
@@ -414,7 +414,7 @@ describe('runResticBackup', () => {
 
     const promise = runResticBackup({
       target,
-      clientId: 'client-abc',
+      tenantId: 'tenant-abc',
       component: 'files',
       passwordHex: FIXTURE_PASSWORD,
       stdinFilename: 'archive.tar',
@@ -461,7 +461,7 @@ describe('runResticBackup', () => {
         s3AccessKey: 'AK',
         s3SecretKey: 'SK',
       },
-      clientId: 'client-abc',
+      tenantId: 'tenant-abc',
       component: 'files',
       passwordHex: FIXTURE_PASSWORD,
       stdinFilename: 'archive.tar',
@@ -479,18 +479,18 @@ describe('runResticBackup', () => {
     expect(c.args).not.toContain('s3.connections=10');
   });
 
-  it('rejects an oversized clientId (defence against header-injection-style abuse)', async () => {
+  it('rejects an oversized tenantId (defence against header-injection-style abuse)', async () => {
     await expect(
       runResticBackup({
         target: { kind: 'hostpath', hostPath: '/tmp/r' },
-        clientId: 'a'.repeat(200),
+        tenantId: 'a'.repeat(200),
         component: 'files',
         passwordHex: FIXTURE_PASSWORD,
         stdinFilename: 'a.tar',
         tags: [],
         stdin: Readable.from([]),
       }),
-    ).rejects.toThrow(/clientId/i);
+    ).rejects.toThrow(/tenantId/i);
   });
 });
 
@@ -532,7 +532,7 @@ describe('deriveDrRecoveryPassword', () => {
     expect(a).not.toBe(b);
   });
 
-  it('rejects clientIds that fail CLIENT_ID_RE (reviewer #1)', () => {
+  it('rejects tenantIds that fail CLIENT_ID_RE (reviewer #1)', () => {
     expect(() => deriveDrRecoveryPassword(FIXTURE_KEY, '../escape')).toThrow(/CLIENT_ID_RE/);
     expect(() => deriveDrRecoveryPassword(FIXTURE_KEY, 'a/b')).toThrow(/CLIENT_ID_RE/);
     expect(() => deriveResticPassword(FIXTURE_KEY, '../escape')).toThrow(/CLIENT_ID_RE/);
@@ -562,7 +562,7 @@ describe('buildSnapshotTags', () => {
   it('encodes the full multi-region tag set per ADR-036', () => {
     const tags = buildSnapshotTags({
       bundleId: 'bk-123',
-      clientId: 'client-abc',
+      tenantId: 'tenant-abc',
       tenantSlug: 'acme-corp',
       component: 'files',
       regionId: 'eu-fsn1',
@@ -572,7 +572,7 @@ describe('buildSnapshotTags', () => {
       `bundle-version=${BUNDLE_SCHEMA_VERSION}`,
       'platform-version=0.0.0-deadbeef',
       'region=eu-fsn1',
-      'tenant-id=client-abc',
+      'tenant-id=tenant-abc',
       'tenant-slug=acme-corp',
       'bundle-id=bk-123',
       'component=files',
@@ -582,7 +582,7 @@ describe('buildSnapshotTags', () => {
   it('rejects values containing whitespace or shell metacharacters', () => {
     const base = {
       bundleId: 'bk',
-      clientId: 'c',
+      tenantId: 'c',
       tenantSlug: 's',
       component: 'files' as const,
       regionId: 'r',

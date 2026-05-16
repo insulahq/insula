@@ -53,16 +53,16 @@ describe('response helpers', () => {
         "Client 'abc' not found",
         404,
         'req-123',
-        { client_id: 'abc' },
-        'Verify client_id',
+        { tenant_id: 'abc' },
+        'Verify tenant_id',
       );
 
       expect(result.error.code).toBe('CLIENT_NOT_FOUND');
       expect(result.error.message).toBe("Client 'abc' not found");
       expect(result.error.status).toBe(404);
       expect(result.error.request_id).toBe('req-123');
-      expect(result.error.details).toEqual({ client_id: 'abc' });
-      expect(result.error.remediation).toBe('Verify client_id');
+      expect(result.error.details).toEqual({ tenant_id: 'abc' });
+      expect(result.error.remediation).toBe('Verify tenant_id');
       expect(result.error.timestamp).toBeDefined();
     });
 

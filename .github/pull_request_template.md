@@ -14,7 +14,7 @@ deleting them.
 ## Test plan
 
 - [ ] Unit tests cover the new behaviour
-- [ ] `npm run typecheck` clean (backend + admin-panel + client-panel)
+- [ ] `npm run typecheck` clean (backend + admin-panel + tenant-panel)
 - [ ] `npm run lint` clean
 - [ ] If user-facing UI changed: exercised in a browser (not just the harness)
 - [ ] If cluster-side: integration scenario added or extended in `scripts/integration-*.sh`

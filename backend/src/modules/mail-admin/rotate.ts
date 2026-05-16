@@ -225,7 +225,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateDeps {
             'Content-Type': 'application/json',
             Authorization: `Basic ${auth}`,
           },
-          body: JSON.stringify({ type: 'code', client_id: 'webadmin', redirect_uri: null }),
+          body: JSON.stringify({ type: 'code', tenant_id: 'webadmin', redirect_uri: null }),
           signal: controller.signal,
         });
         clearTimeout(timer);

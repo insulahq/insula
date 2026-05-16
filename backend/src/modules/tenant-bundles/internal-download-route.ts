@@ -75,7 +75,7 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
     );
     if (verifyErr) {
       // Server-side log carries the precise reason (MALFORMED /
-      // EXPIRED / BAD_MAC); the client-facing 401 body is intentionally
+      // EXPIRED / BAD_MAC); the tenant-facing 401 body is intentionally
       // indistinguishable so a probing attacker can't differentiate
       // failure modes — mirrors the upload-route policy.
       app.log.warn({ verifyErr, bundleId, component, artifactName }, 'tenant-bundles internal download: token rejected');

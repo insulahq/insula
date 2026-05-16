@@ -5,7 +5,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { runAllChecks } from './service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { clients } from '../../db/schema.js';
+import { tenants } from '../../db/schema.js';
 
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -40,8 +40,8 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
    *   pending    — pod is Pending (scheduling, image pull, etc.)
    *   failed     — pod has terminated with an error
    *   completed  — pod finished successfully (e.g. Job pods)
-   *   orphaned   — pod is in a client-* namespace with no matching
-   *                client row in the DB (the namespace leak scenario)
+   *   orphaned   — pod is in a tenant-* namespace with no matching
+   *                tenant row in the DB (the namespace leak scenario)
    *   unknown    — any other phase
    *
    * Also returns node capacity (pod allocatable vs pod count).
@@ -87,13 +87,13 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       }).listNode({}),
     ]);
 
-    // Build a set of known client namespaces from the DB for orphan
+    // Build a set of known tenant namespaces from the DB for orphan
     // detection.
-    const clientRows = await app.db
-      .select({ ns: clients.kubernetesNamespace })
-      .from(clients);
+    const tenantRows = await app.db
+      .select({ ns: tenants.kubernetesNamespace })
+      .from(tenants);
     const knownNamespaces = new Set(
-      clientRows.map((r) => r.ns).filter(Boolean),
+      tenantRows.map((r) => r.ns).filter(Boolean),
     );
 
     // Derive capacity from nodes
@@ -108,8 +108,8 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     const podList = podsResult.items.map((pod) => {
       const ns = pod.metadata?.namespace ?? '';
       const phase = pod.status?.phase ?? 'Unknown';
-      const isClientNs = ns.startsWith('client-');
-      const isOrphaned = isClientNs && !knownNamespaces.has(ns);
+      const isTenantNs = ns.startsWith('tenant-');
+      const isOrphaned = isTenantNs && !knownNamespaces.has(ns);
 
       // Ready check
       const readyCondition = pod.status?.conditions?.find(

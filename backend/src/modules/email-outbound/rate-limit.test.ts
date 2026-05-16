@@ -35,7 +35,7 @@ describe('getEffectiveRateLimit', () => {
     const result = await rl.getEffectiveRateLimit(db as never, 'c1');
 
     expect(result.limitPerHour).toBe(200);
-    expect(result.source).toBe('client_override');
+    expect(result.source).toBe('tenant_override');
     expect(result.suspended).toBe(false);
   });
 
@@ -65,7 +65,7 @@ describe('getEffectiveRateLimit', () => {
     expect(result.source).toBe('hardcoded_default');
   });
 
-  it('forces limit=0 and suspended=true for a suspended client', async () => {
+  it('forces limit=0 and suspended=true for a suspended tenant', async () => {
     selectResults = [
       [{ status: 'suspended', emailSendRateLimit: 200 }],
       [{ value: '500' }],
@@ -79,7 +79,7 @@ describe('getEffectiveRateLimit', () => {
     expect(result.source).toBe('suspended');
   });
 
-  it('throws CLIENT_NOT_FOUND when the client does not exist', async () => {
+  it('throws CLIENT_NOT_FOUND when the tenant does not exist', async () => {
     selectResults = [[]];
     const db = createMockDb();
 

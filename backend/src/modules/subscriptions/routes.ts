@@ -1,32 +1,32 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { updateSubscriptionSchema } from './schema.js';
 import * as service from './service.js';
-import { suspendExpiredClients } from './expiry-checker.js';
+import { suspendExpiredTenants } from './expiry-checker.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
 export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
   // Round-4 Phase C: the previous incarnation applied
   // `requireRole('super_admin','admin','billing')` as a hook to
-  // the whole plugin, which locked client_admin / client_user
+  // the whole plugin, which locked tenant_admin / tenant_user
   // out of viewing their own subscription info. The Settings page
-  // in the client panel therefore showed an empty "—" placeholder.
+  // in the tenant panel therefore showed an empty "—" placeholder.
   //
   // We now split the hooks per-route:
-  //   GET .../subscription  → readable by client_admin + client_user
-  //                           scoped to the authenticated client's id
-  //                           via requireClientAccess()
+  //   GET .../subscription  → readable by tenant_admin + tenant_user
+  //                           scoped to the authenticated tenant's id
+  //                           via requireTenantAccess()
   //   PATCH .../subscription → admin-only (billing role + above)
   //   POST /admin/check-expiry → admin-only
   app.addHook('onRequest', authenticate);
 
-  // GET /api/v1/clients/:id/subscription — readable by the client
-  // themselves (via requireClientAccess) plus staff roles.
-  app.get('/clients/:id/subscription', {
+  // GET /api/v1/tenants/:id/subscription — readable by the tenant
+  // themselves (via requireTenantAccess) plus staff roles.
+  app.get('/tenants/:id/subscription', {
     onRequest: [
-      requireRole('super_admin', 'admin', 'billing', 'support', 'client_admin', 'client_user'),
-      requireClientAccess(),
+      requireRole('super_admin', 'admin', 'billing', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
     ],
   }, async (request) => {
     const { id } = request.params as { id: string };
@@ -34,8 +34,8 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     return success(subscription);
   });
 
-  // PATCH /api/v1/clients/:id/subscription — admin + billing only.
-  app.patch('/clients/:id/subscription', {
+  // PATCH /api/v1/tenants/:id/subscription — admin + billing only.
+  app.patch('/tenants/:id/subscription', {
     onRequest: [requireRole('super_admin', 'admin', 'billing')],
   }, async (request) => {
     const { id } = request.params as { id: string };
@@ -57,7 +57,7 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/check-expiry', {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async () => {
-    const suspendedCount = await suspendExpiredClients(app.db);
+    const suspendedCount = await suspendExpiredTenants(app.db);
     return success({ suspended_count: suspendedCount });
   });
 }

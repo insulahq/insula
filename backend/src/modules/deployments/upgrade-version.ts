@@ -16,12 +16,12 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { catalogEntries, catalogEntryVersions, clients, deployments } from '../../db/schema.js';
+import { catalogEntries, catalogEntryVersions, tenants, deployments } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { deployCatalogEntry } from './k8s-deployer.js';
 import {
-  getClientNamespace,
+  getTenantNamespace,
   parseJsonField,
   readEntryFirewall,
   readEntryHostPorts,
@@ -115,21 +115,21 @@ export interface AvailableUpgradesResponse {
 
 /**
  * Compute the upgrade options for a deployment. Used by:
- *   - GET /clients/:cid/deployments/:id/available-upgrades  (per-deployment)
+ *   - GET /tenants/:cid/deployments/:id/available-upgrades  (per-deployment)
  *   - Admin upgrades page  (admin enumerates across all deployments)
  *   - Auto-upgrade cron    (which target to pick)
  *
- * `clientId` is required for the customer-facing call to enforce tenant
+ * `tenantId` is required for the customer-facing call to enforce tenant
  * isolation — passing `null` is reserved for admin / cron call sites where
  * the deployment ID is already trusted (looked up by an admin query).
  */
 export async function getAvailableUpgrades(
   db: Database,
   deploymentId: string,
-  clientId: string | null,
+  tenantId: string | null,
 ): Promise<AvailableUpgradesResponse> {
-  const where = clientId
-    ? and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId))
+  const where = tenantId
+    ? and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId))
     : eq(deployments.id, deploymentId);
   const [deployment] = await db.select().from(deployments).where(where);
   if (!deployment) {
@@ -269,7 +269,7 @@ export interface UpgradeVersionInput {
  */
 export async function upgradeDeploymentVersion(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   input: UpgradeVersionInput,
   k8s: K8sClients,
@@ -277,7 +277,7 @@ export async function upgradeDeploymentVersion(
   const [deployment] = await db
     .select()
     .from(deployments)
-    .where(and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId)));
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
@@ -393,8 +393,8 @@ export async function upgradeDeploymentVersion(
   }
 
   // Push the new pod spec.
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  const namespace = client?.kubernetesNamespace;
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  const namespace = tenant?.kubernetesNamespace;
   if (!namespace) {
     throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client namespace is missing', 500);
   }
@@ -466,8 +466,8 @@ export interface AdminUpgradesGroup {
   readonly defaultVersion: string | null;
   readonly deployments: ReadonlyArray<{
     readonly id: string;
-    readonly clientId: string;
-    readonly clientCompanyName: string | null;
+    readonly tenantId: string;
+    readonly tenantCompanyName: string | null;
     readonly name: string;
     readonly status: string;
     readonly installedVersion: string | null;
@@ -492,17 +492,17 @@ export interface AdminUpgradesGroup {
  * O(M deployments) — fine up to thousands of deployments.
  */
 export async function getAdminUpgradesOverview(db: Database): Promise<readonly AdminUpgradesGroup[]> {
-  // Pull every non-deleted deployment with its client + entry. The platform
+  // Pull every non-deleted deployment with its tenant + entry. The platform
   // never shows deleted deployments in the upgrades page — soft-deleted rows
   // are tomb-stoned and not redeployable.
   const rows = await db
     .select({
       deployment: deployments,
-      client: clients,
+      tenant: tenants,
       entry: catalogEntries,
     })
     .from(deployments)
-    .innerJoin(clients, eq(clients.id, deployments.clientId))
+    .innerJoin(tenants, eq(tenants.id, deployments.tenantId))
     // ADR-036: the inner join on catalogEntries naturally excludes
     // `source='custom'` rows (their catalogEntryId is NULL). Custom
     // deployments have their own update model (/upgrade-tag) which
@@ -565,8 +565,8 @@ export async function getAdminUpgradesOverview(db: Database): Promise<readonly A
 
       return {
         id: r.deployment.id,
-        clientId: r.deployment.clientId,
-        clientCompanyName: r.client.companyName,
+        tenantId: r.deployment.tenantId,
+        tenantCompanyName: r.tenant.name,
         name: r.deployment.name,
         status: r.deployment.status,
         installedVersion: installed,
@@ -612,14 +612,14 @@ export async function getAdminUpgradesOverview(db: Database): Promise<readonly A
  */
 export async function setAutoUpgrade(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   enabled: boolean,
 ): Promise<typeof deployments.$inferSelect> {
   const [deployment] = await db
     .select()
     .from(deployments)
-    .where(and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId)));
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
@@ -654,14 +654,14 @@ export async function setAutoUpgrade(
  */
 export async function rollbackDeploymentVersion(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   k8s: K8sClients,
 ): Promise<typeof deployments.$inferSelect> {
   const [deployment] = await db
     .select()
     .from(deployments)
-    .where(and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId)));
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
   if (!deployment) {
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
@@ -738,8 +738,8 @@ export async function rollbackDeploymentVersion(
     );
   }
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  const namespace = client?.kubernetesNamespace;
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  const namespace = tenant?.kubernetesNamespace;
   if (!namespace) {
     throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client namespace is missing', 500);
   }

@@ -15,7 +15,7 @@ const configSchema = z.object({
   PLATFORM_INTERNAL_SECRET: z.string().optional(),
   DEFAULT_STORAGE_CLASS: z.string().default('local-path'),
   INGRESS_BASE_DOMAIN: z.string().optional(),
-  // Canonical apex domain. All service subdomains (admin, client, dex,
+  // Canonical apex domain. All service subdomains (admin, tenant, dex,
   // webmail, mail, stalwart) derive from this in
   // backend/src/config/domains.ts. INGRESS_BASE_DOMAIN above is kept as a
   // legacy fallback alias so existing ConfigMaps don't break; prefer
@@ -25,7 +25,7 @@ const configSchema = z.object({
   CLUSTER_ISSUER_NAME: z.string().optional(),
   // Secret that holds the TLS cert for the platform Ingress. The ingress
   // reconciler stamps this into spec.tls[0].secretName on every PATCH of
-  // admin/client panel URLs. Set via platform-config ConfigMap (dev:
+  // admin/tenant panel URLs. Set via platform-config ConfigMap (dev:
   // platform-dev-tls, prod: platform-tls).
   PLATFORM_TLS_SECRET_NAME: z.string().optional(),
   PLATFORM_NAMESPACE: z.string().default('platform'),
@@ -33,7 +33,7 @@ const configSchema = z.object({
   // Private Worker — overlay-supplied. TUNNEL_BASE_URL is the public WSS
   // dial-in (e.g. wss://tunnels.staging.example.test). The agent token
   // blob's server_url field is built from this. The frps image is the
-  // cluster-side tunnel server; the agent image is what the client runs at
+  // cluster-side tunnel server; the agent image is what the tenant runs at
   // home (only referenced from generated docker-compose snippets).
   TUNNEL_BASE_URL: z.string().default('wss://tunnels.example.com'),
   PRIVATE_WORKER_FRPS_IMAGE: z.string().default('fatedier/frps:v0.62.1'),
@@ -53,7 +53,7 @@ const configSchema = z.object({
   // (admin.<apex> only). Set to `.<apex>` to share the session across
   // subdomains (required for the Stalwart web-admin auth_request gate).
   SESSION_COOKIE_DOMAIN: z.string().optional(),
-  // Canonical public origin for URLs we emit back to clients (e.g. the
+  // Canonical public origin for URLs we emit back to tenants (e.g. the
   // CRL distribution point in mTLS provider metadata). Derived from
   // configuration — NOT request headers — to prevent X-Forwarded-Host
   // injection into stored/displayed URLs. Example:

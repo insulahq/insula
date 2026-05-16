@@ -64,7 +64,7 @@ describe('compose pipeline — multi-service stack', () => {
   it('validates with singleServiceOnly=false', () => {
     const r = parseCompose({ composeYaml: COMPOSE });
     const v = validateCustomSpec(r.spec!, {
-      callerRole: 'client_admin',
+      callerRole: 'tenant_admin',
       warnUnpinnedTags: true,
       singleServiceOnly: false,
       deploymentName: 'webapp',
@@ -97,7 +97,7 @@ services:
 `;
     const r = parseCompose({ composeYaml: cyclic });
     const v = validateCustomSpec(r.spec!, {
-      callerRole: 'client_admin',
+      callerRole: 'tenant_admin',
       warnUnpinnedTags: false,
       singleServiceOnly: false,
     });

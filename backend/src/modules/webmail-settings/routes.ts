@@ -22,14 +22,14 @@ import { auditLogs } from '../../db/schema.js';
 import crypto from 'node:crypto';
 
 export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void> {
-  // Phase 3.A.1: k8s client for cert provisioning. Created once at
+  // Phase 3.A.1: k8s tenant for cert provisioning. Created once at
   // plugin registration, not per-request.
   let k8s: K8sClients | undefined;
   try {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     k8s = createK8sClients(kubeconfigPath);
   } catch (err) {
-    app.log.warn({ err }, 'webmail-settings: k8s client unavailable — mail cert provisioning disabled');
+    app.log.warn({ err }, 'webmail-settings: k8s tenant unavailable — mail cert provisioning disabled');
     k8s = undefined;
   }
 
@@ -146,7 +146,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       // Persist a queryable audit record so a forensic review of "who
       // renamed the mail hostname and when" has a discoverable answer.
       // Mail-hostname changes affect SMTP banners, cert SAN
-      // requirements, and outbound deliverability for all clients —
+      // requirements, and outbound deliverability for all tenants —
       // structured logs alone (which rotate) aren't sufficient.
       try {
         await app.db.insert(auditLogs).values({

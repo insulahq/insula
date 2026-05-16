@@ -6,59 +6,59 @@ interface RouteListResponse {
   readonly data: readonly IngressRouteResponse[];
 }
 
-export function useIngressRoutes(clientId: string | undefined, domainId: string | undefined) {
+export function useIngressRoutes(tenantId: string | undefined, domainId: string | undefined) {
   return useQuery({
-    queryKey: ['ingress-routes', clientId, domainId],
+    queryKey: ['ingress-routes', tenantId, domainId],
     queryFn: () =>
       apiFetch<RouteListResponse>(
-        `/api/v1/clients/${clientId}/domains/${domainId}/routes`,
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/routes`,
       ),
-    enabled: !!clientId && !!domainId,
+    enabled: !!tenantId && !!domainId,
     staleTime: 30_000,
   });
 }
 
-export function useCreateIngressRoute(clientId: string | undefined, domainId: string | undefined) {
+export function useCreateIngressRoute(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input: { hostname: string; deployment_id?: string | null }) =>
       apiFetch<{ data: IngressRouteResponse }>(
-        `/api/v1/clients/${clientId}/domains/${domainId}/routes`,
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/routes`,
         { method: 'POST', body: JSON.stringify(input) },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ingress-routes', clientId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
     },
   });
 }
 
-export function useUpdateIngressRoute(clientId: string | undefined, domainId: string | undefined) {
+export function useUpdateIngressRoute(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: ({ routeId, ...input }: { routeId: string; deployment_id?: string | null; tls_mode?: string }) =>
       apiFetch<{ data: IngressRouteResponse }>(
-        `/api/v1/clients/${clientId}/domains/${domainId}/routes/${routeId}`,
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/routes/${routeId}`,
         { method: 'PATCH', body: JSON.stringify(input) },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ingress-routes', clientId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
     },
   });
 }
 
-export function useDeleteIngressRoute(clientId: string | undefined, domainId: string | undefined) {
+export function useDeleteIngressRoute(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (routeId: string) =>
       apiFetch<void>(
-        `/api/v1/clients/${clientId}/domains/${domainId}/routes/${routeId}`,
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/routes/${routeId}`,
         { method: 'DELETE' },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ingress-routes', clientId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
     },
   });
 }

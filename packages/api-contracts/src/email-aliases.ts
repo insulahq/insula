@@ -17,7 +17,7 @@ export type UpdateEmailAliasInput = z.infer<typeof updateEmailAliasSchema>;
 export const emailAliasResponseSchema = z.object({
   id: z.string(),
   emailDomainId: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   sourceAddress: z.string(),
   destinationAddresses: z.array(z.string()),
   enabled: z.number(),

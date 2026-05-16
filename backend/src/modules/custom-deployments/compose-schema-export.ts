@@ -1,6 +1,6 @@
 // JSON Schema (draft-07) describing the compose subset our parser
 // accepts. Served at GET /custom-deployments/compose-schema and
-// consumed by monaco-yaml in the client panel for inline schema-
+// consumed by monaco-yaml in the tenant panel for inline schema-
 // aware completion + red-squiggle on rejected fields.
 //
 // This file is the documentation surface: every change to the parser's
@@ -17,7 +17,7 @@
 //      semantics (we can't express "this key is forbidden" cleanly).
 //
 // Schema version: bump `version` when the parser's accept-set changes
-// so the client-panel cache busts.
+// so the tenant-panel cache busts.
 
 const SCHEMA_VERSION = '1.0.0';
 

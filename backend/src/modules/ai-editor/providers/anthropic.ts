@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { LlmProviderAdapter, LlmMessage, LlmResponse } from './types.js';
 
 export function createAnthropicAdapter(apiKey: string): LlmProviderAdapter {
-  const client = new Anthropic({ apiKey });
+  const tenant = new Anthropic({ apiKey });
 
   return {
     async call(modelName, messages, options = {}) {
@@ -11,7 +11,7 @@ export function createAnthropicAdapter(apiKey: string): LlmProviderAdapter {
         .filter((m) => m.role !== 'system')
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-      const response = await client.messages.create({
+      const response = await tenant.messages.create({
         model: modelName,
         max_tokens: options.maxTokens ?? 4096,
         ...(systemMessage ? { system: systemMessage.content } : {}),
@@ -34,7 +34,7 @@ export function createAnthropicAdapter(apiKey: string): LlmProviderAdapter {
     async testConnection(modelName) {
       const start = Date.now();
       try {
-        await client.messages.create({
+        await tenant.messages.create({
           model: modelName ?? 'claude-haiku-4-5-20251001',
           max_tokens: 10,
           messages: [{ role: 'user', content: 'Reply with "ok"' }],

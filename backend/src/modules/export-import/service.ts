@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm';
-import { clients, domains, hostingPlans, dnsServers } from '../../db/schema.js';
+import { tenants, domains, hostingPlans, dnsServers } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
 interface ExportData {
   readonly version: '1.0';
   readonly exportedAt: string;
-  readonly clients: readonly Record<string, unknown>[];
+  readonly tenants: readonly Record<string, unknown>[];
   readonly domains: readonly Record<string, unknown>[];
   readonly hostingPlans: readonly Record<string, unknown>[];
   readonly dnsServers: readonly Record<string, unknown>[];
@@ -20,8 +20,8 @@ interface ImportResult {
 }
 
 export async function exportAll(db: Database): Promise<ExportData> {
-  const [allClients, allDomains, allPlans, allDnsServers] = await Promise.all([
-    db.select().from(clients),
+  const [allTenants, allDomains, allPlans, allDnsServers] = await Promise.all([
+    db.select().from(tenants),
     db.select().from(domains),
     db.select().from(hostingPlans),
     db.select().from(dnsServers),
@@ -45,7 +45,7 @@ export async function exportAll(db: Database): Promise<ExportData> {
   return {
     version: '1.0',
     exportedAt: new Date().toISOString(),
-    clients: allClients,
+    tenants: allTenants,
     domains: allDomains,
     hostingPlans: allPlans,
     dnsServers: maskedDnsServers,
@@ -110,16 +110,16 @@ export async function importData(
     }
   }
 
-  // Import clients
-  const importClients = Array.isArray(data.clients) ? data.clients : [];
-  for (const client of importClients) {
+  // Import tenants
+  const importTenants = Array.isArray(data.tenants) ? data.tenants : [];
+  for (const tenant of importTenants) {
     try {
-      if (!client.id || !client.companyName || !client.companyEmail) {
-        errors.push(`Client missing required fields: ${JSON.stringify(client).slice(0, 100)}`);
+      if (!tenant.id || !tenant.name || !tenant.primaryEmail) {
+        errors.push(`Client missing required fields: ${JSON.stringify(tenant).slice(0, 100)}`);
         continue;
       }
 
-      const [existing] = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, client.id));
+      const [existing] = await db.select({ id: tenants.id }).from(tenants).where(eq(tenants.id, tenant.id));
 
       if (existing) {
         skipped++;
@@ -127,22 +127,22 @@ export async function importData(
       }
 
       if (!options.dryRun) {
-        await db.insert(clients).values({
-          id: client.id,
-          regionId: client.regionId,
-          companyName: client.companyName,
-          companyEmail: client.companyEmail,
-          contactEmail: client.contactEmail ?? null,
-          status: client.status ?? 'pending',
-          kubernetesNamespace: client.kubernetesNamespace,
-          planId: client.planId,
-          createdBy: client.createdBy ?? null,
+        await db.insert(tenants).values({
+          id: tenant.id,
+          regionId: tenant.regionId,
+          name: tenant.name,
+          primaryEmail: tenant.primaryEmail,
+          secondaryEmail: tenant.secondaryEmail ?? null,
+          status: tenant.status ?? 'pending',
+          kubernetesNamespace: tenant.kubernetesNamespace,
+          planId: tenant.planId,
+          createdBy: tenant.createdBy ?? null,
         });
       }
       created++;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
-      errors.push(`Failed to import client ${client.id}: ${message}`);
+      errors.push(`Failed to import tenant ${tenant.id}: ${message}`);
     }
   }
 
@@ -150,7 +150,7 @@ export async function importData(
   const importDomains = Array.isArray(data.domains) ? data.domains : [];
   for (const domain of importDomains) {
     try {
-      if (!domain.id || !domain.clientId || !domain.domainName) {
+      if (!domain.id || !domain.tenantId || !domain.domainName) {
         errors.push(`Domain missing required fields: ${JSON.stringify(domain).slice(0, 100)}`);
         continue;
       }
@@ -165,7 +165,7 @@ export async function importData(
       if (!options.dryRun) {
         await db.insert(domains).values({
           id: domain.id,
-          clientId: domain.clientId,
+          tenantId: domain.tenantId,
           domainName: domain.domainName,
           status: domain.status ?? 'pending',
           dnsMode: domain.dnsMode ?? 'cname',

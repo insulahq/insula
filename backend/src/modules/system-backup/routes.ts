@@ -41,7 +41,7 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin'));
 
-  // Build K8sClients once per request (cheap; clients are pooled
+  // Build K8sClients once per request (cheap; tenants are pooled
   // internally by @kubernetes/client-node).
   const k8sFactory = (): ReturnType<typeof createK8sClients> => createK8sClients();
 
@@ -67,8 +67,8 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
         db: app.db,
         jwtSecret: effectiveJwtSecret,
         operatorUserId: userId,
-        operatorIp: clientIp(request),
-        operatorUserAgent: clientUa(request),
+        operatorIp: tenantIp(request),
+        operatorUserAgent: tenantUa(request),
         reason: parsed.data.reason ?? null,
       },
       app.log as unknown as { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void; error: (...a: unknown[]) => void },
@@ -218,12 +218,12 @@ function toApiRun(row: SystemBackupRunRow, includeDownloadUrl: boolean): SystemB
   };
 }
 
-function clientIp(request: FastifyRequest): string | null {
+function tenantIp(request: FastifyRequest): string | null {
   const xff = (request.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
   return xff || request.ip || null;
 }
 
-function clientUa(request: FastifyRequest): string | null {
+function tenantUa(request: FastifyRequest): string | null {
   const ua = request.headers['user-agent'];
   if (typeof ua === 'string') return ua.slice(0, 500);
   return null;

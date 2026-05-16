@@ -6,15 +6,15 @@ import type { CreateEmailAliasInput, UpdateEmailAliasInput } from '@k8s-hosting/
 
 export async function createAlias(
   db: Database,
-  clientId: string,
+  tenantId: string,
   emailDomainId: string,
   input: CreateEmailAliasInput,
 ) {
-  // Verify emailDomain exists and belongs to client
+  // Verify emailDomain exists and belongs to tenant
   const [emailDomain] = await db
     .select()
     .from(emailDomains)
-    .where(and(eq(emailDomains.id, emailDomainId), eq(emailDomains.clientId, clientId)));
+    .where(and(eq(emailDomains.id, emailDomainId), eq(emailDomains.tenantId, tenantId)));
 
   if (!emailDomain) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email domain '${emailDomainId}' not found`, 404);
@@ -63,7 +63,7 @@ export async function createAlias(
   await db.insert(emailAliases).values({
     id,
     emailDomainId,
-    clientId,
+    tenantId,
     sourceAddress: input.source_address,
     destinationAddresses: input.destination_addresses,
     enabled: 1,
@@ -73,8 +73,8 @@ export async function createAlias(
   return created;
 }
 
-export async function listAliases(db: Database, clientId: string, emailDomainId?: string) {
-  const conditions = [eq(emailAliases.clientId, clientId)];
+export async function listAliases(db: Database, tenantId: string, emailDomainId?: string) {
+  const conditions = [eq(emailAliases.tenantId, tenantId)];
   if (emailDomainId) {
     conditions.push(eq(emailAliases.emailDomainId, emailDomainId));
   }
@@ -83,14 +83,14 @@ export async function listAliases(db: Database, clientId: string, emailDomainId?
 
 export async function updateAlias(
   db: Database,
-  clientId: string,
+  tenantId: string,
   aliasId: string,
   input: UpdateEmailAliasInput,
 ) {
   const [alias] = await db
     .select()
     .from(emailAliases)
-    .where(and(eq(emailAliases.id, aliasId), eq(emailAliases.clientId, clientId)));
+    .where(and(eq(emailAliases.id, aliasId), eq(emailAliases.tenantId, tenantId)));
 
   if (!alias) {
     throw new ApiError('EMAIL_ALIAS_NOT_FOUND', `Email alias '${aliasId}' not found`, 404);
@@ -112,11 +112,11 @@ export async function updateAlias(
   return updated;
 }
 
-export async function deleteAlias(db: Database, clientId: string, aliasId: string) {
+export async function deleteAlias(db: Database, tenantId: string, aliasId: string) {
   const [alias] = await db
     .select()
     .from(emailAliases)
-    .where(and(eq(emailAliases.id, aliasId), eq(emailAliases.clientId, clientId)));
+    .where(and(eq(emailAliases.id, aliasId), eq(emailAliases.tenantId, tenantId)));
 
   if (!alias) {
     throw new ApiError('EMAIL_ALIAS_NOT_FOUND', `Email alias '${aliasId}' not found`, 404);

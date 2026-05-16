@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as yaml from 'js-yaml';
-import { generateClientManifests } from './generator.js';
+import { generateTenantManifests } from './generator.js';
 
 // ─── Mock Data ──────────────────────────────────────────────────────────────
 
-const mockClient = {
-  id: 'client-001',
-  companyName: 'Acme Corp',
+const mockTenant = {
+  id: 'tenant-001',
+  name: 'Acme Corp',
   kubernetesNamespace: 'acme-corp',
   planId: 'plan-001',
   regionId: 'region-001',
@@ -24,14 +24,14 @@ const mockPlan = {
 };
 
 const mockDomains = [
-  { id: 'd1', domainName: 'example.com', clientId: 'client-001', deploymentId: 'dep1', status: 'active' },
-  { id: 'd2', domainName: 'blog.example.com', clientId: 'client-001', deploymentId: 'dep1', status: 'active' },
+  { id: 'd1', domainName: 'example.com', tenantId: 'tenant-001', deploymentId: 'dep1', status: 'active' },
+  { id: 'd2', domainName: 'blog.example.com', tenantId: 'tenant-001', deploymentId: 'dep1', status: 'active' },
 ];
 
 const mockDeployments = [
   {
     id: 'dep1',
-    clientId: 'client-001',
+    tenantId: 'tenant-001',
     catalogEntryId: 'entry-001',
     name: 'web-app',
     replicaCount: 2,
@@ -41,7 +41,7 @@ const mockDeployments = [
   },
   {
     id: 'dep2',
-    clientId: 'client-001',
+    tenantId: 'tenant-001',
     catalogEntryId: 'entry-002',
     name: 'api-server',
     replicaCount: 1,
@@ -72,23 +72,23 @@ vi.mock('../tls-settings/service.js', () => ({
 // ─── Mock DB Helper ─────────────────────────────────────────────────────────
 
 function createMockDb(overrides: {
-  client?: typeof mockClient | null;
+  tenant?: typeof mockTenant | null;
   plan?: typeof mockPlan | null;
   domains?: typeof mockDomains;
   deployments?: typeof mockDeployments;
   entries?: typeof mockEntries;
 } = {}) {
   const {
-    client = mockClient,
+    tenant = mockTenant,
     plan = mockPlan,
     domains = mockDomains,
     deployments = mockDeployments,
     entries = mockEntries,
   } = overrides;
 
-  // Queries arrive in order: client, plan, domains, deployments, catalogEntries
+  // Queries arrive in order: tenant, plan, domains, deployments, catalogEntries
   const selectResults: unknown[][] = [
-    client ? [client] : [],
+    tenant ? [tenant] : [],
     plan ? [plan] : [],
     domains,
     deployments,
@@ -120,25 +120,25 @@ function createMockDb(overrides: {
 
   const selectFn = vi.fn().mockImplementation(() => makeChain());
 
-  return { select: selectFn } as unknown as Parameters<typeof generateClientManifests>[0];
+  return { select: selectFn } as unknown as Parameters<typeof generateTenantManifests>[0];
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe('generateClientManifests', () => {
-  it('should throw CLIENT_NOT_FOUND when client does not exist', async () => {
-    const db = createMockDb({ client: null });
-    await expect(generateClientManifests(db, 'nonexistent')).rejects.toThrow('not found');
+describe('generateTenantManifests', () => {
+  it('should throw CLIENT_NOT_FOUND when tenant does not exist', async () => {
+    const db = createMockDb({ tenant: null });
+    await expect(generateTenantManifests(db, 'nonexistent')).rejects.toThrow('not found');
   });
 
   it('should throw PLAN_NOT_FOUND when plan does not exist', async () => {
     const db = createMockDb({ plan: null });
-    await expect(generateClientManifests(db, 'client-001')).rejects.toThrow('not found');
+    await expect(generateTenantManifests(db, 'tenant-001')).rejects.toThrow('not found');
   });
 
   it('should generate namespace with correct name and labels', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const nsFile = result.find(f => f.filename === 'namespace.yaml');
     expect(nsFile).toBeDefined();
@@ -151,7 +151,7 @@ describe('generateClientManifests', () => {
         name: 'acme-corp',
         labels: {
           'platform': 'k8s-hosting',
-          'client': 'client-001',
+          'tenant': 'tenant-001',
         },
       },
     });
@@ -159,7 +159,7 @@ describe('generateClientManifests', () => {
 
   it('should generate split ResourceQuotas: Pod-scoped (cpu/memory) + storage-only', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     // Pod-scoped quota — counts only tenant-default Pods so file-manager
     // (priorityClassName=platform-tenant-overhead) is exempt.
@@ -197,7 +197,7 @@ describe('generateClientManifests', () => {
 
   it('should generate NetworkPolicy allowing only the traefik controller namespace', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const npFile = result.find(f => f.filename === 'network-policy.yaml');
     expect(npFile).toBeDefined();
@@ -232,7 +232,7 @@ describe('generateClientManifests', () => {
 
   it('should generate one Deployment per deployment with correct image and resources', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const depFiles = result.filter(f => f.filename.startsWith('deployment-'));
     expect(depFiles).toHaveLength(2);
@@ -293,7 +293,7 @@ describe('generateClientManifests', () => {
 
   it('should generate one Service per deployment (ClusterIP, 80 -> 8080)', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const svcFiles = result.filter(f => f.filename.startsWith('service-'));
     expect(svcFiles).toHaveLength(2);
@@ -316,7 +316,7 @@ describe('generateClientManifests', () => {
 
   it('should generate PVC with storage from plan', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const pvcFile = result.find(f => f.filename === 'pvc.yaml');
     expect(pvcFile).toBeDefined();
@@ -343,7 +343,7 @@ describe('generateClientManifests', () => {
 
   it('should generate IngressRoute with per-domain routes + Certificate CRs', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const ingFile = result.find(f => f.filename === 'ingressroute.yaml');
     expect(ingFile).toBeDefined();
@@ -386,7 +386,7 @@ describe('generateClientManifests', () => {
 
   it('should generate kustomization.yaml listing all resource files', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const kustomFile = result.find(f => f.filename === 'kustomization.yaml');
     expect(kustomFile).toBeDefined();
@@ -409,9 +409,9 @@ describe('generateClientManifests', () => {
     expect(resources).toContain('service-api-server.yaml');
   });
 
-  it('should skip deployment/service when client has no deployments', async () => {
+  it('should skip deployment/service when tenant has no deployments', async () => {
     const db = createMockDb({ deployments: [], entries: [] });
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const depFiles = result.filter(f => f.filename.startsWith('deployment-'));
     const svcFiles = result.filter(f => f.filename.startsWith('service-'));
@@ -425,9 +425,9 @@ describe('generateClientManifests', () => {
     expect(result.find(f => f.filename === 'pvc.yaml')).toBeDefined();
   });
 
-  it('should skip ingress when client has no domains', async () => {
+  it('should skip ingress when tenant has no domains', async () => {
     const db = createMockDb({ domains: [] });
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     const ingFile = result.find(f => f.filename === 'ingress.yaml');
     expect(ingFile).toBeUndefined();
@@ -440,7 +440,7 @@ describe('generateClientManifests', () => {
 
   it('should return valid YAML strings for all manifests', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     for (const manifest of result) {
       expect(manifest.filename).toBeTruthy();
@@ -454,7 +454,7 @@ describe('generateClientManifests', () => {
 
   it('should apply overrides for cpu, memory, and storage limits', async () => {
     const db = createMockDb();
-    const result = await generateClientManifests(db, 'client-001', {
+    const result = await generateTenantManifests(db, 'tenant-001', {
       overrides: {
         cpu_limit: '4',
         memory_limit: '8',
@@ -489,7 +489,7 @@ describe('generateClientManifests', () => {
     const deploymentNoEntry = [
       {
         id: 'dep1',
-        clientId: 'client-001',
+        tenantId: 'tenant-001',
         catalogEntryId: 'missing-entry',
         name: 'static-site',
         replicaCount: 1,
@@ -499,7 +499,7 @@ describe('generateClientManifests', () => {
       },
     ];
     const db = createMockDb({ deployments: deploymentNoEntry, entries: [] });
-    const result = await generateClientManifests(db, 'client-001');
+    const result = await generateTenantManifests(db, 'tenant-001');
 
     // Should still generate deployment but with a placeholder image
     const depFiles = result.filter(f => f.filename.startsWith('deployment-'));

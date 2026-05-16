@@ -5,12 +5,12 @@ import { errorHandler } from '../../middleware/error-handler.js';
 import { registerAuth } from '../../middleware/auth.js';
 
 const mockManifests = [
-  { filename: 'namespace.yaml', content: 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: client-ns\n' },
+  { filename: 'namespace.yaml', content: 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: tenant-ns\n' },
   { filename: 'resource-quota.yaml', content: 'apiVersion: v1\nkind: ResourceQuota\n' },
 ];
 
 vi.mock('./generator.js', () => ({
-  generateClientManifests: vi.fn().mockResolvedValue(mockManifests),
+  generateTenantManifests: vi.fn().mockResolvedValue(mockManifests),
 }));
 
 const { k8sManifestRoutes } = await import('./routes.js');
@@ -43,7 +43,7 @@ describe('k8s-manifest routes', () => {
   it('should require auth', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/admin/clients/550e8400-e29b-41d4-a716-446655440000/manifests',
+      url: '/api/v1/admin/tenants/550e8400-e29b-41d4-a716-446655440000/manifests',
     });
     expect(res.statusCode).toBe(401);
   });
@@ -51,7 +51,7 @@ describe('k8s-manifest routes', () => {
   it('should reject read_only role', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/admin/clients/550e8400-e29b-41d4-a716-446655440000/manifests',
+      url: '/api/v1/admin/tenants/550e8400-e29b-41d4-a716-446655440000/manifests',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -60,7 +60,7 @@ describe('k8s-manifest routes', () => {
   it('should reject support role', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/admin/clients/550e8400-e29b-41d4-a716-446655440000/manifests',
+      url: '/api/v1/admin/tenants/550e8400-e29b-41d4-a716-446655440000/manifests',
       headers: { authorization: `Bearer ${supportToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -69,20 +69,20 @@ describe('k8s-manifest routes', () => {
   it('should generate manifests with empty body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/admin/clients/550e8400-e29b-41d4-a716-446655440000/manifests',
+      url: '/api/v1/admin/tenants/550e8400-e29b-41d4-a716-446655440000/manifests',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.data.manifests).toHaveLength(2);
-    expect(body.data.namespace).toBe('client-ns');
+    expect(body.data.namespace).toBe('tenant-ns');
   });
 
   it('should generate manifests with overrides', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/admin/clients/550e8400-e29b-41d4-a716-446655440000/manifests',
+      url: '/api/v1/admin/tenants/550e8400-e29b-41d4-a716-446655440000/manifests',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         overrides: {
@@ -98,7 +98,7 @@ describe('k8s-manifest routes', () => {
   it('should reject invalid replica_count', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/admin/clients/550e8400-e29b-41d4-a716-446655440000/manifests',
+      url: '/api/v1/admin/tenants/550e8400-e29b-41d4-a716-446655440000/manifests',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         overrides: { replica_count: 99 },

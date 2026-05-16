@@ -1,7 +1,7 @@
 /**
  * Private-worker service layer.
  *
- * Per-client tunnel agents that let an external service (home box, NAS,
+ * Per-tenant tunnel agents that let an external service (home box, NAS,
  * GPU machine, on-prem VPS) be exposed under the platform's ingress.
  *
  * Token model: a single base64url-encoded JSON blob is shipped to the
@@ -14,7 +14,7 @@
 import crypto from 'crypto';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import {
-  clients,
+  tenants,
   privateWorkerAudit,
   privateWorkers,
   type PrivateWorker,
@@ -124,43 +124,43 @@ function hashSecret(secret: string): string {
 }
 
 /**
- * Per-client shared auth token used by frps. frps 0.62 supports exactly one
- * `auth.token` per server, and we run one frps pod per client — so all
- * workers under the same client share a single auth token. Stored plaintext
- * in `clients.private_worker_shared_secret` (column added in migration 0077);
+ * Per-tenant shared auth token used by frps. frps 0.62 supports exactly one
+ * `auth.token` per server, and we run one frps pod per tenant — so all
+ * workers under the same tenant share a single auth token. Stored plaintext
+ * in `tenants.private_worker_shared_secret` (column added in migration 0077);
  * generated lazily on first worker mint and re-used for every subsequent
- * worker minted under the same client. Per-worker revocation is enforced
+ * worker minted under the same tenant. Per-worker revocation is enforced
  * separately by the reconciler via frps `allowPorts`.
  */
-async function ensureClientSharedSecret(
+async function ensureTenantSharedSecret(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string> {
   const [row] = await db
-    .select({ secret: clients.privateWorkerSharedSecret })
-    .from(clients)
-    .where(eq(clients.id, clientId));
+    .select({ secret: tenants.privateWorkerSharedSecret })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
   if (!row) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404);
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404);
   }
   if (row.secret) return row.secret;
-  // First worker for this client — mint a shared secret atomically.
+  // First worker for this tenant — mint a shared secret atomically.
   // The conditional UPDATE handles two concurrent mints racing here:
   // whichever one wins sets the value, the loser's UPDATE is a no-op
   // and we then re-read.
   const fresh = generateSecret();
   await db
-    .update(clients)
+    .update(tenants)
     .set({ privateWorkerSharedSecret: fresh })
-    .where(and(eq(clients.id, clientId), isNull(clients.privateWorkerSharedSecret)));
+    .where(and(eq(tenants.id, tenantId), isNull(tenants.privateWorkerSharedSecret)));
   const [after] = await db
-    .select({ secret: clients.privateWorkerSharedSecret })
-    .from(clients)
-    .where(eq(clients.id, clientId));
+    .select({ secret: tenants.privateWorkerSharedSecret })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
   if (!after?.secret) {
     throw new ApiError(
       'PRIVATE_WORKER_SHARED_SECRET_MISSING',
-      'Failed to mint or read the per-client shared auth secret',
+      'Failed to mint or read the per-tenant shared auth secret',
       500,
     );
   }
@@ -204,35 +204,35 @@ function buildTokenBlob(
   return Buffer.from(JSON.stringify(blob), 'utf8').toString('base64url');
 }
 
-// Auto-allocated port range. Per-client frps pod has its own Linux
-// netns so ports collide only within one client; a 10k-slot pool is
+// Auto-allocated port range. Per-tenant frps pod has its own Linux
+// netns so ports collide only within one tenant; a 10k-slot pool is
 // enormous compared to realistic worker counts.
 const PORT_POOL_LOW = 10000;
 const PORT_POOL_HIGH = 19999;
 
 /**
  * Pick the lowest unused port in [PORT_POOL_LOW, PORT_POOL_HIGH] for
- * this client by reading existing rows. The DB-level unique index on
- * (client_id, exposed_port) (migration 0089) is what actually prevents
+ * this tenant by reading existing rows. The DB-level unique index on
+ * (tenant_id, exposed_port) (migration 0089) is what actually prevents
  * a race between SELECT and INSERT — if a concurrent create won the
  * lowest port, the caller's INSERT fails with a unique-violation and
  * we get retried. This function only computes the next-best candidate.
  */
 async function pickExposedPortCandidate(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<number> {
   const used = await db
     .select({ port: privateWorkers.exposedPort })
     .from(privateWorkers)
-    .where(eq(privateWorkers.clientId, clientId));
+    .where(eq(privateWorkers.tenantId, tenantId));
   const usedSet = new Set(used.map((r) => r.port));
   for (let p = PORT_POOL_LOW; p <= PORT_POOL_HIGH; p++) {
     if (!usedSet.has(p)) return p;
   }
   throw new ApiError(
     'PORT_POOL_EXHAUSTED',
-    `No free port in [${PORT_POOL_LOW},${PORT_POOL_HIGH}] for this client`,
+    `No free port in [${PORT_POOL_LOW},${PORT_POOL_HIGH}] for this tenant`,
     503,
   );
 }
@@ -284,7 +284,7 @@ function buildDockerComposeYaml(token: string): string {
 function mapPrivateWorkerToResponse(row: PrivateWorker): PrivateWorkerResponse {
   return {
     id: row.id,
-    clientId: row.clientId,
+    tenantId: row.tenantId,
     name: row.name,
     slug: row.slug,
     status: row.status,
@@ -330,7 +330,7 @@ async function writeAudit(
 
 async function fetchByIdScoped(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
 ): Promise<PrivateWorker> {
   const [row] = await db
@@ -339,7 +339,7 @@ async function fetchByIdScoped(
     .where(
       and(
         eq(privateWorkers.id, workerId),
-        eq(privateWorkers.clientId, clientId),
+        eq(privateWorkers.tenantId, tenantId),
       ),
     );
   if (!row) {
@@ -356,54 +356,54 @@ async function fetchByIdScoped(
 
 export async function listPrivateWorkers(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<PrivateWorkerResponse[]> {
   const rows = await db
     .select()
     .from(privateWorkers)
-    .where(eq(privateWorkers.clientId, clientId))
+    .where(eq(privateWorkers.tenantId, tenantId))
     .orderBy(desc(privateWorkers.createdAt));
   return rows.map(mapPrivateWorkerToResponse);
 }
 
 export async function getPrivateWorker(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
 ): Promise<PrivateWorkerResponse> {
-  const row = await fetchByIdScoped(db, clientId, workerId);
+  const row = await fetchByIdScoped(db, tenantId, workerId);
   return mapPrivateWorkerToResponse(row);
 }
 
 export async function createPrivateWorker(
   db: Database,
-  clientId: string,
+  tenantId: string,
   input: CreatePrivateWorkerInput,
   createdBy: string | null,
   requesterIp?: string | null,
 ): Promise<PrivateWorkerSecretResponse> {
-  // Reject duplicates on (client_id, name) — surfaced as a clean 409
+  // Reject duplicates on (tenant_id, name) — surfaced as a clean 409
   // rather than a unique-constraint violation from drizzle.
   const [byName] = await db
     .select({ id: privateWorkers.id })
     .from(privateWorkers)
     .where(
       and(
-        eq(privateWorkers.clientId, clientId),
+        eq(privateWorkers.tenantId, tenantId),
         eq(privateWorkers.name, input.name),
       ),
     );
   if (byName) {
     throw new ApiError(
       'DUPLICATE_PRIVATE_WORKER_NAME',
-      `A private worker named '${input.name}' already exists for this client`,
+      `A private worker named '${input.name}' already exists for this tenant`,
       409,
     );
   }
 
   // Slug — caller-provided OR derived from name. If caller-provided, it
   // must be globally unique because it appears in
-  // `tunnels.${DOMAIN}/c/<slug>/` for every client.
+  // `tunnels.${DOMAIN}/c/<slug>/` for every tenant.
   let slug: string;
   if (input.slug) {
     const [collision] = await db
@@ -423,11 +423,11 @@ export async function createPrivateWorker(
   }
 
   const id = crypto.randomUUID();
-  // The actual frps auth token is the per-client shared secret (one frps
-  // pod per client = one auth.token). The per-worker `worker_token_hash`
+  // The actual frps auth token is the per-tenant shared secret (one frps
+  // pod per tenant = one auth.token). The per-worker `worker_token_hash`
   // is a per-row marker for record-keeping and future per-worker auth via
   // an frps webhook plugin (post-v1).
-  const sharedSecret = await ensureClientSharedSecret(db, clientId);
+  const sharedSecret = await ensureTenantSharedSecret(db, tenantId);
   const workerTokenHash = hashSecret(sharedSecret);
 
   // Auto-allocate the cluster-side port. End users never pick this —
@@ -436,7 +436,7 @@ export async function createPrivateWorker(
   // is a separate operator-runtime concern, declared via the
   // PRIVATE_WORKER_TARGET env var on the agent container.
   //
-  // Race protection: the DB has a unique (client_id, exposed_port)
+  // Race protection: the DB has a unique (tenant_id, exposed_port)
   // index (migration 0089). On concurrent creates, both pick the same
   // lowest-free candidate, the second INSERT fails 23505, we retry.
   // The retry budget is small (port pool is huge vs realistic worker
@@ -445,11 +445,11 @@ export async function createPrivateWorker(
   let exposedPort = -1;
   let inserted = false;
   for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
-    exposedPort = await pickExposedPortCandidate(db, clientId);
+    exposedPort = await pickExposedPortCandidate(db, tenantId);
     try {
       await db.insert(privateWorkers).values({
         id,
-        clientId,
+        tenantId,
         name: input.name,
         slug,
         workerTokenHash,
@@ -462,7 +462,7 @@ export async function createPrivateWorker(
       break;
     } catch (err) {
       if (isUniqueViolation(err)) {
-        // Most likely the (client_id, exposed_port) index — racing create.
+        // Most likely the (tenant_id, exposed_port) index — racing create.
         // Retry with a new candidate.
         continue;
       }
@@ -507,54 +507,54 @@ export async function createPrivateWorker(
 
 export async function updatePrivateWorker(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
   input: UpdatePrivateWorkerInput,
 ): Promise<PrivateWorkerResponse> {
-  await fetchByIdScoped(db, clientId, workerId);
+  await fetchByIdScoped(db, tenantId, workerId);
 
   const updates: Record<string, unknown> = {};
   if (input.name !== undefined) updates.name = input.name;
   if (input.description !== undefined) updates.description = input.description;
 
   if (Object.keys(updates).length === 0) {
-    const row = await fetchByIdScoped(db, clientId, workerId);
+    const row = await fetchByIdScoped(db, tenantId, workerId);
     return mapPrivateWorkerToResponse(row);
   }
 
-  // Detect client-scoped name collision before writing.
+  // Detect tenant-scoped name collision before writing.
   if (input.name !== undefined) {
     const [byName] = await db
       .select({ id: privateWorkers.id })
       .from(privateWorkers)
       .where(
         and(
-          eq(privateWorkers.clientId, clientId),
+          eq(privateWorkers.tenantId, tenantId),
           eq(privateWorkers.name, input.name),
         ),
       );
     if (byName && byName.id !== workerId) {
       throw new ApiError(
         'DUPLICATE_PRIVATE_WORKER_NAME',
-        `A private worker named '${input.name}' already exists for this client`,
+        `A private worker named '${input.name}' already exists for this tenant`,
         409,
       );
     }
   }
 
   await db.update(privateWorkers).set(updates).where(eq(privateWorkers.id, workerId));
-  const updated = await fetchByIdScoped(db, clientId, workerId);
+  const updated = await fetchByIdScoped(db, tenantId, workerId);
   return mapPrivateWorkerToResponse(updated);
 }
 
 export async function rotatePrivateWorker(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
   rotatedBy: string | null,
   requesterIp?: string | null,
 ): Promise<PrivateWorkerSecretResponse> {
-  const existing = await fetchByIdScoped(db, clientId, workerId);
+  const existing = await fetchByIdScoped(db, tenantId, workerId);
 
   if (existing.status === 'revoked') {
     throw new ApiError(
@@ -565,13 +565,13 @@ export async function rotatePrivateWorker(
   }
 
   // v1 limitation: frps 0.62 supports one auth.token per server, so all
-  // workers under a client share the same secret. Rotating one worker
+  // workers under a tenant share the same secret. Rotating one worker
   // rotates the secret for every sibling worker. The UI warns about this.
   const newSharedSecret = generateSecret();
   await db
-    .update(clients)
+    .update(tenants)
     .set({ privateWorkerSharedSecret: newSharedSecret })
-    .where(eq(clients.id, clientId));
+    .where(eq(tenants.id, tenantId));
 
   const workerTokenHash = hashSecret(newSharedSecret);
   await db
@@ -585,18 +585,18 @@ export async function rotatePrivateWorker(
     .where(eq(privateWorkers.id, workerId));
 
   // Bump the workerTokenHash on every other active worker for this
-  // client so the UI reflects the rotation.
+  // tenant so the UI reflects the rotation.
   await db
     .update(privateWorkers)
     .set({ workerTokenHash })
-    .where(and(eq(privateWorkers.clientId, clientId), inArray(privateWorkers.status, ['pending', 'active', 'suspended'])));
+    .where(and(eq(privateWorkers.tenantId, tenantId), inArray(privateWorkers.status, ['pending', 'active', 'suspended'])));
 
   await writeAudit(db, workerId, 'rotate', requesterIp ?? null, {
     rotatedBy,
     rotatedSharedSecret: true,
   });
 
-  const refreshed = await fetchByIdScoped(db, clientId, workerId);
+  const refreshed = await fetchByIdScoped(db, tenantId, workerId);
   const token = buildTokenBlob(refreshed.slug, newSharedSecret, refreshed.exposedPort);
   return {
     workerId,
@@ -609,12 +609,12 @@ export async function rotatePrivateWorker(
 
 export async function revokePrivateWorker(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
   revokedBy: string | null,
   requesterIp?: string | null,
 ): Promise<PrivateWorkerResponse> {
-  const existing = await fetchByIdScoped(db, clientId, workerId);
+  const existing = await fetchByIdScoped(db, tenantId, workerId);
 
   if (existing.status === 'revoked') {
     return mapPrivateWorkerToResponse(existing);
@@ -632,17 +632,17 @@ export async function revokePrivateWorker(
 
   await writeAudit(db, workerId, 'revoke', requesterIp ?? null, { revokedBy });
 
-  const refreshed = await fetchByIdScoped(db, clientId, workerId);
+  const refreshed = await fetchByIdScoped(db, tenantId, workerId);
   return mapPrivateWorkerToResponse(refreshed);
 }
 
 export async function deletePrivateWorker(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
   deletedBy: string | null,
 ): Promise<void> {
-  const existing = await fetchByIdScoped(db, clientId, workerId);
+  const existing = await fetchByIdScoped(db, tenantId, workerId);
 
   // Best-effort revoke first so the audit row records the user-visible
   // "this token is dead" event before the row disappears. We skip the
@@ -667,12 +667,12 @@ export async function deletePrivateWorker(
 
 export async function listPrivateWorkerAudit(
   db: Database,
-  clientId: string,
+  tenantId: string,
   workerId: string,
   limit: number = DEFAULT_AUDIT_LIMIT,
 ): Promise<PrivateWorkerAuditEntry[]> {
-  // Verify the worker belongs to the client before exposing audit rows.
-  await fetchByIdScoped(db, clientId, workerId);
+  // Verify the worker belongs to the tenant before exposing audit rows.
+  await fetchByIdScoped(db, tenantId, workerId);
 
   const safeLimit = Math.min(Math.max(limit, 1), 200);
   const rows = await db

@@ -25,7 +25,7 @@ const mockApiFetch = vi.mocked(apiFetch);
 
 const MOCK_DOMAIN = {
   id: 'domain-1',
-  clientId: 'client-1',
+  tenantId: 'tenant-1',
   domainName: 'example.com',
   status: 'active',
   dnsMode: 'cname',
@@ -70,9 +70,9 @@ function createWrapper() {
   return function Wrapper({ children }: { readonly children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/clients/client-1/domains/domain-1']}>
+        <MemoryRouter initialEntries={['/tenants/tenant-1/domains/domain-1']}>
           <Routes>
-            <Route path="/clients/:clientId/domains/:domainId" element={children} />
+            <Route path="/tenants/:tenantId/domains/:domainId" element={children} />
             <Route path="/domains" element={<div>Domains List</div>} />
           </Routes>
         </MemoryRouter>

@@ -6,7 +6,7 @@ import { apiFetch } from '@/lib/api-client';
 interface EmailDomain {
   readonly id: string;
   readonly domainId: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly domainName: string;
   readonly enabled: number;
   readonly dkimSelector: string;
@@ -34,49 +34,49 @@ export function useAdminEmailDomains() {
   });
 }
 
-export function useEmailDomains(clientId?: string) {
+export function useEmailDomains(tenantId?: string) {
   return useQuery({
-    queryKey: ['email-domains', clientId],
-    queryFn: () => apiFetch<EmailDomainsResponse>(`/api/v1/clients/${clientId}/email/domains`),
-    enabled: !!clientId,
+    queryKey: ['email-domains', tenantId],
+    queryFn: () => apiFetch<EmailDomainsResponse>(`/api/v1/tenants/${tenantId}/email/domains`),
+    enabled: !!tenantId,
   });
 }
 
-export function useEnableEmailDomain(clientId: string) {
+export function useEnableEmailDomain(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ domainId, input }: { domainId: string; input: Record<string, unknown> }) =>
-      apiFetch<EmailDomainResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/enable`, {
+      apiFetch<EmailDomainResponse>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/enable`, {
         method: 'POST', body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['email-domains', clientId] });
+      qc.invalidateQueries({ queryKey: ['email-domains', tenantId] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
 }
 
-export function useDisableEmailDomain(clientId: string) {
+export function useDisableEmailDomain(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (domainId: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/email/domains/${domainId}/disable`, { method: 'DELETE' }),
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/disable`, { method: 'DELETE' }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['email-domains', clientId] });
+      qc.invalidateQueries({ queryKey: ['email-domains', tenantId] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
 }
 
-export function useUpdateEmailDomain(clientId: string) {
+export function useUpdateEmailDomain(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ domainId, input }: { domainId: string; input: Record<string, unknown> }) =>
-      apiFetch<EmailDomainResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}`, {
+      apiFetch<EmailDomainResponse>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}`, {
         method: 'PATCH', body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['email-domains', clientId] });
+      qc.invalidateQueries({ queryKey: ['email-domains', tenantId] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
@@ -87,7 +87,7 @@ export function useUpdateEmailDomain(clientId: string) {
 interface Mailbox {
   readonly id: string;
   readonly emailDomainId: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly localPart: string;
   readonly fullAddress: string;
   readonly displayName: string | null;
@@ -103,42 +103,42 @@ interface Mailbox {
 interface MailboxesResponse { readonly data: readonly Mailbox[] }
 interface MailboxResponse { readonly data: Mailbox }
 
-export function useMailboxes(clientId?: string) {
+export function useMailboxes(tenantId?: string) {
   return useQuery({
-    queryKey: ['mailboxes', clientId],
-    queryFn: () => apiFetch<MailboxesResponse>(`/api/v1/clients/${clientId}/mailboxes`),
-    enabled: !!clientId,
+    queryKey: ['mailboxes', tenantId],
+    queryFn: () => apiFetch<MailboxesResponse>(`/api/v1/tenants/${tenantId}/mailboxes`),
+    enabled: !!tenantId,
   });
 }
 
-export function useCreateMailbox(clientId: string, emailDomainId: string) {
+export function useCreateMailbox(tenantId: string, emailDomainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: Record<string, unknown>) =>
-      apiFetch<MailboxResponse>(`/api/v1/clients/${clientId}/email/domains/${emailDomainId}/mailboxes`, {
+      apiFetch<MailboxResponse>(`/api/v1/tenants/${tenantId}/email/domains/${emailDomainId}/mailboxes`, {
         method: 'POST', body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', clientId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] }),
   });
 }
 
-export function useUpdateMailbox(clientId: string) {
+export function useUpdateMailbox(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: Record<string, unknown> }) =>
-      apiFetch<MailboxResponse>(`/api/v1/clients/${clientId}/mailboxes/${id}`, {
+      apiFetch<MailboxResponse>(`/api/v1/tenants/${tenantId}/mailboxes/${id}`, {
         method: 'PATCH', body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', clientId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] }),
   });
 }
 
-export function useDeleteMailbox(clientId: string) {
+export function useDeleteMailbox(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/mailboxes/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', clientId] }),
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/mailboxes/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] }),
   });
 }
 
@@ -147,7 +147,7 @@ export function useDeleteMailbox(clientId: string) {
 interface EmailAlias {
   readonly id: string;
   readonly emailDomainId: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly sourceAddress: string;
   readonly destinationAddresses: readonly string[];
   readonly enabled: number;
@@ -157,31 +157,31 @@ interface EmailAlias {
 interface AliasesResponse { readonly data: readonly EmailAlias[] }
 interface AliasResponse { readonly data: EmailAlias }
 
-export function useEmailAliases(clientId?: string) {
+export function useEmailAliases(tenantId?: string) {
   return useQuery({
-    queryKey: ['email-aliases', clientId],
-    queryFn: () => apiFetch<AliasesResponse>(`/api/v1/clients/${clientId}/email/aliases`),
-    enabled: !!clientId,
+    queryKey: ['email-aliases', tenantId],
+    queryFn: () => apiFetch<AliasesResponse>(`/api/v1/tenants/${tenantId}/email/aliases`),
+    enabled: !!tenantId,
   });
 }
 
-export function useCreateEmailAlias(clientId: string, emailDomainId: string) {
+export function useCreateEmailAlias(tenantId: string, emailDomainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: Record<string, unknown>) =>
-      apiFetch<AliasResponse>(`/api/v1/clients/${clientId}/email/domains/${emailDomainId}/aliases`, {
+      apiFetch<AliasResponse>(`/api/v1/tenants/${tenantId}/email/domains/${emailDomainId}/aliases`, {
         method: 'POST', body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', clientId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', tenantId] }),
   });
 }
 
-export function useDeleteEmailAlias(clientId: string) {
+export function useDeleteEmailAlias(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/email/aliases/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', clientId] }),
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/email/aliases/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', tenantId] }),
   });
 }
 
@@ -291,39 +291,39 @@ export interface DkimRotateResult {
 
 interface DkimRotateResponse { readonly data: DkimRotateResult }
 
-export function useDkimKeys(clientId?: string, domainId?: string) {
+export function useDkimKeys(tenantId?: string, domainId?: string) {
   return useQuery({
-    queryKey: ['dkim-keys', clientId, domainId],
-    queryFn: () => apiFetch<DkimKeysResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/keys`),
-    enabled: !!clientId && !!domainId,
+    queryKey: ['dkim-keys', tenantId, domainId],
+    queryFn: () => apiFetch<DkimKeysResponse>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/dkim/keys`),
+    enabled: !!tenantId && !!domainId,
   });
 }
 
-export function useRotateDkimKey(clientId: string, domainId: string) {
+export function useRotateDkimKey(tenantId: string, domainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      apiFetch<DkimRotateResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/rotate`, {
+      apiFetch<DkimRotateResponse>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/dkim/rotate`, {
         method: 'POST',
         body: JSON.stringify({}),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+      qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, domainId] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
 }
 
-export function useActivateDkimKey(clientId: string, domainId: string) {
+export function useActivateDkimKey(tenantId: string, domainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (keyId: string) =>
       apiFetch<{ data: { id: string; status: string } }>(
-        `/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/keys/${keyId}/activate`,
+        `/api/v1/tenants/${tenantId}/email/domains/${domainId}/dkim/keys/${keyId}/activate`,
         { method: 'POST', body: JSON.stringify({}) },
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+      qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, domainId] });
     },
   });
 }
@@ -375,25 +375,25 @@ export interface MailSubmitRotateResult {
   readonly pushError?: string;
 }
 
-export function useMailSubmitCredential(clientId?: string) {
+export function useMailSubmitCredential(tenantId?: string) {
   return useQuery({
-    queryKey: ['mail-submit-credential', clientId],
+    queryKey: ['mail-submit-credential', tenantId],
     queryFn: () =>
-      apiFetch<{ data: MailSubmitCredentialInfo }>(`/api/v1/clients/${clientId}/mail/submit-credential`),
-    enabled: !!clientId,
+      apiFetch<{ data: MailSubmitCredentialInfo }>(`/api/v1/tenants/${tenantId}/mail/submit-credential`),
+    enabled: !!tenantId,
   });
 }
 
-export function useRotateMailSubmitCredential(clientId: string) {
+export function useRotateMailSubmitCredential(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { note?: string; pushToPvc?: boolean }) =>
       apiFetch<{ data: MailSubmitRotateResult }>(
-        `/api/v1/clients/${clientId}/mail/submit-credential/rotate`,
+        `/api/v1/tenants/${tenantId}/mail/submit-credential/rotate`,
         { method: 'POST', body: JSON.stringify(input) },
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['mail-submit-credential', clientId] });
+      qc.invalidateQueries({ queryKey: ['mail-submit-credential', tenantId] });
     },
   });
 }
@@ -404,7 +404,7 @@ export type ImapSyncJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' |
 
 export interface ImapSyncJob {
   readonly id: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly mailboxId: string;
   readonly sourceHost: string;
   readonly sourcePort: number;
@@ -437,12 +437,12 @@ export interface CreateImapSyncJobInput {
   };
 }
 
-export function useImapSyncJobs(clientId?: string) {
+export function useImapSyncJobs(tenantId?: string) {
   return useQuery({
-    queryKey: ['imapsync-jobs', clientId],
+    queryKey: ['imapsync-jobs', tenantId],
     queryFn: () =>
-      apiFetch<{ data: readonly ImapSyncJob[] }>(`/api/v1/clients/${clientId}/mail/imapsync`),
-    enabled: !!clientId,
+      apiFetch<{ data: readonly ImapSyncJob[] }>(`/api/v1/tenants/${tenantId}/mail/imapsync`),
+    enabled: !!tenantId,
     // Poll while running so the UI shows progress without manual refresh.
     refetchInterval: (query) => {
       const data = query.state.data as { data?: readonly ImapSyncJob[] } | undefined;
@@ -454,26 +454,26 @@ export function useImapSyncJobs(clientId?: string) {
   });
 }
 
-export function useCreateImapSyncJob(clientId: string) {
+export function useCreateImapSyncJob(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateImapSyncJobInput) =>
-      apiFetch<{ data: ImapSyncJob }>(`/api/v1/clients/${clientId}/mail/imapsync`, {
+      apiFetch<{ data: ImapSyncJob }>(`/api/v1/tenants/${tenantId}/mail/imapsync`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', tenantId] }),
   });
 }
 
-export function useCancelImapSyncJob(clientId: string) {
+export function useCancelImapSyncJob(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (jobId: string) =>
       apiFetch<{ data: { id: string; status: string } }>(
-        `/api/v1/clients/${clientId}/mail/imapsync/${jobId}`,
+        `/api/v1/tenants/${tenantId}/mail/imapsync/${jobId}`,
         { method: 'DELETE' },
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', tenantId] }),
   });
 }

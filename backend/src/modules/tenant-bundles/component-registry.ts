@@ -92,11 +92,11 @@ export const BUNDLE_COMPONENTS: ReadonlyArray<ComponentOwnership> = [
   {
     name: 'config',
     description:
-      'JSON Lines dump of every row in CONFIG_DUMP_TABLES filtered by clientId. Restore replays via INSERT…ON CONFLICT…DO UPDATE.',
+      'JSON Lines dump of every row in CONFIG_DUMP_TABLES filtered by tenantId. Restore replays via INSERT…ON CONFLICT…DO UPDATE.',
     // Mirrors backend/src/modules/tenant-bundles/components/config.ts:CONFIG_DUMP_TABLES.
     // The schema-audit script asserts this list stays in sync with that file.
     tables: [
-      'clients',
+      'tenants',
       'users',
       'domains',
       'emailDomains',
@@ -110,10 +110,10 @@ export const BUNDLE_COMPONENTS: ReadonlyArray<ComponentOwnership> = [
       'sslCertificates',
       'cronJobs',
       'resourceQuotas',
-      'clientOidcProviders',
-      'clientMtlsProviders',
-      'clientZitiProviders',
-      'clientZrokAccounts',
+      'tenantOidcProviders',
+      'tenantMtlsProviders',
+      'tenantZitiProviders',
+      'tenantZrokAccounts',
     ],
     pvcs: [],
     secretTypes: [],

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
 import { validateQuotaFitsHeadroom } from './headroom-gate.js';
@@ -11,36 +11,36 @@ import { inArray } from 'drizzle-orm';
 export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
-  // GET /api/v1/clients/:clientId/resource-quota — anyone authenticated can view
-  app.get('/clients/:clientId/resource-quota', async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const quota = await service.getResourceQuota(app.db, clientId);
+  // GET /api/v1/tenants/:tenantId/resource-quota — anyone authenticated can view
+  app.get('/tenants/:tenantId/resource-quota', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const quota = await service.getResourceQuota(app.db, tenantId);
     return success(quota);
   });
 
-  // GET /api/v1/clients/:clientId/resource-availability — authenticated + client access
-  app.get('/clients/:clientId/resource-availability', {
-    onRequest: [authenticate, requireClientAccess()],
+  // GET /api/v1/tenants/:tenantId/resource-availability — authenticated + tenant access
+  app.get('/tenants/:tenantId/resource-availability', {
+    onRequest: [authenticate, requireTenantAccess()],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const availability = await service.getClientResourceAvailability(app.db, clientId);
+    const { tenantId } = request.params as { tenantId: string };
+    const availability = await service.getTenantResourceAvailability(app.db, tenantId);
     return success(availability);
   });
 
-  // PATCH /api/v1/clients/:clientId/resource-quota — admin only
+  // PATCH /api/v1/tenants/:tenantId/resource-quota — admin only
   //
   // 2026-05-11 (Phase 2): cluster-failover-headroom gate. Before saving
-  // the new limits, sum all tenant quota limits (across every client),
+  // the new limits, sum all tenant quota limits (across every tenant),
   // add the projected delta from this patch, and compare against
   // getClusterFailoverHeadroom().tenantAvailable{Cpu,MemoryGi}. If the
   // projection breaches single-failure survivability, return 409
   // CLUSTER_HEADROOM_EXCEEDED. A `?force=true` query param lets a
   // super_admin bypass the gate (e.g. capacity expansion in flight); both
   // accept and override paths emit audit-log entries.
-  app.patch('/clients/:clientId/resource-quota', {
+  app.patch('/tenants/:tenantId/resource-quota', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const input = request.body as Record<string, unknown>;
     const query = request.query as { force?: string };
     const force = query.force === 'true' || query.force === '1';
@@ -61,7 +61,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
       const gate = await validateQuotaFitsHeadroom(app.db, k8s, {
-        clientId,
+        tenantId,
         newCpuLimit,
         newMemoryLimitGi,
       });
@@ -73,7 +73,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           actorType: 'user',
           actionType: 'resource_quota.update.refused',
           resourceType: 'resource_quota',
-          resourceId: clientId,
+          resourceId: tenantId,
           changes: {
             reason: 'cluster_headroom_exceeded',
             attempt: { newCpuLimit, newMemoryLimitGi },
@@ -104,7 +104,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
             actorType: 'user',
             actionType: 'resource_quota.update.force_denied',
             resourceType: 'resource_quota',
-            resourceId: clientId,
+            resourceId: tenantId,
             changes: { reason: 'force_requires_super_admin', userRole },
             httpStatus: 403,
           });
@@ -123,7 +123,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           actorType: 'user',
           actionType: 'resource_quota.update.force_override',
           resourceType: 'resource_quota',
-          resourceId: clientId,
+          resourceId: tenantId,
           changes: {
             reason: 'super_admin_override_cluster_headroom',
             patch: { newCpuLimit, newMemoryLimitGi },
@@ -151,15 +151,15 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
             userId: a.id,
             type: 'warning',
             title: 'Tenant quota force-overrode cluster failover headroom',
-            message: `super_admin "${userSub}" used ?force=true on client ${clientId} quota patch — ${overageStr} past safe headroom. Tenant total ${gate.details.projectedSumCpu.toFixed(2)} CPU / ${gate.details.projectedSumMemoryGi.toFixed(2)} GiB vs available ${gate.details.headroomCpu.toFixed(2)} CPU / ${gate.details.headroomMemoryGi.toFixed(2)} GiB. Cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.`,
+            message: `super_admin "${userSub}" used ?force=true on tenant ${tenantId} quota patch — ${overageStr} past safe headroom. Tenant total ${gate.details.projectedSumCpu.toFixed(2)} CPU / ${gate.details.projectedSumMemoryGi.toFixed(2)} GiB vs available ${gate.details.headroomCpu.toFixed(2)} CPU / ${gate.details.headroomMemoryGi.toFixed(2)} GiB. Cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.`,
             resourceType: 'resource_quota',
-            resourceId: clientId,
+            resourceId: tenantId,
           });
         }
       }
     }
 
-    const updated = await service.updateResourceQuota(app.db, clientId, {
+    const updated = await service.updateResourceQuota(app.db, tenantId, {
       cpu_cores_limit: input.cpu_cores_limit as number | undefined,
       memory_gb_limit: input.memory_gb_limit as number | undefined,
       storage_gb_limit: input.storage_gb_limit as number | undefined,
@@ -182,7 +182,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
         actorType: 'user',
         actionType: 'resource_quota.update',
         resourceType: 'resource_quota',
-        resourceId: clientId,
+        resourceId: tenantId,
         changes: { patch: { newCpuLimit, newMemoryLimitGi } },
         httpStatus: 200,
       });

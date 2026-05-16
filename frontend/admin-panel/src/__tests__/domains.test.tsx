@@ -25,14 +25,14 @@ vi.mock('@/lib/api-client', () => ({
 const mockApiFetch = vi.mocked(apiFetch);
 
 const MOCK_CLIENTS = [
-  { id: 'client-1', companyName: 'Acme Corp', status: 'active' as const },
-  { id: 'client-2', companyName: 'Beta Inc', status: 'active' as const },
+  { id: 'tenant-1', name: 'Acme Corp', status: 'active' as const },
+  { id: 'tenant-2', name: 'Beta Inc', status: 'active' as const },
 ];
 
 const MOCK_DOMAINS = [
   {
     id: 'domain-1',
-    clientId: 'client-1',
+    tenantId: 'tenant-1',
     domainName: 'example.com',
     status: 'active' as const,
     dnsMode: 'cname',
@@ -41,7 +41,7 @@ const MOCK_DOMAINS = [
   },
   {
     id: 'domain-2',
-    clientId: 'client-1',
+    tenantId: 'tenant-1',
     domainName: 'test.org',
     status: 'pending' as const,
     dnsMode: 'primary',
@@ -65,14 +65,14 @@ function createWrapper() {
 
 function setupMockApi() {
   mockApiFetch.mockImplementation((url: string) => {
-    // Single client fetch for selected client display
-    if (typeof url === 'string' && url.match(/\/clients\/client-\d+$/)) {
+    // Single tenant fetch for selected tenant display
+    if (typeof url === 'string' && url.match(/\/tenants\/tenant-\d+$/)) {
       const id = url.split('/').pop();
-      const client = MOCK_CLIENTS.find((c) => c.id === id);
-      return Promise.resolve({ data: client ?? null });
+      const tenant = MOCK_CLIENTS.find((c) => c.id === id);
+      return Promise.resolve({ data: tenant ?? null });
     }
     // Client search
-    if (typeof url === 'string' && url.includes('/clients') && !url.includes('/domains')) {
+    if (typeof url === 'string' && url.includes('/tenants') && !url.includes('/domains')) {
       if (url.includes('search=')) {
         return Promise.resolve({
           data: MOCK_CLIENTS,
@@ -99,15 +99,15 @@ beforeEach(() => {
 });
 
 describe('Domains page', () => {
-  it('renders with searchable client selector', () => {
+  it('renders with searchable tenant selector', () => {
     render(<Domains />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Search clients...')).toBeInTheDocument();
+    expect(screen.getByTestId('tenant-search-select')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search tenants...')).toBeInTheDocument();
   });
 
-  it('shows all clients by default without a prompt to select', () => {
+  it('shows all tenants by default without a prompt to select', () => {
     render(<Domains />, { wrapper: createWrapper() });
-    expect(screen.queryByTestId('select-client-prompt')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('select-tenant-prompt')).not.toBeInTheDocument();
   });
 
   it('add domain button is always enabled', () => {
@@ -124,7 +124,7 @@ describe('Domains page', () => {
 describe('CreateDomainModal', () => {
   it('renders form fields when open', () => {
     const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('create-domain-modal')).toBeInTheDocument();
@@ -135,7 +135,7 @@ describe('CreateDomainModal', () => {
 
   it('is hidden when closed', () => {
     const onClose = vi.fn();
-    render(<CreateDomainModal open={false} onClose={onClose} clientId="client-1" />, {
+    render(<CreateDomainModal open={false} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.queryByTestId('create-domain-modal')).not.toBeInTheDocument();
@@ -143,7 +143,7 @@ describe('CreateDomainModal', () => {
 
   it('has required domain name field', () => {
     const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('domain-name-input')).toBeRequired();
@@ -151,7 +151,7 @@ describe('CreateDomainModal', () => {
 
   it('has required dns mode field', () => {
     const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('dns-mode-select')).toBeRequired();
@@ -159,7 +159,7 @@ describe('CreateDomainModal', () => {
 
   it('defaults dns mode to cname', () => {
     const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     const select = screen.getByTestId('dns-mode-select') as HTMLSelectElement;
@@ -168,7 +168,7 @@ describe('CreateDomainModal', () => {
 
   it('has submit and cancel buttons', () => {
     const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} clientId="client-1" />, {
+    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
       wrapper: createWrapper(),
     });
     expect(screen.getByTestId('submit-domain-button')).toBeInTheDocument();
@@ -177,22 +177,22 @@ describe('CreateDomainModal', () => {
 });
 
 describe('Domain row expansion', () => {
-  async function selectClientAndWaitForDomains() {
+  async function selectTenantAndWaitForDomains() {
     const user = userEvent.setup();
     setupMockApi();
     render(<Domains />, { wrapper: createWrapper() });
 
-    // Type in the searchable client select to find a client
-    const searchInput = screen.getByTestId('client-search-input');
+    // Type in the searchable tenant select to find a tenant
+    const searchInput = screen.getByTestId('tenant-search-input');
     await user.type(searchInput, 'Acme');
 
     // Wait for search results to appear
     await waitFor(() => {
-      expect(screen.getByTestId('client-option-client-1')).toBeInTheDocument();
+      expect(screen.getByTestId('tenant-option-tenant-1')).toBeInTheDocument();
     });
 
-    // Click on the client to select it
-    await user.click(screen.getByTestId('client-option-client-1'));
+    // Click on the tenant to select it
+    await user.click(screen.getByTestId('tenant-option-tenant-1'));
 
     // Wait for domain rows to appear
     await waitFor(() => {
@@ -203,7 +203,7 @@ describe('Domain row expansion', () => {
   }
 
   it('domain rows are clickable', async () => {
-    await selectClientAndWaitForDomains();
+    await selectTenantAndWaitForDomains();
     expect(screen.getByTestId('domain-row-domain-1')).toHaveClass('cursor-pointer');
   });
 });

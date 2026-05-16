@@ -24,7 +24,7 @@
  *      the operator UI can guide them.
  *
  * Why we don't auto-include the mailbox DB row in this executor:
- *   The platform DB row carries cross-tenant constraints (clientId
+ *   The platform DB row carries cross-tenant constraints (tenantId
  *   FK, soft-delete state, lifecycle flags) that belong to the
  *   `config-tables` executor's transactional scope. Mixing concerns
  *   here would mean two executors writing to the same table without

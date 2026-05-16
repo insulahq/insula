@@ -5,11 +5,11 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { backupJobs, backupComponents, backupConfigurations, clients, hostingPlans, clientBackupSchedules } from '../../db/schema.js';
+import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans, tenantBackupSchedules } from '../../db/schema.js';
 import {
   BACKUP_META_SCHEMA_VERSION,
   createBundleSchema,
-  updateClientBackupScheduleSchema,
+  updateTenantBackupScheduleSchema,
   type BundleSummary,
   type BundleDetail,
   type BackupComponentInfo,
@@ -109,10 +109,10 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.get('/admin/tenant-bundles', {
     schema: { tags: ['TenantBundles'], summary: 'List bundles', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const q = request.query as { clientId?: string; limit?: string; status?: string };
+    const q = request.query as { tenantId?: string; limit?: string; status?: string };
     const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 100);
 
-    const whereClause = q.clientId ? eq(backupJobs.clientId, q.clientId) : undefined;
+    const whereClause = q.tenantId ? eq(backupJobs.tenantId, q.tenantId) : undefined;
     const rowsQuery = whereClause
       ? app.db.select().from(backupJobs).where(whereClause).orderBy(desc(backupJobs.createdAt)).limit(limit + 1)
       : app.db.select().from(backupJobs).orderBy(desc(backupJobs.createdAt)).limit(limit + 1);
@@ -124,24 +124,24 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const hasMore = rows.length > limit;
     const visibleRows = rows.slice(0, limit);
 
-    // Resolve client status + name for every distinct client id in a
-    // single bulk query. Bundles for deleted clients miss the JOIN
-    // and surface as clientStatus='missing'.
-    const distinctClientIds = Array.from(new Set(visibleRows.map((r) => r.clientId)));
-    const clientRows = distinctClientIds.length === 0
+    // Resolve tenant status + name for every distinct tenant id in a
+    // single bulk query. Bundles for deleted tenants miss the JOIN
+    // and surface as tenantStatus='missing'.
+    const distinctTenantIds = Array.from(new Set(visibleRows.map((r) => r.tenantId)));
+    const tenantRows = distinctTenantIds.length === 0
       ? []
       : await app.db
-          .select({ id: clients.id, status: clients.status, name: clients.companyName })
-          .from(clients)
-          .where(inArray(clients.id, distinctClientIds));
-    const clientById = new Map<string, { status: string; name: string }>(
-      clientRows.map((c) => [c.id, { status: c.status as string, name: c.name }]),
+          .select({ id: tenants.id, status: tenants.status, name: tenants.name })
+          .from(tenants)
+          .where(inArray(tenants.id, distinctTenantIds));
+    const tenantById = new Map<string, { status: string; name: string }>(
+      tenantRows.map((c) => [c.id, { status: c.status as string, name: c.name }]),
     );
 
     const items: BundleSummary[] = visibleRows.map((row) => {
-      const c = clientById.get(row.clientId);
+      const c = tenantById.get(row.tenantId);
       return toBundleSummary(row, {
-        status: clientRowToBundleStatus(c?.status),
+        status: tenantRowToBundleStatus(c?.status),
         name: c?.name ?? null,
       });
     });
@@ -166,7 +166,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // found" with id="coverage" instead of resolving the static path.
   //
   // Returns the BundleComponent registry + a drift report. The drift
-  // section flags any client-FK'd DB table that no component claims —
+  // section flags any tenant-FK'd DB table that no component claims —
   // the same check the schema-audit script runs at CI time, but
   // available at runtime for the operator coverage UI.
   app.get('/admin/tenant-bundles/coverage', {
@@ -176,14 +176,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async () => {
-    // Pull every table name that has a `client_id` column from the
+    // Pull every table name that has a `tenant_id` column from the
     // information schema. Fast and authoritative — beats parsing
     // schema.ts at runtime.
     const r = await app.db.execute(sql`
       SELECT DISTINCT table_name
       FROM information_schema.columns
       WHERE table_schema = 'public'
-        AND column_name = 'client_id'
+        AND column_name = 'tenant_id'
       ORDER BY table_name
     `);
     const rawDb = r as unknown as { rows: Array<{ table_name: string }> };
@@ -237,14 +237,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
-    const [clientRow] = await app.db
-      .select({ status: clients.status, name: clients.companyName })
-      .from(clients).where(eq(clients.id, job.clientId)).limit(1);
+    const [tenantRow] = await app.db
+      .select({ status: tenants.status, name: tenants.name })
+      .from(tenants).where(eq(tenants.id, job.tenantId)).limit(1);
     const components = await app.db.select().from(backupComponents).where(eq(backupComponents.backupJobId, id));
     const detail: BundleDetail = {
       ...toBundleSummary(job, {
-        status: clientRowToBundleStatus(clientRow?.status as string | undefined),
-        name: clientRow?.name ?? null,
+        status: tenantRowToBundleStatus(tenantRow?.status as string | undefined),
+        name: tenantRow?.name ?? null,
       }),
       components: components.map(toComponentInfo),
     };
@@ -271,20 +271,20 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
     const store = await resolveStore(app, input.targetConfigId);
 
-    // Resolve client + plan retention.
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, input.clientId)).limit(1);
-    if (!client) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    // Resolve tenant + plan retention.
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
 
     // Plan-bound retention. hosting_plans.max_backup_retention_days
-    // is the upper bound the operator may request for a client on
+    // is the upper bound the operator may request for a tenant on
     // this plan; default is hosting_plans.default_backup_retention_days.
-    // Applies to ALL initiators so a Tier-3 client-initiated bundle
+    // Applies to ALL initiators so a Tier-3 tenant-initiated bundle
     // can't bypass the plan cap.
     const [plan] = await app.db.select({
       defaultDays: hostingPlans.defaultBackupRetentionDays,
       maxDays: hostingPlans.maxBackupRetentionDays,
-    }).from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
-    if (!plan) throw new ApiError('CONFIG_INVALID', `Client ${input.clientId} has no resolvable plan`, 400);
+    }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
+    if (!plan) throw new ApiError('CONFIG_INVALID', `Client ${input.tenantId} has no resolvable plan`, 400);
 
     const requested = input.retentionDays ?? plan.defaultDays;
     if (requested > plan.maxDays) {
@@ -296,13 +296,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
     const retentionDays = requested;
 
-    // Build kube clients best-effort — orchestrator handles undefined.
+    // Build kube tenants best-effort — orchestrator handles undefined.
     let k8s;
     try {
       const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       k8s = createK8sClients(kc);
     } catch (err) {
-      app.log.warn({ err }, 'tenant-bundles: k8s client unavailable');
+      app.log.warn({ err }, 'tenant-bundles: k8s tenant unavailable');
       k8s = undefined;
     }
 
@@ -320,7 +320,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         ? null
         : ((request.user as { sub?: string } | undefined)?.sub ?? null);
     const orchInput = {
-      clientId: input.clientId,
+      tenantId: input.tenantId,
       initiator: input.initiator,
       systemTrigger: input.systemTrigger ?? null,
       label: input.label ?? null,
@@ -426,7 +426,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
                 await notifyUser(app.db, orchInput.triggeredByUserId, {
                   type: 'error',
                   title: 'Backup bundle failed',
-                  message: `Bundle ${reservedBundleId} (${orchInput.clientId.slice(0, 8)}…) aborted: ${operatorMsg}`,
+                  message: `Bundle ${reservedBundleId} (${orchInput.tenantId.slice(0, 8)}…) aborted: ${operatorMsg}`,
                   resourceType: 'backup_bundle',
                   resourceId: reservedBundleId,
                 });
@@ -449,14 +449,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // ── GET /api/v1/admin/tenant-bundles/:id/data-export ──────────────
   // Streams the AES-256-CBC-encrypted tarball produced by the
   // data_export wrapper to the caller. The body is opaque ciphertext;
-  // the client decrypts locally with the passphrase they provided at
+  // the tenant decrypts locally with the passphrase they provided at
   // create time:
   //
   //   openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
   //     -in data-export-<bundleId>.tar.gz.enc -out bundle.tar.gz \
   //     -pass stdin <<< "$PASSPHRASE"
   //
-  // Auth is admin-gated — for client-panel download, the client-panel
+  // Auth is admin-gated — for tenant-panel download, the tenant-panel
   // re-uses this same endpoint via its admin proxy + the existing
   // tenant-context check on the bundle.
   app.get('/admin/tenant-bundles/:id/data-export', {
@@ -571,7 +571,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.header('Content-Disposition', `attachment; filename="${filename}"`);
     reply.header('Cache-Control', 'no-store');
     app.log.warn(
-      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, clientId: job.clientId, encrypted: encrypt, format: 'tar' },
+      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, tenantId: job.tenantId, encrypted: encrypt, format: 'tar' },
       'tenant-bundles: export download initiated',
     );
     return reply.send(stream);
@@ -629,7 +629,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.header('Content-Disposition', `attachment; filename="bundle-${id}.zip"`);
     reply.header('Cache-Control', 'no-store');
     app.log.warn(
-      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, clientId: job.clientId, format: 'zip' },
+      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, tenantId: job.tenantId, format: 'zip' },
       'tenant-bundles: export download initiated',
     );
     return reply.send(stream);
@@ -782,7 +782,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       stream.on('error', (err) => {
         app.log.error({ err: err instanceof Error ? err.message : String(err), bundleId }, 'tenant-bundles: signed-url stream error');
       });
-      app.log.warn({ bundleId, clientId: job.clientId, format, encrypted: format === 'tar' && !!(password && password.length > 0) },
+      app.log.warn({ bundleId, tenantId: job.tenantId, format, encrypted: format === 'tar' && !!(password && password.length > 0) },
         'tenant-bundles: export download via signed-url initiated');
       return reply.send(stream);
     },
@@ -796,11 +796,11 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // backup_jobs row pointing at it. The new bundle appears in the
   // operator's list as a normal capture.
   //
-  // Multipart upload: form fields are `passphrase`, `clientId`
+  // Multipart upload: form fields are `passphrase`, `tenantId`
   // (target tenant in this region), `targetConfigId` (off-site), and
   // a file `bundle` containing the ciphertext.
   //
-  // The clientId in meta.json from the source region is REPLACED by
+  // The tenantId in meta.json from the source region is REPLACED by
   // the one in the multipart body — operators routinely import a
   // bundle to a different tenant in the new region.
   // Note: registered AFTER /:id/export, but find-my-way v8 (Fastify
@@ -816,9 +816,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   //
   // Decode + inspect an uploaded archive WITHOUT writing anything to
   // the DB or the off-site target. Returns the parsed meta v2 fields
-  // (client block + domains + deployments summaries + counts) so the
+  // (tenant block + domains + deployments summaries + counts) so the
   // ImportBundleModal can show the operator who they're about to
-  // import + whether the source client already exists in this region.
+  // import + whether the source tenant already exists in this region.
   //
   // Multipart fields: `bundle` (file), `passphrase` (optional, only
   // needed for Salted__-encrypted tar). The archive format is
@@ -826,14 +826,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   //
   // The frontend two-step UX uses this endpoint to:
   //   1. Show a preview after the operator picks the file.
-  //   2. Detect whether the source client UUID already exists in
+  //   2. Detect whether the source tenant UUID already exists in
   //      this region (active/suspended → block with "use Restore
   //      Cart"; archived/missing → unlock the restore-from-bundle
-  //      path; new UUID → unlock the "create new client" path).
+  //      path; new UUID → unlock the "create new tenant" path).
   //
   // Idempotent + side-effect-free: the operator can run this as
   // many times as they like. The actual import / restore happens
-  // via POST /import (legacy clientId-required flow) or via the
+  // via POST /import (legacy tenantId-required flow) or via the
   // upcoming POST /import-finalize.
   app.post('/admin/tenant-bundles/import-preview', {
     // 512 MiB cap on the preview path: an operator who's about to
@@ -877,21 +877,21 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', `meta.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, 400);
     }
 
-    const sourceClient = meta.client as Record<string, unknown> | null | undefined;
-    const sourceClientId = (meta.clientId as string | undefined) ?? null;
+    const sourceTenant = meta.tenant as Record<string, unknown> | null | undefined;
+    const sourceTenantId = (meta.tenantId as string | undefined) ?? null;
 
-    // Look up the client in THIS region if the source meta carries an ID.
+    // Look up the tenant in THIS region if the source meta carries an ID.
     // Used by the UI to choose between "restore existing" / "create new"
     // / "block — use Restore Cart" paths. Failure to resolve is benign;
-    // it just means the source client doesn't exist locally.
-    let localClient: { id: string; status: string; companyName: string } | null = null;
-    if (sourceClientId) {
+    // it just means the source tenant doesn't exist locally.
+    let localTenant: { id: string; status: string; name: string } | null = null;
+    if (sourceTenantId) {
       const [c] = await app.db
-        .select({ id: clients.id, status: clients.status, companyName: clients.companyName })
-        .from(clients)
-        .where(eq(clients.id, sourceClientId))
+        .select({ id: tenants.id, status: tenants.status, name: tenants.name })
+        .from(tenants)
+        .where(eq(tenants.id, sourceTenantId))
         .limit(1);
-      if (c) localClient = { id: c.id, status: c.status as string, companyName: c.companyName };
+      if (c) localTenant = { id: c.id, status: c.status as string, name: c.name };
     }
 
     // Component breakdown: enumerate the entries by component so the
@@ -912,19 +912,19 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       sourceMeta: {
         schemaVersion: meta.schemaVersion ?? null,
         backupId: meta.backupId ?? null,
-        clientId: sourceClientId,
+        tenantId: sourceTenantId,
         capturedAt: meta.capturedAt ?? null,
         platformVersion: meta.platformVersion ?? null,
         label: meta.label ?? null,
-        client: sourceClient ?? null, // v2: may be null on legacy v1 archives
+        tenant: sourceTenant ?? null, // v2: may be null on legacy v1 archives
         domainsSummary: meta.domainsSummary ?? [],
         deploymentsSummary: meta.deploymentsSummary ?? [],
       },
       components: componentBreakdown,
       // Local match: indicates whether this region already has a
-      // client with the source UUID (and what its status is). UI
+      // tenant with the source UUID (and what its status is). UI
       // uses this to pick the right downstream flow.
-      localClientMatch: localClient,
+      localTenantMatch: localTenant,
       // Total entry count (incl. meta.json) and overall size for the
       // "this archive contains N files (X MiB)" UI line.
       entryCount: entries.length,
@@ -946,24 +946,24 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', 'request must be multipart/form-data', 400);
     }
     let passphrase: string | null = null;
-    let clientId: string | null = null;
+    let tenantId: string | null = null;
     let targetConfigId: string | null = null;
     let blob: Buffer | null = null;
     for await (const part of req.parts()) {
       if (part.type === 'field' && part.fieldname === 'passphrase') passphrase = part.value ?? null;
-      else if (part.type === 'field' && part.fieldname === 'clientId') clientId = part.value ?? null;
+      else if (part.type === 'field' && part.fieldname === 'tenantId') tenantId = part.value ?? null;
       else if (part.type === 'field' && part.fieldname === 'targetConfigId') targetConfigId = part.value ?? null;
       else if (part.type === 'file' && part.fieldname === 'bundle' && part.toBuffer) blob = await part.toBuffer();
     }
     // No min-length on passphrase — only required when the uploaded
     // archive is the encrypted-tar variant. Plain tar.gz and ZIP both
     // skip the field. The format-detecting decoder enforces this.
-    if (!clientId) throw new ApiError('VALIDATION_ERROR', 'clientId required', 400);
+    if (!tenantId) throw new ApiError('VALIDATION_ERROR', 'tenantId required', 400);
     if (!targetConfigId) throw new ApiError('VALIDATION_ERROR', 'targetConfigId required', 400);
     if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
 
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-    if (!client) throw new ApiError('NOT_FOUND', 'Target client not found in this region', 404);
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Target tenant not found in this region', 404);
 
     // Format-detecting decoder: dispatches by magic bytes
     // (Salted__/gzip/zip). Encrypted tar requires `passphrase`; the
@@ -974,13 +974,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     try {
       const result = await extractImportArchive({ blob, passphrase: passphrase ?? undefined });
       entries = result.entries;
-      app.log.info({ format: result.format, entryCount: entries.length, clientId }, 'tenant-bundles: import archive decoded');
+      app.log.info({ format: result.format, entryCount: entries.length, tenantId }, 'tenant-bundles: import archive decoded');
     } catch (err) {
       throw new ApiError('VALIDATION_ERROR', `archive decode failed: ${err instanceof Error ? err.message : String(err)}`, 400);
     }
 
     // Pull the source meta.json (kept for label/components info; we
-    // override clientId and capturedAt-vs-importedAt).
+    // override tenantId and capturedAt-vs-importedAt).
     const metaEntry = entries.find((e) => e.path === 'meta.json');
     if (!metaEntry) throw new ApiError('VALIDATION_ERROR', 'tarball missing meta.json', 400);
     let sourceMeta: { backupId?: string; label?: string; description?: string; components?: Record<string, unknown>; retentionDays?: number };
@@ -993,7 +993,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // Allocate a fresh bundleId in this region.
     const newBundleId = `bkp-${randomUUID()}`;
     const store = await resolveStore(app, targetConfigId, { requireActive: false });
-    const handle = await store.reserveBundle({ backupId: newBundleId, clientId });
+    const handle = await store.reserveBundle({ backupId: newBundleId, tenantId });
 
     // Upload every non-meta entry under its original
     // components/<component>/<name> path.
@@ -1013,25 +1013,25 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       componentInfo.push({ component, sizeBytes: ref.sizeBytes });
     }
 
-    // Write a fresh meta.json with this region's bundleId + clientId.
-    // The v2 fields (client / domainsSummary / deploymentsSummary) are
+    // Write a fresh meta.json with this region's bundleId + tenantId.
+    // The v2 fields (tenant / domainsSummary / deploymentsSummary) are
     // forwarded as-is from the source meta. If the source was a v1
     // bundle these are missing and the import will fail validation —
     // intentional, no backcompat (see BACKUP_META_SCHEMA_VERSION = 2).
-    const sourceClient = (sourceMeta as Record<string, unknown>).client;
+    const sourceTenant = (sourceMeta as Record<string, unknown>).tenant;
     const sourceDomains = (sourceMeta as Record<string, unknown>).domainsSummary;
     const sourceDeploys = (sourceMeta as Record<string, unknown>).deploymentsSummary;
-    if (!sourceClient || !Array.isArray(sourceDomains) || !Array.isArray(sourceDeploys)) {
+    if (!sourceTenant || !Array.isArray(sourceDomains) || !Array.isArray(sourceDeploys)) {
       throw new ApiError(
         'BUNDLE_VERSION_UNSUPPORTED',
-        'Imported bundle is missing v2 meta fields (client, domainsSummary, deploymentsSummary). Re-capture the bundle on the source region against a platform-api running schemaVersion=2 or later.',
+        'Imported bundle is missing v2 meta fields (tenant, domainsSummary, deploymentsSummary). Re-capture the bundle on the source region against a platform-api running schemaVersion=2 or later.',
         400,
       );
     }
     const importMeta: import('@k8s-hosting/api-contracts').BackupMetaV1 = {
       schemaVersion: 2 as const,
       backupId: newBundleId,
-      clientId,
+      tenantId,
       capturedAt: new Date().toISOString(),
       platformVersion,
       initiator: 'admin',
@@ -1042,7 +1042,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       expiresAt: null,
       retentionDays: sourceMeta.retentionDays ?? 30,
       description: sourceMeta.description ?? null,
-      client: sourceClient as import('@k8s-hosting/api-contracts').BackupMetaClient,
+      tenant: sourceTenant as import('@k8s-hosting/api-contracts').BackupMetaTenant,
       domainsSummary: sourceDomains as import('@k8s-hosting/api-contracts').BackupMetaDomainSummary[],
       deploymentsSummary: sourceDeploys as import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary[],
     };
@@ -1060,7 +1060,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       : `ssh://${cfg?.sshUser ?? ''}@${cfg?.sshHost ?? ''}:${cfg?.sshPath ?? ''}`;
     await app.db.insert(backupJobs).values({
       id: newBundleId,
-      clientId,
+      tenantId,
       initiator: 'admin',
       systemTrigger: null,
       status: 'completed',
@@ -1079,38 +1079,38 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       lastError: null,
     });
 
-    app.log.warn({ userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: newBundleId, sourceBundleId: sourceMeta.backupId, clientId, totalBytes }, 'tenant-bundles: import succeeded');
+    app.log.warn({ userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: newBundleId, sourceBundleId: sourceMeta.backupId, tenantId, totalBytes }, 'tenant-bundles: import succeeded');
     reply.status(201).send({ data: { bundleId: newBundleId, sizeBytes: totalBytes, componentCount: componentInfo.length } });
   });
 
   // ── POST /api/v1/admin/tenant-bundles/import-finalize ─────────────
   //
-  // Restore-from-bundle: create a brand-new client tenant from the
+  // Restore-from-bundle: create a brand-new tenant tenant from the
   // operator-edited meta + the uploaded archive. Used when the source
-  // client doesn't exist (or no longer exists) in this region —
-  // typically a deleted client whose bundle is the only artifact.
+  // tenant doesn't exist (or no longer exists) in this region —
+  // typically a deleted tenant whose bundle is the only artifact.
   //
   // Flow:
   //   1. Decode archive (same format-detecting decoder as /import).
   //   2. Validate operator-supplied overrides (Zod schema).
-  //   3. Create a fresh client via the standard createClient service
+  //   3. Create a fresh tenant via the standard createTenant service
   //      (bcrypt-hashed admin password, kubernetesNamespace generated
-  //      from companyName, default status=pending).
+  //      from name, default status=pending).
   //   4. Upload every artifact to the off-site target, register a new
-  //      backup_jobs row pointing at the new client.
-  //   5. Return { newClientId, bundleId, generatedPassword } so the UI
-  //      can show "client created" + "bundle imported — open
-  //      /clients/<id> and use Restore Cart to apply the data".
+  //      backup_jobs row pointing at the new tenant.
+  //   5. Return { newTenantId, bundleId, generatedPassword } so the UI
+  //      can show "tenant created" + "bundle imported — open
+  //      /tenants/<id> and use Restore Cart to apply the data".
   //
   // Scope (deferred):
   //   - reuseUuid / reuseNamespace toggles → require bypassing
-  //     createClient's randomUUID + namespace gen; coming in a follow-up.
-  //   - Auto-fire restore-cart against the new client (so the operator
+  //     createTenant's randomUUID + namespace gen; coming in a follow-up.
+  //   - Auto-fire restore-cart against the new tenant (so the operator
   //     doesn't have to click through cart-add for every component) —
   //     out of scope for this endpoint.
   app.post('/admin/tenant-bundles/import-finalize', {
     bodyLimit: 2 * 1024 * 1024 * 1024,
-    schema: { tags: ['TenantBundles'], summary: 'Create new client + import bundle in one shot', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Create new tenant + import bundle in one shot', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const req = request as unknown as {
       isMultipart: () => boolean;
@@ -1134,17 +1134,28 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     if (!overridesJson) throw new ApiError('VALIDATION_ERROR', 'overrides JSON required', 400);
 
     // Operator-supplied overrides — validated against the same Zod
-    // schema the /clients POST endpoint uses, so any value the form
-    // accepts here is also acceptable on the regular create-client
-    // path. The shape is intentionally a strict subset of CreateClientInput.
+    // schema the /tenants POST endpoint uses, so any value the form
+    // accepts here is also acceptable on the regular create-tenant
+    // path. The shape is intentionally a strict subset of CreateTenantInput.
     const overridesSchema = z.object({
-      company_name: z.string().min(1).max(255),
-      company_email: z.string().email(),
-      contact_email: z.string().email().optional(),
+      name: z.string().min(1).max(255),
+      // contact_name + phone_e164 + billing_address are required by
+      // createTenantSchema. Restore-from-backup paths must pass these
+      // through from the bundle's tenant block (or operator form input).
+      contact_name: z.string().min(1).max(255),
+      primary_email: z.string().email(),
+      secondary_email: z.string().email().optional(),
+      phone_e164: z.string(),
+      billing_address: z.object({
+        street_address: z.string().min(1).max(500),
+        postal_address: z.string().min(1).max(500),
+        city: z.string().min(1).max(200),
+        country: z.string().min(2).max(100),
+      }),
       plan_id: z.string().uuid(),
       region_id: z.string().uuid(),
       timezone: z.string().min(1).max(50).optional(),
-      worker_node_name: z.string().min(1).max(253).optional(),
+      node_name: z.string().min(1).max(253).optional(),
       storage_tier: z.enum(['local', 'ha']).optional(),
       // Subscription expiry pulled from the meta is opt-in: only carries
       // through if the operator confirms it on the form. Optional ISO date.
@@ -1157,7 +1168,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const overrides = parsed.data;
 
     // Decode archive first so a corrupt-bundle / wrong-passphrase
-    // failure happens BEFORE we create a phantom client row.
+    // failure happens BEFORE we create a phantom tenant row.
     const { extractImportArchive } = await import('./data-export.js');
     let entries;
     try {
@@ -1177,20 +1188,20 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', `meta.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, 400);
     }
 
-    // Resolve target config + store BEFORE creating the client so an
+    // Resolve target config + store BEFORE creating the tenant so an
     // mistyped targetConfigId fails fast.
     const [cfgRow] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
     if (!cfgRow) throw new ApiError('NOT_FOUND', 'targetConfigId does not match any backup configuration', 404);
 
-    // Create the new client. Returns id + generatedPassword for the
-    // auto-created client_admin user.
+    // Create the new tenant. Returns id + generatedPassword for the
+    // auto-created tenant_admin user.
     const userId = (request.user as { sub?: string } | undefined)?.sub ?? 'system';
-    const { createClient } = await import('../clients/service.js');
-    let newClient;
+    const { createTenant } = await import('../tenants/service.js');
+    let newTenant;
     try {
-      newClient = await createClient(app.db, overrides, userId);
+      newTenant = await createTenant(app.db, overrides, userId);
     } catch (err) {
-      // Surface stable error codes from createClient (EMAIL_IN_USE,
+      // Surface stable error codes from createTenant (EMAIL_IN_USE,
       // INVALID_PLAN_ID, INVALID_REGION_ID, plus worker-pin failures
       // from validateWorkerPin) so the frontend can disambiguate
       // operator-correctable validation errors from server-side
@@ -1203,13 +1214,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       if (code === 'INVALID_PLAN_ID' || code === 'INVALID_REGION_ID') {
         throw new ApiError(code, err instanceof Error ? err.message : 'invalid id', 400);
       }
-      throw new ApiError('VALIDATION_ERROR', `client creation failed: ${err instanceof Error ? err.message : String(err)}`, 400);
+      throw new ApiError('VALIDATION_ERROR', `tenant creation failed: ${err instanceof Error ? err.message : String(err)}`, 400);
     }
 
-    // Now register + upload the bundle against the new client.
+    // Now register + upload the bundle against the new tenant.
     const newBundleId = `bkp-${randomUUID()}`;
     const store = await resolveStore(app, targetConfigId, { requireActive: false });
-    const handle = await store.reserveBundle({ backupId: newBundleId, clientId: newClient.id });
+    const handle = await store.reserveBundle({ backupId: newBundleId, tenantId: newTenant.id });
 
     const componentSet = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
     const componentInfo: Array<{ component: string; sizeBytes: number }> = [];
@@ -1226,13 +1237,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       totalBytes += ref.sizeBytes;
     }
 
-    // Write a fresh meta.json for the new bundle. v2 client block is
+    // Write a fresh meta.json for the new bundle. v2 tenant block is
     // taken from the operator's overrides, NOT the source meta — the
     // source values are stale (different region, different plan, etc).
     const importMeta = {
       schemaVersion: BACKUP_META_SCHEMA_VERSION,
       backupId: newBundleId,
-      clientId: newClient.id,
+      tenantId: newTenant.id,
       capturedAt: new Date().toISOString(),
       platformVersion,
       initiator: 'admin' as const,
@@ -1243,18 +1254,18 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       expiresAt: null,
       retentionDays: ((sourceMeta.retentionDays as number | undefined) ?? 30),
       description: ((sourceMeta.description as string | null | undefined) ?? null),
-      // v2: rebuild client block from the operator overrides. This is
-      // the canonical client info for the new tenant — the operator
+      // v2: rebuild tenant block from the operator overrides. This is
+      // the canonical tenant info for the new tenant — the operator
       // edited it, so we trust it over the (possibly stale) source.
-      client: {
-        companyName: overrides.company_name,
-        companyEmail: overrides.company_email,
-        contactEmail: overrides.contact_email ?? null,
-        status: newClient.status as string,
-        kubernetesNamespace: newClient.kubernetesNamespace,
+      tenant: {
+        name: overrides.name,
+        primaryEmail: overrides.primary_email,
+        secondaryEmail: overrides.secondary_email ?? null,
+        status: newTenant.status as string,
+        kubernetesNamespace: newTenant.kubernetesNamespace,
         regionId: overrides.region_id,
         planId: overrides.plan_id,
-        workerNodeName: overrides.worker_node_name ?? null,
+        nodeName: overrides.node_name ?? null,
         storageTier: overrides.storage_tier ?? 'local',
         timezone: overrides.timezone ?? null,
         storageLimitOverride: null,
@@ -1279,7 +1290,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       : targetKind === 'ssh' ? `ssh://${cfgRow.id}` : `hostpath://${cfgRow.id}`;
     await app.db.insert(backupJobs).values({
       id: newBundleId,
-      clientId: newClient.id,
+      tenantId: newTenant.id,
       initiator: 'admin',
       systemTrigger: null,
       status: 'completed',
@@ -1299,19 +1310,19 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     });
 
     app.log.warn({
-      userId, newClientId: newClient.id, bundleId: newBundleId,
+      userId, newTenantId: newTenant.id, bundleId: newBundleId,
       sourceBundleId: sourceMeta.backupId, totalBytes,
     }, 'tenant-bundles: restore-from-bundle finalize succeeded');
 
     reply.status(201).send({
       data: {
-        newClientId: newClient.id,
+        newTenantId: newTenant.id,
         bundleId: newBundleId,
         sizeBytes: totalBytes,
         componentCount: componentInfo.length,
-        clientUser: {
-          email: overrides.company_email,
-          generatedPassword: (newClient as unknown as { _generatedPassword?: string })._generatedPassword,
+        tenantUser: {
+          email: overrides.primary_email,
+          generatedPassword: (newTenant as unknown as { _generatedPassword?: string })._generatedPassword,
         },
       },
     });
@@ -1431,7 +1442,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // No deep per-component detail — operators wanting that drill into
   // /:id/verify. Synchronous: caller pays the wall-clock cost.
   // Bounded at 200 bundles to keep the response under the 60-s ALB
-  // timeout; if the cluster has more, the operator filters by client.
+  // timeout; if the cluster has more, the operator filters by tenant.
   app.post('/admin/tenant-bundles/verify-all', {
     schema: { tags: ['TenantBundles'], summary: 'Verify integrity of every bundle (round-trip read)', security: [{ bearerAuth: [] }] },
   }, async () => {
@@ -1523,33 +1534,33 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   });
 
   // ── GET /api/v1/admin/backup-schedules ─────────────────────────────
-  // Global list of every per-client schedule, joined with the client's
+  // Global list of every per-tenant schedule, joined with the tenant's
   // business_name for display. Powers the "Schedules" tab on the
   // Tenant Backup admin page. We left-join so a stale schedule row
-  // pointing at a deleted client still surfaces (operator sees
+  // pointing at a deleted tenant still surfaces (operator sees
   // businessName=null and can prune).
   app.get('/admin/backup-schedules', {
-    schema: { tags: ['TenantBundles'], summary: 'List all client backup schedules', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'List all tenant backup schedules', security: [{ bearerAuth: [] }] },
   }, async () => {
     const rows = await app.db
       .select({
-        clientId: clientBackupSchedules.clientId,
-        enabled: clientBackupSchedules.enabled,
-        frequency: clientBackupSchedules.frequency,
-        hourOfDayUtc: clientBackupSchedules.hourOfDayUtc,
-        dayOfWeek: clientBackupSchedules.dayOfWeek,
-        dayOfMonth: clientBackupSchedules.dayOfMonth,
-        retentionDays: clientBackupSchedules.retentionDays,
-        lastRunAt: clientBackupSchedules.lastRunAt,
-        lastRunStatus: clientBackupSchedules.lastRunStatus,
-        businessName: clients.companyName,
+        tenantId: tenantBackupSchedules.tenantId,
+        enabled: tenantBackupSchedules.enabled,
+        frequency: tenantBackupSchedules.frequency,
+        hourOfDayUtc: tenantBackupSchedules.hourOfDayUtc,
+        dayOfWeek: tenantBackupSchedules.dayOfWeek,
+        dayOfMonth: tenantBackupSchedules.dayOfMonth,
+        retentionDays: tenantBackupSchedules.retentionDays,
+        lastRunAt: tenantBackupSchedules.lastRunAt,
+        lastRunStatus: tenantBackupSchedules.lastRunStatus,
+        businessName: tenants.name,
       })
-      .from(clientBackupSchedules)
-      .leftJoin(clients, eq(clientBackupSchedules.clientId, clients.id))
-      .orderBy(desc(clientBackupSchedules.lastRunAt));
+      .from(tenantBackupSchedules)
+      .leftJoin(tenants, eq(tenantBackupSchedules.tenantId, tenants.id))
+      .orderBy(desc(tenantBackupSchedules.lastRunAt));
     return success({
       data: rows.map((r) => ({
-        clientId: r.clientId,
+        tenantId: r.tenantId,
         enabled: r.enabled,
         frequency: r.frequency,
         hourOfDayUtc: r.hourOfDayUtc,
@@ -1563,17 +1574,17 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ── GET /api/v1/admin/clients/:clientId/backup-schedule ────────────
-  // Returns the client's schedule row, or null when none exists yet.
-  app.get('/admin/clients/:clientId/backup-schedule', {
-    schema: { tags: ['TenantBundles'], summary: 'Get the client backup schedule', security: [{ bearerAuth: [] }] },
+  // ── GET /api/v1/admin/tenants/:tenantId/backup-schedule ────────────
+  // Returns the tenant's schedule row, or null when none exists yet.
+  app.get('/admin/tenants/:tenantId/backup-schedule', {
+    schema: { tags: ['TenantBundles'], summary: 'Get the tenant backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const [row] = await app.db.select().from(clientBackupSchedules)
-      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    const { tenantId } = request.params as { tenantId: string };
+    const [row] = await app.db.select().from(tenantBackupSchedules)
+      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
     if (!row) return success(null);
     return success({
-      clientId: row.clientId,
+      tenantId: row.tenantId,
       enabled: row.enabled,
       frequency: row.frequency,
       hourOfDayUtc: row.hourOfDayUtc,
@@ -1585,23 +1596,23 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ── PUT /api/v1/admin/clients/:clientId/backup-schedule ────────────
+  // ── PUT /api/v1/admin/tenants/:tenantId/backup-schedule ────────────
   // Upsert the schedule row. PUT semantics — full row supplied each time.
-  app.put('/admin/clients/:clientId/backup-schedule', {
-    schema: { tags: ['TenantBundles'], summary: 'Upsert the client backup schedule', security: [{ bearerAuth: [] }] },
+  app.put('/admin/tenants/:tenantId/backup-schedule', {
+    schema: { tags: ['TenantBundles'], summary: 'Upsert the tenant backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const parsed = updateClientBackupScheduleSchema.safeParse(request.body);
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = updateTenantBackupScheduleSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
     }
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-    if (!client) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
     // Plan retention cap applies here too (Tier-3 cannot bypass).
     const [plan] = await app.db.select({
       defaultDays: hostingPlans.defaultBackupRetentionDays,
       maxDays: hostingPlans.maxBackupRetentionDays,
-    }).from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
+    }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
     if (!plan) throw new ApiError('CONFIG_INVALID', 'Client has no resolvable plan', 400);
     const requestedRetention = parsed.data.retentionDays ?? plan.defaultDays;
     if (requestedRetention > plan.maxDays) {
@@ -1614,11 +1625,11 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
     // Upsert. Reset last_run_at when enabling so the next tick fires
     // immediately; preserve when re-saving without flipping enable.
-    const existing = await app.db.select().from(clientBackupSchedules)
-      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    const existing = await app.db.select().from(tenantBackupSchedules)
+      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
     if (existing.length === 0) {
-      await app.db.insert(clientBackupSchedules).values({
-        clientId,
+      await app.db.insert(tenantBackupSchedules).values({
+        tenantId,
         enabled: parsed.data.enabled ?? false,
         frequency: parsed.data.frequency ?? 'weekly',
         hourOfDayUtc: parsed.data.hourOfDayUtc ?? 3,
@@ -1627,19 +1638,19 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         retentionDays: requestedRetention,
       });
     } else {
-      await app.db.update(clientBackupSchedules).set({
+      await app.db.update(tenantBackupSchedules).set({
         enabled: parsed.data.enabled ?? existing[0]!.enabled,
         frequency: parsed.data.frequency ?? existing[0]!.frequency,
         hourOfDayUtc: parsed.data.hourOfDayUtc ?? existing[0]!.hourOfDayUtc,
         dayOfWeek: parsed.data.dayOfWeek === undefined ? existing[0]!.dayOfWeek : parsed.data.dayOfWeek,
         dayOfMonth: parsed.data.dayOfMonth === undefined ? existing[0]!.dayOfMonth : parsed.data.dayOfMonth,
         retentionDays: requestedRetention,
-      }).where(eq(clientBackupSchedules.clientId, clientId));
+      }).where(eq(tenantBackupSchedules.tenantId, tenantId));
     }
-    const [refreshed] = await app.db.select().from(clientBackupSchedules)
-      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    const [refreshed] = await app.db.select().from(tenantBackupSchedules)
+      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
     return success({
-      clientId: refreshed!.clientId,
+      tenantId: refreshed!.tenantId,
       enabled: refreshed!.enabled,
       frequency: refreshed!.frequency,
       hourOfDayUtc: refreshed!.hourOfDayUtc,
@@ -1651,36 +1662,36 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ── DELETE /api/v1/admin/clients/:clientId/backup-schedule ─────────
-  app.delete('/admin/clients/:clientId/backup-schedule', {
-    schema: { tags: ['TenantBundles'], summary: 'Disable + remove the client backup schedule', security: [{ bearerAuth: [] }] },
+  // ── DELETE /api/v1/admin/tenants/:tenantId/backup-schedule ─────────
+  app.delete('/admin/tenants/:tenantId/backup-schedule', {
+    schema: { tags: ['TenantBundles'], summary: 'Disable + remove the tenant backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
-    await app.db.delete(clientBackupSchedules).where(eq(clientBackupSchedules.clientId, clientId));
+    const { tenantId } = request.params as { tenantId: string };
+    await app.db.delete(tenantBackupSchedules).where(eq(tenantBackupSchedules.tenantId, tenantId));
     reply.status(204).send();
   });
 
-  // ── POST /api/v1/admin/clients/:clientId/backup-schedule/run-now ───
-  // Reset last_run_at on the client's schedule so the next Tier-1
+  // ── POST /api/v1/admin/tenants/:tenantId/backup-schedule/run-now ───
+  // Reset last_run_at on the tenant's schedule so the next Tier-1
   // tick (within 5 min) picks it up. Operator-friendly affordance:
   // lets you test a schedule without waiting for the natural next-due
   // window. Requires the schedule to exist + be enabled.
-  app.post('/admin/clients/:clientId/backup-schedule/run-now', {
-    schema: { tags: ['TenantBundles'], summary: 'Force the next scheduler tick to fire this client immediately', security: [{ bearerAuth: [] }] },
+  app.post('/admin/tenants/:tenantId/backup-schedule/run-now', {
+    schema: { tags: ['TenantBundles'], summary: 'Force the next scheduler tick to fire this tenant immediately', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
-    const [row] = await app.db.select().from(clientBackupSchedules)
-      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
-    if (!row) throw new ApiError('NOT_FOUND', 'No schedule for this client — create one first', 404);
+    const { tenantId } = request.params as { tenantId: string };
+    const [row] = await app.db.select().from(tenantBackupSchedules)
+      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
+    if (!row) throw new ApiError('NOT_FOUND', 'No schedule for this tenant — create one first', 404);
     if (!row.enabled) throw new ApiError('VALIDATION_ERROR', 'Schedule is disabled — enable it before requesting a run', 400);
     // Setting last_run_at to NULL marks the row as "never run" which
     // matches the eligibility predicate `last_run_at IS NULL` in
     // schedule.ts.runScheduleTick. The cross-replica CAS still
     // serialises if multiple admins hit Run-Now simultaneously.
-    await app.db.update(clientBackupSchedules)
+    await app.db.update(tenantBackupSchedules)
       .set({ lastRunAt: null, lastRunStatus: null })
-      .where(eq(clientBackupSchedules.clientId, clientId));
-    reply.send(success({ clientId, message: 'Scheduled for next tick (within 5 minutes)' }));
+      .where(eq(tenantBackupSchedules.tenantId, tenantId));
+    reply.send(success({ tenantId, message: 'Scheduled for next tick (within 5 minutes)' }));
   });
 }
 
@@ -1770,20 +1781,20 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 }
 
 /**
- * Map a `backup_jobs` row + the live client status into the
- * BundleSummary contract. Caller resolves the client status via
+ * Map a `backup_jobs` row + the live tenant status into the
+ * BundleSummary contract. Caller resolves the tenant status via
  * a LEFT JOIN (list endpoint) or a follow-up SELECT (single-bundle
  * endpoints) so this function stays pure.
  */
 function toBundleSummary(
   j: typeof backupJobs.$inferSelect,
-  client: { status: import('@k8s-hosting/api-contracts').BundleClientStatus; name: string | null },
+  tenant: { status: import('@k8s-hosting/api-contracts').BundleTenantStatus; name: string | null },
 ): BundleSummary {
   return {
     id: j.id,
-    clientId: j.clientId,
-    clientStatus: client.status,
-    clientName: client.name,
+    tenantId: j.tenantId,
+    tenantStatus: tenant.status,
+    tenantName: tenant.name,
     initiator: j.initiator,
     systemTrigger: j.systemTrigger,
     status: j.status,
@@ -1806,12 +1817,12 @@ function toBundleSummary(
 }
 
 /**
- * Convert clients.status (or null when the row was deleted) into the
- * BundleClientStatus enum the UI consumes.
+ * Convert tenants.status (or null when the row was deleted) into the
+ * BundleTenantStatus enum the UI consumes.
  */
-export function clientRowToBundleStatus(
+export function tenantRowToBundleStatus(
   status: string | null | undefined,
-): import('@k8s-hosting/api-contracts').BundleClientStatus {
+): import('@k8s-hosting/api-contracts').BundleTenantStatus {
   if (!status) return 'missing';
   if (status === 'archived') return 'archived';
   if (status === 'suspended') return 'suspended';

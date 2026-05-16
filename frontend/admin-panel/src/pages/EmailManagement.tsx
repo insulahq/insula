@@ -255,7 +255,7 @@ export default function EmailManagement() {
 
 interface EmailDomainRow {
   readonly id: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly domainId: string;
   readonly domainName: string;
   readonly mailboxCount?: number;
@@ -309,7 +309,7 @@ function EmailDomainsTable({ domains, isLoading }: { readonly domains: readonly 
 }
 
 function EmailDomainRowView({ domain: d, onOpenDkim }: { readonly domain: EmailDomainRow; readonly onOpenDkim: () => void }) {
-  const updateDomain = useUpdateEmailDomain(d.clientId);
+  const updateDomain = useUpdateEmailDomain(d.tenantId);
   const webmailOn = d.webmailEnabled !== 0 && d.webmailEnabled !== undefined ? d.webmailEnabled === 1 : true;
 
   const toggleWebmail = () => {

@@ -1,7 +1,7 @@
 /**
  * Tenant Backup Tier-1/3 scheduler.
  *
- * Reads `client_backup_schedules` and ticks one bundle per client
+ * Reads `tenant_backup_schedules` and ticks one bundle per tenant
  * whose `last_run_at` is older than the requested frequency. The
  * tick runs every 5 min on every platform-api replica; we use a
  * `lastRunAt` claim-and-update pattern to serialise across replicas
@@ -20,13 +20,13 @@
  *
  * Failure handling: a failing run sets last_run_status='failed'
  * which leaves the schedule eligible to retry on the NEXT tick (5
- * min later). Persistent failures will NOT block other clients —
- * the loop catches per-client errors.
+ * min later). Persistent failures will NOT block other tenants —
+ * the loop catches per-tenant errors.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { eq, sql } from 'drizzle-orm';
-import { clientBackupSchedules, backupConfigurations } from '../../db/schema.js';
+import { tenantBackupSchedules, backupConfigurations } from '../../db/schema.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
@@ -45,12 +45,12 @@ export interface ScheduleTickResult {
 
 export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTickResult> {
   const due = await app.db.execute(sql`
-    SELECT s.client_id          AS "clientId",
+    SELECT s.tenant_id          AS "tenantId",
            s.frequency,
            s.retention_days     AS "retentionDays",
            s.last_run_at        AS "lastRunAt"
-    FROM client_backup_schedules s
-    INNER JOIN clients c ON c.id = s.client_id
+    FROM tenant_backup_schedules s
+    INNER JOIN tenants c ON c.id = s.tenant_id
     WHERE s.enabled = TRUE
       AND c.status = 'active'
       AND (
@@ -61,7 +61,7 @@ export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTic
       )
     ORDER BY s.last_run_at NULLS FIRST
     LIMIT 50
-  `) as unknown as { rows: Array<{ clientId: string; frequency: string; retentionDays: number; lastRunAt: string | null }> };
+  `) as unknown as { rows: Array<{ tenantId: string; frequency: string; retentionDays: number; lastRunAt: string | null }> };
 
   let considered = 0;
   let ranBundles = 0;
@@ -70,31 +70,31 @@ export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTic
   for (const row of due.rows) {
     considered++;
     const claim = await app.db.execute(sql`
-      UPDATE client_backup_schedules
+      UPDATE tenant_backup_schedules
       SET last_run_at = now(),
           last_run_status = 'running'::backup_job_status,
           updated_at = now()
-      WHERE client_id = ${row.clientId}
+      WHERE tenant_id = ${row.tenantId}
         AND (last_run_at IS NULL OR last_run_at = ${row.lastRunAt})
-      RETURNING client_id
-    `) as unknown as { rows: Array<{ client_id: string }> };
+      RETURNING tenant_id
+    `) as unknown as { rows: Array<{ tenant_id: string }> };
     if (claim.rows.length === 0) continue; // lost race
     try {
-      await runOneScheduledBundle(app, row.clientId, row.retentionDays);
-      await app.db.update(clientBackupSchedules)
+      await runOneScheduledBundle(app, row.tenantId, row.retentionDays);
+      await app.db.update(tenantBackupSchedules)
         .set({ lastRunStatus: 'completed' })
-        .where(eq(clientBackupSchedules.clientId, row.clientId));
+        .where(eq(tenantBackupSchedules.tenantId, row.tenantId));
       ranBundles++;
     } catch (err) {
       errors++;
-      app.log.error({ err, clientId: row.clientId }, 'tenant-backup schedule: scheduled bundle failed');
-      await app.db.update(clientBackupSchedules)
+      app.log.error({ err, tenantId: row.tenantId }, 'tenant-backup schedule: scheduled bundle failed');
+      await app.db.update(tenantBackupSchedules)
         .set({ lastRunStatus: 'failed' })
-        .where(eq(clientBackupSchedules.clientId, row.clientId));
+        .where(eq(tenantBackupSchedules.tenantId, row.tenantId));
       // Notify platform operators (super_admin + admin) so a
       // persistent schedule failure is page-able rather than buried
       // in last_run_status. Fire-and-forget; notification failure
-      // does NOT regress the tick or other clients in the loop.
+      // does NOT regress the tick or other tenants in the loop.
       try {
         const { resolveRecipients } = await import('../notifications/recipients.js');
         const { notifyUsers } = await import('../notifications/service.js');
@@ -102,12 +102,12 @@ export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTic
         await notifyUsers(app.db, recipients, {
           type: 'error',
           title: `Scheduled backup failed`,
-          message: `The ${row.frequency} scheduled backup for client ${row.clientId} failed: ${(err as Error).message}. The next tick (5 min) will retry; check the bundle list and the platform-api logs for details.`,
-          resourceType: 'client',
-          resourceId: row.clientId,
+          message: `The ${row.frequency} scheduled backup for tenant ${row.tenantId} failed: ${(err as Error).message}. The next tick (5 min) will retry; check the bundle list and the platform-api logs for details.`,
+          resourceType: 'tenant',
+          resourceId: row.tenantId,
         });
       } catch (notifyErr) {
-        app.log.warn({ err: notifyErr, clientId: row.clientId }, 'tenant-backup schedule: failure-notification dispatch failed');
+        app.log.warn({ err: notifyErr, tenantId: row.tenantId }, 'tenant-backup schedule: failure-notification dispatch failed');
       }
     }
   }
@@ -115,7 +115,7 @@ export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTic
   return { considered, ranBundles, errors };
 }
 
-async function runOneScheduledBundle(app: FastifyInstance, clientId: string, retentionDays: number): Promise<void> {
+async function runOneScheduledBundle(app: FastifyInstance, tenantId: string, retentionDays: number): Promise<void> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.active, true)).limit(1);
   if (!cfg) throw new Error('no active backup target — schedule cannot fire');
 
@@ -181,7 +181,7 @@ async function runOneScheduledBundle(app: FastifyInstance, clientId: string, ret
       kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
     },
     {
-      clientId,
+      tenantId,
       initiator: 'system',
       systemTrigger: 'scheduled',
       label: 'scheduled',

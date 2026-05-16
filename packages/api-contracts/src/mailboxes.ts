@@ -25,7 +25,7 @@ export type UpdateMailboxInput = z.infer<typeof updateMailboxSchema>;
 export const mailboxResponseSchema = z.object({
   id: z.string(),
   emailDomainId: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   localPart: z.string(),
   fullAddress: z.string(),
   displayName: z.string().nullable(),
@@ -55,7 +55,7 @@ export const webmailTokenRequestSchema = z.object({
   mailbox_id: z.string().uuid(),
   /**
    * Engine to mint the token for. Defaults to `roundcube` for
-   * backwards compatibility with the existing client-panel button.
+   * backwards compatibility with the existing tenant-panel button.
    * Bulwark tokens carry additional claims (`iss`, `jti`,
    * `tenant_id`, `actor_user_id`) and resolve to a different URL
    * shape — see ADR-039.

@@ -23,12 +23,12 @@ const INPUT_CLASS =
 type Tab = 'routing' | 'dns' | 'ssl';
 
 export default function DomainDetail() {
-  const { clientId, domainId } = useParams<{ clientId: string; domainId: string }>();
+  const { tenantId, domainId } = useParams<{ tenantId: string; domainId: string }>();
   const [activeTab, setActiveTab] = useState<Tab>('routing');
   const [showVerifyModal, setShowVerifyModal] = useState(false);
-  const verifyDomain = useVerifyDomain(clientId);
+  const verifyDomain = useVerifyDomain(tenantId);
 
-  const { data: domainsData, isLoading: domainLoading } = useDomains(clientId, { limit: 100 });
+  const { data: domainsData, isLoading: domainLoading } = useDomains(tenantId, { limit: 100 });
   const domain = domainsData?.data?.find((d) => d.id === domainId);
 
   if (domainLoading) {
@@ -229,30 +229,30 @@ export default function DomainDetail() {
               </div>
             );
           })()}
-          <RoutingTab clientId={clientId!} domainId={domainId!} domainName={domain.domainName} dnsMode={domain.dnsMode} />
+          <RoutingTab tenantId={tenantId!} domainId={domainId!} domainName={domain.domainName} dnsMode={domain.dnsMode} />
         </>
       )}
-      {activeTab === 'dns' && <DnsRecordsTab clientId={clientId!} domainId={domainId!} />}
-      {activeTab === 'ssl' && <SslTlsTab clientId={clientId!} domainId={domainId!} sslAutoRenew={domain.sslAutoRenew} />}
+      {activeTab === 'dns' && <DnsRecordsTab tenantId={tenantId!} domainId={domainId!} />}
+      {activeTab === 'ssl' && <SslTlsTab tenantId={tenantId!} domainId={domainId!} sslAutoRenew={domain.sslAutoRenew} />}
     </div>
   );
 }
 
 // ─── Routing Tab ─────────────────────────────────────────────────────────────
 
-function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
-  readonly clientId: string;
+function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
+  readonly tenantId: string;
   readonly domainId: string;
   readonly domainName: string;
   readonly dnsMode: string;
 }) {
-  const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
-  const { data: deploymentsData } = useDeployments(clientId);
+  const { data: routesData, isLoading } = useIngressRoutes(tenantId, domainId);
+  const { data: deploymentsData } = useDeployments(tenantId);
   const { data: ingressSettingsData } = useIngressSettings();
   const ingressBaseDomain = ingressSettingsData?.data?.ingressBaseDomain ?? '';
-  const createRoute = useCreateIngressRoute(clientId, domainId);
-  const updateRoute = useUpdateIngressRoute(clientId, domainId);
-  const deleteRoute = useDeleteIngressRoute(clientId, domainId);
+  const createRoute = useCreateIngressRoute(tenantId, domainId);
+  const updateRoute = useUpdateIngressRoute(tenantId, domainId);
+  const deleteRoute = useDeleteIngressRoute(tenantId, domainId);
 
   const [newHostname, setNewHostname] = useState('');
   // Optional at create time — operator can leave the route unassigned and
@@ -293,7 +293,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
       {/* Explanation */}
       <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
         {isCname && (
-          <p>This is a <strong>CNAME domain</strong>. Add a route and assign a deployment. The client points their DNS to the platform's ingress hostname.</p>
+          <p>This is a <strong>CNAME domain</strong>. Add a route and assign a deployment. The tenant points their DNS to the platform's ingress hostname.</p>
         )}
         {dnsMode === 'primary' && (
           <p>This is a <strong>Primary DNS domain</strong>. Add routes for hostnames (apex or subdomains). For subdomains, a CNAME record is auto-created. For the apex, A/AAAA records point to the platform ingress.</p>
@@ -331,7 +331,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                 <tr key={route.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
                   <td className="px-4 py-3">
                     <Link
-                      to={`/clients/${clientId}/domains/${domainId}/routes/${route.id}`}
+                      to={`/tenants/${tenantId}/domains/${domainId}/routes/${route.id}`}
                       className="flex items-center gap-2 group"
                       data-testid={`route-link-${route.id}`}
                     >
@@ -455,10 +455,10 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
 
 // ─── DNS Records Tab ──────────────────────────────────────────────────────────
 
-function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; readonly domainId: string }) {
-  const { data: response, isLoading, isError } = useDnsRecords(clientId, domainId);
-  const createRecord = useCreateDnsRecord(clientId, domainId);
-  const deleteRecord = useDeleteDnsRecord(clientId, domainId);
+function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; readonly domainId: string }) {
+  const { data: response, isLoading, isError } = useDnsRecords(tenantId, domainId);
+  const createRecord = useCreateDnsRecord(tenantId, domainId);
+  const deleteRecord = useDeleteDnsRecord(tenantId, domainId);
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
@@ -672,14 +672,14 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
 const TEXTAREA_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm font-mono text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-function SslTlsTab({ clientId, domainId, sslAutoRenew }: {
-  readonly clientId: string;
+function SslTlsTab({ tenantId, domainId, sslAutoRenew }: {
+  readonly tenantId: string;
   readonly domainId: string;
   readonly sslAutoRenew: number;
 }) {
-  const { data: certData, isLoading, isError, error } = useSslCert(clientId, domainId);
-  const uploadCert = useUploadSslCert(clientId, domainId);
-  const deleteCert = useDeleteSslCert(clientId, domainId);
+  const { data: certData, isLoading, isError, error } = useSslCert(tenantId, domainId);
+  const uploadCert = useUploadSslCert(tenantId, domainId);
+  const deleteCert = useDeleteSslCert(tenantId, domainId);
 
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [certificate, setCertificate] = useState('');

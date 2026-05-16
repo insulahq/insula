@@ -33,11 +33,11 @@ export function listDeploymentComponents(
 }
 
 export async function fetchPods(
-  k8sClients: K8sClients,
+  k8sTenants: K8sClients,
   namespace: string,
   deploymentName: string,
 ): Promise<k8s.V1Pod[]> {
-  const result = await k8sClients.core.listNamespacedPod({
+  const result = await k8sTenants.core.listNamespacedPod({
     namespace,
     labelSelector: `app=${deploymentName},platform.io/managed=true`,
   });

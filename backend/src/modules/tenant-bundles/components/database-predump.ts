@@ -10,10 +10,10 @@
  * resulting restic snapshot — guaranteed-consistent, alongside the
  * raw on-disk DB files.
  *
- * Design note: the backup-tool image carries NO DB clients. The dump
+ * Design note: the backup-tool image carries NO DB tenants. The dump
  * runs INSIDE the live tenant DB pod via `execInPod`, using the root
  * password the SQL Manager already holds. This avoids:
- *   - duplicating mariadb-client / postgresql-client binaries in the
+ *   - duplicating mariadb-tenant / postgresql-tenant binaries in the
  *     backup image
  *   - shipping a second copy of the root password into the backup ns
  *   - opening a network path from the backup pod to the live DB
@@ -35,7 +35,7 @@ import type { Engine } from '../../deployments/db-manager.js';
 /**
  * Minimal projection of a deployment row + its catalog entry. The caller
  * (orchestrator) does the JOIN against `deployments` × `catalog_entries`
- * filtered by clientId; we only see the fields needed to dispatch.
+ * filtered by tenantId; we only see the fields needed to dispatch.
  */
 export interface PreDumpDeployment {
   readonly deploymentId: string;
@@ -51,7 +51,7 @@ export interface PreDumpDeployment {
 
 /**
  * Subset of the SQL Manager surface this hook depends on. Injected so
- * unit tests can stub the k8s exec without spinning up a kube client.
+ * unit tests can stub the k8s exec without spinning up a kube tenant.
  */
 export interface PreDumpDeps {
   readonly buildDbContext: (

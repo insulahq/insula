@@ -159,7 +159,7 @@ describe('health service', () => {
     expect(result.message).toContain('ENOTFOUND');
   });
 
-  it('kubernetes check returns not_configured when no client provided', async () => {
+  it('kubernetes check returns not_configured when no tenant provided', async () => {
     const result = await checkKubernetes(undefined);
     expect(result.name).toBe('kubernetes');
     expect(result.status).toBe('degraded');

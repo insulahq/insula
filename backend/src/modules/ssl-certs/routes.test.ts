@@ -7,7 +7,7 @@ import { registerAuth } from '../../middleware/auth.js';
 const mockCert = {
   id: 'cert-1',
   domainId: 'd1',
-  clientId: 'c1',
+  tenantId: 'c1',
   issuer: 'CN=Test CA',
   subject: 'CN=example.com',
   expiresAt: new Date('2027-01-01').toISOString(),
@@ -49,14 +49,14 @@ describe('ssl-cert routes', () => {
   // ─── Auth ────────────────────────────────────────────────────────────────
 
   it('GET ssl-cert should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/domains/d1/ssl-cert' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/domains/d1/ssl-cert' });
     expect(res.statusCode).toBe(401);
   });
 
   it('GET ssl-cert should reject read_only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1/ssl-cert',
+      url: '/api/v1/tenants/c1/domains/d1/ssl-cert',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -67,7 +67,7 @@ describe('ssl-cert routes', () => {
   it('GET ssl-cert should return cert for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1/ssl-cert',
+      url: '/api/v1/tenants/c1/domains/d1/ssl-cert',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -79,7 +79,7 @@ describe('ssl-cert routes', () => {
   it('POST ssl-cert should reject invalid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/domains/d1/ssl-cert',
+      url: '/api/v1/tenants/c1/domains/d1/ssl-cert',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
@@ -89,7 +89,7 @@ describe('ssl-cert routes', () => {
   it('POST ssl-cert should upload with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/domains/d1/ssl-cert',
+      url: '/api/v1/tenants/c1/domains/d1/ssl-cert',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         certificate: '-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----',
@@ -105,7 +105,7 @@ describe('ssl-cert routes', () => {
   it('DELETE ssl-cert should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/domains/d1/ssl-cert',
+      url: '/api/v1/tenants/c1/domains/d1/ssl-cert',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

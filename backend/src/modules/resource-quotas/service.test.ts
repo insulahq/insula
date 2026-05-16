@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { getResourceQuota, updateResourceQuota } from './service.js';
 
 const QUOTA = {
-  id: 'q1', clientId: 'c1', cpuCoresLimit: '4.00', memoryGbLimit: 8,
+  id: 'q1', tenantId: 'c1', cpuCoresLimit: '4.00', memoryGbLimit: 8,
   storageGbLimit: 100, bandwidthGbLimit: 500, cpuCoresCurrent: '1.50',
   memoryGbCurrent: 3, storageGbCurrent: 25, cpuWarningThreshold: '80.00',
   memoryWarningThreshold: 80, storageWarningThreshold: 80, updatedAt: new Date(),

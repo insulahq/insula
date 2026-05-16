@@ -110,7 +110,7 @@ export function getWwwCompanionHostname(
 export async function createRoute(
   db: Database,
   domainId: string,
-  clientId: string,
+  tenantId: string,
   hostname: string,
   deploymentId?: string | null,
   path?: string,
@@ -151,7 +151,7 @@ export async function createRoute(
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
@@ -175,7 +175,7 @@ export async function createRoute(
   // resolves — catch it at creation time with a clear error.
   if (deploymentId) {
     const [dep] = await db.select().from(deployments).where(
-      and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId)),
+      and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)),
     );
     if (!dep) {
       throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
@@ -201,16 +201,16 @@ export async function createRoute(
     }
   }
 
-  // Validate private_worker target (must exist + belong to this client + active).
+  // Validate private_worker target (must exist + belong to this tenant + active).
   if (privateWorkerId) {
     const [pw] = await db
       .select()
       .from(privateWorkers)
-      .where(and(eq(privateWorkers.id, privateWorkerId), eq(privateWorkers.clientId, clientId)));
+      .where(and(eq(privateWorkers.id, privateWorkerId), eq(privateWorkers.tenantId, tenantId)));
     if (!pw) {
       throw new ApiError(
         'PRIVATE_WORKER_NOT_FOUND',
-        `Private worker '${privateWorkerId}' not found for this client`,
+        `Private worker '${privateWorkerId}' not found for this tenant`,
         404,
       );
     }
@@ -321,9 +321,9 @@ export async function updateRoute(
     servicePort?: number | null;
   },
   // Required when privateWorkerId is being set — we re-verify the worker
-  // belongs to this client to defend against route-id enumeration that
-  // would otherwise let client A repoint client B's route at A's worker.
-  clientId?: string,
+  // belongs to this tenant to defend against route-id enumeration that
+  // would otherwise let tenant A repoint tenant B's route at A's worker.
+  tenantId?: string,
 ) {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) {
@@ -342,25 +342,25 @@ export async function updateRoute(
   }
 
   // Cross-tenant guard for the new private-worker target. Without this,
-  // a caller authenticated as client A could PATCH client B's route to
+  // a caller authenticated as tenant A could PATCH tenant B's route to
   // target a worker in A's namespace. We re-verify ownership here using
   // the same shape as createRoute.
   if (input.privateWorkerId) {
-    if (!clientId) {
+    if (!tenantId) {
       throw new ApiError(
         'VALIDATION_ERROR',
-        'clientId is required when setting private_worker_id on an ingress route',
+        'tenantId is required when setting private_worker_id on an ingress route',
         400,
       );
     }
     const [pw] = await db
       .select({ id: privateWorkers.id, status: privateWorkers.status })
       .from(privateWorkers)
-      .where(and(eq(privateWorkers.id, input.privateWorkerId), eq(privateWorkers.clientId, clientId)));
+      .where(and(eq(privateWorkers.id, input.privateWorkerId), eq(privateWorkers.tenantId, tenantId)));
     if (!pw) {
       throw new ApiError(
         'PRIVATE_WORKER_NOT_FOUND',
-        `Private worker '${input.privateWorkerId}' not found for this client`,
+        `Private worker '${input.privateWorkerId}' not found for this tenant`,
         404,
       );
     }
@@ -429,10 +429,10 @@ export async function listRoutesForDomain(db: Database, domainId: string) {
   return db.select().from(ingressRoutes).where(eq(ingressRoutes.domainId, domainId));
 }
 
-export async function listRoutesForClient(db: Database, clientId: string) {
-  // Join routes with domains to filter by client
-  const clientDomains = await db.select({ id: domains.id }).from(domains).where(eq(domains.clientId, clientId));
-  const domainIds = clientDomains.map(d => d.id);
+export async function listRoutesForTenant(db: Database, tenantId: string) {
+  // Join routes with domains to filter by tenant
+  const tenantDomains = await db.select({ id: domains.id }).from(domains).where(eq(domains.tenantId, tenantId));
+  const domainIds = tenantDomains.map(d => d.id);
   if (domainIds.length === 0) return [];
 
   const allRoutes = await db.select().from(ingressRoutes);

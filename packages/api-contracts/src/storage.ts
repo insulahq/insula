@@ -14,17 +14,17 @@ export const storageOverviewSchema = z.object({
     redis: z.object({ usedBytes: z.number() }),
     dockerImages: z.object({ totalBytes: z.number(), count: z.number() }),
   }),
-  clients: z.array(
+  tenants: z.array(
     z.object({
-      clientId: z.string(),
-      companyName: z.string(),
+      tenantId: z.string(),
+      name: z.string(),
       namespace: z.string(),
       usedBytes: z.number(),
     }),
   ),
   total: z.object({
     systemBytes: z.number(),
-    clientBytes: z.number(),
+    tenantBytes: z.number(),
   }),
 });
 

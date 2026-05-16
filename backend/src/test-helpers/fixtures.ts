@@ -1,4 +1,4 @@
-import { regions, hostingPlans, clients, domains, backups } from '../db/schema.js';
+import { regions, hostingPlans, tenants, domains, backups } from '../db/schema.js';
 import type { Database } from '../db/index.js';
 
 export async function seedRegion(db: Database, overrides: Partial<typeof regions.$inferInsert> = {}) {
@@ -30,26 +30,26 @@ export async function seedPlan(db: Database, overrides: Partial<typeof hostingPl
   return { ...defaults, ...overrides };
 }
 
-export async function seedClient(db: Database, regionId: string, planId: string, overrides: Partial<typeof clients.$inferInsert> = {}) {
+export async function seedTenant(db: Database, regionId: string, planId: string, overrides: Partial<typeof tenants.$inferInsert> = {}) {
   const id = crypto.randomUUID();
   const defaults = {
     id,
     regionId,
-    companyName: `Test Company ${id.slice(0, 8)}`,
-    companyEmail: `test-${id.slice(0, 8)}@example.com`,
+    name: `Test Company ${id.slice(0, 8)}`,
+    primaryEmail: `test-${id.slice(0, 8)}@example.com`,
     status: 'active' as const,
-    kubernetesNamespace: `client-test-${id.slice(0, 8)}`,
+    kubernetesNamespace: `tenant-test-${id.slice(0, 8)}`,
     planId,
   };
-  await db.insert(clients).values({ ...defaults, ...overrides });
+  await db.insert(tenants).values({ ...defaults, ...overrides });
   return { ...defaults, ...overrides };
 }
 
-export async function seedDomain(db: Database, clientId: string, overrides: Partial<typeof domains.$inferInsert> = {}) {
+export async function seedDomain(db: Database, tenantId: string, overrides: Partial<typeof domains.$inferInsert> = {}) {
   const id = crypto.randomUUID();
   const defaults = {
     id,
-    clientId,
+    tenantId,
     domainName: `test-${id.slice(0, 8)}.example.com`,
     status: 'active' as const,
     dnsMode: 'cname' as const,
@@ -58,16 +58,16 @@ export async function seedDomain(db: Database, clientId: string, overrides: Part
   return { ...defaults, ...overrides };
 }
 
-export async function seedBackup(db: Database, clientId: string, overrides: Partial<typeof backups.$inferInsert> = {}) {
+export async function seedBackup(db: Database, tenantId: string, overrides: Partial<typeof backups.$inferInsert> = {}) {
   const id = crypto.randomUUID();
   const defaults = {
     id,
-    clientId,
+    tenantId,
     backupType: 'manual' as const,
     resourceType: 'full',
     status: 'completed' as const,
     sizeBytes: 1024000,
-    storagePath: `/backups/${clientId}/${id}.tar.gz`,
+    storagePath: `/backups/${tenantId}/${id}.tar.gz`,
   };
   await db.insert(backups).values({ ...defaults, ...overrides });
   return { ...defaults, ...overrides };

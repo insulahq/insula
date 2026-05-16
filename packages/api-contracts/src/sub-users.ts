@@ -1,24 +1,24 @@
 import { z } from 'zod';
 
 /**
- * Sub-user (client-panel team member) API contracts.
+ * Sub-user (tenant-panel team member) API contracts.
  *
- * Endpoints under `/api/v1/clients/:clientId/users*`:
- *   GET    — list the client's team (client_admin + client_user + staff)
- *   POST   — create a sub-user (client_admin + staff only)
- *   DELETE — remove a sub-user (client_admin + staff only)
+ * Endpoints under `/api/v1/tenants/:tenantId/users*`:
+ *   GET    — list the tenant's team (tenant_admin + tenant_user + staff)
+ *   POST   — create a sub-user (tenant_admin + staff only)
+ *   DELETE — remove a sub-user (tenant_admin + staff only)
  *
  * Role semantics:
- *   client_admin — full team management (create/edit/delete sub-users)
- *   client_user  — read-only access to own client resources
+ *   tenant_admin — full team management (create/edit/delete sub-users)
+ *   tenant_user  — read-only access to own tenant resources
  *
  * Plan limits are enforced server-side via
- * `hostingPlans.maxSubUsers + clients.maxSubUsersOverride`.
+ * `hostingPlans.maxSubUsers + tenants.maxSubUsersOverride`.
  */
 
 // ─── Roles ──────────────────────────────────────────────────────────────────
 
-export const subUserRoleSchema = z.enum(['client_admin', 'client_user']);
+export const subUserRoleSchema = z.enum(['tenant_admin', 'tenant_user']);
 export type SubUserRole = z.infer<typeof subUserRoleSchema>;
 
 // ─── Create ─────────────────────────────────────────────────────────────────
@@ -28,9 +28,9 @@ export const createSubUserSchema = z.object({
   full_name: z.string().min(1, 'full_name is required').max(255),
   password: z.string().min(8, 'password must be at least 8 characters').max(255),
   /**
-   * Optional — defaults to `client_user` server-side. Only
-   * `client_admin` (or staff) callers may create another
-   * `client_admin`; a `client_user` caller cannot reach this route
+   * Optional — defaults to `tenant_user` server-side. Only
+   * `tenant_admin` (or staff) callers may create another
+   * `tenant_admin`; a `tenant_user` caller cannot reach this route
    * at all because backend middleware rejects it.
    */
   role_name: subUserRoleSchema.optional(),

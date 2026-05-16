@@ -76,9 +76,9 @@ const TOKEN_PLACEHOLDER = '<RUN-ON-EXISTING-PEER:cat-/var/lib/rancher/k3s/server
 export async function generateBootstrapCommand(
   cppName: string,
   opts: BootstrapCommandOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<BootstrapCommandResponse> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   const cpp = await getPendingPeer(cppName, opts, c);
   const ready = await listReadyPeers(c);
   if (ready.length === 0) {

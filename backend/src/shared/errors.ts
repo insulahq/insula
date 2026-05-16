@@ -31,8 +31,8 @@ export const insufficientPermissions = (required: string) =>
   new ApiError('INSUFFICIENT_PERMISSIONS', 'Insufficient permissions for this action', 403, { required_role: required }, 'Contact admin for permission escalation');
 
 // Resource errors
-export const clientNotFound = (id: string) =>
-  new ApiError('CLIENT_NOT_FOUND', `Client '${id}' not found`, 404, { client_id: id }, 'Verify client_id');
+export const tenantNotFound = (id: string) =>
+  new ApiError('CLIENT_NOT_FOUND', `Client '${id}' not found`, 404, { tenant_id: id }, 'Verify tenant_id');
 
 export const domainNotFound = (id: string) =>
   new ApiError('DOMAIN_NOT_FOUND', `Domain '${id}' not found`, 404, { domain_id: id }, 'Verify domain exists');

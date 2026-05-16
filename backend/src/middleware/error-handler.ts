@@ -38,10 +38,10 @@ export function errorHandler(
     return;
   }
 
-  // FastifyError with a 4xx statusCode — these are client-fault errors
+  // FastifyError with a 4xx statusCode — these are tenant-fault errors
   // raised by the framework itself (empty JSON body, payload too large,
   // missing content-type, etc). Preserve the 4xx code AND the framework
-  // error code so clients get an actionable response instead of being
+  // error code so tenants get an actionable response instead of being
   // told "An unexpected error occurred" with a 500.
   const fastifyStatus = (error as FastifyError & { statusCode?: number }).statusCode;
   const fastifyCode = (error as FastifyError & { code?: string }).code;

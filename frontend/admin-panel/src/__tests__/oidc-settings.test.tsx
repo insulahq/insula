@@ -42,7 +42,7 @@ function setupMockApi(providers: unknown[] = []) {
     }
     if (url.includes('/oidc/settings')) {
       return Promise.resolve({
-        data: { disableLocalAuthAdmin: false, disableLocalAuthClient: false, hasBreakGlassSecret: false },
+        data: { disableLocalAuthAdmin: false, disableLocalAuthTenant: false, hasBreakGlassSecret: false },
       });
     }
     return Promise.resolve({ data: null });
@@ -109,7 +109,7 @@ describe('OidcSettings page', () => {
     setupMockApi();
     render(<OidcSettings />, { wrapper: createWrapper() });
     await waitFor(() => {
-      expect(screen.getByTestId('disable-local-client-toggle')).toBeInTheDocument();
+      expect(screen.getByTestId('disable-local-tenant-toggle')).toBeInTheDocument();
     });
     expect(screen.getByTestId('disable-local-admin-toggle')).toBeInTheDocument();
   });
@@ -120,7 +120,7 @@ describe('OidcSettings page', () => {
         id: 'prov-1',
         displayName: 'Corporate SSO',
         issuerUrl: 'https://dex.example.com',
-        clientId: 'my-client',
+        tenantId: 'my-tenant',
         panelScope: 'admin',
         enabled: true,
         backchannelLogoutEnabled: false,

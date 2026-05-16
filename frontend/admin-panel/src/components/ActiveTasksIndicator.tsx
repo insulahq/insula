@@ -3,7 +3,7 @@ import { Loader2, ChevronRight } from 'lucide-react';
 import { useActiveTasks } from '@/hooks/use-provisioning';
 
 interface ActiveTasksIndicatorProps {
-  readonly onOpenTask?: (clientId: string) => void;
+  readonly onOpenTask?: (tenantId: string) => void;
 }
 
 export default function ActiveTasksIndicator({ onOpenTask }: ActiveTasksIndicatorProps) {
@@ -50,14 +50,14 @@ export default function ActiveTasksIndicator({ onOpenTask }: ActiveTasksIndicato
                 key={task.id}
                 onClick={() => {
                   setOpen(false);
-                  onOpenTask?.(task.clientId);
+                  onOpenTask?.(task.tenantId);
                 }}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50"
                 data-testid={`active-task-${task.id}`}
               >
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate dark:text-gray-100">
-                    {task.companyName}
+                    {task.name}
                   </p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     {task.currentStep ?? 'Starting...'} ({task.completedSteps}/{task.totalSteps})

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { createMailboxSchema, updateMailboxSchema, mailboxAccessSchema } from '@k8s-hosting/api-contracts';
 import { mailboxes } from '../../db/schema.js';
 import * as service from './service.js';
@@ -10,15 +10,15 @@ import type { JwtPayload } from '../../middleware/auth.js';
 export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
   // ─── Client-scoped mailbox CRUD ───
 
-  app.register(async (clientScope) => {
-    clientScope.addHook('onRequest', authenticate);
-    clientScope.addHook('onRequest', requireClientAccess());
+  app.register(async (tenantScope) => {
+    tenantScope.addHook('onRequest', authenticate);
+    tenantScope.addHook('onRequest', requireTenantAccess());
 
-    // POST /api/v1/clients/:clientId/email/domains/:emailDomainId/mailboxes
-    clientScope.post('/clients/:clientId/email/domains/:emailDomainId/mailboxes', {
-      onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+    // POST /api/v1/tenants/:tenantId/email/domains/:emailDomainId/mailboxes
+    tenantScope.post('/tenants/:tenantId/email/domains/:emailDomainId/mailboxes', {
+      onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request, reply) => {
-      const { clientId, emailDomainId } = request.params as { clientId: string; emailDomainId: string };
+      const { tenantId, emailDomainId } = request.params as { tenantId: string; emailDomainId: string };
       const parsed = createMailboxSchema.safeParse(request.body);
       if (!parsed.success) {
         const firstError = parsed.error.issues[0];
@@ -30,35 +30,35 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      const created = await service.createMailbox(app.db, clientId, emailDomainId, parsed.data);
+      const created = await service.createMailbox(app.db, tenantId, emailDomainId, parsed.data);
       reply.status(201).send(success(created));
     });
 
-    // GET /api/v1/clients/:clientId/mailboxes
-    clientScope.get('/clients/:clientId/mailboxes', {
-      onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user')],
+    // GET /api/v1/tenants/:tenantId/mailboxes
+    tenantScope.get('/tenants/:tenantId/mailboxes', {
+      onRequest: [requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user')],
     }, async (request) => {
-      const { clientId } = request.params as { clientId: string };
+      const { tenantId } = request.params as { tenantId: string };
       const query = request.query as Record<string, unknown>;
       const emailDomainId = typeof query.email_domain_id === 'string' ? query.email_domain_id : undefined;
 
-      const data = await service.listMailboxes(app.db, clientId, emailDomainId);
+      const data = await service.listMailboxes(app.db, tenantId, emailDomainId);
       return success(data);
     });
 
-    // GET /api/v1/clients/:clientId/mail/mailbox-usage
+    // GET /api/v1/tenants/:tenantId/mail/mailbox-usage
     //
-    // Phase 4/5 of client-panel email parity round 2: expose the
-    // computed plan-based limit + current count so the client panel
+    // Phase 4/5 of tenant-panel email parity round 2: expose the
+    // computed plan-based limit + current count so the tenant panel
     // can render a usage bar. Returns { limit, current, source,
-    // remaining } — source is 'plan' or 'client_override'.
-    clientScope.get('/clients/:clientId/mail/mailbox-usage', {
-      onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user')],
+    // remaining } — source is 'plan' or 'tenant_override'.
+    tenantScope.get('/tenants/:tenantId/mail/mailbox-usage', {
+      onRequest: [requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user')],
     }, async (request) => {
-      const { clientId } = request.params as { clientId: string };
-      const { getClientMailboxLimit, getClientMailboxCount } = await import('./limit.js');
-      const limit = await getClientMailboxLimit(app.db, clientId);
-      const current = await getClientMailboxCount(app.db, clientId);
+      const { tenantId } = request.params as { tenantId: string };
+      const { getTenantMailboxLimit, getTenantMailboxCount } = await import('./limit.js');
+      const limit = await getTenantMailboxLimit(app.db, tenantId);
+      const current = await getTenantMailboxCount(app.db, tenantId);
       return success({
         limit: limit.limit,
         current,
@@ -67,20 +67,20 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       });
     });
 
-    // GET /api/v1/clients/:clientId/mailboxes/:id
-    clientScope.get('/clients/:clientId/mailboxes/:id', {
-      onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin')],
+    // GET /api/v1/tenants/:tenantId/mailboxes/:id
+    tenantScope.get('/tenants/:tenantId/mailboxes/:id', {
+      onRequest: [requireRole('super_admin', 'admin', 'support', 'tenant_admin')],
     }, async (request) => {
-      const { clientId, id } = request.params as { clientId: string; id: string };
-      const record = await service.getMailbox(app.db, clientId, id);
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
+      const record = await service.getMailbox(app.db, tenantId, id);
       return success(record);
     });
 
-    // PATCH /api/v1/clients/:clientId/mailboxes/:id
-    clientScope.patch('/clients/:clientId/mailboxes/:id', {
-      onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+    // PATCH /api/v1/tenants/:tenantId/mailboxes/:id
+    tenantScope.patch('/tenants/:tenantId/mailboxes/:id', {
+      onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request) => {
-      const { clientId, id } = request.params as { clientId: string; id: string };
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
       const parsed = updateMailboxSchema.safeParse(request.body);
       if (!parsed.success) {
         const firstError = parsed.error.issues[0];
@@ -92,37 +92,37 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      const updated = await service.updateMailbox(app.db, clientId, id, parsed.data);
+      const updated = await service.updateMailbox(app.db, tenantId, id, parsed.data);
       return success(updated);
     });
 
-    // DELETE /api/v1/clients/:clientId/mailboxes/:id
-    clientScope.delete('/clients/:clientId/mailboxes/:id', {
-      onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+    // DELETE /api/v1/tenants/:tenantId/mailboxes/:id
+    tenantScope.delete('/tenants/:tenantId/mailboxes/:id', {
+      onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request, reply) => {
-      const { clientId, id } = request.params as { clientId: string; id: string };
-      await service.deleteMailbox(app.db, clientId, id);
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
+      await service.deleteMailbox(app.db, tenantId, id);
       reply.status(204).send();
     });
 
     // ─── Access management ───
 
-    // GET /api/v1/clients/:clientId/mailboxes/:id/access
-    clientScope.get('/clients/:clientId/mailboxes/:id/access', {
-      onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+    // GET /api/v1/tenants/:tenantId/mailboxes/:id/access
+    tenantScope.get('/tenants/:tenantId/mailboxes/:id/access', {
+      onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request) => {
-      const { clientId, id } = request.params as { clientId: string; id: string };
-      // Verify mailbox belongs to client
-      await service.getMailbox(app.db, clientId, id);
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
+      // Verify mailbox belongs to tenant
+      await service.getMailbox(app.db, tenantId, id);
       const rows = await service.listMailboxAccess(app.db, id);
       return success(rows);
     });
 
-    // POST /api/v1/clients/:clientId/mailboxes/:id/access
-    clientScope.post('/clients/:clientId/mailboxes/:id/access', {
-      onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+    // POST /api/v1/tenants/:tenantId/mailboxes/:id/access
+    tenantScope.post('/tenants/:tenantId/mailboxes/:id/access', {
+      onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request, reply) => {
-      const { clientId, id } = request.params as { clientId: string; id: string };
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
       const parsed = mailboxAccessSchema.safeParse(request.body);
       if (!parsed.success) {
         const firstError = parsed.error.issues[0];
@@ -134,25 +134,25 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      // Verify mailbox belongs to client
-      await service.getMailbox(app.db, clientId, id);
+      // Verify mailbox belongs to tenant
+      await service.getMailbox(app.db, tenantId, id);
       const created = await service.grantMailboxAccess(app.db, id, parsed.data.user_id, parsed.data.access_level);
       reply.status(201).send(success(created));
     });
 
-    // DELETE /api/v1/clients/:clientId/mailboxes/:id/access/:userId
-    clientScope.delete('/clients/:clientId/mailboxes/:id/access/:userId', {
-      onRequest: [requireRole('super_admin', 'admin', 'client_admin')],
+    // DELETE /api/v1/tenants/:tenantId/mailboxes/:id/access/:userId
+    tenantScope.delete('/tenants/:tenantId/mailboxes/:id/access/:userId', {
+      onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request, reply) => {
-      const { clientId, id, userId } = request.params as { clientId: string; id: string; userId: string };
-      // Verify mailbox belongs to client
-      await service.getMailbox(app.db, clientId, id);
+      const { tenantId, id, userId } = request.params as { tenantId: string; id: string; userId: string };
+      // Verify mailbox belongs to tenant
+      await service.getMailbox(app.db, tenantId, id);
       await service.revokeMailboxAccess(app.db, id, userId);
       reply.status(204).send();
     });
   });
 
-  // ─── Webmail SSO (authenticated user, no client param) ───
+  // ─── Webmail SSO (authenticated user, no tenant param) ───
 
   app.register(async (webmailScope) => {
     webmailScope.addHook('onRequest', authenticate);
@@ -191,7 +191,7 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         parsed.data.mailbox_id,
         {
           engine: parsed.data.engine,
-          tenantId: user.clientId,
+          tenantId: user.tenantId,
           actorUserId: user.sub,
         },
       );
@@ -202,11 +202,11 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
     webmailScope.get('/email/accessible-mailboxes', async (request) => {
       const user = request.user as JwtPayload;
 
-      if (!user.clientId) {
-        throw new ApiError('CLIENT_REQUIRED', 'User must belong to a client to access mailboxes', 400);
+      if (!user.tenantId) {
+        throw new ApiError('CLIENT_REQUIRED', 'User must belong to a tenant to access mailboxes', 400);
       }
 
-      const data = await service.getAccessibleMailboxes(app.db, user.sub, user.clientId);
+      const data = await service.getAccessibleMailboxes(app.db, user.sub, user.tenantId);
       return success(data);
     });
   });
@@ -223,7 +223,7 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         .select({
           id: mailboxes.id,
           emailDomainId: mailboxes.emailDomainId,
-          clientId: mailboxes.clientId,
+          tenantId: mailboxes.tenantId,
           localPart: mailboxes.localPart,
           fullAddress: mailboxes.fullAddress,
           displayName: mailboxes.displayName,

@@ -13,9 +13,9 @@ import { buildFilesComponentJobSpec, parseFilesDone } from './files.js';
 describe('buildFilesComponentJobSpec', () => {
   const baseInput = {
     jobName: 'bk-files-bkp-test',
-    namespace: 'client-abc',
+    namespace: 'tenant-abc',
     pvcName: 'tenant-data-pvc',
-    clientId: 'abc',
+    tenantId: 'abc',
     backupId: 'bkp-test',
     jobImage: 'alpine:3.20',
     // Reviewer #5 (Phase 1.5+): token NOT in URL; mounted via Secret
@@ -47,10 +47,10 @@ describe('buildFilesComponentJobSpec', () => {
     expect(spec.spec.template.spec.priorityClassName).toBe('platform-tenant-overhead');
   });
 
-  it('labels the Job with backup-id and client-id', () => {
+  it('labels the Job with backup-id and tenant-id', () => {
     const spec = buildFilesComponentJobSpec(baseInput) as { metadata: { labels: Record<string, string> } };
     expect(spec.metadata.labels['platform.io/component']).toBe('backup-files');
-    expect(spec.metadata.labels['platform.io/client-id']).toBe('abc');
+    expect(spec.metadata.labels['platform.io/tenant-id']).toBe('abc');
     expect(spec.metadata.labels['platform.io/backup-id']).toBe('bkp-test');
   });
 

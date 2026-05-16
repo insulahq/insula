@@ -14,7 +14,7 @@ describe('renderMozillaAutoconfigXml', () => {
     });
 
     expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
-    expect(xml).toContain('<clientConfig version="1.1">');
+    expect(xml).toContain('<tenantConfig version="1.1">');
     expect(xml).toContain('<emailProvider id="acme.com">');
     expect(xml).toContain('<domain>acme.com</domain>');
     expect(xml).toContain('<displayName>Acme</displayName>');

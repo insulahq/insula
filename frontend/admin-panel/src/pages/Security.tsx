@@ -27,7 +27,7 @@ const NETWORK_POLICIES: readonly NetworkPolicy[] = [
   {
     id: 'np-1',
     name: 'deny-all-ingress',
-    namespace: 'client-namespaces',
+    namespace: 'tenant-namespaces',
     type: 'ingress',
     status: 'active',
   },
@@ -106,7 +106,7 @@ export default function Security() {
       </div>
 
       <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
-        Network policies below are the platform's default configuration. These are automatically applied to all client namespaces.
+        Network policies below are the platform's default configuration. These are automatically applied to all tenant namespaces.
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

@@ -6,14 +6,14 @@ import { registerAuth } from '../../middleware/auth.js';
 
 vi.mock('./service.js', () => ({
   getSubscription: vi.fn().mockResolvedValue({
-    client_id: 'c1',
+    tenant_id: 'c1',
     plan: { id: 'p1', name: 'Basic' },
     status: 'active',
     subscription_expires_at: '2027-01-01T00:00:00.000Z',
     created_at: '2026-01-01T00:00:00.000Z',
   }),
   updateSubscription: vi.fn().mockResolvedValue({
-    client_id: 'c1',
+    tenant_id: 'c1',
     plan: { id: 'p1', name: 'Basic' },
     status: 'suspended',
     subscription_expires_at: '2027-01-01T00:00:00.000Z',
@@ -28,8 +28,8 @@ describe('subscription routes', () => {
   let adminToken: string;
   let billingToken: string;
   let readOnlyToken: string;
-  let clientAdminToken: string;
-  let otherClientToken: string;
+  let tenantAdminToken: string;
+  let otherTenantToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -44,20 +44,20 @@ describe('subscription routes', () => {
     adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     billingToken = app.jwt.sign({ sub: 'billing-1', role: 'billing', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
-    // Round-4 Phase C: client_admin / client_user can now view their
+    // Round-4 Phase C: tenant_admin / tenant_user can now view their
     // own subscription via the GET endpoint.
-    clientAdminToken = app.jwt.sign({
+    tenantAdminToken = app.jwt.sign({
       sub: 'cu-1',
-      role: 'client_admin',
-      panel: 'client',
-      clientId: 'c1',
+      role: 'tenant_admin',
+      panel: 'tenant',
+      tenantId: 'c1',
       iat: Math.floor(Date.now() / 1000),
     });
-    otherClientToken = app.jwt.sign({
+    otherTenantToken = app.jwt.sign({
       sub: 'cu-2',
-      role: 'client_admin',
-      panel: 'client',
-      clientId: 'c2',
+      role: 'tenant_admin',
+      panel: 'tenant',
+      tenantId: 'c2',
       iat: Math.floor(Date.now() / 1000),
     });
   });
@@ -67,45 +67,45 @@ describe('subscription routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/subscription' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/subscription' });
     expect(res.statusCode).toBe(401);
   });
 
   it('should reject read-only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/subscription',
+      url: '/api/v1/tenants/c1/subscription',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  // Round-4 Phase C: client_admin for its own client can read the
+  // Round-4 Phase C: tenant_admin for its own tenant can read the
   // subscription but cannot modify it via PATCH.
-  it('GET should allow client_admin for its own client', async () => {
+  it('GET should allow tenant_admin for its own tenant', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/subscription',
-      headers: { authorization: `Bearer ${clientAdminToken}` },
+      url: '/api/v1/tenants/c1/subscription',
+      headers: { authorization: `Bearer ${tenantAdminToken}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data.client_id).toBe('c1');
+    expect(res.json().data.tenant_id).toBe('c1');
   });
 
-  it('GET should reject client_admin trying to read a different client', async () => {
+  it('GET should reject tenant_admin trying to read a different tenant', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/subscription',
-      headers: { authorization: `Bearer ${otherClientToken}` },
+      url: '/api/v1/tenants/c1/subscription',
+      headers: { authorization: `Bearer ${otherTenantToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  it('PATCH should reject client_admin (admin/billing only)', async () => {
+  it('PATCH should reject tenant_admin (admin/billing only)', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/subscription',
-      headers: { authorization: `Bearer ${clientAdminToken}` },
+      url: '/api/v1/tenants/c1/subscription',
+      headers: { authorization: `Bearer ${tenantAdminToken}` },
       payload: { status: 'suspended' },
     });
     expect(res.statusCode).toBe(403);
@@ -114,17 +114,17 @@ describe('subscription routes', () => {
   it('GET should return subscription for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/subscription',
+      url: '/api/v1/tenants/c1/subscription',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data.client_id).toBe('c1');
+    expect(res.json().data.tenant_id).toBe('c1');
   });
 
   it('GET should allow billing role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/subscription',
+      url: '/api/v1/tenants/c1/subscription',
       headers: { authorization: `Bearer ${billingToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -133,7 +133,7 @@ describe('subscription routes', () => {
   it('PATCH should reject invalid status', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/subscription',
+      url: '/api/v1/tenants/c1/subscription',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { status: 'invalid-status' },
     });
@@ -144,7 +144,7 @@ describe('subscription routes', () => {
   it('PATCH should update subscription', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/subscription',
+      url: '/api/v1/tenants/c1/subscription',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { status: 'suspended' },
     });

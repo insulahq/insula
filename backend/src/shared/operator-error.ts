@@ -98,7 +98,7 @@ export function translateOperatorError(
       title: 'Workload is crashing repeatedly',
       detail: 'The container starts and exits non-zero in a loop. Most often a config bug, missing env var, or unreachable dependency.',
       remediation: [
-        'Open the workload\'s pod logs (kubectl logs deploy/<name> -n <client-ns>).',
+        'Open the workload\'s pod logs (kubectl logs deploy/<name> -n <tenant-ns>).',
         'Check connection strings to databases — the most common crash cause for CMS/PHP apps.',
         'If memory-related (exit 137), bump memory limit on the deployment.',
       ],
@@ -171,7 +171,7 @@ export function translateOperatorError(
       remediation: [
         'Verify the domain\'s DNS A record points to the platform\'s public IPs.',
         'Check tenant NetworkPolicy allow-platform-api / default-deny-ingress includes ipBlock 10.42.0.0/16.',
-        'Hit /api/v1/clients/<id>/domains/<id>/verify to re-trigger after DNS settles.',
+        'Hit /api/v1/tenants/<id>/domains/<id>/verify to re-trigger after DNS settles.',
       ],
       retryable: true,
       diagnostics: { raw },

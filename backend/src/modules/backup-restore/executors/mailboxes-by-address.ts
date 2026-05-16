@@ -228,7 +228,7 @@ export async function execMailboxesByAddressItem(args: {
   const spec = buildMailboxesByAddressJobSpec({
     jobName,
     mailNamespace: MAIL_NAMESPACE,
-    clientId: job.clientId,
+    tenantId: job.tenantId,
     cartId: item.restoreJobId,
     itemId: item.id,
     toolsImage: TOOLS_IMAGE_DEFAULT,
@@ -305,7 +305,7 @@ export async function execMailboxesByAddressItem(args: {
 export function buildMailboxesByAddressJobSpec(input: {
   jobName: string;
   mailNamespace: string;
-  clientId: string;
+  tenantId: string;
   cartId: string;
   itemId: string;
   toolsImage: string;
@@ -419,7 +419,7 @@ export function buildMailboxesByAddressJobSpec(input: {
         // covers this Job too (it allows Job → platform-api +
         // Job → in-cluster Stalwart svc).
         'platform.io/component': 'restore-files',
-        'platform.io/client-id': input.clientId,
+        'platform.io/tenant-id': input.tenantId,
         'platform.io/restore-cart': input.cartId,
         'platform.io/restore-item': input.itemId,
         'platform.io/sub-component': 'restore-mailboxes',
@@ -432,7 +432,7 @@ export function buildMailboxesByAddressJobSpec(input: {
         metadata: {
           labels: {
             'platform.io/component': 'restore-files',
-            'platform.io/client-id': input.clientId,
+            'platform.io/tenant-id': input.tenantId,
             'platform.io/restore-cart': input.cartId,
             'platform.io/restore-item': input.itemId,
             'platform.io/sub-component': 'restore-mailboxes',

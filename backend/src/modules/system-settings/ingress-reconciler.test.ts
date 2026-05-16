@@ -58,21 +58,21 @@ describe('extractHost', () => {
 });
 
 describe('buildDesiredRoutes', () => {
-  it('emits an admin + client route in order', () => {
+  it('emits an admin + tenant route in order', () => {
     const routes = buildDesiredRoutes({
       adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: 'https://my.example.com',
+      tenantPanelUrl: 'https://my.example.com',
       tlsSecretName: 'platform-tls',
     });
     expect(routes).toEqual([
       { host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false },
-      { host: 'my.example.com', serviceName: 'client-panel', oauth2: false },
+      { host: 'my.example.com', serviceName: 'tenant-panel', oauth2: false },
     ]);
   });
   it('omits a route when its URL is missing', () => {
     const routes = buildDesiredRoutes({
       adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: null,
+      tenantPanelUrl: null,
       tlsSecretName: 'platform-tls',
     });
     expect(routes).toHaveLength(1);
@@ -81,7 +81,7 @@ describe('buildDesiredRoutes', () => {
   it('sets oauth2 flag when protectAdminViaProxy is true', () => {
     const routes = buildDesiredRoutes({
       adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: 'https://my.example.com',
+      tenantPanelUrl: 'https://my.example.com',
       tlsSecretName: 'platform-tls',
       protectAdminViaProxy: true,
     });
@@ -179,7 +179,7 @@ describe('reconcileIngressHosts', () => {
     const deps = mockDeps();
     const result = await reconcileIngressHosts({
       adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: 'https://my.example.com',
+      tenantPanelUrl: 'https://my.example.com',
       tlsSecretName: 'platform-tls',
     }, deps);
     expect(result.changed).toBe(true);
@@ -196,7 +196,7 @@ describe('reconcileIngressHosts', () => {
       {
         routes: [
           { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null },
-          { host: 'my.example.com', serviceName: 'client-panel', oauth2Backend: null },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null },
         ],
         tlsSecret: 'platform-tls',
       },
@@ -208,7 +208,7 @@ describe('reconcileIngressHosts', () => {
     );
     const result = await reconcileIngressHosts({
       adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: 'https://my.example.com',
+      tenantPanelUrl: 'https://my.example.com',
       tlsSecretName: 'platform-tls',
     }, deps);
     expect(result.changed).toBe(false);
@@ -220,7 +220,7 @@ describe('reconcileIngressHosts', () => {
     const deps = mockDeps();
     const result = await reconcileIngressHosts({
       adminPanelUrl: null,
-      clientPanelUrl: null,
+      tenantPanelUrl: null,
       tlsSecretName: 'platform-tls',
     }, deps);
     expect(result.changed).toBe(false);
@@ -231,7 +231,7 @@ describe('reconcileIngressHosts', () => {
     const deps = mockDeps();
     await reconcileIngressHosts({
       adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: null,
+      tenantPanelUrl: null,
       tlsSecretName: 'platform-tls',
     }, deps);
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -245,7 +245,7 @@ describe('reconcileIngressHosts', () => {
     const deps = mockDeps();
     await reconcileIngressHosts({
       adminPanelUrl: 'not-a-url',
-      clientPanelUrl: 'https://my.example.com',
+      tenantPanelUrl: 'https://my.example.com',
       tlsSecretName: 'platform-tls',
     }, deps);
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -258,12 +258,12 @@ describe('reconcileIngressHosts', () => {
       const deps = mockDeps();
       await reconcileIngressHosts({
         adminPanelUrl: 'https://admin.example.com',
-        clientPanelUrl: 'https://my.example.com',
+        tenantPanelUrl: 'https://my.example.com',
         tlsSecretName: 'platform-tls',
         protectAdminViaProxy: true,
       }, deps);
       const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      // 3 routes: admin /oauth2 + admin /, client /
+      // 3 routes: admin /oauth2 + admin /, tenant /
       expect(ingressApplied.spec.routes).toHaveLength(3);
       const oauth2Route = ingressApplied.spec.routes.find(
         (r: { match: string }) => r.match === 'Host(`admin.example.com`) && PathPrefix(`/oauth2`)',
@@ -273,13 +273,13 @@ describe('reconcileIngressHosts', () => {
       expect(oauth2Route.services[0]).toEqual({ name: 'oauth2-proxy', port: 4180 });
     });
 
-    it('adds /oauth2 to the client host when protectClientViaProxy is true (admin unchanged)', async () => {
+    it('adds /oauth2 to the tenant host when protectTenantViaProxy is true (admin unchanged)', async () => {
       const deps = mockDeps();
       await reconcileIngressHosts({
         adminPanelUrl: 'https://admin.example.com',
-        clientPanelUrl: 'https://my.example.com',
+        tenantPanelUrl: 'https://my.example.com',
         tlsSecretName: 'platform-tls',
-        protectClientViaProxy: true,
+        protectTenantViaProxy: true,
       }, deps);
       const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
       const oauth2Routes = ingressApplied.spec.routes.filter(
@@ -293,10 +293,10 @@ describe('reconcileIngressHosts', () => {
       const deps = mockDeps();
       await reconcileIngressHosts({
         adminPanelUrl: 'https://admin.example.com',
-        clientPanelUrl: 'https://my.example.com',
+        tenantPanelUrl: 'https://my.example.com',
         tlsSecretName: 'platform-tls',
         protectAdminViaProxy: true,
-        protectClientViaProxy: true,
+        protectTenantViaProxy: true,
       }, deps);
       const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
       const oauth2Routes = ingressApplied.spec.routes.filter(
@@ -310,7 +310,7 @@ describe('reconcileIngressHosts', () => {
         {
           routes: [
             { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null },
-            { host: 'my.example.com', serviceName: 'client-panel', oauth2Backend: null },
+            { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null },
           ],
           tlsSecret: 'platform-tls',
         },
@@ -322,7 +322,7 @@ describe('reconcileIngressHosts', () => {
       );
       const result = await reconcileIngressHosts({
         adminPanelUrl: 'https://admin.example.com',
-        clientPanelUrl: 'https://my.example.com',
+        tenantPanelUrl: 'https://my.example.com',
         tlsSecretName: 'platform-tls',
         protectAdminViaProxy: true,
       }, deps);

@@ -80,7 +80,7 @@ export interface MigrationDeps {
   readonly batch: BatchV1Api;
   readonly apps: AppsV1Api;
   readonly db: Database;
-  /** Pass-through so safety snapshot can load its own k8s clients. */
+  /** Pass-through so safety snapshot can load its own k8s tenants. */
   readonly kubeconfigPath: string | undefined;
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
   /**

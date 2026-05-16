@@ -7,7 +7,7 @@ import { registerAuth } from '../../middleware/auth.js';
 const mockExport = {
   version: '1.0',
   exportedAt: '2026-01-01T00:00:00.000Z',
-  clients: [],
+  tenants: [],
   domains: [],
   hostingPlans: [],
   dnsServers: [],
@@ -95,7 +95,7 @@ describe('export-import routes', () => {
       method: 'POST',
       url: '/api/v1/admin/import',
       headers: { authorization: `Bearer ${superAdminToken}` },
-      payload: { version: '1.0', clients: [], domains: [], hostingPlans: [] },
+      payload: { version: '1.0', tenants: [], domains: [], hostingPlans: [] },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.created).toBeDefined();

@@ -24,7 +24,7 @@ interface NodeUsageAggregate {
  * shape expected by the service, and upsert into cluster_nodes.
  *
  * The reconciler treats the k8s label as the source of truth for
- * `role` + `canHostClientWorkloads`. A missing label defaults to
+ * `role` + `canHostTenantWorkloads`. A missing label defaults to
  * worker/true — matching the migration default and the legacy
  * pre-M1 behavior (every node hosted everything).
  */
@@ -36,13 +36,13 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
   const items = nodesRes.items ?? [];
 
   // Read the platform default once per cycle. Used by the per-node
-  // pass below to fill in the missing host-client-workloads label on
+  // pass below to fill in the missing host-tenant-workloads label on
   // freshly joined servers — operator-set explicit labels are never
   // overridden.
   let newServerDefault: boolean;
   try {
     const settings = await getSettings(db);
-    newServerDefault = settings.newServerHostsClientWorkloads;
+    newServerDefault = settings.newServerHostsTenantWorkloads;
   } catch (err) {
     // If the settings table read fails (rare, but DB hiccup is plausible)
     // fall back to TRUE — this matches both bootstrap.sh's flag default
@@ -56,7 +56,7 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
     let observed = projectNode(node);
 
     // Apply the system-defined default for new SERVER nodes whose
-    // bootstrap did not stamp an explicit host-client-workloads label.
+    // bootstrap did not stamp an explicit host-tenant-workloads label.
     // The k8s label is the source of truth — once written, future
     // sync cycles see it and skip this branch.
     const labels = node.metadata?.labels ?? {};
@@ -65,12 +65,12 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
       try {
         await applyNewServerDefault(k8s, observed.name, newServerDefault, observed.taints);
         // Reflect what we just wrote so the DB row matches k8s.
-        observed = { ...observed, canHostClientWorkloads: newServerDefault };
+        observed = { ...observed, canHostTenantWorkloads: newServerDefault };
       } catch (err) {
         // Best-effort — logging keeps the operator informed without
         // failing the whole sync cycle. Next tick retries.
         console.warn(
-          `[node-sync] failed to apply newServerHostsClientWorkloads=${newServerDefault} to ${observed.name}:`,
+          `[node-sync] failed to apply newServerHostsTenantWorkloads=${newServerDefault} to ${observed.name}:`,
           (err as Error).message,
         );
       }
@@ -92,10 +92,10 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
 }
 
 /**
- * Stamp the host-client-workloads label on a fresh server node, and
+ * Stamp the host-tenant-workloads label on a fresh server node, and
  * (when the value is false) ensure the server-only NoSchedule taint
  * matches — mirroring bootstrap.sh's behaviour for an explicit
- * `--host-client-workloads false` join.
+ * `--host-tenant-workloads false` join.
  *
  * Combined into a single strategic-merge patch so labels + taints
  * land atomically. Existing operator-set taints (other keys) are
@@ -104,11 +104,11 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
 export async function applyNewServerDefault(
   k8s: K8sClients,
   nodeName: string,
-  hostClientWorkloads: boolean,
+  hostTenantWorkloads: boolean,
   existingTaints: ReadonlyArray<{ key: string; value?: string; effect: string }>,
 ): Promise<void> {
   const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY);
-  const shouldTaint = !hostClientWorkloads;
+  const shouldTaint = !hostTenantWorkloads;
   const nextTaints = shouldTaint
     ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
     : withoutOurs;
@@ -118,7 +118,7 @@ export async function applyNewServerDefault(
     body: {
       metadata: {
         labels: {
-          [HOST_CLIENT_WORKLOADS_LABEL]: String(hostClientWorkloads),
+          [HOST_CLIENT_WORKLOADS_LABEL]: String(hostTenantWorkloads),
         },
       },
       spec: { taints: nextTaints },
@@ -127,7 +127,7 @@ export async function applyNewServerDefault(
     STRATEGIC_MERGE_PATCH);
 
   console.log(
-    `[node-sync] applied newServerHostsClientWorkloads=${hostClientWorkloads} to fresh server ${nodeName}`,
+    `[node-sync] applied newServerHostsTenantWorkloads=${hostTenantWorkloads} to fresh server ${nodeName}`,
   );
 }
 
@@ -290,7 +290,7 @@ export function projectNode(node: K8sNode): ObservedNode {
 
   // Absent label → default matches migration: workers true, servers false.
   const hostLabelRaw = labels[HOST_CLIENT_WORKLOADS_LABEL];
-  const canHostClientWorkloads = hostLabelRaw === undefined
+  const canHostTenantWorkloads = hostLabelRaw === undefined
     ? (role === 'worker')
     : hostLabelRaw === 'true';
 
@@ -337,7 +337,7 @@ export function projectNode(node: K8sNode): ObservedNode {
   return {
     name,
     role,
-    canHostClientWorkloads,
+    canHostTenantWorkloads,
     ingressMode,
     publicIp,
     kubeletVersion,

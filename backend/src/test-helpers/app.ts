@@ -32,14 +32,14 @@ export async function buildTestApp(): Promise<FastifyInstance> {
 export function generateToken(app: FastifyInstance, payload: {
   sub?: string;
   role?: string;
-  panel?: 'admin' | 'client';
-  clientId?: string;
+  panel?: 'admin' | 'tenant';
+  tenantId?: string;
 }): string {
   return app.jwt.sign({
     sub: payload.sub ?? 'test-user-1',
     role: payload.role ?? 'super_admin',
     panel: payload.panel ?? 'admin',
-    clientId: payload.clientId,
+    tenantId: payload.tenantId,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 3600,
     jti: crypto.randomUUID(),

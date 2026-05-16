@@ -42,7 +42,7 @@ export interface SystemPvcOptions {
 export async function getSystemPvcStorage(
   opts: SystemPvcOptions,
 ): Promise<SystemPvcStorageResponse> {
-  const { core, storage, exec } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, storage, exec } = await loadK8sTenants(opts.kubeconfigPath);
 
   const pvc = await core.readNamespacedPersistentVolumeClaim({
     name: SYSTEM_PVC_NAME,
@@ -121,7 +121,7 @@ export async function resizeSystemPvc(
     );
   }
 
-  const { core } = await loadK8sClients(opts.kubeconfigPath);
+  const { core } = await loadK8sTenants(opts.kubeconfigPath);
   const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
 
   const newSizeStr = `${newGiB}Gi`;
@@ -184,13 +184,13 @@ interface ScShape {
   allowVolumeExpansion?: boolean;
 }
 
-interface K8sClientsBundle {
+interface K8sTenantsBundle {
   core: import('@kubernetes/client-node').CoreV1Api;
   storage: import('@kubernetes/client-node').StorageV1Api;
   exec: import('@kubernetes/client-node').Exec;
 }
 
-async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sClientsBundle> {
+async function loadK8sTenants(kubeconfigPath: string | undefined): Promise<K8sTenantsBundle> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);

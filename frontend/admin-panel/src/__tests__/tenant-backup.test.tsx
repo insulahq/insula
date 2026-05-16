@@ -3,7 +3,7 @@
  *
  * Covers the rendering matrix: tab switching, default tab from URL,
  * search filter on the bundles tab, and the schedule list with
- * "deleted" client edge case. End-to-end mutations (verify, delete,
+ * "deleted" tenant edge case. End-to-end mutations (verify, delete,
  * run-now) are exercised by the staging integration scenario; these
  * tests keep the page-level wiring regression-proof.
  */
@@ -33,9 +33,9 @@ vi.mock('../hooks/use-backup-bundles', () => ({
 vi.mock('../hooks/use-backup-schedule', () => ({
   useAllBackupSchedules: vi.fn(),
   useRunBackupScheduleNow: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useClientBackupSchedule: vi.fn(() => ({ data: undefined, isLoading: false })),
-  useUpdateClientBackupSchedule: vi.fn(() => ({ mutate: vi.fn() })),
-  useDeleteClientBackupSchedule: vi.fn(() => ({ mutate: vi.fn() })),
+  useTenantBackupSchedule: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useUpdateTenantBackupSchedule: vi.fn(() => ({ mutate: vi.fn() })),
+  useDeleteTenantBackupSchedule: vi.fn(() => ({ mutate: vi.fn() })),
 }));
 vi.mock('../hooks/use-restore-carts', () => ({
   useRestoreCarts: vi.fn(),
@@ -43,9 +43,9 @@ vi.mock('../hooks/use-restore-carts', () => ({
 vi.mock('../hooks/use-backup-config', () => ({
   useBackupConfigs: vi.fn(),
 }));
-vi.mock('../hooks/use-clients', () => ({
-  useClients: vi.fn(() => ({ data: { data: [{ id: 'c1', companyName: 'Acme Corp' }] } })),
-  useClient: vi.fn(() => ({ data: undefined })),
+vi.mock('../hooks/use-tenants', () => ({
+  useTenants: vi.fn(() => ({ data: { data: [{ id: 'c1', name: 'Acme Corp' }] } })),
+  useTenant: vi.fn(() => ({ data: undefined })),
 }));
 
 import { useBundles, useBundleCoverage } from '../hooks/use-backup-bundles';
@@ -70,9 +70,9 @@ function wrapper({ children, initialEntries = ['/tenant-backup'] }: { children: 
 
 const BUNDLE: BundleSummary = {
   id: 'bkp-aaaaaaaa-1111-2222-3333-444444444444',
-  clientId: 'c1',
-  clientStatus: 'active',
-  clientName: 'Test Co',
+  tenantId: 'c1',
+  tenantStatus: 'active',
+  tenantName: 'Test Co',
   initiator: 'admin',
   systemTrigger: null,
   status: 'completed',
@@ -94,7 +94,7 @@ const BUNDLE: BundleSummary = {
 };
 
 const SCHEDULE: BackupScheduleSummary = {
-  clientId: 'c1',
+  tenantId: 'c1',
   enabled: true,
   frequency: 'weekly',
   hourOfDayUtc: 3,
@@ -135,17 +135,17 @@ describe('TenantBackup', () => {
     expect(screen.getByTestId('tenant-backup-tab-targets')).toBeInTheDocument();
   });
 
-  it('shows bundles table with client name resolved', () => {
+  it('shows bundles table with tenant name resolved', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [BUNDLE], pagination: {} } }, isLoading: false });
     render(<TenantBackup />, { wrapper });
-    // Server-side `clientName` from the bundle summary takes precedence over
-    // the client-side useClients() lookup (so bundles for deleted clients
+    // Server-side `tenantName` from the bundle summary takes precedence over
+    // the tenant-side useTenants() lookup (so bundles for deleted tenants
     // still show a name).
     expect(screen.getByText('Test Co')).toBeInTheDocument();
     expect(screen.getByText(/manual-test/)).toBeInTheDocument();
   });
 
-  it('search box filters bundles by client name', () => {
+  it('search box filters bundles by tenant name', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [BUNDLE], pagination: {} } }, isLoading: false });
     render(<TenantBackup />, { wrapper });
     fireEvent.change(screen.getByTestId('bundle-search'), { target: { value: 'nonexistent' } });
@@ -164,7 +164,7 @@ describe('TenantBackup', () => {
     expect(screen.getAllByText(/Enabled/).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('schedules tab flags deleted client with italic warning', () => {
+  it('schedules tab flags deleted tenant with italic warning', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
     mockedSchedules.mockReturnValue({
       data: { data: { data: [{ ...SCHEDULE, businessName: null }] } },
@@ -181,7 +181,7 @@ describe('TenantBackup', () => {
         // Outer envelope (success() wrapper) + inner list payload.
         data: {
           data: [{
-            id: 'rstr-1', clientId: 'c1', initiatorUserId: null, status: 'failed',
+            id: 'rstr-1', tenantId: 'c1', initiatorUserId: null, status: 'failed',
             preRestoreSnapshotId: null, description: 'test cart',
             startedAt: null, finishedAt: null, lastError: null,
             createdAt: '2026-05-05T18:00:00Z', updatedAt: '2026-05-05T18:00:00Z',
@@ -218,7 +218,7 @@ describe('TenantBackup', () => {
         data: {
           components: [
             { name: 'files', description: 'tenant PVC', tables: [], pvcs: ['{ns}-storage'], secretTypes: [], externalResources: [] },
-            { name: 'config', description: 'json dump', tables: ['clients', 'domains'], pvcs: [], secretTypes: [], externalResources: [] },
+            { name: 'config', description: 'json dump', tables: ['tenants', 'domains'], pvcs: [], secretTypes: [], externalResources: [] },
           ],
           drift: { orphanTables: [], excludedTables: [], ownedTableCount: 12, totalTenantTables: 12 },
         },
@@ -229,7 +229,7 @@ describe('TenantBackup', () => {
     render(<TenantBackup />, { wrapper: ({ children }) => wrapper({ children, initialEntries: ['/tenant-backup?tab=coverage'] }) });
     expect(screen.getByText(/No drift/)).toBeInTheDocument();
     expect(screen.getByText('Component registry')).toBeInTheDocument();
-    expect(screen.getByText(/clients, domains/)).toBeInTheDocument();
+    expect(screen.getByText(/tenants, domains/)).toBeInTheDocument();
   });
 
   it('coverage tab flags orphan tables as red', () => {
@@ -238,7 +238,7 @@ describe('TenantBackup', () => {
       data: {
         data: {
           components: [
-            { name: 'config', description: 'cfg', tables: ['clients'], pvcs: [], secretTypes: [], externalResources: [] },
+            { name: 'config', description: 'cfg', tables: ['tenants'], pvcs: [], secretTypes: [], externalResources: [] },
           ],
           drift: {
             orphanTables: [{ table: 'newFeatureTable' }, { table: 'anotherOrphan' }],

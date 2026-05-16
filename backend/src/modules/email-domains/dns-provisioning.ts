@@ -174,16 +174,16 @@ function buildBaseRecords(
   return [
     // ─── Core receiving records ────────────────────────────
     // MX target is the platform mail-server hostname directly (e.g.
-    // mail.platformdomain.com), NOT a per-client mail.<domainName>
+    // mail.platformdomain.com), NOT a per-tenant mail.<domainName>
     // alias. Reasons:
     //   1. Stalwart's TLS cert covers mail.${PLATFORM_DOMAIN} (single
     //      SAN) — sending MTAs validate SNI against the cert, so
-    //      pointing at a per-client hostname triggers a TLS-mismatch
+    //      pointing at a per-tenant hostname triggers a TLS-mismatch
     //      reject by strict receivers (Gmail, Microsoft).
     //   2. MTA-STS is impossible without a cert that covers the
     //      MX-target hostname — sticking with the platform hostname
     //      keeps that path open.
-    //   3. One less DNS record per client (no per-client mail.A).
+    //   3. One less DNS record per tenant (no per-tenant mail.A).
     {
       recordType: 'MX',
       recordName: domainName,
@@ -217,7 +217,7 @@ function buildBaseRecords(
       priority: null,
       purpose: 'dmarc',
     },
-    // ─── Phase 3.C.2: SRV records for mail client autodiscovery ─────
+    // ─── Phase 3.C.2: SRV records for mail tenant autodiscovery ─────
     // Thunderbird and Apple Mail probe SRV records before resorting
     // to guesses. Port + priority + weight per RFC 6186.
     {
@@ -264,14 +264,14 @@ function buildBaseRecords(
     //     mail.${PLATFORM_DOMAIN} → cert mismatch → handshake fails
     //   - Same for autodiscover (Outlook).
     //
-    // Per-client cert provisioning to fix this is significant infra
-    // work (cert-manager Cert CR per client, DNS automation, lifecycle
+    // Per-tenant cert provisioning to fix this is significant infra
+    // work (cert-manager Cert CR per tenant, DNS automation, lifecycle
     // hooks). It's out of scope for the TLS-bootstrap rewrite. SRV
     // records (above) are the cheap-but-effective layer that covers
     // Thunderbird, K-9, FairEmail, Mailspring, partial Apple Mail
     // without any cert issues. Outlook autodiscover support becomes
     // a separate follow-up phase if/when customer demand justifies
-    // the per-client cert provisioning.
+    // the per-tenant cert provisioning.
     //
     // The TXT/CNAME entries previously written for these records will
     // be removed from PowerDNS the next time the domain is
@@ -281,7 +281,7 @@ function buildBaseRecords(
     // MTA-STS spec (RFC 8461) requires the policy file to be served
     // over HTTPS at mta-sts.<domain>/.well-known/mta-sts.txt with a
     // cert that validates against mta-sts.<domain>. Stalwart's single-
-    // SAN cert (mail.${PLATFORM_DOMAIN}) doesn't cover mta-sts.<client>
+    // SAN cert (mail.${PLATFORM_DOMAIN}) doesn't cover mta-sts.<tenant>
     // → policy fetch fails → strict-mode MTAs reject delivery,
     // testing-mode MTAs downgrade.
     //
@@ -291,9 +291,9 @@ function buildBaseRecords(
     // (misleading vs. silent). Both records will be removed from
     // PowerDNS the next time the domain is re-provisioned.
     //
-    // Re-introducing MTA-STS requires per-client cert provisioning
-    // (cert-manager Cert CR per client domain covering at least
-    // mta-sts.<client>). Same precondition as Outlook autodiscover —
+    // Re-introducing MTA-STS requires per-tenant cert provisioning
+    // (cert-manager Cert CR per tenant domain covering at least
+    // mta-sts.<tenant>). Same precondition as Outlook autodiscover —
     // tracked as a separate phase.
   ];
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { getHostingSettings, updateHostingSettings } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
-const DOMAIN = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+const DOMAIN = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 const SETTINGS = {
   id: 'hs1', domainId: 'd1', redirectWww: 0, redirectHttps: 1,
   forwardExternal: null, webrootPath: '/var/www/html', hostingEnabled: 1,

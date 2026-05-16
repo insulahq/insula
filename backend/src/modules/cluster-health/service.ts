@@ -120,7 +120,7 @@ export async function collectNodeSubsystemHealth(k8s: K8sClients): Promise<NodeS
 
   // CSINode resources tell us which CSI drivers are registered on each node.
   // CSINode lives in storage.k8s.io/v1 — a built-in API, NOT a CRD — so the
-  // CustomObjects client returns empty lists for it. Use the typed
+  // CustomObjects tenant returns empty lists for it. Use the typed
   // StorageV1Api directly. (Bug fix 2026-04-25: customObjects path silently
   // reported every node as "csiDriverRegistered: false" even on healthy
   // nodes, scaring operators on the Cluster Nodes page.)

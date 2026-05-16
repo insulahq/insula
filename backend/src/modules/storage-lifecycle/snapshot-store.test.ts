@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { LocalHostPathStore, getSnapshotStore } from './snapshot-store.js';
 
 describe('LocalHostPathStore', () => {
-  it('reservePath is deterministic and namespaced by client', () => {
+  it('reservePath is deterministic and namespaced by tenant', () => {
     const s = new LocalHostPathStore('/var/lib/platform/snapshots');
     expect(s.reservePath('c1', 'snap1')).toBe('c1/snap1.tar.gz');
-    // Different client, same snapshot id — paths must differ so reservations
-    // from concurrent ops on different clients can't collide.
+    // Different tenant, same snapshot id — paths must differ so reservations
+    // from concurrent ops on different tenants can't collide.
     expect(s.reservePath('c2', 'snap1')).toBe('c2/snap1.tar.gz');
   });
 

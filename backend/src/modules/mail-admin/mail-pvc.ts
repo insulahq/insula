@@ -38,7 +38,7 @@ export interface MailPvcOptions {
 export async function getMailPvcStorage(
   opts: MailPvcOptions,
 ): Promise<MailPvcStorageResponse> {
-  const { core, exec } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, exec } = await loadK8sTenants(opts.kubeconfigPath);
 
   const pvc = await core.readNamespacedPersistentVolumeClaim({
     name: MAIL_PVC_NAME,
@@ -97,7 +97,7 @@ interface ScShape {
   allowVolumeExpansion?: boolean;
 }
 
-interface K8sClientsBundle {
+interface K8sTenantsBundle {
   // Imports are lazy so this module is import-cheap for tests that
   // never exercise the cluster. Mirrors rotate-jmap.ts:defaultDeps.
   core: import('@kubernetes/client-node').CoreV1Api;
@@ -105,7 +105,7 @@ interface K8sClientsBundle {
   exec: import('@kubernetes/client-node').Exec;
 }
 
-async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sClientsBundle> {
+async function loadK8sTenants(kubeconfigPath: string | undefined): Promise<K8sTenantsBundle> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);

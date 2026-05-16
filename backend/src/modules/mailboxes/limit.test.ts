@@ -25,86 +25,86 @@ beforeEach(() => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// computeClientMailboxLimit — pure function
+// computeTenantMailboxLimit — pure function
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('computeClientMailboxLimit', () => {
+describe('computeTenantMailboxLimit', () => {
   it('returns the plan limit when override is null', () => {
-    expect(limit.computeClientMailboxLimit({ planLimit: 25, override: null })).toEqual({
+    expect(limit.computeTenantMailboxLimit({ planLimit: 25, override: null })).toEqual({
       limit: 25,
       source: 'plan',
     });
   });
 
   it('returns the override when it is a positive integer', () => {
-    expect(limit.computeClientMailboxLimit({ planLimit: 25, override: 100 })).toEqual({
+    expect(limit.computeTenantMailboxLimit({ planLimit: 25, override: 100 })).toEqual({
       limit: 100,
-      source: 'client_override',
+      source: 'tenant_override',
     });
   });
 
   it('falls back to the plan limit when override is zero', () => {
-    expect(limit.computeClientMailboxLimit({ planLimit: 25, override: 0 })).toEqual({
+    expect(limit.computeTenantMailboxLimit({ planLimit: 25, override: 0 })).toEqual({
       limit: 25,
       source: 'plan',
     });
   });
 
   it('falls back to the plan limit when override is negative', () => {
-    expect(limit.computeClientMailboxLimit({ planLimit: 25, override: -5 })).toEqual({
+    expect(limit.computeTenantMailboxLimit({ planLimit: 25, override: -5 })).toEqual({
       limit: 25,
       source: 'plan',
     });
   });
 
   it('allows override to go lower than the plan limit', () => {
-    expect(limit.computeClientMailboxLimit({ planLimit: 100, override: 10 })).toEqual({
+    expect(limit.computeTenantMailboxLimit({ planLimit: 100, override: 10 })).toEqual({
       limit: 10,
-      source: 'client_override',
+      source: 'tenant_override',
     });
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// getClientMailboxCount
+// getTenantMailboxCount
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('getClientMailboxCount', () => {
-  it('returns the total mailbox count across all email domains for a client', async () => {
+describe('getTenantMailboxCount', () => {
+  it('returns the total mailbox count across all email domains for a tenant', async () => {
     selectResults = [[{ count: 12 }]];
     const db = createMockDb();
-    const count = await limit.getClientMailboxCount(db as never, 'c1');
+    const count = await limit.getTenantMailboxCount(db as never, 'c1');
     expect(count).toBe(12);
   });
 
-  it('returns 0 when the client has no mailboxes', async () => {
+  it('returns 0 when the tenant has no mailboxes', async () => {
     selectResults = [[]];
     const db = createMockDb();
-    const count = await limit.getClientMailboxCount(db as never, 'c-empty');
+    const count = await limit.getTenantMailboxCount(db as never, 'c-empty');
     expect(count).toBe(0);
   });
 
   it('coerces the count to a number when the DB returns a string', async () => {
     selectResults = [[{ count: '42' }]];
     const db = createMockDb();
-    const count = await limit.getClientMailboxCount(db as never, 'c1');
+    const count = await limit.getTenantMailboxCount(db as never, 'c1');
     expect(count).toBe(42);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// getClientMailboxLimit (fetches plan + override + composes)
+// getTenantMailboxLimit (fetches plan + override + composes)
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('getClientMailboxLimit', () => {
-  it('returns the composed plan+override limit for a client', async () => {
-    // Call 1: client+plan join lookup
+describe('getTenantMailboxLimit', () => {
+  it('returns the composed plan+override limit for a tenant', async () => {
+    // Call 1: tenant+plan join lookup
     selectResults = [
       [{ planLimit: 50, override: 100 }],
     ];
     const db = createMockDb();
-    const result = await limit.getClientMailboxLimit(db as never, 'c1');
-    expect(result).toEqual({ limit: 100, source: 'client_override' });
+    const result = await limit.getTenantMailboxLimit(db as never, 'c1');
+    expect(result).toEqual({ limit: 100, source: 'tenant_override' });
   });
 
   it('uses the plan limit when no override is set', async () => {
@@ -112,14 +112,14 @@ describe('getClientMailboxLimit', () => {
       [{ planLimit: 50, override: null }],
     ];
     const db = createMockDb();
-    const result = await limit.getClientMailboxLimit(db as never, 'c1');
+    const result = await limit.getTenantMailboxLimit(db as never, 'c1');
     expect(result).toEqual({ limit: 50, source: 'plan' });
   });
 
-  it('throws CLIENT_NOT_FOUND when the client does not exist', async () => {
+  it('throws CLIENT_NOT_FOUND when the tenant does not exist', async () => {
     selectResults = [[]];
     const db = createMockDb();
-    await expect(limit.getClientMailboxLimit(db as never, 'ghost')).rejects.toMatchObject({
+    await expect(limit.getTenantMailboxLimit(db as never, 'ghost')).rejects.toMatchObject({
       code: 'CLIENT_NOT_FOUND',
       status: 404,
     });

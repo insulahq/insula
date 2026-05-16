@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resizeClient } from './service.js';
+import { resizeTenant } from './service.js';
 
 // ─── Mocks ─────────────────────────────────────────────────────────────
 //
-// resizeClient orchestrates DB writes + async k8s calls. We stub the
-// k8s clients + DB chain just enough to assert the dispatch path:
+// resizeTenant orchestrates DB writes + async k8s calls. We stub the
+// k8s tenants + DB chain just enough to assert the dispatch path:
 //
 //   • newMib === currentMib  → no-op, op row inserted with
 //     params.mode='noop', no PVC patch issued.
@@ -24,15 +24,15 @@ interface InsertedOp {
 function makeMockCtx(currentGi: number) {
   // FYI: storageLimitOverride is stored as a string in the DB so the
   // service casts via Number(...). Match that here.
-  const client = {
+  const tenant = {
     id: 'c1',
-    kubernetesNamespace: 'client-acme',
+    kubernetesNamespace: 'tenant-acme',
     storageLimitOverride: currentGi.toFixed(2),
     storageLifecycleState: 'idle',
     activeStorageOpId: null,
     planId: 'plan-1',
   };
-  // mustBeIdle selects { state: clients.storageLifecycleState, opId: clients.activeStorageOpId }.
+  // mustBeIdle selects { state: tenants.storageLifecycleState, opId: tenants.activeStorageOpId }.
   // Drizzle's projection rebuilds the row with those keys; we mirror it.
   const idleProjection = { state: 'idle', opId: null };
 
@@ -40,12 +40,12 @@ function makeMockCtx(currentGi: number) {
   const insertedSnapshots: unknown[] = [];
 
   // Different queries hit different shapes. Rather than juggling call
-  // counts, we satisfy whoever asks: full client OR idle projection.
-  const whereFn = vi.fn().mockImplementation(() => Promise.resolve([client, idleProjection][0]
-    ? [{ ...client, ...idleProjection }] : []));
+  // counts, we satisfy whoever asks: full tenant OR idle projection.
+  const whereFn = vi.fn().mockImplementation(() => Promise.resolve([tenant, idleProjection][0]
+    ? [{ ...tenant, ...idleProjection }] : []));
   const fromFn = vi.fn().mockReturnValue({
     where: whereFn,
-    orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ ...client, ...idleProjection }]) }),
+    orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ ...tenant, ...idleProjection }]) }),
   });
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
@@ -68,7 +68,7 @@ function makeMockCtx(currentGi: number) {
     });
   });
 
-  // Mock k8s clients — we only need core for PVC reads/patches; the
+  // Mock k8s tenants — we only need core for PVC reads/patches; the
   // actual orchestrator runs async via void runGrowOnline(...) so the
   // patch may fire AFTER our resolved promise. We accept that and
   // assert on the synchronous DB writes (op row insertion).
@@ -99,19 +99,19 @@ function makeMockCtx(currentGi: number) {
       delete: vi.fn().mockResolvedValue(undefined),
     },
     platformNamespace: 'platform',
-  } as unknown as Parameters<typeof resizeClient>[0];
+  } as unknown as Parameters<typeof resizeTenant>[0];
 
   return { ctx, insertedOps, insertedSnapshots, k8s };
 }
 
-describe('resizeClient dispatch', () => {
+describe('resizeTenant dispatch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('no-op when newMib === currentMib (records params.mode=noop, no snapshot)', async () => {
     const { ctx, insertedOps, insertedSnapshots, k8s } = makeMockCtx(10); // 10 GiB = 10240 MiB
-    const { operationId } = await resizeClient(ctx, 'c1', { newMib: 10240 });
+    const { operationId } = await resizeTenant(ctx, 'c1', { newMib: 10240 });
 
     expect(operationId).toBeTruthy();
     expect(insertedOps).toHaveLength(1);
@@ -126,7 +126,7 @@ describe('resizeClient dispatch', () => {
 
   it('grow path: schedules grow_online op (no snapshot, no quiesce)', async () => {
     const { ctx, insertedOps, insertedSnapshots } = makeMockCtx(10);
-    const { operationId } = await resizeClient(ctx, 'c1', { newMib: 20480 }); // 20 GiB
+    const { operationId } = await resizeTenant(ctx, 'c1', { newMib: 20480 }); // 20 GiB
 
     expect(operationId).toBeTruthy();
     expect(insertedOps).toHaveLength(1);
@@ -149,13 +149,13 @@ describe('resizeClient dispatch', () => {
     // path. That's the documented behaviour — used==0 means safe to
     // shrink. We pin that here.
     await expect(
-      resizeClient(ctx, 'c1', { newMib: 5120 }), // 20 → 5 GiB
+      resizeTenant(ctx, 'c1', { newMib: 5120 }), // 20 → 5 GiB
     ).resolves.toMatchObject({ operationId: expect.any(String) });
   });
 
   it('shrink path: records params.mode=destructive + creates pre-resize snapshot', async () => {
     const { ctx, insertedOps, insertedSnapshots } = makeMockCtx(20);
-    await resizeClient(ctx, 'c1', { newMib: 10240 }); // 20 → 10 GiB
+    await resizeTenant(ctx, 'c1', { newMib: 10240 }); // 20 → 10 GiB
 
     expect(insertedOps).toHaveLength(1);
     expect(insertedOps[0].params.mode).toBe('destructive');

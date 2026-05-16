@@ -183,7 +183,7 @@ export const volumePathSchema = z.object({
 
 export const deploymentResponseSchema = z.object({
   id: uuidField,
-  clientId: z.string(),
+  tenantId: z.string(),
   /** Null for custom deployments (source='custom', ADR-036). */
   catalogEntryId: z.string().nullable(),
   /** 'catalog' for standard workloads/apps; 'custom' for ADR-036 bring-your-own containers. */
@@ -286,7 +286,7 @@ export const batchUpgradeSchema = z.object({
   force: z.boolean().optional(),
 });
 
-/** GET /clients/:cid/deployments/:id/available-upgrades */
+/** GET /tenants/:cid/deployments/:id/available-upgrades */
 export const availableUpgradeItemSchema = z.object({
   version: z.string(),
   isDefault: z.boolean(),
@@ -314,8 +314,8 @@ export type AvailableUpgradesResponse = z.infer<typeof availableUpgradesResponse
 /** Per-deployment row in the admin upgrades overview. */
 export const adminUpgradesDeploymentSchema = z.object({
   id: z.string(),
-  clientId: z.string(),
-  clientCompanyName: z.string().nullable(),
+  tenantId: z.string(),
+  tenantCompanyName: z.string().nullable(),
   name: z.string(),
   status: z.string(),
   installedVersion: z.string().nullable(),
@@ -370,7 +370,7 @@ export const resourceBreakdownResponseSchema = z.object({
    */
   warnings: z.array(z.string()),
   /**
-   * Asymmetric QoS model surfaced for client UX (ADR-037).
+   * Asymmetric QoS model surfaced for tenant UX (ADR-037).
    * Frontend renders "burstable" vs "guaranteed" badges accordingly.
    */
   qosModel: z.object({

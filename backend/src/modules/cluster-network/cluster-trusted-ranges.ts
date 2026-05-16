@@ -11,7 +11,7 @@
  *  - cidr is IMMUTABLE post-create — the operator deletes + recreates
  *    if they want a different range. The CRD schema does not enforce
  *    this; the service does at the patch path.
- *  - The "addedBy" field is set from req.user.sub on POST; clients
+ *  - The "addedBy" field is set from req.user.sub on POST; tenants
  *    can't override.
  *  - status is reconciler-owned, never written by this service.
  */
@@ -81,9 +81,9 @@ function toTrustedRange(cr: CrShape): TrustedRange {
 
 export async function listTrustedRanges(
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<TrustedRange[]> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   try {
     const resp = (await c.custom.listClusterCustomObject({
       group: CRD_GROUP,
@@ -100,9 +100,9 @@ export async function createTrustedRange(
   req: CreateTrustedRangeRequest,
   addedBy: string,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<TrustedRange> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   const body = {
     apiVersion: `${CRD_GROUP}/${CRD_VERSION}`,
     kind: 'ClusterTrustedRange',
@@ -144,9 +144,9 @@ export async function updateTrustedRangeDescription(
   name: string,
   req: UpdateTrustedRangeRequest,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<TrustedRange> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   const patch = { spec: { description: req.description } };
   try {
     const resp = (await c.custom.patchClusterCustomObject(
@@ -175,9 +175,9 @@ export async function updateTrustedRangeDescription(
 export async function deleteTrustedRange(
   name: string,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<void> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   try {
     await c.custom.deleteClusterCustomObject({
       group: CRD_GROUP,

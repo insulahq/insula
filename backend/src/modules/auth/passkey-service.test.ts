@@ -22,12 +22,12 @@ describe('loadPasskeyConfig', () => {
   it('accepts subdomain origins of RP_ID', () => {
     const cfg = loadPasskeyConfig({
       PLATFORM_PASSKEY_RP_ID: 'example.test',
-      PLATFORM_PASSKEY_ORIGINS: 'https://admin.example.test,https://client.example.test',
+      PLATFORM_PASSKEY_ORIGINS: 'https://admin.example.test,https://tenant.example.test',
     });
     expect(cfg.rpId).toBe('example.test');
     expect(cfg.origins).toEqual([
       'https://admin.example.test',
-      'https://client.example.test',
+      'https://tenant.example.test',
     ]);
   });
 

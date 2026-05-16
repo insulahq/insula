@@ -13,7 +13,7 @@ describe('buildIngressRoute — cross-namespace Service guard', () => {
   it('accepts a route with same-namespace Services (omitted namespace)', () => {
     const body = buildIngressRoute({
       name: 'r-tenant',
-      namespace: 'client-abc',
+      namespace: 'tenant-abc',
       routes: [
         {
           match: hostMatch('app.example.com'),
@@ -28,16 +28,16 @@ describe('buildIngressRoute — cross-namespace Service guard', () => {
   it('accepts a route with explicit same-namespace ref (echoes args.namespace)', () => {
     const body = buildIngressRoute({
       name: 'r-tenant',
-      namespace: 'client-abc',
+      namespace: 'tenant-abc',
       routes: [
         {
           match: hostMatch('app.example.com'),
           kind: 'Rule',
-          services: [{ name: 'app', port: 80, namespace: 'client-abc' }],
+          services: [{ name: 'app', port: 80, namespace: 'tenant-abc' }],
         },
       ],
     });
-    expect(body.spec.routes[0].services[0].namespace).toBe('client-abc');
+    expect(body.spec.routes[0].services[0].namespace).toBe('tenant-abc');
   });
 
   it('THROWS when a route declares a Service in a DIFFERENT namespace', () => {
@@ -47,7 +47,7 @@ describe('buildIngressRoute — cross-namespace Service guard', () => {
     expect(() =>
       buildIngressRoute({
         name: 'r-tenant',
-        namespace: 'client-abc',
+        namespace: 'tenant-abc',
         routes: [
           {
             match: hostMatch('app.example.com'),
@@ -126,7 +126,7 @@ describe('buildMiddleware', () => {
   it('stamps default labels + caller labels on every Middleware', () => {
     const mw = buildMiddleware({
       name: 'r-12345678-waf',
-      namespace: 'client-abc',
+      namespace: 'tenant-abc',
       spec: { rateLimit: { average: 10, burst: 50 } },
       labels: { 'hosting-platform/route-id': '12345678', 'hosting-platform/middleware-kind': 'waf' },
     });

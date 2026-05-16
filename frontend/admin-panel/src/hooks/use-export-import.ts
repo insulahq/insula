@@ -5,7 +5,7 @@ interface ExportResponse {
   readonly data: {
     readonly version: string;
     readonly exportedAt: string;
-    readonly clients: readonly Record<string, unknown>[];
+    readonly tenants: readonly Record<string, unknown>[];
     readonly domains: readonly Record<string, unknown>[];
     readonly hostingPlans: readonly Record<string, unknown>[];
     readonly dnsServers: readonly Record<string, unknown>[];

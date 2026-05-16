@@ -129,19 +129,19 @@ export function resolveIngressBackend(
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
- * Reconcile the Ingress resource for a client namespace.
+ * Reconcile the Ingress resource for a tenant namespace.
  * Builds rules from ingress_routes that have deployments assigned.
  * If no routable routes exist, deletes the Ingress.
  */
 export async function reconcileIngress(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   namespace: string,
 ): Promise<void> {
-  // Get all domains for this client
-  const clientDomains = await db.select().from(domains).where(eq(domains.clientId, clientId));
-  const domainIds = clientDomains.map(d => d.id);
+  // Get all domains for this tenant
+  const tenantDomains = await db.select().from(domains).where(eq(domains.tenantId, tenantId));
+  const domainIds = tenantDomains.map(d => d.id);
 
   const ingressName = `${namespace}-ingress`;
 
@@ -152,10 +152,10 @@ export async function reconcileIngress(
   }
 
   // Get all ingress routes with an assigned target (deployment OR
-  // private_worker) for this client's domains. Migration 0076 added
+  // private_worker) for this tenant's domains. Migration 0076 added
   // the private_worker_id polymorphic target column.
   const allRoutes = await db.select().from(ingressRoutes);
-  const clientRoutes = allRoutes.filter(
+  const tenantRoutes = allRoutes.filter(
     r =>
       domainIds.includes(r.domainId)
       && (r.deploymentId || r.privateWorkerId)
@@ -163,13 +163,13 @@ export async function reconcileIngress(
   );
 
   // Auto-migrate: create ingress_routes for legacy domains with deploymentId
-  for (const domain of clientDomains) {
+  for (const domain of tenantDomains) {
     if (!domain.deploymentId) continue;
-    const alreadyRouted = clientRoutes.some(r => r.hostname === domain.domainName);
+    const alreadyRouted = tenantRoutes.some(r => r.hostname === domain.domainName);
     if (alreadyRouted) continue;
 
     try {
-      await createRoute(db, domain.id, clientId, domain.domainName, domain.deploymentId);
+      await createRoute(db, domain.id, tenantId, domain.domainName, domain.deploymentId);
     } catch {
       // Route already exists or creation failed — continue
     }
@@ -183,7 +183,7 @@ export async function reconcileIngress(
   // public Ingress is then never created for that hostname — true
   // zero-trust on the network layer.
   const suppressedDomainIds = new Set(
-    clientDomains.filter((d) => d.suppressPublicIngress).map((d) => d.id),
+    tenantDomains.filter((d) => d.suppressPublicIngress).map((d) => d.id),
   );
   const updatedRoutes = updatedAllRoutes.filter(
     r =>
@@ -204,12 +204,12 @@ export async function reconcileIngress(
   // `<deployment>-<component>` one, not the deployment name itself. Also
   // catches the hardcoded 8080 bug — each catalog entry declares its own
   // ingress port via components[*].ports[*].ingress = true.
-  const clientDeployments = await db.select().from(deployments).where(eq(deployments.clientId, clientId));
+  const tenantDeployments = await db.select().from(deployments).where(eq(deployments.tenantId, tenantId));
   // Custom deployments (ADR-036) carry no catalog entry; PR-2 wires
   // their ingress backends via a separate path. Drop them here so the
   // catalog inArray lookup is well-typed.
   const entryIds = [...new Set(
-    clientDeployments.map(d => d.catalogEntryId).filter((id): id is string => id !== null),
+    tenantDeployments.map(d => d.catalogEntryId).filter((id): id is string => id !== null),
   )];
   const entryRows = entryIds.length > 0
     ? await db.select().from(catalogEntries).where(inArray(catalogEntries.id, entryIds))
@@ -217,7 +217,7 @@ export async function reconcileIngress(
   const entryMap = new Map(entryRows.map(e => [e.id, e]));
 
   const backendMap = new Map<string, { serviceName: string; port: number }>();
-  for (const d of clientDeployments) {
+  for (const d of tenantDeployments) {
     if (d.catalogEntryId === null) {
       // Custom deployment (ADR-036): no catalog entry. The ingressEligible
       // port is resolved from the customSpec on a per-route basis below,
@@ -249,20 +249,20 @@ export async function reconcileIngress(
 
   // Build custom-deployment lookup by id for fast per-route resolution.
   const customDeploymentMap = new Map(
-    clientDeployments.filter(d => d.catalogEntryId === null).map(d => [d.id, d]),
+    tenantDeployments.filter(d => d.catalogEntryId === null).map(d => [d.id, d]),
   );
 
   // Build private-worker → (service, port) lookup. Each active worker has a
-  // per-worker ClusterIP Service `pw-<id>` in the client's namespace
+  // per-worker ClusterIP Service `pw-<id>` in the tenant's namespace
   // (created by private-workers/reconciler.ts) backed by the frps pod
   // bound to the worker's exposed_port. The Ingress backend is that
   // Service — same shape as a deployment-targeted route.
   const privateWorkerBackends = new Map<string, { serviceName: string; port: number }>();
-  const clientPrivateWorkers = await db
+  const tenantPrivateWorkers = await db
     .select()
     .from(privateWorkers)
-    .where(eq(privateWorkers.clientId, clientId));
-  for (const pw of clientPrivateWorkers) {
+    .where(eq(privateWorkers.tenantId, tenantId));
+  for (const pw of tenantPrivateWorkers) {
     if (pw.status !== 'active' && pw.status !== 'pending') continue;
     privateWorkerBackends.set(pw.id, {
       serviceName: `pw-${pw.id}`,
@@ -327,7 +327,7 @@ export async function reconcileIngress(
   // carries the Middleware bodies to apply BEFORE the IngressRoute
   // references them and the list of names attached to the route entry
   // in spec.routes[].middlewares.
-  const routeSpecs = await buildAllRouteSpecs(db, k8s, clientId, domainIds, resolveBackend);
+  const routeSpecs = await buildAllRouteSpecs(db, k8s, tenantId, domainIds, resolveBackend);
 
   // Apply every Middleware first. Track the names actually applied so we
   // can GC orphans afterwards.
@@ -408,7 +408,7 @@ export async function reconcileIngress(
       // Find the domain row matching this hostname so we can pass its
       // id to ensureRouteCertificate (it looks up dns_provider settings
       // by domainId).
-      const matchingDomain = clientDomains.find((d) =>
+      const matchingDomain = tenantDomains.find((d) =>
         d.domainName === hostname || hostname.endsWith(`.${d.domainName}`),
       );
       if (!matchingDomain) continue;
@@ -438,12 +438,12 @@ export async function reconcileIngress(
     entryPoints: ['websecure'],
     ...(primaryTlsSecret ? { tls: { secretName: primaryTlsSecret } } : {}),
     labels: {
-      'hosting-platform/client-id': clientId,
+      'hosting-platform/tenant-id': tenantId,
     },
   });
   await applyIngressRoute(k8s.custom, ingressBody);
 
-  // GC orphan Middlewares that this client's reconcile no longer
+  // GC orphan Middlewares that this tenant's reconcile no longer
   // produces. Limited to labels matching hosting-platform/route-id IN
   // (current route ids) — anything else (cluster-shared admin-auth
   // Middlewares, oauth2-proxy break-glass middleware, …) stays put.

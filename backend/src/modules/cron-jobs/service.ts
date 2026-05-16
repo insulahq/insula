@@ -1,19 +1,19 @@
 import { eq, and, desc, lt, sql } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
-import { getClientById } from '../clients/service.js';
+import { getTenantById } from '../tenants/service.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import type { CreateCronJobInput, UpdateCronJobInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 
-export async function createCronJob(db: Database, clientId: string, input: CreateCronJobInput) {
-  await getClientById(db, clientId);
+export async function createCronJob(db: Database, tenantId: string, input: CreateCronJobInput) {
+  await getTenantById(db, tenantId);
 
   const id = crypto.randomUUID();
   await db.insert(cronJobs).values({
     id,
-    clientId,
+    tenantId,
     name: input.name,
     type: input.type,
     schedule: input.schedule,
@@ -28,11 +28,11 @@ export async function createCronJob(db: Database, clientId: string, input: Creat
   return created;
 }
 
-export async function getCronJobById(db: Database, clientId: string, cronJobId: string) {
+export async function getCronJobById(db: Database, tenantId: string, cronJobId: string) {
   const [job] = await db
     .select()
     .from(cronJobs)
-    .where(and(eq(cronJobs.id, cronJobId), eq(cronJobs.clientId, clientId)));
+    .where(and(eq(cronJobs.id, cronJobId), eq(cronJobs.tenantId, tenantId)));
   if (!job) {
     throw new ApiError('CRON_JOB_NOT_FOUND', `Cron job '${cronJobId}' not found`, 404, { cron_job_id: cronJobId });
   }
@@ -90,12 +90,12 @@ export async function listAllCronJobs(
 
 export async function listCronJobs(
   db: Database,
-  clientId: string,
+  tenantId: string,
   params: { limit: number; cursor?: string },
 ): Promise<{ data: typeof cronJobs.$inferSelect[]; pagination: PaginationMeta }> {
   const { limit, cursor } = params;
 
-  const conditions = [eq(cronJobs.clientId, clientId)];
+  const conditions = [eq(cronJobs.tenantId, tenantId)];
   if (cursor) {
     const decoded = decodeCursor(cursor);
     conditions.push(lt(cronJobs.createdAt, new Date(decoded.sort)));
@@ -124,7 +124,7 @@ export async function listCronJobs(
   const [countResult] = await db
     .select({ count: sql<number>`count(*)` })
     .from(cronJobs)
-    .where(eq(cronJobs.clientId, clientId));
+    .where(eq(cronJobs.tenantId, tenantId));
 
   return {
     data,
@@ -137,8 +137,8 @@ export async function listCronJobs(
   };
 }
 
-export async function updateCronJob(db: Database, clientId: string, cronJobId: string, input: UpdateCronJobInput) {
-  await getCronJobById(db, clientId, cronJobId);
+export async function updateCronJob(db: Database, tenantId: string, cronJobId: string, input: UpdateCronJobInput) {
+  await getCronJobById(db, tenantId, cronJobId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
@@ -153,11 +153,11 @@ export async function updateCronJob(db: Database, clientId: string, cronJobId: s
     await db.update(cronJobs).set(updateValues).where(eq(cronJobs.id, cronJobId));
   }
 
-  return getCronJobById(db, clientId, cronJobId);
+  return getCronJobById(db, tenantId, cronJobId);
 }
 
-export async function runCronJobNow(db: Database, clientId: string, cronJobId: string) {
-  const job = await getCronJobById(db, clientId, cronJobId);
+export async function runCronJobNow(db: Database, tenantId: string, cronJobId: string) {
+  const job = await getCronJobById(db, tenantId, cronJobId);
 
   const startTime = Date.now();
   let status: 'success' | 'failed' = 'success';
@@ -192,11 +192,11 @@ export async function runCronJobNow(db: Database, clientId: string, cronJobId: s
     lastRunOutput: output,
   }).where(eq(cronJobs.id, cronJobId));
 
-  return getCronJobById(db, clientId, cronJobId);
+  return getCronJobById(db, tenantId, cronJobId);
 }
 
-export async function deleteCronJob(db: Database, clientId: string, cronJobId: string) {
-  await getCronJobById(db, clientId, cronJobId);
+export async function deleteCronJob(db: Database, tenantId: string, cronJobId: string) {
+  await getCronJobById(db, tenantId, cronJobId);
   await db.delete(cronJobs).where(eq(cronJobs.id, cronJobId));
 }
 

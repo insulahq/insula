@@ -10,7 +10,7 @@
  * Audit logging:
  *   - All write operations log the requester sub + the resource name
  *     at WARN level so operators can trace policy changes.
- *   - addedBy on CTR/CPP is set from req.user.sub, never client-supplied.
+ *   - addedBy on CTR/CPP is set from req.user.sub, never tenant-supplied.
  *
  *   GET    /admin/cluster/trusted-ranges
  *   POST   /admin/cluster/trusted-ranges

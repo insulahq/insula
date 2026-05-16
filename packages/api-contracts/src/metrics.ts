@@ -18,7 +18,7 @@ export const metricAggregateSchema = z.object({
 });
 
 export const metricsResponseSchema = z.object({
-  client_id: z.string(),
+  tenant_id: z.string(),
   period: z.string(),
   since: z.string(),
   metrics: z.record(z.string(), metricAggregateSchema),

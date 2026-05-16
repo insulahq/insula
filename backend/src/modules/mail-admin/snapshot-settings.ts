@@ -44,7 +44,7 @@ export interface SnapshotSettingsOptions {
   readonly kubeconfigPath: string | undefined;
 }
 
-interface K8sBatchClient {
+interface K8sBatchTenant {
   batch: import('@kubernetes/client-node').BatchV1Api;
   core: import('@kubernetes/client-node').CoreV1Api;
 }
@@ -112,7 +112,7 @@ async function getOrCreateResticPassword(
  * until the repo is re-initialised (first backup after rotation recreates it).
  */
 export async function rotateResticPassword(opts: SnapshotSettingsOptions): Promise<{ status: string }> {
-  const { core } = await loadK8sClients(opts.kubeconfigPath);
+  const { core } = await loadK8sTenants(opts.kubeconfigPath);
   try {
     await core.deleteNamespacedSecret({
       namespace: MAIL_NAMESPACE,
@@ -125,7 +125,7 @@ export async function rotateResticPassword(opts: SnapshotSettingsOptions): Promi
   return { status: 'password_rotated' };
 }
 
-async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sBatchClient> {
+async function loadK8sTenants(kubeconfigPath: string | undefined): Promise<K8sBatchTenant> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
@@ -149,7 +149,7 @@ export async function getMailSnapshotSchedule(
 ): Promise<MailSnapshotScheduleResponse> {
   // Try k8s first — it is authoritative.
   try {
-    const { batch } = await loadK8sClients(opts.kubeconfigPath);
+    const { batch } = await loadK8sTenants(opts.kubeconfigPath);
     const cronJob = await batch.readNamespacedCronJob({
       namespace: MAIL_NAMESPACE,
       name: SNAPSHOT_CRONJOB_NAME,
@@ -176,7 +176,7 @@ export async function updateMailSnapshotSchedule(
   db: Database,
   opts: SnapshotSettingsOptions,
 ): Promise<MailSnapshotScheduleResponse> {
-  const { batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   try {
     await batch.patchNamespacedCronJob(
@@ -247,7 +247,7 @@ export async function updateMailSnapshotBackupTarget(
   opts: SnapshotSettingsOptions,
   encryptionKey: string,
 ): Promise<MailSnapshotBackupTargetResponse> {
-  const { core } = await loadK8sClients(opts.kubeconfigPath);
+  const { core } = await loadK8sTenants(opts.kubeconfigPath);
 
   if (!update.backupStoreId) {
     // Clear: delete the restic repo Secret if it exists.

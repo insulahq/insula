@@ -1,30 +1,30 @@
 /**
  * SQLite file management routes.
  *
- * All routes require authentication and client access.
+ * All routes require authentication and tenant access.
  * SQLite files are queried by executing `sqlite3` inside the file-manager pod
- * which has the client's shared PVC mounted at /data/.
+ * which has the tenant's shared PVC mounted at /data/.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { clients } from '../../db/schema.js';
+import { tenants } from '../../db/schema.js';
 import * as sqliteService from './service.js';
 
 export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
-  // Phase 6: method-aware role guard — read open, writes staff+client_admin only
+  // Phase 6: method-aware role guard — read open, writes staff+tenant_admin only
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireClientRoleByMethod());
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantRoleByMethod());
+  app.addHook('onRequest', requireTenantAccess());
 
   const getK8s = () => {
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      return { k8sClients: createK8sClients(kubeconfigPath), kubeconfigPath };
+      return { k8sTenants: createK8sClients(kubeconfigPath), kubeconfigPath };
     } catch {
       return undefined;
     }
@@ -38,15 +38,15 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
     return result;
   }
 
-  async function resolveNamespace(clientId: string): Promise<string> {
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-    if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
-    return client.kubernetesNamespace;
+  async function resolveNamespace(tenantId: string): Promise<string> {
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+    return tenant.kubernetesNamespace;
   }
 
-  // POST /api/v1/clients/:clientId/sqlite/query
-  app.post('/clients/:clientId/sqlite/query', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // POST /api/v1/tenants/:tenantId/sqlite/query
+  app.post('/tenants/:tenantId/sqlite/query', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const body = (request.body ?? {}) as { file_path?: string; query?: string };
 
     if (!body.file_path) {
@@ -56,15 +56,15 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'query is required', 400, { field: 'query' });
     }
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const result = await sqliteService.executeQuery(k8sClients, kubeconfigPath, namespace, body.file_path, body.query);
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const result = await sqliteService.executeQuery(k8sTenants, kubeconfigPath, namespace, body.file_path, body.query);
     return success(result);
   });
 
-  // GET /api/v1/clients/:clientId/sqlite/tables?file_path=path/to/db.sqlite
-  app.get('/clients/:clientId/sqlite/tables', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/sqlite/tables?file_path=path/to/db.sqlite
+  app.get('/tenants/:tenantId/sqlite/tables', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const filePath = query.file_path as string | undefined;
 
@@ -72,15 +72,15 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'file_path query parameter is required', 400, { field: 'file_path' });
     }
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const tables = await sqliteService.listTables(k8sClients, kubeconfigPath, namespace, filePath);
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const tables = await sqliteService.listTables(k8sTenants, kubeconfigPath, namespace, filePath);
     return success(tables);
   });
 
-  // GET /api/v1/clients/:clientId/sqlite/table-structure?file_path=...&table=users
-  app.get('/clients/:clientId/sqlite/table-structure', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/sqlite/table-structure?file_path=...&table=users
+  app.get('/tenants/:tenantId/sqlite/table-structure', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const filePath = query.file_path as string | undefined;
     const table = query.table as string | undefined;
@@ -92,15 +92,15 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
     }
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const columns = await sqliteService.describeTable(k8sClients, kubeconfigPath, namespace, filePath, table);
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const columns = await sqliteService.describeTable(k8sTenants, kubeconfigPath, namespace, filePath, table);
     return success(columns);
   });
 
-  // GET /api/v1/clients/:clientId/sqlite/table-data?file_path=...&table=users&limit=50&offset=0&orderBy=id&orderDir=desc
-  app.get('/clients/:clientId/sqlite/table-data', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/sqlite/table-data?file_path=...&table=users&limit=50&offset=0&orderBy=id&orderDir=desc
+  app.get('/tenants/:tenantId/sqlite/table-data', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const filePath = query.file_path as string | undefined;
     const table = query.table as string | undefined;
@@ -117,15 +117,15 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
     const orderBy = query.orderBy as string | undefined;
     const orderDir = (query.orderDir as string | undefined)?.toLowerCase() === 'desc' ? 'desc' as const : 'asc' as const;
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const result = await sqliteService.browseTable(k8sClients, kubeconfigPath, namespace, filePath, table, { limit, offset, orderBy, orderDir });
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const result = await sqliteService.browseTable(k8sTenants, kubeconfigPath, namespace, filePath, table, { limit, offset, orderBy, orderDir });
     return success(result);
   });
 
-  // GET /api/v1/clients/:clientId/sqlite/row-count?file_path=...&table=users
-  app.get('/clients/:clientId/sqlite/row-count', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/sqlite/row-count?file_path=...&table=users
+  app.get('/tenants/:tenantId/sqlite/row-count', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const filePath = query.file_path as string | undefined;
     const table = query.table as string | undefined;
@@ -137,15 +137,15 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
     }
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const count = await sqliteService.countRows(k8sClients, kubeconfigPath, namespace, filePath, table);
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const count = await sqliteService.countRows(k8sTenants, kubeconfigPath, namespace, filePath, table);
     return success({ count });
   });
 
-  // POST /api/v1/clients/:clientId/sqlite/export?file_path=...
-  app.post('/clients/:clientId/sqlite/export', async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+  // POST /api/v1/tenants/:tenantId/sqlite/export?file_path=...
+  app.post('/tenants/:tenantId/sqlite/export', async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const filePath = query.file_path as string | undefined;
 
@@ -153,9 +153,9 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'file_path query parameter is required', 400, { field: 'file_path' });
     }
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const dump = await sqliteService.exportDatabase(k8sClients, kubeconfigPath, namespace, filePath);
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const dump = await sqliteService.exportDatabase(k8sTenants, kubeconfigPath, namespace, filePath);
 
     const filename = filePath.split('/').pop() ?? 'database';
     reply
@@ -164,9 +164,9 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       .send(dump);
   });
 
-  // POST /api/v1/clients/:clientId/sqlite/import
-  app.post('/clients/:clientId/sqlite/import', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // POST /api/v1/tenants/:tenantId/sqlite/import
+  app.post('/tenants/:tenantId/sqlite/import', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const body = (request.body ?? {}) as { file_path?: string; sql?: string };
 
     if (!body.file_path) {
@@ -176,9 +176,9 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'SQL content is required', 400, { field: 'sql' });
     }
 
-    const { k8sClients, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(clientId);
-    const result = await sqliteService.importSql(k8sClients, kubeconfigPath, namespace, body.file_path, body.sql);
+    const { k8sTenants, kubeconfigPath } = requireK8s();
+    const namespace = await resolveNamespace(tenantId);
+    const result = await sqliteService.importSql(k8sTenants, kubeconfigPath, namespace, body.file_path, body.sql);
     return success(result);
   });
 }

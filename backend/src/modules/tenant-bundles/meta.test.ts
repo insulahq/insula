@@ -5,7 +5,7 @@ import { BackupMetaError, parseMeta, serializeMeta, componentDir, META_FILENAME 
 const VALID_META: BackupMetaV1 = {
   schemaVersion: BACKUP_META_SCHEMA_VERSION,
   backupId: 'bkp-aaaa',
-  clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
+  tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
   capturedAt: '2026-05-01T10:00:00.000Z',
   platformVersion: '0.3.1',
   initiator: 'admin',
@@ -19,15 +19,15 @@ const VALID_META: BackupMetaV1 = {
   retentionDays: 30,
   description: null,
   // v2 fields
-  client: {
-    companyName: 'Acme Co',
-    companyEmail: 'admin@acme.test',
-    contactEmail: null,
+  tenant: {
+    name: 'Acme Co',
+    primaryEmail: 'admin@acme.test',
+    secondaryEmail: null,
     status: 'active',
-    kubernetesNamespace: 'client-acme-deadbeef',
+    kubernetesNamespace: 'tenant-acme-deadbeef',
     regionId: '7707111e-21f6-49b6-9eea-a26a007fa2a1',
     planId: 'a383c4ce-ff5e-427b-b6c8-76fea6af043c',
-    workerNodeName: null,
+    nodeName: null,
     storageTier: 'local',
     timezone: 'UTC',
     storageLimitOverride: null,
@@ -87,16 +87,16 @@ describe('serializeMeta / parseMeta', () => {
 });
 
 describe('parseMeta v1 → v2 read-side promotion', () => {
-  // Legacy v1 bundles (captured before 2026-05-08) lack the `client`,
+  // Legacy v1 bundles (captured before 2026-05-08) lack the `tenant`,
   // `domainsSummary`, `deploymentsSummary` fields. parseMeta promotes
   // them in-memory so verify / export / restore-cart still work for
   // pre-existing bundles. The IMPORT endpoint still rejects v1 — that
   // path is owned by routes.ts (BUNDLE_VERSION_UNSUPPORTED).
-  it('accepts a v1 manifest and fills client/domains/deployments with safe defaults', () => {
+  it('accepts a v1 manifest and fills tenant/domains/deployments with safe defaults', () => {
     const v1 = {
       schemaVersion: 1,
       backupId: 'bkp-legacy-1',
-      clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
+      tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
       capturedAt: '2026-05-01T10:00:00.000Z',
       platformVersion: '0.3.0',
       initiator: 'admin',
@@ -111,7 +111,7 @@ describe('parseMeta v1 → v2 read-side promotion', () => {
     const meta = parseMeta(JSON.stringify(v1));
     expect(meta.schemaVersion).toBe(BACKUP_META_SCHEMA_VERSION);
     expect(meta.backupId).toBe('bkp-legacy-1');
-    expect(meta.client).toBeNull();
+    expect(meta.tenant).toBeNull();
     expect(meta.domainsSummary).toEqual([]);
     expect(meta.deploymentsSummary).toEqual([]);
   });

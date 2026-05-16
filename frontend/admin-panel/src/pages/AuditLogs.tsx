@@ -7,7 +7,7 @@ import { useAuditLogs, type AuditLogEntry, type ListAuditLogsParams } from '@/ho
  *
  * Reads from the backend `GET /api/v1/admin/audit-logs` endpoint
  * which already supports cursor pagination and filtering by
- * client_id, action_type, resource_type, actor_id, http_method,
+ * tenant_id, action_type, resource_type, actor_id, http_method,
  * search (path LIKE), from, to. Restricted to super_admin and
  * admin roles server-side.
  *
@@ -90,7 +90,7 @@ export default function AuditLogs() {
     || !!filters.search
     || !!filters.from
     || !!filters.to
-    || !!filters.client_id
+    || !!filters.tenant_id
     || !!filters.actor_id;
 
   return (
@@ -133,7 +133,7 @@ export default function AuditLogs() {
             <input
               id="filter-resource"
               type="text"
-              placeholder="e.g. client, user, domain"
+              placeholder="e.g. tenant, user, domain"
               className={INPUT_CLASS + ' mt-1'}
               value={filters.resource_type ?? ''}
               onChange={(e) => applyFilters({ resource_type: e.target.value || undefined })}
@@ -163,7 +163,7 @@ export default function AuditLogs() {
               <input
                 id="filter-search"
                 type="text"
-                placeholder="/clients/..."
+                placeholder="/tenants/..."
                 className={INPUT_CLASS + ' pl-8'}
                 value={filters.search ?? ''}
                 onChange={(e) => applyFilters({ search: e.target.value || undefined })}
@@ -194,15 +194,15 @@ export default function AuditLogs() {
             />
           </div>
           <div>
-            <label htmlFor="filter-client" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label>
+            <label htmlFor="filter-tenant" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label>
             <input
-              id="filter-client"
+              id="filter-tenant"
               type="text"
               placeholder="UUID"
               className={INPUT_CLASS + ' mt-1 font-mono'}
-              value={filters.client_id ?? ''}
-              onChange={(e) => applyFilters({ client_id: e.target.value || undefined })}
-              data-testid="filter-client-id"
+              value={filters.tenant_id ?? ''}
+              onChange={(e) => applyFilters({ tenant_id: e.target.value || undefined })}
+              data-testid="filter-tenant-id"
             />
           </div>
           <div>
@@ -385,7 +385,7 @@ function AuditLogRow({
               <Field label="ID" value={row.id} mono />
               <Field label="Actor type" value={row.actorType} />
               <Field label="Actor ID" value={row.actorId} mono />
-              <Field label="Client ID" value={row.clientId ?? '—'} mono />
+              <Field label="Client ID" value={row.tenantId ?? '—'} mono />
               <Field label="Resource type" value={row.resourceType} />
               <Field label="Resource ID" value={row.resourceId ?? '—'} mono />
               <Field label="HTTP method" value={row.httpMethod ?? '—'} mono />

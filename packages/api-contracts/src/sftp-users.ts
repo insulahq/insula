@@ -35,7 +35,7 @@ export const rotateSftpPasswordSchema = z.object({
 
 export const sftpUserResponseSchema = z.object({
   id: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   username: z.string(),
   description: z.string().nullable(),
   enabled: z.boolean(),
@@ -72,7 +72,7 @@ export const sftpConnectionInfoSchema = z.object({
 export const sftpAuditLogSchema = z.object({
   id: z.string(),
   sftpUserId: z.string().nullable(),
-  clientId: z.string(),
+  tenantId: z.string(),
   event: z.string(),
   sourceIp: z.string(),
   protocol: z.string(),

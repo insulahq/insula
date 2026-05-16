@@ -2,15 +2,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { DnsRecordResponse } from '@/types/api';
 
-function basePath(clientId: string, domainId: string) {
-  return `/api/v1/clients/${clientId}/domains/${domainId}/dns-records`;
+function basePath(tenantId: string, domainId: string) {
+  return `/api/v1/tenants/${tenantId}/domains/${domainId}/dns-records`;
 }
 
-export function useDnsRecords(clientId: string | undefined, domainId: string | undefined) {
+export function useDnsRecords(tenantId: string | undefined, domainId: string | undefined) {
   return useQuery({
-    queryKey: ['dns-records', clientId, domainId],
-    queryFn: () => apiFetch<{ data: readonly DnsRecordResponse[] }>(basePath(clientId!, domainId!)),
-    enabled: Boolean(clientId && domainId),
+    queryKey: ['dns-records', tenantId, domainId],
+    queryFn: () => apiFetch<{ data: readonly DnsRecordResponse[] }>(basePath(tenantId!, domainId!)),
+    enabled: Boolean(tenantId && domainId),
   });
 }
 
@@ -24,17 +24,17 @@ interface CreateDnsRecordInput {
   readonly port?: number;
 }
 
-export function useCreateDnsRecord(clientId: string | undefined, domainId: string | undefined) {
+export function useCreateDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input: CreateDnsRecordInput) =>
-      apiFetch<{ data: DnsRecordResponse }>(basePath(clientId!, domainId!), {
+      apiFetch<{ data: DnsRecordResponse }>(basePath(tenantId!, domainId!), {
         method: 'POST',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dns-records', clientId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records', tenantId, domainId] });
     },
   });
 }
@@ -47,29 +47,29 @@ interface UpdateDnsRecordInput {
   readonly port?: number;
 }
 
-export function useUpdateDnsRecord(clientId: string | undefined, domainId: string | undefined) {
+export function useUpdateDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: ({ recordId, ...input }: UpdateDnsRecordInput & { readonly recordId: string }) =>
-      apiFetch<{ data: DnsRecordResponse }>(`${basePath(clientId!, domainId!)}/${recordId}`, {
+      apiFetch<{ data: DnsRecordResponse }>(`${basePath(tenantId!, domainId!)}/${recordId}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dns-records', clientId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records', tenantId, domainId] });
     },
   });
 }
 
-export function useDeleteDnsRecord(clientId: string | undefined, domainId: string | undefined) {
+export function useDeleteDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (recordId: string) =>
-      apiFetch<void>(`${basePath(clientId!, domainId!)}/${recordId}`, { method: 'DELETE' }),
+      apiFetch<void>(`${basePath(tenantId!, domainId!)}/${recordId}`, { method: 'DELETE' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dns-records', clientId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records', tenantId, domainId] });
     },
   });
 }

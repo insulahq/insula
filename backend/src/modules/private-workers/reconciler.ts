@@ -1,19 +1,19 @@
 /**
- * Per-client K8s materialisation for private workers.
+ * Per-tenant K8s materialisation for private workers.
  *
  * Reference-counted on `private_workers` rows: a frps Deployment is
- * provisioned in the client namespace as soon as the client has at
+ * provisioned in the tenant namespace as soon as the tenant has at
  * least one `active` or `pending` worker, and torn down when the last
  * one leaves the active set.
  *
  * In `platform-system`:
- *   - Per-client Ingress `tunnel-<slug>` for each active slug, hosting
+ *   - Per-tenant Ingress `tunnel-<slug>` for each active slug, hosting
  *     `tunnels.${PLATFORM_BASE_DOMAIN}/c/<slug>(/|$)(.*)` and pointing
- *     at the per-client ExternalName Service.
- *   - Per-client ExternalName Service `tunnel-<slug>` pointing at the
+ *     at the per-tenant ExternalName Service.
+ *   - Per-tenant ExternalName Service `tunnel-<slug>` pointing at the
  *     in-namespace frps Service.
  *
- * In the client namespace:
+ * In the tenant namespace:
  *   - ConfigMap `private-worker-server-config` (frps.toml).
  *   - Service `pw-<workerId>` (ClusterIP, one per active worker).
  *   - Deployment `private-worker-server` (1 replica, frps).
@@ -27,7 +27,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { and, eq, inArray } from 'drizzle-orm';
-import { clients, platformSettings, privateWorkers, type PrivateWorker } from '../../db/schema.js';
+import { tenants, platformSettings, privateWorkers, type PrivateWorker } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -77,23 +77,23 @@ export interface ReconcileDeps {
 }
 
 export interface ReconcileOutcome {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly action: 'apply' | 'noop' | 'teardown';
   readonly workerCount: number;
   readonly error: string | null;
 }
 
-export async function reconcilePrivateWorkersForClient(
+export async function reconcilePrivateWorkersForTenant(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReconcileOutcome> {
-  const namespace = await getClientNamespace(deps.db, clientId);
+  const namespace = await getTenantNamespace(deps.db, tenantId);
   if (!namespace) {
     return {
-      clientId,
+      tenantId,
       action: 'noop',
       workerCount: 0,
-      error: 'client not found or has no namespace',
+      error: 'tenant not found or has no namespace',
     };
   }
 
@@ -105,15 +105,15 @@ export async function reconcilePrivateWorkersForClient(
     .from(privateWorkers)
     .where(
       and(
-        eq(privateWorkers.clientId, clientId),
+        eq(privateWorkers.tenantId, tenantId),
         inArray(privateWorkers.status, ['active', 'pending']),
       ),
     );
 
   if (activeWorkers.length === 0) {
-    const err = await tearDown(deps, clientId, namespace);
+    const err = await tearDown(deps, tenantId, namespace);
     return {
-      clientId,
+      tenantId,
       action: 'teardown',
       workerCount: 0,
       error: err,
@@ -122,7 +122,7 @@ export async function reconcilePrivateWorkersForClient(
 
   const err = await apply(deps, namespace, activeWorkers);
   return {
-    clientId,
+    tenantId,
     action: 'apply',
     workerCount: activeWorkers.length,
     error: err,
@@ -138,15 +138,15 @@ async function apply(
 ): Promise<string | null> {
   const errors: string[] = [];
 
-  // 0. Fetch the per-client shared auth token. frps requires this to
+  // 0. Fetch the per-tenant shared auth token. frps requires this to
   //    authenticate frpc connections. The token must already exist in
   //    the DB (createPrivateWorker mints it on first worker create).
   //    If somehow missing, refuse to render — better to fail closed
   //    than render an unauthenticated frps.
-  const clientId = workers[0].clientId;
-  const sharedSecret = await loadClientSharedSecret(deps.db, clientId);
+  const tenantId = workers[0].tenantId;
+  const sharedSecret = await loadTenantSharedSecret(deps.db, tenantId);
   if (!sharedSecret) {
-    return 'private-worker shared secret missing on clients row; refusing to render unauthenticated frps';
+    return 'private-worker shared secret missing on tenants row; refusing to render unauthenticated frps';
   }
   const allowedPorts = workers.map((w) => w.exposedPort);
   const issuer = await loadTunnelIssuer(deps.db);
@@ -191,7 +191,7 @@ async function apply(
     );
   }
 
-  // 3. frps Deployment. 1 replica per client.
+  // 3. frps Deployment. 1 replica per tenant.
   await safe(
     errors,
     'frps-deployment',
@@ -208,9 +208,9 @@ async function apply(
     () => upsertFrpsNetworkPolicy(deps.k8s.networking, namespace),
   );
 
-  // 5. Per-client ExternalName Service in platform-system, pointing
-  //    at the frps Service in the client namespace. Used by the per-
-  //    client tunnel Ingress.
+  // 5. Per-tenant ExternalName Service in platform-system, pointing
+  //    at the frps Service in the tenant namespace. Used by the per-
+  //    tenant tunnel Ingress.
   for (const w of workers) {
      
     await safe(
@@ -228,8 +228,8 @@ async function apply(
 
   // 6. Reap stale tunnel-* Ingresses + ExternalName Services in
   //    platform-system that no longer correspond to an active slug.
-  //    We can't scope the listing to a per-client label cleanly
-  //    because the slugs are global, so reap by client-namespace
+  //    We can't scope the listing to a per-tenant label cleanly
+  //    because the slugs are global, so reap by tenant-namespace
   //    label injected by upsertTunnelIngress.
   await safe(
     errors,
@@ -243,7 +243,7 @@ async function apply(
       ),
   );
 
-  // 7. Reap stale per-worker Services in the client namespace.
+  // 7. Reap stale per-worker Services in the tenant namespace.
   await safe(
     errors,
     'reap-stale-pw-services',
@@ -262,19 +262,19 @@ async function apply(
 
 async function tearDown(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
   namespace: string,
 ): Promise<string | null> {
   const errors: string[] = [];
 
-  // Drop the per-client tunnels in platform-system first so external
+  // Drop the per-tenant tunnels in platform-system first so external
   // traffic stops flowing before the in-namespace targets disappear.
   await safe(errors, 'reap-tunnels-all', () =>
     reapStaleTunnels(
       deps.k8s.core,
       deps.k8s.custom,
       namespace,
-      new Set(), // empty active set => delete all this client's tunnels
+      new Set(), // empty active set => delete all this tenant's tunnels
     ),
   );
 
@@ -318,35 +318,35 @@ async function tearDown(
     ),
   );
 
-  // clientId is not used in the teardown body but kept in the
+  // tenantId is not used in the teardown body but kept in the
   // signature for symmetry with apply(). Avoids "unused parameter"
   // friction if a future change wants to log/audit on this path.
-  void clientId;
+  void tenantId;
 
   return errors.length === 0 ? null : errors.join('; ');
 }
 
 // ─── DB helpers ─────────────────────────────────────────────────────────────
 
-async function getClientNamespace(
+async function getTenantNamespace(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string | null> {
   const [row] = await db
-    .select({ ns: clients.kubernetesNamespace })
-    .from(clients)
-    .where(eq(clients.id, clientId));
+    .select({ ns: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
   return row?.ns ?? null;
 }
 
-async function loadClientSharedSecret(
+async function loadTenantSharedSecret(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<string | null> {
   const [row] = await db
-    .select({ secret: clients.privateWorkerSharedSecret })
-    .from(clients)
-    .where(eq(clients.id, clientId));
+    .select({ secret: tenants.privateWorkerSharedSecret })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
   return row?.secret ?? null;
 }
 
@@ -369,7 +369,7 @@ async function upsertFrpsConfigMap(
 ): Promise<void> {
   // frps config — token-authed + port-restricted.
   //
-  //   auth.token        — per-client shared secret (clients.private_worker_shared_secret).
+  //   auth.token        — per-tenant shared secret (tenants.private_worker_shared_secret).
   //                       Without this, frps 0.62 accepts any frpc with no token,
   //                       which is a complete tunnel auth bypass.
   //   allowPorts        — only the ports of currently-active workers. Revoked
@@ -394,7 +394,7 @@ async function upsertFrpsConfigMap(
     '# Control + data over the same WebSocket connection.',
     '# vhostHTTPPort is unset — we proxy raw TCP per worker.',
     '',
-    '# Token authentication — shared per-client secret.',
+    '# Token authentication — shared per-tenant secret.',
     'auth.method = "token"',
     `auth.token = "${authToken.replace(/"/g, '\\"')}"`,
     '',
@@ -686,10 +686,10 @@ async function upsertFrpsNetworkPolicy(
 async function upsertExternalNameService(
   core: k8s.CoreV1Api,
   slug: string,
-  clientNamespace: string,
+  tenantNamespace: string,
 ): Promise<void> {
   const name = `tunnel-${slug}`;
-  const externalName = `${FRPS_DEPLOYMENT_NAME}.${clientNamespace}.svc.cluster.local`;
+  const externalName = `${FRPS_DEPLOYMENT_NAME}.${tenantNamespace}.svc.cluster.local`;
 
   const body: k8s.V1Service = {
     apiVersion: 'v1',
@@ -700,7 +700,7 @@ async function upsertExternalNameService(
       labels: {
         'app.kubernetes.io/managed-by': 'platform-api',
         'platform.example.test/private-worker-tunnel': 'true',
-        'platform.example.test/client-namespace': clientNamespace,
+        'platform.example.test/tenant-namespace': tenantNamespace,
       },
     },
     spec: {
@@ -735,7 +735,7 @@ async function upsertExternalNameService(
 async function upsertTunnelIngress(
   custom: k8s.CustomObjectsApi,
   slug: string,
-  clientNamespace: string,
+  tenantNamespace: string,
   issuer: string,
 ): Promise<void> {
   const name = `tunnel-${slug}`;
@@ -757,7 +757,7 @@ async function upsertTunnelIngress(
     spec: rateLimitSpec({ average: 5, burst: 5 }),
     labels: {
       'platform.example.test/private-worker-tunnel': 'true',
-      'platform.example.test/client-namespace': clientNamespace,
+      'platform.example.test/tenant-namespace': tenantNamespace,
     },
   });
   await applyMiddleware(custom, rateLimitMiddleware);
@@ -775,7 +775,7 @@ async function upsertTunnelIngress(
       labels: {
         'app.kubernetes.io/managed-by': 'platform-api',
         'platform.example.test/private-worker-tunnel': 'true',
-        'platform.example.test/client-namespace': clientNamespace,
+        'platform.example.test/tenant-namespace': tenantNamespace,
       },
     },
     spec: {
@@ -843,7 +843,7 @@ async function upsertTunnelIngress(
     tls: { secretName: tlsSecret },
     labels: {
       'platform.example.test/private-worker-tunnel': 'true',
-      'platform.example.test/client-namespace': clientNamespace,
+      'platform.example.test/tenant-namespace': tenantNamespace,
     },
   });
   await applyIngressRoute(custom, ingressRoute);
@@ -854,15 +854,15 @@ async function upsertTunnelIngress(
 async function reapStaleTunnels(
   core: k8s.CoreV1Api,
   custom: k8s.CustomObjectsApi,
-  clientNamespace: string,
+  tenantNamespace: string,
   activeSlugs: ReadonlySet<string>,
 ): Promise<void> {
   // Find all tunnel-* Services + IngressRoutes + Certificates +
-  // rate-limit Middlewares in platform-system that belong to this client
+  // rate-limit Middlewares in platform-system that belong to this tenant
   // namespace via the labels set during upsert. Without the
-  // client-namespace scope, one client's teardown (activeSlugs=∅) would
-  // delete every other client's live tunnels.
-  const labelSelector = `platform.example.test/private-worker-tunnel=true,platform.example.test/client-namespace=${clientNamespace}`;
+  // tenant-namespace scope, one tenant's teardown (activeSlugs=∅) would
+  // delete every other tenant's live tunnels.
+  const labelSelector = `platform.example.test/private-worker-tunnel=true,platform.example.test/tenant-namespace=${tenantNamespace}`;
 
   // ── Services (ExternalName backing the tunnel) ──────────────────
   let services: k8s.V1ServiceList;

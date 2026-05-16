@@ -125,7 +125,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
     dnsMode: 'primary' | 'cname' | 'secondary';
     status: string;
     verifiedAt: Date | null;
-    clientId: string;
+    tenantId: string;
     createdAt: Date;
   }>;
   try {
@@ -136,7 +136,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
         dnsMode: domains.dnsMode,
         status: domains.status,
         verifiedAt: domains.verifiedAt,
-        clientId: domains.clientId,
+        tenantId: domains.tenantId,
         createdAt: domains.createdAt,
       })
       .from(domains)
@@ -184,7 +184,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
         try {
           await notifyDomainRegression(db, {
             id: candidate.id,
-            clientId: candidate.clientId,
+            tenantId: candidate.tenantId,
             domainName: candidate.domainName,
             verifiedAt: candidate.verifiedAt,
           }, result);
@@ -207,7 +207,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
     const graceTargets = await db
       .select({
         id: domains.id,
-        clientId: domains.clientId,
+        tenantId: domains.tenantId,
         domainName: domains.domainName,
         createdAt: domains.createdAt,
       })

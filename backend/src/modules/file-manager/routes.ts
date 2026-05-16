@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
 import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@k8s-hosting/api-contracts';
-import { clients } from '../../db/schema.js';
+import { tenants } from '../../db/schema.js';
 import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -10,13 +10,13 @@ import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFile
 import { getFileManagerImage } from './image.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
 
-async function resolveNamespace(app: FastifyInstance, clientId: string): Promise<string> {
-  const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404);
-  if (client.provisioningStatus !== 'provisioned') {
+async function resolveNamespace(app: FastifyInstance, tenantId: string): Promise<string> {
+  const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404);
+  if (tenant.provisioningStatus !== 'provisioned') {
     throw new ApiError('NOT_PROVISIONED', 'Client must be provisioned before accessing files', 409);
   }
-  return client.kubernetesNamespace;
+  return tenant.kubernetesNamespace;
 }
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
@@ -32,8 +32,8 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireClientRoleByMethod());
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantRoleByMethod());
+  app.addHook('onRequest', requireTenantAccess());
 
   // Register content type parser for binary uploads — do NOT buffer the body.
   // The upload-raw route streams request.raw directly to the sidecar.
@@ -50,62 +50,62 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
 
   const getK8s = () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    return { k8sClients: createK8sClients(kubeconfigPath), kubeconfigPath };
+    return { k8sTenants: createK8sClients(kubeconfigPath), kubeconfigPath };
   };
 
-  // GET /api/v1/clients/:clientId/files/status — check file manager pod status
-  app.get('/clients/:clientId/files/status', {
+  // GET /api/v1/tenants/:tenantId/files/status — check file manager pod status
+  app.get('/tenants/:tenantId/files/status', {
     schema: { tags: ['Files'], summary: 'Get file manager status', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const namespace = await resolveNamespace(app, clientId);
-    const { k8sClients } = getK8s();
+    const { tenantId } = request.params as { tenantId: string };
+    const namespace = await resolveNamespace(app, tenantId);
+    const { k8sTenants } = getK8s();
     // Status polling counts as activity — without this, a UI that
     // sits on the loading screen for ~10min would have its pod
     // scaled back to 0 by the idle-cleanup loop while still being
     // actively waited-on by the user.
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const status = await getFileManagerStatus(k8sClients, namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const status = await getFileManagerStatus(k8sTenants, namespace);
     return success(status);
   });
 
-  // POST /api/v1/clients/:clientId/files/start — start file manager pod
-  app.post('/clients/:clientId/files/start', {
+  // POST /api/v1/tenants/:tenantId/files/start — start file manager pod
+  app.post('/tenants/:tenantId/files/start', {
     schema: { tags: ['Files'], summary: 'Start file manager pod', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const namespace = await resolveNamespace(app, clientId);
-    const { k8sClients } = getK8s();
-    await ensureFileManagerRunning(k8sClients, namespace, getFileManagerImage());
+    const { tenantId } = request.params as { tenantId: string };
+    const namespace = await resolveNamespace(app, tenantId);
+    const { k8sTenants } = getK8s();
+    await ensureFileManagerRunning(k8sTenants, namespace, getFileManagerImage());
     // Refresh idle timer so the cleanup loop doesn't immediately
     // scale the pod we just asked for back down. /start is a clear
     // user intent to USE the file-manager.
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const status = await getFileManagerStatus(k8sClients, namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const status = await getFileManagerStatus(k8sTenants, namespace);
     return success(status);
   });
 
-  // POST /api/v1/clients/:clientId/files/stop — stop file manager pod
-  app.post('/clients/:clientId/files/stop', {
+  // POST /api/v1/tenants/:tenantId/files/stop — stop file manager pod
+  app.post('/tenants/:tenantId/files/stop', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: { tags: ['Files'], summary: 'Stop file manager pod', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const namespace = await resolveNamespace(app, clientId);
-    const { k8sClients } = getK8s();
-    await stopFileManager(k8sClients, namespace);
+    const { tenantId } = request.params as { tenantId: string };
+    const namespace = await resolveNamespace(app, tenantId);
+    const { k8sTenants } = getK8s();
+    await stopFileManager(k8sTenants, namespace);
     return success({ stopped: true });
   });
 
-  // GET /api/v1/clients/:clientId/files/disk-usage — get disk usage
-  app.get('/clients/:clientId/files/disk-usage', {
+  // GET /api/v1/tenants/:tenantId/files/disk-usage — get disk usage
+  app.get('/tenants/:tenantId/files/disk-usage', {
     schema: { tags: ['Files'], summary: 'Get disk usage', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/disk-usage', {});
+    const { tenantId } = request.params as { tenantId: string };
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/disk-usage', {});
     if (result.status !== 200) {
       const err = JSON.parse(result.body);
       throw new ApiError('FILE_ERROR', err.error || 'Failed to get disk usage', result.status);
@@ -113,17 +113,17 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // GET /api/v1/clients/:clientId/files/folder-size — calculate folder size
-  app.get('/clients/:clientId/files/folder-size', {
+  // GET /api/v1/tenants/:tenantId/files/folder-size — calculate folder size
+  app.get('/tenants/:tenantId/files/folder-size', {
     schema: { tags: ['Files'], summary: 'Calculate folder size', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/folder-size', {
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/folder-size', {
       query: { path: query.path },
     });
     if (result.status !== 200) {
@@ -133,18 +133,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // GET /api/v1/clients/:clientId/files — list directory
-  app.get('/clients/:clientId/files', {
+  // GET /api/v1/tenants/:tenantId/files — list directory
+  app.get('/tenants/:tenantId/files', {
     schema: { tags: ['Files'], summary: 'List directory', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, string>;
     const path = query.path || '/';
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
       query: { path },
     });
 
@@ -156,18 +156,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // GET /api/v1/clients/:clientId/files/read — read file content
-  app.get('/clients/:clientId/files/read', {
+  // GET /api/v1/tenants/:tenantId/files/read — read file content
+  app.get('/tenants/:tenantId/files/read', {
     schema: { tags: ['Files'], summary: 'Read file content', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
       query: { path: query.path },
     });
 
@@ -179,21 +179,21 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // GET /api/v1/clients/:clientId/files/download — download file (streaming, no RAM buffering)
-  app.get('/clients/:clientId/files/download', {
+  // GET /api/v1/tenants/:tenantId/files/download — download file (streaming, no RAM buffering)
+  app.get('/tenants/:tenantId/files/download', {
     schema: { tags: ['Files'], summary: 'Download file', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
     // Probe-first ready helper: ~10 ms when FM is healthy (most calls),
     // skips the K8s API ensure+status round-trips that previously made
     // download/preview cold-start take 3-7 s.
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
+    const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage());
 
     // streamFromFileManager throws on non-2xx upstream BEFORE writing
     // any response headers (it drains a bounded 16 KiB error buffer
@@ -224,7 +224,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
         } catch { /* non-JSON body — keep generic message */ }
       }
       // We hijacked already, so we have to write the error envelope
-      // ourselves. Match `errorResponse()` so clients/tests parse it
+      // ourselves. Match `errorResponse()` so tenants/tests parse it
       // identically to any other API error.
       const body = JSON.stringify(errorResponse('FILE_ERROR', message, status, request.id));
       reply.raw.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(body)) });
@@ -232,18 +232,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // POST /api/v1/clients/:clientId/files/mkdir — create directory
-  app.post('/clients/:clientId/files/mkdir', {
+  // POST /api/v1/tenants/:tenantId/files/mkdir — create directory
+  app.post('/tenants/:tenantId/files/mkdir', {
     schema: { tags: ['Files'], summary: 'Create directory', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = createDirectoryInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/mkdir', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/mkdir', {
       method: 'POST',
       body: JSON.stringify({ path: parsed.data.path }),
       contentType: 'application/json',
@@ -257,18 +257,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/write — write file content
-  app.post('/clients/:clientId/files/write', {
+  // POST /api/v1/tenants/:tenantId/files/write — write file content
+  app.post('/tenants/:tenantId/files/write', {
     schema: { tags: ['Files'], summary: 'Write file content', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = writeFileInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/write', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/write', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -282,18 +282,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/rename — rename/move
-  app.post('/clients/:clientId/files/rename', {
+  // POST /api/v1/tenants/:tenantId/files/rename — rename/move
+  app.post('/tenants/:tenantId/files/rename', {
     schema: { tags: ['Files'], summary: 'Rename file or directory', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = renameInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/rename', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/rename', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -307,19 +307,19 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/delete — delete file or directory
+  // POST /api/v1/tenants/:tenantId/files/delete — delete file or directory
   // Uses POST instead of DELETE because K8s API proxy can strip DELETE body
-  app.post('/clients/:clientId/files/delete', {
+  app.post('/tenants/:tenantId/files/delete', {
     schema: { tags: ['Files'], summary: 'Delete file or directory', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = deleteInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -333,18 +333,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/copy — copy file or directory
-  app.post('/clients/:clientId/files/copy', {
+  // POST /api/v1/tenants/:tenantId/files/copy — copy file or directory
+  app.post('/tenants/:tenantId/files/copy', {
     schema: { tags: ['Files'], summary: 'Copy file or directory', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = copyInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/copy', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/copy', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -358,18 +358,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/archive — create archive
-  app.post('/clients/:clientId/files/archive', {
+  // POST /api/v1/tenants/:tenantId/files/archive — create archive
+  app.post('/tenants/:tenantId/files/archive', {
     schema: { tags: ['Files'], summary: 'Create archive from files', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = archiveInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/archive', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/archive', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -383,18 +383,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/extract — extract archive
-  app.post('/clients/:clientId/files/extract', {
+  // POST /api/v1/tenants/:tenantId/files/extract — extract archive
+  app.post('/tenants/:tenantId/files/extract', {
     schema: { tags: ['Files'], summary: 'Extract archive', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = extractInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/extract', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/extract', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -408,18 +408,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/git-clone — clone git repository
-  app.post('/clients/:clientId/files/git-clone', {
+  // POST /api/v1/tenants/:tenantId/files/git-clone — clone git repository
+  app.post('/tenants/:tenantId/files/git-clone', {
     schema: { tags: ['Files'], summary: 'Clone git repository', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = gitCloneInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/git-clone', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/git-clone', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -433,18 +433,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/chmod — change file/directory permissions
-  app.post('/clients/:clientId/files/chmod', {
+  // POST /api/v1/tenants/:tenantId/files/chmod — change file/directory permissions
+  app.post('/tenants/:tenantId/files/chmod', {
     schema: { tags: ['Files'], summary: 'Change file or directory permissions', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = chmodInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/chmod', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/chmod', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -458,18 +458,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/chown — change file/directory ownership
-  app.post('/clients/:clientId/files/chown', {
+  // POST /api/v1/tenants/:tenantId/files/chown — change file/directory ownership
+  app.post('/tenants/:tenantId/files/chown', {
     schema: { tags: ['Files'], summary: 'Change file or directory ownership', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = chownInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/chown', {
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/chown', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -483,26 +483,26 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/upload-raw — streaming raw binary upload
+  // POST /api/v1/tenants/:tenantId/files/upload-raw — streaming raw binary upload
   // Body limit raised to effectively unbounded (5 TiB; Fastify rejects 0).
   // The route never buffers anyway — request.raw is piped straight to the
   // sidecar. Only the PVC quota actually gates upload size.
-  app.post('/clients/:clientId/files/upload-raw', {
+  app.post('/tenants/:tenantId/files/upload-raw', {
     bodyLimit: 5 * 1024 * 1024 * 1024 * 1024,
     schema: { tags: ['Files'], summary: 'Upload file (raw binary, streaming)', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
     // Probe-first ready helper (same fast path as /download).
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
+    const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage());
 
     // Forward `offset` query param to enable parallel-chunked uploads.
-    // When the client splits a file into N chunks and POSTs each with
+    // When the tenant splits a file into N chunks and POSTs each with
     // ?offset=<absolute byte offset>, the sidecar pwrites at that
     // offset without truncating — so concurrent chunks land in their
     // correct slot and the file is whole when all chunks complete.
@@ -526,7 +526,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(success(JSON.parse(result.body)));
   });
 
-  // POST /api/v1/clients/:clientId/files/upload — deprecated multipart path.
+  // POST /api/v1/tenants/:tenantId/files/upload — deprecated multipart path.
   // Responds 410 Gone with a pointer to /upload-raw. The multipart handler
   // used to buffer the whole request body in memory inside the sidecar pod
   // (limits.memory=128Mi), which meant any upload over ~80 MiB OOM-killed
@@ -534,7 +534,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   // and is what the UI has used from the start. This stub stays so any
   // external tool still hitting the old URL gets a clear error instead of
   // a 404 guessing game.
-  app.post('/clients/:clientId/files/upload', {
+  app.post('/tenants/:tenantId/files/upload', {
     schema: { tags: ['Files'], summary: 'Upload file (deprecated — use /upload-raw)', security: [{ bearerAuth: [] }] },
   }, async (_request, reply) => {
     reply.status(410).send({
@@ -545,20 +545,20 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // POST /api/v1/clients/:clientId/files/fetch-url — download file from URL
+  // POST /api/v1/tenants/:tenantId/files/fetch-url — download file from URL
   // Uses streaming proxy (not buffered fileManagerRequest) for real-time progress
-  app.post('/clients/:clientId/files/fetch-url', {
+  app.post('/tenants/:tenantId/files/fetch-url', {
     schema: { tags: ['Files'], summary: 'Download file from URL to PVC', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const { url, path: destPath, force } = request.body as { url?: string; path?: string; force?: boolean };
     if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
 
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
+    const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage());
     const { proxyToFileManagerStream } = await import('./service.js');
     reply.hijack();
     await proxyToFileManagerStream(
@@ -571,22 +571,22 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  // POST /api/v1/clients/:clientId/files/clone-site — clone entire website
-  app.post('/clients/:clientId/files/clone-site', {
+  // POST /api/v1/tenants/:tenantId/files/clone-site — clone entire website
+  app.post('/tenants/:tenantId/files/clone-site', {
     schema: { tags: ['Files'], summary: 'Clone website to PVC', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const { url, path: destPath, maxPages, maxDepth, prettifyHtml, prettifyCss, prettifyJs } = request.body as {
       url?: string; path?: string; maxPages?: number; maxDepth?: number;
       prettifyHtml?: boolean; prettifyCss?: boolean; prettifyJs?: boolean;
     };
     if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
 
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace, getK8s().k8sClients);
-    const { k8sClients, kubeconfigPath } = getK8s();
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
+    const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage());
     const { proxyToFileManagerStream } = await import('./service.js');
     reply.hijack();
     await proxyToFileManagerStream(

@@ -13,7 +13,7 @@ interface ProvisioningStep {
 
 interface ProvisioningTask {
   readonly id: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly type: string;
   readonly status: 'pending' | 'running' | 'completed' | 'failed';
   readonly currentStep: string | null;
@@ -30,8 +30,8 @@ interface ProvisioningTask {
 
 interface ActiveTask {
   readonly id: string;
-  readonly clientId: string;
-  readonly companyName: string;
+  readonly tenantId: string;
+  readonly name: string;
   readonly type: string;
   readonly status: 'pending' | 'running' | 'completed' | 'failed';
   readonly currentStep: string | null;
@@ -46,7 +46,7 @@ interface ActiveTasksSummary {
 
 interface TriggerResponse {
   readonly taskId: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly status: string;
   readonly totalSteps: number;
 }
@@ -63,11 +63,11 @@ export function useActiveTasks() {
   });
 }
 
-/** Get provisioning status for a specific client */
-export function useProvisioningStatus(clientId: string, enabled = true) {
+/** Get provisioning status for a specific tenant */
+export function useProvisioningStatus(tenantId: string, enabled = true) {
   return useQuery({
-    queryKey: ['provisioning-status', clientId],
-    queryFn: () => apiFetch<{ data: ProvisioningTask }>(`/api/v1/admin/clients/${clientId}/provision/status`),
+    queryKey: ['provisioning-status', tenantId],
+    queryFn: () => apiFetch<{ data: ProvisioningTask }>(`/api/v1/admin/tenants/${tenantId}/provision/status`),
     refetchInterval: 2_000, // Poll every 2s during provisioning
     enabled,
     select: (res) => res.data,
@@ -79,15 +79,15 @@ export function useProvisioningStatus(clientId: string, enabled = true) {
 export function useTriggerProvisioning() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId, overrides }: { clientId: string; overrides?: Record<string, string> }) =>
-      apiFetch<{ data: TriggerResponse }>(`/api/v1/admin/clients/${clientId}/provision`, {
+    mutationFn: ({ tenantId, overrides }: { tenantId: string; overrides?: Record<string, string> }) =>
+      apiFetch<{ data: TriggerResponse }>(`/api/v1/admin/tenants/${tenantId}/provision`, {
         method: 'POST',
         body: JSON.stringify({ overrides }),
       }),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ['provisioning-active-tasks'] });
-      qc.invalidateQueries({ queryKey: ['provisioning-status', vars.clientId] });
-      qc.invalidateQueries({ queryKey: ['clients'] });
+      qc.invalidateQueries({ queryKey: ['provisioning-status', vars.tenantId] });
+      qc.invalidateQueries({ queryKey: ['tenants'] });
     },
   });
 }
@@ -96,15 +96,15 @@ export function useTriggerProvisioning() {
 export function useTriggerDecommission() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (clientId: string) =>
-      apiFetch<{ data: TriggerResponse }>(`/api/v1/admin/clients/${clientId}/decommission`, {
+    mutationFn: (tenantId: string) =>
+      apiFetch<{ data: TriggerResponse }>(`/api/v1/admin/tenants/${tenantId}/decommission`, {
         method: 'POST',
         body: JSON.stringify({}),
       }),
-    onSuccess: (_data, clientId) => {
+    onSuccess: (_data, tenantId) => {
       qc.invalidateQueries({ queryKey: ['provisioning-active-tasks'] });
-      qc.invalidateQueries({ queryKey: ['provisioning-status', clientId] });
-      qc.invalidateQueries({ queryKey: ['clients'] });
+      qc.invalidateQueries({ queryKey: ['provisioning-status', tenantId] });
+      qc.invalidateQueries({ queryKey: ['tenants'] });
     },
   });
 }

@@ -30,7 +30,7 @@ const PROBE_TIMEOUT_MS = 8_000;
  */
 export async function probeS3(input: S3ProbeInput): Promise<TestConnectionResult> {
   const started = Date.now();
-  const client = new S3Client({
+  const tenant = new S3Client({
     region: input.region,
     endpoint: input.endpoint,
     credentials: {
@@ -49,7 +49,7 @@ export async function probeS3(input: S3ProbeInput): Promise<TestConnectionResult
 
   try {
     await withTimeout(
-      client.send(new HeadBucketCommand({ Bucket: input.bucket })),
+      tenant.send(new HeadBucketCommand({ Bucket: input.bucket })),
       PROBE_TIMEOUT_MS,
     );
     return { ok: true, latencyMs: Date.now() - started };
@@ -60,9 +60,9 @@ export async function probeS3(input: S3ProbeInput): Promise<TestConnectionResult
   } finally {
     // Free up sockets. S3Client holds a Keep-Alive pool which otherwise
     // prevents Vitest from exiting on test completion. Guarded because
-    // the test suite's fake client doesn't implement destroy.
-    if (typeof (client as { destroy?: unknown }).destroy === 'function') {
-      (client as { destroy: () => void }).destroy();
+    // the test suite's fake tenant doesn't implement destroy.
+    if (typeof (tenant as { destroy?: unknown }).destroy === 'function') {
+      (tenant as { destroy: () => void }).destroy();
     }
   }
 }

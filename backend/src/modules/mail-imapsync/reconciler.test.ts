@@ -40,7 +40,7 @@ function createMockDb() {
   } as unknown as ReturnType<typeof createMockDb>;
 }
 
-// ─── Mock K8s clients ───────────────────────────────────────────────────────
+// ─── Mock K8s tenants ───────────────────────────────────────────────────────
 
 let mockJobStatus: { active?: number; succeeded?: number; failed?: number } | null = null;
 let mockJobNotFound = false;

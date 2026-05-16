@@ -20,14 +20,14 @@ function createMockDb(selectResults: unknown[][] = []) {
 }
 
 const KEY = {
-  id: 'k1', clientId: 'c1', name: 'my-key',
+  id: 'k1', tenantId: 'c1', name: 'my-key',
   publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest user@host',
   keyFingerprint: 'SHA256:test', keyAlgorithm: 'ED25519',
   createdAt: new Date(),
 };
 
 describe('listSshKeys', () => {
-  it('should return keys for client', async () => {
+  it('should return keys for tenant', async () => {
     const db = createMockDb([[KEY]]);
     const result = await listSshKeys(db, 'c1');
     expect(result).toEqual([KEY]);

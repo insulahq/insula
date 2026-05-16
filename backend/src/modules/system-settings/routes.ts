@@ -37,12 +37,12 @@ function resolveTlsSecretName(config: unknown): string {
 const updateSchema = z.object({
   platformName: z.string().min(1).max(255).optional(),
   adminPanelUrl: z.string().url().max(500).optional().nullable(),
-  clientPanelUrl: z.string().url().max(500).optional().nullable(),
+  tenantPanelUrl: z.string().url().max(500).optional().nullable(),
   supportEmail: z.string().email().max(255).optional().nullable(),
   supportUrl: z.string().url().max(500).optional().nullable(),
   ingressBaseDomain: z.string().max(255).optional().nullable(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
-  // IANA timezone string. Used as the fallback on new clients that don't
+  // IANA timezone string. Used as the fallback on new tenants that don't
   // specify their own timezone, and as the global default for UI date
   // rendering when a user has no per-user override.
   timezone: z.string().min(1).max(50).optional(),
@@ -59,8 +59,8 @@ const updateSchema = z.object({
   allowHostPortsWorker: z.boolean().optional(),
   // Node-defaults (migration 0063). Default applied to freshly-joined
   // SERVER nodes that arrive without an explicit
-  // `platform.example.test/host-client-workloads` label.
-  newServerHostsClientWorkloads: z.boolean().optional(),
+  // `platform.example.test/host-tenant-workloads` label.
+  newServerHostsTenantWorkloads: z.boolean().optional(),
   // Kubelet image-GC thresholds (migration 0065). high > low, both 0–100,
   // minTtl ≥ 0. Applied on new nodes via bootstrap.sh --kubelet-arg.
   imageGcHighThreshold: z.number().int().min(50).max(95).optional(),
@@ -78,7 +78,7 @@ const updateSchema = z.object({
 export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/system-info — PUBLIC (no auth). Returns the subset of
   // system settings that are safe to expose to unauthenticated visitors:
-  // branding (platform name), support links, and the admin/client panel
+  // branding (platform name), support links, and the admin/tenant panel
   // URLs used for email templates and cross-panel redirects. Consumed by
   // both frontends on boot (login page, footer) and by the main shell to
   // set document.title.
@@ -94,7 +94,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
       supportEmail: settings.supportEmail ?? null,
       supportUrl: settings.supportUrl ?? null,
       adminPanelUrl: settings.adminPanelUrl ?? null,
-      clientPanelUrl: settings.clientPanelUrl ?? null,
+      tenantPanelUrl: settings.tenantPanelUrl ?? null,
     });
   });
 
@@ -123,7 +123,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
     // to the new hostname is actually served. Non-blocking on failure —
     // the DB write is the authoritative change; the reconciler will retry
     // on next startup if this call hits a transient k8s error.
-    if (parsed.data.adminPanelUrl !== undefined || parsed.data.clientPanelUrl !== undefined) {
+    if (parsed.data.adminPanelUrl !== undefined || parsed.data.tenantPanelUrl !== undefined) {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const tlsSecretName = resolveTlsSecretName(app.config);
       const clusterIssuerName = (app.config as Record<string, unknown>).CLUSTER_ISSUER_NAME as string | undefined;
@@ -135,23 +135,23 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
         const result = await reconcileIngressHosts(
           {
             adminPanelUrl: updated.adminPanelUrl ?? null,
-            clientPanelUrl: updated.clientPanelUrl ?? null,
+            tenantPanelUrl: updated.tenantPanelUrl ?? null,
             tlsSecretName,
             protectAdminViaProxy: oidc.protectAdminViaProxy,
-            protectClientViaProxy: oidc.protectClientViaProxy,
+            protectTenantViaProxy: oidc.protectTenantViaProxy,
           },
           undefined,
           { kubeconfigPath, clusterIssuerName },
         );
         if (result.changed) {
           app.log.info(
-            { adminPanelUrl: updated.adminPanelUrl, clientPanelUrl: updated.clientPanelUrl },
+            { adminPanelUrl: updated.adminPanelUrl, tenantPanelUrl: updated.tenantPanelUrl },
             'system-settings: ingress hosts reconciled',
           );
         }
       } catch (err) {
         app.log.warn(
-          { err, adminPanelUrl: updated.adminPanelUrl, clientPanelUrl: updated.clientPanelUrl },
+          { err, adminPanelUrl: updated.adminPanelUrl, tenantPanelUrl: updated.tenantPanelUrl },
           'system-settings: ingress reconcile failed (non-blocking)',
         );
       }
@@ -159,7 +159,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
 
     // PATCH invalidates the health cache for these hosts so the next UI
     // poll probes fresh values instead of the 60s-old ones.
-    if (parsed.data.adminPanelUrl !== undefined || parsed.data.clientPanelUrl !== undefined) {
+    if (parsed.data.adminPanelUrl !== undefined || parsed.data.tenantPanelUrl !== undefined) {
       HEALTH_CACHE.clear();
     }
 
@@ -176,7 +176,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['System Settings'],
-      summary: 'DNS + TLS health check for admin/client panel URLs',
+      summary: 'DNS + TLS health check for admin/tenant panel URLs',
       security: [{ bearerAuth: [] }],
     },
   }, async () => {
@@ -187,7 +187,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
     const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
 
     const adminHost = extractHost(settings.adminPanelUrl);
-    const clientHost = extractHost(settings.clientPanelUrl);
+    const tenantHost = extractHost(settings.tenantPanelUrl);
     const deps = createDefaultUrlHealthDeps({ kubeconfigPath });
 
     const probe = async (host: string | null): Promise<UrlHealthReport> => {
@@ -203,7 +203,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
       return report;
     };
 
-    const [admin, client] = await Promise.all([probe(adminHost), probe(clientHost)]);
-    return success({ admin, client });
+    const [admin, tenant] = await Promise.all([probe(adminHost), probe(tenantHost)]);
+    return success({ admin, tenant });
   });
 }

@@ -1,7 +1,7 @@
 /**
  * Unit tests for wal-archive.ts (Barman Cloud Plugin path).
  *
- * Strategy: pass a fake K8sClients with vitest-spy custom client methods
+ * Strategy: pass a fake K8sClients with vitest-spy custom tenant methods
  * + a fake Database that captures inserts. Asserts the EXACT API calls
  * (group/version/plural/name/body) the module makes — that's what
  * could regress and break the live cluster wiring.

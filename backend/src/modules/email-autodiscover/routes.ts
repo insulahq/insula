@@ -1,7 +1,7 @@
 /**
  * Email autodiscover / autoconfig / MTA-STS routes.
  *
- * These are PUBLIC endpoints — email clients hit them before any
+ * These are PUBLIC endpoints — email tenants hit them before any
  * authentication. Do not add auth middleware.
  *
  * The routes live at the platform base URL. Customers point
@@ -19,7 +19,7 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { emailDomains, domains, clients } from '../../db/schema.js';
+import { emailDomains, domains, tenants } from '../../db/schema.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import {
   renderMozillaAutoconfigXml,
@@ -43,19 +43,19 @@ async function resolveDomainForEmail(
   const [row] = await db
     .select({
       domainName: domains.domainName,
-      displayName: clients.companyName,
-      clientStatus: clients.status,
+      displayName: tenants.name,
+      tenantStatus: tenants.status,
       enabled: emailDomains.enabled,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
-    .innerJoin(clients, eq(emailDomains.clientId, clients.id))
+    .innerJoin(tenants, eq(emailDomains.tenantId, tenants.id))
     .where(eq(domains.domainName, domainPart));
 
   if (!row) return null;
   if (row.enabled !== 1) return null;
-  // Phase 3.C.3: don't advertise autoconfig for suspended clients
-  if (row.clientStatus !== 'active') return null;
+  // Phase 3.C.3: don't advertise autoconfig for suspended tenants
+  if (row.tenantStatus !== 'active') return null;
   return { domainName: row.domainName, displayName: row.displayName };
 }
 
@@ -88,7 +88,7 @@ export async function emailAutodiscoverRoutes(app: FastifyInstance): Promise<voi
 
   // ─── Microsoft Autodiscover (Outlook) ─────────────────────────────
   // POST /Autodiscover/Autodiscover.xml with an XML body containing <EMailAddress>
-  // Also GET /autodiscover/autodiscover.xml?email=... for simpler clients
+  // Also GET /autodiscover/autodiscover.xml?email=... for simpler tenants
 
   async function handleAutodiscover(
     emailAddress: string | undefined,
@@ -120,7 +120,7 @@ export async function emailAutodiscoverRoutes(app: FastifyInstance): Promise<voi
     await handleAutodiscover(emailAddress, reply);
   });
 
-  // Lowercase + GET variant for forgiving clients
+  // Lowercase + GET variant for forgiving tenants
   app.get('/autodiscover/autodiscover.xml', async (request, reply) => {
     const { email } = request.query as { email?: string };
     await handleAutodiscover(email, reply);

@@ -225,7 +225,7 @@ async function runExport(runId: string, input: ExportRunInput, logger: FastifyLo
  *
  * Returns null if the token fails MAC verify, is expired, has been
  * used, or its row doesn't exist. Callers MUST NOT distinguish these
- * cases to the client (single 410 response — no oracle).
+ * cases to the tenant (single 410 response — no oracle).
  */
 export async function claimDownloadToken(
   db: Database,

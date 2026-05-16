@@ -1,6 +1,6 @@
 import { eq, and, gte } from 'drizzle-orm';
 import { usageMetrics } from '../../db/schema.js';
-import { getClientById } from '../clients/service.js';
+import { getTenantById } from '../tenants/service.js';
 import type { Database } from '../../db/index.js';
 import type { MetricsQuery } from './schema.js';
 
@@ -14,12 +14,12 @@ function periodToDate(period: string): Date {
   }
 }
 
-export async function getMetrics(db: Database, clientId: string, query: MetricsQuery) {
-  await getClientById(db, clientId);
+export async function getMetrics(db: Database, tenantId: string, query: MetricsQuery) {
+  await getTenantById(db, tenantId);
 
   const since = periodToDate(query.period);
   const conditions = [
-    eq(usageMetrics.clientId, clientId),
+    eq(usageMetrics.tenantId, tenantId),
     gte(usageMetrics.measurementTimestamp, since),
   ];
 
@@ -57,7 +57,7 @@ export async function getMetrics(db: Database, clientId: string, query: MetricsQ
   }
 
   return {
-    client_id: clientId,
+    tenant_id: tenantId,
     period: query.period,
     since: since.toISOString(),
     metrics: aggregated,

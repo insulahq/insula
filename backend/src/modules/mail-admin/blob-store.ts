@@ -76,7 +76,7 @@ export interface BlobStoreOptions {
  * CIFS_PASSWORD) are NEVER included in the response.
  */
 export async function getBlobStore(opts: BlobStoreOptions): Promise<BlobStoreResponse> {
-  const { core, batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, batch } = await loadK8sTenants(opts.kubeconfigPath);
   const podName = `stalwart-blob-store-read-${randomShort()}`;
 
   // Spawn the read Pod with the same cli + admin-password env wiring
@@ -169,7 +169,7 @@ export async function updateBlobStore(
   request: BlobStoreUpdateRequest,
   opts: BlobStoreOptions,
 ): Promise<BlobStoreUpdateResponse> {
-  const { core, batch, apps } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, batch, apps } = await loadK8sTenants(opts.kubeconfigPath);
 
   // Step 1: write credentials / prepare infrastructure if applicable.
   if (request.type === 'S3') {
@@ -231,7 +231,7 @@ export async function getBlobStoreJobStatus(
     throw new ApiError('BLOB_STORE_JOB_INVALID_NAME', `invalid job name: ${jobName}`, 400);
   }
 
-  const { core, batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   const job = await batch.readNamespacedJob({
     namespace: MAIL_NAMESPACE,
@@ -305,13 +305,13 @@ function jobStatusFromConditions(job: JobShape): BlobStoreJobStatusResponse['sta
   return 'queued';
 }
 
-interface K8sClientsBundle {
+interface K8sTenantsBundle {
   core: import('@kubernetes/client-node').CoreV1Api;
   batch: import('@kubernetes/client-node').BatchV1Api;
   apps: import('@kubernetes/client-node').AppsV1Api;
 }
 
-async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sClientsBundle> {
+async function loadK8sTenants(kubeconfigPath: string | undefined): Promise<K8sTenantsBundle> {
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);

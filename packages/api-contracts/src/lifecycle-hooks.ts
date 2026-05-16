@@ -3,7 +3,7 @@ import { z } from 'zod';
 /**
  * Operator-facing envelope a lifecycle hook returns on failure /
  * partial-success. Backend writes this into
- * client_lifecycle_hook_runs.last_error verbatim; frontend renders
+ * tenant_lifecycle_hook_runs.last_error verbatim; frontend renders
  * each field via the lifecycle progress UI.
  *
  * Same shape as the broader OperatorError envelope but narrower —

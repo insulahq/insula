@@ -1,0 +1,178 @@
+/**
+ * Phase 5 API surface for lifecycle hooks.
+ *
+ *   GET  /api/v1/admin/lifecycle/transitions
+ *        - Lists recent transitions across all tenants with their hook_runs.
+ *        - Used by the (future) Settings → Lifecycle Hooks panel.
+ *
+ *   GET  /api/v1/admin/tenants/:id/lifecycle/transitions
+ *        - Per-tenant view; same row shape filtered by tenant_id.
+ *
+ *   POST /api/v1/admin/lifecycle/hook-runs/:runId/retry
+ *        - Operator-triggered immediate retry. Sets next_attempt_at=now()
+ *          so the scheduler's next tick picks it up; this endpoint does
+ *          NOT run the hook inline (avoids tying up a request thread on
+ *          a slow provider).
+ */
+import type { FastifyInstance } from 'fastify';
+import { eq, desc, inArray, sql } from 'drizzle-orm';
+import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
+import { success } from '../../shared/response.js';
+import { ApiError } from '../../shared/errors.js';
+import {
+  tenantLifecycleTransitions,
+  tenantLifecycleHookRuns,
+} from '../../db/schema.js';
+
+type HookRunRow = typeof tenantLifecycleHookRuns.$inferSelect;
+
+async function fetchHookRunsForTransitions(
+  db: FastifyInstance['db'],
+  transitionIds: readonly string[],
+): Promise<Record<string, HookRunRow[]>> {
+  if (transitionIds.length === 0) return {};
+  const rows = await db.select().from(tenantLifecycleHookRuns)
+    .where(inArray(tenantLifecycleHookRuns.transitionId, transitionIds as string[]));
+  const grouped: Record<string, HookRunRow[]> = {};
+  for (const r of rows) {
+    grouped[r.transitionId] = grouped[r.transitionId] ?? [];
+    grouped[r.transitionId].push(r);
+  }
+  return grouped;
+}
+
+export async function tenantLifecycleRoutes(app: FastifyInstance): Promise<void> {
+  app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requirePanel('admin'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin'));
+
+  // GET /admin/lifecycle/transitions?tenantId=...&limit=...
+  app.get('/admin/lifecycle/transitions', {
+    schema: {
+      tags: ['TenantLifecycle'],
+      summary: 'List recent lifecycle transitions',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          tenantId: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+        },
+      },
+    },
+  }, async (request) => {
+    const { tenantId, limit } = request.query as { tenantId?: string; limit?: number };
+    const cap = Math.min(limit ?? 50, 200);
+    const transitions = tenantId
+      ? await app.db.select().from(tenantLifecycleTransitions)
+        .where(eq(tenantLifecycleTransitions.tenantId, tenantId))
+        .orderBy(desc(tenantLifecycleTransitions.startedAt))
+        .limit(cap)
+      : await app.db.select().from(tenantLifecycleTransitions)
+        .orderBy(desc(tenantLifecycleTransitions.startedAt))
+        .limit(cap);
+    const hookRuns = await fetchHookRunsForTransitions(app.db, transitions.map((t) => t.id));
+    return success({ transitions, hookRuns });
+  });
+
+  // GET /admin/tenants/:id/lifecycle/transitions
+  app.get('/admin/tenants/:id/lifecycle/transitions', {
+    schema: {
+      tags: ['TenantLifecycle'],
+      summary: 'Transitions for a single tenant',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const transitions = await app.db.select().from(tenantLifecycleTransitions)
+      .where(eq(tenantLifecycleTransitions.tenantId, id))
+      .orderBy(desc(tenantLifecycleTransitions.startedAt))
+      .limit(50);
+    const hookRuns = await fetchHookRunsForTransitions(app.db, transitions.map((t) => t.id));
+    return success({ transitions, hookRuns });
+  });
+
+  // GET /admin/lifecycle/bulk-ops/:bulkOpId
+  // Returns every transition row whose detail.bulkOpId matches, with
+  // per-row hook_runs. Used by the bulk-progress modal to poll a
+  // single endpoint instead of N per-tenant requests.
+  app.get('/admin/lifecycle/bulk-ops/:bulkOpId', {
+    schema: {
+      tags: ['TenantLifecycle'],
+      summary: 'List all transitions for one bulk operation',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['bulkOpId'], properties: { bulkOpId: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { bulkOpId } = request.params as { bulkOpId: string };
+    // Postgres JSONB containment: detail @> '{"bulkOpId":"..."}'
+    const transitions = await app.db.select().from(tenantLifecycleTransitions)
+      .where(sql`${tenantLifecycleTransitions.detail} @> ${JSON.stringify({ bulkOpId })}::jsonb`)
+      .orderBy(desc(tenantLifecycleTransitions.startedAt));
+    const hookRuns = await fetchHookRunsForTransitions(app.db, transitions.map((t) => t.id));
+    return success({ bulkOpId, transitions, hookRuns });
+  });
+
+  // POST /admin/lifecycle/breakers/:hookName/reset
+  // Clear the in-memory circuit breaker for one hook so the next
+  // retry tick can attempt it immediately.
+  //
+  // IMPORTANT: breaker state is per-replica (in-memory Map). This
+  // endpoint only resets the breaker on the SINGLE pod that handles
+  // the request. The response includes `replicaHostname` so the
+  // operator can re-issue the call N times (or use kubectl exec) to
+  // hit other replicas. A future enhancement would persist breakers
+  // in Redis to make resets cluster-wide.
+  app.post('/admin/lifecycle/breakers/:hookName/reset', {
+    schema: {
+      tags: ['TenantLifecycle'],
+      summary: 'Clear the circuit breaker for one hook (per-replica)',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['hookName'], properties: { hookName: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { hookName } = request.params as { hookName: string };
+    const { resetBreakerForHook } = await import('./scheduler.js');
+    const wasOpen = resetBreakerForHook(hookName);
+    return success({
+      hookName,
+      wasOpen,
+      replicaHostname: process.env.HOSTNAME ?? 'unknown',
+      note: 'Breaker state is per-replica. Re-issue this call N times in a multi-replica deploy to reset all pods.',
+    });
+  });
+
+  // POST /admin/lifecycle/hook-runs/:runId/retry
+  app.post('/admin/lifecycle/hook-runs/:runId/retry', {
+    schema: {
+      tags: ['TenantLifecycle'],
+      summary: 'Mark a failed hook_run for immediate retry',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['runId'], properties: { runId: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { runId } = request.params as { runId: string };
+    const [row] = await app.db.select().from(tenantLifecycleHookRuns)
+      .where(eq(tenantLifecycleHookRuns.id, runId))
+      .limit(1);
+    if (!row) {
+      throw new ApiError('NOT_FOUND', `hook_run ${runId} not found`, 404);
+    }
+    if (row.state !== 'failed') {
+      throw new ApiError('CONFLICT',
+        `hook_run is in state '${row.state}' — only 'failed' rows can be retried`,
+        409);
+    }
+    // Operator override: if attempts >= maxAttempts, bump max so the
+    // next tick is allowed to try one more time.
+    const patch: { nextAttemptAt: Date; maxAttempts?: number } = { nextAttemptAt: new Date() };
+    if (row.attempts >= row.maxAttempts) {
+      patch.maxAttempts = row.attempts + 1;
+    }
+    await app.db.update(tenantLifecycleHookRuns)
+      .set(patch)
+      .where(eq(tenantLifecycleHookRuns.id, runId));
+    return success({ retryQueuedAt: new Date().toISOString() });
+  });
+}

@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { getCronJobById, updateCronJob, deleteCronJob } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
-vi.mock('../clients/service.js', () => ({
-  getClientById: vi.fn().mockResolvedValue({ id: 'c1', companyName: 'Acme' }),
+vi.mock('../tenants/service.js', () => ({
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', name: 'Acme' }),
 }));
 
 function createMockDb(selectResult: unknown[] = []) {
@@ -31,7 +31,7 @@ function createMockDb(selectResult: unknown[] = []) {
 
 describe('getCronJobById', () => {
   it('should return cron job when found', async () => {
-    const job = { id: 'j1', clientId: 'c1', name: 'cleanup' };
+    const job = { id: 'j1', tenantId: 'c1', name: 'cleanup' };
     const db = createMockDb([job]);
 
     const result = await getCronJobById(db, 'c1', 'j1');
@@ -51,7 +51,7 @@ describe('getCronJobById', () => {
 
 describe('updateCronJob', () => {
   it('should update and return cron job', async () => {
-    const job = { id: 'j1', clientId: 'c1', name: 'cleanup' };
+    const job = { id: 'j1', tenantId: 'c1', name: 'cleanup' };
 
     const whereFn = vi.fn().mockResolvedValue([job]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -72,7 +72,7 @@ describe('updateCronJob', () => {
   });
 
   it('should convert enabled boolean to number', async () => {
-    const job = { id: 'j1', clientId: 'c1', name: 'cleanup' };
+    const job = { id: 'j1', tenantId: 'c1', name: 'cleanup' };
 
     const whereFn = vi.fn().mockResolvedValue([job]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -95,7 +95,7 @@ describe('updateCronJob', () => {
   });
 
   it('should skip update when no fields provided', async () => {
-    const job = { id: 'j1', clientId: 'c1', name: 'cleanup' };
+    const job = { id: 'j1', tenantId: 'c1', name: 'cleanup' };
 
     const whereFn = vi.fn().mockResolvedValue([job]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -115,7 +115,7 @@ describe('updateCronJob', () => {
 
 describe('deleteCronJob', () => {
   it('should delete when cron job exists', async () => {
-    const job = { id: 'j1', clientId: 'c1' };
+    const job = { id: 'j1', tenantId: 'c1' };
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 

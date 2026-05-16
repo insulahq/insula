@@ -6,18 +6,18 @@ import { z } from 'zod';
  * Reasons a Persistent Volume / Longhorn volume is classified as orphaned.
  *
  *  - namespace_deleted     The PV's claimRef.namespace is gone.
- *  - client_record_deleted Tenant namespace exists but no client row in DB.
+ *  - tenant_record_deleted Tenant namespace exists but no tenant row in DB.
  *  - pv_released_stale     Phase=Released for > stalePvThresholdDays.
  *  - longhorn_volume_unbound  Longhorn volume CR exists but no PV references it.
- *  - namespace_orphaned    A `client-*` namespace exists with no matching
- *                          client row and no PV already covered by a more
+ *  - namespace_orphaned    A `tenant-*` namespace exists with no matching
+ *                          tenant row and no PV already covered by a more
  *                          specific reason — typically a deprovision that
  *                          left the namespace stranded after volumes were
  *                          already cleaned up.
  */
 export const orphanReasonSchema = z.enum([
   'namespace_deleted',
-  'client_record_deleted',
+  'tenant_record_deleted',
   'pv_released_stale',
   'longhorn_volume_unbound',
   'namespace_orphaned',
@@ -39,7 +39,7 @@ export const orphanedVolumeEntrySchema = z.object({
   reason: orphanReasonSchema,
   /** Days since PV.status.lastTransitionTime; null when unknown. */
   ageDays: z.number().int().nonnegative().nullable(),
-  /** Pre-resolved label: client company name OR "Platform System (<ns>)". */
+  /** Pre-resolved label: tenant company name OR "Platform System (<ns>)". */
   ownerLabel: z.string(),
   /**
    * Canonical platform/role on the PV (when the PVC→PV mirror reconciler

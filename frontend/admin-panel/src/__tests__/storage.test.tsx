@@ -48,14 +48,14 @@ describe('Storage page', () => {
     render(<Storage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('tab-backups'));
     expect(screen.getByTestId('tab-backups')).toHaveClass('border-brand-500');
-    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
+    expect(screen.getByTestId('tenant-search-select')).toBeInTheDocument();
   });
 
-  it('shows select-client prompt when no client is selected on Backups tab', () => {
+  it('shows select-tenant prompt when no tenant is selected on Backups tab', () => {
     render(<Storage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('tab-backups'));
-    expect(screen.getByTestId('select-client-prompt')).toBeInTheDocument();
-    expect(screen.getByText('Select a client to view their data.')).toBeInTheDocument();
+    expect(screen.getByTestId('select-tenant-prompt')).toBeInTheDocument();
+    expect(screen.getByText('Select a tenant to view their data.')).toBeInTheDocument();
   });
 
   it('renders the tab bar with five tabs including Settings', () => {

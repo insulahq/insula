@@ -7,12 +7,12 @@ import { useDeployments } from '@/hooks/use-deployments';
 interface CreateCronJobModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly clientId: string;
+  readonly tenantId: string;
 }
 
 const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-export default function CreateCronJobModal({ open, onClose, clientId }: CreateCronJobModalProps) {
+export default function CreateCronJobModal({ open, onClose, tenantId }: CreateCronJobModalProps) {
   const [name, setName] = useState('');
   const [type, setType] = useState<'webcron' | 'deployment'>('webcron');
   const [schedule, setSchedule] = useState('');
@@ -22,8 +22,8 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
   const [deploymentId, setDeploymentId] = useState('');
   const [enabled, setEnabled] = useState(true);
 
-  const createCronJob = useCreateCronJob(clientId);
-  const { data: deploymentsResponse } = useDeployments(clientId);
+  const createCronJob = useCreateCronJob(tenantId);
+  const { data: deploymentsResponse } = useDeployments(tenantId);
   const deployments = (deploymentsResponse?.data ?? []).filter((d) => d.status === 'running');
 
   const resetForm = () => {

@@ -29,7 +29,7 @@ export function generateSecurePassword(length = 24): string {
 function mapSftpUserToResponse(row: typeof sftpUsers.$inferSelect) {
   return {
     id: row.id,
-    clientId: row.clientId,
+    tenantId: row.tenantId,
     username: row.username,
     description: row.description ?? null,
     enabled: row.enabled === 1,
@@ -70,11 +70,11 @@ async function fetchLinkedSshKeys(db: Database, userIds: string[]) {
   return map;
 }
 
-export async function listSftpUsers(db: Database, clientId: string, limit = 100) {
+export async function listSftpUsers(db: Database, tenantId: string, limit = 100) {
   const rows = await db
     .select()
     .from(sftpUsers)
-    .where(eq(sftpUsers.clientId, clientId))
+    .where(eq(sftpUsers.tenantId, tenantId))
     .orderBy(desc(sftpUsers.createdAt))
     .limit(limit);
 
@@ -87,11 +87,11 @@ export async function listSftpUsers(db: Database, clientId: string, limit = 100)
   }));
 }
 
-export async function getSftpUser(db: Database, clientId: string, userId: string) {
+export async function getSftpUser(db: Database, tenantId: string, userId: string) {
   const [row] = await db
     .select()
     .from(sftpUsers)
-    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.clientId, clientId)));
+    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.tenantId, tenantId)));
 
   if (!row) {
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
@@ -109,7 +109,7 @@ function generateUsername(): string {
   return crypto.randomBytes(4).toString('hex'); // 8 hex chars, e.g. "a3f7c2e1"
 }
 
-export async function createSftpUser(db: Database, clientId: string, input: CreateSftpUserInput) {
+export async function createSftpUser(db: Database, tenantId: string, input: CreateSftpUserInput) {
   // Validate home_path at the service layer (defense-in-depth beyond Zod)
   if (input.home_path) {
     validateHomePath(input.home_path);
@@ -124,7 +124,7 @@ export async function createSftpUser(db: Database, clientId: string, input: Crea
     }
   }
 
-  // Auto-generate a unique 8-char hex username (clients cannot choose)
+  // Auto-generate a unique 8-char hex username (tenants cannot choose)
   let username = generateUsername();
   for (let attempt = 0; attempt < 5; attempt++) {
     const [existing] = await db
@@ -147,7 +147,7 @@ export async function createSftpUser(db: Database, clientId: string, input: Crea
 
   await db.insert(sftpUsers).values({
     id,
-    clientId,
+    tenantId,
     username,
     passwordHash,
     description: input.description ?? null,
@@ -183,7 +183,7 @@ export async function createSftpUser(db: Database, clientId: string, input: Crea
 
 export async function updateSftpUser(
   db: Database,
-  clientId: string,
+  tenantId: string,
   userId: string,
   input: UpdateSftpUserInput,
 ) {
@@ -191,7 +191,7 @@ export async function updateSftpUser(
   const [existing] = await db
     .select()
     .from(sftpUsers)
-    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.clientId, clientId)));
+    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.tenantId, tenantId)));
 
   if (!existing) {
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
@@ -279,11 +279,11 @@ export async function updateSftpUser(
   };
 }
 
-export async function deleteSftpUser(db: Database, clientId: string, userId: string) {
+export async function deleteSftpUser(db: Database, tenantId: string, userId: string) {
   const [existing] = await db
     .select()
     .from(sftpUsers)
-    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.clientId, clientId)));
+    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.tenantId, tenantId)));
 
   if (!existing) {
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
@@ -294,14 +294,14 @@ export async function deleteSftpUser(db: Database, clientId: string, userId: str
 
 export async function rotateSftpPassword(
   db: Database,
-  clientId: string,
+  tenantId: string,
   userId: string,
   customPassword?: string,
 ) {
   const [existing] = await db
     .select()
     .from(sftpUsers)
-    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.clientId, clientId)));
+    .where(and(eq(sftpUsers.id, userId), eq(sftpUsers.tenantId, tenantId)));
 
   if (!existing) {
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
@@ -355,7 +355,7 @@ export async function getSftpConnectionInfo(db: Database) {
 
 export async function listSftpAuditLog(
   db: Database,
-  clientId: string,
+  tenantId: string,
   limit: number,
   offset: number,
 ) {
@@ -363,21 +363,21 @@ export async function listSftpAuditLog(
     db
       .select()
       .from(sftpAuditLog)
-      .where(eq(sftpAuditLog.clientId, clientId))
+      .where(eq(sftpAuditLog.tenantId, tenantId))
       .orderBy(desc(sftpAuditLog.createdAt))
       .limit(limit)
       .offset(offset),
     db
       .select({ total: count() })
       .from(sftpAuditLog)
-      .where(eq(sftpAuditLog.clientId, clientId)),
+      .where(eq(sftpAuditLog.tenantId, tenantId)),
   ]);
 
   return {
     items: rows.map((row) => ({
       id: row.id,
       sftpUserId: row.sftpUserId ?? null,
-      clientId: row.clientId,
+      tenantId: row.tenantId,
       event: row.event,
       sourceIp: row.sourceIp,
       protocol: row.protocol,

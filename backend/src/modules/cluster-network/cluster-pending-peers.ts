@@ -89,9 +89,9 @@ function toPendingPeer(cr: CppShape): PendingPeer {
 
 export async function listPendingPeers(
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<PendingPeer[]> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   try {
     const resp = (await c.custom.listClusterCustomObject({
       group: CRD_GROUP,
@@ -107,9 +107,9 @@ export async function listPendingPeers(
 export async function getPendingPeer(
   name: string,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<PendingPeer> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   try {
     const resp = (await c.custom.getClusterCustomObject({
       group: CRD_GROUP,
@@ -134,9 +134,9 @@ export async function createPendingPeer(
   req: CreatePendingPeerRequest,
   addedBy: string,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<PendingPeer> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   const body = {
     apiVersion: `${CRD_GROUP}/${CRD_VERSION}`,
     kind: 'ClusterPendingPeer',
@@ -179,9 +179,9 @@ export async function createPendingPeer(
 export async function deletePendingPeer(
   name: string,
   opts: LoadOptions = {},
-  clients?: ClusterNetworkClients,
+  tenants?: ClusterNetworkClients,
 ): Promise<void> {
-  const c = clients ?? (await loadClusterNetworkClients(opts));
+  const c = tenants ?? (await loadClusterNetworkClients(opts));
   try {
     await c.custom.deleteClusterCustomObject({
       group: CRD_GROUP,

@@ -176,7 +176,7 @@ export const changeAuthUserPasswordSchema = z.object({
 export const wafLogResponseSchema = z.object({
   id: z.string(),
   routeId: z.string(),
-  clientId: z.string(),
+  tenantId: z.string(),
   ruleId: z.string(),
   severity: z.string(),
   message: z.string(),
@@ -206,7 +206,7 @@ export const ingressSettingsResponseSchema = z.object({
 });
 
 // IPv4/IPv6 validated via Zod 4 built-ins — rejects typos at the API
-// boundary (client-side validation also runs but must not be trusted).
+// boundary (tenant-side validation also runs but must not be trusted).
 // ingressDefaultIpv6 accepts null/empty-string to clear the field.
 export const updateIngressSettingsSchema = z.object({
   ingressBaseDomain: z.string().min(1).max(255).optional(),

@@ -7,20 +7,20 @@ import { registerAuth } from '../../middleware/auth.js';
 // vi.mock factories are hoisted — don't reference file-level variables inside them.
 vi.mock('./service.js', () => ({
   createDomain: vi.fn().mockResolvedValue({
-    id: 'd1', clientId: 'c1', domainName: 'example.com',
+    id: 'd1', tenantId: 'c1', domainName: 'example.com',
     dnsMode: 'cname', status: 'active',
     verifiedAt: null, verificationCacheAt: null, verificationCacheResult: null,
   }),
   getDomainById: vi.fn().mockResolvedValue({
-    id: 'd1', clientId: 'c1', domainName: 'example.com',
+    id: 'd1', tenantId: 'c1', domainName: 'example.com',
     dnsMode: 'cname', status: 'active',
     verifiedAt: null, verificationCacheAt: null, verificationCacheResult: null,
   }),
   listDomains: vi.fn().mockResolvedValue({
-    data: [{ id: 'd1', clientId: 'c1', domainName: 'example.com', dnsMode: 'cname', status: 'active' }],
+    data: [{ id: 'd1', tenantId: 'c1', domainName: 'example.com', dnsMode: 'cname', status: 'active' }],
     pagination: { cursor: null, has_more: false, page_size: 1, total_count: 1 },
   }),
-  updateDomain: vi.fn().mockResolvedValue({ id: 'd1', clientId: 'c1', domainName: 'example.com', dnsMode: 'primary', status: 'active' }),
+  updateDomain: vi.fn().mockResolvedValue({ id: 'd1', tenantId: 'c1', domainName: 'example.com', dnsMode: 'primary', status: 'active' }),
   deleteDomain: vi.fn().mockResolvedValue({
     deleted: { emailDomains: 0, mailboxes: 0, aliases: 0, dnsRecords: 0, ingressRoutes: 0 },
   }),
@@ -65,7 +65,7 @@ const { domainRoutes } = await import('./routes.js');
 
 const BASE_DOMAIN = {
   id: 'd1',
-  clientId: 'c1',
+  tenantId: 'c1',
   domainName: 'example.com',
   dnsMode: 'cname',
   status: 'active',
@@ -102,14 +102,14 @@ describe('domain routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/domains' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/domains' });
     expect(res.statusCode).toBe(401);
   });
 
   it('should reject read-only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains',
+      url: '/api/v1/tenants/c1/domains',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -118,7 +118,7 @@ describe('domain routes', () => {
   it('should allow admin to list domains', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains',
+      url: '/api/v1/tenants/c1/domains',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -128,7 +128,7 @@ describe('domain routes', () => {
   it('should allow support to list domains', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains',
+      url: '/api/v1/tenants/c1/domains',
       headers: { authorization: `Bearer ${supportToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -137,7 +137,7 @@ describe('domain routes', () => {
   it('GET /:domainId should return domain', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1',
+      url: '/api/v1/tenants/c1/domains/d1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -146,7 +146,7 @@ describe('domain routes', () => {
   it('POST should reject invalid domain body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/domains',
+      url: '/api/v1/tenants/c1/domains',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { domain_name: '' },
     });
@@ -156,7 +156,7 @@ describe('domain routes', () => {
   it('POST should create domain with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/domains',
+      url: '/api/v1/tenants/c1/domains',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { domain_name: 'test.example.com' },
     });
@@ -166,7 +166,7 @@ describe('domain routes', () => {
   it('PATCH should reject invalid dns_mode', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/domains/d1',
+      url: '/api/v1/tenants/c1/domains/d1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { dns_mode: 'invalid' },
     });
@@ -177,7 +177,7 @@ describe('domain routes', () => {
   it('PATCH should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/domains/d1',
+      url: '/api/v1/tenants/c1/domains/d1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { dns_mode: 'primary' },
     });
@@ -187,7 +187,7 @@ describe('domain routes', () => {
   it('DELETE should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/domains/d1',
+      url: '/api/v1/tenants/c1/domains/d1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);
@@ -200,7 +200,7 @@ describe('domain routes', () => {
 
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/clients/c1/domains/d1/verify',
+        url: '/api/v1/tenants/c1/domains/d1/verify',
         headers: { authorization: `Bearer ${adminToken}` },
       });
       expect(res.statusCode).toBe(200);
@@ -220,7 +220,7 @@ describe('domain routes', () => {
 
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/clients/c1/domains/d1/verify',
+        url: '/api/v1/tenants/c1/domains/d1/verify',
         headers: { authorization: `Bearer ${adminToken}` },
       });
       expect(res.statusCode).toBe(200);
@@ -240,7 +240,7 @@ describe('domain routes', () => {
 
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/clients/c1/domains/d1/verify?force=true',
+        url: '/api/v1/tenants/c1/domains/d1/verify?force=true',
         headers: { authorization: `Bearer ${adminToken}` },
       });
       expect(res.statusCode).toBe(200);

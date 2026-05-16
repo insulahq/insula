@@ -31,7 +31,7 @@ vi.mock('../dns-servers/service.js', () => ({
 
 // Mock notifications (fire-and-forget; must not throw)
 vi.mock('../notifications/events.js', () => ({
-  notifyClientEmailBootstrapped: vi.fn().mockResolvedValue(undefined),
+  notifyTenantEmailBootstrapped: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock webmail-settings so getMailServerHostname resolves without a real DB
@@ -39,11 +39,11 @@ vi.mock('../webmail-settings/service.js', () => ({
   getMailServerHostname: vi.fn().mockResolvedValue('mail.example.com'),
 }));
 
-const DOMAIN = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+const DOMAIN = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 const EMAIL_DOMAIN = {
   id: 'ed1',
   domainId: 'd1',
-  clientId: 'c1',
+  tenantId: 'c1',
   enabled: 1,
   // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey dropped (migration 0075).
   catchAllAddress: null,
@@ -215,7 +215,7 @@ describe('getEmailDomain', () => {
 });
 
 describe('listEmailDomains', () => {
-  it('should return email domains for client', async () => {
+  it('should return email domains for tenant', async () => {
     const emailDomainWithJoin = { ...EMAIL_DOMAIN, domainName: 'example.com', mailboxCount: 0 };
     const innerJoinWhere = vi.fn().mockResolvedValue([emailDomainWithJoin]);
     const innerJoinFn = vi.fn().mockReturnValue({ where: innerJoinWhere });

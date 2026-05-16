@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { clients, domains, ingressRoutes } from '../../db/schema.js';
+import { tenants, domains, ingressRoutes } from '../../db/schema.js';
 import {
   createRoute,
   updateRoute,
@@ -57,13 +57,13 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  const triggerReconcile = async (clientId: string) => {
+  const triggerReconcile = async (tenantId: string) => {
     const k8s = getK8s();
     if (!k8s) return;
-    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
-    if (client?.kubernetesNamespace) {
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId));
+    if (tenant?.kubernetesNamespace) {
       try {
-        await reconcileIngress(app.db, k8s, clientId, client.kubernetesNamespace);
+        await reconcileIngress(app.db, k8s, tenantId, tenant.kubernetesNamespace);
       } catch {
         // Non-blocking
       }
@@ -75,17 +75,17 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   // are owned by reconcileIngress, which calls buildAllRouteSpecs to
   // rebuild every Middleware + IngressRoute from the current DB state.
   // Callers historically passed routeId; we accept it for API
-  // compatibility but ignore it because the full client namespace
+  // compatibility but ignore it because the full tenant namespace
   // reconciles in one pass anyway.
-  const triggerAnnotationSync = async (_routeId: string, clientId: string) => {
-    await triggerReconcile(clientId);
+  const triggerAnnotationSync = async (_routeId: string, tenantId: string) => {
+    await triggerReconcile(tenantId);
   };
 
   // ─── Client-scoped routes ─────────────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/domains/:domainId/routes
-  app.get('/clients/:clientId/domains/:domainId/routes', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // GET /api/v1/tenants/:tenantId/domains/:domainId/routes
+  app.get('/tenants/:tenantId/domains/:domainId/routes', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'List ingress routes for a domain',
@@ -97,16 +97,16 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     return success(routes);
   });
 
-  // POST /api/v1/clients/:clientId/domains/:domainId/routes
-  app.post('/clients/:clientId/domains/:domainId/routes', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // POST /api/v1/tenants/:tenantId/domains/:domainId/routes
+  app.post('/tenants/:tenantId/domains/:domainId/routes', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Create an ingress route for a hostname under this domain',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const parsed = createIngressRouteSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
@@ -116,14 +116,14 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const route = await createRoute(
       app.db,
       domainId,
-      clientId,
+      tenantId,
       body.hostname,
       body.deployment_id,
       body.path ?? '/',
       body.private_worker_id,
       body.service_port,
     );
-    await triggerReconcile(clientId);
+    await triggerReconcile(tenantId);
 
     // Phase 2c: delegate cert provisioning to the central certificates
     // module. It picks the right ClusterIssuer based on the domain's
@@ -147,16 +147,16 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(success(route));
   });
 
-  // PATCH /api/v1/clients/:clientId/domains/:domainId/routes/:routeId
-  app.patch('/clients/:clientId/domains/:domainId/routes/:routeId', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // PATCH /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId
+  app.patch('/tenants/:tenantId/domains/:domainId/routes/:routeId', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Update an ingress route (assign workload, change TLS mode)',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const parsed = updateIngressRouteSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
@@ -168,111 +168,111 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
       servicePort: parsed.data.service_port,
-    }, clientId);
-    await triggerReconcile(clientId);
+    }, tenantId);
+    await triggerReconcile(tenantId);
     return success(updated);
   });
 
-  // DELETE /api/v1/clients/:clientId/domains/:domainId/routes/:routeId
-  app.delete('/clients/:clientId/domains/:domainId/routes/:routeId', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // DELETE /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId
+  app.delete('/tenants/:tenantId/domains/:domainId/routes/:routeId', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Delete an ingress route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     await deleteRoute(app.db, routeId);
-    await triggerReconcile(clientId);
+    await triggerReconcile(tenantId);
     reply.status(204).send();
   });
 
   // ─── Route-level Settings ─────────────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/routes/:routeId — single route detail
-  app.get('/clients/:clientId/routes/:routeId', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // GET /api/v1/tenants/:tenantId/routes/:routeId — single route detail
+  app.get('/tenants/:tenantId/routes/:routeId', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Get a single ingress route with all settings',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const [route] = await app.db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
     if (!route) throw new ApiError('ROUTE_NOT_FOUND', 'Ingress route not found', 404);
-    // Verify ownership via domain → client
-    const [domain] = await app.db.select().from(domains).where(and(eq(domains.id, route.domainId), eq(domains.clientId, clientId)));
+    // Verify ownership via domain → tenant
+    const [domain] = await app.db.select().from(domains).where(and(eq(domains.id, route.domainId), eq(domains.tenantId, tenantId)));
     if (!domain) throw new ApiError('ROUTE_NOT_FOUND', 'Ingress route not found', 404);
     return success(mapRouteToResponse(route));
   });
 
-  // PATCH /api/v1/clients/:clientId/routes/:routeId/redirects
-  app.patch('/clients/:clientId/routes/:routeId/redirects', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // PATCH /api/v1/tenants/:tenantId/routes/:routeId/redirects
+  app.patch('/tenants/:tenantId/routes/:routeId/redirects', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Settings'],
       summary: 'Update redirect settings for a route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const parsed = updateRedirectSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const updated = await updateRedirectSettings(app.db, routeId, clientId, parsed.data);
-    await triggerAnnotationSync(routeId, clientId);
+    const updated = await updateRedirectSettings(app.db, routeId, tenantId, parsed.data);
+    await triggerAnnotationSync(routeId, tenantId);
     return success(updated);
   });
 
-  // PATCH /api/v1/clients/:clientId/routes/:routeId/security
-  app.patch('/clients/:clientId/routes/:routeId/security', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // PATCH /api/v1/tenants/:tenantId/routes/:routeId/security
+  app.patch('/tenants/:tenantId/routes/:routeId/security', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Settings'],
       summary: 'Update security settings for a route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const parsed = updateSecuritySettingsSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const updated = await updateSecuritySettings(app.db, routeId, clientId, parsed.data);
-    await triggerAnnotationSync(routeId, clientId);
+    const updated = await updateSecuritySettings(app.db, routeId, tenantId, parsed.data);
+    await triggerAnnotationSync(routeId, tenantId);
     return success(updated);
   });
 
-  // PATCH /api/v1/clients/:clientId/routes/:routeId/advanced
-  app.patch('/clients/:clientId/routes/:routeId/advanced', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // PATCH /api/v1/tenants/:tenantId/routes/:routeId/advanced
+  app.patch('/tenants/:tenantId/routes/:routeId/advanced', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Settings'],
       summary: 'Update advanced settings for a route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const parsed = updateAdvancedSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const updated = await updateAdvancedSettings(app.db, routeId, clientId, parsed.data);
-    await triggerAnnotationSync(routeId, clientId);
+    const updated = await updateAdvancedSettings(app.db, routeId, tenantId, parsed.data);
+    await triggerAnnotationSync(routeId, tenantId);
     return success(updated);
   });
 
   // ─── Protected Directories ──────────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/routes/:routeId/protected-dirs
-  app.get('/clients/:clientId/routes/:routeId/protected-dirs', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // GET /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs
+  app.get('/tenants/:tenantId/routes/:routeId/protected-dirs', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'List protected directories for a route',
@@ -284,78 +284,78 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     return success(dirs);
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs
-  app.post('/clients/:clientId/routes/:routeId/protected-dirs', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // POST /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs
+  app.post('/tenants/:tenantId/routes/:routeId/protected-dirs', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Create a protected directory for a route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const parsed = createRouteProtectedDirSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const dir = await createProtectedDir(app.db, routeId, clientId, parsed.data);
-    await triggerAnnotationSync(routeId, clientId);
+    const dir = await createProtectedDir(app.db, routeId, tenantId, parsed.data);
+    await triggerAnnotationSync(routeId, tenantId);
     reply.status(201).send(success(dir));
   });
 
-  // PATCH /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId
-  app.patch('/clients/:clientId/routes/:routeId/protected-dirs/:dirId', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // PATCH /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId
+  app.patch('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Update a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
+    const { tenantId, routeId, dirId } = request.params as { tenantId: string; routeId: string; dirId: string };
     const parsed = updateRouteProtectedDirSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const updated = await updateProtectedDir(app.db, dirId, routeId, clientId, parsed.data);
-    await triggerAnnotationSync(routeId, clientId);
+    const updated = await updateProtectedDir(app.db, dirId, routeId, tenantId, parsed.data);
+    await triggerAnnotationSync(routeId, tenantId);
     return success(updated);
   });
 
-  // DELETE /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId
-  app.delete('/clients/:clientId/routes/:routeId/protected-dirs/:dirId', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // DELETE /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId
+  app.delete('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Delete a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
-    await deleteProtectedDir(app.db, dirId, routeId, clientId);
+    const { tenantId, routeId, dirId } = request.params as { tenantId: string; routeId: string; dirId: string };
+    await deleteProtectedDir(app.db, dirId, routeId, tenantId);
 
     // Explicitly delete the child Ingress + Secret for this directory
     const k8s = getK8s();
     if (k8s) {
-      const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
-      if (client?.kubernetesNamespace) {
+      const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId));
+      if (tenant?.kubernetesNamespace) {
         try {
-          await deleteProtectedDirIngress(k8s, client.kubernetesNamespace, dirId);
+          await deleteProtectedDirIngress(k8s, tenant.kubernetesNamespace, dirId);
         } catch { /* Non-blocking */ }
       }
     }
 
-    await triggerAnnotationSync(routeId, clientId);
+    await triggerAnnotationSync(routeId, tenantId);
     reply.status(204).send();
   });
 
   // ─── Directory-Scoped Auth Users ──────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users
-  app.get('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // GET /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users
+  app.get('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'List auth users for a protected directory',
@@ -367,86 +367,86 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     return success(users);
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users
-  app.post('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // POST /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users
+  app.post('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Create an auth user for a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
+    const { tenantId, routeId, dirId } = request.params as { tenantId: string; routeId: string; dirId: string };
     const parsed = createAuthUserSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const user = await createDirUser(app.db, dirId, parsed.data.username, parsed.data.password);
-    await triggerAnnotationSync(routeId, clientId);
+    await triggerAnnotationSync(routeId, tenantId);
     reply.status(201).send(success(user));
   });
 
-  // DELETE /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId
-  app.delete('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // DELETE /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId
+  app.delete('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Delete an auth user from a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
+    const { tenantId, routeId, dirId, userId } = request.params as { tenantId: string; routeId: string; dirId: string; userId: string };
     await deleteDirUser(app.db, dirId, userId);
-    await triggerAnnotationSync(routeId, clientId);
+    await triggerAnnotationSync(routeId, tenantId);
     reply.status(204).send();
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/toggle
-  app.post('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/toggle', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // POST /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId/toggle
+  app.post('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId/toggle', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Enable/disable an auth user in a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
+    const { tenantId, routeId, dirId, userId } = request.params as { tenantId: string; routeId: string; dirId: string; userId: string };
     const parsed = toggleAuthUserSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     await toggleDirUser(app.db, dirId, userId, parsed.data.enabled);
-    await triggerAnnotationSync(routeId, clientId);
+    await triggerAnnotationSync(routeId, tenantId);
     return success({ message: 'User toggled' });
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password
-  app.post('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // POST /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password
+  app.post('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
       summary: 'Change password for an auth user in a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
+    const { tenantId, routeId, dirId, userId } = request.params as { tenantId: string; routeId: string; dirId: string; userId: string };
     const parsed = changeAuthUserPasswordSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     await changeDirUserPassword(app.db, dirId, userId, parsed.data.password);
-    await triggerAnnotationSync(routeId, clientId);
+    await triggerAnnotationSync(routeId, tenantId);
     return success({ message: 'Password changed' });
   });
 
   // ─── WAF Logs ─────────────────────────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/routes/:routeId/waf-logs
-  app.get('/clients/:clientId/routes/:routeId/waf-logs', {
-    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+  // GET /api/v1/tenants/:tenantId/routes/:routeId/waf-logs
+  app.get('/tenants/:tenantId/routes/:routeId/waf-logs', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route WAF'],
       summary: 'List WAF logs for a route',
@@ -461,14 +461,14 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ─── Client-facing: Ingress Base Domain ──────────────────────────────────
-  // Exposes only the public ingress base domain so the client panel can display
+  // Exposes only the public ingress base domain so the tenant panel can display
   // the correct CNAME target label without calling the admin-only settings endpoint.
 
   app.get('/platform/ingress-base-domain', {
     onRequest: [authenticate],
     schema: {
       tags: ['Ingress Settings'],
-      summary: 'Get the public ingress base domain (client-accessible)',
+      summary: 'Get the public ingress base domain (tenant-accessible)',
       security: [{ bearerAuth: [] }],
     },
   }, async () => {

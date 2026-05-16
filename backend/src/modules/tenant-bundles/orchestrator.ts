@@ -28,7 +28,7 @@ import type { Database } from '../../db/index.js';
 import {
   backupJobs,
   backupComponents,
-  clients,
+  tenants,
   domains,
   deployments,
   type NewBackupJob,
@@ -91,7 +91,7 @@ export interface OrchestratorDeps {
 }
 
 export interface RunBundleInput {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly initiator: BackupInitiator;
   readonly systemTrigger?: BackupSystemTrigger | null;
   readonly label?: string | null;
@@ -114,12 +114,12 @@ export interface RunBundleInput {
    * Optional callback fired AFTER the `backup_jobs` row is inserted
    * (status='pending') and the bundle is reserved on the off-site
    * target. Async callers use this to return the bundleId to the
-   * client immediately while the rest of the orchestration runs in
+   * tenant immediately while the rest of the orchestration runs in
    * the background. Synchronous callers can ignore it.
    */
   readonly onBundleReserved?: (bundleId: string) => void | Promise<void>;
   /**
-   * The user (admin or client) that initiated the bundle. Threaded
+   * The user (admin or tenant) that initiated the bundle. Threaded
    * through to the Task Tracker chip so the operator's session lights
    * up. Null for system/cron-triggered bundles (initiator='system' or
    * 'cluster') — those land in notifications on failure, never in any
@@ -147,15 +147,15 @@ export async function runBundle(
 ): Promise<RunBundleResult> {
   const bundleId = `bkp-${randomUUID()}`;
 
-  // Resolve the client's namespace + PVC up-front. We need both for
+  // Resolve the tenant's namespace + PVC up-front. We need both for
   // the files + secrets components; failing here gives a clean error
   // before any external state is touched.
-  const namespace = await resolveClientNamespace(deps.db, input.clientId);
+  const namespace = await resolveTenantNamespace(deps.db, input.tenantId);
 
   // Insert the backup_jobs row in `pending`.
   const newJob: NewBackupJob = {
     id: bundleId,
-    clientId: input.clientId,
+    tenantId: input.tenantId,
     initiator: input.initiator,
     systemTrigger: input.systemTrigger ?? null,
     status: 'pending',
@@ -180,11 +180,11 @@ export async function runBundle(
       await startTask(deps.db, {
         kind: 'backup.bundle',
         refId: bundleId,
-        scope: input.initiator === 'client' ? 'client' : 'admin',
+        scope: input.initiator === 'tenant' ? 'tenant' : 'admin',
         userId: input.triggeredByUserId,
-        clientId: input.clientId,
-        label: toSafeText(`Backup bundle (${input.clientId.slice(0, 8)})`),
-        target: { type: 'route', href: `/clients/${input.clientId}?tab=backups` },
+        tenantId: input.tenantId,
+        label: toSafeText(`Backup bundle (${input.tenantId.slice(0, 8)})`),
+        target: { type: 'route', href: `/tenants/${input.tenantId}?tab=backups` },
         details: { bundleId, initiator: input.initiator },
       });
     } catch (err) {
@@ -194,7 +194,7 @@ export async function runBundle(
   }
 
   // Reserve the bundle in the store (in-flight; meta.json absent).
-  const handle = await deps.store.reserveBundle({ backupId: bundleId, clientId: input.clientId });
+  const handle = await deps.store.reserveBundle({ backupId: bundleId, tenantId: input.tenantId });
 
   await deps.db
     .update(backupJobs)
@@ -238,8 +238,8 @@ export async function runBundle(
   if (input.components.files) {
     tasks.push((async () => {
       if (!deps.k8s) {
-        errors.push('files: kubernetes client unavailable');
-        await markComponentFailed(deps.db, bundleId, 'files', 'archive.tar.gz', 'kubernetes client unavailable');
+        errors.push('files: kubernetes tenant unavailable');
+        await markComponentFailed(deps.db, bundleId, 'files', 'archive.tar.gz', 'kubernetes tenant unavailable');
         return;
       }
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'files', 'archive.tar.gz');
@@ -248,7 +248,7 @@ export async function runBundle(
           throw new Error('files component requires platformApiUrl on OrchestratorDeps (Phase 3 HTTP-upload pattern)');
         }
         // Reviewer #2: derive pvcName from the namespace already
-        // resolved at line 153 — saves a redundant SELECT on `clients`
+        // resolved at line 153 — saves a redundant SELECT on `tenants`
         // in the bundle hot path. Convention `${ns}-storage` mirrors
         // resolveTenantPvc / component-registry.ts.
         const pvcName = `${namespace}-storage`;
@@ -265,7 +265,7 @@ export async function runBundle(
           const predumpResults = await runPreCaptureDatabaseDumps({
             db: deps.db,
             k8s: deps.k8s,
-            clientId: input.clientId,
+            tenantId: input.tenantId,
             namespace,
             backupId: bundleId,
             kubeconfigPath: deps.kubeconfigPath,
@@ -286,7 +286,7 @@ export async function runBundle(
           k8s: deps.k8s,
           namespace,
           pvcName,
-          clientId: input.clientId,
+          tenantId: input.tenantId,
           backupId: bundleId,
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
@@ -328,7 +328,7 @@ export async function runBundle(
         // even on first-attempt failures (no prior row exists).
         await recordResticRunFailed({
           db: deps.db,
-          clientId: input.clientId,
+          tenantId: input.tenantId,
           component: 'files',
           runAt: new Date(),
         }).catch(() => undefined);
@@ -343,7 +343,7 @@ export async function runBundle(
       try {
         configResult = await captureConfigComponent({
           db: deps.db,
-          clientId: input.clientId,
+          tenantId: input.tenantId,
           store: deps.store,
           handle,
         });
@@ -361,8 +361,8 @@ export async function runBundle(
   if (input.components.secrets) {
     tasks.push((async () => {
       if (!deps.k8s) {
-        errors.push('secrets: kubernetes client unavailable');
-        await markComponentFailed(deps.db, bundleId, 'secrets', 'tls.json.gz.enc', 'kubernetes client unavailable');
+        errors.push('secrets: kubernetes tenant unavailable');
+        await markComponentFailed(deps.db, bundleId, 'secrets', 'tls.json.gz.enc', 'kubernetes tenant unavailable');
         return;
       }
       // Skip-when-empty: if the tenant ns has no Secrets at all there
@@ -401,8 +401,8 @@ export async function runBundle(
   if (input.components.mailboxes) {
     tasks.push((async () => {
       if (!deps.k8s) {
-        errors.push('mailboxes: kubernetes client unavailable');
-        await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'kubernetes client unavailable');
+        errors.push('mailboxes: kubernetes tenant unavailable');
+        await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'kubernetes tenant unavailable');
         return;
       }
       if (!deps.platformApiUrl) {
@@ -410,14 +410,14 @@ export async function runBundle(
         await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'platformApiUrl missing');
         return;
       }
-      // Skip-when-empty: a client without any mailboxes rows skips
+      // Skip-when-empty: a tenant without any mailboxes rows skips
       // the whole mbsync Job — saves up to 60 min of activeDeadline
       // on every clientful-of-no-mail bundle. Recorded as `skipped`
       // so the coverage drift report still tracks the component.
-      const mailboxCount = await countClientMailboxes(deps.db, input.clientId);
+      const mailboxCount = await countTenantMailboxes(deps.db, input.tenantId);
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'mailboxes', '__pending__');
       if (mailboxCount === 0) {
-        await markComponentRowSkipped(deps.db, componentRowId, 'no mailboxes for client');
+        await markComponentRowSkipped(deps.db, componentRowId, 'no mailboxes for tenant');
         return;
       }
       try {
@@ -425,7 +425,7 @@ export async function runBundle(
         mailboxesResult = await captureMailboxesComponent({
           db: deps.db,
           k8s: deps.k8s,
-          clientId: input.clientId,
+          tenantId: input.tenantId,
           backupId: bundleId,
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
@@ -443,11 +443,11 @@ export async function runBundle(
         if (mailboxesResult.newStates.length > 0) {
           try {
             const { persistJmapStates } = await import('./components/mailboxes-state.js');
-            await persistJmapStates(deps.db, input.clientId, mailboxesResult.newStates);
+            await persistJmapStates(deps.db, input.tenantId, mailboxesResult.newStates);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             // eslint-disable-next-line no-console
-            console.warn(`[tenant-bundles] tenant_jmap_state persist failed for ${input.clientId}: ${msg}`);
+            console.warn(`[tenant-bundles] tenant_jmap_state persist failed for ${input.tenantId}: ${msg}`);
           }
         }
       } catch (err) {
@@ -466,7 +466,7 @@ export async function runBundle(
   await Promise.allSettled(tasks);
 
   // Bundle is `completed` iff no component reported a failure into
-  // `errors[]`. `skipped` rows do not contribute — a client with no
+  // `errors[]`. `skipped` rows do not contribute — a tenant with no
   // mailboxes still produces a fully-completed bundle.
   const status: 'completed' | 'partial' = errors.length === 0 ? 'completed' : 'partial';
 
@@ -479,34 +479,34 @@ export async function runBundle(
     (secretsResult?.sizeBytes ?? 0) +
     (mailboxesResult?.sizeBytes ?? 0);
 
-  // v2 meta.json: capture the client account + counts + summaries so
+  // v2 meta.json: capture the tenant account + counts + summaries so
   // the import flow can present a confirmation dialog without
   // unzipping the config component.
-  const clientMetaBlock = await captureClientBlock(deps.db, input.clientId);
-  const domainsSummaryRO = await captureDomainsSummary(deps.db, input.clientId);
-  const deploymentsSummaryRO = await captureDeploymentsSummary(deps.db, input.clientId);
+  const tenantMetaBlock = await captureTenantBlock(deps.db, input.tenantId);
+  const domainsSummaryRO = await captureDomainsSummary(deps.db, input.tenantId);
+  const deploymentsSummaryRO = await captureDeploymentsSummary(deps.db, input.tenantId);
   const domainsSummary = [...domainsSummaryRO];
   const deploymentsSummary = [...deploymentsSummaryRO];
 
   const meta: BackupMetaV1 = {
     schemaVersion: BACKUP_META_SCHEMA_VERSION,
     backupId: bundleId,
-    clientId: input.clientId,
+    tenantId: input.tenantId,
     capturedAt: new Date().toISOString(),
     platformVersion: deps.platformVersion,
     initiator: input.initiator,
     systemTrigger: input.systemTrigger ?? null,
     label: input.label ?? null,
     components: componentInfos,
-    nodePlacement: clientMetaBlock.workerNodeName
-      ? { preferredNode: clientMetaBlock.workerNodeName, preferredRegion: clientMetaBlock.regionId }
+    nodePlacement: tenantMetaBlock.nodeName
+      ? { preferredNode: tenantMetaBlock.nodeName, preferredRegion: tenantMetaBlock.regionId }
       : null,
     expiresAt: input.retentionDays > 0
       ? addDays(new Date(), input.retentionDays).toISOString()
       : null,
     retentionDays: input.retentionDays,
     description: input.description ?? null,
-    client: clientMetaBlock,
+    tenant: tenantMetaBlock,
     domainsSummary,
     deploymentsSummary,
   };
@@ -589,7 +589,7 @@ export async function runBundle(
           await notifyUser(deps.db, input.triggeredByUserId, {
             type: 'error',
             title: 'Backup bundle failed',
-            message: `Bundle ${bundleId} (${input.clientId.slice(0, 8)}…) failed: ${errText ?? 'unknown error'}`,
+            message: `Bundle ${bundleId} (${input.tenantId.slice(0, 8)}…) failed: ${errText ?? 'unknown error'}`,
             resourceType: 'backup_bundle',
             resourceId: bundleId,
           });
@@ -690,29 +690,29 @@ async function markComponentFailed(
 }
 
 /**
- * Resolve the client's namespace + tenant data PVC name in one query.
+ * Resolve the tenant's namespace + tenant data PVC name in one query.
  *
  * Convention (matches storage-lifecycle/service.ts):
- *   namespace = clients.kubernetesNamespace
+ *   namespace = tenants.kubernetesNamespace
  *   pvcName   = `${namespace}-storage`
  *
- * Throws OperatorError-friendly messages when the client is missing or
- * has no provisioned namespace yet (e.g. a freshly created client whose
+ * Throws OperatorError-friendly messages when the tenant is missing or
+ * has no provisioned namespace yet (e.g. a freshly created tenant whose
  * provisioning Job hasn't run).
  */
-async function resolveClientNamespace(db: Database, clientId: string): Promise<string> {
+async function resolveTenantNamespace(db: Database, tenantId: string): Promise<string> {
   const [r] = await db
-    .select({ ns: clients.kubernetesNamespace })
-    .from(clients)
-    .where(eq(clients.id, clientId))
+    .select({ ns: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
     .limit(1);
-  if (!r) throw new Error(`client not found: ${clientId}`);
-  if (!r.ns) throw new Error(`client ${clientId} has no kubernetesNamespace yet — wait for provisioning to complete`);
+  if (!r) throw new Error(`tenant not found: ${tenantId}`);
+  if (!r.ns) throw new Error(`tenant ${tenantId} has no kubernetesNamespace yet — wait for provisioning to complete`);
   return r.ns;
 }
 
-async function resolveTenantPvc(db: Database, clientId: string): Promise<string> {
-  const namespace = await resolveClientNamespace(db, clientId);
+async function resolveTenantPvc(db: Database, tenantId: string): Promise<string> {
+  const namespace = await resolveTenantNamespace(db, tenantId);
   return `${namespace}-storage`;
 }
 
@@ -723,21 +723,21 @@ function addDays(d: Date, days: number): Date {
 }
 
 /**
- * Build the meta.json `client` block (v2). Pulls the live row from
- * `clients` + counts via raw SQL to keep the latency low. Throws if
- * the client is missing — capture should fail loudly because a v2
- * bundle without a client block can't be imported.
+ * Build the meta.json `tenant` block (v2). Pulls the live row from
+ * `tenants` + counts via raw SQL to keep the latency low. Throws if
+ * the tenant is missing — capture should fail loudly because a v2
+ * bundle without a tenant block can't be imported.
  *
  * Numeric override fields land in PG as `numeric(...)` and Drizzle
  * returns them as strings; we coerce to number|null so the JSON
  * round-trips cleanly through z.number().nullable() on the schema.
  */
-async function captureClientBlock(
+async function captureTenantBlock(
   db: Database,
-  clientId: string,
-): Promise<import('@k8s-hosting/api-contracts').BackupMetaClient> {
-  const [c] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!c) throw new Error(`captureClientBlock: client ${clientId} not found`);
+  tenantId: string,
+): Promise<import('@k8s-hosting/api-contracts').BackupMetaTenant> {
+  const [c] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!c) throw new Error(`captureTenantBlock: tenant ${tenantId} not found`);
 
   const rawDb = db as unknown as {
     execute: (q: ReturnType<typeof sql>) => Promise<{
@@ -746,9 +746,9 @@ async function captureClientBlock(
   };
   const counts = await rawDb.execute(sql`
     SELECT
-      (SELECT COUNT(*)::int FROM mailboxes WHERE client_id = ${clientId})  AS mailboxes,
-      (SELECT COUNT(*)::int FROM domains    WHERE client_id = ${clientId})  AS domains,
-      (SELECT COUNT(*)::int FROM deployments WHERE client_id = ${clientId} AND deleted_at IS NULL) AS deployments
+      (SELECT COUNT(*)::int FROM mailboxes WHERE tenant_id = ${tenantId})  AS mailboxes,
+      (SELECT COUNT(*)::int FROM domains    WHERE tenant_id = ${tenantId})  AS domains,
+      (SELECT COUNT(*)::int FROM deployments WHERE tenant_id = ${tenantId} AND deleted_at IS NULL) AS deployments
   `);
   const row = counts.rows[0] ?? { mailboxes: 0, domains: 0, deployments: 0 };
 
@@ -756,14 +756,14 @@ async function captureClientBlock(
     v === null || v === undefined ? null : Number(v);
 
   return {
-    companyName: c.companyName,
-    companyEmail: c.companyEmail,
-    contactEmail: c.contactEmail ?? null,
+    name: c.name,
+    primaryEmail: c.primaryEmail,
+    secondaryEmail: c.secondaryEmail ?? null,
     status: c.status as string,
     kubernetesNamespace: c.kubernetesNamespace,
     regionId: c.regionId,
     planId: c.planId,
-    workerNodeName: c.workerNodeName ?? null,
+    nodeName: c.nodeName ?? null,
     storageTier: c.storageTier as string,
     timezone: c.timezone ?? null,
     storageLimitOverride: numOrNull(c.storageLimitOverride),
@@ -784,18 +784,18 @@ async function captureClientBlock(
 
 async function captureDomainsSummary(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary>> {
   const rows = await db
     .select({ name: domains.domainName, status: domains.status })
     .from(domains)
-    .where(eq(domains.clientId, clientId));
+    .where(eq(domains.tenantId, tenantId));
   return rows.map((r) => ({ name: r.name, status: r.status as string }));
 }
 
 async function captureDeploymentsSummary(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary>> {
   const rows = await db
     .select({
@@ -805,7 +805,7 @@ async function captureDeploymentsSummary(
       status: deployments.status,
     })
     .from(deployments)
-    .where(eq(deployments.clientId, clientId));
+    .where(eq(deployments.tenantId, tenantId));
   // Type predicate so the post-filter type narrows from
   // `name: string | null` to `name: string` (Array.prototype.filter
   // does not narrow without an explicit predicate). Belt-and-braces:
@@ -825,17 +825,17 @@ async function captureDeploymentsSummary(
 }
 
 /**
- * Count the client's mailboxes without dragging the full list across
+ * Count the tenant's mailboxes without dragging the full list across
  * the wire. Used to decide whether to skip the mailboxes component
  * entirely. Failure is non-fatal: an error here returns `1` so the
  * Job runs anyway (better to spawn an empty Job than to silently skip
  * a component on a transient DB hiccup).
  */
-async function countClientMailboxes(db: Database, clientId: string): Promise<number> {
+async function countTenantMailboxes(db: Database, tenantId: string): Promise<number> {
   try {
     const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { count: string | number }[] }> };
     const r = await rawDb.execute(
-      sql`SELECT COUNT(*)::int AS count FROM mailboxes WHERE client_id = ${clientId}`,
+      sql`SELECT COUNT(*)::int AS count FROM mailboxes WHERE tenant_id = ${tenantId}`,
     );
     const c = r.rows[0]?.count;
     return typeof c === 'number' ? c : Number(c ?? 0);
@@ -916,7 +916,7 @@ async function recordResticSnapshotForFiles(args: {
   // was missing (e.g. ad-hoc bundle without a target), record the row
   // anyway with an empty repoUri — the admin UI will surface the gap.
   const repoUri = target
-    ? buildResticRepoUri(target, input.clientId, 'files' satisfies ResticComponent)
+    ? buildResticRepoUri(target, input.tenantId, 'files' satisfies ResticComponent)
     : '';
 
   // Region id derivation: read the override from settings, fall back
@@ -935,7 +935,7 @@ async function recordResticSnapshotForFiles(args: {
 
   await recordResticSnapshot({
     db: deps.db,
-    clientId: input.clientId,
+    tenantId: input.tenantId,
     component: 'files',
     repoUri,
     targetConfigId,

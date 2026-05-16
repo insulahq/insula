@@ -14,8 +14,8 @@ import { eq } from 'drizzle-orm';
 import {
   deploymentNetworkAccessConfigs,
   deployments,
-  clientZitiProviders,
-  clientZrokAccounts,
+  tenantZitiProviders,
+  tenantZrokAccounts,
   domains,
   ingressRoutes,
 } from '../../db/schema.js';
@@ -64,23 +64,23 @@ export async function upsertConfig(
   if (!deployment) {
     throw new ApiError('NOT_FOUND', 'deployment not found', 404);
   }
-  // Validate provider FKs belong to the same client.
+  // Validate provider FKs belong to the same tenant.
   if (input.mode === 'tunneler' && input.zitiProviderId) {
     const [p] = await db
       .select()
-      .from(clientZitiProviders)
-      .where(eq(clientZitiProviders.id, input.zitiProviderId));
-    if (!p || p.clientId !== deployment.clientId) {
-      throw new ApiError('INVALID_PROVIDER', 'Ziti provider not found for this client', 422);
+      .from(tenantZitiProviders)
+      .where(eq(tenantZitiProviders.id, input.zitiProviderId));
+    if (!p || p.tenantId !== deployment.tenantId) {
+      throw new ApiError('INVALID_PROVIDER', 'Ziti provider not found for this tenant', 422);
     }
   }
   if (input.mode === 'zrok' && input.zrokProviderId) {
     const [p] = await db
       .select()
-      .from(clientZrokAccounts)
-      .where(eq(clientZrokAccounts.id, input.zrokProviderId));
-    if (!p || p.clientId !== deployment.clientId) {
-      throw new ApiError('INVALID_PROVIDER', 'Zrok provider not found for this client', 422);
+      .from(tenantZrokAccounts)
+      .where(eq(tenantZrokAccounts.id, input.zrokProviderId));
+    if (!p || p.tenantId !== deployment.tenantId) {
+      throw new ApiError('INVALID_PROVIDER', 'Zrok provider not found for this tenant', 422);
     }
   }
 
@@ -125,11 +125,11 @@ export async function deleteConfig(db: Database, deploymentId: string): Promise<
 
 /**
  * Reconciler-facing: list every deployment in a non-public mode for
- * a client. Used to drive the per-client mesh-proxy lifecycle.
+ * a tenant. Used to drive the per-tenant mesh-proxy lifecycle.
  */
-export async function listMeshDeploymentsForClient(
+export async function listMeshDeploymentsForTenant(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<{
   readonly deploymentId: string;
   readonly mode: NetworkAccessMode;
@@ -149,7 +149,7 @@ export async function listMeshDeploymentsForClient(
     })
     .from(deploymentNetworkAccessConfigs)
     .innerJoin(deployments, eq(deployments.id, deploymentNetworkAccessConfigs.deploymentId))
-    .where(eq(deployments.clientId, clientId));
+    .where(eq(deployments.tenantId, tenantId));
   return rows.filter((r) => r.mode !== 'public') as never;
 }
 

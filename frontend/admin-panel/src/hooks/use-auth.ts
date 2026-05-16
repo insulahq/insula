@@ -7,7 +7,7 @@ interface AuthUser {
   readonly fullName: string;
   readonly role: string;
   readonly panel?: string;
-  readonly clientId?: string | null;
+  readonly tenantId?: string | null;
 }
 
 /**
@@ -56,7 +56,7 @@ export const useAuth = create<AuthState>((set) => ({
         set({ token, user, isAuthenticated: true, isLoading: false });
 
         // Verify token is still valid with backend (async, non-blocking)
-        apiFetch<{ data: { id: string; email: string; fullName: string; role: string; clientId?: string } }>('/api/v1/auth/me')
+        apiFetch<{ data: { id: string; email: string; fullName: string; role: string; tenantId?: string } }>('/api/v1/auth/me')
           .then((res) => {
             const freshUser = res.data;
             localStorage.setItem('auth_user', JSON.stringify(freshUser));

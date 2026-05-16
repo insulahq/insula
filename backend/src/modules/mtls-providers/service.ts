@@ -1,8 +1,8 @@
 /**
- * Per-client mTLS provider service. Stores reusable CA cert + optional
+ * Per-tenant mTLS provider service. Stores reusable CA cert + optional
  * private key (encrypted at rest using PLATFORM_ENCRYPTION_KEY for v1).
  *
- * As of migration 0097 this module also owns the `client_certificates`
+ * As of migration 0097 this module also owns the `tenant_certificates`
  * lifecycle:
  *   * issueUserCert persists each issued cert (PEM encrypted, key NEVER
  *     stored) for audit + future revocation.
@@ -15,14 +15,14 @@
 import { randomUUID, createHash, X509Certificate } from 'node:crypto';
 import { eq, and, sql, desc, lt, isNotNull, isNull, inArray } from 'drizzle-orm';
 import {
-  clientCertificates,
-  clientMtlsProviders,
+  tenantCertificates,
+  tenantMtlsProviders,
   ingressMtlsConfigs,
   ingressRoutes,
 } from '../../db/schema.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
-import { generateSelfSignedCa, signClientCert, bundlePkcs12, generateCrl } from './cert-ops.js';
+import { generateSelfSignedCa, signTenantCert, bundlePkcs12, generateCrl } from './cert-ops.js';
 import type { CrlRevokedEntry, CrlReason } from './cert-ops.js';
 import type { Database } from '../../db/index.js';
 import type {
@@ -74,7 +74,7 @@ function normaliseRevocationReason(raw: string | null): CertificateRevocationRea
     return raw as CertificateRevocationReason;
   }
   // Unknown stored reason — coerce to 'unspecified' rather than
-  // throwing or surfacing the raw string to the client.
+  // throwing or surfacing the raw string to the tenant.
   return 'unspecified';
 }
 
@@ -109,25 +109,25 @@ function parseCaMetadata(pem: string): CaCertMetadata {
 
 export async function listProviders(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<MtlsProviderResponse>> {
   const rows = await db
     .select({
-      id: clientMtlsProviders.id,
-      name: clientMtlsProviders.name,
-      caCertFingerprint: clientMtlsProviders.caCertFingerprint,
-      caCertSubject: clientMtlsProviders.caCertSubject,
-      caCertExpiresAt: clientMtlsProviders.caCertExpiresAt,
-      canIssue: clientMtlsProviders.canIssue,
-      createdAt: clientMtlsProviders.createdAt,
-      updatedAt: clientMtlsProviders.updatedAt,
+      id: tenantMtlsProviders.id,
+      name: tenantMtlsProviders.name,
+      caCertFingerprint: tenantMtlsProviders.caCertFingerprint,
+      caCertSubject: tenantMtlsProviders.caCertSubject,
+      caCertExpiresAt: tenantMtlsProviders.caCertExpiresAt,
+      canIssue: tenantMtlsProviders.canIssue,
+      createdAt: tenantMtlsProviders.createdAt,
+      updatedAt: tenantMtlsProviders.updatedAt,
       consumerCount: sql<number>`(
         SELECT COUNT(*)::int FROM ${ingressMtlsConfigs}
-        WHERE ${ingressMtlsConfigs.providerId} = ${clientMtlsProviders.id}
+        WHERE ${ingressMtlsConfigs.providerId} = ${tenantMtlsProviders.id}
       )`,
     })
-    .from(clientMtlsProviders)
-    .where(eq(clientMtlsProviders.clientId, clientId));
+    .from(tenantMtlsProviders)
+    .where(eq(tenantMtlsProviders.tenantId, tenantId));
 
   // Bulk-fetch consumers in one query so the per-provider mapping is
   // O(N) instead of an N+1 SELECT per provider.
@@ -169,7 +169,7 @@ export async function listProviders(
 export async function createProvider(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   input: MtlsProviderInput,
 ): Promise<MtlsProviderResponse> {
   let caCertPem: string;
@@ -181,7 +181,7 @@ export async function createProvider(
   } else {
     // Generate a new self-signed CA + key. Both stay encrypted in DB;
     // the operator never sees the key, but the issue-user-cert action
-    // can sign new client certs with it.
+    // can sign new tenant certs with it.
     const generated = await generateSelfSignedCa({
       commonName: input.commonName,
       organization: input.organization,
@@ -193,9 +193,9 @@ export async function createProvider(
 
   const meta = parseCaMetadata(caCertPem);
   const id = randomUUID();
-  await db.insert(clientMtlsProviders).values({
+  await db.insert(tenantMtlsProviders).values({
     id,
-    clientId,
+    tenantId,
     name: input.name,
     caCertPemEncrypted: encrypt(caCertPem, encryptionKey),
     caKeyPemEncrypted: caKeyPem ? encrypt(caKeyPem, encryptionKey) : null,
@@ -204,7 +204,7 @@ export async function createProvider(
     caCertExpiresAt: meta.expiresAt,
     canIssue: Boolean(caKeyPem),
   });
-  const all = await listProviders(db, clientId);
+  const all = await listProviders(db, tenantId);
   const created = all.find((p) => p.id === id);
   if (!created) {
     throw new ApiError('INTERNAL_ERROR', 'provider disappeared after insert', 500);
@@ -215,18 +215,18 @@ export async function createProvider(
 export async function updateProvider(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   input: MtlsProviderUpdate,
 ): Promise<MtlsProviderResponse> {
   const [existing] = await db
     .select()
-    .from(clientMtlsProviders)
-    .where(and(eq(clientMtlsProviders.id, providerId), eq(clientMtlsProviders.clientId, clientId)));
+    .from(tenantMtlsProviders)
+    .where(and(eq(tenantMtlsProviders.id, providerId), eq(tenantMtlsProviders.tenantId, tenantId)));
   if (!existing) {
     throw new ApiError('NOT_FOUND', 'mTLS provider not found', 404);
   }
-  const update: Partial<typeof clientMtlsProviders.$inferInsert> = {
+  const update: Partial<typeof tenantMtlsProviders.$inferInsert> = {
     updatedAt: new Date(),
   };
   if (input.name !== undefined) update.name = input.name;
@@ -247,10 +247,10 @@ export async function updateProvider(
     }
   }
   await db
-    .update(clientMtlsProviders)
+    .update(tenantMtlsProviders)
     .set(update)
-    .where(eq(clientMtlsProviders.id, providerId));
-  const all = await listProviders(db, clientId);
+    .where(eq(tenantMtlsProviders.id, providerId));
+  const all = await listProviders(db, tenantId);
   const updated = all.find((p) => p.id === providerId);
   if (!updated) {
     throw new ApiError('INTERNAL_ERROR', 'provider disappeared after update', 500);
@@ -260,7 +260,7 @@ export async function updateProvider(
 
 export async function deleteProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
 ): Promise<void> {
   const consumers = await db
@@ -275,21 +275,21 @@ export async function deleteProvider(
     );
   }
   await db
-    .delete(clientMtlsProviders)
-    .where(and(eq(clientMtlsProviders.id, providerId), eq(clientMtlsProviders.clientId, clientId)));
+    .delete(tenantMtlsProviders)
+    .where(and(eq(tenantMtlsProviders.id, providerId), eq(tenantMtlsProviders.tenantId, tenantId)));
 }
 
 export async function issueUserCert(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   input: MtlsIssueCertInput,
 ): Promise<MtlsIssueCertResponse> {
   const [provider] = await db
     .select()
-    .from(clientMtlsProviders)
-    .where(and(eq(clientMtlsProviders.id, providerId), eq(clientMtlsProviders.clientId, clientId)));
+    .from(tenantMtlsProviders)
+    .where(and(eq(tenantMtlsProviders.id, providerId), eq(tenantMtlsProviders.tenantId, tenantId)));
   if (!provider) {
     throw new ApiError('NOT_FOUND', 'mTLS provider not found', 404);
   }
@@ -302,7 +302,7 @@ export async function issueUserCert(
   }
   const caCertPem = decrypt(provider.caCertPemEncrypted, encryptionKey);
   const caKeyPem = decrypt(provider.caKeyPemEncrypted, encryptionKey);
-  const signed = await signClientCert({
+  const signed = await signTenantCert({
     caCertPem,
     caKeyPem,
     commonName: input.commonName,
@@ -338,10 +338,10 @@ export async function issueUserCert(
   // it later. Private key is NEVER persisted — it's returned once in
   // the response and the operator alone is responsible for it.
   const certRowId = randomUUID();
-  await db.insert(clientCertificates).values({
+  await db.insert(tenantCertificates).values({
     id: certRowId,
     providerId: provider.id,
-    clientId,
+    tenantId,
     serialHex: signed.serialHex,
     certPemEncrypted: encrypt(signed.certPem, encryptionKey),
     certFingerprintSha256: signed.fingerprintSha256,
@@ -375,8 +375,8 @@ export async function loadProviderCaCert(
 ): Promise<string | null> {
   const [row] = await db
     .select()
-    .from(clientMtlsProviders)
-    .where(eq(clientMtlsProviders.id, providerId));
+    .from(tenantMtlsProviders)
+    .where(eq(tenantMtlsProviders.id, providerId));
   if (!row) return null;
   return decrypt(row.caCertPemEncrypted, encryptionKey);
 }
@@ -423,15 +423,15 @@ function toCertificateResponse(
 
 async function ensureProviderScope(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
 ): Promise<void> {
   const [provider] = await db
-    .select({ id: clientMtlsProviders.id })
-    .from(clientMtlsProviders)
+    .select({ id: tenantMtlsProviders.id })
+    .from(tenantMtlsProviders)
     .where(and(
-      eq(clientMtlsProviders.id, providerId),
-      eq(clientMtlsProviders.clientId, clientId),
+      eq(tenantMtlsProviders.id, providerId),
+      eq(tenantMtlsProviders.tenantId, tenantId),
     ));
   if (!provider) {
     throw new ApiError('NOT_FOUND', 'mTLS provider not found', 404);
@@ -440,28 +440,28 @@ async function ensureProviderScope(
 
 export async function listCertificates(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   query: ListCertificatesQuery,
 ): Promise<ListCertificatesResponse> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const now = new Date();
   // Filter by status. "active"/"expired" both have revokedAt IS NULL;
   // we discriminate by expiresAt relative to now. "revoked" has
   // revokedAt IS NOT NULL.
-  const baseFilter = eq(clientCertificates.providerId, providerId);
+  const baseFilter = eq(tenantCertificates.providerId, providerId);
   let statusFilter;
   if (query.status === 'revoked') {
-    statusFilter = isNotNull(clientCertificates.revokedAt);
+    statusFilter = isNotNull(tenantCertificates.revokedAt);
   } else if (query.status === 'active') {
     statusFilter = and(
-      isNull(clientCertificates.revokedAt),
-      sql`${clientCertificates.expiresAt} >= ${now}`,
+      isNull(tenantCertificates.revokedAt),
+      sql`${tenantCertificates.expiresAt} >= ${now}`,
     );
   } else if (query.status === 'expired') {
     statusFilter = and(
-      isNull(clientCertificates.revokedAt),
-      lt(clientCertificates.expiresAt, now),
+      isNull(tenantCertificates.revokedAt),
+      lt(tenantCertificates.expiresAt, now),
     );
   }
   const where = statusFilter ? and(baseFilter, statusFilter) : baseFilter;
@@ -475,14 +475,14 @@ export async function listCertificates(
     if (Number.isNaN(ts.getTime())) {
       throw new ApiError('VALIDATION_ERROR', 'cursor must be an ISO-8601 timestamp', 400);
     }
-    cursorFilter = lt(clientCertificates.issuedAt, ts);
+    cursorFilter = lt(tenantCertificates.issuedAt, ts);
   }
   const finalWhere = cursorFilter ? and(where, cursorFilter) : where;
   const rows = await db
     .select()
-    .from(clientCertificates)
+    .from(tenantCertificates)
     .where(finalWhere)
-    .orderBy(desc(clientCertificates.issuedAt), desc(clientCertificates.id))
+    .orderBy(desc(tenantCertificates.issuedAt), desc(tenantCertificates.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
@@ -496,17 +496,17 @@ export async function listCertificates(
 
 export async function getCertificate(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   certId: string,
 ): Promise<CertificateResponse> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const [row] = await db
     .select()
-    .from(clientCertificates)
+    .from(tenantCertificates)
     .where(and(
-      eq(clientCertificates.id, certId),
-      eq(clientCertificates.providerId, providerId),
+      eq(tenantCertificates.id, certId),
+      eq(tenantCertificates.providerId, providerId),
     ));
   if (!row) {
     throw new ApiError('NOT_FOUND', 'certificate not found', 404);
@@ -521,17 +521,17 @@ export async function getCertificate(
 export async function getCertificatePem(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   certId: string,
 ): Promise<{ certPem: string; serialHex: string; subjectCn: string }> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const [row] = await db
     .select()
-    .from(clientCertificates)
+    .from(tenantCertificates)
     .where(and(
-      eq(clientCertificates.id, certId),
-      eq(clientCertificates.providerId, providerId),
+      eq(tenantCertificates.id, certId),
+      eq(tenantCertificates.providerId, providerId),
     ));
   if (!row) {
     throw new ApiError('NOT_FOUND', 'certificate not found', 404);
@@ -556,20 +556,20 @@ export async function getCertificatePem(
  */
 export async function deleteCertificate(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   certId: string,
 ): Promise<void> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const now = new Date();
   await db.transaction(async (tx) => {
     const deleted = await tx
-      .delete(clientCertificates)
+      .delete(tenantCertificates)
       .where(and(
-        eq(clientCertificates.id, certId),
-        eq(clientCertificates.providerId, providerId),
+        eq(tenantCertificates.id, certId),
+        eq(tenantCertificates.providerId, providerId),
       ))
-      .returning({ id: clientCertificates.id, revokedAt: clientCertificates.revokedAt });
+      .returning({ id: tenantCertificates.id, revokedAt: tenantCertificates.revokedAt });
     if (deleted.length === 0) {
       // Already gone — idempotent.
       return;
@@ -579,14 +579,14 @@ export async function deleteCertificate(
     // unchanged.
     if (deleted[0].revokedAt) {
       await tx
-        .update(clientMtlsProviders)
+        .update(tenantMtlsProviders)
         .set({
-          crlNumber: sql`${clientMtlsProviders.crlNumber} + 1`,
+          crlNumber: sql`${tenantMtlsProviders.crlNumber} + 1`,
           crlPem: null,
           crlLastGeneratedAt: null,
           updatedAt: now,
         })
-        .where(eq(clientMtlsProviders.id, providerId));
+        .where(eq(tenantMtlsProviders.id, providerId));
       await tx
         .update(ingressMtlsConfigs)
         .set({ updatedAt: now })
@@ -609,17 +609,17 @@ export async function deleteCertificate(
  */
 export async function unrevokeCertificate(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   certId: string,
 ): Promise<CertificateResponse> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const [existing] = await db
     .select()
-    .from(clientCertificates)
+    .from(tenantCertificates)
     .where(and(
-      eq(clientCertificates.id, certId),
-      eq(clientCertificates.providerId, providerId),
+      eq(tenantCertificates.id, certId),
+      eq(tenantCertificates.providerId, providerId),
     ));
   if (!existing) {
     throw new ApiError('NOT_FOUND', 'certificate not found', 404);
@@ -631,22 +631,22 @@ export async function unrevokeCertificate(
   const now = new Date();
   await db.transaction(async (tx) => {
     await tx
-      .update(clientCertificates)
+      .update(tenantCertificates)
       .set({
         revokedAt: null,
         revocationReason: null,
         revokedByUserId: null,
       })
-      .where(eq(clientCertificates.id, certId));
+      .where(eq(tenantCertificates.id, certId));
     await tx
-      .update(clientMtlsProviders)
+      .update(tenantMtlsProviders)
       .set({
-        crlNumber: sql`${clientMtlsProviders.crlNumber} + 1`,
+        crlNumber: sql`${tenantMtlsProviders.crlNumber} + 1`,
         crlPem: null,
         crlLastGeneratedAt: null,
         updatedAt: now,
       })
-      .where(eq(clientMtlsProviders.id, providerId));
+      .where(eq(tenantMtlsProviders.id, providerId));
   });
 
   await db
@@ -654,24 +654,24 @@ export async function unrevokeCertificate(
     .set({ updatedAt: now })
     .where(eq(ingressMtlsConfigs.providerId, providerId));
 
-  return getCertificate(db, clientId, providerId, certId);
+  return getCertificate(db, tenantId, providerId, certId);
 }
 
 export async function revokeCertificate(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   certId: string,
   reason: CertificateRevocationReason,
   revokedByUserId: string | null,
 ): Promise<CertificateResponse> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const [existing] = await db
     .select()
-    .from(clientCertificates)
+    .from(tenantCertificates)
     .where(and(
-      eq(clientCertificates.id, certId),
-      eq(clientCertificates.providerId, providerId),
+      eq(tenantCertificates.id, certId),
+      eq(tenantCertificates.providerId, providerId),
     ));
   if (!existing) {
     throw new ApiError('NOT_FOUND', 'certificate not found', 404);
@@ -684,30 +684,30 @@ export async function revokeCertificate(
   const now = new Date();
   await db.transaction(async (tx) => {
     await tx
-      .update(clientCertificates)
+      .update(tenantCertificates)
       .set({
         revokedAt: now,
         revocationReason: reason,
         revokedByUserId,
       })
-      .where(eq(clientCertificates.id, certId));
+      .where(eq(tenantCertificates.id, certId));
     // Bump CRL number + invalidate cache. The reconciler will
     // regenerate the CRL on its next pass; reads go through
     // getOrGenerateCrl() which produces a fresh one lazily.
     await tx
-      .update(clientMtlsProviders)
+      .update(tenantMtlsProviders)
       .set({
-        crlNumber: sql`${clientMtlsProviders.crlNumber} + 1`,
+        crlNumber: sql`${tenantMtlsProviders.crlNumber} + 1`,
         crlPem: null,
         crlLastGeneratedAt: null,
         updatedAt: now,
       })
-      .where(eq(clientMtlsProviders.id, providerId));
+      .where(eq(tenantMtlsProviders.id, providerId));
   });
 
   // Best-effort: enqueue reconciliation of every ingress route that
   // references this provider so the new CRL propagates to NGINX. The
-  // service layer doesn't import the K8s client (avoids cyclic deps);
+  // service layer doesn't import the K8s tenant (avoids cyclic deps);
   // instead we touch ingress_mtls_configs.updated_at — annotation-sync
   // picks up the change in its next sweep.
   await db
@@ -715,7 +715,7 @@ export async function revokeCertificate(
     .set({ updatedAt: now })
     .where(eq(ingressMtlsConfigs.providerId, providerId));
 
-  return getCertificate(db, clientId, providerId, certId);
+  return getCertificate(db, tenantId, providerId, certId);
 }
 
 interface BuiltCrl {
@@ -745,8 +745,8 @@ async function buildOrLoadCrl(
     // to `FOR UPDATE` on Postgres.
     const [provider] = await tx
       .select()
-      .from(clientMtlsProviders)
-      .where(eq(clientMtlsProviders.id, providerId))
+      .from(tenantMtlsProviders)
+      .where(eq(tenantMtlsProviders.id, providerId))
       .for('update');
     if (!provider) return null;
     if (!provider.caKeyPemEncrypted) return null;
@@ -755,14 +755,14 @@ async function buildOrLoadCrl(
     // path returns a consistent revoked_count.
     const revokedRows = await tx
       .select({
-        serialHex: clientCertificates.serialHex,
-        revokedAt: clientCertificates.revokedAt,
-        revocationReason: clientCertificates.revocationReason,
+        serialHex: tenantCertificates.serialHex,
+        revokedAt: tenantCertificates.revokedAt,
+        revocationReason: tenantCertificates.revocationReason,
       })
-      .from(clientCertificates)
+      .from(tenantCertificates)
       .where(and(
-        eq(clientCertificates.providerId, providerId),
-        isNotNull(clientCertificates.revokedAt),
+        eq(tenantCertificates.providerId, providerId),
+        isNotNull(tenantCertificates.revokedAt),
       ));
 
     if (provider.crlPem && provider.crlLastGeneratedAt) {
@@ -793,21 +793,21 @@ async function buildOrLoadCrl(
     });
     const now = new Date();
     await tx
-      .update(clientMtlsProviders)
+      .update(tenantMtlsProviders)
       .set({
         crlPem,
         crlLastGeneratedAt: now,
         crlNumber: newCrlNumber,
         updatedAt: now,
       })
-      .where(eq(clientMtlsProviders.id, providerId));
+      .where(eq(tenantMtlsProviders.id, providerId));
     return { crlPem, crlNumber: newCrlNumber, lastGeneratedAt: now, revokedCount: entries.length };
   });
 }
 
 /**
  * Return the CRL PEM for a provider, regenerating it from the
- * `client_certificates` table when the cache is empty. Tenant-scoped.
+ * `tenant_certificates` table when the cache is empty. Tenant-scoped.
  *
  * Empty CRLs (no revocations on file) are still produced — they're
  * a valid signal "no revocations" to a relying party.
@@ -815,10 +815,10 @@ async function buildOrLoadCrl(
 export async function getOrGenerateCrl(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   providerId: string,
 ): Promise<BuiltCrl> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const built = await buildOrLoadCrl(db, encryptionKey, providerId);
   if (!built) {
     // Provider has no CA private key — can't sign a CRL.
@@ -847,27 +847,27 @@ export async function loadProviderCrlForReconciler(
 
 export async function getCrlMetadata(
   db: Database,
-  clientId: string,
+  tenantId: string,
   providerId: string,
   publicCrlUrl: string,
 ): Promise<CrlMetadataResponse> {
-  await ensureProviderScope(db, clientId, providerId);
+  await ensureProviderScope(db, tenantId, providerId);
   const [provider] = await db
     .select({
-      crlNumber: clientMtlsProviders.crlNumber,
-      crlLastGeneratedAt: clientMtlsProviders.crlLastGeneratedAt,
+      crlNumber: tenantMtlsProviders.crlNumber,
+      crlLastGeneratedAt: tenantMtlsProviders.crlLastGeneratedAt,
     })
-    .from(clientMtlsProviders)
-    .where(eq(clientMtlsProviders.id, providerId));
+    .from(tenantMtlsProviders)
+    .where(eq(tenantMtlsProviders.id, providerId));
   if (!provider) {
     throw new ApiError('NOT_FOUND', 'mTLS provider not found', 404);
   }
   const [{ n }] = await db
     .select({ n: sql<number>`COUNT(*)::int` })
-    .from(clientCertificates)
+    .from(tenantCertificates)
     .where(and(
-      eq(clientCertificates.providerId, providerId),
-      isNotNull(clientCertificates.revokedAt),
+      eq(tenantCertificates.providerId, providerId),
+      isNotNull(tenantCertificates.revokedAt),
     ));
   return {
     crlNumber: provider.crlNumber,

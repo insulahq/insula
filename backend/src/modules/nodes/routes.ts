@@ -9,7 +9,7 @@ import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 // RFC-1123 DNS subdomain label with dots — matches k8s' own node-name
 // validation. We reject anything else at the route boundary so a path
-// like "../../etc/passwd" never reaches the k8s client or DB.
+// like "../../etc/passwd" never reaches the k8s tenant or DB.
 const NODE_NAME_REGEX = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
 
 function validateNodeName(name: string): void {
@@ -20,7 +20,7 @@ function validateNodeName(name: string): void {
 
 export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   // Admin-only — node management is infra-level. Defence in depth:
-  // authenticate → requirePanel (refuse client-panel tokens even if
+  // authenticate → requirePanel (refuse tenant-panel tokens even if
   // they somehow carry an admin role claim) → requireRole.
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('admin'));
@@ -43,10 +43,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/admin/nodes/worker-usage-summary
   //
-  // Worker selector dropdown data: free-vs-total per host-client-
+  // Worker selector dropdown data: free-vs-total per host-tenant-
   // workloads node, in absolute bytes / millicores so the UI can show
   // "3.25/6 CPUs available · 6.5/8 GB RAM available · 60/80 GB disk
-  // available". Driven by the create-client / placement-edit modal so
+  // available". Driven by the create-tenant / placement-edit modal so
   // the operator can pick the node with the most headroom — or accept
   // Auto and let the platform choose.
   app.get('/admin/nodes/worker-usage-summary', {
@@ -59,7 +59,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     let k8s: ReturnType<typeof createK8sClients> | undefined;
     try { k8s = createK8sClients(kubeconfigPath); } catch { /* fall through */ }
-    const { listWorkerCandidatesWithUsage } = await import('../clients/storage-placement-service.js');
+    const { listWorkerCandidatesWithUsage } = await import('../tenants/storage-placement-service.js');
     const summary = await listWorkerCandidatesWithUsage(app.db, k8s);
     return success(summary);
   });
@@ -86,7 +86,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
   // PATCH /api/v1/admin/nodes/:name
   //
-  // Body: { role?, canHostClientWorkloads?, notes?, force? }
+  // Body: { role?, canHostTenantWorkloads?, notes?, force? }
   //
   // k8s labels are written first (authoritative); DB is refreshed
   // from k8s state. If the target is a server→worker demotion and
@@ -95,7 +95,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   app.patch('/admin/nodes/:name', {
     schema: {
       tags: ['Nodes'],
-      summary: 'Update node role / host-client-workloads / notes',
+      summary: 'Update node role / host-tenant-workloads / notes',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
@@ -126,7 +126,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     // Enrich with live cordoned/drained from K8s so the response
     // surfaces the field the operator just toggled. Without this
     // round-trip the response would be missing `cordoned` entirely
-    // (only GET /admin/nodes enriches), and an API client would have
+    // (only GET /admin/nodes enriches), and an API tenant would have
     // no way to confirm the cordon flip from the PATCH itself.
     const allEnriched = await listNodesEnriched(app.db, k8s);
     const enriched = allEnriched.find((n) => n.name === updated.name) ?? {
@@ -136,7 +136,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/admin/nodes/:name/drain-impact
-  // Preview which pods (by namespace/name + clientId when tagged) the
+  // Preview which pods (by namespace/name + tenantId when tagged) the
   // drain would evict, plus any Longhorn last-replica risks. UI uses
   // this to populate the confirmation modal.
   app.get('/admin/nodes/:name/drain-impact', {

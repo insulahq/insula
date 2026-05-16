@@ -137,7 +137,7 @@ export async function mirrorPvcLabelsToPvs(
       if (!drift) continue;
 
       // RFC-7396 JSON Merge Patch — additive label update without
-      // disturbing other PV labels. The k8s client library defaults to
+      // disturbing other PV labels. The k8s tenant library defaults to
       // application/json-patch+json (RFC 6902 ops array) on patch* calls,
       // which would 400 on this body shape; MERGE_PATCH overrides the
       // Content-Type header.

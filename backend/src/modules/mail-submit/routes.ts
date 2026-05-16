@@ -2,12 +2,12 @@
  * Phase 3 T5.1 — mail submit credential admin API.
  *
  * Endpoints:
- *   GET    /clients/:clientId/mail/submit-credential
- *   POST   /clients/:clientId/mail/submit-credential/rotate
- *   POST   /clients/:clientId/mail/submit-credential/push-to-pvc
+ *   GET    /tenants/:tenantId/mail/submit-credential
+ *   POST   /tenants/:tenantId/mail/submit-credential/rotate
+ *   POST   /tenants/:tenantId/mail/submit-credential/push-to-pvc
  *
- * All endpoints require admin or client_admin. The plain password is
- * ONLY returned at the moment of rotation (client_admin cannot
+ * All endpoints require admin or tenant_admin. The plain password is
+ * ONLY returned at the moment of rotation (tenant_admin cannot
  * retrieve it later — this prevents privilege escalation via the
  * API). Once rotated, the auth file on the PVC is the authoritative
  * source and pods read it at send time.
@@ -15,8 +15,8 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
-import { clients } from '../../db/schema.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
+import { tenants } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -69,16 +69,16 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     k8s = createK8sClients(kubeconfigPath);
   } catch (err) {
-    app.log.warn({ err }, 'mail-submit: k8s client unavailable — PVC writes disabled');
+    app.log.warn({ err }, 'mail-submit: k8s tenant unavailable — PVC writes disabled');
     k8s = undefined;
   }
 
   // GET — returns metadata only (no plain password)
-  app.get('/clients/:clientId/mail/submit-credential', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin'), requireClientAccess()],
+  app.get('/tenants/:tenantId/mail/submit-credential', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'tenant_admin'), requireTenantAccess()],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const active = await service.loadActiveCredential(app.db, clientId);
+    const { tenantId } = request.params as { tenantId: string };
+    const active = await service.loadActiveCredential(app.db, tenantId);
     if (!active) {
       return success({ exists: false });
     }
@@ -94,23 +94,23 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
 
   // POST — rotate + (optionally) push the new file to the PVC.
   // Returns the plain password ONCE.
-  app.post('/clients/:clientId/mail/submit-credential/rotate', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.post('/tenants/:tenantId/mail/submit-credential/rotate', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
     const body = (request.body ?? {}) as { note?: string; pushToPvc?: boolean };
 
-    const [client] = await app.db
-      .select({ namespace: clients.kubernetesNamespace })
-      .from(clients)
-      .where(eq(clients.id, clientId));
-    if (!client) {
+    const [tenant] = await app.db
+      .select({ namespace: tenants.kubernetesNamespace })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId));
+    if (!tenant) {
       throw new ApiError('CLIENT_NOT_FOUND', 'Client not found', 404);
     }
 
     const result = await service.rotateSubmitCredential(
       app.db,
-      clientId,
+      tenantId,
       encryptionKey(),
       { note: body.note },
     );
@@ -121,11 +121,11 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
       try {
         await writeSendmailAuthFile(
           {
-            k8sClients: k8s,
+            k8sTenants: k8s,
             kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
             fileManagerImage: getFileManagerImage(),
           },
-          client.namespace,
+          tenant.namespace,
           {
             username: result.username,
             password: result.password,
@@ -136,7 +136,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
         pushed = true;
       } catch (err) {
         pushError = err instanceof Error ? err.message : String(err);
-        app.log.warn({ err, clientId }, 'mail-submit: PVC write failed after rotation');
+        app.log.warn({ err, tenantId }, 'mail-submit: PVC write failed after rotation');
       }
     }
 
@@ -157,18 +157,18 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
   // expose it via API only during rotation for the audit trail).
   // This endpoint asks the admin to rotate instead if they need to
   // refresh the PVC file.
-  app.post('/clients/:clientId/mail/submit-credential/push-to-pvc', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  app.post('/tenants/:tenantId/mail/submit-credential/push-to-pvc', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const [client] = await app.db
-      .select({ namespace: clients.kubernetesNamespace })
-      .from(clients)
-      .where(eq(clients.id, clientId));
-    if (!client) {
+    const { tenantId } = request.params as { tenantId: string };
+    const [tenant] = await app.db
+      .select({ namespace: tenants.kubernetesNamespace })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId));
+    if (!tenant) {
       throw new ApiError('CLIENT_NOT_FOUND', 'Client not found', 404);
     }
-    const active = await service.loadActiveCredential(app.db, clientId);
+    const active = await service.loadActiveCredential(app.db, tenantId);
     if (!active) {
       throw new ApiError(
         'NO_ACTIVE_CREDENTIAL',
@@ -179,7 +179,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
     if (!k8s) {
       throw new ApiError(
         'K8S_UNAVAILABLE',
-        'Kubernetes client is not configured — PVC write disabled',
+        'Kubernetes tenant is not configured — PVC write disabled',
         503,
       );
     }
@@ -187,17 +187,17 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
     // Decrypt the password at rest so we can write the plaintext to
     // the PVC. This is the only place outside of rotation where
     // plain credentials leave the DB, and they go directly into a
-    // protected file on the client's own PVC.
+    // protected file on the tenant's own PVC.
     const { decrypt } = await import('../oidc/crypto.js');
     const plain = decrypt(active.passwordEncrypted, encryptionKey());
 
     await writeSendmailAuthFile(
       {
-        k8sClients: k8s,
+        k8sTenants: k8s,
         kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
         fileManagerImage: getFileManagerImage(),
       },
-      client.namespace,
+      tenant.namespace,
       {
         username: active.username,
         password: plain,

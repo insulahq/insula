@@ -327,9 +327,9 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('returns 403 for a client-panel session (admin gate only)', async () => {
+    it('returns 403 for a tenant-panel session (admin gate only)', async () => {
       const token = app.jwt.sign({
-        sub: 'cu', role: 'client_user', panel: 'client', clientId: 'c1',
+        sub: 'cu', role: 'tenant_user', panel: 'tenant', tenantId: 'c1',
         exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
       });
       const res = await app.inject({
@@ -422,8 +422,8 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(403);
     });
 
-    it('returns 403 for a client_user role (structurally different from read_only)', async () => {
-      mockDbLookup([{ email: 'cu@example.com', roleName: 'client_user', status: 'active' }]);
+    it('returns 403 for a tenant_user role (structurally different from read_only)', async () => {
+      mockDbLookup([{ email: 'cu@example.com', roleName: 'tenant_user', status: 'active' }]);
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/auth/verify-admin-email',

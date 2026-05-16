@@ -30,15 +30,15 @@ export type RevokedReason =
 
 export interface IssueRefreshTokenInput {
   readonly userId: string;
-  readonly panel: 'admin' | 'client';
-  readonly clientId?: string | null;
+  readonly panel: 'admin' | 'tenant';
+  readonly tenantId?: string | null;
   readonly familyId?: string;
   readonly userAgent?: string;
   readonly ipAddress?: string;
 }
 
 export interface IssuedRefreshToken {
-  readonly token: string;          // plaintext — return to client, never store
+  readonly token: string;          // plaintext — return to tenant, never store
   readonly tokenHash: string;
   readonly familyId: string;
   readonly id: string;
@@ -70,7 +70,7 @@ export async function issueRefreshToken(
     familyId,
     tokenHash,
     panel: input.panel,
-    clientId: input.clientId ?? null,
+    tenantId: input.tenantId ?? null,
     userAgent: input.userAgent?.slice(0, 500) ?? null,
     ipAddress: input.ipAddress?.slice(0, 64) ?? null,
     expiresAt,
@@ -84,8 +84,8 @@ export interface ValidationSuccess {
   readonly id: string;
   readonly userId: string;
   readonly familyId: string;
-  readonly panel: 'admin' | 'client';
-  readonly clientId: string | null;
+  readonly panel: 'admin' | 'tenant';
+  readonly tenantId: string | null;
 }
 export interface ValidationFailure {
   readonly ok: false;
@@ -139,7 +139,7 @@ export async function validateRefreshToken(
     userId: row.userId,
     familyId: row.familyId,
     panel: row.panel,
-    clientId: row.clientId,
+    tenantId: row.tenantId,
   };
 }
 

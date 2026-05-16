@@ -7,7 +7,7 @@ import { registerAuth } from '../../middleware/auth.js';
 const mockMailbox = {
   id: 'mb-1',
   emailDomainId: 'ed-1',
-  clientId: 'c1',
+  tenantId: 'c1',
   localPart: 'info',
   fullAddress: 'info@example.com',
   displayName: 'Info Mailbox',
@@ -31,7 +31,7 @@ vi.mock('../../db/schema.js', () => ({
   mailboxes: {
     id: 'id',
     emailDomainId: 'emailDomainId',
-    clientId: 'clientId',
+    tenantId: 'tenantId',
     localPart: 'localPart',
     fullAddress: 'fullAddress',
     displayName: 'displayName',
@@ -64,7 +64,7 @@ describe('mailbox routes', () => {
   let app: FastifyInstance;
   let adminToken: string;
   let readOnlyToken: string;
-  let clientUserToken: string;
+  let tenantUserToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -84,7 +84,7 @@ describe('mailbox routes', () => {
 
     adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
-    clientUserToken = app.jwt.sign({ sub: 'cu-1', role: 'client_user', panel: 'client', clientId: 'c1', iat: Math.floor(Date.now() / 1000) });
+    tenantUserToken = app.jwt.sign({ sub: 'cu-1', role: 'tenant_user', panel: 'tenant', tenantId: 'c1', iat: Math.floor(Date.now() / 1000) });
   });
 
   afterAll(async () => {
@@ -93,15 +93,15 @@ describe('mailbox routes', () => {
 
   // ── Auth ──
 
-  it('GET /clients/:clientId/mailboxes should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/mailboxes' });
+  it('GET /tenants/:tenantId/mailboxes should require auth', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/mailboxes' });
     expect(res.statusCode).toBe(401);
   });
 
-  it('GET /clients/:clientId/mailboxes should reject read_only', async () => {
+  it('GET /tenants/:tenantId/mailboxes should reject read_only', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/mailboxes',
+      url: '/api/v1/tenants/c1/mailboxes',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -109,21 +109,21 @@ describe('mailbox routes', () => {
 
   // ── List ──
 
-  it('GET /clients/:clientId/mailboxes should return list for admin', async () => {
+  it('GET /tenants/:tenantId/mailboxes should return list for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/mailboxes',
+      url: '/api/v1/tenants/c1/mailboxes',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toHaveLength(1);
   });
 
-  it('GET /clients/:clientId/mailboxes should allow client_user', async () => {
+  it('GET /tenants/:tenantId/mailboxes should allow tenant_user', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/mailboxes',
-      headers: { authorization: `Bearer ${clientUserToken}` },
+      url: '/api/v1/tenants/c1/mailboxes',
+      headers: { authorization: `Bearer ${tenantUserToken}` },
     });
     expect(res.statusCode).toBe(200);
   });
@@ -133,7 +133,7 @@ describe('mailbox routes', () => {
   it('POST should reject invalid body (missing local_part)', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/ed-1/mailboxes',
+      url: '/api/v1/tenants/c1/email/domains/ed-1/mailboxes',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { password: 'short' },
     });
@@ -141,11 +141,11 @@ describe('mailbox routes', () => {
     expect(res.json().error.code).toBe('MISSING_REQUIRED_FIELD');
   });
 
-  it('POST should reject client_user role', async () => {
+  it('POST should reject tenant_user role', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/ed-1/mailboxes',
-      headers: { authorization: `Bearer ${clientUserToken}` },
+      url: '/api/v1/tenants/c1/email/domains/ed-1/mailboxes',
+      headers: { authorization: `Bearer ${tenantUserToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -153,7 +153,7 @@ describe('mailbox routes', () => {
   it('POST should create with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/ed-1/mailboxes',
+      url: '/api/v1/tenants/c1/email/domains/ed-1/mailboxes',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         local_part: 'info',
@@ -168,7 +168,7 @@ describe('mailbox routes', () => {
   it('GET /:id should return mailbox', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/mailboxes/mb-1',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -179,7 +179,7 @@ describe('mailbox routes', () => {
   it('PATCH should reject invalid status', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/mailboxes/mb-1',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { status: 'invalid' },
     });
@@ -190,7 +190,7 @@ describe('mailbox routes', () => {
   it('PATCH should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/mailboxes/mb-1',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { display_name: 'New Name' },
     });
@@ -202,7 +202,7 @@ describe('mailbox routes', () => {
   it('DELETE should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/mailboxes/mb-1',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);
@@ -213,7 +213,7 @@ describe('mailbox routes', () => {
   it('GET /access should return access list', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/mailboxes/mb-1/access',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1/access',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -222,7 +222,7 @@ describe('mailbox routes', () => {
   it('POST /access should reject missing user_id', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/mailboxes/mb-1/access',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1/access',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
@@ -233,7 +233,7 @@ describe('mailbox routes', () => {
   it('POST /access should grant with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/mailboxes/mb-1/access',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1/access',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { user_id: '550e8400-e29b-41d4-a716-446655440000', access_level: 'full' },
     });
@@ -243,7 +243,7 @@ describe('mailbox routes', () => {
   it('DELETE /access/:userId should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/mailboxes/mb-1/access/u-1',
+      url: '/api/v1/tenants/c1/mailboxes/mb-1/access/u-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

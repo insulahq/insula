@@ -129,7 +129,7 @@ export default function LifecycleHooksSettings() {
                 <summary className="flex cursor-pointer items-center gap-3 px-4 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-700/40">
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${TRANSITION_BADGE[t.state]}`}>{t.state}</span>
                   <span className="font-mono text-gray-700 dark:text-gray-200">{t.transitionKind}</span>
-                  <span className="text-gray-500 dark:text-gray-400">client {t.clientId.slice(0, 8)}…</span>
+                  <span className="text-gray-500 dark:text-gray-400">tenant {t.tenantId.slice(0, 8)}…</span>
                   {t.namespace && <span className="text-gray-400 dark:text-gray-500">ns {t.namespace}</span>}
                   <span className="ml-auto text-gray-500 dark:text-gray-400">{new Date(t.startedAt).toLocaleString()}</span>
                   <span className="text-gray-500 dark:text-gray-400">{runs.length} hook{runs.length === 1 ? '' : 's'}</span>

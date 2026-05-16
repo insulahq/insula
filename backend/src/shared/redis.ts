@@ -11,8 +11,8 @@
 //     timer per entry by default — we keep `ttlAutopurge: false`
 //     so eviction is lazy on get/set, avoiding setInterval leaks
 //     in long-running pods.
-//   - Cache values are JSON strings (small, bounded by clientCount
-//     × per-client-metrics size — measured at ~1-2 KB per entry).
+//   - Cache values are JSON strings (small, bounded by tenantCount
+//     × per-tenant-metrics size — measured at ~1-2 KB per entry).
 //   - Total worst-case footprint: max=10000 entries × 2KB = ~20MB
 //     per platform-api pod. Headroom matches the previous Redis
 //     query path.
@@ -76,17 +76,17 @@ class InMemoryRedisLike {
   }
 }
 
-let client: InMemoryRedisLike | null = null;
+let tenant: InMemoryRedisLike | null = null;
 
 export function getRedis(): InMemoryRedisLike {
-  if (!client) client = new InMemoryRedisLike();
-  return client;
+  if (!tenant) tenant = new InMemoryRedisLike();
+  return tenant;
 }
 
 export async function closeRedis(): Promise<void> {
-  if (client) {
-    client.clear();
-    client = null;
+  if (tenant) {
+    tenant.clear();
+    tenant = null;
   }
 }
 

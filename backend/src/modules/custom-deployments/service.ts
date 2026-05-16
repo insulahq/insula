@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { deployments, clients } from '../../db/schema.js';
+import { deployments, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -52,7 +52,7 @@ interface CallerCtx {
 
 export interface CustomDeploymentRow {
   readonly id: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly name: string;
   readonly status: string;
   readonly customSpec: CustomDeploymentSpec;
@@ -68,23 +68,23 @@ export interface CustomDeploymentRow {
 
 export async function listCustomDeployments(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<readonly CustomDeploymentRow[]> {
   const rows = await db.select().from(deployments)
-    .where(and(eq(deployments.clientId, clientId), eq(deployments.source, 'custom')))
+    .where(and(eq(deployments.tenantId, tenantId), eq(deployments.source, 'custom')))
     .orderBy(desc(deployments.createdAt));
   return rows.map(toRow);
 }
 
 export async function getCustomDeployment(
   db: Database,
-  clientId: string,
+  tenantId: string,
   id: string,
 ): Promise<CustomDeploymentRow> {
   const [row] = await db.select().from(deployments)
     .where(and(
       eq(deployments.id, id),
-      eq(deployments.clientId, clientId),
+      eq(deployments.tenantId, tenantId),
       eq(deployments.source, 'custom'),
     ));
   if (!row) {
@@ -123,7 +123,7 @@ export async function validateSimpleSpec(
 export async function createSimpleDeployment(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   input: CreateCustomDeploymentSimpleInput,
   ctx: CallerCtx,
 ): Promise<CustomDeploymentRow> {
@@ -136,7 +136,7 @@ export async function createSimpleDeployment(
     );
   }
 
-  const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
+  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
   // Build + validate the normalized spec.
   const spec = buildSpecFromSimple(input);
@@ -155,14 +155,14 @@ export async function createSimpleDeployment(
     );
   }
 
-  // Uniqueness: per-client deployment name (catalog already enforces
+  // Uniqueness: per-tenant deployment name (catalog already enforces
   // this on the same `deployments_client_name_unique` constraint).
   const existing = await db.select().from(deployments)
-    .where(and(eq(deployments.clientId, clientId), eq(deployments.name, input.name)));
+    .where(and(eq(deployments.tenantId, tenantId), eq(deployments.name, input.name)));
   if (existing.length > 0) {
     throw new ApiError(
       'DEPLOYMENT_NAME_IN_USE',
-      `A deployment named '${input.name}' already exists in this client.`,
+      `A deployment named '${input.name}' already exists in this tenant.`,
       409,
       { name: input.name },
     );
@@ -175,7 +175,7 @@ export async function createSimpleDeployment(
   const storagePath = `custom-deployment/${input.name}`;
   await db.insert(deployments).values({
     id,
-    clientId,
+    tenantId,
     catalogEntryId: null,
     source: 'custom',
     customSpec: spec as unknown as Record<string, unknown>,
@@ -188,9 +188,9 @@ export async function createSimpleDeployment(
     status: 'deploying',
   });
 
-  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, spec, workerNodeName, storageTier);
+  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, spec, nodeName, storageTier);
 
-  return getCustomDeployment(db, clientId, id);
+  return getCustomDeployment(db, tenantId, id);
 }
 
 // ─── Compose create / validate ──────────────────────────────────────────────
@@ -240,7 +240,7 @@ export async function validateComposeSpec(
 export async function createComposeDeployment(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   input: CreateCustomDeploymentComposeInput,
   ctx: CallerCtx,
 ): Promise<CustomDeploymentRow> {
@@ -264,7 +264,7 @@ export async function createComposeDeployment(
     throw new ApiError('MISSING_REQUIRED_FIELD', 'Stack name is required to create a deployment.', 400, { field: 'name' });
   }
 
-  const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
+  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
   // Phase 1: parse → validate → reject if errors.
   const parsed = parseCompose({ composeYaml: input.compose_yaml, envFiles: input.env_files });
@@ -293,11 +293,11 @@ export async function createComposeDeployment(
 
   // Uniqueness — per the existing deployments_client_name_unique constraint.
   const existing = await db.select().from(deployments)
-    .where(and(eq(deployments.clientId, clientId), eq(deployments.name, input.name)));
+    .where(and(eq(deployments.tenantId, tenantId), eq(deployments.name, input.name)));
   if (existing.length > 0) {
     throw new ApiError(
       'DEPLOYMENT_NAME_IN_USE',
-      `A deployment named '${input.name}' already exists in this client.`,
+      `A deployment named '${input.name}' already exists in this tenant.`,
       409,
       { name: input.name },
     );
@@ -320,7 +320,7 @@ export async function createComposeDeployment(
   const storagePath = `custom-deployment/${input.name}`;
   await db.insert(deployments).values({
     id,
-    clientId,
+    tenantId,
     catalogEntryId: null,
     source: 'custom',
     customSpec: finalSpec as unknown as Record<string, unknown>,
@@ -333,16 +333,16 @@ export async function createComposeDeployment(
     status: 'deploying',
   });
 
-  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, finalSpec, workerNodeName, storageTier);
-  return getCustomDeployment(db, clientId, id);
+  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, finalSpec, nodeName, storageTier);
+  return getCustomDeployment(db, tenantId, id);
 }
 
 // ─── Update ──────────────────────────────────────────────────────────────────
 
 /**
  * Apply a narrow patch to a custom deployment. Role-gating: the route
- * layer already checks `requireClientRoleByMethod` (writes need
- * client_admin+); the validator below uses hardcoded `'admin'` for
+ * layer already checks `requireTenantRoleByMethod` (writes need
+ * tenant_admin+); the validator below uses hardcoded `'admin'` for
  * `callerRole` because patches CANNOT alter the admin-only allowRoot
  * flag (it's not in `UpdateCustomDeploymentInput`). Adding a CallerCtx
  * parameter here would be dead surface that risks a future caller
@@ -351,11 +351,11 @@ export async function createComposeDeployment(
 export async function updateCustomDeployment(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   id: string,
   patch: UpdateCustomDeploymentInput,
 ): Promise<CustomDeploymentRow> {
-  const current = await getCustomDeployment(db, clientId, id);
+  const current = await getCustomDeployment(db, tenantId, id);
   let nextSpec = current.customSpec;
   let needsRedeploy = false;
   const isCompose = current.customSpec.sourceMode === 'compose';
@@ -421,11 +421,11 @@ export async function updateCustomDeployment(
   // Re-validate so a patch that introduces an invalid combination is
   // rejected before any cluster mutation. callerRole is hardcoded to
   // 'admin' here because the previously-validated spec may carry an
-  // admin-set allowRoot=true; we never want a client-initiated patch
+  // admin-set allowRoot=true; we never want a tenant-initiated patch
   // (image bump, restart) to fail the ALLOW_ROOT_REQUIRES_ADMIN check
-  // for a flag the client didn't touch. The update schema does NOT
+  // for a flag the tenant didn't touch. The update schema does NOT
   // expose `allowRoot` (admin-only post-create knob), so there's no
-  // path for a client to escalate via this elevation.
+  // path for a tenant to escalate via this elevation.
   //
   // `singleServiceOnly` mirrors the source mode — compose stacks
   // get the multi-service validator path so the existing N-service
@@ -468,10 +468,10 @@ export async function updateCustomDeployment(
     })
     .where(eq(deployments.id, id));
 
-  const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
-  await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom-deployment/${current.name}`, nextSpec, workerNodeName, storageTier);
+  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
+  await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom-deployment/${current.name}`, nextSpec, nodeName, storageTier);
 
-  return getCustomDeployment(db, clientId, id);
+  return getCustomDeployment(db, tenantId, id);
 }
 
 // ─── Upgrade-tag (one-click) ────────────────────────────────────────────────
@@ -479,11 +479,11 @@ export async function updateCustomDeployment(
 export async function upgradeTag(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   id: string,
   newImage: string,
 ): Promise<CustomDeploymentRow> {
-  return updateCustomDeployment(db, k8s, clientId, id, { image: newImage });
+  return updateCustomDeployment(db, k8s, tenantId, id, { image: newImage });
 }
 
 // ─── Delete ──────────────────────────────────────────────────────────────────
@@ -491,11 +491,11 @@ export async function upgradeTag(
 export async function deleteCustomDeploymentRow(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   id: string,
 ): Promise<void> {
-  const current = await getCustomDeployment(db, clientId, id);
-  const namespace = await loadClientNamespace(db, clientId);
+  const current = await getCustomDeployment(db, tenantId, id);
+  const namespace = await loadTenantNamespace(db, tenantId);
 
   // Mark as deleting BEFORE the cluster mutation so a concurrent
   // reconciler tick doesn't bring it back to `running`.
@@ -528,7 +528,7 @@ export async function deleteCustomDeploymentRow(
 export async function attachPullCredential(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   submission: PatSubmission,
   encryptionKey: string,
@@ -542,14 +542,14 @@ export async function attachPullCredential(
     );
   }
   // Ownership check.
-  await getCustomDeployment(db, clientId, deploymentId);
+  await getCustomDeployment(db, tenantId, deploymentId);
   const record = await upsertPullCredential(db, deploymentId, submission, encryptionKey);
 
   // Materialise the k8s Secret immediately so the next pod restart
   // picks up the new credentials. The deployment isn't redeployed
   // here — the operator can call /restart explicitly if they want
   // the pull to happen now.
-  const namespace = await loadClientNamespace(db, clientId);
+  const namespace = await loadTenantNamespace(db, tenantId);
   await materializePullSecret(k8s, namespace, deploymentId, {
     registryHost: submission.registryHost,
     username: submission.username,
@@ -561,21 +561,21 @@ export async function attachPullCredential(
 export async function revokePullCredential(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ): Promise<void> {
-  await getCustomDeployment(db, clientId, deploymentId);
-  const namespace = await loadClientNamespace(db, clientId);
+  await getCustomDeployment(db, tenantId, deploymentId);
+  const namespace = await loadTenantNamespace(db, tenantId);
   await deletePullSecret(k8s, namespace, deploymentId);
   await deletePullCredential(db, deploymentId);
 }
 
 export async function readPullCredentialPublic(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
 ): Promise<PullCredentialRecord | null> {
-  await getCustomDeployment(db, clientId, deploymentId);
+  await getCustomDeployment(db, tenantId, deploymentId);
   return getPullCredential(db, deploymentId);
 }
 
@@ -588,16 +588,16 @@ export async function readPullCredentialPublic(
  */
 export async function setAllowRoot(
   db: Database,
-  clientId: string,
+  tenantId: string,
   deploymentId: string,
   allowRoot: boolean,
 ): Promise<CustomDeploymentRow> {
-  const current = await getCustomDeployment(db, clientId, deploymentId);
+  const current = await getCustomDeployment(db, tenantId, deploymentId);
   const nextSpec: CustomDeploymentSpec = { ...current.customSpec, allowRoot };
   const [updated] = await db
     .update(deployments)
     .set({ customSpec: nextSpec as unknown as Record<string, unknown> })
-    .where(and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId), eq(deployments.source, 'custom')))
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId), eq(deployments.source, 'custom')))
     .returning();
   if (!updated) {
     throw new ApiError('CUSTOM_DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
@@ -615,7 +615,7 @@ async function deployToCluster(
   deploymentName: string,
   storageSubPath: string,
   spec: CustomDeploymentSpec,
-  workerNodeName?: string | null,
+  nodeName?: string | null,
   storageTier?: 'local' | 'ha' | null,
 ): Promise<void> {
   const hasPullCredential = await getPullCredential(db, deploymentId);
@@ -658,7 +658,7 @@ async function deployToCluster(
       storageSubPath,
       spec,
       hasPullCredential: !!hasPullCredential,
-      workerNodeName: workerNodeName ?? undefined,
+      nodeName: nodeName ?? undefined,
       storageTier: storageTier ?? undefined,
     });
     // Optimistic: status flips to running on the next reconciler tick
@@ -680,36 +680,36 @@ async function deployToCluster(
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function loadClientNamespace(db: Database, clientId: string): Promise<string> {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+async function loadTenantNamespace(db: Database, tenantId: string): Promise<string> {
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
-  return client.kubernetesNamespace;
+  return tenant.kubernetesNamespace;
 }
 
-interface ClientContext {
+interface TenantContext {
   readonly namespace: string;
-  readonly workerNodeName: string | null;
+  readonly nodeName: string | null;
   readonly storageTier: 'local' | 'ha';
 }
 
-async function loadClientContext(db: Database, clientId: string): Promise<ClientContext> {
-  const [client] = await db
+async function loadTenantContext(db: Database, tenantId: string): Promise<TenantContext> {
+  const [tenant] = await db
     .select({
-      kubernetesNamespace: clients.kubernetesNamespace,
-      workerNodeName: clients.workerNodeName,
-      storageTier: clients.storageTier,
+      kubernetesNamespace: tenants.kubernetesNamespace,
+      nodeName: tenants.nodeName,
+      storageTier: tenants.storageTier,
     })
-    .from(clients)
-    .where(eq(clients.id, clientId));
-  if (!client) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  if (!tenant) {
+    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
   return {
-    namespace: client.kubernetesNamespace,
-    workerNodeName: client.workerNodeName ?? null,
-    storageTier: (client.storageTier ?? 'local') as 'local' | 'ha',
+    namespace: tenant.kubernetesNamespace,
+    nodeName: tenant.nodeName ?? null,
+    storageTier: (tenant.storageTier ?? 'local') as 'local' | 'ha',
   };
 }
 
@@ -813,7 +813,7 @@ function parseMemMi(qty: string): number {
 function toRow(row: typeof deployments.$inferSelect): CustomDeploymentRow {
   return {
     id: row.id,
-    clientId: row.clientId,
+    tenantId: row.tenantId,
     name: row.name,
     status: row.status,
     customSpec: row.customSpec as unknown as CustomDeploymentSpec,

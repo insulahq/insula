@@ -30,7 +30,7 @@ import {
 } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt } from '../oidc/crypto.js';
-import { notifyClientImapsyncTerminal } from '../notifications/events.js';
+import { notifyTenantImapsyncTerminal } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { CreateImapSyncJobInput, UpdateImapSyncJobInput, ImapSyncJobResponse } from '@k8s-hosting/api-contracts';
 import {
@@ -205,7 +205,7 @@ export function buildJobSecret(input: BuildJobSecretInput): V1Secret {
 function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
   return {
     id: row.id,
-    clientId: row.clientId,
+    tenantId: row.tenantId,
     mailboxId: row.mailboxId,
     sourceHost: row.sourceHost,
     sourcePort: row.sourcePort,
@@ -233,31 +233,31 @@ function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
 }
 
 /**
- * Create a new pending IMAPSync job for a client's mailbox.
+ * Create a new pending IMAPSync job for a tenant's mailbox.
  *
- * Validates that the mailbox actually belongs to the client to
+ * Validates that the mailbox actually belongs to the tenant to
  * prevent cross-tenant access. Encrypts the source password at
  * rest. Returns the new row (passwords stripped).
  */
 export async function createImapSyncJob(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   input: CreateImapSyncJobInput,
 ): Promise<ImapSyncJobResponse> {
   // Ownership check
   const [mb] = await db
     .select({
       id: mailboxes.id,
-      clientId: mailboxes.clientId,
+      tenantId: mailboxes.tenantId,
       fullAddress: mailboxes.fullAddress,
     })
     .from(mailboxes)
     .where(eq(mailboxes.id, input.mailbox_id));
-  if (!mb || mb.clientId !== clientId) {
+  if (!mb || mb.tenantId !== tenantId) {
     throw new ApiError(
       'MAILBOX_NOT_FOUND',
-      `Mailbox '${input.mailbox_id}' not found for client '${clientId}'`,
+      `Mailbox '${input.mailbox_id}' not found for tenant '${tenantId}'`,
       404,
     );
   }
@@ -269,7 +269,7 @@ export async function createImapSyncJob(
       .insert(imapSyncJobs)
       .values({
         id,
-        clientId,
+        tenantId,
         mailboxId: input.mailbox_id,
         sourceHost: input.source_host,
         sourcePort: input.source_port,
@@ -297,41 +297,41 @@ export async function createImapSyncJob(
 }
 
 /**
- * List IMAPSync jobs for a client, newest first. Capped at 100.
+ * List IMAPSync jobs for a tenant, newest first. Capped at 100.
  * Passwords stripped before returning.
  */
 export async function listImapSyncJobs(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<readonly ImapSyncJobResponse[]> {
   const rows = await db
     .select()
     .from(imapSyncJobs)
-    .where(eq(imapSyncJobs.clientId, clientId))
+    .where(eq(imapSyncJobs.tenantId, tenantId))
     .orderBy(desc(imapSyncJobs.createdAt))
     .limit(100);
   return rows.map(rowToResponse);
 }
 
 /**
- * Get a single IMAPSync job by id, scoped to a client. Returns null
- * if the job doesn't exist or belongs to a different client.
+ * Get a single IMAPSync job by id, scoped to a tenant. Returns null
+ * if the job doesn't exist or belongs to a different tenant.
  */
 export async function getImapSyncJob(
   db: Database,
-  clientId: string,
+  tenantId: string,
   jobId: string,
 ): Promise<ImapSyncJobResponse | null> {
   const [row] = await db
     .select()
     .from(imapSyncJobs)
-    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.tenantId, tenantId)));
   return row ? rowToResponse(row as ImapSyncJob) : null;
 }
 
 /**
  * Mark a job as cancelled in the DB. The K8s Job + Secret cleanup
- * happens in the routes layer (since it needs the K8s client
+ * happens in the routes layer (since it needs the K8s tenant
  * handle). Returns the updated row or null if the job is already
  * terminal.
  */
@@ -339,9 +339,9 @@ export async function markCancelled(
   db: Database,
   jobId: string,
 ): Promise<void> {
-  // Look up clientId first so we can notify after the DB write.
+  // Look up tenantId first so we can notify after the DB write.
   const [row] = await db
-    .select({ clientId: imapSyncJobs.clientId })
+    .select({ tenantId: imapSyncJobs.tenantId })
     .from(imapSyncJobs)
     .where(eq(imapSyncJobs.id, jobId));
 
@@ -353,8 +353,8 @@ export async function markCancelled(
     })
     .where(eq(imapSyncJobs.id, jobId));
 
-  if (row?.clientId) {
-    void notifyClientImapsyncTerminal(db, row.clientId, {
+  if (row?.tenantId) {
+    void notifyTenantImapsyncTerminal(db, row.tenantId, {
       jobId,
       status: 'cancelled',
     });
@@ -385,7 +385,7 @@ export async function markRunning(
  * Only allowed for jobs in `succeeded`, `failed`, or `cancelled`
  * status. Active jobs must be cancelled first via the existing
  * DELETE cancel endpoint. Returns the deleted row's identifying
- * info (clientId, status, k8sJobName, k8sNamespace) so the caller
+ * info (tenantId, status, k8sJobName, k8sNamespace) so the caller
  * can clean up any K8s residue without re-querying the DB. Returns
  * null if the row doesn't exist.
  *
@@ -396,23 +396,23 @@ export async function markRunning(
  */
 export async function deleteTerminalJob(
   db: Database,
-  clientId: string,
+  tenantId: string,
   jobId: string,
 ): Promise<{
-  clientId: string;
+  tenantId: string;
   status: string;
   k8sJobName: string | null;
   k8sNamespace: string;
 } | null> {
   const [row] = await db
     .select({
-      clientId: imapSyncJobs.clientId,
+      tenantId: imapSyncJobs.tenantId,
       status: imapSyncJobs.status,
       k8sJobName: imapSyncJobs.k8sJobName,
       k8sNamespace: imapSyncJobs.k8sNamespace,
     })
     .from(imapSyncJobs)
-    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.tenantId, tenantId)));
   if (!row) return null;
   if (row.status !== 'succeeded' && row.status !== 'failed' && row.status !== 'cancelled') {
     throw new ApiError(
@@ -424,7 +424,7 @@ export async function deleteTerminalJob(
   }
   await db.delete(imapSyncJobs).where(eq(imapSyncJobs.id, jobId));
   return {
-    clientId: row.clientId,
+    tenantId: row.tenantId,
     status: row.status,
     k8sJobName: row.k8sJobName,
     k8sNamespace: row.k8sNamespace,
@@ -442,17 +442,17 @@ export async function deleteTerminalJob(
  */
 export async function resyncImapSyncJob(
   db: Database,
-  clientId: string,
+  tenantId: string,
   jobId: string,
 ): Promise<ImapSyncJob> {
   const [original] = await db
     .select()
     .from(imapSyncJobs)
-    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.tenantId, tenantId)));
   if (!original) {
     throw new ApiError(
       'IMAPSYNC_JOB_NOT_FOUND',
-      `IMAPSync job '${jobId}' not found for client '${clientId}'`,
+      `IMAPSync job '${jobId}' not found for tenant '${tenantId}'`,
       404,
     );
   }
@@ -469,8 +469,8 @@ export async function resyncImapSyncJob(
     );
   }
 
-  // Check active job limit per client
-  await enforceActiveJobLimit(db, clientId);
+  // Check active job limit per tenant
+  await enforceActiveJobLimit(db, tenantId);
 
   const now = new Date();
   const newK8sJobName = `imapsync-${jobId}-${now.getTime()}`;
@@ -497,47 +497,47 @@ export async function resyncImapSyncJob(
 }
 
 /**
- * Enforce the per-client active job limit. Throws 429 if the
- * client already has MAX_ACTIVE_IMAPSYNC_JOBS pending/running.
+ * Enforce the per-tenant active job limit. Throws 429 if the
+ * tenant already has MAX_ACTIVE_IMAPSYNC_JOBS pending/running.
  */
 export async function enforceActiveJobLimit(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<void> {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(imapSyncJobs)
     .where(
       and(
-        eq(imapSyncJobs.clientId, clientId),
+        eq(imapSyncJobs.tenantId, tenantId),
         inArray(imapSyncJobs.status, ['pending', 'running']),
       ),
     );
   if (count >= MAX_ACTIVE_IMAPSYNC_JOBS) {
     throw new ApiError(
       'IMAPSYNC_ACTIVE_LIMIT',
-      `Maximum ${MAX_ACTIVE_IMAPSYNC_JOBS} active sync jobs per client`,
+      `Maximum ${MAX_ACTIVE_IMAPSYNC_JOBS} active sync jobs per tenant`,
       429,
     );
   }
 }
 
 /**
- * Enforce the per-client total job limit. Throws 429 if the client
+ * Enforce the per-tenant total job limit. Throws 429 if the tenant
  * already has MAX_TOTAL_IMAPSYNC_JOBS rows.
  */
 export async function enforceTotalJobLimit(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<void> {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(imapSyncJobs)
-    .where(eq(imapSyncJobs.clientId, clientId));
+    .where(eq(imapSyncJobs.tenantId, tenantId));
   if (count >= MAX_TOTAL_IMAPSYNC_JOBS) {
     throw new ApiError(
       'IMAPSYNC_TOTAL_LIMIT',
-      `Maximum ${MAX_TOTAL_IMAPSYNC_JOBS} sync jobs per client — delete old jobs to create new ones`,
+      `Maximum ${MAX_TOTAL_IMAPSYNC_JOBS} sync jobs per tenant — delete old jobs to create new ones`,
       429,
     );
   }
@@ -551,14 +551,14 @@ export async function enforceTotalJobLimit(
 export async function updateImapSyncJob(
   db: Database,
   encryptionKey: string,
-  clientId: string,
+  tenantId: string,
   jobId: string,
   input: UpdateImapSyncJobInput,
 ): Promise<ImapSyncJobResponse> {
   const [row] = await db
     .select()
     .from(imapSyncJobs)
-    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.tenantId, tenantId)));
   if (!row) {
     throw new ApiError('IMAPSYNC_JOB_NOT_FOUND', 'IMAPSync job not found', 404);
   }
@@ -619,7 +619,7 @@ export async function markFailed(
   errorMessage: string,
 ): Promise<void> {
   const [row] = await db
-    .select({ clientId: imapSyncJobs.clientId })
+    .select({ tenantId: imapSyncJobs.tenantId })
     .from(imapSyncJobs)
     .where(eq(imapSyncJobs.id, jobId));
 
@@ -632,8 +632,8 @@ export async function markFailed(
     })
     .where(eq(imapSyncJobs.id, jobId));
 
-  if (row?.clientId) {
-    void notifyClientImapsyncTerminal(db, row.clientId, {
+  if (row?.tenantId) {
+    void notifyTenantImapsyncTerminal(db, row.tenantId, {
       jobId,
       status: 'failed',
       errorMessage,

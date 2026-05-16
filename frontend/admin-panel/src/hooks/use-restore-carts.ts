@@ -32,12 +32,12 @@ interface CartListResponse { readonly data: { readonly data: ReadonlyArray<Resto
  * operator watching a long-running cart sees status flips without
  * a manual refresh.
  */
-export function useRestoreCarts(filters: { clientId?: string; status?: string } = {}) {
+export function useRestoreCarts(filters: { tenantId?: string; status?: string } = {}) {
   return useQuery({
     queryKey: ['restore-carts', filters],
     queryFn: () => {
       const qs = new URLSearchParams();
-      if (filters.clientId) qs.set('clientId', filters.clientId);
+      if (filters.tenantId) qs.set('tenantId', filters.tenantId);
       if (filters.status) qs.set('status', filters.status);
       const suffix = qs.toString() ? `?${qs.toString()}` : '';
       return apiFetch<CartListResponse>(`/api/v1/admin/restores/carts${suffix}`);
@@ -57,7 +57,7 @@ export function useRestoreCart(cartId: string | null) {
 export function useCreateRestoreCart() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { clientId: string; description?: string }) =>
+    mutationFn: (input: { tenantId: string; description?: string }) =>
       apiFetch<CartSummaryResponse>('/api/v1/admin/restores/carts', {
         method: 'POST',
         body: JSON.stringify(input),

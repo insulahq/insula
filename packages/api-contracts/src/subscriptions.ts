@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { statusEnum } from './shared.js';
+import { tenantStatusEnum } from './shared.js';
 
 // ─── Input Schemas ───────────────────────────────────────────────────────────
 
 export const updateSubscriptionSchema = z.object({
   plan_id: z.string().uuid().optional(),
   subscription_expires_at: z.string().datetime().optional(),
-  status: statusEnum.optional(),
+  status: tenantStatusEnum.optional(),
   notes: z.string().max(1000).optional(),
 });
 
@@ -22,8 +22,8 @@ export const hostingPlanSchema = z.object({
   storageLimit: z.string(),
   monthlyPriceUsd: z.string(),
   maxSubUsers: z.number(),
-  // Phase 1 (client-panel email parity round 2): per-plan cap on
-  // total mailboxes across the client's email domains.
+  // Phase 1 (tenant-panel email parity round 2): per-plan cap on
+  // total mailboxes across the tenant's email domains.
   maxMailboxes: z.number(),
   features: z.unknown().nullable(),
   status: z.string(),
@@ -31,7 +31,7 @@ export const hostingPlanSchema = z.object({
 });
 
 export const subscriptionResponseSchema = z.object({
-  client_id: z.string(),
+  tenant_id: z.string(),
   plan: hostingPlanSchema.nullable(),
   status: z.string(),
   subscription_expires_at: z.string().nullable(),

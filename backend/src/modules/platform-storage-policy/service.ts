@@ -1,5 +1,5 @@
 // M13: platform-level storage replication policy. Companion to the M7
-// per-tenant `clients.storage_tier` enum, but for the PLATFORM's own
+// per-tenant `tenants.storage_tier` enum, but for the PLATFORM's own
 // StatefulSets (postgres, stalwart-mail). The reconciler patches the
 // matching longhorn.io/Volume CRs `.spec.numberOfReplicas` live —
 // Longhorn handles add/remove of replicas asynchronously. No
@@ -61,10 +61,10 @@ export function replicasForSystemTier(tier: 'local' | 'ha', readyServerCount: nu
 // tier. Adding topologySpreadConstraints on each scale-up so a 3-replica
 // rollout lands one pod per server (DoNotSchedule — see HA_TOPOLOGY_SPREAD).
 // List is exhaustive — these are every platform-namespace Deployment whose
-// loss would degrade admin/client panel function.
+// loss would degrade admin/tenant panel function.
 const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'admin-panel' },
-  { namespace: 'platform', name: 'client-panel' },
+  { namespace: 'platform', name: 'tenant-panel' },
   { namespace: 'platform', name: 'platform-api' },
   { namespace: 'platform', name: 'oauth2-proxy' },
   { namespace: 'platform', name: 'dex' },
@@ -221,7 +221,7 @@ const HA_SERVER_THRESHOLD = 3;
 
 // NOTE: topologySpreadConstraints for the active-active Deployments
 // live in the manifests themselves (e.g. k8s/base/oauth2-proxy/
-// deployment.yaml, k8s/base/platform/{admin,client}-deployment.yaml).
+// deployment.yaml, k8s/base/platform/{admin,tenant}-deployment.yaml).
 // We can't patch them imperatively from here without fighting Flux's
 // server-side-apply field manager — see the patchStatelessDeployments
 // comment around line 642 for the full rationale. The convention is
@@ -384,7 +384,7 @@ export async function readClusterState(
       const lhVolName = pvc.spec?.volumeName;
       if (!lhVolName) continue;
       // Longhorn Volumes are namespaced to longhorn-system. We use the
-      // CustomObjects API directly — there's no typed client.
+      // CustomObjects API directly — there's no typed tenant.
       const vol = await k8s.custom.getNamespacedCustomObject({
         group: 'longhorn.io', version: 'v1beta2',
         namespace: 'longhorn-system', plural: 'volumes', name: lhVolName,
@@ -583,7 +583,7 @@ async function patchLonghornVolumes(
     }
 
     try {
-      // Double-cast — see longhorn-reconciler.ts; @kubernetes/client-
+      // Double-cast — see longhorn-reconciler.ts; @kubernetes/tenant-
       // node v1.4 typings reject the plain literal here.
       await k8s.custom.patchNamespacedCustomObject({
         group: 'longhorn.io', version: 'v1beta2',
@@ -649,7 +649,7 @@ async function readLiveNodeSelectors(
 // Generic scale-loop helper: reads each Deployment's current replicas,
 // scales via the /scale subresource if it differs from `desired`, and
 // reports per-deployment outcomes. Used by both the stateless tier
-// (admin/client/platform-api/oauth2-proxy/dex + mail) and the
+// (admin/tenant/platform-api/oauth2-proxy/dex + mail) and the
 // leader-elect tier (cert-manager + Flux + sealed-secrets +
 // snapshot-controller + CNPG operator).
 //

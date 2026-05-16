@@ -89,7 +89,7 @@ const { proxyToFileManager, fileManagerRequest, __resetFileManagerReadyCacheForT
 
 // ─── Mock K8sClients ────────────────────────────────────────────────────────
 
-const mockK8sClients = {
+const mockK8sTenants = {
   coreV1Api: {},
   appsV1Api: {},
   networkingV1Api: {},
@@ -113,7 +113,7 @@ describe('file-manager service', () => {
     it('should build correct proxy path through K8s API', async () => {
       const resultPromise = proxyToFileManager(
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         '/api/files',
       );
 
@@ -121,14 +121,14 @@ describe('file-manager service', () => {
 
       expect(mockHttpsRequest).toHaveBeenCalled();
       const callArgs = mockHttpsRequest.mock.calls[0][0] as { path: string; hostname: string };
-      expect(callArgs.path).toContain('/api/v1/namespaces/client-ns-1/services/file-manager:8111/proxy/api/files');
+      expect(callArgs.path).toContain('/api/v1/namespaces/tenant-ns-1/services/file-manager:8111/proxy/api/files');
       expect(callArgs.hostname).toBe('localhost');
     });
 
     it('should include query parameters in proxy path', async () => {
       const resultPromise = proxyToFileManager(
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         '/api/files',
         { query: { path: '/var/www' } },
       );
@@ -144,7 +144,7 @@ describe('file-manager service', () => {
 
       const resultPromise = proxyToFileManager(
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         '/api/files',
         { method: 'PUT', body, contentType: 'application/json' },
       );
@@ -160,7 +160,7 @@ describe('file-manager service', () => {
     it('should include bearer token from kubeconfig user', async () => {
       const resultPromise = proxyToFileManager(
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         '/api/files',
       );
 
@@ -173,7 +173,7 @@ describe('file-manager service', () => {
     it('should return body as string and bodyBuffer as Buffer', async () => {
       const result = await proxyToFileManager(
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         '/api/files',
       );
 
@@ -187,9 +187,9 @@ describe('file-manager service', () => {
   describe('fileManagerRequest', () => {
     it('should ensure FM is running before proxying', async () => {
       const result = await fileManagerRequest(
-        mockK8sClients,
+        mockK8sTenants,
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         'file-manager:latest',
         '/api/files',
       );
@@ -197,7 +197,7 @@ describe('file-manager service', () => {
       // Phase D fix: fileManagerRequest passes initialReplicas=1 so the
       // /files/start path scales FM up from the 0 it was provisioned
       // with (avoids RWO Multi-Attach with workload pods).
-      expect(mockEnsureRunning).toHaveBeenCalledWith(mockK8sClients, 'client-ns-1', 'file-manager:latest', 1);
+      expect(mockEnsureRunning).toHaveBeenCalledWith(mockK8sTenants, 'tenant-ns-1', 'file-manager:latest', 1);
       expect(mockGetStatus).toHaveBeenCalled();
       expect(result.status).toBe(200);
     });
@@ -207,9 +207,9 @@ describe('file-manager service', () => {
 
       await expect(
         fileManagerRequest(
-          mockK8sClients,
+          mockK8sTenants,
           '/path/to/kubeconfig',
-          'client-ns-1',
+          'tenant-ns-1',
           'file-manager:latest',
           '/api/files',
         ),
@@ -222,9 +222,9 @@ describe('file-manager service', () => {
 
       await expect(
         fileManagerRequest(
-          mockK8sClients,
+          mockK8sTenants,
           '/path/to/kubeconfig',
-          'client-ns-1',
+          'tenant-ns-1',
           'file-manager:latest',
           '/api/files',
         ),
@@ -235,9 +235,9 @@ describe('file-manager service', () => {
       const body = '{"action":"delete"}';
 
       await fileManagerRequest(
-        mockK8sClients,
+        mockK8sTenants,
         '/path/to/kubeconfig',
-        'client-ns-1',
+        'tenant-ns-1',
         'file-manager:latest',
         '/api/files',
         { method: 'DELETE', body, contentType: 'application/json' },

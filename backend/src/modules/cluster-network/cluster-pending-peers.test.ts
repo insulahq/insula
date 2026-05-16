@@ -7,7 +7,7 @@ import {
 } from './cluster-pending-peers.js';
 import type { ClusterNetworkClients } from './k8s-client.js';
 
-function fakeClients(custom: Record<string, unknown>): ClusterNetworkClients {
+function fakeTenants(custom: Record<string, unknown>): ClusterNetworkClients {
   return {
     core: {} as ClusterNetworkClients['core'],
     custom: custom as ClusterNetworkClients['custom'],
@@ -29,7 +29,7 @@ describe('listPendingPeers', () => {
         },
       }],
     });
-    const out = await listPendingPeers({}, fakeClients({ listClusterCustomObject: list }));
+    const out = await listPendingPeers({}, fakeTenants({ listClusterCustomObject: list }));
     expect(out[0]).toMatchObject({
       name: 'new-worker',
       claimedAt: '2026-05-08T12:01:00Z',
@@ -45,7 +45,7 @@ describe('listPendingPeers', () => {
         spec: { ip: '10.0.0.5', role: 'worker' },
       }],
     });
-    const out = await listPendingPeers({}, fakeClients({ listClusterCustomObject: list }));
+    const out = await listPendingPeers({}, fakeTenants({ listClusterCustomObject: list }));
     expect(out[0]?.ttlSeconds).toBe(1800);
   });
 });
@@ -60,7 +60,7 @@ describe('createPendingPeer', () => {
       { name: 'p', ip: '10.0.0.5', role: 'worker', ttlSeconds: 1800, hostname: '' },
       'admin@x',
       {},
-      fakeClients({ createClusterCustomObject: create }),
+      fakeTenants({ createClusterCustomObject: create }),
     );
     const callArg = (create.mock.calls[0]?.[0] ?? {}) as { body?: { spec?: { addedBy?: string } } };
     expect(callArg.body?.spec?.addedBy).toBe('admin@x');
@@ -73,7 +73,7 @@ describe('createPendingPeer', () => {
         { name: 'dup', ip: '10.0.0.5', role: 'worker', ttlSeconds: 1800, hostname: '' },
         'admin',
         {},
-        fakeClients({ createClusterCustomObject: create }),
+        fakeTenants({ createClusterCustomObject: create }),
       ),
     ).rejects.toMatchObject({ code: 'PENDING_PEER_EXISTS', status: 409 });
   });
@@ -83,7 +83,7 @@ describe('getPendingPeer', () => {
   it('translates 404 into PENDING_PEER_NOT_FOUND', async () => {
     const get = vi.fn().mockRejectedValue({ statusCode: 404 });
     await expect(
-      getPendingPeer('gone', {}, fakeClients({ getClusterCustomObject: get })),
+      getPendingPeer('gone', {}, fakeTenants({ getClusterCustomObject: get })),
     ).rejects.toMatchObject({ code: 'PENDING_PEER_NOT_FOUND', status: 404 });
   });
 });
@@ -92,13 +92,13 @@ describe('deletePendingPeer', () => {
   it('translates 404 into PENDING_PEER_NOT_FOUND', async () => {
     const del = vi.fn().mockRejectedValue({ statusCode: 404 });
     await expect(
-      deletePendingPeer('gone', {}, fakeClients({ deleteClusterCustomObject: del })),
+      deletePendingPeer('gone', {}, fakeTenants({ deleteClusterCustomObject: del })),
     ).rejects.toMatchObject({ code: 'PENDING_PEER_NOT_FOUND', status: 404 });
   });
 
   it('succeeds quietly on 200', async () => {
     const del = vi.fn().mockResolvedValue({});
-    await deletePendingPeer('p', {}, fakeClients({ deleteClusterCustomObject: del }));
+    await deletePendingPeer('p', {}, fakeTenants({ deleteClusterCustomObject: del }));
     expect(del).toHaveBeenCalledTimes(1);
   });
 });

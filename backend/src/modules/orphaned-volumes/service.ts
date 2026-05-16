@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { clients } from '../../db/schema.js';
+import { tenants } from '../../db/schema.js';
 
 /**
  * Reasons a Persistent Volume / Longhorn volume is classified as orphaned.
@@ -14,9 +14,9 @@ import { clients } from '../../db/schema.js';
  *                          PV behind because the operator deleted the ns
  *                          before the cascade ran.
  *
- *  - client_record_deleted The namespace looks like a tenant
- *                          (`client-*`) but no row exists in the platform
- *                          `clients` table — the client was deleted from
+ *  - tenant_record_deleted The namespace looks like a tenant
+ *                          (`tenant-*`) but no row exists in the platform
+ *                          `tenants` table — the tenant was deleted from
  *                          the admin panel but its PV survived because
  *                          reclaimPolicy=Retain.
  *
@@ -31,8 +31,8 @@ import { clients } from '../../db/schema.js';
  *                          references it (PV deleted / never created /
  *                          orphaned by a failed provisioning).
  *
- *  - namespace_orphaned    A `client-*` namespace still exists with no
- *                          matching client row in the platform DB and no
+ *  - namespace_orphaned    A `tenant-*` namespace still exists with no
+ *                          matching tenant row in the platform DB and no
  *                          PV that already triggered a more specific
  *                          reason. Typically a deprovision left the
  *                          namespace stranded after volumes were already
@@ -41,7 +41,7 @@ import { clients } from '../../db/schema.js';
  */
 export type OrphanReason =
   | 'namespace_deleted'
-  | 'client_record_deleted'
+  | 'tenant_record_deleted'
   | 'pv_released_stale'
   | 'longhorn_volume_unbound'
   | 'namespace_orphaned';
@@ -157,7 +157,7 @@ function ageDaysFromIso(iso: string | undefined): number | null {
  *   2. Namespaces (existence check)
  *   3. Longhorn volumes + replicas (size + node placement)
  *
- * Plus the platform `clients` table to distinguish tenant orphans from
+ * Plus the platform `tenants` table to distinguish tenant orphans from
  * platform-system orphans.
  */
 export async function detectOrphans(
@@ -168,7 +168,7 @@ export async function detectOrphans(
   const stalePvThresholdDays = options.stalePvThresholdDays ?? DEFAULT_STALE_PV_DAYS;
 
   // 1) Pull all data sources in parallel.
-  const [pvList, nsList, volList, replicaList, clientRows] = await Promise.all([
+  const [pvList, nsList, volList, replicaList, tenantRows] = await Promise.all([
     k8s.core.listPersistentVolume({}) as Promise<{ items?: readonly RawPv[] }>,
     k8s.core.listNamespace({}) as Promise<{ items?: readonly RawNamespace[] }>,
     k8s.custom.listNamespacedCustomObject({
@@ -179,7 +179,7 @@ export async function detectOrphans(
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'replicas',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawLhReplica[] }>,
-    db.select({ ns: clients.kubernetesNamespace, name: clients.companyName }).from(clients),
+    db.select({ ns: tenants.kubernetesNamespace, name: tenants.name }).from(tenants),
   ]);
 
   // 2) Index lookup tables.
@@ -195,9 +195,9 @@ export async function detectOrphans(
     namespacesAlive.add(name);
     namespaceMeta.set(name, ns);
   }
-  const clientByNs = new Map<string, { name: string }>();
-  for (const c of clientRows) {
-    if (c.ns) clientByNs.set(c.ns, { name: c.name });
+  const tenantByNs = new Map<string, { name: string }>();
+  for (const c of tenantRows) {
+    if (c.ns) tenantByNs.set(c.ns, { name: c.name });
   }
   const replicaNodesByVolume = new Map<string, string[]>();
   for (const r of replicaList.items ?? []) {
@@ -244,11 +244,11 @@ export async function detectOrphans(
 
     if (ns && !namespacesAlive.has(ns)) {
       reason = 'namespace_deleted';
-    } else if (ns && ns.startsWith('client-') && !clientByNs.has(ns)) {
-      // Namespace exists but the client row was deleted — extremely rare
+    } else if (ns && ns.startsWith('tenant-') && !tenantByNs.has(ns)) {
+      // Namespace exists but the tenant row was deleted — extremely rare
       // (lifecycle deletes the namespace too) but possible after a manual
       // DB row delete or a half-failed deprovision.
-      reason = 'client_record_deleted';
+      reason = 'tenant_record_deleted';
     } else if (phase === 'Released'
       && ageDays !== null
       && ageDays >= stalePvThresholdDays) {
@@ -258,7 +258,7 @@ export async function detectOrphans(
     if (reason && lhVolName) seenLonghornVols.add(lhVolName);
     if (!reason) continue;
 
-    const owner = ns ? clientByNs.get(ns)?.name : undefined;
+    const owner = ns ? tenantByNs.get(ns)?.name : undefined;
     const ownerLabel = owner ?? (ns ? `Platform System (${ns})` : 'Unknown');
     const pvLabels = pv.metadata?.labels ?? {};
     const canonicalRole = pvLabels['platform/role'] ?? null;
@@ -294,7 +294,7 @@ export async function detectOrphans(
     const pvcName = rawPvcName && rawPvcName.length > 0 ? rawPvcName : null;
     const sizeBytes = parseQuantityBytes(v.spec?.size);
     const nodes = replicaNodesByVolume.get(volName) ?? [];
-    const owner = ns ? clientByNs.get(ns)?.name : undefined;
+    const owner = ns ? tenantByNs.get(ns)?.name : undefined;
     const ownerLabel = owner ?? (ns ? `Platform System (${ns})` : 'Unknown');
     orphans.push({
       pvName,
@@ -315,10 +315,10 @@ export async function detectOrphans(
     });
   }
 
-  // 5) Namespace orphans: tenant-shaped namespaces (`client-*`) with no
-  // matching client row AND no PV that already triggered a row in pass 3.
+  // 5) Namespace orphans: tenant-shaped namespaces (`tenant-*`) with no
+  // matching tenant row AND no PV that already triggered a row in pass 3.
   // Catches the case where deprovision deleted volumes/PVs but left the
-  // namespace standing, or where an admin hand-deletes a client row but
+  // namespace standing, or where an admin hand-deletes a tenant row but
   // not its namespace.
   //
   // De-dup against namespaces already represented above: if any orphan
@@ -329,8 +329,8 @@ export async function detectOrphans(
     if (o.namespace) namespacesAlreadyReported.add(o.namespace);
   }
   for (const [nsName, ns] of namespaceMeta) {
-    if (!nsName.startsWith('client-')) continue;
-    if (clientByNs.has(nsName)) continue;
+    if (!nsName.startsWith('tenant-')) continue;
+    if (tenantByNs.has(nsName)) continue;
     if (namespacesAlreadyReported.has(nsName)) continue;
     const created = ns.metadata?.creationTimestamp;
     const ageDays = ageDaysFromIso(created);
@@ -469,7 +469,7 @@ export async function deleteOrphan(
     // detectOrphans already enforces this for the namespace_orphaned
     // pass, but a future code path that calls deleteOrphan directly
     // would otherwise be a footgun.
-    if (!target.namespace.startsWith('client-')) {
+    if (!target.namespace.startsWith('tenant-')) {
       throw new Error(
         `BUG: refusing to cascade non-tenant namespace '${target.namespace}'`,
       );

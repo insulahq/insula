@@ -2,14 +2,14 @@ import { eq } from 'drizzle-orm';
 import type { K8sClients } from './k8s-client.js';
 import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
 import { toSafeText } from '@k8s-hosting/api-contracts';
-import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
+import { tenants, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { getFileManagerImage } from '../file-manager/image.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
-import { clientStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
+import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
 /**
@@ -31,7 +31,7 @@ function formatProvisionErrorForStorage(message: string): string {
 function isK8s404(err: unknown): boolean {
   // v1.4 HttpException: message starts with "HTTP-Code: 404"
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  // Older client versions used statusCode property
+  // Older tenant versions used statusCode property
   if (isNotFound(err)) return true;
   return false;
 }
@@ -43,7 +43,7 @@ function isK8s409(err: unknown): boolean {
 }
 
 /**
- * Extract a single-line, human-readable message from a k8s client error.
+ * Extract a single-line, human-readable message from a k8s tenant error.
  * @kubernetes/client-node v1.4 throws HttpException whose `.message` embeds
  * the full response (code, headers, JSON body). Raw, this is useless in a UI —
  * we want just the `status.message` field when available, otherwise the first
@@ -90,9 +90,9 @@ export function formatK8sError(err: unknown): string {
   return firstLine.length > 500 ? `${firstLine.slice(0, 500)}…` : firstLine;
 }
 
-/** Returns false if the client row was deleted — orchestrator should abort. */
-async function clientStillExists(db: Database, clientId: string): Promise<boolean> {
-  const [row] = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, clientId)).limit(1);
+/** Returns false if the tenant row was deleted — orchestrator should abort. */
+async function tenantStillExists(db: Database, tenantId: string): Promise<boolean> {
+  const [row] = await db.select({ id: tenants.id }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   return !!row;
 }
 
@@ -141,13 +141,13 @@ export function updateStepStatus(
 
 // ─── System Service Reserves (DEPRECATED) ───────────────────────────────────
 //
-// Originally we padded each client ResourceQuota by a SYSTEM_*_RESERVE so
-// file-manager (running in the client namespace) wouldn't eat into plan
+// Originally we padded each tenant ResourceQuota by a SYSTEM_*_RESERVE so
+// file-manager (running in the tenant namespace) wouldn't eat into plan
 // limits. That guesswork is replaced by the two-tier placement model:
 //
 //   - Storage-lifecycle Jobs (fsck) run in `platform-tenant-ops` namespace
 //     (no quota at all).
-//   - file-manager (must stay in client namespace because of PVC mount) is
+//   - file-manager (must stay in tenant namespace because of PVC mount) is
 //     tagged `priorityClassName: platform-tenant-overhead`. The quota's
 //     `scopeSelector` matches only `tenant-default` priority — file-manager
 //     is exempt.
@@ -211,9 +211,9 @@ const TENANT_NAMESPACE_LABELS = {
 export async function applyNamespace(
   k8s: K8sClients,
   namespace: string,
-  clientId: string,
+  tenantId: string,
 ): Promise<void> {
-  const labels = { ...TENANT_NAMESPACE_LABELS, client: clientId };
+  const labels = { ...TENANT_NAMESPACE_LABELS, tenant: tenantId };
 
   // Check if namespace already exists. Either path (exists or 404)
   // must end with the PSS labels in place — this function is the
@@ -507,7 +507,7 @@ export async function applyPVC(
             // storage-policy reconciler so `kubectl get pv` and the
             // Longhorn UI can show meaningful names alongside the
             // CSI-generated PV UUID.
-            ...clientStoragePvcLabelsFromNamespace(namespace),
+            ...tenantStoragePvcLabelsFromNamespace(namespace),
           },
         },
         spec: {
@@ -589,13 +589,13 @@ export interface ProvisionOptions {
 /**
  * Sync a `provisioning_tasks` row into the canonical `tasks` table so
  * the Task Center chip surfaces it. Idempotent on
- * `(kind=client.provision|client.deprovision, ref_id=taskId)` —
+ * `(kind=tenant.provision|tenant.deprovision, ref_id=taskId)` —
  * multiple progress updates within a single run just refresh the
  * existing task row.
  *
  * The `kind` is derived from `provisioningTasks.type`:
- *   - `provision_namespace` → `client.provision`
- *   - `deprovision`         → `client.deprovision`
+ *   - `provision_namespace` → `tenant.provision`
+ *   - `deprovision`         → `tenant.deprovision`
  * This keeps deprovision rows from upserting onto the original
  * provision row (they share `ref_id` only when the orchestrator
  * re-uses ids, but separate kinds let both rows coexist anyway).
@@ -614,7 +614,7 @@ export async function mirrorProvisioningToTaskTracker(
   const [task] = await db
     .select({
       id: provisioningTasks.id,
-      clientId: provisioningTasks.clientId,
+      tenantId: provisioningTasks.tenantId,
       type: provisioningTasks.type,
       status: provisioningTasks.status,
       currentStep: provisioningTasks.currentStep,
@@ -628,16 +628,16 @@ export async function mirrorProvisioningToTaskTracker(
     .limit(1);
   if (!task || !task.startedBy) return;
 
-  // Look up client for the modal label. ProvisioningProgressModal
-  // takes `clientId` + `clientName` (companyName) as its required
+  // Look up tenant for the modal label. ProvisioningProgressModal
+  // takes `tenantId` + `tenantName` (name) as its required
   // props — keep them in modalProps so the chip's reopen path doesn't
   // need a follow-up fetch.
-  const [client] = await db
-    .select({ id: clients.id, companyName: clients.companyName })
-    .from(clients)
-    .where(eq(clients.id, task.clientId))
+  const [tenant] = await db
+    .select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .where(eq(tenants.id, task.tenantId))
     .limit(1);
-  const clientName = client?.companyName ?? task.clientId.slice(0, 8);
+  const tenantName = tenant?.name ?? task.tenantId.slice(0, 8);
 
   // pending|running → 'running'; completed → 'succeeded'; failed → 'failed'.
   const isTerminal = task.status === 'completed' || task.status === 'failed';
@@ -655,15 +655,15 @@ export async function mirrorProvisioningToTaskTracker(
   // modal-registry maps both kinds via `target.modal = 'provisioning'`
   // (the modal renders the same step list in either direction).
   const isDeprovision = task.type === 'deprovision';
-  const kind = isDeprovision ? 'client.deprovision' : 'client.provision';
+  const kind = isDeprovision ? 'tenant.deprovision' : 'tenant.provision';
   const labelVerb = isDeprovision ? 'Decommission' : 'Provision';
 
   const target = {
     type: 'modal' as const,
     modal: 'provisioning',
     modalProps: {
-      clientId: task.clientId,
-      clientName,
+      tenantId: task.tenantId,
+      tenantName,
     },
   };
 
@@ -671,12 +671,12 @@ export async function mirrorProvisioningToTaskTracker(
   // containing "token=..." would trip the secret-leak guard). Falling
   // back to a guaranteed-safe string keeps the mirror running and the
   // chip lit up — operators always have the modal target to recover
-  // the full client name.
+  // the full tenant name.
   const safeLabel = (() => {
     try {
-      return toSafeText(`${labelVerb}: ${clientName}`);
+      return toSafeText(`${labelVerb}: ${tenantName}`);
     } catch {
-      return toSafeText(`${labelVerb}: ${task.clientId.slice(0, 8)}`);
+      return toSafeText(`${labelVerb}: ${task.tenantId.slice(0, 8)}`);
     }
   })();
   const safeProgressText = task.currentStep
@@ -698,7 +698,7 @@ export async function mirrorProvisioningToTaskTracker(
       refId: task.id,
       scope: 'admin',
       userId: task.startedBy,
-      clientId: task.clientId,
+      tenantId: task.tenantId,
       label: safeLabel,
       target,
       progressPct,
@@ -722,7 +722,7 @@ export async function mirrorProvisioningToTaskTracker(
     refId: task.id,
     scope: 'admin',
     userId: task.startedBy,
-    clientId: task.clientId,
+    tenantId: task.tenantId,
     label: safeLabel,
     target,
     progressPct,
@@ -750,20 +750,20 @@ export async function runProvisionNamespace(
   db: Database,
   k8s: K8sClients,
   taskId: string,
-  clientId: string,
+  tenantId: string,
   options?: ProvisionOptions,
 ): Promise<void> {
-  // Fetch client + plan
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) throw new Error(`Client ${clientId} not found`);
+  // Fetch tenant + plan
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) throw new Error(`Client ${tenantId} not found`);
 
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
-  if (!plan) throw new Error(`Plan ${client.planId} not found`);
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
+  if (!plan) throw new Error(`Plan ${tenant.planId} not found`);
 
-  const namespace = client.kubernetesNamespace;
-  const cpuLimit = options?.overrides?.cpu_limit ?? String(parseFloat(String(client.cpuLimitOverride ?? plan.cpuLimit)));
-  const memoryLimit = options?.overrides?.memory_limit ?? String(parseFloat(String(client.memoryLimitOverride ?? plan.memoryLimit)));
-  const storageLimit = options?.overrides?.storage_limit ?? String(parseFloat(String(client.storageLimitOverride ?? plan.storageLimit)));
+  const namespace = tenant.kubernetesNamespace;
+  const cpuLimit = options?.overrides?.cpu_limit ?? String(parseFloat(String(tenant.cpuLimitOverride ?? plan.cpuLimit)));
+  const memoryLimit = options?.overrides?.memory_limit ?? String(parseFloat(String(tenant.memoryLimitOverride ?? plan.memoryLimit)));
+  const storageLimit = options?.overrides?.storage_limit ?? String(parseFloat(String(tenant.storageLimitOverride ?? plan.storageLimit)));
   // Unified tenant SC. PVC.spec.storageClassName is immutable on a
   // bound PVC, so splitting tier semantics across two SCs forced a
   // snapshot+restore migration to change tier. We now use ONE SC and
@@ -779,20 +779,20 @@ export async function runProvisionNamespace(
   const storageClass = process.env.TENANT_STORAGE_CLASS || 'longhorn-tenant';
 
   // Auto-pick worker for Local tier when the operator chose "Auto"
-  // (workerNodeName=null). Local tier MUST run on a specific node
+  // (nodeName=null). Local tier MUST run on a specific node
   // because the single replica only exists there — without a pin,
   // the next pod reschedule could land on a node with no replica
   // and Longhorn would have to migrate the volume (slow + risky).
   // HA tier with Auto stays null: the scheduler picks freely and
   // dataLocality=best-effort drifts the primary toward the chosen
   // node naturally.
-  if (!client.workerNodeName && client.storageTier !== 'ha') {
+  if (!tenant.nodeName && tenant.storageTier !== 'ha') {
     try {
-      const { autoPickWorkerNode } = await import('../clients/storage-placement-service.js');
+      const { autoPickWorkerNode } = await import('../tenants/storage-placement-service.js');
       const picked = await autoPickWorkerNode(db, k8s);
       if (picked) {
-        await db.update(clients).set({ workerNodeName: picked }).where(eq(clients.id, clientId));
-        client.workerNodeName = picked;
+        await db.update(tenants).set({ nodeName: picked }).where(eq(tenants.id, tenantId));
+        tenant.nodeName = picked;
       }
     } catch (err) {
       console.warn(`[k8s-provisioner] auto-pick worker failed for ${namespace}: ${(err as Error).message}`);
@@ -829,16 +829,16 @@ export async function runProvisionNamespace(
     console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
   });
 
-  await db.update(clients).set({
+  await db.update(tenants).set({
     provisioningStatus: 'provisioning',
-  }).where(eq(clients.id, clientId));
+  }).where(eq(tenants.id, tenantId));
 
-  // Abort early if the client was deleted before/while we started.
-  // Protects against the "delete a failed client while retry is still
+  // Abort early if the tenant was deleted before/while we started.
+  // Protects against the "delete a failed tenant while retry is still
   // running in the background" race — without this guard the orchestrator
   // would happily recreate resources in a namespace that's being torn down.
-  const guardClientExists = async (): Promise<boolean> => {
-    if (await clientStillExists(db, clientId)) return true;
+  const guardTenantExists = async (): Promise<boolean> => {
+    if (await tenantStillExists(db, tenantId)) return true;
     await db.update(provisioningTasks).set({
       status: 'failed',
       errorMessage: 'Client deleted during provisioning — aborted',
@@ -853,25 +853,25 @@ export async function runProvisionNamespace(
 
   try {
     // Step 1: Create Namespace
-    if (!(await guardClientExists())) return;
+    if (!(await guardTenantExists())) return;
     await updateProgress('Create Namespace', 'running');
-    await applyNamespace(k8s, namespace, clientId);
+    await applyNamespace(k8s, namespace, tenantId);
     await updateProgress('Create Namespace', 'completed');
 
     // Step 2: Create ResourceQuota
-    if (!(await guardClientExists())) return;
+    if (!(await guardTenantExists())) return;
     await updateProgress('Create ResourceQuota', 'running');
     await applyResourceQuota(k8s, namespace, { cpu: cpuLimit, memory: memoryLimit, storage: storageLimit });
     await updateProgress('Create ResourceQuota', 'completed');
 
     // Step 3: Create NetworkPolicy
-    if (!(await guardClientExists())) return;
+    if (!(await guardTenantExists())) return;
     await updateProgress('Create NetworkPolicy', 'running');
     await applyNetworkPolicy(k8s, namespace);
     await updateProgress('Create NetworkPolicy', 'completed');
 
     // Step 4: Create shared PVC (all components use Deployment + subPath on this PVC)
-    if (!(await guardClientExists())) return;
+    if (!(await guardTenantExists())) return;
     await updateProgress('Create PVC', 'running');
     const sharedPvcSize = Math.min(10, Number(storageLimit) || 10);
     await applyPVC(k8s, namespace, String(sharedPvcSize), storageClass);
@@ -881,7 +881,7 @@ export async function runProvisionNamespace(
     // by default; HA tenants need replicas=2. Patching after bind is
     // safe (Longhorn rebuilds replicas async). Idempotent — a re-
     // provision with the same tier flips to a no-op.
-    const targetReplicas = client.storageTier === 'ha' ? 2 : 1;
+    const targetReplicas = tenant.storageTier === 'ha' ? 2 : 1;
     try {
       await patchTenantVolumeReplicas(k8s, namespace, targetReplicas);
     } catch (err) {
@@ -894,12 +894,12 @@ export async function runProvisionNamespace(
     await updateProgress('Create PVC', 'completed');
 
     // Step 5: Start file-manager sidecar (Deployment + Service)
-    if (!(await guardClientExists())) return;
+    if (!(await guardTenantExists())) return;
     await updateProgress('Start File Manager', 'running');
     await ensureFileManagerRunning(k8s, namespace, getFileManagerImage());
     await updateProgress('Start File Manager', 'completed');
 
-    // All done — mark task and client as provisioned
+    // All done — mark task and tenant as provisioned
     await db.update(provisioningTasks).set({
       status: 'completed',
       completedSteps,
@@ -907,9 +907,9 @@ export async function runProvisionNamespace(
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
 
-    await db.update(clients).set({
+    await db.update(tenants).set({
       provisioningStatus: 'provisioned',
-    }).where(eq(clients.id, clientId));
+    }).where(eq(tenants.id, tenantId));
     await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
       console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
     });
@@ -938,9 +938,9 @@ export async function runProvisionNamespace(
     // Client may have been deleted between the last guard and the throw —
     // don't let that turn a provisioning failure into an unhandled rejection.
     try {
-      await db.update(clients).set({
+      await db.update(tenants).set({
         provisioningStatus: 'failed',
-      }).where(eq(clients.id, clientId));
+      }).where(eq(tenants.id, tenantId));
     } catch {
       // Swallow — row is gone, nothing to update.
     }
@@ -960,12 +960,12 @@ export async function runDeprovision(
   db: Database,
   k8s: K8sClients,
   taskId: string,
-  clientId: string,
+  tenantId: string,
 ): Promise<void> {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) throw new Error(`Client ${clientId} not found`);
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) throw new Error(`Client ${tenantId} not found`);
 
-  const namespace = client.kubernetesNamespace;
+  const namespace = tenant.kubernetesNamespace;
   let stepsLog = buildStepsLog(DEPROVISION_STEPS);
   let completedSteps = 0;
 
@@ -997,21 +997,21 @@ export async function runDeprovision(
     // lifecycle registry BEFORE we touch the namespace. This fires
     // the orphan-prevention hooks (dns-zone-cleanup, tenant-bundles-bundle-
     // cleanup, cluster-scoped-refs-cleanup) while domains + backup_jobs
-    // rows are still readable. Decommission keeps the client row, so
-    // the dispatch records the action in client_lifecycle_transitions
-    // for the audit trail; detail.preservedClient=true distinguishes
+    // rows are still readable. Decommission keeps the tenant row, so
+    // the dispatch records the action in tenant_lifecycle_transitions
+    // for the audit trail; detail.preservedTenant=true distinguishes
     // it from a hard delete.
     try {
-      const { runTransition } = await import('../client-lifecycle/registry/index.js');
+      const { runTransition } = await import('../tenant-lifecycle/registry/index.js');
       await runTransition(db, k8s, {
-        clientId,
+        tenantId,
         namespace,
         transition: 'deleted',
         toStatus: 'suspended', // status doesn't change on decommission
-        detail: { preservedClient: true, source: 'decommission-orchestrator' },
+        detail: { preservedTenant: true, source: 'decommission-orchestrator' },
       });
     } catch (err) {
-      console.warn(`[deprovision] lifecycle dispatch failed for ${clientId}: ${(err as Error).message}`);
+      console.warn(`[deprovision] lifecycle dispatch failed for ${tenantId}: ${(err as Error).message}`);
     }
 
     // Step 1: Delete Namespace (cascades everything inside)
@@ -1027,7 +1027,7 @@ export async function runDeprovision(
     // Step 1.5: Delete Released PVs whose claimRef points at this
     // namespace. The tenant SC is `reclaimPolicy: Retain` (intentional
     // — protects against accidental data loss when the operator
-    // deletes a PVC). After client deletion the operator has already
+    // deletes a PVC). After tenant deletion the operator has already
     // signed off on losing the data, so we purge the leftover PVs to
     // free Longhorn capacity AND remove the conflict surface for
     // future re-provisioning. Caught by integration-staging.sh
@@ -1133,9 +1133,9 @@ export async function runDeprovision(
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
 
-    await db.update(clients).set({
+    await db.update(tenants).set({
       provisioningStatus: 'unprovisioned',
-    }).where(eq(clients.id, clientId));
+    }).where(eq(tenants.id, tenantId));
     await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
       console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
     });

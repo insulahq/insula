@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import * as yaml from 'js-yaml';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { generateManifestSchema } from '@k8s-hosting/api-contracts';
-import { generateClientManifests } from './generator.js';
+import { generateTenantManifests } from './generator.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -11,17 +11,17 @@ export async function k8sManifestRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
-  // POST /api/v1/admin/clients/:clientId/manifests
-  app.post('/admin/clients/:clientId/manifests', {
+  // POST /api/v1/admin/tenants/:tenantId/manifests
+  app.post('/admin/tenants/:tenantId/manifests', {
     schema: {
       tags: ['K8s Manifests'],
-      summary: 'Generate Kustomize manifests for a client',
+      summary: 'Generate Kustomize manifests for a tenant',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
-        required: ['clientId'],
+        required: ['tenantId'],
         properties: {
-          clientId: { type: 'string', format: 'uuid' },
+          tenantId: { type: 'string', format: 'uuid' },
         },
       },
       body: {
@@ -40,7 +40,7 @@ export async function k8sManifestRoutes(app: FastifyInstance): Promise<void> {
       },
     },
   }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
+    const { tenantId } = request.params as { tenantId: string };
 
     // Validate body with Zod schema
     const parsed = generateManifestSchema.safeParse(request.body ?? {});
@@ -54,7 +54,7 @@ export async function k8sManifestRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const manifests = await generateClientManifests(app.db, clientId, parsed.data);
+    const manifests = await generateTenantManifests(app.db, tenantId, parsed.data);
 
     // Derive namespace from first manifest (namespace.yaml)
     const nsManifest = manifests.find(m => m.filename === 'namespace.yaml');
@@ -63,8 +63,8 @@ export async function k8sManifestRoutes(app: FastifyInstance): Promise<void> {
       : undefined;
 
     return success({
-      clientId,
-      namespace: namespace?.metadata?.name ?? clientId,
+      tenantId,
+      namespace: namespace?.metadata?.name ?? tenantId,
       manifests: manifests.map(m => ({
         filename: m.filename,
         content: m.content,

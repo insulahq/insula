@@ -6,8 +6,8 @@ import ErrorPanel from '@/components/ErrorPanel';
 import type { OperatorError } from '@k8s-hosting/api-contracts';
 
 interface ProvisioningProgressModalProps {
-  readonly clientId: string;
-  readonly clientName: string;
+  readonly tenantId: string;
+  readonly tenantName: string;
   readonly onClose: () => void;
   /** Called once when the task reaches `completed`. Use to navigate away. */
   readonly onSuccess?: () => void;
@@ -28,8 +28,8 @@ const stepIcons: Record<ProvisioningStep['status'], React.ReactNode> = {
 };
 
 export default function ProvisioningProgressModal({
-  clientId,
-  clientName,
+  tenantId,
+  tenantName,
   onClose,
   onSuccess,
   onCleanup,
@@ -37,7 +37,7 @@ export default function ProvisioningProgressModal({
   isCleaningUp = false,
   isRetrying = false,
 }: ProvisioningProgressModalProps) {
-  const { data: task, isLoading, error } = useProvisioningStatus(clientId);
+  const { data: task, isLoading, error } = useProvisioningStatus(tenantId);
 
   // Stop polling once completed or failed
   const isTerminal = task?.status === 'completed' || task?.status === 'failed';
@@ -81,7 +81,7 @@ export default function ProvisioningProgressModal({
         <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Provisioning: {clientName}
+              Provisioning: {tenantName}
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
               {task?.status === 'completed'
@@ -127,7 +127,7 @@ export default function ProvisioningProgressModal({
           {error && !task && (
             <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
               <AlertTriangle size={16} />
-              No provisioning task found for this client.
+              No provisioning task found for this tenant.
             </div>
           )}
 

@@ -1,9 +1,9 @@
 import { eq, and, sql } from 'drizzle-orm';
-import { emailDomains, domains, mailboxes, clients, emailAliases, dnsRecords } from '../../db/schema.js';
+import { emailDomains, domains, mailboxes, tenants, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
-import { notifyClientEmailBootstrapped } from '../notifications/events.js';
+import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'email-domains' });
@@ -49,26 +49,26 @@ async function getDomainJmapAccountId(): Promise<JmapAccountId | null> {
   }
 }
 
-async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
+async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for client`, 404);
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for tenant`, 404);
   }
   return domain;
 }
 
 export async function enableEmailForDomain(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   input: EnableEmailDomainInput,
   encryptionKey: string,
 ) {
-  const domain = await verifyDomainOwnership(db, clientId, domainId);
+  const domain = await verifyDomainOwnership(db, tenantId, domainId);
 
   // Idempotency: if the email_domains row already exists, return it —
   // BUT if its stalwartDomainId is still null, fall through to retry the
@@ -107,7 +107,7 @@ export async function enableEmailForDomain(
     await db.insert(emailDomains).values({
       id,
       domainId,
-      clientId,
+      tenantId,
       enabled: 1,
       // max_mailboxes + max_quota_mb removed in migration 0019.
       catchAllAddress: input.catch_all_address ?? null,
@@ -172,9 +172,9 @@ export async function enableEmailForDomain(
     .from(emailDomains)
     .where(eq(emailDomains.id, id));
 
-  // Phase 3 round-2: notify client admins that email is now live.
+  // Phase 3 round-2: notify tenant admins that email is now live.
   // Fire-and-forget; a failure here cannot roll back the enable.
-  void notifyClientEmailBootstrapped(db, clientId, {
+  void notifyTenantEmailBootstrapped(db, tenantId, {
     emailDomainId: id,
     domainName: domain.domainName,
   });
@@ -184,15 +184,15 @@ export async function enableEmailForDomain(
 
 export async function disableEmailForDomain(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [existing] = await db
     .select()
     .from(emailDomains)
-    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.clientId, clientId)));
+    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.tenantId, tenantId)));
 
   if (!existing) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
@@ -225,15 +225,15 @@ export async function disableEmailForDomain(
 // Round-4 Phase 1: authoritative disable preview. Returns the exact
 // list of resources that `disableEmailForDomain` + the FK cascade
 // from migration 0020 will remove for this email domain. Pure read —
-// no side effects. Reused by the client-panel disable confirmation
+// no side effects. Reused by the tenant-panel disable confirmation
 // modal so users see mailbox addresses, alias sources, DNS records,
 // DKIM keys, and the webmail hostname by name BEFORE they confirm.
 export async function getEmailDomainDisablePreview(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ): Promise<EmailDomainDisablePreview> {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [ed] = await db
     .select({
@@ -243,7 +243,7 @@ export async function getEmailDomainDisablePreview(
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
-    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.clientId, clientId)));
+    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.tenantId, tenantId)));
 
   if (!ed) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
@@ -331,16 +331,16 @@ export async function getEmailDomainDisablePreview(
 
 export async function getEmailDomain(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [emailDomain] = await db
     .select({
       id: emailDomains.id,
       domainId: emailDomains.domainId,
-      clientId: emailDomains.clientId,
+      tenantId: emailDomains.tenantId,
       domainName: domains.domainName,
       dnsMode: domains.dnsMode,
       enabled: emailDomains.enabled,
@@ -364,7 +364,7 @@ export async function getEmailDomain(
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
-    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.clientId, clientId)));
+    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.tenantId, tenantId)));
 
   if (!emailDomain) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
@@ -389,7 +389,7 @@ export async function getEmailDomain(
  */
 export async function getEmailDomainDnsRecords(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ): Promise<{
   readonly dnsMode: string;
@@ -404,7 +404,7 @@ export async function getEmailDomainDnsRecords(
     readonly purpose: string;
   }[];
 }> {
-  const ed = await getEmailDomain(db, clientId, domainId);
+  const ed = await getEmailDomain(db, tenantId, domainId);
 
   // Import lazily so dns-provisioning is only loaded when the route
   // is actually hit — keeps the module's import cycle flat.
@@ -443,13 +443,13 @@ export async function getEmailDomainDnsRecords(
 
 export async function listEmailDomains(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ) {
   const results = await db
     .select({
       id: emailDomains.id,
       domainId: emailDomains.domainId,
-      clientId: emailDomains.clientId,
+      tenantId: emailDomains.tenantId,
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
@@ -471,7 +471,7 @@ export async function listEmailDomains(
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
-    .where(eq(emailDomains.clientId, clientId));
+    .where(eq(emailDomains.tenantId, tenantId));
 
   return results;
 }
@@ -481,7 +481,7 @@ export async function listAllEmailDomains(db: Database) {
     .select({
       id: emailDomains.id,
       domainId: emailDomains.domainId,
-      clientId: emailDomains.clientId,
+      tenantId: emailDomains.tenantId,
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
@@ -505,7 +505,7 @@ export async function listAllEmailDomains(db: Database) {
 
 export async function updateEmailDomain(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   input: UpdateEmailDomainInput,
   // Round-3 review HIGH-1: caller must supply the encryption key
@@ -513,12 +513,12 @@ export async function updateEmailDomain(
   // to process.env silently hides misconfigured test environments.
   encryptionKey?: string,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const [existing] = await db
     .select()
     .from(emailDomains)
-    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.clientId, clientId)));
+    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.tenantId, tenantId)));
 
   if (!existing) {
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
@@ -543,7 +543,7 @@ export async function updateEmailDomain(
   // Round-3: if webmail_enabled flipped, publish or unpublish the
   // webmail.<domain> DNS record alongside the ingress lifecycle.
   // The k8s Ingress is handled by the route-layer caller (which has
-  // the k8s client handle) via ensureWebmailIngress /
+  // the k8s tenant handle) via ensureWebmailIngress /
   // removeWebmailIngress. We only own the DNS record mutation here.
   if (
     input.webmail_enabled !== undefined
@@ -641,7 +641,7 @@ async function setWebmailStatus(
 
 /**
  * Ensure a webmail.<domain> Ingress + ExternalName Service exist in
- * the client's namespace, pointing at the shared Roundcube Service in
+ * the tenant's namespace, pointing at the shared Roundcube Service in
  * the `mail` namespace.
  *
  * Called by enableEmailForDomain and updateEmailDomain (when
@@ -657,13 +657,13 @@ export async function ensureWebmailIngress(
   k8s: K8sClients | undefined,
   emailDomainId: string,
 ): Promise<{ ingressCreated: boolean; reason?: string; status: WebmailStatus }> {
-  if (!k8s) return { ingressCreated: false, reason: 'no k8s client', status: 'failed' };
+  if (!k8s) return { ingressCreated: false, reason: 'no k8s tenant', status: 'failed' };
 
   const [row] = await db
     .select({
       emailDomainId: emailDomains.id,
       domainId: emailDomains.domainId,
-      clientId: emailDomains.clientId,
+      tenantId: emailDomains.tenantId,
       webmailEnabled: emailDomains.webmailEnabled,
       domainName: domains.domainName,
     })
@@ -693,12 +693,12 @@ export async function ensureWebmailIngress(
   // Mark pending at the start so the UI sees the transition.
   await setWebmailStatus(db, row.emailDomainId, 'pending');
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, row.clientId));
-  if (!client) {
-    await setWebmailStatus(db, row.emailDomainId, 'failed', 'client row not found');
-    return { ingressCreated: false, reason: 'client not found', status: 'failed' };
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, row.tenantId));
+  if (!tenant) {
+    await setWebmailStatus(db, row.emailDomainId, 'failed', 'tenant row not found');
+    return { ingressCreated: false, reason: 'tenant not found', status: 'failed' };
   }
-  const namespace = client.kubernetesNamespace;
+  const namespace = tenant.kubernetesNamespace;
   const hostname = `webmail.${row.domainName}`;
 
   // Ingress name: stable per hostname, sanitized for DNS-1123
@@ -750,7 +750,7 @@ export async function ensureWebmailIngress(
   // Step 2: ensure the Ingress rule for webmail.<domain>
   //
   // Use ensureRouteCertificate to get the right secret name. Round-3
-  // round-2 surfaced cert failures as a client-facing notification.
+  // round-2 surfaced cert failures as a tenant-facing notification.
   // Round-4 Phase 2: cert failure is no longer a "failed" outcome —
   // the Ingress is still created without TLS and is reachable on
   // plain HTTP. Status becomes 'ready_no_tls' and the cert
@@ -847,7 +847,7 @@ export async function removeWebmailIngress(
 
   const [row] = await db
     .select({
-      clientId: emailDomains.clientId,
+      tenantId: emailDomains.tenantId,
       domainName: domains.domainName,
     })
     .from(emailDomains)
@@ -856,9 +856,9 @@ export async function removeWebmailIngress(
 
   if (!row) return;
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, row.clientId));
-  if (!client) return;
-  const namespace = client.kubernetesNamespace;
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, row.tenantId));
+  if (!tenant) return;
+  const namespace = tenant.kubernetesNamespace;
   const hostname = `webmail.${row.domainName}`;
   const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
   const ingressName = `${safeName}-ingress`;

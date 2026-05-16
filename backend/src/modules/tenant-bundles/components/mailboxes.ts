@@ -2,14 +2,14 @@
  * `mailboxes` component capture (Phase 2 rewrite, 2026-05-11, ADR-036).
  *
  * Replaces the mbsync-based capture path with a JMAP-driven flow. Per
- * tenant client:
+ * tenant tenant:
  *
- *   1. Resolve every mailbox address belonging to the client from the
+ *   1. Resolve every mailbox address belonging to the tenant from the
  *      platform DB.
  *   2. Look up any prior `tenant_jmap_state.last_jmap_state` per
- *      (client_id, mailbox_address) — feeds incremental Email/changes.
+ *      (tenant_id, mailbox_address) — feeds incremental Email/changes.
  *   3. Sign ONE HMAC upload token bound to (bundleId, 'mailboxes',
- *      'restic-stream') for the entire client's Maildir tarball.
+ *      'restic-stream') for the entire tenant's Maildir tarball.
  *   4. Spawn one Job in the `mail` namespace using the
  *      `mail-backup-tools` image. The Job loops every address and runs
  *      `jmap-sync.py` for each:
@@ -28,7 +28,7 @@
  *      component model exactly.
  *
  *   5. Orchestrator parses Job log for JMAP_DONE lines, persists new
- *      state per (client_id, mailbox_jmap_id) AFTER the restic snapshot
+ *      state per (tenant_id, mailbox_jmap_id) AFTER the restic snapshot
  *      is acked. At-least-once: if persistence fails the next run does
  *      a no-op delta (same state token); restic content-dedups.
  *
@@ -36,7 +36,7 @@
  *   - Stalwart 0.16's IMAP MAY return less data than JMAP (some flags +
  *     keywords don't round-trip cleanly via IMAP STORE).
  *   - Email/changes is a server-side delta primitive; mbsync had to
- *     compare UIDVALIDITY + UID per-folder client-side.
+ *     compare UIDVALIDITY + UID per-folder tenant-side.
  *   - Mailbox renames are stable via Mailbox/changes; IMAP doesn't have
  *     a server-side rename primitive.
  *
@@ -57,9 +57,9 @@
  *
  * Ephemeral storage:
  *   `/tmp/maildir-out` holds the in-flight Maildir for ALL the
- *   client's mailboxes. `emptyDir.sizeLimit: 50Gi` covers the common
- *   case (typical client < 5 GiB mail). For tenants with >50 GiB mail,
- *   the platform should be sharding the client before reaching that
+ *   tenant's mailboxes. `emptyDir.sizeLimit: 50Gi` covers the common
+ *   case (typical tenant < 5 GiB mail). For tenants with >50 GiB mail,
+ *   the platform should be sharding the tenant before reaching that
  *   tier anyway.
  */
 
@@ -90,7 +90,7 @@ export interface MailboxesComponentResult {
 export interface CaptureMailboxesComponentOpts {
   readonly db: Database;
   readonly k8s: K8sClients;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly backupId: string;
   readonly platformApiUrl: string;
   readonly secretsKeyHex: string;
@@ -119,16 +119,16 @@ const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/hosting-platform/mail-backup-tools
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';
 const STDIN_FILENAME = 'maildir.tar';
 
-export async function listClientMailboxAddresses(db: Database, clientId: string): Promise<string[]> {
+export async function listTenantMailboxAddresses(db: Database, tenantId: string): Promise<string[]> {
   // `mailboxes.full_address` (camelCase = `fullAddress` per Drizzle
   // convention) is the canonical address column. Audited 2026-05-05.
   const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { full_address: string }[] }> };
-  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE client_id = ${clientId} ORDER BY full_address`);
+  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE tenant_id = ${tenantId} ORDER BY full_address`);
   return r.rows.map((row) => row.full_address);
 }
 
 /** Returns prior JMAP state per (client, address). Empty map for first-ever capture. */
-async function loadPriorStates(db: Database, clientId: string): Promise<Map<string, { jmapId: string; state: string }>> {
+async function loadPriorStates(db: Database, tenantId: string): Promise<Map<string, { jmapId: string; state: string }>> {
   const rows = await db
     .select({
       jmapId: tenantJmapState.mailboxJmapId,
@@ -136,7 +136,7 @@ async function loadPriorStates(db: Database, clientId: string): Promise<Map<stri
       state: tenantJmapState.lastJmapState,
     })
     .from(tenantJmapState)
-    .where(eq(tenantJmapState.clientId, clientId));
+    .where(eq(tenantJmapState.tenantId, tenantId));
   const out = new Map<string, { jmapId: string; state: string }>();
   for (const r of rows) {
     if (r.address && r.state) out.set(r.address, { jmapId: r.jmapId, state: r.state });
@@ -169,12 +169,12 @@ function shQuote(s: string): string {
 
 /**
  * Build the K8s Job spec for the JMAP mailboxes-component capture.
- * Pure function — exposed for unit-testing the spec without a kube client.
+ * Pure function — exposed for unit-testing the spec without a kube tenant.
  */
 export function buildMailboxesComponentJobSpec(input: {
   jobName: string;
   mailNamespace: string;
-  clientId: string;
+  tenantId: string;
   backupId: string;
   toolsImage: string;
   jmapEndpoint: string;
@@ -300,7 +300,7 @@ export function buildMailboxesComponentJobSpec(input: {
       namespace: input.mailNamespace,
       labels: {
         'platform.io/component': 'backup-files',
-        'platform.io/client-id': input.clientId,
+        'platform.io/tenant-id': input.tenantId,
         'platform.io/backup-id': input.backupId,
         'platform.io/sub-component': 'backup-mailboxes',
       },
@@ -315,7 +315,7 @@ export function buildMailboxesComponentJobSpec(input: {
         metadata: {
           labels: {
             'platform.io/component': 'backup-files',
-            'platform.io/client-id': input.clientId,
+            'platform.io/tenant-id': input.tenantId,
             'platform.io/backup-id': input.backupId,
             'platform.io/sub-component': 'backup-mailboxes',
           },
@@ -459,12 +459,12 @@ async function createUploadTokenSecret(
 export async function captureMailboxesComponent(
   opts: CaptureMailboxesComponentOpts,
 ): Promise<MailboxesComponentResult> {
-  const addresses = await listClientMailboxAddresses(opts.db, opts.clientId);
+  const addresses = await listTenantMailboxAddresses(opts.db, opts.tenantId);
   if (addresses.length === 0) {
     return { mailboxCount: 0, addresses: [], sizeBytes: 0, newStates: [] };
   }
 
-  const priorStates = await loadPriorStates(opts.db, opts.clientId);
+  const priorStates = await loadPriorStates(opts.db, opts.tenantId);
   const perAddress = addresses.map((address) => ({
     address,
     stateIn: priorStates.get(address)?.state ?? null,
@@ -504,7 +504,7 @@ export async function captureMailboxesComponent(
   const spec = buildMailboxesComponentJobSpec({
     jobName,
     mailNamespace,
-    clientId: opts.clientId,
+    tenantId: opts.tenantId,
     backupId: opts.backupId,
     toolsImage: opts.toolsImage ?? TOOLS_IMAGE_DEFAULT,
     jmapEndpoint: opts.jmapEndpoint ?? JMAP_ENDPOINT_DEFAULT,

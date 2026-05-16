@@ -109,7 +109,7 @@ export default function TlsSettings() {
         <Shield size={28} className="text-emerald-500" />
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="tls-settings-heading">Ingress & TLS Settings</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Configure ingress routing, cert-manager, and automatic TLS for client domains.</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Configure ingress routing, cert-manager, and automatic TLS for tenant domains.</p>
         </div>
       </div>
 
@@ -137,7 +137,7 @@ export default function TlsSettings() {
                 Automatic TLS
               </label>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                When enabled, cert-manager will automatically provision TLS certificates for all client domains via the configured ClusterIssuer.
+                When enabled, cert-manager will automatically provision TLS certificates for all tenant domains via the configured ClusterIssuer.
               </p>
             </div>
             <button
@@ -159,7 +159,7 @@ export default function TlsSettings() {
           <div className="rounded-lg bg-gray-50 dark:bg-gray-900 p-4 text-sm text-gray-600 dark:text-gray-400 space-y-2">
             <p><strong>How it works:</strong></p>
             <ul className="list-disc list-inside space-y-1">
-              <li>When auto-TLS is enabled, client Ingress resources include a <code className="text-gray-700 dark:text-gray-300">cert-manager.io/cluster-issuer</code> annotation and <code className="text-gray-700 dark:text-gray-300">spec.tls</code> block.</li>
+              <li>When auto-TLS is enabled, tenant Ingress resources include a <code className="text-gray-700 dark:text-gray-300">cert-manager.io/cluster-issuer</code> annotation and <code className="text-gray-700 dark:text-gray-300">spec.tls</code> block.</li>
               <li>cert-manager automatically provisions certificates from the ClusterIssuer (e.g., Let's Encrypt).</li>
               <li>Domains with full DNS control use DNS-01 challenges; others fall back to HTTP-01.</li>
               <li>Custom uploaded certificates override auto-provisioned ones.</li>
@@ -324,7 +324,7 @@ function IngressSettingsCard() {
           &nbsp;&nbsp;&nbsp;&nbsp;CNAME → node-1.platform.net<br />
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;A → {ipv4 || '1.2.3.4'}
         </p>
-        <p className="mt-2">Subdomains use CNAME records. Apex domains use A/AAAA records pointing to the default IP. Node migration only requires updating platform DNS — no client action needed.</p>
+        <p className="mt-2">Subdomains use CNAME records. Apex domains use A/AAAA records pointing to the default IP. Node migration only requires updating platform DNS — no tenant action needed.</p>
       </div>
 
       <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">

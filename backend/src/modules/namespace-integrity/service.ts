@@ -1,7 +1,7 @@
 import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { clients, hostingPlans, notifications, users } from '../../db/schema.js';
+import { tenants, hostingPlans, notifications, users } from '../../db/schema.js';
 import {
   applyNamespace,
   applyResourceQuota,
@@ -11,12 +11,12 @@ import {
 
 // Issue 1 fix: a namespace can lose its tenant PVC / ResourceQuota /
 // NetworkPolicies after a cluster rebootstrap (sqlite→etcd, DR
-// restore, etc.) while clients.provisioning_status stays
+// restore, etc.) while tenants.provisioning_status stays
 // "provisioned". The lifecycle module recreates the namespace +
 // file-manager but not these other resources, leaving deployments
 // stuck in pending forever.
 //
-// This module audits a single client (or the full fleet) for missing
+// This module audits a single tenant (or the full fleet) for missing
 // resources and repairs the gap.
 
 export type IntegrityFinding =
@@ -26,8 +26,8 @@ export type IntegrityFinding =
   | 'network_policy_missing';
 
 export interface NamespaceIntegrityReport {
-  readonly clientId: string;
-  readonly companyName: string;
+  readonly tenantId: string;
+  readonly name: string;
   readonly namespace: string;
   readonly findings: readonly IntegrityFinding[];
   readonly repaired: readonly IntegrityFinding[];
@@ -87,58 +87,58 @@ async function inspect(
 }
 
 /**
- * Audit + optionally repair a single client's namespace. `repair=false`
+ * Audit + optionally repair a single tenant's namespace. `repair=false`
  * is the read-only audit used by the UI. `repair=true` is the
  * "Run reconciler" admin action and the cron-driven sweep.
  */
-export async function checkClientNamespaceIntegrity(
+export async function checkTenantNamespaceIntegrity(
   db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   repair: boolean,
 ): Promise<NamespaceIntegrityReport> {
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) {
-    throw new Error(`Client ${clientId} not found`);
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) {
+    throw new Error(`Client ${tenantId} not found`);
   }
-  if (client.provisioningStatus !== 'provisioned') {
+  if (tenant.provisioningStatus !== 'provisioned') {
     return {
-      clientId,
-      companyName: client.companyName,
-      namespace: client.kubernetesNamespace,
+      tenantId,
+      name: tenant.name,
+      namespace: tenant.kubernetesNamespace,
       findings: [],
       repaired: [],
       errors: [],
     };
   }
 
-  const findings = await inspect(k8s, client.kubernetesNamespace);
+  const findings = await inspect(k8s, tenant.kubernetesNamespace);
   if (findings.length === 0 || !repair) {
     return {
-      clientId,
-      companyName: client.companyName,
-      namespace: client.kubernetesNamespace,
+      tenantId,
+      name: tenant.name,
+      namespace: tenant.kubernetesNamespace,
       findings,
       repaired: [],
       errors: [],
     };
   }
 
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
   // Unified tenant SC; tier is encoded as Volume.spec.numberOfReplicas
   // and patched live by applyTenantTier rather than baked into the SC.
   const storageClass = 'longhorn-tenant';
 
   const repaired: IntegrityFinding[] = [];
   const errors: string[] = [];
-  const ns = client.kubernetesNamespace;
+  const ns = tenant.kubernetesNamespace;
 
   // Repair each missing resource. Order matters: namespace first, then
   // PVC + RQ + NetPol (can be parallel but the failure mode is clearer
   // serial).
   if (findings.includes('namespace_missing')) {
     try {
-      await applyNamespace(k8s, ns, clientId);
+      await applyNamespace(k8s, ns, tenantId);
       repaired.push('namespace_missing');
     } catch (err) {
       errors.push(`namespace_missing: ${(err as Error).message}`);
@@ -146,7 +146,7 @@ export async function checkClientNamespaceIntegrity(
   }
   if (findings.includes('pvc_missing')) {
     try {
-      const sharedPvcSize = Math.min(10, Number(client.storageLimitOverride ?? plan?.storageLimit ?? 10));
+      const sharedPvcSize = Math.min(10, Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 10));
       await applyPVC(k8s, ns, String(sharedPvcSize), storageClass);
       repaired.push('pvc_missing');
     } catch (err) {
@@ -155,9 +155,9 @@ export async function checkClientNamespaceIntegrity(
   }
   if (findings.includes('resource_quota_missing')) {
     try {
-      const cpu = String(parseFloat(String(client.cpuLimitOverride ?? plan?.cpuLimit ?? '2')));
-      const memory = String(parseFloat(String(client.memoryLimitOverride ?? plan?.memoryLimit ?? '4')));
-      const storage = String(parseFloat(String(client.storageLimitOverride ?? plan?.storageLimit ?? '50')));
+      const cpu = String(parseFloat(String(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? '2')));
+      const memory = String(parseFloat(String(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? '4')));
+      const storage = String(parseFloat(String(tenant.storageLimitOverride ?? plan?.storageLimit ?? '50')));
       await applyResourceQuota(k8s, ns, { cpu, memory, storage });
       repaired.push('resource_quota_missing');
     } catch (err) {
@@ -182,8 +182,8 @@ export async function checkClientNamespaceIntegrity(
       .from(users)
       .where(inArray(users.roleName, ['super_admin', 'admin']));
     const title = errors.length > 0
-      ? `Namespace integrity issues for '${client.companyName}'`
-      : `Namespace integrity repaired for '${client.companyName}'`;
+      ? `Namespace integrity issues for '${tenant.name}'`
+      : `Namespace integrity repaired for '${tenant.name}'`;
     const message = errors.length > 0
       ? `Auto-repair partially failed. Repaired: ${repaired.join(', ') || 'none'}. Errors: ${errors.join('; ')}`
       : `Auto-repaired missing resources: ${repaired.join(', ')}`;
@@ -194,8 +194,8 @@ export async function checkClientNamespaceIntegrity(
         type: errors.length > 0 ? 'error' : 'success',
         title,
         message,
-        resourceType: 'client',
-        resourceId: clientId,
+        resourceType: 'tenant',
+        resourceId: tenantId,
       }).catch((err) => {
         console.error('[namespace-integrity] notification write failed:', (err as Error).message);
       });
@@ -203,8 +203,8 @@ export async function checkClientNamespaceIntegrity(
   }
 
   return {
-    clientId,
-    companyName: client.companyName,
+    tenantId,
+    name: tenant.name,
     namespace: ns,
     findings,
     repaired,
@@ -213,25 +213,25 @@ export async function checkClientNamespaceIntegrity(
 }
 
 /**
- * Cron-driven fleet sweep — audit every active provisioned client, repair
+ * Cron-driven fleet sweep — audit every active provisioned tenant, repair
  * any gaps. Runs from the storage-lifecycle scheduler so it shares the
- * same k8s client + DB pool.
+ * same k8s tenant + DB pool.
  */
 export async function sweepFleetIntegrity(
   db: Database,
   k8s: K8sClients,
 ): Promise<{ readonly checked: number; readonly repaired: number; readonly errored: number }> {
   const provisioned = await db
-    .select({ id: clients.id })
-    .from(clients)
-    .where(inArray(clients.provisioningStatus, ['provisioned']));
+    .select({ id: tenants.id })
+    .from(tenants)
+    .where(inArray(tenants.provisioningStatus, ['provisioned']));
 
   let repairedTotal = 0;
   let erroredTotal = 0;
 
   for (const c of provisioned) {
     try {
-      const report = await checkClientNamespaceIntegrity(db, k8s, c.id, true);
+      const report = await checkTenantNamespaceIntegrity(db, k8s, c.id, true);
       if (report.repaired.length > 0) repairedTotal += 1;
       if (report.errors.length > 0) erroredTotal += 1;
     } catch (err) {

@@ -39,7 +39,7 @@ interface NodeEditModalProps {
  *
  * Fields:
  *  - displayName (alias) — operator-friendly label, falls back to k8s name.
- *  - role + canHostClientWorkloads — preserved from the legacy form.
+ *  - role + canHostTenantWorkloads — preserved from the legacy form.
  *  - ingressMode — three-state (all / local / none) — sets the
  *    platform.example.test/ingress-mode label which the
  *    ingress-nginx DaemonSet's nodeAffinity respects.
@@ -49,7 +49,7 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
   const update = useUpdateClusterNode(node.name);
   const [displayName, setDisplayName] = useState(node.displayName ?? '');
   const [role, setRole] = useState<'server' | 'worker'>(node.role);
-  const [canHost, setCanHost] = useState(node.canHostClientWorkloads);
+  const [canHost, setCanHost] = useState(node.canHostTenantWorkloads);
   const [cordoned, setCordoned] = useState(node.cordoned);
   const [ingressMode, setIngressMode] = useState<NodeIngressMode>(node.ingressMode);
   const [notes, setNotes] = useState(node.notes ?? '');
@@ -64,7 +64,7 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
         // Empty string clears the alias on the server.
         displayName: displayName.trim(),
         role,
-        canHostClientWorkloads: canHost,
+        canHostTenantWorkloads: canHost,
         cordoned: cordoned !== node.cordoned ? cordoned : undefined,
         ingressMode,
         notes: notes.trim() === '' ? null : notes,
@@ -151,7 +151,7 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
                 htmlFor="node-can-host-toggle"
                 className="block text-sm font-medium text-gray-900 dark:text-gray-100"
               >
-                Can host client workloads
+                Can host tenant workloads
               </label>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 When ON, tenant pods may schedule here. When OFF, a NoSchedule taint

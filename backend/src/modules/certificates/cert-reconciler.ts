@@ -5,10 +5,10 @@
  * status reconciler). For each domain with `sslAutoRenew = 1` it:
  *
  *   1. Reads the TLS Secret created by cert-manager (wildcard first, then
- *      per-hostname) in the client's kubernetesNamespace.
+ *      per-hostname) in the tenant's kubernetesNamespace.
  *   2. Parses the X.509 certificate from the Secret to extract issuer,
  *      subject, and expiry.
- *   3. Upserts a row into `ssl_certificates` so the admin/client panels
+ *   3. Upserts a row into `ssl_certificates` so the admin/tenant panels
  *      can display real certificate status without live K8s queries on
  *      every page load.
  *
@@ -25,7 +25,7 @@
 
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
-import { domains, sslCertificates, clients } from '../../db/schema.js';
+import { domains, sslCertificates, tenants } from '../../db/schema.js';
 import { tlsSecretNameFor } from './service.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -59,23 +59,23 @@ export async function reconcileCertificateStatuses(
   db: Database,
   k8s: K8sClients,
 ): Promise<CertReconcileResult> {
-  // Get all domains with auto-TLS enabled, joined with their client's namespace
-  const domainsWithClients = await db
+  // Get all domains with auto-TLS enabled, joined with their tenant's namespace
+  const domainsWithTenants = await db
     .select({
       domainId: domains.id,
       domainName: domains.domainName,
-      clientId: domains.clientId,
-      namespace: clients.kubernetesNamespace,
+      tenantId: domains.tenantId,
+      namespace: tenants.kubernetesNamespace,
     })
     .from(domains)
-    .innerJoin(clients, eq(domains.clientId, clients.id))
+    .innerJoin(tenants, eq(domains.tenantId, tenants.id))
     .where(eq(domains.sslAutoRenew, 1));
 
   let checked = 0;
   let synced = 0;
   const errors: string[] = [];
 
-  for (const d of domainsWithClients) {
+  for (const d of domainsWithTenants) {
     if (!d.namespace) continue;
     checked++;
 
@@ -163,7 +163,7 @@ export async function reconcileCertificateStatuses(
         await db.insert(sslCertificates).values({
           id: crypto.randomUUID(),
           domainId: d.domainId,
-          clientId: d.clientId,
+          tenantId: d.tenantId,
           // Store a placeholder — the actual cert is in the K8s Secret
           certificate: '# Managed by cert-manager',
           privateKeyEncrypted: '# Managed by cert-manager',

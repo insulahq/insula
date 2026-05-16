@@ -99,7 +99,7 @@ export class HetznerProvider implements LoadBalancerProvider {
 
 /**
  * AWSProvider — stub. A future integration uses the AWS SDK's ELBv2
- * client. Scope TBD (NLB vs ALB depends on whether we want L4 or L7
+ * tenant. Scope TBD (NLB vs ALB depends on whether we want L4 or L7
  * termination — L4 keeps TLS on our nginx and is the recommended
  * default to avoid re-configuring cert-manager).
  */

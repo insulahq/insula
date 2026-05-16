@@ -22,11 +22,11 @@ function detectAlgorithm(publicKey: string): string | null {
   return null;
 }
 
-export async function listSshKeys(db: Database, clientId: string) {
-  return db.select().from(sshKeys).where(eq(sshKeys.clientId, clientId));
+export async function listSshKeys(db: Database, tenantId: string) {
+  return db.select().from(sshKeys).where(eq(sshKeys.tenantId, tenantId));
 }
 
-export async function createSshKey(db: Database, clientId: string, input: CreateSshKeyInput) {
+export async function createSshKey(db: Database, tenantId: string, input: CreateSshKeyInput) {
   const fingerprint = computeFingerprint(input.public_key);
   const algorithm = detectAlgorithm(input.public_key);
 
@@ -40,20 +40,20 @@ export async function createSshKey(db: Database, clientId: string, input: Create
     throw new ApiError('DUPLICATE_SSH_KEY', 'An SSH key with this fingerprint already exists', 409);
   }
 
-  // Check for duplicate name per client
+  // Check for duplicate name per tenant
   const [existingName] = await db
     .select()
     .from(sshKeys)
-    .where(and(eq(sshKeys.clientId, clientId), eq(sshKeys.name, input.name)));
+    .where(and(eq(sshKeys.tenantId, tenantId), eq(sshKeys.name, input.name)));
 
   if (existingName) {
-    throw new ApiError('DUPLICATE_KEY_NAME', `SSH key named '${input.name}' already exists for this client`, 409);
+    throw new ApiError('DUPLICATE_KEY_NAME', `SSH key named '${input.name}' already exists for this tenant`, 409);
   }
 
   const id = crypto.randomUUID();
   await db.insert(sshKeys).values({
     id,
-    clientId,
+    tenantId,
     name: input.name,
     publicKey: input.public_key,
     keyFingerprint: fingerprint,
@@ -64,11 +64,11 @@ export async function createSshKey(db: Database, clientId: string, input: Create
   return created;
 }
 
-export async function updateSshKey(db: Database, clientId: string, keyId: string, input: UpdateSshKeyInput) {
+export async function updateSshKey(db: Database, tenantId: string, keyId: string, input: UpdateSshKeyInput) {
   const [existing] = await db
     .select()
     .from(sshKeys)
-    .where(and(eq(sshKeys.id, keyId), eq(sshKeys.clientId, clientId)));
+    .where(and(eq(sshKeys.id, keyId), eq(sshKeys.tenantId, tenantId)));
 
   if (!existing) {
     throw new ApiError('SSH_KEY_NOT_FOUND', `SSH key '${keyId}' not found`, 404);
@@ -77,14 +77,14 @@ export async function updateSshKey(db: Database, clientId: string, keyId: string
   const updates: Record<string, unknown> = {};
 
   if (input.name !== undefined) {
-    // Check for duplicate name per client (excluding current key)
+    // Check for duplicate name per tenant (excluding current key)
     const [existingName] = await db
       .select()
       .from(sshKeys)
-      .where(and(eq(sshKeys.clientId, clientId), eq(sshKeys.name, input.name)));
+      .where(and(eq(sshKeys.tenantId, tenantId), eq(sshKeys.name, input.name)));
 
     if (existingName && existingName.id !== keyId) {
-      throw new ApiError('DUPLICATE_KEY_NAME', `SSH key named '${input.name}' already exists for this client`, 409);
+      throw new ApiError('DUPLICATE_KEY_NAME', `SSH key named '${input.name}' already exists for this tenant`, 409);
     }
     updates.name = input.name;
   }
@@ -116,11 +116,11 @@ export async function updateSshKey(db: Database, clientId: string, keyId: string
   return updated;
 }
 
-export async function deleteSshKey(db: Database, clientId: string, keyId: string) {
+export async function deleteSshKey(db: Database, tenantId: string, keyId: string) {
   const [key] = await db
     .select()
     .from(sshKeys)
-    .where(and(eq(sshKeys.id, keyId), eq(sshKeys.clientId, clientId)));
+    .where(and(eq(sshKeys.id, keyId), eq(sshKeys.tenantId, tenantId)));
 
   if (!key) {
     throw new ApiError('SSH_KEY_NOT_FOUND', `SSH key '${keyId}' not found`, 404);

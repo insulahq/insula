@@ -11,7 +11,7 @@
  *
  * Job uses platform-api's ServiceAccount so it inherits all the RBAC
  * + Secret-mount config. The pg_dump binary must be on PATH inside
- * the platform-api container — see Dockerfile (apk add postgresql-client).
+ * the platform-api container — see Dockerfile (apk add postgresql-tenant).
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';

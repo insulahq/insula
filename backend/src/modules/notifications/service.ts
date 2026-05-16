@@ -172,8 +172,8 @@ export async function notifyUser(
  * given list. Individual failures are swallowed (notifyUser is already
  * fire-and-forget) so one bad recipient cannot starve the others.
  *
- * Used by the events.ts helpers that resolve client_admin recipients
- * via getClientNotificationRecipients and then call this with the
+ * Used by the events.ts helpers that resolve tenant_admin recipients
+ * via getTenantNotificationRecipients and then call this with the
  * resolved list.
  */
 export async function notifyUsers(

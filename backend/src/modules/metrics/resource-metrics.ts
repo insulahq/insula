@@ -7,7 +7,7 @@ const CACHE_KEY_PREFIX = 'metrics:';
 const CACHE_TTL = 7200; // 2 hours (auto-expire even if refresh fails)
 
 export interface ResourceMetrics {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly cpu: { readonly inUse: number; readonly reserved: number; readonly available: number };
   readonly memory: { readonly inUse: number; readonly reserved: number; readonly available: number }; // in Gi
   readonly storage: { readonly inUse: number; readonly reserved: number; readonly available: number }; // in Gi
@@ -36,10 +36,10 @@ type PodItem = {
   };
 };
 
-export async function collectClientMetrics(
+export async function collectTenantMetrics(
   _db: Database,
   k8s: K8sClients,
-  clientId: string,
+  tenantId: string,
   namespace: string,
   planLimits: { readonly cpuLimit: number; readonly memoryLimitGi: number; readonly storageLimitGi: number },
 ): Promise<ResourceMetrics> {
@@ -133,7 +133,7 @@ export async function collectClientMetrics(
   }
 
   const metrics: ResourceMetrics = {
-    clientId,
+    tenantId,
     cpu: {
       inUse: Math.round(cpuInUse * 1000) / 1000,
       reserved: Math.round(cpuReserved * 1000) / 1000,
@@ -154,29 +154,29 @@ export async function collectClientMetrics(
 
   // Cache in Redis
   const redis = getRedis();
-  await redis.setex(`${CACHE_KEY_PREFIX}${clientId}`, CACHE_TTL, JSON.stringify(metrics));
+  await redis.setex(`${CACHE_KEY_PREFIX}${tenantId}`, CACHE_TTL, JSON.stringify(metrics));
 
   return metrics;
 }
 
-export async function getCachedMetrics(clientId: string): Promise<ResourceMetrics | null> {
+export async function getCachedMetrics(tenantId: string): Promise<ResourceMetrics | null> {
   const redis = getRedis();
-  const cached = await redis.get(`${CACHE_KEY_PREFIX}${clientId}`);
+  const cached = await redis.get(`${CACHE_KEY_PREFIX}${tenantId}`);
   if (!cached) return null;
   return JSON.parse(cached) as ResourceMetrics;
 }
 
-export async function getAllCachedMetrics(clientIds: readonly string[]): Promise<Record<string, ResourceMetrics>> {
-  if (clientIds.length === 0) return {};
+export async function getAllCachedMetrics(tenantIds: readonly string[]): Promise<Record<string, ResourceMetrics>> {
+  if (tenantIds.length === 0) return {};
   const redis = getRedis();
-  const keys = clientIds.map(id => `${CACHE_KEY_PREFIX}${id}`);
+  const keys = tenantIds.map(id => `${CACHE_KEY_PREFIX}${id}`);
   const values = await redis.mget(...keys);
 
   const result: Record<string, ResourceMetrics> = {};
-  for (let i = 0; i < clientIds.length; i++) {
+  for (let i = 0; i < tenantIds.length; i++) {
     const raw = values[i];
     if (raw) {
-      result[clientIds[i]] = JSON.parse(raw) as ResourceMetrics;
+      result[tenantIds[i]] = JSON.parse(raw) as ResourceMetrics;
     }
   }
   return result;

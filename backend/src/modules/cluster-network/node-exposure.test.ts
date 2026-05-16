@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { setNodeExposure } from './node-exposure.js';
 import type { ClusterNetworkClients } from './k8s-client.js';
 
-function fakeClients(core: Record<string, unknown>): ClusterNetworkClients {
+function fakeTenants(core: Record<string, unknown>): ClusterNetworkClients {
   return {
     core: core as ClusterNetworkClients['core'],
     custom: {} as ClusterNetworkClients['custom'],
@@ -17,7 +17,7 @@ describe('setNodeExposure', () => {
       { exposure: 'private' },
       'admin@x',
       {},
-      fakeClients({ patchNode }),
+      fakeTenants({ patchNode }),
     );
     expect(patchNode).toHaveBeenCalledTimes(1);
     const callArg = (patchNode.mock.calls[0]?.[0] ?? {}) as { name?: string; body?: { metadata?: { labels?: Record<string, string | null>; annotations?: Record<string, string> } } };
@@ -38,7 +38,7 @@ describe('setNodeExposure', () => {
       { exposure: 'public' },
       'admin@x',
       {},
-      fakeClients({ patchNode }),
+      fakeTenants({ patchNode }),
     );
     const callArg = (patchNode.mock.calls[0]?.[0] ?? {}) as { body?: { metadata?: { labels?: Record<string, string | null> } } };
     // null on the label key removes it via merge-patch semantics
@@ -53,7 +53,7 @@ describe('setNodeExposure', () => {
         { exposure: 'private' },
         'admin',
         {},
-        fakeClients({ patchNode }),
+        fakeTenants({ patchNode }),
       ),
     ).rejects.toMatchObject({ code: 'NODE_NOT_FOUND', status: 404 });
   });
@@ -66,7 +66,7 @@ describe('setNodeExposure', () => {
         { exposure: 'private' },
         'admin',
         {},
-        fakeClients({ patchNode }),
+        fakeTenants({ patchNode }),
       ),
     ).rejects.toMatchObject({ code: 'CLUSTER_NETWORK_FORBIDDEN', status: 503 });
   });

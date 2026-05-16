@@ -641,7 +641,7 @@ export async function applyMailServerHostnameToStalwart(
   // SystemSettings on startup and caches; without a roll, the
   // running pods keep announcing the old hostname until their next
   // natural restart. Failure is non-fatal — caller may not have
-  // passed a k8s client (unit tests, or platform-api degraded mode).
+  // passed a k8s tenant (unit tests, or platform-api degraded mode).
   let rolloutTriggered = false;
   if (k8s && previousHostname !== trimmed) {
     try {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { collectClusterHealth, collectNodeSubsystemHealth } from './service.js';
 
 // Helper to build a K8sClients-shaped mock with just the methods these
-// tests exercise. Cast to `any` at call sites — the real client surface
+// tests exercise. Cast to `any` at call sites — the real tenant surface
 // is huge and not relevant to what's under test here.
 function makeK8s(overrides: Record<string, unknown> = {}) {
   return {

@@ -7,7 +7,7 @@ import { registerAuth } from '../../middleware/auth.js';
 const mockRoute = {
   id: 'route-1',
   domainId: 'dom-1',
-  clientId: 'client-1',
+  tenantId: 'tenant-1',
   hostname: 'app.example.com',
   workloadId: 'wl-1',
   tlsMode: 'auto',
@@ -56,10 +56,10 @@ describe('ingress-routes routes', () => {
 
   // --- Auth ---
 
-  it('GET client routes should require auth', async () => {
+  it('GET tenant routes should require auth', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/client-1/domains/dom-1/routes',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes',
     });
     expect(res.statusCode).toBe(401);
   });
@@ -74,7 +74,7 @@ describe('ingress-routes routes', () => {
   it('GET routes should return list for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/client-1/domains/dom-1/routes',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -87,7 +87,7 @@ describe('ingress-routes routes', () => {
   it('POST route should create with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/client-1/domains/dom-1/routes',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         hostname: 'app.example.com',
@@ -101,7 +101,7 @@ describe('ingress-routes routes', () => {
   it('POST route should reject empty body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/client-1/domains/dom-1/routes',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {},
     });
@@ -113,7 +113,7 @@ describe('ingress-routes routes', () => {
   it('DELETE route should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/client-1/domains/dom-1/routes/route-1',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes/route-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

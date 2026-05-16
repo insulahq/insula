@@ -7,7 +7,7 @@ import {
   closeTestDb,
   getTestDb,
 } from '../../test-helpers/db.js';
-import { seedRegion, seedPlan, seedClient, seedDomain } from '../../test-helpers/fixtures.js';
+import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
 import { emailDomains, dnsRecords } from '../../db/schema.js';
 import { enableEmailForDomain, updateEmailDomain, ensureWebmailIngress } from './service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -15,7 +15,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 const dbAvailable = await isDbAvailable();
 
 describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', () => {
-  let clientId: string;
+  let tenantId: string;
 
   beforeAll(async () => {
     await runMigrations();
@@ -30,16 +30,16 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     const db = getTestDb();
     const region = await seedRegion(db);
     const plan = await seedPlan(db);
-    const client = await seedClient(db, region.id, plan.id);
-    clientId = client.id;
+    const tenant = await seedTenant(db, region.id, plan.id);
+    tenantId = tenant.id;
   });
 
   it('enableEmailForDomain publishes a webmail.<domain> A record by default', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, { domainName: 'webmail-test.example.com' });
+    const domain = await seedDomain(db, tenantId, { domainName: 'webmail-test.example.com' });
     await enableEmailForDomain(
       db as never,
-      clientId,
+      tenantId,
       domain.id,
       {},
       '0'.repeat(64),
@@ -59,10 +59,10 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
 
   it('updateEmailDomain with webmail_enabled=false removes the webmail DNS record', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, { domainName: 'toggle-test.example.com' });
+    const domain = await seedDomain(db, tenantId, { domainName: 'toggle-test.example.com' });
     await enableEmailForDomain(
       db as never,
-      clientId,
+      tenantId,
       domain.id,
       {},
       '0'.repeat(64),
@@ -78,7 +78,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     ).toBe(true);
 
     // Toggle webmail off
-    await updateEmailDomain(db as never, clientId, domain.id, { webmail_enabled: false });
+    await updateEmailDomain(db as never, tenantId, domain.id, { webmail_enabled: false });
 
     const after = await db
       .select()
@@ -98,18 +98,18 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
 
   it('updateEmailDomain with webmail_enabled=true re-publishes the webmail DNS record', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, { domainName: 'republish-test.example.com' });
+    const domain = await seedDomain(db, tenantId, { domainName: 'republish-test.example.com' });
     await enableEmailForDomain(
       db as never,
-      clientId,
+      tenantId,
       domain.id,
       {},
       '0'.repeat(64),
     );
 
     // Toggle off and then back on
-    await updateEmailDomain(db as never, clientId, domain.id, { webmail_enabled: false });
-    await updateEmailDomain(db as never, clientId, domain.id, { webmail_enabled: true });
+    await updateEmailDomain(db as never, tenantId, domain.id, { webmail_enabled: false });
+    await updateEmailDomain(db as never, tenantId, domain.id, { webmail_enabled: true });
 
     const records = await db
       .select()
@@ -160,13 +160,13 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
 
   it('ensureWebmailIngress writes status=ready when cert + ingress succeed', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, {
+    const domain = await seedDomain(db, tenantId, {
       domainName: 'status-ok.example.com',
       dnsMode: 'primary',
     });
     const enabled = await enableEmailForDomain(
       db as never,
-      clientId,
+      tenantId,
       domain.id,
       {},
       '0'.repeat(64),
@@ -177,7 +177,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     // ensureRouteCertificate is invoked dynamically inside
     // ensureWebmailIngress — to keep this test focused on the status
     // write paths, we skip cert provisioning by passing a fake k8s
-    // client whose namespacedCustomObject succeeds. The actual cert
+    // tenant whose namespacedCustomObject succeeds. The actual cert
     // logic is tested separately in webmail-reconciler.test.ts.
     const result = await ensureWebmailIngress(
       db as never,
@@ -197,13 +197,13 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
 
   it('ensureWebmailIngress writes status=failed when ingress create throws', async () => {
     const db = getTestDb();
-    const domain = await seedDomain(db, clientId, {
+    const domain = await seedDomain(db, tenantId, {
       domainName: 'status-fail.example.com',
       dnsMode: 'primary',
     });
     const enabled = await enableEmailForDomain(
       db as never,
-      clientId,
+      tenantId,
       domain.id,
       {},
       '0'.repeat(64),

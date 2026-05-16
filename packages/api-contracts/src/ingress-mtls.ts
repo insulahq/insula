@@ -22,7 +22,7 @@ export type MtlsVerifyMode = z.infer<typeof mtlsVerifyModeSchema>;
 /**
  * Per-ingress mTLS config. The CA cert is uploaded inline (PEM bundle)
  * and stored encrypted at rest; the platform syncs it as a K8s Secret
- * in the client namespace. Inline upload (no separate provider table)
+ * in the tenant namespace. Inline upload (no separate provider table)
  * because in practice each ingress has its own CA — sharing a CA across
  * many ingresses doesn't model real customer use cases (different
  * apps trust different identity sources).

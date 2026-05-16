@@ -146,15 +146,15 @@ describe('computeFailoverHeadroom — server-node selection', () => {
 });
 
 describe('computeFailoverHeadroom — tenant accounting + survivability flag', () => {
-  it('sums tenant requests across client-* namespaces only', () => {
+  it('sums tenant requests across tenant-* namespaces only', () => {
     const nodes = [
       node({ name: 'server1', role: 'server', cpu: '4', memory: '8Gi' }),
       node({ name: 'server2', role: 'server', cpu: '4', memory: '8Gi' }),
       node({ name: 'server3', role: 'server', cpu: '4', memory: '8Gi' }),
     ];
     const pods = [
-      pod({ namespace: 'client-acme-co-1234', cpu: '500m', memory: '512Mi' }),
-      pod({ namespace: 'client-other-5678', cpu: '500m', memory: '512Mi' }),
+      pod({ namespace: 'tenant-acme-co-1234', cpu: '500m', memory: '512Mi' }),
+      pod({ namespace: 'tenant-other-5678', cpu: '500m', memory: '512Mi' }),
       pod({ namespace: 'kube-system', cpu: '100m', memory: '128Mi' }),
       pod({ namespace: 'unrelated-ns', cpu: '999', memory: '999Gi' }), // ignored
     ];
@@ -171,7 +171,7 @@ describe('computeFailoverHeadroom — tenant accounting + survivability flag', (
     ];
     // tenantAvailable = 12 - 0 - 4 = 8 cores. Pack tenants to 10.
     const pods = [
-      pod({ namespace: 'client-greedy', cpu: '10', memory: '1Gi' }),
+      pod({ namespace: 'tenant-greedy', cpu: '10', memory: '1Gi' }),
     ];
     const h = computeFailoverHeadroom(nodes, pods);
     expect(h.tenantUsedCpu).toBe(10);
@@ -186,7 +186,7 @@ describe('computeFailoverHeadroom — tenant accounting + survivability flag', (
       node({ name: 'server3', role: 'server', cpu: '4', memory: '8Gi' }),
     ];
     const pods = [
-      pod({ namespace: 'client-modest', cpu: '2', memory: '4Gi' }),
+      pod({ namespace: 'tenant-modest', cpu: '2', memory: '4Gi' }),
     ];
     const h = computeFailoverHeadroom(nodes, pods);
     expect(h.singleFailureSurvivable).toBe(true);
@@ -203,7 +203,7 @@ describe('computeFailoverHeadroom — tenant accounting + survivability flag', (
     // 24 total GiB - 0 system - 8 failover = 16 GiB headroom.
     // 6 cores (fits) + 100 GiB (does NOT fit) → survivable must be false.
     const pods = [
-      pod({ namespace: 'client-cpu-light', cpu: '6', memory: '100Gi' }),
+      pod({ namespace: 'tenant-cpu-light', cpu: '6', memory: '100Gi' }),
     ];
     const h = computeFailoverHeadroom(nodes, pods);
     expect(h.tenantAvailableCpu).toBe(8);

@@ -71,7 +71,7 @@ export type ImapSyncJobStatus = z.infer<typeof imapSyncJobStatusSchema>;
 
 export interface ImapSyncJobResponse {
   readonly id: string;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly mailboxId: string;
   readonly sourceHost: string;
   readonly sourcePort: number;

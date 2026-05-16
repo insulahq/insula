@@ -31,7 +31,7 @@ async function resolveRateLimitMax(db: Database): Promise<number> {
 }
 import { registerAuth, authenticate, requireRole } from './middleware/auth.js';
 import { createCacheMiddleware, cacheOnSendHook } from './middleware/cache.js';
-import { clientRoutes } from './modules/clients/routes.js';
+import { tenantRoutes } from './modules/tenants/routes.js';
 import { domainRoutes } from './modules/domains/routes.js';
 import { subscriptionRoutes } from './modules/subscriptions/routes.js';
 import { backupRoutes } from './modules/backups/routes.js';
@@ -70,8 +70,8 @@ import { nodeHealthRoutes } from './modules/node-health/routes.js';
 import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
-import { registerAllLifecycleHooks } from './modules/client-lifecycle/hooks/index.js';
-import { clientLifecycleRoutes } from './modules/client-lifecycle/routes.js';
+import { registerAllLifecycleHooks } from './modules/tenant-lifecycle/hooks/index.js';
+import { tenantLifecycleRoutes } from './modules/tenant-lifecycle/routes.js';
 import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { postgresRestoreRoutes } from './modules/postgres-restore/routes.js';
 import { isPostgresRestoreInProgress, isPostgresRestoreInProgressClusterWide } from './modules/postgres-restore/service.js';
@@ -90,7 +90,7 @@ import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
 import { backupsV2InternalDownloadRoutes } from './modules/tenant-bundles/internal-download-route.js';
-import { backupsV2ClientRoutes } from './modules/tenant-bundles/client-routes.js';
+import { backupsV2ClientRoutes } from './modules/tenant-bundles/tenant-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
@@ -107,7 +107,7 @@ import { emailSslStatusRoutes } from './modules/email-ssl-status/routes.js';
 import { mailStatsRoutes } from './modules/mail-stats/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
-import { smtpRelayRoutes, smtpRelayClientRoutes } from './modules/smtp-relay/routes.js';
+import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
 import { platformUrlsRoutes } from './modules/platform-urls/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
@@ -196,7 +196,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     // trustProxy: nginx-ingress terminates TLS and forwards as HTTP
     // to the platform-api pod. Without this, request.protocol returns
     // "http" — which breaks OIDC because the redirect_uri sent to
-    // Dex is "http://admin.../callback" while Dex's static client
+    // Dex is "http://admin.../callback" while Dex's static tenant
     // only allows "https://admin.../callback" → "Unregistered
     // redirect_uri." Surfaced by integration-oidc-dex.sh.
     trustProxy: true,
@@ -387,7 +387,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(passkeyRoutes, { prefix: '/api/v1' });
   await app.register(planRoutes, { prefix: '/api/v1' });
   await app.register(regionRoutes, { prefix: '/api/v1' });
-  await app.register(clientRoutes, { prefix: '/api/v1' });
+  await app.register(tenantRoutes, { prefix: '/api/v1' });
   await app.register(domainRoutes, { prefix: '/api/v1' });
   await app.register(subscriptionRoutes, { prefix: '/api/v1' });
   await app.register(backupRoutes, { prefix: '/api/v1' });
@@ -424,7 +424,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });
-  await app.register(clientLifecycleRoutes, { prefix: '/api/v1' });
+  await app.register(tenantLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(postgresRestoreRoutes, { prefix: '/api/v1' });
   await app.register(systemBackupRoutes, { prefix: '/api/v1' });
@@ -453,7 +453,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   await app.register(mailAdminRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
-  // Email clients hit these BEFORE auth, at well-known paths on
+  // Email tenants hit these BEFORE auth, at well-known paths on
   // the platform base URL (or at autoconfig.<domain> / autodiscover.<domain>
   // CNAMEs that resolve to the platform ingress).
   await app.register(emailAutodiscoverRoutes);
@@ -462,7 +462,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
-  await app.register(smtpRelayClientRoutes, { prefix: '/api/v1' });
+  await app.register(smtpRelayTenantRoutes, { prefix: '/api/v1' });
   await app.register(webmailSettingsRoutes, { prefix: '/api/v1' });
   await app.register(platformUrlsRoutes, { prefix: '/api/v1' });
   await app.register(platformUpdateRoutes, { prefix: '/api/v1' });
@@ -535,17 +535,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const result = await reconcileIngressHosts(
           {
             adminPanelUrl: settings.adminPanelUrl ?? null,
-            clientPanelUrl: settings.clientPanelUrl ?? null,
+            tenantPanelUrl: settings.tenantPanelUrl ?? null,
             tlsSecretName,
             protectAdminViaProxy: oidc.protectAdminViaProxy,
-            protectClientViaProxy: oidc.protectClientViaProxy,
+            protectTenantViaProxy: oidc.protectTenantViaProxy,
           },
           undefined,
           { kubeconfigPath, clusterIssuerName },
         );
         if (result.changed) {
           app.log.info(
-            { adminPanelUrl: settings.adminPanelUrl, clientPanelUrl: settings.clientPanelUrl },
+            { adminPanelUrl: settings.adminPanelUrl, tenantPanelUrl: settings.tenantPanelUrl },
             'startup: ingress hosts reconciled from DB',
           );
         }
@@ -553,23 +553,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'startup: ingress host reconcile skipped (k8s unavailable)');
       }
 
-      // PR 2 (network-access two-tier): re-reconcile every client
+      // PR 2 (network-access two-tier): re-reconcile every tenant
       // ResourceQuota on boot to ensure the new scopeSelector + plan-
       // exact limits are in place. Idempotent — quotas already in the
       // target shape are no-ops. Best-effort: failure of this hook
-      // does NOT abort startup; per-client errors are logged.
+      // does NOT abort startup; per-tenant errors are logged.
       // Fire-and-forget: boot-time quota reconciliation walks every
-      // client and round-trips the k8s API once per row. With 30+
-      // clients that easily exceeds Fastify's 60s onReady timeout
+      // tenant and round-trips the k8s API once per row. With 30+
+      // tenants that easily exceeds Fastify's 60s onReady timeout
       // and starves the readiness probe → CrashLoopBackOff. Kick it
       // off async so the API comes up immediately; the reconciler
       // logs scanned/reconciled/errors when it finishes.
       void (async () => {
         try {
           const { createK8sClients: createK8s } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const { reconcileAllClientQuotas } = await import('./modules/k8s-provisioner/quota-reconciler.js');
+          const { reconcileAllTenantQuotas } = await import('./modules/k8s-provisioner/quota-reconciler.js');
           const quotaK8s = createK8s((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
-          await reconcileAllClientQuotas(app.db, quotaK8s, app.log);
+          await reconcileAllTenantQuotas(app.db, quotaK8s, app.log);
         } catch (err) {
           app.log.warn({ err }, 'startup: quota reconcile skipped (k8s unavailable)');
         }
@@ -638,9 +638,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => storageLifecycleHandle.stop());
 
         // Phase 5: lifecycle-hook retry tick. Drains failed
-        // client_lifecycle_hook_runs rows whose next_attempt_at has
+        // tenant_lifecycle_hook_runs rows whose next_attempt_at has
         // passed. Per-hook circuit-breaker bounded in-memory.
-        const { startLifecycleHookRetryScheduler } = await import('./modules/client-lifecycle/scheduler.js');
+        const { startLifecycleHookRetryScheduler } = await import('./modules/tenant-lifecycle/scheduler.js');
         const lifecycleRetryStop = startLifecycleHookRetryScheduler(app.db, storageK8s);
         app.addHook('onClose', () => lifecycleRetryStop());
       } catch (err) {
@@ -658,7 +658,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       }
 
       // Tenant Backup Tier-1 scheduler — fans out scheduled bundles
-      // for clients whose client_backup_schedules.last_run_at is
+      // for tenants whose tenant_backup_schedules.last_run_at is
       // older than the configured frequency (daily/weekly/monthly).
       // Cross-replica CAS via UPDATE ... RETURNING serialises ticks.
       try {
@@ -763,7 +763,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
 
         // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
-        // 60s. Shares the same k8s client instance as mail reconcilers
+        // 60s. Shares the same k8s tenant instance as mail reconcilers
         // to avoid re-reading the kubeconfig. Stops cleanly on app
         // close.
         const nodeSyncHandle = startNodeSyncReconciler(app.db, k8sForImapsync);
@@ -800,7 +800,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // Cluster-storage capacity reconciler — 5-min tick that emits
         // admin notifications when any node OR the cluster as a whole
         // crosses 80 % (warning) or 95 % (critical) commitPct. Catches
-        // the failure mode where new client provisioning / Apply HA
+        // the failure mode where new tenant provisioning / Apply HA
         // scale-up SILENTLY fails because Longhorn precheck rejects
         // ("insufficient storage") before the operator notices the
         // cluster filled up.
@@ -820,7 +820,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // Backup-health: watches Jobs cluster-wide via the
         // platform.example.test/backup-health-watch=true label and
         // emits one notification per failed Job UID. Routes admin or
-        // client_admin recipients per the optional client-id label.
+        // tenant_admin recipients per the optional tenant-id label.
         const { startBackupHealthScheduler } = await import('./modules/backup-health/scheduler.js');
         const backupHealthStop = startBackupHealthScheduler({
           db: app.db,
@@ -896,13 +896,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       } catch (err) {
         // Catch covers the entire mail-related scheduler block above
         // (mail-imapsync, mail-stats, cnpg-backup-health, dr-watcher,
-        // proxy-networks-reconciler). One unavailable k8s client takes
+        // proxy-networks-reconciler). One unavailable k8s tenant takes
         // them all down together — that's the trade-off for sharing
         // k8sForImapsync. The "schedulers not started" wording avoids
         // misattributing a failure to mail-imapsync specifically.
         app.log.warn(
           { err },
-          'mail schedulers not started (imapsync, dr-watcher, proxy-networks reconciler) — k8s client unavailable',
+          'mail schedulers not started (imapsync, dr-watcher, proxy-networks reconciler) — k8s tenant unavailable',
         );
       }
 
@@ -988,7 +988,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       app.addHook('onClose', () => clearInterval(passkeyPruneInterval));
 
       // Phase 3 — disk-pressure image watcher + Phase 2 kubelet-GC drift
-      // detector. Both share a k8s client. Failures are non-fatal.
+      // detector. Both share a k8s tenant. Failures are non-fatal.
       try {
         const { createK8sClients: createK8sForWatcher } = await import('./modules/k8s-provisioner/k8s-client.js');
         const watcherKubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -1004,7 +1004,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       }
 
       // Domain verification cron — hourly DNS re-check with regression notifications.
-      // Does not require k8s clients; uses only DB + DNS resolution.
+      // Does not require k8s tenants; uses only DB + DNS resolution.
       //
       // Register the onClose hook SYNCHRONOUSLY with a closure that captures
       // the handle as it resolves — `addHook` after the server starts

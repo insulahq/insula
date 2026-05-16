@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createCronJobSchema, updateCronJobSchema } from './schema.js';
 import * as service from './service.js';
 import { bulkUpdateCronJobEnabled, bulkDeleteCronJobs } from './service.js';
@@ -8,11 +8,11 @@ import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 
 export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
-  // Phase 6: method-aware role guard — read for all client roles,
-  // writes only for client_admin + staff.
+  // Phase 6: method-aware role guard — read for all tenant roles,
+  // writes only for tenant_admin + staff.
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireClientRoleByMethod());
-  app.addHook('onRequest', requireClientAccess());
+  app.addHook('onRequest', requireTenantRoleByMethod());
+  app.addHook('onRequest', requireTenantAccess());
 
   // POST /api/v1/admin/cron-jobs/bulk — bulk enable/disable/delete
   app.post('/admin/cron-jobs/bulk', {
@@ -40,7 +40,7 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // GET /api/v1/admin/cron-jobs — list all cron jobs across all clients
+  // GET /api/v1/admin/cron-jobs — list all cron jobs across all tenants
   app.get('/admin/cron-jobs', async (request) => {
     const query = request.query as Record<string, unknown>;
     const { limit, cursor } = parsePaginationParams(query);
@@ -48,8 +48,8 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     return paginated(result.data, result.pagination);
   });
 
-  // GET /api/v1/clients/:id/cron-jobs
-  app.get('/clients/:id/cron-jobs', async (request) => {
+  // GET /api/v1/tenants/:id/cron-jobs
+  app.get('/tenants/:id/cron-jobs', async (request) => {
     const { id } = request.params as { id: string };
     const query = request.query as Record<string, unknown>;
     const { limit, cursor } = parsePaginationParams(query);
@@ -57,8 +57,8 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     return paginated(result.data, result.pagination);
   });
 
-  // POST /api/v1/clients/:id/cron-jobs
-  app.post('/clients/:id/cron-jobs', async (request, reply) => {
+  // POST /api/v1/tenants/:id/cron-jobs
+  app.post('/tenants/:id/cron-jobs', async (request, reply) => {
     const { id } = request.params as { id: string };
     const parsed = createCronJobSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -74,15 +74,15 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(success(job));
   });
 
-  // GET /api/v1/clients/:id/cron-jobs/:cronJobId
-  app.get('/clients/:id/cron-jobs/:cronJobId', async (request) => {
+  // GET /api/v1/tenants/:id/cron-jobs/:cronJobId
+  app.get('/tenants/:id/cron-jobs/:cronJobId', async (request) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };
     const job = await service.getCronJobById(app.db, id, cronJobId);
     return success(job);
   });
 
-  // PATCH /api/v1/clients/:id/cron-jobs/:cronJobId
-  app.patch('/clients/:id/cron-jobs/:cronJobId', async (request) => {
+  // PATCH /api/v1/tenants/:id/cron-jobs/:cronJobId
+  app.patch('/tenants/:id/cron-jobs/:cronJobId', async (request) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };
     const parsed = updateCronJobSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -98,15 +98,15 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
-  // POST /api/v1/clients/:id/cron-jobs/:cronJobId/run
-  app.post('/clients/:id/cron-jobs/:cronJobId/run', async (request) => {
+  // POST /api/v1/tenants/:id/cron-jobs/:cronJobId/run
+  app.post('/tenants/:id/cron-jobs/:cronJobId/run', async (request) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };
     const job = await service.runCronJobNow(app.db, id, cronJobId);
     return success(job);
   });
 
-  // DELETE /api/v1/clients/:id/cron-jobs/:cronJobId
-  app.delete('/clients/:id/cron-jobs/:cronJobId', async (request, reply) => {
+  // DELETE /api/v1/tenants/:id/cron-jobs/:cronJobId
+  app.delete('/tenants/:id/cron-jobs/:cronJobId', async (request, reply) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };
     await service.deleteCronJob(app.db, id, cronJobId);
     reply.status(204).send();

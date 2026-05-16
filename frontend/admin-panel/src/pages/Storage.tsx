@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { HardDrive, Archive, Loader2, Settings as SettingsIcon, Cloud, Server, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
-import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
+import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import { useBackups } from '@/hooks/use-backups';
 import { useDashboardMetrics } from '@/hooks/use-dashboard';
 import { useBackupConfigs, useBackupList } from '@/hooks/use-backup-config';
@@ -51,13 +51,13 @@ function truncateId(id: string): string {
 
 export default function Storage() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
 
   const {
     data: backupsData,
     isLoading: backupsLoading,
     error: backupsError,
-  } = useBackups(selectedClientId ?? undefined);
+  } = useBackups(selectedTenantId ?? undefined);
 
   const { data: dashData } = useDashboardMetrics();
   const metrics = dashData?.data;
@@ -103,8 +103,8 @@ export default function Storage() {
       {activeTab === 'overview' && <OverviewTab />}
       {activeTab === 'backups' && (
         <DataTab
-          selectedClientId={selectedClientId}
-          onClientChange={setSelectedClientId}
+          selectedTenantId={selectedTenantId}
+          onTenantChange={setSelectedTenantId}
           isLoading={backupsLoading}
           error={backupsError}
         >
@@ -113,8 +113,8 @@ export default function Storage() {
       )}
       {activeTab === 'snapshots' && (
         <SnapshotsTab
-          selectedClientId={selectedClientId}
-          onClientChange={setSelectedClientId}
+          selectedTenantId={selectedTenantId}
+          onTenantChange={setSelectedTenantId}
         />
       )}
       {activeTab === 'audit' && <AuditTab />}
@@ -124,13 +124,13 @@ export default function Storage() {
 }
 
 function SnapshotsTab({
-  selectedClientId,
-  onClientChange,
+  selectedTenantId,
+  onTenantChange,
 }: {
-  readonly selectedClientId: string | null;
-  readonly onClientChange: (id: string | null) => void;
+  readonly selectedTenantId: string | null;
+  readonly onTenantChange: (id: string | null) => void;
 }) {
-  const { data, isLoading, error } = useSnapshots(selectedClientId ?? undefined);
+  const { data, isLoading, error } = useSnapshots(selectedTenantId ?? undefined);
   const createSnap = useCreateSnapshot();
   const deleteSnap = useDeleteSnapshot();
   const snapshots = data?.data ?? [];
@@ -142,27 +142,27 @@ function SnapshotsTab({
       <hr className="border-gray-200 dark:border-gray-700" />
 
       <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Tenant Snapshots</h2>
-      <SearchableClientSelect
-        selectedClientId={selectedClientId}
-        onSelect={onClientChange}
-        placeholder="Search clients..."
+      <SearchableTenantSelect
+        selectedTenantId={selectedTenantId}
+        onSelect={onTenantChange}
+        placeholder="Search tenants..."
       />
-      {!selectedClientId && (
+      {!selectedTenantId && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-5 py-16 text-center shadow-sm">
           <Archive size={40} className="mx-auto text-gray-300" />
           <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
-            Select a client to view and manage snapshots.
+            Select a tenant to view and manage snapshots.
           </p>
         </div>
       )}
-      {selectedClientId && (
+      {selectedTenantId && (
         <>
           <div className="flex items-center justify-between">
             <p className="text-sm text-gray-500 dark:text-gray-400">
               {snapshots.length} snapshot(s) — snapshots taken before resize/archive operations are retained per plan policy.
             </p>
             <button
-              onClick={() => createSnap.mutate({ clientId: selectedClientId, label: `Manual ${new Date().toISOString().slice(0, 16)}` })}
+              onClick={() => createSnap.mutate({ tenantId: selectedTenantId, label: `Manual ${new Date().toISOString().slice(0, 16)}` })}
               disabled={createSnap.isPending}
               className="rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
             >
@@ -247,7 +247,7 @@ function AuditTab() {
           Clients listed largest-waste first. High waste = good candidate for a shrink operation via the Clients page.
         </p>
         <p className="mt-2 text-lg font-bold text-gray-900 dark:text-gray-100">
-          {totalWasteGi.toFixed(1)} GiB provisioned but unused across {rows.length} active client(s)
+          {totalWasteGi.toFixed(1)} GiB provisioned but unused across {rows.length} active tenant(s)
         </p>
       </div>
       {isLoading && <Loader2 size={24} className="animate-spin text-gray-400" />}
@@ -272,7 +272,7 @@ function AuditTable({ rows }: { readonly rows: readonly AuditRow[] }) {
         </thead>
         <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
           {sorted.map((r) => (
-            <tr key={r.clientId}>
+            <tr key={r.tenantId}>
               <td className="px-4 py-2"><code className="text-xs text-gray-600 dark:text-gray-300">{r.namespace}</code></td>
               <td className="px-4 py-2 text-right">{r.provisionedGi} GiB</td>
               <td className="px-4 py-2 text-right">{formatBytes(r.usedBytes)}</td>
@@ -404,44 +404,44 @@ function BackupTargetStatCard({ cfg }: { readonly cfg: import('@k8s-hosting/api-
 }
 
 interface DataTabProps {
-  readonly selectedClientId: string | null;
-  readonly onClientChange: (id: string | null) => void;
+  readonly selectedTenantId: string | null;
+  readonly onTenantChange: (id: string | null) => void;
   readonly isLoading: boolean;
   readonly error: Error | null;
   readonly children: React.ReactNode;
 }
 
-function DataTab({ selectedClientId, onClientChange, isLoading, error, children }: DataTabProps) {
+function DataTab({ selectedTenantId, onTenantChange, isLoading, error, children }: DataTabProps) {
   return (
     <div className="space-y-4">
-      <SearchableClientSelect
-        selectedClientId={selectedClientId}
-        onSelect={onClientChange}
-        placeholder="Search clients..."
+      <SearchableTenantSelect
+        selectedTenantId={selectedTenantId}
+        onSelect={onTenantChange}
+        placeholder="Search tenants..."
       />
 
-      {!selectedClientId && (
+      {!selectedTenantId && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-5 py-16 text-center shadow-sm">
           <Archive size={40} className="mx-auto text-gray-300" />
-          <p className="mt-4 text-sm text-gray-500 dark:text-gray-400" data-testid="select-client-prompt">
-            Select a client to view their data.
+          <p className="mt-4 text-sm text-gray-500 dark:text-gray-400" data-testid="select-tenant-prompt">
+            Select a tenant to view their data.
           </p>
         </div>
       )}
 
-      {selectedClientId && isLoading && (
+      {selectedTenantId && isLoading && (
         <div className="flex items-center justify-center py-10">
           <Loader2 size={24} className="animate-spin text-gray-400" />
         </div>
       )}
 
-      {selectedClientId && error && (
+      {selectedTenantId && error && (
         <div className="px-5 py-10 text-center text-sm text-red-500 dark:text-red-400" data-testid="data-error">
           {error instanceof Error ? error.message : 'Failed to load data'}
         </div>
       )}
 
-      {selectedClientId && !isLoading && !error && children}
+      {selectedTenantId && !isLoading && !error && children}
     </div>
   );
 }
@@ -504,7 +504,7 @@ function BackupsTable({ backups }: BackupsTableProps) {
             {backups.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-                  No backups found for this client.
+                  No backups found for this tenant.
                 </td>
               </tr>
             )}
@@ -568,7 +568,7 @@ function SettingsTab() {
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Snapshot Store</h2>
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-          Where client PVC snapshots are persisted. Changing the backend affects <strong>new</strong> snapshots only — existing archives stay where they were written.
+          Where tenant PVC snapshots are persisted. Changing the backend affects <strong>new</strong> snapshots only — existing archives stay where they were written.
         </p>
         {backupConfigs.length > 0 && (
           <div className="mb-4 rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-700 dark:text-blue-300">

@@ -120,8 +120,8 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
         updated_at = now()
     WHERE status = 'running'
       AND started_at < ${cutoff}
-    RETURNING id, client_id
-  `) as unknown as { rows: Array<{ id: string; client_id: string }> };
+    RETURNING id, tenant_id
+  `) as unknown as { rows: Array<{ id: string; tenant_id: string }> };
   stuckMarkedFailed = stuckRes.rows.length;
   if (stuckMarkedFailed > 0) {
     app.log.warn({ count: stuckMarkedFailed, ids: stuckRes.rows.map((r) => r.id) }, 'tenant-backup retention: marked stuck running bundles as failed');
@@ -130,7 +130,7 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
     // — the count is bounded (sweep runs every 5 min, anyone but a
     // disaster scenario won't have more than a handful past the
     // cutoff).
-    for (const { id: bundleId, client_id: clientId } of stuckRes.rows) {
+    for (const { id: bundleId, tenant_id: tenantId } of stuckRes.rows) {
       try {
         const taskRow = await app.db.execute(sql`
           SELECT user_id FROM tasks WHERE kind = 'backup.bundle' AND ref_id = ${bundleId} LIMIT 1
@@ -146,7 +146,7 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
           await notifyUser(app.db, userId, {
             type: 'error',
             title: 'Backup bundle reaped (stuck)',
-            message: `Bundle ${bundleId} (${clientId.slice(0, 8)}…) was stuck in 'running' past the ${STUCK_RUNNING_HOURS}h cutoff. ${stuckErr}`,
+            message: `Bundle ${bundleId} (${tenantId.slice(0, 8)}…) was stuck in 'running' past the ${STUCK_RUNNING_HOURS}h cutoff. ${stuckErr}`,
             resourceType: 'backup_bundle',
             resourceId: bundleId,
           });

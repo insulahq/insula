@@ -1,6 +1,6 @@
 // Docker Registry HTTP API V2 tag-list probe with 60-minute cache.
 //
-// Used by the client-panel "Updates available?" pill: each row in
+// Used by the tenant-panel "Updates available?" pill: each row in
 // the Custom Containers tab triggers a check-updates-batch POST when
 // the tab opens; the backend serves the cached result immediately
 // and fires an async refresh for entries older than 60 minutes.

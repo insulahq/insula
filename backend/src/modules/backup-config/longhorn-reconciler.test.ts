@@ -12,7 +12,7 @@ const DEFAULT_DISCOVERED_CRONS = [
   'platform-backup-audit',
 ];
 
-function createMockClients(discoveredCrons: string[] = DEFAULT_DISCOVERED_CRONS) {
+function createMockTenants(discoveredCrons: string[] = DEFAULT_DISCOVERED_CRONS) {
   const core = {
     replaceNamespacedSecret: vi.fn(),
     createNamespacedSecret: vi.fn(),
@@ -68,22 +68,22 @@ const SSH_INPUT = {
 };
 
 describe('reconcileBackupTarget', () => {
-  let clients: ReturnType<typeof createMockClients>;
+  let tenants: ReturnType<typeof createMockTenants>;
 
   beforeEach(() => {
-    clients = createMockClients();
+    tenants = createMockTenants();
   });
 
   it('replaces the credentials Secret on happy path', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
     // Called three times — longhorn-system, platform ns, mail ns (M6.3 mirror)
-    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledTimes(3);
-    const [args] = clients.core.replaceNamespacedSecret.mock.calls[0];
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(3);
+    const [args] = tenants.core.replaceNamespacedSecret.mock.calls[0];
     expect(args.name).toBe('longhorn-backup-credentials');
     expect(args.namespace).toBe('longhorn-system');
     expect(args.body.stringData.AWS_ACCESS_KEY_ID).toBe(INPUT.accessKeyId);
@@ -94,13 +94,13 @@ describe('reconcileBackupTarget', () => {
   });
 
   it('marks the platform-ns Secret with TARGET_KIND=s3 on S3 activate', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
-    const [, platformArgs] = clients.core.replaceNamespacedSecret.mock.calls;
+    const [, platformArgs] = tenants.core.replaceNamespacedSecret.mock.calls;
     expect(platformArgs[0].body.stringData.TARGET_KIND).toBe('s3');
     // Switching back from SSH→S3 must drop stale SSH keys. stringData set
     // to '' lets replaceNamespacedSecret overwrite them without leaving
@@ -110,13 +110,13 @@ describe('reconcileBackupTarget', () => {
   });
 
   it('also writes backup-credentials Secret into the platform namespace for DR CronJobs', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
-    const calls = clients.core.replaceNamespacedSecret.mock.calls;
+    const calls = tenants.core.replaceNamespacedSecret.mock.calls;
     // 3 calls: longhorn-system + platform + mail (M6.3 mirror)
     expect(calls).toHaveLength(3);
     const [, platformArgs] = calls;
@@ -138,29 +138,29 @@ describe('reconcileBackupTarget', () => {
     // platform-ns call fails. The reconciler should log + return, not
     // throw, so the operator sees the Longhorn target go live.
     // Mail-ns call also succeeds (separate try/catch).
-    clients.core.replaceNamespacedSecret
+    tenants.core.replaceNamespacedSecret
       .mockResolvedValueOnce({})   // longhorn-system: ok
       .mockRejectedValueOnce({ statusCode: 500, message: 'platform ns down' })  // platform: fail
       .mockResolvedValueOnce({}); // mail: ok
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
-    expect(clients.custom.patchClusterCustomObject).toHaveBeenCalled();
+    await expect(reconcileBackupTarget(tenants as any, INPUT)).resolves.toBeUndefined();
+    expect(tenants.custom.patchClusterCustomObject).toHaveBeenCalled();
   });
 
   it('falls back to create when the Secret does not yet exist (all three namespaces)', async () => {
-    clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
-    clients.core.createNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
+    tenants.core.createNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
     // 3 replace attempts (all 404) → 3 create fallbacks: longhorn-system, platform, mail
-    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledTimes(3);
-    expect(clients.core.createNamespacedSecret).toHaveBeenCalledTimes(3);
-    const calls = clients.core.createNamespacedSecret.mock.calls;
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(3);
+    expect(tenants.core.createNamespacedSecret).toHaveBeenCalledTimes(3);
+    const calls = tenants.core.createNamespacedSecret.mock.calls;
     expect(calls[0][0].namespace).toBe('longhorn-system');
     expect(calls[0][0].body.metadata.name).toBe('longhorn-backup-credentials');
     expect(calls[1][0].namespace).toBe('platform');
@@ -170,14 +170,14 @@ describe('reconcileBackupTarget', () => {
   });
 
   it('patches BackupTarget/default with correct S3 URL', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
-    expect(clients.custom.patchClusterCustomObject).toHaveBeenCalledOnce();
-    const [args] = clients.custom.patchClusterCustomObject.mock.calls[0];
+    expect(tenants.custom.patchClusterCustomObject).toHaveBeenCalledOnce();
+    const [args] = tenants.custom.patchClusterCustomObject.mock.calls[0];
     expect(args.group).toBe('longhorn.io');
     expect(args.version).toBe('v1beta2');
     expect(args.plural).toBe('backuptargets');
@@ -187,47 +187,47 @@ describe('reconcileBackupTarget', () => {
   });
 
   it('includes the path prefix when one is supplied', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, { ...INPUT, pathPrefix: 'longhorn-staging' });
+    await reconcileBackupTarget(tenants as any, { ...INPUT, pathPrefix: 'longhorn-staging' });
 
-    const [args] = clients.custom.patchClusterCustomObject.mock.calls[0];
+    const [args] = tenants.custom.patchClusterCustomObject.mock.calls[0];
     expect(args.body.spec.backupTargetURL).toBe('s3://k8s-staging@eu-central/longhorn-staging');
   });
 
   it('strips leading/trailing slashes from the path prefix', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, { ...INPUT, pathPrefix: '//nested/path/' });
+    await reconcileBackupTarget(tenants as any, { ...INPUT, pathPrefix: '//nested/path/' });
 
-    const [args] = clients.custom.patchClusterCustomObject.mock.calls[0];
+    const [args] = tenants.custom.patchClusterCustomObject.mock.calls[0];
     expect(args.body.spec.backupTargetURL).toBe('s3://k8s-staging@eu-central/nested/path');
   });
 
   it('falls back to namespaced BackupTarget on cluster-scope 404', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockRejectedValue({ statusCode: 404 });
-    clients.custom.patchNamespacedCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockRejectedValue({ statusCode: 404 });
+    tenants.custom.patchNamespacedCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
-    expect(clients.custom.patchClusterCustomObject).toHaveBeenCalledOnce();
-    expect(clients.custom.patchNamespacedCustomObject).toHaveBeenCalledOnce();
-    const [args] = clients.custom.patchNamespacedCustomObject.mock.calls[0];
+    expect(tenants.custom.patchClusterCustomObject).toHaveBeenCalledOnce();
+    expect(tenants.custom.patchNamespacedCustomObject).toHaveBeenCalledOnce();
+    const [args] = tenants.custom.patchNamespacedCustomObject.mock.calls[0];
     expect(args.namespace).toBe('longhorn-system');
     expect(args.name).toBe('default');
   });
 
   it('propagates non-404 errors from the Secret API', async () => {
-    clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 500, message: 'boom' });
+    tenants.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 500, message: 'boom' });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(reconcileBackupTarget(clients as any, INPUT)).rejects.toMatchObject({
+    await expect(reconcileBackupTarget(tenants as any, INPUT)).rejects.toMatchObject({
       statusCode: 500,
     });
   });
@@ -241,14 +241,14 @@ describe('reconcileBackupTarget', () => {
     const wrappedErr = new Error(
       'HTTP-Code: 404 Message: Unknown API Status Code! Body: "{\\"kind\\":\\"Status\\",\\"code\\":404,\\"reason\\":\\"NotFound\\"}" Headers: {}',
     );
-    clients.core.replaceNamespacedSecret.mockRejectedValueOnce(wrappedErr);
-    clients.core.createNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockRejectedValueOnce(wrappedErr);
+    tenants.core.createNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
+    await expect(reconcileBackupTarget(tenants as any, INPUT)).resolves.toBeUndefined();
     // Fallback create was reached
-    expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
+    expect(tenants.core.createNamespacedSecret).toHaveBeenCalled();
   });
 
   it('recognises v1 404 when body is a parseable JSON string carrying reason=NotFound', async () => {
@@ -256,30 +256,30 @@ describe('reconcileBackupTarget', () => {
       body: '{"kind":"Status","status":"Failure","code":404,"reason":"NotFound"}',
       message: 'Request failed',
     };
-    clients.core.replaceNamespacedSecret.mockRejectedValueOnce(err);
-    clients.core.createNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockRejectedValueOnce(err);
+    tenants.core.createNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
-    expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
+    await expect(reconcileBackupTarget(tenants as any, INPUT)).resolves.toBeUndefined();
+    expect(tenants.core.createNamespacedSecret).toHaveBeenCalled();
   });
 });
 
 describe('reconcileBackupTarget — SSH variant', () => {
-  let clients: ReturnType<typeof createMockClients>;
-  beforeEach(() => { clients = createMockClients(); });
+  let tenants: ReturnType<typeof createMockTenants>;
+  beforeEach(() => { tenants = createMockTenants(); });
 
   it('writes SSH_* keys + TARGET_KIND=ssh to platform-ns and mail-ns Secrets', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, SSH_INPUT);
+    await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
     // Two Secret calls — platform-ns + mail-ns mirror (M6.3).
     // Longhorn-system is never touched for SSH (BackupTarget only talks S3).
-    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
-    const [args] = clients.core.replaceNamespacedSecret.mock.calls[0];
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
+    const [args] = tenants.core.replaceNamespacedSecret.mock.calls[0];
     expect(args.name).toBe('backup-credentials');
     expect(args.namespace).toBe('platform');
     expect(args.body.stringData.TARGET_KIND).toBe('ssh');
@@ -290,18 +290,18 @@ describe('reconcileBackupTarget — SSH variant', () => {
     expect(args.body.stringData.SSH_PRIVATE_KEY).toBe(SSH_INPUT.privateKey);
     // Mail mirror carries the same SSH data (barman-cloud will fail silently
     // on SSH-target, which is expected — SSH is not a CNPG-native transport)
-    const [, mailArgs] = clients.core.replaceNamespacedSecret.mock.calls;
+    const [, mailArgs] = tenants.core.replaceNamespacedSecret.mock.calls;
     expect(mailArgs[0].namespace).toBe('mail');
     expect(mailArgs[0].body.stringData.TARGET_KIND).toBe('ssh');
   });
 
   it('clears stale AWS_* keys when activating SSH after a prior S3 config', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, SSH_INPUT);
+    await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
-    const [args] = clients.core.replaceNamespacedSecret.mock.calls[0];
+    const [args] = tenants.core.replaceNamespacedSecret.mock.calls[0];
     // Empty-string stringData overwrites prior AWS_* on replace — keeps
     // the Secret shape deterministic across target-kind switches.
     expect(args.body.stringData.AWS_ACCESS_KEY_ID).toBe('');
@@ -312,41 +312,41 @@ describe('reconcileBackupTarget — SSH variant', () => {
   });
 
   it('does NOT patch the Longhorn BackupTarget CR on SSH activate', async () => {
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, SSH_INPUT);
+    await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
     // Longhorn does not support SSH as a BackupTarget backend — the CR
     // is left untouched. Longhorn-level volume backups are disabled when
     // the admin panel's active config is SSH-only.
-    expect(clients.custom.patchClusterCustomObject).not.toHaveBeenCalled();
-    expect(clients.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(tenants.custom.patchClusterCustomObject).not.toHaveBeenCalled();
+    expect(tenants.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
   });
 
   it('falls back to createNamespacedSecret on 404 for SSH variant (platform + mail)', async () => {
-    clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
-    clients.core.createNamespacedSecret.mockResolvedValue({});
+    tenants.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
+    tenants.core.createNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, SSH_INPUT);
+    await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
     // 2 replace attempts (all 404) → 2 create fallbacks: platform + mail
-    expect(clients.core.createNamespacedSecret).toHaveBeenCalledTimes(2);
-    const [args] = clients.core.createNamespacedSecret.mock.calls[0];
+    expect(tenants.core.createNamespacedSecret).toHaveBeenCalledTimes(2);
+    const [args] = tenants.core.createNamespacedSecret.mock.calls[0];
     expect(args.namespace).toBe('platform');
     expect(args.body.metadata.name).toBe('backup-credentials');
     expect(args.body.stringData.TARGET_KIND).toBe('ssh');
-    const [, mailArgs] = clients.core.createNamespacedSecret.mock.calls;
+    const [, mailArgs] = tenants.core.createNamespacedSecret.mock.calls;
     expect(mailArgs[0].namespace).toBe('mail');
     expect(mailArgs[0].body.metadata.name).toBe('backup-credentials');
   });
 
   it('propagates non-404 errors from the SSH Secret write', async () => {
-    clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 500, message: 'boom' });
+    tenants.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 500, message: 'boom' });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(reconcileBackupTarget(clients as any, SSH_INPUT)).rejects.toMatchObject({
+    await expect(reconcileBackupTarget(tenants as any, SSH_INPUT)).rejects.toMatchObject({
       statusCode: 500,
     });
   });
@@ -354,28 +354,28 @@ describe('reconcileBackupTarget — SSH variant', () => {
 
 describe('clearBackupTarget', () => {
   it('empties the URL and secret reference', async () => {
-    const clients = createMockClients();
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    const tenants = createMockTenants();
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await clearBackupTarget(clients as any);
+    await clearBackupTarget(tenants as any);
 
-    const [args] = clients.custom.patchClusterCustomObject.mock.calls[0];
+    const [args] = tenants.custom.patchClusterCustomObject.mock.calls[0];
     expect(args.body.spec.backupTargetURL).toBe('');
     expect(args.body.spec.credentialSecret).toBe('');
   });
 
   it('skips the BackupTarget CR patch when kind=ssh is supplied', async () => {
-    const clients = createMockClients();
+    const tenants = createMockTenants();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await clearBackupTarget(clients as any, { kind: 'ssh' });
+    await clearBackupTarget(tenants as any, { kind: 'ssh' });
 
     // SSH was never patched-in, so clearing has nothing to clear. The
     // caller still wants a well-defined no-op instead of needing to
     // branch on kind externally.
-    expect(clients.custom.patchClusterCustomObject).not.toHaveBeenCalled();
-    expect(clients.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(tenants.custom.patchClusterCustomObject).not.toHaveBeenCalled();
+    expect(tenants.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });
 
@@ -394,85 +394,85 @@ describe('DR CronJob suspend toggle', () => {
   ];
 
   it('unsuspends every DR CronJob on S3 activate', async () => {
-    const clients = createMockClients();
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    const tenants = createMockTenants();
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, INPUT);
+    await reconcileBackupTarget(tenants as any, INPUT);
 
-    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
-    const namesPatched = clients.batch.patchNamespacedCronJob.mock.calls.map((c) => c[0].name);
+    expect(tenants.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    const namesPatched = tenants.batch.patchNamespacedCronJob.mock.calls.map((c) => c[0].name);
     expect(namesPatched).toEqual(expect.arrayContaining(EXPECTED_CRONJOBS));
-    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+    for (const call of tenants.batch.patchNamespacedCronJob.mock.calls) {
       expect(call[0].namespace).toBe('platform');
       expect(call[0].body).toEqual({ spec: { suspend: false } });
     }
   });
 
   it('unsuspends every DR CronJob on SSH activate', async () => {
-    const clients = createMockClients();
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    const tenants = createMockTenants();
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await reconcileBackupTarget(clients as any, SSH_INPUT);
+    await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
-    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
-    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+    expect(tenants.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    for (const call of tenants.batch.patchNamespacedCronJob.mock.calls) {
       expect(call[0].body).toEqual({ spec: { suspend: false } });
     }
   });
 
   it('suspends every DR CronJob on clearBackupTarget (S3)', async () => {
-    const clients = createMockClients();
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    const tenants = createMockTenants();
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await clearBackupTarget(clients as any);
+    await clearBackupTarget(tenants as any);
 
-    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
-    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+    expect(tenants.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    for (const call of tenants.batch.patchNamespacedCronJob.mock.calls) {
       expect(call[0].body).toEqual({ spec: { suspend: true } });
     }
   });
 
   it('suspends every DR CronJob on clearBackupTarget (SSH)', async () => {
-    const clients = createMockClients();
+    const tenants = createMockTenants();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await clearBackupTarget(clients as any, { kind: 'ssh' });
+    await clearBackupTarget(tenants as any, { kind: 'ssh' });
 
-    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
-    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+    expect(tenants.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    for (const call of tenants.batch.patchNamespacedCronJob.mock.calls) {
       expect(call[0].body).toEqual({ spec: { suspend: true } });
     }
   });
 
-  it('skips toggle silently when batch client is not provided (legacy callers)', async () => {
-    const clients = createMockClients();
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
-    const noBatch = { core: clients.core, custom: clients.custom };
+  it('skips toggle silently when batch tenant is not provided (legacy callers)', async () => {
+    const tenants = createMockTenants();
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
+    const noBatch = { core: tenants.core, custom: tenants.custom };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(reconcileBackupTarget(noBatch as any, INPUT)).resolves.toBeUndefined();
     // The reconciler still completes the Secret + BackupTarget writes;
     // only the cron toggle is skipped (the warning lands in console.warn).
-    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalled();
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalled();
   });
 
   it('continues past a missing CronJob (404) on activate', async () => {
-    const clients = createMockClients();
-    clients.core.replaceNamespacedSecret.mockResolvedValue({});
-    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    const tenants = createMockTenants();
+    tenants.core.replaceNamespacedSecret.mockResolvedValue({});
+    tenants.custom.patchClusterCustomObject.mockResolvedValue({});
     // Simulate first cron not deployed yet (e.g. partial Flux apply)
-    clients.batch.patchNamespacedCronJob
+    tenants.batch.patchNamespacedCronJob
       .mockRejectedValueOnce({ statusCode: 404 })
       .mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
+    await expect(reconcileBackupTarget(tenants as any, INPUT)).resolves.toBeUndefined();
     // All five attempted; first 404 swallowed, remaining four succeed.
-    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    expect(tenants.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
   });
 });

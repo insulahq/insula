@@ -54,7 +54,7 @@ function makeK8sMock() {
 function baseInput(overrides: Partial<DeployCatalogEntryInput> = {}): DeployCatalogEntryInput {
   return {
     deploymentName: 'my-wp',
-    namespace: 'client-test-abcd',
+    namespace: 'tenant-test-abcd',
     storagePath: 'applications/wordpress/my-wp',
     components: [],
     volumes: [],
@@ -157,7 +157,7 @@ describe('deployCatalogEntry: per-component volume scoping', () => {
     }));
     const body = calls.createJob.mock.calls[0][0].body;
     const podSpec = body.spec.template.spec;
-    expect(podSpec.containers[0].volumeMounts).toEqual([{ name: 'client-storage', mountPath: '/work', subPath: 'app/inst/data' }]);
+    expect(podSpec.containers[0].volumeMounts).toEqual([{ name: 'tenant-storage', mountPath: '/work', subPath: 'app/inst/data' }]);
     expect(podSpec.initContainers).toHaveLength(1);
     expect(podSpec.volumes).toBeDefined();
   });

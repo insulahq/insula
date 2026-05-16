@@ -28,7 +28,7 @@ vi.mock('./service.js', () => ({
 vi.mock('../../db/schema.js', () => ({
   domains: {
     id: 'id',
-    clientId: 'clientId',
+    tenantId: 'tenantId',
     dnsMode: 'dnsMode',
   },
 }));
@@ -50,7 +50,7 @@ describe('dns-record routes', () => {
     const mockDb = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: 'd1', clientId: 'c1', dnsMode: 'cname' }]),
+          where: vi.fn().mockResolvedValue([{ id: 'd1', tenantId: 'c1', dnsMode: 'cname' }]),
         }),
       }),
     };
@@ -67,14 +67,14 @@ describe('dns-record routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/domains/d1/dns-records' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/domains/d1/dns-records' });
     expect(res.statusCode).toBe(401);
   });
 
   it('should reject read_only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1/dns-records',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -83,7 +83,7 @@ describe('dns-record routes', () => {
   it('GET should list records for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/domains/d1/dns-records',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -93,7 +93,7 @@ describe('dns-record routes', () => {
   it('POST should reject invalid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/domains/d1/dns-records',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { record_type: 'INVALID' },
     });
@@ -104,7 +104,7 @@ describe('dns-record routes', () => {
   it('POST should create record with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/domains/d1/dns-records',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         record_type: 'A',
@@ -119,7 +119,7 @@ describe('dns-record routes', () => {
   it('PATCH should reject invalid ttl', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/domains/d1/dns-records/rec-1',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records/rec-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { ttl: 10 },
     });
@@ -130,7 +130,7 @@ describe('dns-record routes', () => {
   it('PATCH should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/domains/d1/dns-records/rec-1',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records/rec-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { record_value: '5.6.7.8' },
     });
@@ -140,7 +140,7 @@ describe('dns-record routes', () => {
   it('DELETE should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/domains/d1/dns-records/rec-1',
+      url: '/api/v1/tenants/c1/domains/d1/dns-records/rec-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

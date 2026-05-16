@@ -1,14 +1,14 @@
 /**
  * HTTP routes for per-client OIDC provider CRUD.
  *
- *   GET    /api/v1/clients/:cid/oidc-providers
- *   POST   /api/v1/clients/:cid/oidc-providers
- *   GET    /api/v1/clients/:cid/oidc-providers/:id
- *   PATCH  /api/v1/clients/:cid/oidc-providers/:id
- *   DELETE /api/v1/clients/:cid/oidc-providers/:id
+ *   GET    /api/v1/tenants/:cid/oidc-providers
+ *   POST   /api/v1/tenants/:cid/oidc-providers
+ *   GET    /api/v1/tenants/:cid/oidc-providers/:id
+ *   PATCH  /api/v1/tenants/:cid/oidc-providers/:id
+ *   DELETE /api/v1/tenants/:cid/oidc-providers/:id
  *
- * Auth: client_admin / super_admin / admin. Cross-tenant safety —
- * every handler scopes by `clientId` from the URL.
+ * Auth: tenant_admin / super_admin / admin. Cross-tenant safety —
+ * every handler scopes by `tenantId` from the URL.
  *
  * Delete returns 409 with consumer count when ingresses still
  * reference the provider (FK RESTRICT at the DB level).
@@ -39,17 +39,17 @@ export async function oidcProvidersRoutes(app: FastifyInstance): Promise<void> {
     app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'client_admin'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
 
-  // GET — list all providers for a client.
-  app.get('/clients/:cid/oidc-providers', async (request) => {
+  // GET — list all providers for a tenant.
+  app.get('/tenants/:cid/oidc-providers', async (request) => {
     const { cid } = request.params as { cid: string };
     const rows = await listProviders(app.db, cid);
     return success(rows);
   });
 
   // POST — create a new provider.
-  app.post('/clients/:cid/oidc-providers', async (request, reply) => {
+  app.post('/tenants/:cid/oidc-providers', async (request, reply) => {
     const { cid } = request.params as { cid: string };
     const parsed = oidcProviderInputSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -60,7 +60,7 @@ export async function oidcProvidersRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET — single provider.
-  app.get('/clients/:cid/oidc-providers/:id', async (request) => {
+  app.get('/tenants/:cid/oidc-providers/:id', async (request) => {
     const { cid, id } = request.params as { cid: string; id: string };
     const provider = await getProvider(app.db, cid, id);
     if (!provider) {
@@ -69,8 +69,8 @@ export async function oidcProvidersRoutes(app: FastifyInstance): Promise<void> {
     return success(provider);
   });
 
-  // PATCH — partial update. clientSecret optional.
-  app.patch('/clients/:cid/oidc-providers/:id', async (request) => {
+  // PATCH — partial update. tenantSecret optional.
+  app.patch('/tenants/:cid/oidc-providers/:id', async (request) => {
     const { cid, id } = request.params as { cid: string; id: string };
     const parsed = oidcProviderInputSchema.partial().safeParse(request.body);
     if (!parsed.success) {
@@ -81,7 +81,7 @@ export async function oidcProvidersRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // DELETE — 409 when in use.
-  app.delete('/clients/:cid/oidc-providers/:id', async (request) => {
+  app.delete('/tenants/:cid/oidc-providers/:id', async (request) => {
     const { cid, id } = request.params as { cid: string; id: string };
     await deleteProvider(app.db, cid, id);
     return success({ deleted: true });

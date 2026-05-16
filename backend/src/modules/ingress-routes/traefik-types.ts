@@ -88,7 +88,7 @@ export interface IngressRouteBody {
  *   2. Applies `ingressRoute` (one per host or per hostname-group).
  *   3. Reads `expectedMiddlewareNames` to compute orphan cleanup
  *      (Middleware CRDs no longer referenced by any RouteSpec for the
- *      same client get deleted).
+ *      same tenant get deleted).
  */
 export interface RouteSpec {
   /** Hostname this spec services — for diagnostics + grouping. */
@@ -347,7 +347,7 @@ export function forwardAuthSpec(args: ForwardAuthArgs): Record<string, unknown> 
 export interface HeadersArgs {
   /** Custom request headers added before forwarding upstream. */
   customRequestHeaders?: Record<string, string>;
-  /** Custom response headers added before sending back to client. */
+  /** Custom response headers added before sending back to tenant. */
   customResponseHeaders?: Record<string, string>;
   /** Server-side cors-allow-* equivalents (rare; opt-in). */
   accessControlAllowOriginList?: string[];

@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { domains } from '../../db/schema.js';
 import { createDomainSchema, updateDomainSchema } from './schema.js';
 import * as service from './service.js';
@@ -15,18 +15,18 @@ import { listProviderGroups } from '../dns-servers/service.js';
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
-  // GET /api/v1/dns-provider-groups — registered BEFORE requireClientAccess
-  // because this endpoint has no :clientId in the path
+  // GET /api/v1/dns-provider-groups — registered BEFORE requireTenantAccess
+  // because this endpoint has no :tenantId in the path
   app.get('/dns-provider-groups', {
-    onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user')],
+    onRequest: [requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user')],
   }, async () => {
     return success(await listProviderGroups(app.db));
   });
 
-  // Phase 6: method-aware role guard — GET is open to all client
-  // roles (including client_user), writes require client_admin.
-  app.addHook('onRequest', requireClientRoleByMethod());
-  app.addHook('onRequest', requireClientAccess());
+  // Phase 6: method-aware role guard — GET is open to all tenant
+  // roles (including tenant_user), writes require tenant_admin.
+  app.addHook('onRequest', requireTenantRoleByMethod());
+  app.addHook('onRequest', requireTenantAccess());
 
   const getK8s = () => {
     try {
@@ -37,7 +37,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  // GET /api/v1/admin/domains — list all domains across all clients
+  // GET /api/v1/admin/domains — list all domains across all tenants
   app.get('/admin/domains', {
     onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
   }, async (request) => {
@@ -49,9 +49,9 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     return paginated(result.data, result.pagination);
   });
 
-  // POST /api/v1/clients/:clientId/domains
-  app.post('/clients/:clientId/domains', async (request, reply) => {
-    const { clientId } = request.params as { clientId: string };
+  // POST /api/v1/tenants/:tenantId/domains
+  app.post('/tenants/:tenantId/domains', async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = createDomainSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -63,31 +63,31 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const domain = await service.createDomain(app.db, clientId, parsed.data, getK8s());
+    const domain = await service.createDomain(app.db, tenantId, parsed.data, getK8s());
     reply.status(201).send(success(domain));
   });
 
-  // GET /api/v1/clients/:clientId/domains
-  app.get('/clients/:clientId/domains', async (request) => {
-    const { clientId } = request.params as { clientId: string };
+  // GET /api/v1/tenants/:tenantId/domains
+  app.get('/tenants/:tenantId/domains', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const paginationParams = parsePaginationParams(query);
     const search = typeof query.search === 'string' ? query.search : undefined;
 
-    const result = await service.listDomains(app.db, clientId, { ...paginationParams, search });
+    const result = await service.listDomains(app.db, tenantId, { ...paginationParams, search });
     return paginated(result.data, result.pagination);
   });
 
-  // GET /api/v1/clients/:clientId/domains/:domainId
-  app.get('/clients/:clientId/domains/:domainId', async (request) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
-    const domain = await service.getDomainById(app.db, clientId, domainId);
+  // GET /api/v1/tenants/:tenantId/domains/:domainId
+  app.get('/tenants/:tenantId/domains/:domainId', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    const domain = await service.getDomainById(app.db, tenantId, domainId);
     return success(domain);
   });
 
-  // PATCH /api/v1/clients/:clientId/domains/:domainId
-  app.patch('/clients/:clientId/domains/:domainId', async (request) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+  // PATCH /api/v1/tenants/:tenantId/domains/:domainId
+  app.patch('/tenants/:tenantId/domains/:domainId', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const parsed = updateDomainSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -99,55 +99,55 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const updated = await service.updateDomain(app.db, clientId, domainId, parsed.data, getK8s());
+    const updated = await service.updateDomain(app.db, tenantId, domainId, parsed.data, getK8s());
     return success(updated);
   });
 
-  // GET /api/v1/clients/:clientId/domains/:domainId/delete-preview
+  // GET /api/v1/tenants/:tenantId/domains/:domainId/delete-preview
   //
   // Phase 3 round-3: dynamic cascade preview. Returns the exact list
   // of resources that deleteDomain would remove (DNS records,
   // email_domains + mailboxes + aliases, ingress routes, webmail
-  // Ingress hostname) so the client-panel confirm dialog can render
+  // Ingress hostname) so the tenant-panel confirm dialog can render
   // a complete warning instead of a vague "this will remove stuff"
   // message.
-  app.get('/clients/:clientId/domains/:domainId/delete-preview', async (request) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
-    const preview = await service.getDomainDeletePreview(app.db, clientId, domainId);
+  app.get('/tenants/:tenantId/domains/:domainId/delete-preview', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    const preview = await service.getDomainDeletePreview(app.db, tenantId, domainId);
     return success(preview);
   });
 
-  // DELETE /api/v1/clients/:clientId/domains/:domainId
-  app.delete('/clients/:clientId/domains/:domainId', async (request, reply) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
-    const result = await service.deleteDomain(app.db, clientId, domainId, getK8s());
+  // DELETE /api/v1/tenants/:tenantId/domains/:domainId
+  app.delete('/tenants/:tenantId/domains/:domainId', async (request, reply) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    const result = await service.deleteDomain(app.db, tenantId, domainId, getK8s());
     // Phase 3 round-3: log cascade counts for audit trail. The 204
-    // response body is still empty so clients that expect no body
+    // response body is still empty so tenants that expect no body
     // don't break.
     app.log.info(
-      { clientId, domainId, deleted: result.deleted },
+      { tenantId, domainId, deleted: result.deleted },
       'domains: deleteDomain cascaded deletions',
     );
     reply.status(204).send();
   });
 
-  // POST /api/v1/clients/:clientId/domains/:domainId/verify
+  // POST /api/v1/tenants/:tenantId/domains/:domainId/verify
   //
   // Cache strategy: single POST with optional ?force=true query param.
   // - Without force: return cached result (with cached:true) if verification_cache_at
-  //   is within 24 hours. This lets the client-panel auto-fire on mount without
+  //   is within 24 hours. This lets the tenant-panel auto-fire on mount without
   //   hammering DNS on every page load.
   // - With force=true (or stale cache): run full verification, store result.
   //
   // We chose single-POST-with-force over a separate GET because the verify
   // mutation already exists on both panels; callers that want a no-op read
   // can just check domain.verificationCacheAt before calling.
-  app.post('/clients/:clientId/domains/:domainId/verify', async (request) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+  app.post('/tenants/:tenantId/domains/:domainId/verify', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const query = request.query as Record<string, unknown>;
     const force = query.force === 'true' || query.force === '1';
 
-    const domain = await service.getDomainById(app.db, clientId, domainId);
+    const domain = await service.getDomainById(app.db, tenantId, domainId);
 
     // Cache check — skip if force=true
     const cacheAge = 24 * 60 * 60 * 1000; // 24 hours in ms
@@ -168,7 +168,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     // 5-30s on stale cache misses). Idempotent on (kind, refId=domainId)
     // so concurrent verifies coalesce to one row.
     const userId = request.user?.sub ?? null;
-    const taskScope = request.user?.panel === 'client' ? 'client' as const : 'admin' as const;
+    const taskScope = request.user?.panel === 'tenant' ? 'tenant' as const : 'admin' as const;
 
     const verifyAndPersist = async () => {
       const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, app.db);
@@ -189,9 +189,9 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
           refId: domainId,
           scope: taskScope,
           userId,
-          clientId,
+          tenantId,
           label: toSafeText(`Verify DNS — ${domain.domainName}`),
-          target: { type: 'route', href: `/clients/${clientId}/domains/${domainId}` },
+          target: { type: 'route', href: `/tenants/${tenantId}/domains/${domainId}` },
         },
         verifyAndPersist,
       );
@@ -202,16 +202,16 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     return success({ ...result, domainId, domainName: domain.domainName, cached: false });
   });
 
-  // POST /api/v1/clients/:clientId/domains/:domainId/migrate-dns
-  app.post('/clients/:clientId/domains/:domainId/migrate-dns', async (request) => {
-    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+  // POST /api/v1/tenants/:tenantId/domains/:domainId/migrate-dns
+  app.post('/tenants/:tenantId/domains/:domainId/migrate-dns', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const body = request.body as { target_group_id?: string };
 
     if (!body.target_group_id) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'target_group_id is required', 400, { field: 'target_group_id' });
     }
 
-    const updated = await service.migrateDomainDns(app.db, clientId, domainId, body.target_group_id);
+    const updated = await service.migrateDomainDns(app.db, tenantId, domainId, body.target_group_id);
     return success(updated);
   });
 

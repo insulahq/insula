@@ -5,8 +5,8 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
  * Inventory of platform/system PVCs and their Longhorn snapshot state.
  *
  * "System" namespaces (platform/mail/longhorn-system/...) are platform-
- * managed, distinct from tenant client-* namespaces. Snapshots for those
- * client volumes are surfaced via the existing storage-lifecycle module.
+ * managed, distinct from tenant tenant-* namespaces. Snapshots for those
+ * tenant volumes are surfaced via the existing storage-lifecycle module.
  *
  * Each row carries:
  *  - the PVC name + namespace

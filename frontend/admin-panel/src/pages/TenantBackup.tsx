@@ -1,12 +1,12 @@
 /**
  * Tenant Backup admin page (consolidated).
  *
- * Single-stop operator surface for the per-client (tenant) bundle
+ * Single-stop operator surface for the per-tenant (tenant) bundle
  * lifecycle. Replaces the friction of context-switching between
- * /settings/backups, /restores, /restore, and per-client tabs.
+ * /settings/backups, /restores, /restore, and per-tenant tabs.
  *
  * Tabs (deep-linkable via ?tab=…):
- *   - bundles   (default) — cross-client searchable list + filters,
+ *   - bundles   (default) — cross-tenant searchable list + filters,
  *                           inline verify/delete/GDPR/restore.
  *   - schedules            — global cron list, inline run-now + edit.
  *   - carts                — recent restore-carts list (resume failed).
@@ -24,7 +24,7 @@ import {
   FileDown, Eye, EyeOff, Sparkles,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
-import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
+import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
 import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useBundleDetailLive, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle, previewImport, restoreFromBundle, type ImportPreviewResponse, type RestoreFromBundleResult } from '@/hooks/use-backup-bundles';
 import { usePlans, useRegions } from '@/hooks/use-plans';
@@ -33,7 +33,7 @@ import type { VerifyAllResult } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
-import { useClients } from '@/hooks/use-clients';
+import { useTenants } from '@/hooks/use-tenants';
 import { formatBytes } from '@/hooks/use-platform-storage';
 import type {
   BundleSummary,
@@ -87,7 +87,7 @@ export default function TenantBackup() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Tenant Backup</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Per-client off-site bundles, schedules, restores, and targets.
+            Per-tenant off-site bundles, schedules, restores, and targets.
           </p>
         </div>
       </header>
@@ -196,7 +196,7 @@ function CoverageTab() {
           {drift.orphanTables.length > 0 && (
             <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
               <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-                Tables in DB with <code className="font-mono text-xs">client_id</code> that NO component claims:
+                Tables in DB with <code className="font-mono text-xs">tenant_id</code> that NO component claims:
               </p>
               <ul className="mt-1 list-disc pl-5 text-sm text-amber-900 dark:text-amber-200">
                 {drift.orphanTables.map((o) => (
@@ -279,14 +279,14 @@ function CoverageTab() {
 
 function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
   const { data: bundlesResp, isLoading } = useBundles();
-  const { data: clientsResp } = useClients();
+  const { data: clientsResp } = useTenants();
   const { data: configsResp } = useBackupConfigs();
   const verifyBundle = useVerifyBundle();
   const deleteBundle = useDeleteBundle();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [clientFilter, setClientFilter] = useState<string | null>(null);
+  const [tenantFilter, setTenantFilter] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<{ id: string; ok: boolean; msg: string } | null>(null);
   const [deletePromptId, setDeletePromptId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -302,29 +302,29 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
   // useBundles wraps as { data: { data: [...], pagination } } —
   // see hooks/use-backup-bundles.ts ListResponse type.
   const bundles: ReadonlyArray<BundleSummary> = bundlesResp?.data?.data ?? [];
-  const clients = clientsResp?.data ?? [];
+  const tenants = clientsResp?.data ?? [];
   const configs = configsResp?.data ?? [];
 
-  const clientName = useMemo(() => {
-    const m = new Map(clients.map((c) => [c.id, c.companyName]));
+  const tenantName = useMemo(() => {
+    const m = new Map(tenants.map((c) => [c.id, c.name]));
     return (id: string) => m.get(id) ?? '(unknown)';
-  }, [clients]);
+  }, [tenants]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return bundles.filter((b) => {
       if (statusFilter && b.status !== statusFilter) return false;
-      if (clientFilter && b.clientId !== clientFilter) return false;
+      if (tenantFilter && b.tenantId !== tenantFilter) return false;
       if (!q) return true;
       const haystack = [
         b.id,
         b.label ?? '',
         b.description ?? '',
-        clientName(b.clientId).toLowerCase(),
+        tenantName(b.tenantId).toLowerCase(),
       ].join(' ').toLowerCase();
       return haystack.includes(q);
     });
-  }, [bundles, search, statusFilter, clientFilter, clientName]);
+  }, [bundles, search, statusFilter, tenantFilter, tenantName]);
 
   const handleVerify = async (bundleId: string) => {
     setVerifyResult(null);
@@ -398,7 +398,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by bundle id, label, or client name…"
+            placeholder="Search by bundle id, label, or tenant name…"
             className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
             data-testid="bundle-search"
           />
@@ -421,10 +421,10 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
         </select>
 
         <div className="min-w-[12rem]">
-          <SearchableClientSelect
-            selectedClientId={clientFilter}
-            onSelect={setClientFilter}
-            placeholder="All clients"
+          <SearchableTenantSelect
+            selectedTenantId={tenantFilter}
+            onSelect={setTenantFilter}
+            placeholder="All tenants"
           />
         </div>
 
@@ -457,7 +457,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           onClick={() => setShowImport(true)}
           className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
           data-testid="bundle-import"
-          title="Import a bundle archive (tar.gz / tar.gz.enc / zip) for an existing local client"
+          title="Import a bundle archive (tar.gz / tar.gz.enc / zip) for an existing local tenant"
         >
           <Upload size={14} /> Import
         </button>
@@ -467,7 +467,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           onClick={() => setShowRestore(true)}
           className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
           data-testid="bundle-restore-from-bundle"
-          title="Restore a deleted client from a bundle archive — creates a new tenant with a fresh UUID + namespace"
+          title="Restore a deleted tenant from a bundle archive — creates a new tenant with a fresh UUID + namespace"
         >
           <RotateCcw size={14} /> Restore from bundle
         </button>
@@ -543,7 +543,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
               <button type="button" className="text-brand-600 underline" onClick={() => setShowCreate(true)}>
                 Create one now
               </button>
-              {' '}or set up a per-client schedule on the Schedules tab.
+              {' '}or set up a per-tenant schedule on the Schedules tab.
             </>
           ) : (
             'No bundles match the current filter.'
@@ -564,7 +564,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
                 <BundleRow
                   key={b.id}
                   bundle={b}
-                  clientName={clientName(b.clientId)}
+                  tenantName={tenantName(b.tenantId)}
                   onVerify={() => handleVerify(b.id)}
                   onDelete={() => { setDeleteError(null); setDeletePromptId(b.id); }}
                   onDataExport={() => downloadDataExport(b.id)}
@@ -777,18 +777,18 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
  * Two-step import flow:
  *   1. Pick file + (optional) passphrase → click Inspect →
  *      `POST /import-preview` returns the parsed meta v2 + a local
- *      lookup of the source clientId.
- *   2. Server-resolved client info shows in the modal:
- *      - if the source client exists locally and is active/suspended:
+ *      lookup of the source tenantId.
+ *   2. Server-resolved tenant info shows in the modal:
+ *      - if the source tenant exists locally and is active/suspended:
  *        BLOCK with "use the Restore Cart" warning (no import).
- *      - if the source client is archived/missing: unlock the
+ *      - if the source tenant is archived/missing: unlock the
  *        RestoreFromBundleModal path.
  *      - if no local match: prompt the operator to either pick a
  *        target tenant manually (legacy /import) OR open the
  *        RestoreFromBundleModal in "create-new" mode.
  *   3. Operator picks the off-site target + final action.
  *
- * The clientId field has been removed from the form — the source
+ * The tenantId field has been removed from the form — the source
  * meta carries the answer. The modal still exposes a manual override
  * path (used when the bundle is being adopted by a different
  * tenant — typical multi-region migration).
@@ -804,9 +804,9 @@ function ImportBundleModal({ configs, onClose }: {
   const [targetConfigId, setTargetConfigId] = useState<string>(
     () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
   );
-  // Manual-adoption clientId — only used when the operator overrides
+  // Manual-adoption tenantId — only used when the operator overrides
   // the auto-detected target (e.g. adopting bundle to a different tenant).
-  const [overrideClientId, setOverrideClientId] = useState<string | null>(null);
+  const [overrideTenantId, setOverrideTenantId] = useState<string | null>(null);
   const [showOverride, setShowOverride] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -814,8 +814,8 @@ function ImportBundleModal({ configs, onClose }: {
 
   // Derived: which downstream path the local match unlocks.
   // - active/suspended: blocked (operator should use Restore Cart on the existing tenant)
-  // - archived/missing/no-match: unlocked (will open RestoreFromBundleModal in a follow-up; for now → legacy /import with explicit clientId)
-  const localMatch = preview?.localClientMatch ?? null;
+  // - archived/missing/no-match: unlocked (will open RestoreFromBundleModal in a follow-up; for now → legacy /import with explicit tenantId)
+  const localMatch = preview?.localTenantMatch ?? null;
   const blocked = localMatch && (localMatch.status === 'active' || localMatch.status === 'suspended');
 
   const handleInspect = async () => {
@@ -828,8 +828,8 @@ function ImportBundleModal({ configs, onClose }: {
     try {
       const result = await previewImport({ file, passphrase: passphrase || undefined });
       setPreview(result);
-      // Reset override since a new file may have changed the source client.
-      setOverrideClientId(null);
+      // Reset override since a new file may have changed the source tenant.
+      setOverrideTenantId(null);
       setShowOverride(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Inspect failed');
@@ -841,21 +841,21 @@ function ImportBundleModal({ configs, onClose }: {
   const handleImport = async () => {
     if (!preview || !file) return;
     if (blocked) {
-      setError(`This region already has an ${localMatch!.status} client with the source UUID — open the client and use Restore Cart instead. Importing would overwrite live state.`);
+      setError(`This region already has an ${localMatch!.status} tenant with the source UUID — open the tenant and use Restore Cart instead. Importing would overwrite live state.`);
       return;
     }
-    // Decide the target clientId:
+    // Decide the target tenantId:
     //   - If operator picked an override: use it.
-    //   - Else use the source meta clientId (which matches the local archived/missing client).
-    const clientId = overrideClientId ?? preview.sourceMeta.clientId;
-    if (!clientId) {
-      setError('Source meta has no clientId AND no override was picked. Pick a target tenant manually.');
+    //   - Else use the source meta tenantId (which matches the local archived/missing tenant).
+    const tenantId = overrideTenantId ?? preview.sourceMeta.tenantId;
+    if (!tenantId) {
+      setError('Source meta has no tenantId AND no override was picked. Pick a target tenant manually.');
       return;
     }
     setError(null);
     setPending(true);
     try {
-      const r = await importBundle({ file, passphrase, clientId, targetConfigId });
+      const r = await importBundle({ file, passphrase, tenantId, targetConfigId });
       setSuccess({ bundleId: r.bundleId, sizeBytes: r.sizeBytes });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed');
@@ -954,14 +954,14 @@ function ImportBundleModal({ configs, onClose }: {
 
                   {/* Source-meta facts */}
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                    {preview.sourceMeta.client?.companyName && (
-                      <><dt className="text-gray-500">Source client</dt><dd className="text-gray-900 dark:text-gray-100">{preview.sourceMeta.client.companyName}</dd></>
+                    {preview.sourceMeta.tenant?.name && (
+                      <><dt className="text-gray-500">Source tenant</dt><dd className="text-gray-900 dark:text-gray-100">{preview.sourceMeta.tenant.name}</dd></>
                     )}
-                    {preview.sourceMeta.clientId && (
-                      <><dt className="text-gray-500">Source UUID</dt><dd className="font-mono text-gray-700 dark:text-gray-300" title={preview.sourceMeta.clientId}>{preview.sourceMeta.clientId.slice(0, 8)}…</dd></>
+                    {preview.sourceMeta.tenantId && (
+                      <><dt className="text-gray-500">Source UUID</dt><dd className="font-mono text-gray-700 dark:text-gray-300" title={preview.sourceMeta.tenantId}>{preview.sourceMeta.tenantId.slice(0, 8)}…</dd></>
                     )}
-                    {preview.sourceMeta.client?.regionId && (
-                      <><dt className="text-gray-500">Source region</dt><dd className="font-mono text-gray-700 dark:text-gray-300">{preview.sourceMeta.client.regionId.slice(0, 8)}…</dd></>
+                    {preview.sourceMeta.tenant?.regionId && (
+                      <><dt className="text-gray-500">Source region</dt><dd className="font-mono text-gray-700 dark:text-gray-300">{preview.sourceMeta.tenant.regionId.slice(0, 8)}…</dd></>
                     )}
                     {preview.sourceMeta.capturedAt && (
                       <><dt className="text-gray-500">Captured at</dt><dd className="text-gray-700 dark:text-gray-300">{new Date(preview.sourceMeta.capturedAt).toLocaleString()}</dd></>
@@ -986,21 +986,21 @@ function ImportBundleModal({ configs, onClose }: {
                     blocked ? (
                       <div className="rounded-md bg-red-50 p-2 text-xs text-red-900 dark:bg-red-950/40 dark:text-red-200">
                         <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
-                        This region already has an <strong>{localMatch.status}</strong> client (<em>{localMatch.companyName}</em>)
+                        This region already has an <strong>{localMatch.status}</strong> tenant (<em>{localMatch.name}</em>)
                         with the source UUID. Importing would create a parallel bundle row pointing at the live tenant —
-                        instead, open <code className="font-mono">/clients/{localMatch.id}</code> and use the Restore Cart there.
+                        instead, open <code className="font-mono">/tenants/{localMatch.id}</code> and use the Restore Cart there.
                       </div>
                     ) : (
                       <div className="rounded-md bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                         <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
-                        This region has an <strong>{localMatch.status}</strong> client (<em>{localMatch.companyName}</em>)
-                        with the source UUID. The import will register the bundle against this client; restoration
+                        This region has an <strong>{localMatch.status}</strong> tenant (<em>{localMatch.name}</em>)
+                        with the source UUID. The import will register the bundle against this tenant; restoration
                         is then via the Restore Cart. (Full RestoreFromBundleModal coming soon for {localMatch.status} cases.)
                       </div>
                     )
                   ) : (
                     <div className="rounded-md bg-blue-50 p-2 text-xs text-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
-                      No local client matches the source UUID. Pick a target tenant below to adopt the bundle.
+                      No local tenant matches the source UUID. Pick a target tenant below to adopt the bundle.
                     </div>
                   )}
 
@@ -1016,7 +1016,7 @@ function ImportBundleModal({ configs, onClose }: {
                       </button>
                       {(showOverride || !localMatch) && (
                         <div className="mt-2">
-                          <SearchableClientSelect selectedClientId={overrideClientId} onSelect={setOverrideClientId} placeholder={localMatch ? 'Override target client…' : 'Pick a client…'} />
+                          <SearchableTenantSelect selectedTenantId={overrideTenantId} onSelect={setOverrideTenantId} placeholder={localMatch ? 'Override target tenant…' : 'Pick a tenant…'} />
                         </div>
                       )}
                     </div>
@@ -1053,9 +1053,9 @@ function ImportBundleModal({ configs, onClose }: {
                 <button
                   type="button"
                   onClick={handleImport}
-                  disabled={pending || !!blocked || (!preview.sourceMeta.clientId && !overrideClientId)}
+                  disabled={pending || !!blocked || (!preview.sourceMeta.tenantId && !overrideTenantId)}
                   className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
-                  title={blocked ? 'Source client is active locally — use Restore Cart instead' : ''}
+                  title={blocked ? 'Source tenant is active locally — use Restore Cart instead' : ''}
                 >
                   {pending ? <><Loader2 size={14} className="animate-spin" /> Importing…</> : <><Upload size={14} /> Import</>}
                 </button>
@@ -1073,7 +1073,7 @@ function CreateBundleModal({ configs, onClose }: {
   onClose: () => void;
 }) {
   const createBundle = useCreateBundle();
-  const [clientId, setClientId] = useState<string | null>(null);
+  const [tenantId, setTenantId] = useState<string | null>(null);
   const [targetConfigId, setTargetConfigId] = useState<string>(
     () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
   );
@@ -1088,11 +1088,11 @@ function CreateBundleModal({ configs, onClose }: {
 
   const handleSubmit = async () => {
     setError(null);
-    if (!clientId) { setError('Pick a client.'); return; }
+    if (!tenantId) { setError('Pick a tenant.'); return; }
     if (!targetConfigId) { setError('Pick an off-site target.'); return; }
     try {
       const r = await createBundle.mutateAsync({
-        clientId,
+        tenantId,
         initiator: 'admin',
         components,
         label: label.trim() || null,
@@ -1125,7 +1125,7 @@ function CreateBundleModal({ configs, onClose }: {
         <div className="space-y-3 text-sm">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Client</label>
-            <SearchableClientSelect selectedClientId={clientId} onSelect={setClientId} placeholder="Pick a client…" />
+            <SearchableTenantSelect selectedTenantId={tenantId} onSelect={setTenantId} placeholder="Pick a tenant…" />
           </div>
 
           <div>
@@ -1202,7 +1202,7 @@ function CreateBundleModal({ configs, onClose }: {
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={!clientId || !targetConfigId || createBundle.isPending}
+              disabled={!tenantId || !targetConfigId || createBundle.isPending}
               className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
             >
               {createBundle.isPending ? <><Loader2 size={14} className="animate-spin" /> Starting…</> : <><Plus size={14} /> Create bundle</>}
@@ -1225,21 +1225,21 @@ function CreateBundleModal({ configs, onClose }: {
 }
 
 /**
- * RestoreFromBundleModal — single-shot create-new-client + import flow
- * for bundles whose source client doesn't exist locally any more.
+ * RestoreFromBundleModal — single-shot create-new-tenant + import flow
+ * for bundles whose source tenant doesn't exist locally any more.
  *
  * Operator workflow:
  *   1. Pick the bundle archive (.tar.gz / .tar.gz.enc / .zip).
  *   2. Click "Inspect" → preview decodes the archive + returns the
- *      meta v2 client block. Form is pre-populated from those values.
+ *      meta v2 tenant block. Form is pre-populated from those values.
  *   3. Operator edits company name/email, picks region/plan/worker
- *      node/storage tier (matches CreateClientModal's UX).
- *   4. Submit → POST /import-finalize creates the client + imports
- *      the bundle in one shot. Returns the new clientId + the auto-
- *      generated client_admin password for one-shot display.
+ *      node/storage tier (matches CreateTenantModal's UX).
+ *   4. Submit → POST /import-finalize creates the tenant + imports
+ *      the bundle in one shot. Returns the new tenantId + the auto-
+ *      generated tenant_admin password for one-shot display.
  *
  * Scope (deferred):
- *   - re-use UUID toggle (would bypass createClient's randomUUID)
+ *   - re-use UUID toggle (would bypass createTenant's randomUUID)
  *   - re-use namespace toggle (would bypass generateNamespace)
  *   These come in a follow-up alongside the restore-archived path
  *   that needs both for byte-identical recovery.
@@ -1255,12 +1255,12 @@ function RestoreFromBundleModal({ configs, onClose }: {
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(null);
 
   // Step 2 — operator-edited form (pre-filled from preview)
-  const [companyName, setCompanyName] = useState('');
-  const [companyEmail, setCompanyEmail] = useState('');
-  const [contactEmail, setContactEmail] = useState('');
+  const [name, setCompanyName] = useState('');
+  const [primaryEmail, setCompanyEmail] = useState('');
+  const [secondaryEmail, setContactEmail] = useState('');
   const [planId, setPlanId] = useState('');
   const [regionId, setRegionId] = useState('');
-  const [workerNodeName, setWorkerNodeName] = useState('');
+  const [nodeName, setWorkerNodeName] = useState('');
   const [storageTier, setStorageTier] = useState<'local' | 'ha'>('local');
   const [targetConfigId, setTargetConfigId] = useState<string>(
     () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
@@ -1288,16 +1288,16 @@ function RestoreFromBundleModal({ configs, onClose }: {
       const p = await previewImport({ file, passphrase: passphrase || undefined });
       setPreview(p);
       // Pre-fill the form from the source meta where available.
-      const c = p.sourceMeta.client;
+      const c = p.sourceMeta.tenant;
       if (c) {
-        setCompanyName(c.companyName || '');
-        setCompanyEmail(c.companyEmail || '');
-        setContactEmail(c.contactEmail ?? '');
+        setCompanyName(c.name || '');
+        setCompanyEmail(c.primaryEmail || '');
+        setContactEmail(c.secondaryEmail ?? '');
         setStorageTier((c.storageTier as 'local' | 'ha') ?? 'local');
       }
       // The source plan/region UUIDs may not match anything in this
       // region — leave the dropdowns at default and let the operator
-      // pick. workerNodeName ditto (different cluster).
+      // pick. nodeName ditto (different cluster).
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Inspect failed');
     } finally {
@@ -1305,7 +1305,7 @@ function RestoreFromBundleModal({ configs, onClose }: {
     }
   };
 
-  const validForSubmit = !!file && !!preview && !!companyName && !!companyEmail
+  const validForSubmit = !!file && !!preview && !!name && !!primaryEmail
     && !!planId && !!regionId && !!targetConfigId;
 
   const handleSubmit = async () => {
@@ -1321,12 +1321,12 @@ function RestoreFromBundleModal({ configs, onClose }: {
         passphrase: passphrase || undefined,
         targetConfigId,
         overrides: {
-          company_name: companyName,
-          company_email: companyEmail,
-          contact_email: contactEmail || undefined,
+          name: name,
+          primary_email: primaryEmail,
+          secondary_email: secondaryEmail || undefined,
           plan_id: planId,
           region_id: regionId,
-          worker_node_name: workerNodeName || undefined,
+          node_name: nodeName || undefined,
           storage_tier: storageTier,
         },
       });
@@ -1338,7 +1338,7 @@ function RestoreFromBundleModal({ configs, onClose }: {
     }
   };
 
-  // Result screen — show the new client + one-shot generated password
+  // Result screen — show the new tenant + one-shot generated password
   if (result) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
@@ -1352,22 +1352,22 @@ function RestoreFromBundleModal({ configs, onClose }: {
           <div className="space-y-3 text-sm">
             <div className="rounded-md border border-green-300 bg-green-50 p-3 text-green-900 dark:border-green-800 dark:bg-green-950/40 dark:text-green-200">
               <CheckCircle2 className="mr-1 inline h-4 w-4" />
-              Created client <code className="font-mono text-xs">{result.newClientId.slice(0, 8)}</code>{' '}
+              Created tenant <code className="font-mono text-xs">{result.newTenantId.slice(0, 8)}</code>{' '}
               + bundle <code className="font-mono text-xs">{result.bundleId.slice(0, 16)}</code>{' '}
               ({(result.sizeBytes / 1024 / 1024).toFixed(1)} MiB).
             </div>
-            {result.clientUser?.generatedPassword && (
+            {result.tenantUser?.generatedPassword && (
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                <p className="mb-2 font-medium">Auto-generated client_admin credentials (shown ONCE — record now):</p>
+                <p className="mb-2 font-medium">Auto-generated tenant_admin credentials (shown ONCE — record now):</p>
                 <div className="space-y-1 font-mono">
-                  <div>email: <code>{result.clientUser.email}</code></div>
+                  <div>email: <code>{result.tenantUser.email}</code></div>
                   <div className="flex items-center gap-2">
                     <span>password:</span>
-                    <code className="rounded bg-white/50 px-1 py-0.5 dark:bg-gray-900/50">{result.clientUser.generatedPassword}</code>
+                    <code className="rounded bg-white/50 px-1 py-0.5 dark:bg-gray-900/50">{result.tenantUser.generatedPassword}</code>
                     <button
                       type="button"
                       onClick={() => {
-                        navigator.clipboard.writeText(result.clientUser!.generatedPassword!);
+                        navigator.clipboard.writeText(result.tenantUser!.generatedPassword!);
                         setPwCopied(true);
                         setTimeout(() => setPwCopied(false), 2000);
                       }}
@@ -1380,15 +1380,15 @@ function RestoreFromBundleModal({ configs, onClose }: {
               </div>
             )}
             <p className="text-xs text-gray-600 dark:text-gray-300">
-              Open the new client and use Restore Cart to apply the bundle to the freshly-provisioned tenant.
+              Open the new tenant and use Restore Cart to apply the bundle to the freshly-provisioned tenant.
             </p>
             <div className="flex justify-end gap-2">
               <Link
-                to={`/clients/${result.newClientId}`}
+                to={`/tenants/${result.newTenantId}`}
                 className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700"
                 onClick={onClose}
               >
-                Open client →
+                Open tenant →
               </Link>
             </div>
           </div>
@@ -1401,14 +1401,14 @@ function RestoreFromBundleModal({ configs, onClose }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Restore client from bundle</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Restore tenant from bundle</h3>
           <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
             <X size={16} />
           </button>
         </div>
         <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
-          Re-creates a client tenant from a bundle archive. Use when the source client has been deleted from this region.
-          For active or suspended clients, open the client and use Restore Cart instead — that path preserves UUID + namespace.
+          Re-creates a tenant tenant from a bundle archive. Use when the source tenant has been deleted from this region.
+          For active or suspended tenants, open the tenant and use Restore Cart instead — that path preserves UUID + namespace.
         </p>
 
         <div className="space-y-3 text-sm">
@@ -1471,35 +1471,35 @@ function RestoreFromBundleModal({ configs, onClose }: {
                 <span className="font-medium text-gray-700 dark:text-gray-200">Detected:</span>{' '}
                 <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">{preview.format}</span>{' '}
                 · {preview.entryCount} entries · {(preview.totalBytes / 1024 / 1024).toFixed(1)} MiB
-                {preview.sourceMeta.client && (
+                {preview.sourceMeta.tenant && (
                   <span className="ml-2 text-gray-500">
-                    (source: <em>{preview.sourceMeta.client.companyName}</em>, captured {preview.sourceMeta.capturedAt ? new Date(preview.sourceMeta.capturedAt).toLocaleDateString() : '—'})
+                    (source: <em>{preview.sourceMeta.tenant.name}</em>, captured {preview.sourceMeta.capturedAt ? new Date(preview.sourceMeta.capturedAt).toLocaleDateString() : '—'})
                   </span>
                 )}
               </div>
 
-              {preview.localClientMatch && (preview.localClientMatch.status === 'active' || preview.localClientMatch.status === 'suspended') ? (
+              {preview.localTenantMatch && (preview.localTenantMatch.status === 'active' || preview.localTenantMatch.status === 'suspended') ? (
                 <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
                   <AlertCircle className="mr-1 inline h-4 w-4" />
-                  This region already has an <strong>{preview.localClientMatch.status}</strong> client (<em>{preview.localClientMatch.companyName}</em>) with the source UUID.
-                  Restore-from-bundle would create a SECOND parallel tenant. Open the existing client and use Restore Cart instead.
+                  This region already has an <strong>{preview.localTenantMatch.status}</strong> tenant (<em>{preview.localTenantMatch.name}</em>) with the source UUID.
+                  Restore-from-bundle would create a SECOND parallel tenant. Open the existing tenant and use Restore Cart instead.
                 </div>
               ) : (
                 <>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Company name *</label>
-                      <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)}
+                      <input type="text" value={name} onChange={(e) => setCompanyName(e.target.value)}
                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
                     </div>
                     <div>
                       <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Company email *</label>
-                      <input type="email" value={companyEmail} onChange={(e) => setCompanyEmail(e.target.value)}
+                      <input type="email" value={primaryEmail} onChange={(e) => setCompanyEmail(e.target.value)}
                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
                     </div>
                     <div>
                       <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Contact email</label>
-                      <input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="(optional)"
+                      <input type="email" value={secondaryEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="(optional)"
                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
                     </div>
                     <div>
@@ -1527,17 +1527,17 @@ function RestoreFromBundleModal({ configs, onClose }: {
                       <select value={storageTier} onChange={(e) => setStorageTier(e.target.value as 'local' | 'ha')}
                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
                         <option value="local">Local (1 replica)</option>
-                        <option value="ha" disabled={(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).length < 3}>
-                          HA (2 replicas){(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).length < 3 && ' — needs ≥3 nodes'}
+                        <option value="ha" disabled={(nodesData?.data ?? []).filter((n) => n.canHostTenantWorkloads).length < 3}>
+                          HA (2 replicas){(nodesData?.data ?? []).filter((n) => n.canHostTenantWorkloads).length < 3 && ' — needs ≥3 nodes'}
                         </option>
                       </select>
                     </div>
                     <div className="col-span-2">
                       <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Worker node</label>
-                      <select value={workerNodeName} onChange={(e) => setWorkerNodeName(e.target.value)}
+                      <select value={nodeName} onChange={(e) => setWorkerNodeName(e.target.value)}
                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
                         <option value="">Auto (scheduler picks based on capacity)</option>
-                        {(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).map((n) => (
+                        {(nodesData?.data ?? []).filter((n) => n.canHostTenantWorkloads).map((n) => (
                           <option key={n.name} value={n.name}>{n.name}</option>
                         ))}
                       </select>
@@ -1556,7 +1556,7 @@ function RestoreFromBundleModal({ configs, onClose }: {
                   <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                     <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
                     A new tenant will be provisioned with a fresh UUID + namespace. The bundle is registered against
-                    the new client; apply the actual data via Restore Cart on the resulting client page.
+                    the new tenant; apply the actual data via Restore Cart on the resulting tenant page.
                   </p>
                 </>
               )}
@@ -1574,14 +1574,14 @@ function RestoreFromBundleModal({ configs, onClose }: {
           <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
             Cancel
           </button>
-          {preview && !(preview.localClientMatch && (preview.localClientMatch.status === 'active' || preview.localClientMatch.status === 'suspended')) && (
+          {preview && !(preview.localTenantMatch && (preview.localTenantMatch.status === 'active' || preview.localTenantMatch.status === 'suspended')) && (
             <button
               type="button"
               onClick={handleSubmit}
               disabled={!validForSubmit || pending}
               className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
             >
-              {pending ? <><Loader2 size={14} className="animate-spin" /> Restoring…</> : <><RotateCcw size={14} /> Restore client</>}
+              {pending ? <><Loader2 size={14} className="animate-spin" /> Restoring…</> : <><RotateCcw size={14} /> Restore tenant</>}
             </button>
           )}
         </div>
@@ -1693,7 +1693,7 @@ function BundleCaptureProgress({ bundleId, onAcknowledge }: {
 
 interface BundleRowProps {
   readonly bundle: BundleSummary;
-  readonly clientName: string;
+  readonly tenantName: string;
   readonly onVerify: () => void;
   readonly onDelete: () => void;
   readonly onDataExport: () => void;
@@ -1701,7 +1701,7 @@ interface BundleRowProps {
   readonly verifying: boolean;
 }
 
-function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, onExportForRegion, verifying }: BundleRowProps) {
+function BundleRow({ bundle: b, tenantName, onVerify, onDelete, onDataExport, onExportForRegion, verifying }: BundleRowProps) {
   return (
     <tr className="text-sm">
       <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-300">
@@ -1710,15 +1710,15 @@ function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, on
       </td>
       <td className="px-4 py-2 text-gray-700 dark:text-gray-200">
         <div className="flex items-center gap-2">
-          {b.clientStatus === 'missing' ? (
-            // No /clients/:id row exists for a missing client — render
+          {b.tenantStatus === 'missing' ? (
+            // No /tenants/:id row exists for a missing tenant — render
             // as plain text so the operator doesn't get a 404 click.
-            <span className="text-gray-500 italic">{b.clientName ?? clientName}</span>
+            <span className="text-gray-500 italic">{b.tenantName ?? tenantName}</span>
           ) : (
-            <Link to={`/clients/${b.clientId}`} className="hover:text-brand-600 hover:underline">{b.clientName ?? clientName}</Link>
+            <Link to={`/tenants/${b.tenantId}`} className="hover:text-brand-600 hover:underline">{b.tenantName ?? tenantName}</Link>
           )}
-          {b.clientStatus && b.clientStatus !== 'active' && (
-            <StatusBadge status={b.clientStatus} />
+          {b.tenantStatus && b.tenantStatus !== 'active' && (
+            <StatusBadge status={b.tenantStatus} />
           )}
         </div>
       </td>
@@ -1733,7 +1733,7 @@ function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, on
       <td className="px-4 py-2">
         <div className="flex items-center gap-1">
           <Link
-            to={`/restore?bundleId=${b.id}&clientId=${b.clientId}`}
+            to={`/restore?bundleId=${b.id}&tenantId=${b.tenantId}`}
             className="rounded p-1.5 text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30"
             title="Restore from this bundle"
           >
@@ -1820,7 +1820,7 @@ function DeleteConfirmModal({ bundleId, onCancel, onConfirm, isDeleting, error }
 function SchedulesTab() {
   const { data, isLoading } = useAllBackupSchedules();
   const [search, setSearch] = useState('');
-  const [editClientId, setEditClientId] = useState<string | null>(null);
+  const [editTenantId, setEditTenantId] = useState<string | null>(null);
 
   // API envelope: { data: { data: [...] } }. Outer .data is the
   // success() wrapper; inner .data is our list payload.
@@ -1829,7 +1829,7 @@ function SchedulesTab() {
     const q = search.trim().toLowerCase();
     if (!q) return schedules;
     return schedules.filter((s) =>
-      (s.businessName ?? '').toLowerCase().includes(q) || s.clientId.toLowerCase().includes(q),
+      (s.businessName ?? '').toLowerCase().includes(q) || s.tenantId.toLowerCase().includes(q),
     );
   }, [schedules, search]);
 
@@ -1842,7 +1842,7 @@ function SchedulesTab() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search schedules by client name…"
+            placeholder="Search schedules by tenant name…"
             className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
             data-testid="schedule-search"
           />
@@ -1858,7 +1858,7 @@ function SchedulesTab() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
-          No schedules configured yet. Open a client and toggle "Enable scheduled bundles" to create one.
+          No schedules configured yet. Open a tenant and toggle "Enable scheduled bundles" to create one.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
@@ -1872,14 +1872,14 @@ function SchedulesTab() {
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-700 dark:bg-gray-900">
               {filtered.map((s) => (
-                <ScheduleRow key={s.clientId} schedule={s} onEdit={() => setEditClientId(s.clientId)} />
+                <ScheduleRow key={s.tenantId} schedule={s} onEdit={() => setEditTenantId(s.tenantId)} />
               ))}
             </tbody>
           </table>
         </div>
       )}
 
-      {editClientId && (
+      {editTenantId && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           role="dialog"
@@ -1889,13 +1889,13 @@ function SchedulesTab() {
           <div className="w-full max-w-2xl rounded-lg bg-white p-1 shadow-xl dark:bg-gray-800">
             <div className="flex items-center justify-between px-4 py-2">
               <span id="edit-schedule-title" className="text-sm text-gray-500 dark:text-gray-400">
-                Editing schedule for client <code className="font-mono text-xs">{editClientId.slice(0, 8)}…</code>
+                Editing schedule for tenant <code className="font-mono text-xs">{editTenantId.slice(0, 8)}…</code>
               </span>
-              <button type="button" onClick={() => setEditClientId(null)} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
+              <button type="button" onClick={() => setEditTenantId(null)} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
                 <X size={16} />
               </button>
             </div>
-            <BackupScheduleEditor clientId={editClientId} />
+            <BackupScheduleEditor tenantId={editTenantId} />
           </div>
         </div>
       )}
@@ -1904,16 +1904,16 @@ function SchedulesTab() {
 }
 
 function ScheduleRow({ schedule: s, onEdit }: { schedule: BackupScheduleSummary; onEdit: () => void }) {
-  const runNow = useRunBackupScheduleNow(s.clientId);
+  const runNow = useRunBackupScheduleNow(s.tenantId);
   const handleRunNow = () => { runNow.mutate(); };
 
   return (
     <tr className="text-sm">
       <td className="px-4 py-2">
-        <Link to={`/clients/${s.clientId}`} className="text-gray-700 hover:text-brand-600 hover:underline dark:text-gray-200">
+        <Link to={`/tenants/${s.tenantId}`} className="text-gray-700 hover:text-brand-600 hover:underline dark:text-gray-200">
           {s.businessName ?? <span className="italic text-red-500">(deleted)</span>}
         </Link>
-        <div className="font-mono text-[11px] text-gray-500">{s.clientId.slice(0, 8)}…</div>
+        <div className="font-mono text-[11px] text-gray-500">{s.tenantId.slice(0, 8)}…</div>
       </td>
       <td className="px-4 py-2">
         {s.enabled ? (

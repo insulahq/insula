@@ -1,5 +1,5 @@
 /**
- * Boot-time reconciliation: re-apply every existing client ResourceQuota
+ * Boot-time reconciliation: re-apply every existing tenant ResourceQuota
  * with the new shape (no SYSTEM_*_RESERVE padding, scopeSelector matching
  * `tenant-default` PriorityClass).
  *
@@ -15,7 +15,7 @@
  */
 
 import type { Database } from '../../db/index.js';
-import { clients, hostingPlans } from '../../db/schema.js';
+import { tenants, hostingPlans } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { applyResourceQuota } from './service.js';
 import type { K8sClients } from './k8s-client.js';
@@ -24,32 +24,32 @@ interface ReconcileResult {
   readonly scanned: number;
   readonly reconciled: number;
   readonly skipped: number;
-  readonly errors: ReadonlyArray<{ clientId: string; error: string }>;
+  readonly errors: ReadonlyArray<{ tenantId: string; error: string }>;
 }
 
-export async function reconcileAllClientQuotas(
+export async function reconcileAllTenantQuotas(
   db: Database,
   k8s: K8sClients,
   log: { info: (obj: object, msg?: string) => void; warn: (obj: object, msg?: string) => void },
 ): Promise<ReconcileResult> {
   const rows = await db
     .select({
-      id: clients.id,
-      namespace: clients.kubernetesNamespace,
-      planId: clients.planId,
-      cpuLimitOverride: clients.cpuLimitOverride,
-      memoryLimitOverride: clients.memoryLimitOverride,
-      storageLimitOverride: clients.storageLimitOverride,
+      id: tenants.id,
+      namespace: tenants.kubernetesNamespace,
+      planId: tenants.planId,
+      cpuLimitOverride: tenants.cpuLimitOverride,
+      memoryLimitOverride: tenants.memoryLimitOverride,
+      storageLimitOverride: tenants.storageLimitOverride,
       cpuLimit: hostingPlans.cpuLimit,
       memoryLimit: hostingPlans.memoryLimit,
       storageLimit: hostingPlans.storageLimit,
     })
-    .from(clients)
-    .leftJoin(hostingPlans, eq(hostingPlans.id, clients.planId));
+    .from(tenants)
+    .leftJoin(hostingPlans, eq(hostingPlans.id, tenants.planId));
 
   let reconciled = 0;
   let skipped = 0;
-  const errors: Array<{ clientId: string; error: string }> = [];
+  const errors: Array<{ tenantId: string; error: string }> = [];
 
   for (const c of rows) {
     const effectiveCpu = c.cpuLimitOverride ?? c.cpuLimit;
@@ -69,10 +69,10 @@ export async function reconcileAllClientQuotas(
       reconciled++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push({ clientId: c.id, error: msg });
+      errors.push({ tenantId: c.id, error: msg });
       log.warn(
-        { clientId: c.id, namespace: c.namespace, err: msg },
-        'quota-reconcile: failed for client; will retry on next boot',
+        { tenantId: c.id, namespace: c.namespace, err: msg },
+        'quota-reconcile: failed for tenant; will retry on next boot',
       );
     }
   }

@@ -75,8 +75,8 @@ function extractRefreshTokenFromCookie(cookieHeader: string | undefined): string
 interface AccessTokenInput {
   readonly userId: string;
   readonly role: string;
-  readonly panel: 'admin' | 'client';
-  readonly clientId?: string | null;
+  readonly panel: 'admin' | 'tenant';
+  readonly tenantId?: string | null;
   readonly impersonatedBy?: string;
 }
 
@@ -90,7 +90,7 @@ function signAccessToken(app: FastifyInstance, input: AccessTokenInput): string 
     iat: now,
     jti: crypto.randomUUID(),
   };
-  if (input.clientId) payload.clientId = input.clientId;
+  if (input.tenantId) payload.tenantId = input.tenantId;
   if (input.impersonatedBy) payload.impersonatedBy = input.impersonatedBy;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return app.jwt.sign(payload as any);
@@ -108,7 +108,7 @@ const PRE_AUTH_TOKEN_TTL_SECONDS = 5 * 60;
  * a pre-auth token can't use it as an access token because the access
  * verifier rejects payloads with non-empty `step` claims.
  */
-function signPreAuthToken(app: FastifyInstance, userId: string, panel: 'admin' | 'client', jti: string): string {
+function signPreAuthToken(app: FastifyInstance, userId: string, panel: 'admin' | 'tenant', jti: string): string {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     sub: userId,
@@ -187,7 +187,7 @@ export async function authRoutes(app: FastifyInstance) {
   }, async (request, reply) => {
     // Check if local auth is disabled for the requested panel
     const loginBody = request.body as Record<string, unknown>;
-    const loginPanel = (loginBody?.panel === 'client' ? 'client' : 'admin') as 'admin' | 'client';
+    const loginPanel = (loginBody?.panel === 'tenant' ? 'tenant' : 'admin') as 'admin' | 'tenant';
     if (await isLocalAuthDisabled(app.db, loginPanel)) {
       throw new ApiError('LOCAL_AUTH_DISABLED', 'Local authentication is disabled. Please use SSO to sign in.', 403);
     }
@@ -213,7 +213,7 @@ export async function authRoutes(app: FastifyInstance) {
       const pre = await issuePreAuthToken(
         app.db,
         user.id,
-        (user.panel ?? 'admin') as 'admin' | 'client',
+        (user.panel ?? 'admin') as 'admin' | 'tenant',
       );
       const preAuthToken = signPreAuthToken(app, user.id, pre.panel, pre.jti);
       return reply.send({
@@ -227,7 +227,7 @@ export async function authRoutes(app: FastifyInstance) {
             fullName: user.fullName,
             role: user.role,
             panel: user.panel,
-            clientId: user.clientId,
+            tenantId: user.tenantId,
           },
         },
       });
@@ -237,13 +237,13 @@ export async function authRoutes(app: FastifyInstance) {
       userId: user.id,
       role: user.role,
       panel: user.panel ?? 'admin',
-      clientId: user.clientId,
+      tenantId: user.tenantId,
     });
 
     const issued = await issueRefreshToken(app.db, {
       userId: user.id,
-      panel: (user.panel ?? 'admin') as 'admin' | 'client',
-      clientId: user.clientId ?? null,
+      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+      tenantId: user.tenantId ?? null,
       userAgent: pickUserAgent(request),
       ipAddress: request.ip,
     });
@@ -262,7 +262,7 @@ export async function authRoutes(app: FastifyInstance) {
           fullName: user.fullName,
           role: user.role,
           panel: user.panel,
-          clientId: user.clientId,
+          tenantId: user.tenantId,
         },
       },
     });
@@ -271,11 +271,11 @@ export async function authRoutes(app: FastifyInstance) {
   /**
    * Runtime-info: surfaces which platform-api pod served the request,
    * the running version, and the build's git branch. Lightweight,
-   * cacheable; both admin and client panels render it under the
+   * cacheable; both admin and tenant panels render it under the
    * sidebar title so operators can tell at a glance which node is
    * answering them and which build is live.
    *
-   * Auth: any authenticated user (admin or client). Reads NODE_NAME,
+   * Auth: any authenticated user (admin or tenant). Reads NODE_NAME,
    * POD_NAME, PLATFORM_VERSION, PLATFORM_BRANCH from env (downward
    * API + platform-version configmap).
    */
@@ -306,21 +306,21 @@ export async function authRoutes(app: FastifyInstance) {
       throw invalidToken();
     }
 
-    // For client-panel users, include the owning client's lifecycle
+    // For tenant-panel users, include the owning tenant's lifecycle
     // state so the UI can render a banner / block destructive pages
-    // when the client is suspended or being operated on. Admin users
-    // have no clientId and skip this lookup entirely.
-    let clientStatus: string | null = null;
+    // when the tenant is suspended or being operated on. Admin users
+    // have no tenantId and skip this lookup entirely.
+    let tenantStatus: string | null = null;
     let storageLifecycleState: string | null = null;
-    if (user.clientId) {
-      const { clients } = await import('../../db/schema.js');
+    if (user.tenantId) {
+      const { tenants } = await import('../../db/schema.js');
       const [c] = await app.db
-        .select({ status: clients.status, state: clients.storageLifecycleState })
-        .from(clients)
-        .where(eq(clients.id, user.clientId))
+        .select({ status: tenants.status, state: tenants.storageLifecycleState })
+        .from(tenants)
+        .where(eq(tenants.id, user.tenantId))
         .limit(1);
       if (c) {
-        clientStatus = c.status;
+        tenantStatus = c.status;
         storageLifecycleState = c.state;
       }
     }
@@ -332,9 +332,9 @@ export async function authRoutes(app: FastifyInstance) {
         fullName: user.fullName,
         role: user.roleName,
         panel: user.panel ?? 'admin',
-        clientId: user.clientId ?? null,
+        tenantId: user.tenantId ?? null,
         timezone: user.timezone ?? null,
-        clientStatus,
+        tenantStatus,
         storageLifecycleState,
       },
     };
@@ -458,8 +458,8 @@ export async function authRoutes(app: FastifyInstance) {
     await revokeAllUserRefreshTokens(app.db, payload.sub, 'password_change');
     const issued = await issueRefreshToken(app.db, {
       userId: user.id,
-      panel: (user.panel ?? 'admin') as 'admin' | 'client',
-      clientId: user.clientId ?? null,
+      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+      tenantId: user.tenantId ?? null,
       userAgent: pickUserAgent(request),
       ipAddress: request.ip,
     });
@@ -494,7 +494,7 @@ export async function authRoutes(app: FastifyInstance) {
         await revokeRefreshTokenById(app.db, validation.id, 'logout');
       }
       // not_found / expired / revoked / reuse_detected — no-op, the
-      // client is already logged out from the server's POV.
+      // tenant is already logged out from the server's POV.
     }
     clearSessionCookies(reply);
     return reply.send({ data: { message: 'Logged out successfully' } });
@@ -515,7 +515,7 @@ export async function authRoutes(app: FastifyInstance) {
   //   204 — authenticated admin-panel staff with a non-read-only role
   //   401 — no cookie, invalid cookie, or expired session
   //   403 — authenticated but not allowed on admin-only subdomains
-  //         (client-panel session, or admin-panel read_only role)
+  //         (tenant-panel session, or admin-panel read_only role)
   // No body — nginx only inspects status.
   app.get('/auth/verify-admin-session', async (request, reply) => {
     const token = extractPlatformSessionCookie(request.headers.cookie);
@@ -650,14 +650,14 @@ export async function authRoutes(app: FastifyInstance) {
       throw invalidToken();
     }
 
-    // Archived client → terminal state, kill the session. Suspended is
+    // Archived tenant → terminal state, kill the session. Suspended is
     // still allowed so the user can see the suspension banner.
-    if (user.clientId) {
-      const { clients } = await import('../../db/schema.js');
+    if (user.tenantId) {
+      const { tenants } = await import('../../db/schema.js');
       const [c] = await app.db
-        .select({ status: clients.status })
-        .from(clients)
-        .where(eq(clients.id, user.clientId))
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, user.tenantId))
         .limit(1);
       if (c && c.status === 'archived') {
         await revokeRefreshTokenById(app.db, validation.id, 'admin_revoke');
@@ -670,7 +670,7 @@ export async function authRoutes(app: FastifyInstance) {
     const issued = await issueRefreshToken(app.db, {
       userId: user.id,
       panel: validation.panel,
-      clientId: validation.clientId,
+      tenantId: validation.tenantId,
       familyId: validation.familyId,
       userAgent: pickUserAgent(request),
       ipAddress: request.ip,
@@ -693,8 +693,8 @@ export async function authRoutes(app: FastifyInstance) {
     const accessToken = signAccessToken(app, {
       userId: user.id,
       role: user.roleName,
-      panel: (user.panel ?? 'admin') as 'admin' | 'client',
-      clientId: user.clientId,
+      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+      tenantId: user.tenantId,
       impersonatedBy,
     });
 
@@ -712,7 +712,7 @@ export async function authRoutes(app: FastifyInstance) {
           fullName: user.fullName,
           role: user.roleName,
           panel: user.panel ?? 'admin',
-          clientId: user.clientId ?? null,
+          tenantId: user.tenantId ?? null,
         },
       },
     });

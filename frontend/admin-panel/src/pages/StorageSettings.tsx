@@ -253,7 +253,7 @@ function LonghornIframeModal({ url, onClose }: { url: string; onClose: () => voi
 /**
  * Issue 1 fix: surfaces the namespace-integrity reconciler. Auto-runs every
  * 30 min via the storage-lifecycle scheduler; this card lets an operator
- * trigger a fleet-wide sweep on demand. Per-client repair lives on the
+ * trigger a fleet-wide sweep on demand. Per-tenant repair lives on the
  * Client Detail page banner.
  */
 function NamespaceIntegrityCard() {
@@ -270,12 +270,12 @@ function NamespaceIntegrityCard() {
       <p className="text-sm text-gray-600 dark:text-gray-400">
         After a cluster rebootstrap or DR restore, a tenant namespace can lose its PVC,
         ResourceQuota, or NetworkPolicies while still appearing provisioned. The reconciler
-        sweeps every provisioned client every 30 minutes and re-creates the missing pieces.
+        sweeps every provisioned tenant every 30 minutes and re-creates the missing pieces.
         Run it now from here when you suspect drift after an incident.
       </p>
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Orphaned volumes are a related drift class — PVs / Longhorn volumes whose owning
-        namespace was deleted, whose client row was removed, or that have been stuck in
+        namespace was deleted, whose tenant row was removed, or that have been stuck in
         Released phase past the stale threshold. Use the Manage button to review and reclaim them.
       </p>
       <div className="flex flex-wrap items-center gap-3">

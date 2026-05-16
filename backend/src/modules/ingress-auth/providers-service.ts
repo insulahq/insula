@@ -1,7 +1,7 @@
 /**
  * Per-client OIDC provider CRUD.
  *
- * Providers are reusable across N ingresses for the same client.
+ * Providers are reusable across N ingresses for the same tenant.
  * Secret encryption uses the existing PLATFORM_ENCRYPTION_KEY (32-byte
  * hex). Secrets are NEVER returned in responses; only a `secretSet`
  * flag exposes presence.
@@ -14,13 +14,13 @@
 
 import { eq, and, count } from 'drizzle-orm';
 import {
-  clientOidcProviders,
+  tenantOidcProviders,
   ingressAuthConfigs,
 } from '../../db/schema.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
-import type { ClientOidcProvider } from '../../db/schema.js';
+import type { TenantOidcProvider } from '../../db/schema.js';
 
 export interface ProviderInput {
   readonly name: string;
@@ -53,7 +53,7 @@ interface Ctx {
   readonly encryptionKey: string;
 }
 
-function toResponse(row: ClientOidcProvider, consumerCount: number): ProviderResponse {
+function toResponse(row: TenantOidcProvider, consumerCount: number): ProviderResponse {
   return {
     id: row.id,
     name: row.name,
@@ -80,12 +80,12 @@ async function consumerCount(db: Database, providerId: string): Promise<number> 
 
 export async function listProviders(
   db: Database,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReadonlyArray<ProviderResponse>> {
   const rows = await db
     .select()
-    .from(clientOidcProviders)
-    .where(eq(clientOidcProviders.clientId, clientId));
+    .from(tenantOidcProviders)
+    .where(eq(tenantOidcProviders.tenantId, tenantId));
   // Per-row consumerCount: cheap join would be nicer but requires a
   // groupBy. Two-step: collect ids, fetch counts in one query.
   const idCounts = new Map<string, number>();
@@ -103,13 +103,13 @@ export async function listProviders(
 
 export async function getProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   id: string,
 ): Promise<ProviderResponse | null> {
   const [row] = await db
     .select()
-    .from(clientOidcProviders)
-    .where(and(eq(clientOidcProviders.id, id), eq(clientOidcProviders.clientId, clientId)));
+    .from(tenantOidcProviders)
+    .where(and(eq(tenantOidcProviders.id, id), eq(tenantOidcProviders.tenantId, tenantId)));
   if (!row) return null;
   return toResponse(row, await consumerCount(db, id));
 }
@@ -117,7 +117,7 @@ export async function getProvider(
 export async function createProvider(
   db: Database,
   ctx: Ctx,
-  clientId: string,
+  tenantId: string,
   input: ProviderInput,
 ): Promise<ProviderResponse> {
   if (!input.oauthClientSecret) {
@@ -128,9 +128,9 @@ export async function createProvider(
     );
   }
   const id = crypto.randomUUID();
-  await db.insert(clientOidcProviders).values({
+  await db.insert(tenantOidcProviders).values({
     id,
-    clientId,
+    tenantId,
     name: input.name,
     issuerUrl: input.issuerUrl,
     oauthClientId: input.oauthClientId,
@@ -140,7 +140,7 @@ export async function createProvider(
     usePkce: input.usePkce ?? true,
     defaultScopes: input.defaultScopes ?? 'openid profile email',
   });
-  const result = await getProvider(db, clientId, id);
+  const result = await getProvider(db, tenantId, id);
   if (!result) throw new ApiError('INTERNAL', 'Provider missing after insert', 500);
   return result;
 }
@@ -148,15 +148,15 @@ export async function createProvider(
 export async function updateProvider(
   db: Database,
   ctx: Ctx,
-  clientId: string,
+  tenantId: string,
   id: string,
   input: Partial<ProviderInput>,
 ): Promise<ProviderResponse> {
-  const existing = await getProvider(db, clientId, id);
+  const existing = await getProvider(db, tenantId, id);
   if (!existing) {
     throw new ApiError('NOT_FOUND', `Provider ${id} not found`, 404);
   }
-  const set: Partial<typeof clientOidcProviders.$inferInsert> = {};
+  const set: Partial<typeof tenantOidcProviders.$inferInsert> = {};
   if (input.name !== undefined) set.name = input.name;
   if (input.issuerUrl !== undefined) set.issuerUrl = input.issuerUrl;
   if (input.oauthClientId !== undefined) set.oauthClientId = input.oauthClientId;
@@ -169,11 +169,11 @@ export async function updateProvider(
   if (input.defaultScopes !== undefined) set.defaultScopes = input.defaultScopes;
   if (Object.keys(set).length > 0) {
     await db
-      .update(clientOidcProviders)
+      .update(tenantOidcProviders)
       .set(set)
-      .where(and(eq(clientOidcProviders.id, id), eq(clientOidcProviders.clientId, clientId)));
+      .where(and(eq(tenantOidcProviders.id, id), eq(tenantOidcProviders.tenantId, tenantId)));
   }
-  const updated = await getProvider(db, clientId, id);
+  const updated = await getProvider(db, tenantId, id);
   if (!updated) throw new ApiError('INTERNAL', 'Provider missing after update', 500);
   return updated;
 }
@@ -184,7 +184,7 @@ export async function updateProvider(
  */
 export async function deleteProvider(
   db: Database,
-  clientId: string,
+  tenantId: string,
   id: string,
 ): Promise<void> {
   const consumers = await consumerCount(db, id);
@@ -198,15 +198,15 @@ export async function deleteProvider(
     );
   }
   await db
-    .delete(clientOidcProviders)
-    .where(and(eq(clientOidcProviders.id, id), eq(clientOidcProviders.clientId, clientId)));
+    .delete(tenantOidcProviders)
+    .where(and(eq(tenantOidcProviders.id, id), eq(tenantOidcProviders.tenantId, tenantId)));
 }
 
 /**
- * Decrypt the provider's client secret for reconciler consumption.
+ * Decrypt the provider's tenant secret for reconciler consumption.
  */
 export function decryptProviderSecret(
-  row: ClientOidcProvider,
+  row: TenantOidcProvider,
   encryptionKey: string,
 ): string {
   if (!row.oauthClientSecretEncrypted) return '';

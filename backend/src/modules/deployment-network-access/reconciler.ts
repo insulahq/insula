@@ -1,9 +1,9 @@
 /**
- * Per-client mesh-proxy reconciler for the Network Access feature.
+ * Per-tenant mesh-proxy reconciler for the Network Access feature.
  *
- * Materialises ONE pod per (client, kind) where kind is
+ * Materialises ONE pod per (tenant, kind) where kind is
  * 'ziti-tunneler' or 'zrok-frontdoor', shared by every deployment of
- * that client in the matching mode. Reference-counted: provisioned on
+ * that tenant in the matching mode. Reference-counted: provisioned on
  * first deployment, torn down when the last deployment leaves the mode.
  *
  * Userspace mode for Ziti — uses ziti-edge-tunnel's `proxy` subcommand
@@ -21,16 +21,16 @@
 import * as k8s from '@kubernetes/client-node';
 import { eq } from 'drizzle-orm';
 import {
-  clients,
-  clientMeshProxyState,
-  clientZitiProviders,
-  clientZrokAccounts,
+  tenants,
+  tenantMeshProxyState,
+  tenantZitiProviders,
+  tenantZrokAccounts,
   deploymentNetworkAccessConfigs,
   deployments,
 } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import {
-  listMeshDeploymentsForClient,
+  listMeshDeploymentsForTenant,
   setDomainSuppression,
   markReconciled,
 } from './service.js';
@@ -54,7 +54,7 @@ export interface ReconcileDeps {
 }
 
 export interface ReconcileOutcome {
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly namespace: string;
   readonly tunnelerDeployments: number;
   readonly zrokDeployments: number;
@@ -62,15 +62,15 @@ export interface ReconcileOutcome {
   readonly error: string | null;
 }
 
-export async function reconcileClient(
+export async function reconcileTenant(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
 ): Promise<ReconcileOutcome> {
-  const namespace = await getClientNamespace(deps.db, clientId);
+  const namespace = await getTenantNamespace(deps.db, tenantId);
   if (!namespace) {
-    return { clientId, namespace: '', tunnelerDeployments: 0, zrokDeployments: 0, action: 'noop', error: 'client not found' };
+    return { tenantId, namespace: '', tunnelerDeployments: 0, zrokDeployments: 0, action: 'noop', error: 'tenant not found' };
   }
-  const meshDeps = await listMeshDeploymentsForClient(deps.db, clientId);
+  const meshDeps = await listMeshDeploymentsForTenant(deps.db, tenantId);
   const tunnelerDeps = meshDeps.filter((d) => d.mode === 'tunneler');
   const zrokDeps = meshDeps.filter((d) => d.mode === 'zrok');
 
@@ -83,7 +83,7 @@ export async function reconcileClient(
       const wasNew = await ensureZitiTunneler(deps, namespace, provider);
       action = wasNew ? 'provisioned' : 'updated';
     } else {
-      const torn = await tearDownZitiTunneler(deps, clientId, namespace);
+      const torn = await tearDownZitiTunneler(deps, tenantId, namespace);
       if (torn) action = 'torn_down';
     }
 
@@ -94,7 +94,7 @@ export async function reconcileClient(
       if (wasNew && action === 'noop') action = 'provisioned';
       else if (action === 'noop') action = 'updated';
     } else {
-      const torn = await tearDownZrokFrontdoor(deps, clientId, namespace);
+      const torn = await tearDownZrokFrontdoor(deps, tenantId, namespace);
       if (torn && action === 'noop') action = 'torn_down';
     }
 
@@ -106,22 +106,22 @@ export async function reconcileClient(
       await markReconciled(deps.db, d.deploymentId, true, null, true, d.mode === 'tunneler');
     }
 
-    return { clientId, namespace, tunnelerDeployments: tunnelerDeps.length, zrokDeployments: zrokDeps.length, action, error: null };
+    return { tenantId, namespace, tunnelerDeployments: tunnelerDeps.length, zrokDeployments: zrokDeps.length, action, error: null };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     for (const d of meshDeps) {
       // eslint-disable-next-line no-await-in-loop
       await markReconciled(deps.db, d.deploymentId, false, msg, false, false);
     }
-    return { clientId, namespace, tunnelerDeployments: tunnelerDeps.length, zrokDeployments: zrokDeps.length, action: 'noop', error: msg };
+    return { tenantId, namespace, tunnelerDeployments: tunnelerDeps.length, zrokDeployments: zrokDeps.length, action: 'noop', error: msg };
   }
 }
 
-async function getClientNamespace(db: Database, clientId: string): Promise<string | null> {
+async function getTenantNamespace(db: Database, tenantId: string): Promise<string | null> {
   const [row] = await db
-    .select({ ns: clients.kubernetesNamespace })
-    .from(clients)
-    .where(eq(clients.id, clientId));
+    .select({ ns: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
   return row?.ns ?? null;
 }
 
@@ -129,7 +129,7 @@ async function loadZitiProvider(db: Database, encryptionKey: string, providerId:
   controllerUrl: string;
   enrollmentJwt: string | null;
 }> {
-  const [row] = await db.select().from(clientZitiProviders).where(eq(clientZitiProviders.id, providerId));
+  const [row] = await db.select().from(tenantZitiProviders).where(eq(tenantZitiProviders.id, providerId));
   if (!row) throw new Error(`ziti provider ${providerId} not found`);
   return {
     controllerUrl: row.controllerUrl,
@@ -141,7 +141,7 @@ async function loadZrokAccount(db: Database, encryptionKey: string, providerId: 
   controllerUrl: string;
   accountToken: string;
 }> {
-  const [row] = await db.select().from(clientZrokAccounts).where(eq(clientZrokAccounts.id, providerId));
+  const [row] = await db.select().from(tenantZrokAccounts).where(eq(tenantZrokAccounts.id, providerId));
   if (!row) throw new Error(`zrok account ${providerId} not found`);
   return {
     controllerUrl: row.controllerUrl,
@@ -167,7 +167,7 @@ async function ensureZitiTunneler(
     { name: 'http-proxy', port: 8080, targetPort: 8080 },
   ]);
   const wasNew = await upsertZitiDeployment(deps.k8s.apps, namespace);
-  await markMeshState(deps.db, await clientIdForNamespace(deps.db, namespace), 'ziti-tunneler', true, null);
+  await markMeshState(deps.db, await tenantIdForNamespace(deps.db, namespace), 'ziti-tunneler', true, null);
   return wasNew;
 }
 
@@ -184,19 +184,19 @@ async function ensureZrokFrontdoor(
     { name: 'http', port: 8080, targetPort: 8080 },
   ]);
   const wasNew = await upsertZrokDeployment(deps.k8s.apps, namespace);
-  await markMeshState(deps.db, await clientIdForNamespace(deps.db, namespace), 'zrok-frontdoor', true, null);
+  await markMeshState(deps.db, await tenantIdForNamespace(deps.db, namespace), 'zrok-frontdoor', true, null);
   return wasNew;
 }
 
 async function tearDownZitiTunneler(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
   namespace: string,
 ): Promise<boolean> {
   const [state] = await deps.db
     .select()
-    .from(clientMeshProxyState)
-    .where(eq(clientMeshProxyState.clientId, clientId));
+    .from(tenantMeshProxyState)
+    .where(eq(tenantMeshProxyState.tenantId, tenantId));
   if (!state || state.kind !== 'ziti-tunneler' || !state.provisioned) return false;
   await deleteIfExists(() =>
     deps.k8s.apps.deleteNamespacedDeployment({ name: ZITI_PROXY_NAME, namespace } as never),
@@ -207,19 +207,19 @@ async function tearDownZitiTunneler(
   await deleteIfExists(() =>
     deps.k8s.core.deleteNamespacedConfigMap({ name: ZITI_PROXY_NAME, namespace } as never),
   );
-  await markMeshState(deps.db, clientId, 'ziti-tunneler', false, null);
+  await markMeshState(deps.db, tenantId, 'ziti-tunneler', false, null);
   return true;
 }
 
 async function tearDownZrokFrontdoor(
   deps: ReconcileDeps,
-  clientId: string,
+  tenantId: string,
   namespace: string,
 ): Promise<boolean> {
   const [state] = await deps.db
     .select()
-    .from(clientMeshProxyState)
-    .where(eq(clientMeshProxyState.clientId, clientId));
+    .from(tenantMeshProxyState)
+    .where(eq(tenantMeshProxyState.tenantId, tenantId));
   if (!state || state.kind !== 'zrok-frontdoor' || !state.provisioned) return false;
   await deleteIfExists(() =>
     deps.k8s.apps.deleteNamespacedDeployment({ name: ZROK_FRONTDOOR_NAME, namespace } as never),
@@ -230,7 +230,7 @@ async function tearDownZrokFrontdoor(
   await deleteIfExists(() =>
     deps.k8s.core.deleteNamespacedConfigMap({ name: ZROK_FRONTDOOR_NAME, namespace } as never),
   );
-  await markMeshState(deps.db, clientId, 'zrok-frontdoor', false, null);
+  await markMeshState(deps.db, tenantId, 'zrok-frontdoor', false, null);
   return true;
 }
 
@@ -369,8 +369,8 @@ async function upsertZrokDeployment(apps: k8s.AppsV1Api, namespace: string): Pro
               // Enable on first boot if state dir is empty, then run
               // a private share access loop. Multi-share frontdoor
               // configuration is a v2 enhancement; v1 routes a single
-              // share token per (client) — UI restricts to one zrok-
-              // mode deployment per client at a time.
+              // share token per (tenant) — UI restricts to one zrok-
+              // mode deployment per tenant at a time.
               'set -e; ' +
               'cd /state; ' +
               'if [ ! -d ".zrok" ]; then zrok enable "$ZROK_ENABLE_TOKEN"; fi; ' +
@@ -415,34 +415,34 @@ function isNotFound(err: unknown): boolean {
   return false;
 }
 
-async function clientIdForNamespace(db: Database, namespace: string): Promise<string> {
+async function tenantIdForNamespace(db: Database, namespace: string): Promise<string> {
   const [row] = await db
-    .select({ id: clients.id })
-    .from(clients)
-    .where(eq(clients.kubernetesNamespace, namespace));
+    .select({ id: tenants.id })
+    .from(tenants)
+    .where(eq(tenants.kubernetesNamespace, namespace));
   return row?.id ?? '';
 }
 
 async function markMeshState(
   db: Database,
-  clientId: string,
+  tenantId: string,
   kind: 'ziti-tunneler' | 'zrok-frontdoor',
   provisioned: boolean,
   error: string | null,
 ): Promise<void> {
-  if (!clientId) return;
+  if (!tenantId) return;
   const [existing] = await db
     .select()
-    .from(clientMeshProxyState)
-    .where(eq(clientMeshProxyState.clientId, clientId));
+    .from(tenantMeshProxyState)
+    .where(eq(tenantMeshProxyState.tenantId, tenantId));
   if (existing && existing.kind === kind) {
     await db
-      .update(clientMeshProxyState)
+      .update(tenantMeshProxyState)
       .set({ provisioned, lastProvisionedAt: provisioned ? new Date() : existing.lastProvisionedAt, lastError: error })
-      .where(eq(clientMeshProxyState.clientId, clientId));
+      .where(eq(tenantMeshProxyState.tenantId, tenantId));
   } else {
-    await db.insert(clientMeshProxyState).values({
-      clientId,
+    await db.insert(tenantMeshProxyState).values({
+      tenantId,
       kind,
       provisioned,
       lastProvisionedAt: provisioned ? new Date() : null,

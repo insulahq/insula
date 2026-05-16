@@ -29,7 +29,7 @@ function makeNode(overrides: Partial<ClusterNodeResponse> = {}): ClusterNodeResp
     name: 'staging1',
     displayName: null,
     role: 'server',
-    canHostClientWorkloads: false,
+    canHostTenantWorkloads: false,
     cordoned: false,
     drained: false,
     ingressMode: 'all',

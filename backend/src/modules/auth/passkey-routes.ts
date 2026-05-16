@@ -59,8 +59,8 @@ function pickUserAgent(request: FastifyRequest): string | undefined {
 interface AccessTokenPayload {
   sub: string;
   role: string;
-  panel: 'admin' | 'client';
-  clientId?: string | null;
+  panel: 'admin' | 'tenant';
+  tenantId?: string | null;
 }
 
 function signAccessToken(app: FastifyInstance, p: AccessTokenPayload): string {
@@ -73,7 +73,7 @@ function signAccessToken(app: FastifyInstance, p: AccessTokenPayload): string {
     iat: now,
     jti: randomUUID(),
   };
-  if (p.clientId) payload.clientId = p.clientId;
+  if (p.tenantId) payload.tenantId = p.tenantId;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return app.jwt.sign(payload as any);
 }
@@ -85,7 +85,7 @@ function signAccessToken(app: FastifyInstance, p: AccessTokenPayload): string {
  */
 function panelFromBody(request: FastifyRequest): PasskeyPanel {
   const body = (request.body ?? {}) as { panel?: unknown };
-  return body.panel === 'client' ? 'client' : 'admin';
+  return body.panel === 'tenant' ? 'tenant' : 'admin';
 }
 
 async function recordAudit(
@@ -99,7 +99,7 @@ async function recordAudit(
   try {
     await db.insert(auditLogs).values({
       id: randomUUID(),
-      clientId: null,
+      tenantId: null,
       actionType,
       resourceType: 'passkey',
       resourceId: resourceId ?? actorId,
@@ -130,7 +130,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
    */
   app.post('/auth/passkey/registration/options', async (request, reply) => {
     await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'client' };
+    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const options = await beginRegistration(app.db, config, payload.sub, payload.panel);
     return reply.send({ data: options });
   });
@@ -142,7 +142,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
    */
   app.post('/auth/passkey/registration/verify', async (request, reply) => {
     await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'client' };
+    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const body = (request.body ?? {}) as { response?: unknown; nickname?: unknown };
     if (!body.response || typeof body.nickname !== 'string' || body.nickname.length === 0) {
       throw new ApiError('VALIDATION_ERROR', 'response and nickname are required', 400);
@@ -226,13 +226,13 @@ export async function passkeyRoutes(app: FastifyInstance) {
     const accessToken = signAccessToken(app, {
       sub: user.id,
       role: user.roleName,
-      panel: (user.panel ?? 'admin') as 'admin' | 'client',
-      clientId: user.clientId,
+      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+      tenantId: user.tenantId,
     });
     const issued = await issueRefreshToken(app.db, {
       userId: user.id,
-      panel: (user.panel ?? 'admin') as 'admin' | 'client',
-      clientId: user.clientId ?? null,
+      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+      tenantId: user.tenantId ?? null,
       userAgent: pickUserAgent(request),
       ipAddress: request.ip,
     });
@@ -258,7 +258,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
           fullName: user.fullName,
           role: user.roleName,
           panel: user.panel,
-          clientId: user.clientId,
+          tenantId: user.tenantId,
         },
       },
     });
@@ -267,7 +267,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
   /** List the caller's passkeys + current mode. */
   app.get('/auth/passkey', async (request, reply) => {
     await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'client' };
+    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const list = await listPasskeys(app.db, payload.sub);
     const [user] = await app.db.select({ mode: users.passkeyMode }).from(users).where(eq(users.id, payload.sub)).limit(1);
     return reply.send({ data: { passkeys: list, mode: user?.mode ?? null } });
@@ -276,7 +276,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
   /** Delete a passkey. Service refuses last-passkey delete in 2FA mode. */
   app.delete('/auth/passkey/:id', async (request, reply) => {
     await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'client' };
+    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const passkeyId = (request.params as { id: string }).id;
     await deletePasskey(app.db, payload.sub, passkeyId);
     await recordAudit(app.db, payload.sub, 'passkey_deleted', passkeyId, request);
@@ -286,7 +286,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
   /** Set passkey mode for the current user. */
   app.patch('/auth/passkey-mode', async (request, reply) => {
     await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'client' };
+    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const body = (request.body ?? {}) as { mode?: unknown };
     const mode = body.mode;
     if (mode !== null && mode !== 'alternative' && mode !== 'second_factor') {
@@ -321,7 +321,7 @@ async function assertBearerAuth(request: FastifyRequest): Promise<void> {
   }
 }
 
-interface PreAuthClaims { sub: string; panel: 'admin' | 'client'; jti: string; }
+interface PreAuthClaims { sub: string; panel: 'admin' | 'tenant'; jti: string; }
 
 async function verifyPreAuthClaims(
   app: FastifyInstance,

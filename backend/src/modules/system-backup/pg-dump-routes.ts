@@ -9,7 +9,7 @@
  * Listing of pg_dump runs reuses GET /api/v1/system-backup/secrets/runs
  * pattern — Phase 2.3 will add a wider /api/v1/system-backup/runs that
  * lists all kinds together. For now operators filter by
- * source_namespace + source_cluster client-side.
+ * source_namespace + source_cluster tenant-side.
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -36,7 +36,7 @@ import { spawn } from 'node:child_process';
 
 // Cap on simultaneous /download streams. Each download pipes the
 // entire pgdump artifact (potentially multi-GB) S3/SSH→platform-api→
-// client. Without a limit a single operator can saturate the pod's
+// tenant. Without a limit a single operator can saturate the pod's
 // egress (sec review M-3). Module-scoped intentionally — per-replica
 // counter is fine for DoS-from-self protection; if multi-replica
 // total cap matters later, swap for a DB advisory-lock counter.
@@ -117,8 +117,8 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
           kind: 'pg_dump',
           status: 'pending',
           operatorUserId: userId,
-          operatorIp: clientIp(request),
-          operatorUserAgent: clientUa(request),
+          operatorIp: tenantIp(request),
+          operatorUserAgent: tenantUa(request),
           sourceNamespace: parsed.data.sourceNamespace,
           sourceCluster: parsed.data.sourceCluster,
           sourceDatabase: parsed.data.sourceDatabase,
@@ -141,7 +141,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
             targetConfigId: parsed.data.targetConfigId,
             reason: parsed.data.reason ?? null,
           },
-          ipAddress: clientIp(request) ?? null,
+          ipAddress: tenantIp(request) ?? null,
         });
       });
     } catch (err) {
@@ -276,7 +276,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
         httpPath: `/api/v1/system-backup/pg-dump/runs/${id}`,
         httpStatus: 200,
         changes: { bundleId: row.bundleId, targetConfigId: row.targetConfigId },
-        ipAddress: clientIp(request) ?? null,
+        ipAddress: tenantIp(request) ?? null,
       });
     });
     return success({ ok: true });
@@ -442,7 +442,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
           httpPath: `/api/v1/system-backup/pg-dump/runs/${row.id}/download`,
           httpStatus: 200,
           changes: { bundleId: row.bundleId, sha256: row.sha256, sizeBytes: row.sizeBytes },
-          ipAddress: clientIp(request) ?? null,
+          ipAddress: tenantIp(request) ?? null,
         });
         await tx.update(systemBackupRuns)
           .set({ downloadedAt: new Date() })
@@ -515,7 +515,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
       httpPath: '/api/v1/system-backup/pg-dump/stream',
       httpStatus: 200,
       changes: { reason: parsed.data.reason ?? null },
-      ipAddress: clientIp(request) ?? null,
+      ipAddress: tenantIp(request) ?? null,
     });
 
     // `-r` (any ready instance) instead of `-ro` (replicas only) so
@@ -533,7 +533,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     });
     // Capture stderr so a non-zero exit produces a useful error log
     // (operator gets a partial body in this case — that's the price
-    // of streaming; their client should fail any sha-checksum step).
+    // of streaming; their tenant should fail any sha-checksum step).
     const stderrChunks: Buffer[] = [];
     proc.stderr.on('data', (c: Buffer) => { if (stderrChunks.length < 100) stderrChunks.push(c); });
     proc.on('error', (err) => {
@@ -546,7 +546,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
           '[pg-dump-stream] pg_dump exited non-zero');
       }
     });
-    // Kill pg_dump if the client aborts the response — otherwise we'd
+    // Kill pg_dump if the tenant aborts the response — otherwise we'd
     // leak a child process per cancelled download.
     reply.raw.on('close', () => {
       if (!proc.killed) proc.kill('SIGTERM');
@@ -654,7 +654,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
         httpPath: '/api/v1/system-backup/pg-dump/schedules',
         httpStatus: 200,
         changes: parsed.data as unknown as Record<string, unknown>,
-        ipAddress: clientIp(request) ?? null,
+        ipAddress: tenantIp(request) ?? null,
       });
     });
     return success({ ok: true, id, nextRunAt: next.toISOString() });
@@ -687,7 +687,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
         httpPath: `/api/v1/system-backup/pg-dump/schedules/${id}`,
         httpStatus: 200,
         changes: null,
-        ipAddress: clientIp(request) ?? null,
+        ipAddress: tenantIp(request) ?? null,
       });
     });
     return success({ ok: true });
@@ -772,11 +772,11 @@ function toApiRun(row: RunRow): SystemBackupRun {
   };
 }
 
-function clientIp(request: FastifyRequest): string | null {
+function tenantIp(request: FastifyRequest): string | null {
   const xff = (request.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
   return xff || request.ip || null;
 }
-function clientUa(request: FastifyRequest): string | null {
+function tenantUa(request: FastifyRequest): string | null {
   const ua = request.headers['user-agent'];
   if (typeof ua === 'string') return ua.slice(0, 500);
   return null;

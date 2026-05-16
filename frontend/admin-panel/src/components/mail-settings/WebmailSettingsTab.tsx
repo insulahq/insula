@@ -34,7 +34,7 @@ const ENGINES: ReadonlyArray<EngineMeta> = [
     bullets: [
       'Speaks JMAP directly — lower latency, no IMAP→JMAP translation.',
       'Reuses the same webmail.<apex> URL — no extra DNS or cert work.',
-      'Master-user impersonation lets client_admin open any mailbox SSO-style.',
+      'Master-user impersonation lets tenant_admin open any mailbox SSO-style.',
     ],
     docsHref: 'https://bulwarkmail.org/',
   },
@@ -42,7 +42,7 @@ const ENGINES: ReadonlyArray<EngineMeta> = [
 
 /**
  * Webmail engine + URL settings. The engine selector is platform-wide:
- * once flipped, every `Open Webmail` button in client-panel mints a
+ * once flipped, every `Open Webmail` button in tenant-panel mints a
  * handoff token shaped for the chosen engine. There is no per-tenant
  * override (per ADR-039 §Phase 10 — the SSO contract differs between
  * engines and the operator cost of supporting both per-tenant is
@@ -129,7 +129,7 @@ export default function WebmailSettingsTab() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Pick the webmail client every mailbox lands in when a customer
+        Pick the webmail tenant every mailbox lands in when a customer
         clicks &ldquo;Open Webmail&rdquo;. Both engines share the same{' '}
         <code>webmail.&lt;apex&gt;</code> hostname &mdash; flipping the
         engine switches which backend serves that URL. Only one engine is

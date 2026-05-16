@@ -1,19 +1,19 @@
 import { eq, and, desc, lt, sql } from 'drizzle-orm';
 import { backups } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { getClientById } from '../clients/service.js';
+import { getTenantById } from '../tenants/service.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import type { CreateBackupInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 
-export async function createBackup(db: Database, clientId: string, input: CreateBackupInput) {
-  await getClientById(db, clientId);
+export async function createBackup(db: Database, tenantId: string, input: CreateBackupInput) {
+  await getTenantById(db, tenantId);
 
   const id = crypto.randomUUID();
   await db.insert(backups).values({
     id,
-    clientId,
+    tenantId,
     backupType: input.backup_type,
     resourceType: input.resource_type,
     resourceId: input.resource_id ?? null,
@@ -27,12 +27,12 @@ export async function createBackup(db: Database, clientId: string, input: Create
 
 export async function listBackups(
   db: Database,
-  clientId: string,
+  tenantId: string,
   params: { limit: number; cursor?: string },
 ): Promise<{ data: typeof backups.$inferSelect[]; pagination: PaginationMeta }> {
   const { limit, cursor } = params;
 
-  const conditions = [eq(backups.clientId, clientId)];
+  const conditions = [eq(backups.tenantId, tenantId)];
   if (cursor) {
     const decoded = decodeCursor(cursor);
     conditions.push(lt(backups.createdAt, new Date(decoded.sort)));
@@ -61,7 +61,7 @@ export async function listBackups(
   const [countResult] = await db
     .select({ count: sql<number>`count(*)` })
     .from(backups)
-    .where(eq(backups.clientId, clientId));
+    .where(eq(backups.tenantId, tenantId));
 
   return {
     data,
@@ -74,11 +74,11 @@ export async function listBackups(
   };
 }
 
-export async function deleteBackup(db: Database, clientId: string, backupId: string) {
+export async function deleteBackup(db: Database, tenantId: string, backupId: string) {
   const [backup] = await db
     .select()
     .from(backups)
-    .where(and(eq(backups.id, backupId), eq(backups.clientId, clientId)));
+    .where(and(eq(backups.id, backupId), eq(backups.tenantId, tenantId)));
 
   if (!backup) {
     throw new ApiError('BACKUP_NOT_FOUND', `Backup '${backupId}' not found`, 404, { backup_id: backupId });

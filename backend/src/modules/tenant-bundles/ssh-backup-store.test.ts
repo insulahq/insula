@@ -23,7 +23,7 @@ describe('SshBackupStore — path-traversal guards', () => {
     'reserveBundle rejects unsafe backupId %s',
     async (backupId) => {
       const store = makeStore();
-      await expect(store.reserveBundle({ backupId, clientId: 'c1' }))
+      await expect(store.reserveBundle({ backupId, tenantId: 'c1' }))
         .rejects.toThrow(/invalid backupId/);
     },
   );
@@ -35,7 +35,7 @@ describe('SshBackupStore — path-traversal guards', () => {
     // is NOT the "invalid backupId" one — i.e. the guard let it past.
     await expect(store.reserveBundle({
       backupId: 'bkp-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-      clientId: 'c1',
+      tenantId: 'c1',
     })).rejects.not.toThrow(/invalid backupId/);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock the k8s-client module before importing routes
+// Mock the k8s-tenant module before importing routes
 vi.mock('./k8s-client.js', () => ({
   createK8sClients: vi.fn().mockReturnValue({
     core: {
@@ -79,40 +79,40 @@ async function setupApp() {
     panel: 'admin',
   });
 
-  const clientToken = app.jwt.sign({
-    sub: 'client-user-123',
-    role: 'client_admin',
-    panel: 'client',
-    clientId: 'client-123',
+  const tenantToken = app.jwt.sign({
+    sub: 'tenant-user-123',
+    role: 'tenant_admin',
+    panel: 'tenant',
+    tenantId: 'tenant-123',
   });
 
-  return { app, mockDb, adminToken, clientToken };
+  return { app, mockDb, adminToken, tenantToken };
 }
 
 describe('Provisioning Routes', () => {
-  describe('POST /api/v1/admin/clients/:clientId/provision', () => {
+  describe('POST /api/v1/admin/tenants/:tenantId/provision', () => {
     it('should return 401 without auth', async () => {
       const { app } = await setupApp();
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/admin/clients/some-id/provision',
+        url: '/api/v1/admin/tenants/some-id/provision',
       });
       expect(res.statusCode).toBe(401);
     });
 
-    it('should return 403 for client_admin role', async () => {
-      const { app, clientToken } = await setupApp();
+    it('should return 403 for tenant_admin role', async () => {
+      const { app, tenantToken } = await setupApp();
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/admin/clients/some-id/provision',
-        headers: { authorization: `Bearer ${clientToken}` },
+        url: '/api/v1/admin/tenants/some-id/provision',
+        headers: { authorization: `Bearer ${tenantToken}` },
       });
       expect(res.statusCode).toBe(403);
     });
 
-    it('should return 404 when client not found', async () => {
+    it('should return 404 when tenant not found', async () => {
       const { app, mockDb, adminToken } = await setupApp();
-      // DB returns empty for client lookup
+      // DB returns empty for tenant lookup
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -123,7 +123,7 @@ describe('Provisioning Routes', () => {
 
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/admin/clients/nonexistent-id/provision',
+        url: '/api/v1/admin/tenants/nonexistent-id/provision',
         headers: { authorization: `Bearer ${adminToken}` },
         payload: {},
       });
@@ -132,14 +132,14 @@ describe('Provisioning Routes', () => {
 
     it('should return 202 when provisioning is triggered', async () => {
       const { app, mockDb, adminToken } = await setupApp();
-      // DB returns a client
+      // DB returns a tenant
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'client-123',
-              companyName: 'Test Co',
-              kubernetesNamespace: 'client-test-ns',
+              id: 'tenant-123',
+              name: 'Test Co',
+              kubernetesNamespace: 'tenant-test-ns',
               planId: 'plan-1',
               provisioningStatus: 'unprovisioned',
             }]),
@@ -149,7 +149,7 @@ describe('Provisioning Routes', () => {
 
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/admin/clients/client-123/provision',
+        url: '/api/v1/admin/tenants/tenant-123/provision',
         headers: { authorization: `Bearer ${adminToken}` },
         payload: {},
       });
@@ -160,12 +160,12 @@ describe('Provisioning Routes', () => {
     });
   });
 
-  describe('GET /api/v1/admin/clients/:clientId/provision/status', () => {
+  describe('GET /api/v1/admin/tenants/:tenantId/provision/status', () => {
     it('should return 401 without auth', async () => {
       const { app } = await setupApp();
       const res = await app.inject({
         method: 'GET',
-        url: '/api/v1/admin/clients/some-id/provision/status',
+        url: '/api/v1/admin/tenants/some-id/provision/status',
       });
       expect(res.statusCode).toBe(401);
     });
@@ -179,7 +179,7 @@ describe('Provisioning Routes', () => {
             orderBy: vi.fn().mockReturnValue({
               limit: vi.fn().mockResolvedValue([{
                 id: 'task-1',
-                clientId: 'client-123',
+                tenantId: 'tenant-123',
                 type: 'provision_namespace',
                 status: 'running',
                 currentStep: 'Create Namespace',
@@ -200,7 +200,7 @@ describe('Provisioning Routes', () => {
 
       const res = await app.inject({
         method: 'GET',
-        url: '/api/v1/admin/clients/client-123/provision/status',
+        url: '/api/v1/admin/tenants/tenant-123/provision/status',
         headers: { authorization: `Bearer ${adminToken}` },
       });
       expect(res.statusCode).toBe(200);

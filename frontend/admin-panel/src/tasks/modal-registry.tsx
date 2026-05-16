@@ -35,10 +35,10 @@ const MailMigrationProgressModal = lazy(() => import('@/components/MailMigration
 // task row. The backend chooses `target.modal = 'foo'` and supplies
 // the matching `target.modalProps` shape:
 //
-//   transition            → TransitionProgressModal     (client.transition)
-//   bulk                  → BulkProgressModal           (client.*.bulk)
+//   transition            → TransitionProgressModal     (tenant.transition)
+//   bulk                  → BulkProgressModal           (tenant.*.bulk)
 //   operation             → OperationProgressModal      (storage.*)
-//   provisioning          → ProvisioningProgressModal   (client.provision)
+//   provisioning          → ProvisioningProgressModal   (tenant.provision)
 //   platform-storage-apply→ ApplyHaProgressModal        (storage.tier-flip)
 //   mail-operation        → MailTaskProgressModal       (mail.port-exposure, mail.snapshot.trigger)
 //   mail-migration        → MailMigrationProgressModal  (mail.migration)

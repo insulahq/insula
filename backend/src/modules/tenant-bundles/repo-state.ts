@@ -13,7 +13,7 @@
  *     on local repos, mandatory for restored-from-external rows)
  *   - bundle schema version that wrote it
  *
- * Single-row PK is (clientId, component) — every backup overwrites
+ * Single-row PK is (tenantId, component) — every backup overwrites
  * the last_snapshot_* fields. The history of snapshots lives in
  * restic itself (`restic snapshots`); this row is a fast-lookup
  * cache for the admin UI and the retention sweeper.
@@ -29,7 +29,7 @@ import { BUNDLE_SCHEMA_VERSION } from './restic-driver.js';
 
 export interface RecordResticSnapshotArgs {
   readonly db: Database;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly component: 'files' | 'mailboxes';
   readonly repoUri: string;
   readonly targetConfigId: string | null;
@@ -41,12 +41,12 @@ export interface RecordResticSnapshotArgs {
 }
 
 /**
- * Upsert the per-tenant restic state. Conflict on PK (clientId,
+ * Upsert the per-tenant restic state. Conflict on PK (tenantId,
  * component) — last_* fields overwritten on every successful capture.
  */
 export async function recordResticSnapshot(args: RecordResticSnapshotArgs): Promise<void> {
   const row: NewTenantResticRepoState = {
-    clientId: args.clientId,
+    tenantId: args.tenantId,
     component: args.component,
     repoUri: args.repoUri,
     targetConfigId: args.targetConfigId,
@@ -62,7 +62,7 @@ export async function recordResticSnapshot(args: RecordResticSnapshotArgs): Prom
     .insert(tenantResticRepoState)
     .values(row)
     .onConflictDoUpdate({
-      target: [tenantResticRepoState.clientId, tenantResticRepoState.component],
+      target: [tenantResticRepoState.tenantId, tenantResticRepoState.component],
       set: {
         repoUri: sql`excluded.repo_uri`,
         targetConfigId: sql`excluded.target_config_id`,
@@ -85,7 +85,7 @@ export async function recordResticSnapshot(args: RecordResticSnapshotArgs): Prom
  */
 export async function recordResticRunFailed(args: {
   readonly db: Database;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly component: 'files' | 'mailboxes';
   readonly runAt: Date;
 }): Promise<void> {
@@ -96,14 +96,14 @@ export async function recordResticRunFailed(args: {
   await args.db
     .insert(tenantResticRepoState)
     .values({
-      clientId: args.clientId,
+      tenantId: args.tenantId,
       component: args.component,
       repoUri: '',
       lastRunAt: args.runAt,
       bundleSchemaVersion: BUNDLE_SCHEMA_VERSION,
     } as NewTenantResticRepoState)
     .onConflictDoUpdate({
-      target: [tenantResticRepoState.clientId, tenantResticRepoState.component],
+      target: [tenantResticRepoState.tenantId, tenantResticRepoState.component],
       set: {
         lastRunAt: sql`excluded.last_run_at`,
       },

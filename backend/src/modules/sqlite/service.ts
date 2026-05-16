@@ -2,7 +2,7 @@
  * SQLite database management via K8s pod exec.
  *
  * Executes `sqlite3` commands inside the file-manager pod (which has the
- * client's shared PVC mounted at /data/) to query .sqlite/.db/.sqlite3 files.
+ * tenant's shared PVC mounted at /data/) to query .sqlite/.db/.sqlite3 files.
  *
  * Unlike MariaDB/PostgreSQL, SQLite is not a running database instance --
  * it is a file on disk. The user selects a file path and we exec into the

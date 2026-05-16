@@ -1,5 +1,5 @@
 /**
- * Per-client backup schedule editor. Surfaced on the ClientDetail
+ * Per-tenant backup schedule editor. Surfaced on the TenantDetail
  * page so an operator can flip a switch + pick frequency without
  * touching the DB.
  *
@@ -10,19 +10,19 @@
 import { useEffect, useState } from 'react';
 import { Calendar, Loader2, AlertCircle, CheckCircle2, Trash2, Play } from 'lucide-react';
 import {
-  useClientBackupSchedule,
-  useUpdateClientBackupSchedule,
-  useDeleteClientBackupSchedule,
+  useTenantBackupSchedule,
+  useUpdateTenantBackupSchedule,
+  useDeleteTenantBackupSchedule,
   useRunBackupScheduleNow,
 } from '@/hooks/use-backup-schedule';
 
-interface Props { clientId: string }
+interface Props { tenantId: string }
 
-export function BackupScheduleEditor({ clientId }: Props) {
-  const q = useClientBackupSchedule(clientId);
-  const upd = useUpdateClientBackupSchedule(clientId);
-  const del = useDeleteClientBackupSchedule(clientId);
-  const runNow = useRunBackupScheduleNow(clientId);
+export function BackupScheduleEditor({ tenantId }: Props) {
+  const q = useTenantBackupSchedule(tenantId);
+  const upd = useUpdateTenantBackupSchedule(tenantId);
+  const del = useDeleteTenantBackupSchedule(tenantId);
+  const runNow = useRunBackupScheduleNow(tenantId);
 
   const [enabled, setEnabled] = useState(false);
   const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
@@ -131,7 +131,7 @@ export function BackupScheduleEditor({ clientId }: Props) {
                 onClick={() => runNow.mutate()}
                 disabled={runNow.isPending}
                 className="flex items-center gap-1 rounded-md border border-brand-500 bg-white px-3 py-1.5 text-sm font-medium text-brand-700 hover:bg-brand-50 disabled:opacity-50 dark:bg-gray-800 dark:text-brand-300 dark:hover:bg-brand-950"
-                title="Force the next scheduler tick (within 5 min) to fire this client's bundle"
+                title="Force the next scheduler tick (within 5 min) to fire this tenant's bundle"
               >
                 {runNow.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 Run now
@@ -145,7 +145,7 @@ export function BackupScheduleEditor({ clientId }: Props) {
             {q.data?.data && (
               <button
                 type="button"
-                onClick={() => { if (window.confirm('Remove this client\'s backup schedule? Existing bundles are not affected.')) del.mutate(); }}
+                onClick={() => { if (window.confirm('Remove this tenant\'s backup schedule? Existing bundles are not affected.')) del.mutate(); }}
                 className="flex items-center gap-1 rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
               >
                 <Trash2 className="h-4 w-4" /> Remove

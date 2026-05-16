@@ -10,7 +10,7 @@
  *   - Hand off to `preCaptureDatabaseDumps`.
  *
  * Kept separate from the orchestrator file so it can be unit-tested
- * with a stubbed db + a stubbed kube client. The orchestrator
+ * with a stubbed db + a stubbed kube tenant. The orchestrator
  * remains a thin coordinator that calls this once.
  */
 
@@ -33,7 +33,7 @@ import {
 export interface RunPreCaptureDumpsArgs {
   readonly db: Database;
   readonly k8s: K8sClients;
-  readonly clientId: string;
+  readonly tenantId: string;
   readonly namespace: string;
   readonly backupId: string;
   readonly kubeconfigPath?: string;
@@ -64,7 +64,7 @@ export async function runPreCaptureDatabaseDumps(
     .innerJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
     .where(
       and(
-        eq(deployments.clientId, args.clientId),
+        eq(deployments.tenantId, args.tenantId),
         eq(catalogEntries.type, 'database'),
       ),
     );

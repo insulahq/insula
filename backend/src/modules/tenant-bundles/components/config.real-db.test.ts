@@ -5,14 +5,14 @@
  *   The unit tests in `config.test.ts` mock `db.execute` and assert
  *   on the SQL skeleton. That kind of test passes happily when the
  *   skeleton itself references columns that don't exist in the real
- *   schema — exactly how the `clients.user_id` and
- *   `ingress_auth_configs.client_id` schema-mismatch bugs slipped
+ *   schema — exactly how the `tenants.user_id` and
+ *   `ingress_auth_configs.tenant_id` schema-mismatch bugs slipped
  *   through Phase 2 review and only surfaced after a 25-min staging
  *   round-trip.
  *
  *   This test boots an in-memory Postgres (`pg-mem`), creates the
  *   minimum tables that buildConfigDump touches, seeds one row per
- *   CONFIG_DUMP_TABLES entry against a fixture client, and runs the
+ *   CONFIG_DUMP_TABLES entry against a fixture tenant, and runs the
  *   real buildConfigDump function. If a SELECT references a missing
  *   column it FAILS HERE instead of in production.
  *
@@ -96,58 +96,58 @@ const FIXTURE_OTHER_CLIENT_ID = '00000000-0000-0000-0000-000000000099';
 function makeFixtureDb(): Database {
   const mem = newDb();
   mem.public.none(`
-    CREATE TABLE clients (
+    CREATE TABLE tenants (
       id            VARCHAR(36) PRIMARY KEY,
-      company_name  VARCHAR(255) NOT NULL,
+      name  VARCHAR(255) NOT NULL,
       kubernetes_namespace VARCHAR(63) NOT NULL
     );
     CREATE TABLE users (
       id         VARCHAR(36) PRIMARY KEY,
       email      VARCHAR(255) NOT NULL,
-      client_id  VARCHAR(36) REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id  VARCHAR(36) REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE domains (
       id         VARCHAR(36) PRIMARY KEY,
       hostname   VARCHAR(255) NOT NULL,
-      client_id  VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id  VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE email_domains (
       id         VARCHAR(36) PRIMARY KEY,
       domain     VARCHAR(255) NOT NULL,
-      client_id  VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id  VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE mailboxes (
       id              VARCHAR(36) PRIMARY KEY,
       address         VARCHAR(255) NOT NULL,
       email_domain_id VARCHAR(36) NOT NULL REFERENCES email_domains(id),
-      client_id       VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id       VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE email_aliases (
       id              VARCHAR(36) PRIMARY KEY,
       from_addr       VARCHAR(255) NOT NULL,
       to_addr         VARCHAR(255) NOT NULL,
       email_domain_id VARCHAR(36) NOT NULL REFERENCES email_domains(id),
-      client_id       VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id       VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE mail_submit_credentials (
       id        VARCHAR(36) PRIMARY KEY,
       username  VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE ssh_keys (
       id        VARCHAR(36) PRIMARY KEY,
       label     VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE sftp_users (
       id        VARCHAR(36) PRIMARY KEY,
       username  VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE deployments (
       id        VARCHAR(36) PRIMARY KEY,
       name      VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE ingress_routes (
       id        VARCHAR(36) PRIMARY KEY,
@@ -162,85 +162,85 @@ function makeFixtureDb(): Database {
     CREATE TABLE ssl_certificates (
       id        VARCHAR(36) PRIMARY KEY,
       domain    VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE cron_jobs (
       id        VARCHAR(36) PRIMARY KEY,
       name      VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
     CREATE TABLE resource_quotas (
       id        VARCHAR(36) PRIMARY KEY,
       cpu       VARCHAR(50) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
-    CREATE TABLE client_oidc_providers (
+    CREATE TABLE tenant_oidc_providers (
       id        VARCHAR(36) PRIMARY KEY,
       issuer    VARCHAR(500) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
-    CREATE TABLE client_mtls_providers (
+    CREATE TABLE tenant_mtls_providers (
       id        VARCHAR(36) PRIMARY KEY,
       ca_cert   TEXT NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
-    CREATE TABLE client_ziti_providers (
+    CREATE TABLE tenant_ziti_providers (
       id        VARCHAR(36) PRIMARY KEY,
       controller_url VARCHAR(500) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
-    CREATE TABLE client_zrok_accounts (
+    CREATE TABLE tenant_zrok_accounts (
       id        VARCHAR(36) PRIMARY KEY,
       account   VARCHAR(255) NOT NULL,
-      client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+      tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
-    CREATE TABLE client_certificates (
+    CREATE TABLE tenant_certificates (
       id                        VARCHAR(36)  PRIMARY KEY,
-      provider_id               VARCHAR(36)  NOT NULL REFERENCES client_mtls_providers(id) ON DELETE CASCADE,
-      client_id                 VARCHAR(36)  NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      provider_id               VARCHAR(36)  NOT NULL REFERENCES tenant_mtls_providers(id) ON DELETE CASCADE,
+      tenant_id                 VARCHAR(36)  NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       serial_hex                VARCHAR(64)  NOT NULL,
       cert_pem_encrypted        TEXT         NOT NULL,
       cert_fingerprint_sha256   VARCHAR(64)  NOT NULL,
       subject_cn                VARCHAR(255) NOT NULL
     );
   `);
-  // Seed the fixture client + one row per dump table — one belonging
-  // to the fixture client (assertion target), one to a different
-  // client (negative-control: must NOT appear in the dump).
+  // Seed the fixture tenant + one row per dump table — one belonging
+  // to the fixture tenant (assertion target), one to a different
+  // tenant (negative-control: must NOT appear in the dump).
   mem.public.none(`
-    INSERT INTO clients(id, company_name, kubernetes_namespace) VALUES
-      ('${FIXTURE_CLIENT_ID}', 'Fixture Co', 'client-fixture'),
-      ('${FIXTURE_OTHER_CLIENT_ID}', 'Other Co', 'client-other');
+    INSERT INTO tenants(id, name, kubernetes_namespace) VALUES
+      ('${FIXTURE_CLIENT_ID}', 'Fixture Co', 'tenant-fixture'),
+      ('${FIXTURE_OTHER_CLIENT_ID}', 'Other Co', 'tenant-other');
 
-    INSERT INTO users(id, email, client_id) VALUES
+    INSERT INTO users(id, email, tenant_id) VALUES
       ('u1', 'owner@fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('u2', 'sub@fixture.test',   '${FIXTURE_CLIENT_ID}'),
       ('u3', 'other@other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
 
-    INSERT INTO domains(id, hostname, client_id) VALUES
+    INSERT INTO domains(id, hostname, tenant_id) VALUES
       ('d-fix',   'fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('d-other', 'other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
 
-    INSERT INTO email_domains(id, domain, client_id) VALUES
+    INSERT INTO email_domains(id, domain, tenant_id) VALUES
       ('ed-fix',   'mail.fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('ed-other', 'mail.other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
 
-    INSERT INTO mailboxes(id, address, email_domain_id, client_id) VALUES
+    INSERT INTO mailboxes(id, address, email_domain_id, tenant_id) VALUES
       ('mb-fix',   'a@mail.fixture.test', 'ed-fix',   '${FIXTURE_CLIENT_ID}'),
       ('mb-other', 'a@mail.other.test',   'ed-other', '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO email_aliases(id, from_addr, to_addr, email_domain_id, client_id) VALUES
+    INSERT INTO email_aliases(id, from_addr, to_addr, email_domain_id, tenant_id) VALUES
       ('ea-fix',   'al@mail.fixture.test', 'a@mail.fixture.test', 'ed-fix',   '${FIXTURE_CLIENT_ID}'),
       ('ea-other', 'al@mail.other.test',   'a@mail.other.test',   'ed-other', '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO mail_submit_credentials(id, username, client_id) VALUES
+    INSERT INTO mail_submit_credentials(id, username, tenant_id) VALUES
       ('msc-fix',   'submit@fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('msc-other', 'submit@other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO ssh_keys(id, label, client_id) VALUES
+    INSERT INTO ssh_keys(id, label, tenant_id) VALUES
       ('sk-fix',   'workstation',  '${FIXTURE_CLIENT_ID}'),
       ('sk-other', 'other-laptop', '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO sftp_users(id, username, client_id) VALUES
+    INSERT INTO sftp_users(id, username, tenant_id) VALUES
       ('sftp-fix',   'fixture', '${FIXTURE_CLIENT_ID}'),
       ('sftp-other', 'other',   '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO deployments(id, name, client_id) VALUES
+    INSERT INTO deployments(id, name, tenant_id) VALUES
       ('depl-fix',   'wp',     '${FIXTURE_CLIENT_ID}'),
       ('depl-other', 'static', '${FIXTURE_OTHER_CLIENT_ID}');
     INSERT INTO ingress_routes(id, hostname, domain_id) VALUES
@@ -249,28 +249,28 @@ function makeFixtureDb(): Database {
     INSERT INTO ingress_auth_configs(id, ingress_route_id, enabled) VALUES
       ('iac-fix',   'ir-fix',   TRUE),
       ('iac-other', 'ir-other', FALSE);
-    INSERT INTO ssl_certificates(id, domain, client_id) VALUES
+    INSERT INTO ssl_certificates(id, domain, tenant_id) VALUES
       ('cert-fix',   'fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('cert-other', 'other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO cron_jobs(id, name, client_id) VALUES
+    INSERT INTO cron_jobs(id, name, tenant_id) VALUES
       ('cj-fix',   'daily',  '${FIXTURE_CLIENT_ID}'),
       ('cj-other', 'hourly', '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO resource_quotas(id, cpu, client_id) VALUES
+    INSERT INTO resource_quotas(id, cpu, tenant_id) VALUES
       ('rq-fix',   '1', '${FIXTURE_CLIENT_ID}'),
       ('rq-other', '2', '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO client_oidc_providers(id, issuer, client_id) VALUES
+    INSERT INTO tenant_oidc_providers(id, issuer, tenant_id) VALUES
       ('coidc-fix',   'https://idp.fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('coidc-other', 'https://idp.other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO client_mtls_providers(id, ca_cert, client_id) VALUES
+    INSERT INTO tenant_mtls_providers(id, ca_cert, tenant_id) VALUES
       ('cmtls-fix',   '-----BEGIN CERTIFICATE-----', '${FIXTURE_CLIENT_ID}'),
       ('cmtls-other', '-----BEGIN CERT-OTHER-----',  '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO client_ziti_providers(id, controller_url, client_id) VALUES
+    INSERT INTO tenant_ziti_providers(id, controller_url, tenant_id) VALUES
       ('cziti-fix',   'https://ziti.fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('cziti-other', 'https://ziti.other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO client_zrok_accounts(id, account, client_id) VALUES
+    INSERT INTO tenant_zrok_accounts(id, account, tenant_id) VALUES
       ('czrok-fix',   'fixture-zrok', '${FIXTURE_CLIENT_ID}'),
       ('czrok-other', 'other-zrok',   '${FIXTURE_OTHER_CLIENT_ID}');
-    INSERT INTO client_certificates(id, provider_id, client_id, serial_hex, cert_pem_encrypted, cert_fingerprint_sha256, subject_cn) VALUES
+    INSERT INTO tenant_certificates(id, provider_id, tenant_id, serial_hex, cert_pem_encrypted, cert_fingerprint_sha256, subject_cn) VALUES
       ('cc-fix',   'cmtls-fix',   '${FIXTURE_CLIENT_ID}',        'deadbeef01', 'PEM-ENCRYPTED-FIX',   'aabbcc01', 'fixture-user'),
       ('cc-other', 'cmtls-other', '${FIXTURE_OTHER_CLIENT_ID}',  'deadbeef02', 'PEM-ENCRYPTED-OTHER', 'aabbcc02', 'other-user');
   `);
@@ -285,68 +285,68 @@ describe('buildConfigDump (real-DB)', () => {
     db = makeFixtureDb();
   });
 
-  it('every CONFIG_DUMP_TABLES entry returns rows for the fixture client', async () => {
+  it('every CONFIG_DUMP_TABLES entry returns rows for the fixture tenant', async () => {
     const dump = await buildConfigDump(db, FIXTURE_CLIENT_ID);
     // One row per table (or two for users — owner + sub-user). The
     // assertion that matters: every declared table is non-empty in
     // the fixture, which means the SELECT executed successfully.
     for (const t of CONFIG_DUMP_TABLES) {
       const rows = dump.tables[t];
-      expect(rows, `table ${t} in CONFIG_DUMP_TABLES must return rows for the fixture client`)
+      expect(rows, `table ${t} in CONFIG_DUMP_TABLES must return rows for the fixture tenant`)
         .toBeDefined();
       expect(Array.isArray(rows), `table ${t} must be an array`).toBe(true);
       expect((rows as unknown[]).length,
-        `table ${t} returned 0 rows — the SELECT either failed or excluded the fixture client. ` +
-        `Check selectClientRows() in config.ts.`,
+        `table ${t} returned 0 rows — the SELECT either failed or excluded the fixture tenant. ` +
+        `Check selectTenantRows() in config.ts.`,
       ).toBeGreaterThanOrEqual(1);
     }
   });
 
-  it('users dump returns owner + sub-user (2 rows) for the fixture client only', async () => {
+  it('users dump returns owner + sub-user (2 rows) for the fixture tenant only', async () => {
     const dump = await buildConfigDump(db, FIXTURE_CLIENT_ID);
-    const users = dump.tables.users as Array<{ email: string; client_id: string }>;
+    const users = dump.tables.users as Array<{ email: string; tenant_id: string }>;
     expect(users).toHaveLength(2);
     expect(new Set(users.map((u) => u.email))).toEqual(new Set(['owner@fixture.test', 'sub@fixture.test']));
-    expect(users.every((u) => u.client_id === FIXTURE_CLIENT_ID)).toBe(true);
+    expect(users.every((u) => u.tenant_id === FIXTURE_CLIENT_ID)).toBe(true);
   });
 
   it('ingress_auth_configs joins through ingress_routes → domains correctly', async () => {
     const dump = await buildConfigDump(db, FIXTURE_CLIENT_ID);
     const iac = dump.tables.ingressAuthConfigs as Array<{ id: string }>;
-    // Only the fixture's iac (`iac-fix`) — not the other client's (`iac-other`).
+    // Only the fixture's iac (`iac-fix`) — not the other tenant's (`iac-other`).
     expect(iac).toHaveLength(1);
     expect(iac[0]?.id).toBe('iac-fix');
   });
 
-  it('schemaVersion + clientId + exportedAt are populated', async () => {
+  it('schemaVersion + tenantId + exportedAt are populated', async () => {
     const dump = await buildConfigDump(db, FIXTURE_CLIENT_ID);
     expect(dump.schemaVersion).toBe(1);
-    expect(dump.clientId).toBe(FIXTURE_CLIENT_ID);
+    expect(dump.tenantId).toBe(FIXTURE_CLIENT_ID);
     expect(typeof dump.exportedAt).toBe('string');
     // Must be ISO string parseable.
     expect(() => new Date(dump.exportedAt).toISOString()).not.toThrow();
   });
 
-  it('does not return rows belonging to a different client (cross-tenant safety)', async () => {
+  it('does not return rows belonging to a different tenant (cross-tenant safety)', async () => {
     const dump = await buildConfigDump(db, FIXTURE_CLIENT_ID);
     // Every dump table now has at least one OTHER_CLIENT_ID row in
     // the fixture. Assert the dump never includes any of them.
     for (const t of CONFIG_DUMP_TABLES) {
       const rows = dump.tables[t] as Array<Record<string, unknown>>;
-      // For each row, every value must NOT include the other-client
-      // id either as a `client_id` field OR as an embedded
+      // For each row, every value must NOT include the other-tenant
+      // id either as a `tenant_id` field OR as an embedded
       // identifier (covers the iac case where the row has no direct
-      // client_id but is owned via the join chain).
+      // tenant_id but is owned via the join chain).
       for (const r of rows) {
-        // Direct client_id mismatch — most tables.
-        if ('client_id' in r) {
-          expect(r.client_id, `${t} row leaked from other client`).toBe(FIXTURE_CLIENT_ID);
+        // Direct tenant_id mismatch — most tables.
+        if ('tenant_id' in r) {
+          expect(r.tenant_id, `${t} row leaked from other tenant`).toBe(FIXTURE_CLIENT_ID);
         }
         // Cross-join-owned tables (ingressAuthConfigs) — assert id
         // doesn't end with `-other`, the convention used in the fixture.
         const id = (r as { id?: unknown }).id;
         if (typeof id === 'string') {
-          expect(id.endsWith('-other'), `${t} row id ${id} leaked from other client`).toBe(false);
+          expect(id.endsWith('-other'), `${t} row id ${id} leaked from other tenant`).toBe(false);
         }
       }
     }

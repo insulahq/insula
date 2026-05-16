@@ -52,7 +52,7 @@ export type ProvisioningStep = z.infer<typeof provisioningStepSchema>;
 
 export const provisioningTaskResponseSchema = z.object({
   id: uuidField,
-  clientId: uuidField,
+  tenantId: uuidField,
   type: provisioningTaskTypeEnum,
   status: provisioningTaskStatusEnum,
   currentStep: z.string().nullable(),
@@ -79,8 +79,8 @@ export const activeTasksSummarySchema = z.object({
   count: z.number(),
   tasks: z.array(z.object({
     id: uuidField,
-    clientId: uuidField,
-    companyName: z.string(),
+    tenantId: uuidField,
+    name: z.string(),
     type: provisioningTaskTypeEnum,
     status: provisioningTaskStatusEnum,
     currentStep: z.string().nullable(),

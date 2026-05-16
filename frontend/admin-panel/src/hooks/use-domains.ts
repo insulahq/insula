@@ -8,19 +8,19 @@ interface ListDomainsParams {
   readonly cursor?: string;
 }
 
-export function useDomains(clientId: string | undefined, params: ListDomainsParams = {}) {
+export function useDomains(tenantId: string | undefined, params: ListDomainsParams = {}) {
   const searchParams = new URLSearchParams();
   if (params.search) searchParams.set('search', params.search);
   if (params.limit) searchParams.set('limit', String(params.limit));
   if (params.cursor) searchParams.set('cursor', params.cursor);
 
   const qs = searchParams.toString();
-  const path = clientId
-    ? `/api/v1/clients/${clientId}/domains${qs ? `?${qs}` : ''}`
+  const path = tenantId
+    ? `/api/v1/tenants/${tenantId}/domains${qs ? `?${qs}` : ''}`
     : `/api/v1/admin/domains${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['domains', clientId ?? 'all', params],
+    queryKey: ['domains', tenantId ?? 'all', params],
     queryFn: () => apiFetch<PaginatedResponse<Domain>>(path),
   });
 }
@@ -31,17 +31,17 @@ interface CreateDomainInput {
   readonly deployment_id?: string;
 }
 
-export function useCreateDomain(clientId: string | undefined) {
+export function useCreateDomain(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input: CreateDomainInput) =>
-      apiFetch<{ data: Domain }>(`/api/v1/clients/${clientId}/domains`, {
+      apiFetch<{ data: Domain }>(`/api/v1/tenants/${tenantId}/domains`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
     },
   });
 }
@@ -53,12 +53,12 @@ interface UpdateDomainInput {
   readonly status?: 'active' | 'pending' | 'suspended' | 'deleted';
 }
 
-export function useUpdateDomain(clientId: string | undefined) {
+export function useUpdateDomain(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: ({ domainId, ...input }: UpdateDomainInput & { domainId: string }) =>
-      apiFetch<{ data: Domain }>(`/api/v1/clients/${clientId}/domains/${domainId}`, {
+      apiFetch<{ data: Domain }>(`/api/v1/tenants/${tenantId}/domains/${domainId}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
@@ -81,31 +81,31 @@ export interface VerificationResult {
   readonly domainName: string;
 }
 
-export function useVerifyDomain(clientId: string | undefined) {
+export function useVerifyDomain(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (domainId: string) =>
       apiFetch<{ data: VerificationResult }>(
-        `/api/v1/clients/${clientId}/domains/${domainId}/verify`,
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/verify`,
         { method: 'POST' },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
     },
   });
 }
 
-export function useDeleteDomain(clientId: string | undefined) {
+export function useDeleteDomain(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (domainId: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/domains/${domainId}`, {
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/domains/${domainId}`, {
         method: 'DELETE',
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
     },
   });
 }

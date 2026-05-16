@@ -31,7 +31,7 @@ const FAILED_DR_JOB = {
   displayName: 'platform-pg-backup',
   category: 'dr' as const,
   severity: 'critical' as const,
-  clientId: null,
+  tenantId: null,
   state: 'failed' as const,
   startedAt: new Date('2026-04-27T00:00:00Z'),
   completedAt: null,
@@ -41,12 +41,12 @@ const FAILED_DR_JOB = {
 const FAILED_TENANT_JOB = {
   uid: 'uid-2',
   name: 'tenant-snap-1',
-  namespace: 'client-abc',
+  namespace: 'tenant-abc',
   groupKey: 'tenant-snap',
   displayName: 'Client snapshot',
   category: 'tenant' as const,
   severity: 'warning' as const,
-  clientId: 'client-abc',
+  tenantId: 'tenant-abc',
   state: 'failed' as const,
   startedAt: new Date('2026-04-27T00:00:00Z'),
   completedAt: null,
@@ -72,7 +72,7 @@ describe('runTick', () => {
     NOOP_LOG.warn.mockClear();
   });
 
-  it('dispatches admin recipients for DR-category failures (no client-id)', async () => {
+  it('dispatches admin recipients for DR-category failures (no tenant-id)', async () => {
     listJobsMock.mockResolvedValue([FAILED_DR_JOB]);
     resolveRecipientsMock.mockResolvedValue(['admin-1']);
 
@@ -89,15 +89,15 @@ describe('runTick', () => {
     expect(payload.resourceId).toBe('uid-1');
   });
 
-  it('dispatches client_admin recipients for tenant-category failures (with client-id)', async () => {
+  it('dispatches tenant_admin recipients for tenant-category failures (with tenant-id)', async () => {
     listJobsMock.mockResolvedValue([FAILED_TENANT_JOB]);
-    resolveRecipientsMock.mockResolvedValue(['client-admin-1']);
+    resolveRecipientsMock.mockResolvedValue(['tenant-admin-1']);
 
     await runTick(mockDb([]), {} as never, NOOP_LOG);
 
     expect(resolveRecipientsMock).toHaveBeenCalledWith(expect.anything(), {
-      kind: 'client',
-      clientId: 'client-abc',
+      kind: 'tenant',
+      tenantId: 'tenant-abc',
     });
     expect(notifyUsersMock).toHaveBeenCalledOnce();
   });

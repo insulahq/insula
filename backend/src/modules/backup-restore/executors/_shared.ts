@@ -15,7 +15,7 @@
  *     quotes-and-escapes per Postgres rules.
  *   - All values are bound parameters via `sql` template literal.
  *   - Table allow-list is enforced by callers.
- *   - Cross-tenant guard (dump.clientId === restoreJob.clientId) is
+ *   - Cross-tenant guard (dump.tenantId === restoreJob.tenantId) is
  *     enforced before any rows are applied.
  */
 
@@ -28,7 +28,7 @@ import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 
 export interface ConfigDump {
   schemaVersion: number;
-  clientId: string;
+  tenantId: string;
   tables: Record<string, Array<Record<string, unknown>>>;
 }
 
@@ -53,15 +53,15 @@ export async function readAndAuthorizeConfigDump(args: {
     throw new Error(`config dump has unknown schemaVersion ${dump.schemaVersion}`);
   }
   // Cross-tenant guard: refuse to apply a bundle that was captured
-  // for a different client than the cart's client. Defence-in-depth
+  // for a different tenant than the cart's tenant. Defence-in-depth
   // against a manually-tampered backup_jobs row pointing the cart at
-  // a foreign client's bundle.
+  // a foreign tenant's bundle.
   const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
   if (!job) throw new ApiError('NOT_FOUND', `Restore job ${item.restoreJobId} not found`, 404);
-  if (dump.clientId && dump.clientId !== job.clientId) {
+  if (dump.tenantId && dump.tenantId !== job.tenantId) {
     throw new ApiError(
       'VALIDATION_ERROR',
-      `Bundle's clientId (${dump.clientId}) does not match cart's clientId (${job.clientId}); refusing cross-tenant restore`,
+      `Bundle's tenantId (${dump.tenantId}) does not match cart's tenantId (${job.tenantId}); refusing cross-tenant restore`,
       400,
     );
   }

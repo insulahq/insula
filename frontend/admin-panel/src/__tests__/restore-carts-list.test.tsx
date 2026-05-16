@@ -34,7 +34,7 @@ const mocked = useRestoreCarts as unknown as ReturnType<typeof vi.fn>;
 
 const ROW: RestoreJobSummary = {
   id: 'rstr-aaaaaaaa-1111-2222-3333-444444444444',
-  clientId: 'client-bbbb-1111',
+  tenantId: 'tenant-bbbb-1111',
   initiatorUserId: null,
   status: 'failed',
   preRestoreSnapshotId: null,

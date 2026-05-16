@@ -64,7 +64,7 @@ function parseModSecurityLine(line: string): ParsedWafEvent | null {
   const msgMatch = line.match(/\[msg "([^"]+)"\]/);
   const uidMatch = line.match(/\[unique_id "([^"]+)"\]/);
   const uriMatch = line.match(/request: "(\w+) ([^ ]+)/);
-  const clientMatch = line.match(/client: ([^,]+)/);
+  const tenantMatch = line.match(/tenant: ([^,]+)/);
   // Error lines have "server: hostname", Warning lines have "[hostname ...]"
   const hostMatch = line.match(/server: ([^,]+)/) || line.match(/\[hostname "([^"]+)"\]/);
   const sevMatch = line.match(/\[severity "(\d+)"\]/);
@@ -84,7 +84,7 @@ function parseModSecurityLine(line: string): ParsedWafEvent | null {
     message,
     requestUri: uriMatch ? uriMatch[2] : '/',
     requestMethod: uriMatch ? uriMatch[1] : 'GET',
-    sourceIp: clientMatch ? clientMatch[1] : '0.0.0.0',
+    sourceIp: tenantMatch ? tenantMatch[1] : '0.0.0.0',
     hostname: hostMatch ? hostMatch[1] : '',
   };
 }
@@ -146,14 +146,14 @@ export async function scrapeWafLogs(
     const event = parseModSecurityLine(line);
     if (!event) continue;
     allParsed.push(event);
-    // The blocking rule (949110) includes "server: hostname" and "client: ip" in [error] lines
+    // The blocking rule (949110) includes "server: hostname" and "tenant: ip" in [error] lines
     // Use it to map unique_id → hostname/ip/uri for all related rules
     const uidPrefix = event.uniqueId.split(':')[0];
     const serverMatch = line.match(/server: ([^,]+)/);
     if (serverMatch && serverMatch[1]) {
       uidToHostname.set(uidPrefix, serverMatch[1]);
     }
-    // Also store client IP and request URI from error lines for the group
+    // Also store tenant IP and request URI from error lines for the group
     if (event.sourceIp !== '0.0.0.0') uidToHostname.set(`${uidPrefix}:ip`, event.sourceIp);
     if (event.requestUri !== '/') uidToHostname.set(`${uidPrefix}:uri`, event.requestUri);
     if (event.requestMethod !== 'GET') uidToHostname.set(`${uidPrefix}:method`, event.requestMethod);
@@ -191,26 +191,26 @@ export async function scrapeWafLogs(
   const routeMap = new Map<string, { id: string; domainId: string }>();
   for (const r of routes) routeMap.set(r.hostname, { id: r.id, domainId: r.domainId });
 
-  // Resolve domain → client mapping
+  // Resolve domain → tenant mapping
   const domainIds = [...new Set(routes.map(r => r.domainId))];
   const domainRows = domainIds.length > 0
-    ? await db.select({ id: domains.id, clientId: domains.clientId }).from(domains).where(inArray(domains.id, domainIds))
+    ? await db.select({ id: domains.id, tenantId: domains.tenantId }).from(domains).where(inArray(domains.id, domainIds))
     : [];
-  const clientMap = new Map<string, string>();
-  for (const d of domainRows) clientMap.set(d.id, d.clientId);
+  const tenantMap = new Map<string, string>();
+  for (const d of domainRows) tenantMap.set(d.id, d.tenantId);
 
   // 4. Insert events (skip duplicates via unique_id hash)
   for (const event of events) {
     const route = routeMap.get(event.hostname);
     if (!route) continue;
-    const clientId = clientMap.get(route.domainId);
-    if (!clientId) continue;
+    const tenantId = tenantMap.get(route.domainId);
+    if (!tenantId) continue;
 
     try {
       await db.insert(wafLogs).values({
         id: crypto.randomUUID(),
         routeId: route.id,
-        clientId,
+        tenantId,
         ruleId: event.ruleId,
         severity: event.severity,
         message: event.message,

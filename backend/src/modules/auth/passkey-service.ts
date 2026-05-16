@@ -41,7 +41,7 @@ import {
  *   • Setting mode='second_factor' requires ≥1 verified passkey.
  *   • Deleting the last passkey while mode='second_factor' is rejected.
  *   • Panel binding: passkey verify must match the calling endpoint's
- *     panel context, since the same user may have admin AND client roles.
+ *     panel context, since the same user may have admin AND tenant roles.
  */
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;          // 5 minutes
@@ -49,7 +49,7 @@ const PRE_AUTH_TOKEN_TTL_MS = 5 * 60 * 1000;     // 5 minutes
 const USER_HANDLE_BYTES = 32;
 const CHALLENGE_BYTES = 32;
 
-export type PasskeyPanel = 'admin' | 'client';
+export type PasskeyPanel = 'admin' | 'tenant';
 export type PasskeyMode = 'alternative' | 'second_factor' | null;
 
 export interface PasskeyConfig {
@@ -70,9 +70,9 @@ export function loadPasskeyConfig(env: NodeJS.ProcessEnv = process.env): Passkey
   if (!rpId || !originsRaw) {
     throw new Error(
       'PLATFORM_PASSKEY_RP_ID and PLATFORM_PASSKEY_ORIGINS must be set. '
-      + 'RP_ID is the registrable suffix shared by admin + client panels '
+      + 'RP_ID is the registrable suffix shared by admin + tenant panels '
       + '(e.g. "example.test"). ORIGINS is a comma-separated list of '
-      + 'fully-qualified panel origins (e.g. "https://admin.example.test,https://client.example.test").',
+      + 'fully-qualified panel origins (e.g. "https://admin.example.test,https://tenant.example.test").',
     );
   }
   const origins = originsRaw.split(',').map((o) => o.trim()).filter((o) => o.length > 0);
@@ -260,7 +260,7 @@ export async function verifyAndConsumePreAuthToken(
   if (!user) {
     throw new ApiError('USER_NOT_FOUND', 'User not found', 404);
   }
-  // user.panel can be admin or client; pre-auth must match the
+  // user.panel can be admin or tenant; pre-auth must match the
   // calling endpoint's panel.
   if ((user.panel ?? 'admin') !== panel) {
     throw new ApiError('PRE_AUTH_TOKEN_PANEL_MISMATCH',
@@ -454,7 +454,7 @@ export async function completeAuthentication(
     throw new ApiError('USER_INACTIVE', 'User account is not active', 401);
   }
 
-  // Panel binding: a user with 'admin' panel can't log into the client
+  // Panel binding: a user with 'admin' panel can't log into the tenant
   // panel via passkey, and vice versa.
   if ((user.panel ?? 'admin') !== input.panel) {
     throw new ApiError('PASSKEY_PANEL_MISMATCH',

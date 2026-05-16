@@ -19,7 +19,7 @@ const TABS: ReadonlyArray<{
     key: 'nodes',
     label: 'Cluster Nodes',
     icon: Server,
-    hint: 'Server/worker role + host-client-workloads opt-in',
+    hint: 'Server/worker role + host-tenant-workloads opt-in',
   },
   {
     key: 'storage',

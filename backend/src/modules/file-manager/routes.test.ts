@@ -4,17 +4,17 @@ import fastifyJwt from '@fastify/jwt';
 import { errorHandler } from '../../middleware/error-handler.js';
 import { registerAuth } from '../../middleware/auth.js';
 
-const mockClient = {
+const mockTenant = {
   id: 'c1',
   provisioningStatus: 'provisioned',
-  kubernetesNamespace: 'client-c1',
+  kubernetesNamespace: 'tenant-c1',
 };
 
 const mockDb = {
   select: vi.fn().mockReturnValue({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([mockClient]),
+        limit: vi.fn().mockResolvedValue([mockTenant]),
       }),
     }),
   }),
@@ -31,14 +31,14 @@ vi.mock('./service.js', () => ({
     _kc: string | undefined,
     _ns: string,
     _path: string,
-    clientRes: import('node:http').ServerResponse,
+    tenantRes: import('node:http').ServerResponse,
   ) => {
-    // Default success: write a small buffer through to the client.
-    clientRes.writeHead(200, {
+    // Default success: write a small buffer through to the tenant.
+    tenantRes.writeHead(200, {
       'content-type': 'application/octet-stream',
       'content-disposition': 'attachment; filename="test.txt"',
     });
-    clientRes.end(Buffer.from('hello world binary content'));
+    tenantRes.end(Buffer.from('hello world binary content'));
   }),
   streamToFileManager: vi.fn().mockResolvedValue({
     status: 200, body: '{}', bodyBuffer: Buffer.from('{}'), headers: {},
@@ -59,7 +59,7 @@ vi.mock('../k8s-provisioner/k8s-client.js', () => ({
 }));
 
 vi.mock('../../db/schema.js', () => ({
-  clients: { id: 'clients.id' },
+  tenants: { id: 'tenants.id' },
 }));
 
 const { fileManagerRoutes } = await import('./routes.js');
@@ -67,7 +67,7 @@ const { fileManagerRoutes } = await import('./routes.js');
 describe('file-manager routes', () => {
   let app: FastifyInstance;
   let adminToken: string;
-  let clientToken: string;
+  let tenantToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -83,8 +83,8 @@ describe('file-manager routes', () => {
       sub: 'admin-1', role: 'super_admin', panel: 'admin',
       iat: Math.floor(Date.now() / 1000),
     });
-    clientToken = app.jwt.sign({
-      sub: 'client-1', role: 'client_admin', panel: 'client', clientId: 'c1',
+    tenantToken = app.jwt.sign({
+      sub: 'tenant-1', role: 'tenant_admin', panel: 'tenant', tenantId: 'c1',
       iat: Math.floor(Date.now() / 1000),
     });
   });
@@ -95,20 +95,20 @@ describe('file-manager routes', () => {
 
   // ─── Auth ───────────────────────────────────────────────────────────────
 
-  it('GET /clients/c1/files without auth returns 401', async () => {
+  it('GET /tenants/c1/files without auth returns 401', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/files',
+      url: '/api/v1/tenants/c1/files',
     });
     expect(res.statusCode).toBe(401);
   });
 
   // ─── Status ─────────────────────────────────────────────────────────────
 
-  it('GET /clients/c1/files/status returns 200', async () => {
+  it('GET /tenants/c1/files/status returns 200', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/files/status',
+      url: '/api/v1/tenants/c1/files/status',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -119,10 +119,10 @@ describe('file-manager routes', () => {
 
   // ─── List directory ─────────────────────────────────────────────────────
 
-  it('GET /clients/c1/files with auth returns directory listing', async () => {
+  it('GET /tenants/c1/files with auth returns directory listing', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/files',
+      url: '/api/v1/tenants/c1/files',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -134,10 +134,10 @@ describe('file-manager routes', () => {
 
   // ─── Read file ──────────────────────────────────────────────────────────
 
-  it('GET /clients/c1/files/read without path query returns 400', async () => {
+  it('GET /tenants/c1/files/read without path query returns 400', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/files/read',
+      url: '/api/v1/tenants/c1/files/read',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(400);
@@ -145,7 +145,7 @@ describe('file-manager routes', () => {
 
   // ─── Mkdir ──────────────────────────────────────────────────────────────
 
-  it('POST /clients/c1/files/mkdir with valid body returns 200', async () => {
+  it('POST /tenants/c1/files/mkdir with valid body returns 200', async () => {
     const { fileManagerRequest } = await import('./service.js');
     (fileManagerRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       status: 201,
@@ -156,7 +156,7 @@ describe('file-manager routes', () => {
 
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/files/mkdir',
+      url: '/api/v1/tenants/c1/files/mkdir',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { path: '/new-dir' },
     });
@@ -167,7 +167,7 @@ describe('file-manager routes', () => {
 
   // ─── Delete ─────────────────────────────────────────────────────────────
 
-  it('POST /clients/c1/files/delete with valid body returns 200', async () => {
+  it('POST /tenants/c1/files/delete with valid body returns 200', async () => {
     const { fileManagerRequest } = await import('./service.js');
     (fileManagerRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       status: 200,
@@ -178,7 +178,7 @@ describe('file-manager routes', () => {
 
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/files/delete',
+      url: '/api/v1/tenants/c1/files/delete',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { path: '/old-file.txt' },
     });
@@ -189,7 +189,7 @@ describe('file-manager routes', () => {
 
   // ─── Copy ───────────────────────────────────────────────────────────────
 
-  it('POST /clients/c1/files/copy with valid body returns 200', async () => {
+  it('POST /tenants/c1/files/copy with valid body returns 200', async () => {
     const { fileManagerRequest } = await import('./service.js');
     (fileManagerRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       status: 200,
@@ -200,7 +200,7 @@ describe('file-manager routes', () => {
 
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/files/copy',
+      url: '/api/v1/tenants/c1/files/copy',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { sourcePath: '/file.txt', destPath: '/file-copy.txt' },
     });
@@ -211,10 +211,10 @@ describe('file-manager routes', () => {
 
   // ─── Start ──────────────────────────────────────────────────────────────
 
-  it('POST /clients/c1/files/start returns 200', async () => {
+  it('POST /tenants/c1/files/start returns 200', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/files/start',
+      url: '/api/v1/tenants/c1/files/start',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -224,19 +224,19 @@ describe('file-manager routes', () => {
 
   // ─── Stop (admin only) ─────────────────────────────────────────────────
 
-  it('POST /clients/c1/files/stop with client token returns 403', async () => {
+  it('POST /tenants/c1/files/stop with tenant token returns 403', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/files/stop',
-      headers: { authorization: `Bearer ${clientToken}` },
+      url: '/api/v1/tenants/c1/files/stop',
+      headers: { authorization: `Bearer ${tenantToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  it('POST /clients/c1/files/stop with admin token returns 200', async () => {
+  it('POST /tenants/c1/files/stop with admin token returns 200', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/files/stop',
+      url: '/api/v1/tenants/c1/files/stop',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -246,25 +246,25 @@ describe('file-manager routes', () => {
 
   // ─── Download ───────────────────────────────────────────────────────────
 
-  it('GET /clients/c1/files/download streams binary content through', async () => {
+  it('GET /tenants/c1/files/download streams binary content through', async () => {
     const binaryContent = Buffer.from('hello world binary content');
     const { streamFromFileManager } = await import('./service.js');
     (streamFromFileManager as ReturnType<typeof vi.fn>).mockImplementationOnce(async (
       _kc: string | undefined,
       _ns: string,
       _path: string,
-      clientRes: import('node:http').ServerResponse,
+      tenantRes: import('node:http').ServerResponse,
     ) => {
-      clientRes.writeHead(200, {
+      tenantRes.writeHead(200, {
         'content-type': 'application/octet-stream',
         'content-disposition': 'attachment; filename="test.txt"',
       });
-      clientRes.end(binaryContent);
+      tenantRes.end(binaryContent);
     });
 
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/files/download?path=/test.txt',
+      url: '/api/v1/tenants/c1/files/download?path=/test.txt',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);

@@ -2,21 +2,21 @@ import { describe, it, expect, vi } from 'vitest';
 import { exportAll, importData } from './service.js';
 
 function createMockDb(options?: {
-  clients?: Record<string, unknown>[];
+  tenants?: Record<string, unknown>[];
   domains?: Record<string, unknown>[];
   hostingPlans?: Record<string, unknown>[];
   dnsServers?: Record<string, unknown>[];
 }) {
   const data = {
-    clients: options?.clients ?? [{ id: 'c1', companyName: 'Acme', companyEmail: 'admin@acme.com', status: 'active', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'client-acme' }],
-    domains: options?.domains ?? [{ id: 'd1', clientId: 'c1', domainName: 'acme.com', status: 'active' }],
+    tenants: options?.tenants ?? [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com', status: 'active', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'tenant-acme' }],
+    domains: options?.domains ?? [{ id: 'd1', tenantId: 'c1', domainName: 'acme.com', status: 'active' }],
     hostingPlans: options?.hostingPlans ?? [{ id: 'p1', code: 'starter', name: 'Starter', cpuLimit: '1.00', memoryLimit: '1.00', storageLimit: '10.00', monthlyPriceUsd: '9.99' }],
     dnsServers: options?.dnsServers ?? [{ id: 'dns1', displayName: 'Primary', providerType: 'powerdns', connectionConfigEncrypted: 'ENCRYPTED_SECRET', zoneDefaultKind: 'Native', isDefault: 1, enabled: 1 }],
   };
 
   // Track what table is being selected from
   let callCount = 0;
-  const tableOrder = ['clients', 'domains', 'hostingPlans', 'dnsServers'];
+  const tableOrder = ['tenants', 'domains', 'hostingPlans', 'dnsServers'];
 
   return {
     select: vi.fn().mockReturnValue({
@@ -39,8 +39,8 @@ function createMockDb(options?: {
 
 describe('export service', () => {
   it('export includes all resource types', async () => {
-    const clientsData = [{ id: 'c1', companyName: 'Acme', companyEmail: 'admin@acme.com' }];
-    const domainsData = [{ id: 'd1', clientId: 'c1', domainName: 'acme.com' }];
+    const clientsData = [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com' }];
+    const domainsData = [{ id: 'd1', tenantId: 'c1', domainName: 'acme.com' }];
     const plansData = [{ id: 'p1', code: 'starter', name: 'Starter' }];
     const dnsData = [{ id: 'dns1', displayName: 'Primary', providerType: 'powerdns', connectionConfigEncrypted: 'SECRET' }];
 
@@ -59,7 +59,7 @@ describe('export service', () => {
 
     expect(result.version).toBe('1.0');
     expect(result.exportedAt).toBeDefined();
-    expect(result.clients).toHaveLength(1);
+    expect(result.tenants).toHaveLength(1);
     expect(result.domains).toHaveLength(1);
     expect(result.hostingPlans).toHaveLength(1);
     expect(result.dnsServers).toHaveLength(1);
@@ -115,8 +115,8 @@ describe('import service', () => {
 
     const importPayload = {
       version: '1.0',
-      clients: [{ id: 'c1', companyName: 'Acme', companyEmail: 'admin@acme.com', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'ns-acme' }],
-      domains: [{ id: 'd1', clientId: 'c1', domainName: 'acme.com' }],
+      tenants: [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'ns-acme' }],
+      domains: [{ id: 'd1', tenantId: 'c1', domainName: 'acme.com' }],
       hostingPlans: [{ id: 'p1', code: 'starter', name: 'Starter' }],
       dnsServers: [],
     };
@@ -124,7 +124,7 @@ describe('import service', () => {
     const result = await importData(db, importPayload, { dryRun: true });
 
     expect(result.dryRun).toBe(true);
-    expect(result.created).toBe(3); // 1 plan + 1 client + 1 domain
+    expect(result.created).toBe(3); // 1 plan + 1 tenant + 1 domain
     expect(db.insert).not.toHaveBeenCalled();
   });
 
@@ -142,7 +142,7 @@ describe('import service', () => {
 
     const importPayload = {
       version: '1.0',
-      clients: [{ id: 'c1', companyName: 'Acme', companyEmail: 'admin@acme.com', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'ns-acme' }],
+      tenants: [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'ns-acme' }],
       domains: [],
       hostingPlans: [{ id: 'p1', code: 'starter', name: 'Starter' }],
       dnsServers: [],
@@ -151,7 +151,7 @@ describe('import service', () => {
     const result = await importData(db, importPayload, { dryRun: false });
 
     expect(result.dryRun).toBe(false);
-    expect(result.created).toBe(2); // 1 plan + 1 client
+    expect(result.created).toBe(2); // 1 plan + 1 tenant
     expect(db.insert).toHaveBeenCalled();
   });
 
@@ -169,8 +169,8 @@ describe('import service', () => {
 
     const importPayload = {
       version: '1.0',
-      clients: [{ id: 'c1', companyName: 'Acme', companyEmail: 'admin@acme.com', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'ns-acme' }],
-      domains: [{ id: 'd1', clientId: 'c1', domainName: 'acme.com' }],
+      tenants: [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com', regionId: 'r1', planId: 'p1', kubernetesNamespace: 'ns-acme' }],
+      domains: [{ id: 'd1', tenantId: 'c1', domainName: 'acme.com' }],
       hostingPlans: [{ id: 'p1', code: 'starter', name: 'Starter' }],
       dnsServers: [],
     };

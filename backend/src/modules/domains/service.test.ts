@@ -20,7 +20,7 @@ vi.mock('drizzle-orm', () => ({
 
 vi.mock('../../db/schema.js', () => ({
   domains: {
-    id: 'id', status: 'status', verifiedAt: 'verifiedAt', clientId: 'clientId',
+    id: 'id', status: 'status', verifiedAt: 'verifiedAt', tenantId: 'tenantId',
     domainName: 'domainName', dnsMode: 'dnsMode', verificationCacheAt: 'verificationCacheAt',
     createdAt: 'createdAt',
   },
@@ -45,9 +45,9 @@ vi.mock('../dns-servers/service.js', () => ({
   getProviderGroupById: vi.fn().mockResolvedValue({ id: 'g1', nsHostnames: [] }),
 }));
 
-// We need to mock getClientById which is imported by domains/service
-vi.mock('../clients/service.js', () => ({
-  getClientById: vi.fn().mockResolvedValue({ id: 'c1', companyName: 'Acme' }),
+// We need to mock getTenantById which is imported by domains/service
+vi.mock('../tenants/service.js', () => ({
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', name: 'Acme' }),
 }));
 
 function createMockDb(selectResult: unknown[] = []) {
@@ -75,7 +75,7 @@ function createMockDb(selectResult: unknown[] = []) {
 
 describe('getDomainById', () => {
   it('should return domain when found', async () => {
-    const domain = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+    const domain = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
     const db = createMockDb([domain]);
 
     const result = await getDomainById(db, 'c1', 'd1');
@@ -95,7 +95,7 @@ describe('getDomainById', () => {
 
 describe('updateDomain', () => {
   it('should update and return the domain', async () => {
-    const domain = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+    const domain = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 
     const whereFn = vi.fn().mockResolvedValue([domain]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -116,7 +116,7 @@ describe('updateDomain', () => {
   });
 
   it('should skip update when no fields provided', async () => {
-    const domain = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+    const domain = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 
     const whereFn = vi.fn().mockResolvedValue([domain]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -134,7 +134,7 @@ describe('updateDomain', () => {
   });
 
   it('should convert ssl_auto_renew boolean to number', async () => {
-    const domain = { id: 'd1', clientId: 'c1', domainName: 'example.com' };
+    const domain = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
 
     const whereFn = vi.fn().mockResolvedValue([domain]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -159,7 +159,7 @@ describe('updateDomain', () => {
 
 describe('deleteDomain', () => {
   it('should delete when domain exists', async () => {
-    const domain = { id: 'd1', clientId: 'c1' };
+    const domain = { id: 'd1', tenantId: 'c1' };
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 

@@ -7,7 +7,7 @@ import Security from '../pages/Security';
 const mockAuditLogs = [
   {
     id: 'al-1',
-    clientId: null,
+    tenantId: null,
     actionType: 'login.failed',
     resourceType: 'auth',
     resourceId: null,
@@ -22,7 +22,7 @@ const mockAuditLogs = [
   },
   {
     id: 'al-2',
-    clientId: 'client-1',
+    tenantId: 'tenant-1',
     actionType: 'certificate.renewed',
     resourceType: 'ssl-cert',
     resourceId: 'cert-1',
@@ -37,14 +37,14 @@ const mockAuditLogs = [
   },
   {
     id: 'al-3',
-    clientId: null,
+    tenantId: null,
     actionType: 'request.server_error',
     resourceType: 'api-gateway',
     resourceId: null,
     actorId: 'user-2',
     actorType: 'user' as const,
     httpMethod: 'GET',
-    httpPath: '/api/v1/admin/clients',
+    httpPath: '/api/v1/admin/tenants',
     httpStatus: 500,
     changes: null,
     ipAddress: '10.0.0.1',

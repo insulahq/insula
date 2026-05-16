@@ -23,7 +23,7 @@ function sanitizeCert(row: typeof sslCertificates.$inferSelect) {
   return {
     id: row.id,
     domainId: row.domainId,
-    clientId: row.clientId,
+    tenantId: row.tenantId,
     issuer: row.issuer,
     subject: row.subject,
     expiresAt: row.expiresAt,
@@ -34,19 +34,19 @@ function sanitizeCert(row: typeof sslCertificates.$inferSelect) {
 
 export async function uploadCert(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
   input: UploadSslCertInput,
   encryptionKey: string,
 ) {
-  // Verify the domain belongs to this client
+  // Verify the domain belongs to this tenant
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for client '${clientId}'`, 404);
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for tenant '${tenantId}'`, 404);
   }
 
   // Validate PEM format
@@ -115,7 +115,7 @@ export async function uploadCert(
   await db.insert(sslCertificates).values({
     id,
     domainId,
-    clientId,
+    tenantId,
     certificate: input.certificate,
     privateKeyEncrypted,
     caBundle: input.ca_bundle ?? null,
@@ -134,13 +134,13 @@ export async function uploadCert(
 
 export async function getCert(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ) {
   const [cert] = await db
     .select()
     .from(sslCertificates)
-    .where(and(eq(sslCertificates.domainId, domainId), eq(sslCertificates.clientId, clientId)));
+    .where(and(eq(sslCertificates.domainId, domainId), eq(sslCertificates.tenantId, tenantId)));
 
   if (!cert) {
     throw new ApiError('SSL_CERT_NOT_FOUND', `No SSL certificate found for domain '${domainId}'`, 404);
@@ -151,13 +151,13 @@ export async function getCert(
 
 export async function deleteCert(
   db: Database,
-  clientId: string,
+  tenantId: string,
   domainId: string,
 ) {
   const [cert] = await db
     .select({ id: sslCertificates.id })
     .from(sslCertificates)
-    .where(and(eq(sslCertificates.domainId, domainId), eq(sslCertificates.clientId, clientId)));
+    .where(and(eq(sslCertificates.domainId, domainId), eq(sslCertificates.tenantId, tenantId)));
 
   if (!cert) {
     throw new ApiError('SSL_CERT_NOT_FOUND', `No SSL certificate found for domain '${domainId}'`, 404);

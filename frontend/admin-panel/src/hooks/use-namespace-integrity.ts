@@ -8,35 +8,35 @@ export type IntegrityFinding =
   | 'network_policy_missing';
 
 export interface NamespaceIntegrityReport {
-  readonly clientId: string;
-  readonly companyName: string;
+  readonly tenantId: string;
+  readonly name: string;
   readonly namespace: string;
   readonly findings: readonly IntegrityFinding[];
   readonly repaired: readonly IntegrityFinding[];
   readonly errors: readonly string[];
 }
 
-export function useClientNamespaceIntegrity(clientId: string | undefined) {
+export function useTenantNamespaceIntegrity(tenantId: string | undefined) {
   return useQuery({
-    queryKey: ['namespace-integrity', clientId],
+    queryKey: ['namespace-integrity', tenantId],
     queryFn: () =>
-      apiFetch<{ data: NamespaceIntegrityReport }>(`/api/v1/admin/clients/${clientId}/namespace-integrity`),
-    enabled: Boolean(clientId),
+      apiFetch<{ data: NamespaceIntegrityReport }>(`/api/v1/admin/tenants/${tenantId}/namespace-integrity`),
+    enabled: Boolean(tenantId),
     refetchInterval: 60_000,
   });
 }
 
-export function useRepairClientNamespace(clientId: string) {
+export function useRepairTenantNamespace(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
       apiFetch<{ data: NamespaceIntegrityReport }>(
-        `/api/v1/admin/clients/${clientId}/namespace-integrity/repair`,
+        `/api/v1/admin/tenants/${tenantId}/namespace-integrity/repair`,
         { method: 'POST', body: JSON.stringify({}) },
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['namespace-integrity', clientId] });
-      qc.invalidateQueries({ queryKey: ['clients', clientId] });
+      qc.invalidateQueries({ queryKey: ['namespace-integrity', tenantId] });
+      qc.invalidateQueries({ queryKey: ['tenants', tenantId] });
       qc.invalidateQueries({ queryKey: ['notifications'] });
     },
   });

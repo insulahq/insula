@@ -15,7 +15,7 @@ const SALT_ROUNDS = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function verifyRouteOwnership(db: Database, routeId: string, clientId: string) {
+async function verifyRouteOwnership(db: Database, routeId: string, tenantId: string) {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) {
     throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found`, 404);
@@ -24,10 +24,10 @@ async function verifyRouteOwnership(db: Database, routeId: string, clientId: str
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, route.domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, route.domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found for client`, 404);
+    throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found for tenant`, 404);
   }
 
   return route;
@@ -41,8 +41,8 @@ async function getDirOrThrow(db: Database, dirId: string) {
   return dir;
 }
 
-async function verifyDirOwnership(db: Database, dirId: string, routeId: string, clientId: string) {
-  await verifyRouteOwnership(db, routeId, clientId);
+async function verifyDirOwnership(db: Database, dirId: string, routeId: string, tenantId: string) {
+  await verifyRouteOwnership(db, routeId, tenantId);
   const dir = await getDirOrThrow(db, dirId);
   if (dir.routeId !== routeId) {
     throw new ApiError('PROTECTED_DIR_NOT_FOUND', `Protected directory '${dirId}' not found on route`, 404);
@@ -99,10 +99,10 @@ export async function listProtectedDirs(db: Database, routeId: string) {
 export async function createProtectedDir(
   db: Database,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   input: { path: string; realm?: string },
 ) {
-  await verifyRouteOwnership(db, routeId, clientId);
+  await verifyRouteOwnership(db, routeId, tenantId);
   validatePath(input.path);
 
   // Check uniqueness: path per route
@@ -131,10 +131,10 @@ export async function updateProtectedDir(
   db: Database,
   dirId: string,
   routeId: string,
-  clientId: string,
+  tenantId: string,
   input: { path?: string; realm?: string; enabled?: boolean },
 ) {
-  await verifyDirOwnership(db, dirId, routeId, clientId);
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.path !== undefined) {
@@ -174,9 +174,9 @@ export async function deleteProtectedDir(
   db: Database,
   dirId: string,
   routeId: string,
-  clientId: string,
+  tenantId: string,
 ) {
-  await verifyDirOwnership(db, dirId, routeId, clientId);
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
   // CASCADE will remove child auth users
   await db.delete(routeProtectedDirs).where(eq(routeProtectedDirs.id, dirId));
 }

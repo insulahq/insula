@@ -206,7 +206,7 @@ async function fanoutNotification(
   if (severity === 'critical') {
     lines.push('Action: free space (delete unused tenants / orphan PVs / unused snapshots) OR add a server node.');
   } else if (severity === 'warning') {
-    lines.push('Heads-up: new client provisioning + Apply HA scale-up will start failing soon. Plan to free space or add capacity.');
+    lines.push('Heads-up: new tenant provisioning + Apply HA scale-up will start failing soon. Plan to free space or add capacity.');
   }
   const message = lines.join(' ');
   const type = severity === 'critical' ? 'error' : (severity === 'warning' ? 'warning' : 'info');

@@ -8,7 +8,7 @@
  *      from the source namespace (with a `<cluster>-app` fallback).
  *      We do NOT use Pod env secretKeyRef — it's namespace-local and
  *      breaks for cross-namespace clusters like mail/mail-pg.
- *   3. Reserve a BackupStore bundle under synthetic clientId='__system__'
+ *   3. Reserve a BackupStore bundle under synthetic tenantId='__system__'
  *      so system artifacts live in a dedicated subtree.
  *   4. Spawn `pg_dump --format=custom --compress=9 --no-owner
  *      --no-privileges` against the CNPG `<cluster>-ro` read-replica
@@ -290,7 +290,7 @@ export async function runPgDump(inputs: PgDumpInputs): Promise<PgDumpResult> {
     const resolved = await resolveSystemStore(db, targetConfigId, oidcEncryptionKey);
     store = resolved.store;
     const creds = await resolveCnpgCredentials(k8s, namespace, cluster);
-    handle = await store.reserveBundle({ backupId: runId, clientId: SYSTEM_CLIENT_ID });
+    handle = await store.reserveBundle({ backupId: runId, tenantId: SYSTEM_CLIENT_ID });
 
     const dump = spawnPgDump(namespace, cluster, database, creds);
 

@@ -105,7 +105,7 @@ describe('parseJob', () => {
     expect(meta?.category).toBe('dr');
     expect(meta?.severity).toBe('critical');
     expect(meta?.state).toBe('succeeded');
-    expect(meta?.clientId).toBeNull();
+    expect(meta?.tenantId).toBeNull();
   });
 
   it('falls back to defaults when optional labels are missing', () => {
@@ -117,14 +117,14 @@ describe('parseJob', () => {
     expect(meta?.groupKey).toBe('one-off-job');
   });
 
-  it('extracts client-id when label present', () => {
+  it('extracts tenant-id when label present', () => {
     const job = makeJob({
       uid: 'u-3',
       name: 'tenant-backup-1',
-      labels: { [LABEL_CLIENT_ID]: 'client-abc', [LABEL_CATEGORY]: 'tenant' },
+      labels: { [LABEL_CLIENT_ID]: 'tenant-abc', [LABEL_CATEGORY]: 'tenant' },
     });
     const meta = parseJob(job);
-    expect(meta?.clientId).toBe('client-abc');
+    expect(meta?.tenantId).toBe('tenant-abc');
     expect(meta?.category).toBe('tenant');
   });
 

@@ -8,14 +8,14 @@ import { auditLogRoutes } from './routes.js';
 const MOCK_AUDIT_ROWS = [
   {
     id: 'log-1',
-    clientId: null,
+    tenantId: null,
     actionType: 'create',
-    resourceType: 'client',
+    resourceType: 'tenant',
     resourceId: 'c-1',
     actorId: 'admin-1',
     actorType: 'user',
     httpMethod: 'POST',
-    httpPath: '/api/v1/clients',
+    httpPath: '/api/v1/tenants',
     httpStatus: 201,
     changes: null,
     ipAddress: '127.0.0.1',
@@ -23,14 +23,14 @@ const MOCK_AUDIT_ROWS = [
   },
   {
     id: 'log-2',
-    clientId: 'c-1',
+    tenantId: 'c-1',
     actionType: 'update',
     resourceType: 'domain',
     resourceId: 'd-1',
     actorId: 'admin-1',
     actorType: 'user',
     httpMethod: 'PATCH',
-    httpPath: '/api/v1/clients/c-1/domains/d-1',
+    httpPath: '/api/v1/tenants/c-1/domains/d-1',
     httpStatus: 200,
     changes: null,
     ipAddress: '127.0.0.1',
@@ -127,7 +127,7 @@ describe('audit-logs routes', () => {
     expect(Array.isArray(body.data)).toBe(true);
     expect(body.data).toHaveLength(2);
     expect(body.data[0].actionType).toBe('create');
-    expect(body.data[0].resourceType).toBe('client');
+    expect(body.data[0].resourceType).toBe('tenant');
     // Verify pagination metadata
     expect(body.pagination).toBeDefined();
     expect(body.pagination.total_count).toBe(2);

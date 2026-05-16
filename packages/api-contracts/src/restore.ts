@@ -49,7 +49,7 @@ export type FilesPathsSelector = z.infer<typeof filesPathsSelectorSchema>;
  *                                     success. Mid-run crash leaves staging
  *                                     for operator inspection.
  *
- * `replace` is destructive — clients MUST set `confirmDestructive: true`
+ * `replace` is destructive — tenants MUST set `confirmDestructive: true`
  * to opt in (matches the `confirm_destructive_shrink` typed-confirmation
  * pattern used elsewhere in the platform).
  */
@@ -116,7 +116,7 @@ export type RestoreItemPayload = z.infer<typeof restoreItemPayloadSchema>;
 // ─── API DTOs ────────────────────────────────────────────────────────────────
 
 export const createRestoreCartSchema = z.object({
-  clientId: uuidField,
+  tenantId: uuidField,
   description: z.string().max(2000).nullable().optional(),
 });
 export type CreateRestoreCartInput = z.infer<typeof createRestoreCartSchema>;
@@ -131,7 +131,7 @@ export type AddRestoreItemInput = z.infer<typeof addRestoreItemSchema>;
 
 export const restoreJobSummarySchema = z.object({
   id: z.string(),
-  clientId: uuidField,
+  tenantId: uuidField,
   initiatorUserId: uuidField.nullable(),
   status: restoreJobStatusSchema,
   preRestoreSnapshotId: z.string().nullable(),

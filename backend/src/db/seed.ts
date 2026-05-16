@@ -21,7 +21,7 @@ console.log('Seeding database...');
 // populated from env. Admin-configured values (non-NULL) are always
 // preserved; re-seeding never clobbers them.
 const adminPanelUrl = process.env.ADMIN_PANEL_URL ?? null;
-const clientPanelUrl = process.env.CLIENT_PANEL_URL ?? null;
+const tenantPanelUrl = process.env.CLIENT_PANEL_URL ?? null;
 const supportEmail = process.env.SUPPORT_EMAIL ?? null;
 const supportUrl = process.env.SUPPORT_URL ?? null;
 const ingressBaseDomain = process.env.INGRESS_BASE_DOMAIN ?? null;
@@ -33,7 +33,7 @@ await db.insert(systemSettings).values({
   id: 'system',
   platformName,
   adminPanelUrl,
-  clientPanelUrl,
+  tenantPanelUrl,
   supportEmail,
   supportUrl,
   ingressBaseDomain,
@@ -45,7 +45,7 @@ await db.insert(systemSettings).values({
     // COALESCE(existing, new) — if existing value is already set, keep it.
     // Only fill in NULL columns from env. Respect what the admin chose.
     adminPanelUrl: sql`COALESCE(${systemSettings.adminPanelUrl}, ${adminPanelUrl})`,
-    clientPanelUrl: sql`COALESCE(${systemSettings.clientPanelUrl}, ${clientPanelUrl})`,
+    tenantPanelUrl: sql`COALESCE(${systemSettings.tenantPanelUrl}, ${tenantPanelUrl})`,
     supportEmail: sql`COALESCE(${systemSettings.supportEmail}, ${supportEmail})`,
     supportUrl: sql`COALESCE(${systemSettings.supportUrl}, ${supportUrl})`,
     ingressBaseDomain: sql`COALESCE(${systemSettings.ingressBaseDomain}, ${ingressBaseDomain})`,
@@ -67,12 +67,12 @@ console.log('  Seeded system settings (fills NULL columns only)');
 // RBAC Roles
 await db.insert(rbacRoles).values([
   { id: crypto.randomUUID(), name: 'super_admin', description: 'Full platform access + OIDC/user management', isSystemRole: 1, permissions: JSON.parse('["*"]') as string[] },
-  { id: crypto.randomUUID(), name: 'admin', description: 'Manage clients and all resources', isSystemRole: 1, permissions: JSON.parse('["clients:*","domains:*","databases:*","workloads:*","backups:*","cron-jobs:*","subscriptions:*"]') as string[] },
-  { id: crypto.randomUUID(), name: 'billing', description: 'Subscription and billing management', isSystemRole: 1, permissions: JSON.parse('["clients:read","subscriptions:*","billing:*"]') as string[] },
-  { id: crypto.randomUUID(), name: 'support', description: 'Client support — domains, databases, backups + impersonate', isSystemRole: 1, permissions: JSON.parse('["clients:read","domains:*","databases:*","backups:*","impersonate"]') as string[] },
-  { id: crypto.randomUUID(), name: 'read_only', description: 'View-only access to metrics and status', isSystemRole: 1, permissions: JSON.parse('["clients:read","metrics:read","status:read"]') as string[] },
-  { id: crypto.randomUUID(), name: 'client_admin', description: 'Full access to own client account', isSystemRole: 1, permissions: JSON.parse('["own:*"]') as string[] },
-  { id: crypto.randomUUID(), name: 'client_user', description: 'View-only access to own client resources', isSystemRole: 1, permissions: JSON.parse('["own:read"]') as string[] },
+  { id: crypto.randomUUID(), name: 'admin', description: 'Manage tenants and all resources', isSystemRole: 1, permissions: JSON.parse('["tenants:*","domains:*","databases:*","workloads:*","backups:*","cron-jobs:*","subscriptions:*"]') as string[] },
+  { id: crypto.randomUUID(), name: 'billing', description: 'Subscription and billing management', isSystemRole: 1, permissions: JSON.parse('["tenants:read","subscriptions:*","billing:*"]') as string[] },
+  { id: crypto.randomUUID(), name: 'support', description: 'Client support — domains, databases, backups + impersonate', isSystemRole: 1, permissions: JSON.parse('["tenants:read","domains:*","databases:*","backups:*","impersonate"]') as string[] },
+  { id: crypto.randomUUID(), name: 'read_only', description: 'View-only access to metrics and status', isSystemRole: 1, permissions: JSON.parse('["tenants:read","metrics:read","status:read"]') as string[] },
+  { id: crypto.randomUUID(), name: 'tenant_admin', description: 'Full access to own tenant account', isSystemRole: 1, permissions: JSON.parse('["own:*"]') as string[] },
+  { id: crypto.randomUUID(), name: 'tenant_user', description: 'View-only access to own tenant resources', isSystemRole: 1, permissions: JSON.parse('["own:read"]') as string[] },
 ]).onConflictDoUpdate({ target: rbacRoles.name, set: { description: sql`excluded.description` } });
 console.log('  Seeded RBAC roles');
 
@@ -142,7 +142,7 @@ if (process.env.NODE_ENV !== 'production') {
       id: crypto.randomUUID(),
       displayName: 'Local Dex (Admin)',
       issuerUrl: dexIssuer,
-      clientId: 'hosting-platform-admin',
+      tenantId: 'hosting-platform-admin',
       clientSecretEncrypted: encrypt('local-dev-secret-admin', encKey),
       panelScope: 'admin',
       enabled: 1,
@@ -152,9 +152,9 @@ if (process.env.NODE_ENV !== 'production') {
       id: crypto.randomUUID(),
       displayName: 'Local Dex (Client)',
       issuerUrl: dexIssuer,
-      clientId: 'hosting-platform-client',
-      clientSecretEncrypted: encrypt('local-dev-secret-client', encKey),
-      panelScope: 'client',
+      tenantId: 'hosting-platform-tenant',
+      clientSecretEncrypted: encrypt('local-dev-secret-tenant', encKey),
+      panelScope: 'tenant',
       enabled: 1,
       displayOrder: 0,
     },

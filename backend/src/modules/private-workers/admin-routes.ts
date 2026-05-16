@@ -101,7 +101,7 @@ async function getAnchorCertStatus(): Promise<{ ready: boolean; reason: string |
   try {
     k8s = createK8sClients();
   } catch {
-    return { ready: false, reason: 'k8s client unavailable' };
+    return { ready: false, reason: 'k8s tenant unavailable' };
   }
   try {
     const cert = (await k8s.custom.getNamespacedCustomObject({
@@ -159,7 +159,7 @@ async function getPerWorkerCertCounts(): Promise<{ issued: number; pending: numb
 export async function privateWorkerAdminRoutes(app: FastifyInstance): Promise<void> {
   // Same chain as backend/src/modules/admin-users/routes.ts: authenticate
   // first, then gate by staff roles. The platform's role enum is
-  // ['super_admin','admin','support','read_only','client_admin','client_user']
+  // ['super_admin','admin','support','read_only','tenant_admin','tenant_user']
   // — we accept the two staff roles that have admin-panel write access.
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));

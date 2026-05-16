@@ -1,14 +1,14 @@
 /**
  * HTTP routes for OpenZiti provider CRUD.
  *
- *   GET    /api/v1/clients/:cid/ziti-providers
- *   POST   /api/v1/clients/:cid/ziti-providers
- *   PATCH  /api/v1/clients/:cid/ziti-providers/:pid
- *   DELETE /api/v1/clients/:cid/ziti-providers/:pid
- *   POST   /api/v1/clients/:cid/ziti-providers/:pid/test
+ *   GET    /api/v1/tenants/:cid/ziti-providers
+ *   POST   /api/v1/tenants/:cid/ziti-providers
+ *   PATCH  /api/v1/tenants/:cid/ziti-providers/:pid
+ *   DELETE /api/v1/tenants/:cid/ziti-providers/:pid
+ *   POST   /api/v1/tenants/:cid/ziti-providers/:pid/test
  *
- * Auth: client_admin / super_admin / admin. All handlers verify
- * cross-tenant ownership via the client FK on the provider row.
+ * Auth: tenant_admin / super_admin / admin. All handlers verify
+ * cross-tenant ownership via the tenant FK on the provider row.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -36,15 +36,15 @@ export async function zitiProvidersRoutes(app: FastifyInstance): Promise<void> {
     ?? '0'.repeat(64);
 
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'client_admin'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
 
-  app.get('/clients/:cid/ziti-providers', async (request) => {
+  app.get('/tenants/:cid/ziti-providers', async (request) => {
     const { cid } = request.params as { cid: string };
     const rows = await listProviders(app.db, cid);
     return success(rows);
   });
 
-  app.post('/clients/:cid/ziti-providers', async (request) => {
+  app.post('/tenants/:cid/ziti-providers', async (request) => {
     const { cid } = request.params as { cid: string };
     const parsed = zitiProviderInputSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -54,7 +54,7 @@ export async function zitiProvidersRoutes(app: FastifyInstance): Promise<void> {
     return success(created);
   });
 
-  app.patch('/clients/:cid/ziti-providers/:pid', async (request) => {
+  app.patch('/tenants/:cid/ziti-providers/:pid', async (request) => {
     const { cid, pid } = request.params as { cid: string; pid: string };
     const parsed = zitiProviderInputSchema.partial().safeParse(request.body);
     if (!parsed.success) {
@@ -64,7 +64,7 @@ export async function zitiProvidersRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
-  app.delete('/clients/:cid/ziti-providers/:pid', async (request) => {
+  app.delete('/tenants/:cid/ziti-providers/:pid', async (request) => {
     const { cid, pid } = request.params as { cid: string; pid: string };
     await deleteProvider(app.db, cid, pid);
     return success({ deleted: true });
@@ -72,7 +72,7 @@ export async function zitiProvidersRoutes(app: FastifyInstance): Promise<void> {
 
   // Probes the controller's CA bundle endpoint to validate reachability.
   // Doesn't persist or modify anything.
-  app.post('/clients/:cid/ziti-providers/:pid/test', async (request) => {
+  app.post('/tenants/:cid/ziti-providers/:pid/test', async (request) => {
     const { cid: _cid, pid: _pid } = request.params as { cid: string; pid: string };
     // For v1, the test just probes the configured controller URL —
     // resolving the provider row first is unnecessary because the

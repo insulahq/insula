@@ -225,15 +225,15 @@ describe('buildJobSecret', () => {
 
 describe('createImapSyncJob', () => {
   it('inserts a pending row with the encrypted source password', async () => {
-    // ownership lookup: mailbox exists and belongs to client
+    // ownership lookup: mailbox exists and belongs to tenant
     selectResults = [
-      [{ id: 'mb1', clientId: 'c1', fullAddress: 'alice@acme.com' }],
+      [{ id: 'mb1', tenantId: 'c1', fullAddress: 'alice@acme.com' }],
     ];
     const now = new Date('2026-04-08T12:00:00Z');
     insertReturning = [
       {
         id: 'job-1',
-        clientId: 'c1',
+        tenantId: 'c1',
         mailboxId: 'mb1',
         sourceHost: 'imap.gmail.com',
         sourcePort: 993,
@@ -269,7 +269,7 @@ describe('createImapSyncJob', () => {
     // Inspect the values that were passed to .values()
     const insertedValues = (db._insertValuesFn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0];
     const v = insertedValues as Record<string, unknown>;
-    expect(v.clientId).toBe('c1');
+    expect(v.tenantId).toBe('c1');
     expect(v.mailboxId).toBe('mb1');
     expect(v.sourcePasswordEncrypted).toBe('encrypted:p@ss');
     expect(v.status).toBe('pending');
@@ -281,7 +281,7 @@ describe('createImapSyncJob', () => {
     }
   });
 
-  it('throws MAILBOX_NOT_FOUND when the mailbox does not belong to the client', async () => {
+  it('throws MAILBOX_NOT_FOUND when the mailbox does not belong to the tenant', async () => {
     selectResults = [[]];
     const db = createMockDb();
 
@@ -300,7 +300,7 @@ describe('createImapSyncJob', () => {
 
   it('throws IMAPSYNC_ALREADY_RUNNING on partial-unique-index violation', async () => {
     selectResults = [
-      [{ id: 'mb1', clientId: 'c1', fullAddress: 'alice@acme.com' }],
+      [{ id: 'mb1', tenantId: 'c1', fullAddress: 'alice@acme.com' }],
     ];
     insertImpl = () => {
       // Simulate the partial unique index violation
@@ -329,10 +329,10 @@ describe('createImapSyncJob', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('listImapSyncJobs', () => {
-  it('returns rows for the client with passwords stripped', async () => {
+  it('returns rows for the tenant with passwords stripped', async () => {
     const dbRow = {
       id: 'job-1',
-      clientId: 'c1',
+      tenantId: 'c1',
       mailboxId: 'mb1',
       sourceHost: 'imap.gmail.com',
       sourcePort: 993,
@@ -368,10 +368,10 @@ describe('listImapSyncJobs', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('deleteTerminalJob', () => {
-  it('deletes a succeeded job and returns its clientId, status, and K8s coordinates', async () => {
+  it('deletes a succeeded job and returns its tenantId, status, and K8s coordinates', async () => {
     selectResults = [[
       {
-        clientId: 'c1',
+        tenantId: 'c1',
         status: 'succeeded',
         k8sJobName: 'imapsync-job-1',
         k8sNamespace: 'mail',
@@ -384,7 +384,7 @@ describe('deleteTerminalJob', () => {
     const result = await service.deleteTerminalJob(db as never, 'c1', 'job-1');
 
     expect(result).toEqual({
-      clientId: 'c1',
+      tenantId: 'c1',
       status: 'succeeded',
       k8sJobName: 'imapsync-job-1',
       k8sNamespace: 'mail',
@@ -393,7 +393,7 @@ describe('deleteTerminalJob', () => {
   });
 
   it('deletes a failed job', async () => {
-    selectResults = [[{ clientId: 'c1', status: 'failed', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
+    selectResults = [[{ tenantId: 'c1', status: 'failed', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
     deleteImpl = async () => undefined;
     const db = createMockDb();
 
@@ -402,7 +402,7 @@ describe('deleteTerminalJob', () => {
   });
 
   it('deletes a cancelled job', async () => {
-    selectResults = [[{ clientId: 'c1', status: 'cancelled', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
+    selectResults = [[{ tenantId: 'c1', status: 'cancelled', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
     deleteImpl = async () => undefined;
     const db = createMockDb();
 
@@ -411,7 +411,7 @@ describe('deleteTerminalJob', () => {
   });
 
   it('throws INVALID_STATE 409 when the job is still running', async () => {
-    selectResults = [[{ clientId: 'c1', status: 'running', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
+    selectResults = [[{ tenantId: 'c1', status: 'running', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
     const db = createMockDb();
 
     await expect(service.deleteTerminalJob(db as never, 'c1', 'job-1'))
@@ -419,7 +419,7 @@ describe('deleteTerminalJob', () => {
   });
 
   it('throws INVALID_STATE 409 when the job is still pending', async () => {
-    selectResults = [[{ clientId: 'c1', status: 'pending', k8sJobName: null, k8sNamespace: 'mail' }]];
+    selectResults = [[{ tenantId: 'c1', status: 'pending', k8sJobName: null, k8sNamespace: 'mail' }]];
     const db = createMockDb();
 
     await expect(service.deleteTerminalJob(db as never, 'c1', 'job-1'))
@@ -442,7 +442,7 @@ describe('deleteTerminalJob', () => {
 describe('resyncImapSyncJob', () => {
   const ORIGINAL = {
     id: 'job-orig',
-    clientId: 'c1',
+    tenantId: 'c1',
     mailboxId: 'mb1',
     sourceHost: 'imap.gmail.com',
     sourcePort: 993,

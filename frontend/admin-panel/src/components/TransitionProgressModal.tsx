@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, Loader2, CheckCircle, AlertTriangle, RotateCw } from 'lucide-react';
 import {
-  useClientLifecycleTransitions,
+  useTenantLifecycleTransitions,
   useRetryHookRun,
   type LifecycleTransitionRow,
   type LifecycleHookRunRow,
 } from '@/hooks/use-lifecycle';
 
 interface Props {
-  readonly clientId: string;
+  readonly tenantId: string;
   /** Transition kind to follow (active|suspended|archived|restored|deleted).
    *  Modal latches onto the most-recent transition of that kind started
    *  AFTER `since` so concurrent transitions don't bleed into the view. */
@@ -39,11 +39,11 @@ const TRANSITION_BADGE: Record<LifecycleTransitionRow['state'], { label: string;
   failed_blocking: { label: 'Failed', cls: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300', icon: AlertTriangle },
 };
 
-export default function TransitionProgressModal({ clientId, transition, since, transitionId, onClose }: Props) {
+export default function TransitionProgressModal({ tenantId, transition, since, transitionId, onClose }: Props) {
   const [paused, setPaused] = useState(false);
   // Faster initial polling so the gap between "open modal" and "first
   // hook_runs visible" is sub-second in the common case.
-  const data = useClientLifecycleTransitions(clientId, 800, paused);
+  const data = useTenantLifecycleTransitions(tenantId, 800, paused);
   const retry = useRetryHookRun();
 
   // Pick the matching transition: prefer explicit transitionId when

@@ -12,7 +12,7 @@
  * Why in-cluster (vs externally probing each node external IP):
  *   - Avoids per-node-IP enumeration headaches (round-robin DNS,
  *     externalIPs lists)
- *   - Matches the trust path mail clients use (clients connect by
+ *   - Matches the trust path mail tenants use (tenants connect by
  *     hostname → DNS → Stalwart pod, with SNI auth-routing on
  *     Stalwart's side; cluster-internal probe with the right SNI
  *     reproduces the same handshake)
@@ -288,7 +288,7 @@ function tlsConnect(host: string, port: number, sni: string): Promise<tls.TLSSoc
  * STARTTLS upgrade for SMTP/IMAP/ManageSieve.
  *
  * Wire-protocol abbreviated to the minimum needed to land at TLS:
- *   - SMTP:     EHLO <client>\r\n + STARTTLS\r\n
+ *   - SMTP:     EHLO <tenant>\r\n + STARTTLS\r\n
  *   - IMAP:     A001 STARTTLS\r\n
  *   - SIEVE:    STARTTLS\r\n
  *

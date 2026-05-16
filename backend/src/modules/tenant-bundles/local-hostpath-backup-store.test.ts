@@ -9,7 +9,7 @@ import { LocalHostPathBackupStore } from './local-hostpath-backup-store.js';
 const VALID_META: BackupMetaV1 = {
   schemaVersion: BACKUP_META_SCHEMA_VERSION,
   backupId: 'bkp-aaaa',
-  clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
+  tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
   capturedAt: '2026-05-01T10:00:00.000Z',
   platformVersion: '0.3.1',
   initiator: 'admin',
@@ -20,12 +20,12 @@ const VALID_META: BackupMetaV1 = {
   expiresAt: null,
   retentionDays: 30,
   description: null,
-  client: {
-    companyName: 'Acme', companyEmail: 'a@b.test', contactEmail: null,
-    status: 'active', kubernetesNamespace: 'client-acme-deadbeef',
+  tenant: {
+    name: 'Acme', primaryEmail: 'a@b.test', secondaryEmail: null,
+    status: 'active', kubernetesNamespace: 'tenant-acme-deadbeef',
     regionId: '7707111e-21f6-49b6-9eea-a26a007fa2a1',
     planId: 'a383c4ce-ff5e-427b-b6c8-76fea6af043c',
-    workerNodeName: null, storageTier: 'local', timezone: null,
+    nodeName: null, storageTier: 'local', timezone: null,
     storageLimitOverride: null, cpuLimitOverride: null, memoryLimitOverride: null,
     maxSubUsersOverride: null, maxMailboxesOverride: null, monthlyPriceOverride: null,
     emailSendRateLimit: null, subscriptionExpiresAt: null,
@@ -47,7 +47,7 @@ async function withStore<T>(fn: (store: LocalHostPathBackupStore, root: string) 
 describe('LocalHostPathBackupStore', () => {
   it('reserveBundle creates the four component subdirs', async () => {
     await withStore(async (store, root) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-aaaa', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-aaaa', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       expect(handle.bundleId).toBe('bkp-aaaa');
       const dirs = await readdir(join(root, 'bkp-aaaa', 'components'));
       expect(dirs.sort()).toEqual(['config', 'files', 'mailboxes', 'secrets']);
@@ -56,7 +56,7 @@ describe('LocalHostPathBackupStore', () => {
 
   it('writeComponent + readComponent round-trip a payload', async () => {
     await withStore(async (store) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-rt', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-rt', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       const payload = Buffer.from('hello world');
       await store.writeComponent(handle, 'files', 'archive.tar.gz', Readable.from(payload));
       const stream = await store.readComponent(handle, 'files', 'archive.tar.gz');
@@ -68,7 +68,7 @@ describe('LocalHostPathBackupStore', () => {
 
   it('writeComponent uses tmp-then-rename so partial bodies are invisible on crash', async () => {
     await withStore(async (store, root) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-tmp', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-tmp', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       // Build a stream that errors after some bytes — pipeline must not
       // leave a half-written archive.tar.gz visible.
       const failing = new Readable({
@@ -86,7 +86,7 @@ describe('LocalHostPathBackupStore', () => {
 
   it('listArtifacts ignores .tmp and .sha256 sidecars', async () => {
     await withStore(async (store, root) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-list', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-list', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       const dir = join(root, 'bkp-list', 'components', 'mailboxes');
       await writeFile(join(dir, 'a@x.com.mbox.tar.gz'), 'a');
       await writeFile(join(dir, 'a@x.com.mbox.tar.gz.sha256'), 'a'.repeat(64));
@@ -98,7 +98,7 @@ describe('LocalHostPathBackupStore', () => {
 
   it('putMeta is the commit marker — getMeta succeeds afterwards', async () => {
     await withStore(async (store, root) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-meta', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-meta', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       // No meta.json yet → getMeta throws.
       await expect(store.getMeta(handle)).rejects.toThrow();
       const meta = { ...VALID_META, backupId: 'bkp-meta' };
@@ -119,7 +119,7 @@ describe('LocalHostPathBackupStore', () => {
   it('rejects backupIds that resolve outside the root (path traversal)', async () => {
     await withStore(async (store) => {
       await expect(store.open('../etc/passwd')).rejects.toThrow(/path traversal rejected/);
-      await expect(store.reserveBundle({ backupId: '../escape', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' }))
+      await expect(store.reserveBundle({ backupId: '../escape', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' }))
         .rejects.toThrow(/path traversal rejected/);
     });
   });
@@ -127,7 +127,7 @@ describe('LocalHostPathBackupStore', () => {
 
   it('delete removes the entire bundle dir', async () => {
     await withStore(async (store, root) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-del', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-del', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       await store.writeComponent(handle, 'files', 'archive.tar.gz', Readable.from(Buffer.from('x')));
       await store.delete(handle);
       await expect(fsStat(join(root, 'bkp-del'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -136,7 +136,7 @@ describe('LocalHostPathBackupStore', () => {
 
   it('stat returns sha256 from the sidecar when present', async () => {
     await withStore(async (store, root) => {
-      const handle = await store.reserveBundle({ backupId: 'bkp-s', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
+      const handle = await store.reserveBundle({ backupId: 'bkp-s', tenantId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });
       await store.writeComponent(handle, 'files', 'archive.tar.gz', Readable.from(Buffer.from('x')));
       const dir = join(root, 'bkp-s', 'components', 'files');
       await writeFile(join(dir, 'archive.tar.gz.sha256'), `${'b'.repeat(64)}  archive.tar.gz\n`);

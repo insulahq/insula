@@ -7,7 +7,7 @@ import { registerAuth } from '../../middleware/auth.js';
 const mockAlias = {
   id: 'al-1',
   emailDomainId: 'ed-1',
-  clientId: 'c1',
+  tenantId: 'c1',
   sourceAddress: 'sales@example.com',
   destinationAddresses: ['user1@example.com', 'user2@example.com'],
   enabled: 1,
@@ -28,7 +28,7 @@ describe('email-alias routes', () => {
   let app: FastifyInstance;
   let adminToken: string;
   let readOnlyToken: string;
-  let clientUserToken: string;
+  let tenantUserToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -42,7 +42,7 @@ describe('email-alias routes', () => {
 
     adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
-    clientUserToken = app.jwt.sign({ sub: 'cu-1', role: 'client_user', panel: 'client', clientId: 'c1', iat: Math.floor(Date.now() / 1000) });
+    tenantUserToken = app.jwt.sign({ sub: 'cu-1', role: 'tenant_user', panel: 'tenant', tenantId: 'c1', iat: Math.floor(Date.now() / 1000) });
   });
 
   afterAll(async () => {
@@ -50,24 +50,24 @@ describe('email-alias routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/email/aliases' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/email/aliases' });
     expect(res.statusCode).toBe(401);
   });
 
   it('should reject read_only role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/email/aliases',
+      url: '/api/v1/tenants/c1/email/aliases',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  it('should reject client_user role', async () => {
+  it('should reject tenant_user role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/email/aliases',
-      headers: { authorization: `Bearer ${clientUserToken}` },
+      url: '/api/v1/tenants/c1/email/aliases',
+      headers: { authorization: `Bearer ${tenantUserToken}` },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -75,7 +75,7 @@ describe('email-alias routes', () => {
   it('GET should list aliases for admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/email/aliases',
+      url: '/api/v1/tenants/c1/email/aliases',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -85,7 +85,7 @@ describe('email-alias routes', () => {
   it('POST should reject missing source_address', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/ed-1/aliases',
+      url: '/api/v1/tenants/c1/email/domains/ed-1/aliases',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { destination_addresses: [] },
     });
@@ -96,7 +96,7 @@ describe('email-alias routes', () => {
   it('POST should reject invalid email in source_address', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/ed-1/aliases',
+      url: '/api/v1/tenants/c1/email/domains/ed-1/aliases',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         source_address: 'not-an-email',
@@ -110,7 +110,7 @@ describe('email-alias routes', () => {
   it('POST should create with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/clients/c1/email/domains/ed-1/aliases',
+      url: '/api/v1/tenants/c1/email/domains/ed-1/aliases',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         source_address: 'sales@example.com',
@@ -123,7 +123,7 @@ describe('email-alias routes', () => {
   it('PATCH should reject invalid destination_addresses', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/email/aliases/al-1',
+      url: '/api/v1/tenants/c1/email/aliases/al-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { destination_addresses: ['not-email'] },
     });
@@ -134,7 +134,7 @@ describe('email-alias routes', () => {
   it('PATCH should update with valid data', async () => {
     const res = await app.inject({
       method: 'PATCH',
-      url: '/api/v1/clients/c1/email/aliases/al-1',
+      url: '/api/v1/tenants/c1/email/aliases/al-1',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { enabled: false },
     });
@@ -144,7 +144,7 @@ describe('email-alias routes', () => {
   it('DELETE should return 204', async () => {
     const res = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/clients/c1/email/aliases/al-1',
+      url: '/api/v1/tenants/c1/email/aliases/al-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 // M13: platform-level Longhorn replica policy (postgres + stalwart).
-// Distinct from per-tenant storage_tier in clients.ts.
+// Distinct from per-tenant storage_tier in tenants.ts.
 
 export const platformStorageTierSchema = z.enum(['local', 'ha']);
 export type PlatformStorageTier = z.infer<typeof platformStorageTierSchema>;

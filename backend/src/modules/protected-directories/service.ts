@@ -7,14 +7,14 @@ import type { CreateProtectedDirectoryInput, UpdateProtectedDirectoryInput, Crea
 
 const SALT_ROUNDS = 10;
 
-async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
+async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
   const [domain] = await db
     .select()
     .from(domains)
-    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+    .where(and(eq(domains.id, domainId), eq(domains.tenantId, tenantId)));
 
   if (!domain) {
-    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for client`, 404);
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for tenant`, 404);
   }
   return domain;
 }
@@ -33,20 +33,20 @@ async function getDirectoryOrThrow(db: Database, domainId: string, dirId: string
 
 // ─── Directory CRUD ─────────────────────────────────────────────────────────
 
-export async function listDirectories(db: Database, clientId: string, domainId: string) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function listDirectories(db: Database, tenantId: string, domainId: string) {
+  await verifyDomainOwnership(db, tenantId, domainId);
   return db.select().from(protectedDirectories).where(eq(protectedDirectories.domainId, domainId));
 }
 
-export async function getDirectory(db: Database, clientId: string, domainId: string, dirId: string) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function getDirectory(db: Database, tenantId: string, domainId: string, dirId: string) {
+  await verifyDomainOwnership(db, tenantId, domainId);
   return getDirectoryOrThrow(db, domainId, dirId);
 }
 
 export async function createDirectory(
-  db: Database, clientId: string, domainId: string, input: CreateProtectedDirectoryInput,
+  db: Database, tenantId: string, domainId: string, input: CreateProtectedDirectoryInput,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
 
   const id = crypto.randomUUID();
   await db.insert(protectedDirectories).values({
@@ -61,9 +61,9 @@ export async function createDirectory(
 }
 
 export async function updateDirectory(
-  db: Database, clientId: string, domainId: string, dirId: string, input: UpdateProtectedDirectoryInput,
+  db: Database, tenantId: string, domainId: string, dirId: string, input: UpdateProtectedDirectoryInput,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   if (input.realm !== undefined) {
@@ -74,8 +74,8 @@ export async function updateDirectory(
   return updated;
 }
 
-export async function deleteDirectory(db: Database, clientId: string, domainId: string, dirId: string) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function deleteDirectory(db: Database, tenantId: string, domainId: string, dirId: string) {
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   await db.delete(protectedDirectoryUsers).where(eq(protectedDirectoryUsers.directoryId, dirId));
@@ -84,8 +84,8 @@ export async function deleteDirectory(db: Database, clientId: string, domainId: 
 
 // ─── Directory User CRUD ────────────────────────────────────────────────────
 
-export async function listDirectoryUsers(db: Database, clientId: string, domainId: string, dirId: string) {
-  await verifyDomainOwnership(db, clientId, domainId);
+export async function listDirectoryUsers(db: Database, tenantId: string, domainId: string, dirId: string) {
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   const users = await db
@@ -103,9 +103,9 @@ export async function listDirectoryUsers(db: Database, clientId: string, domainI
 }
 
 export async function createDirectoryUser(
-  db: Database, clientId: string, domainId: string, dirId: string, input: CreateProtectedDirectoryUserInput,
+  db: Database, tenantId: string, domainId: string, dirId: string, input: CreateProtectedDirectoryUserInput,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   const id = crypto.randomUUID();
@@ -133,9 +133,9 @@ export async function createDirectoryUser(
 }
 
 export async function changeDirectoryUserPassword(
-  db: Database, clientId: string, domainId: string, dirId: string, userId: string, password: string,
+  db: Database, tenantId: string, domainId: string, dirId: string, userId: string, password: string,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   const [user] = await db
@@ -152,9 +152,9 @@ export async function changeDirectoryUserPassword(
 }
 
 export async function toggleDirectoryUser(
-  db: Database, clientId: string, domainId: string, dirId: string, userId: string, enabled: boolean,
+  db: Database, tenantId: string, domainId: string, dirId: string, userId: string, enabled: boolean,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   const [user] = await db
@@ -170,9 +170,9 @@ export async function toggleDirectoryUser(
 }
 
 export async function deleteDirectoryUser(
-  db: Database, clientId: string, domainId: string, dirId: string, userId: string,
+  db: Database, tenantId: string, domainId: string, dirId: string, userId: string,
 ) {
-  await verifyDomainOwnership(db, clientId, domainId);
+  await verifyDomainOwnership(db, tenantId, domainId);
   await getDirectoryOrThrow(db, domainId, dirId);
 
   const [user] = await db

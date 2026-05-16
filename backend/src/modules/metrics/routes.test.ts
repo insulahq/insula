@@ -6,7 +6,7 @@ import { registerAuth } from '../../middleware/auth.js';
 
 vi.mock('./service.js', () => ({
   getMetrics: vi.fn().mockResolvedValue({
-    client_id: 'c1',
+    tenant_id: 'c1',
     period: '24h',
     since: new Date().toISOString(),
     metrics: {},
@@ -42,14 +42,14 @@ describe('metrics routes', () => {
   });
 
   it('should require auth', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/metrics' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants/c1/metrics' });
     expect(res.statusCode).toBe(401);
   });
 
   it('should reject support role', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/metrics',
+      url: '/api/v1/tenants/c1/metrics',
       headers: { authorization: `Bearer ${supportToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -58,17 +58,17 @@ describe('metrics routes', () => {
   it('should allow admin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/metrics',
+      url: '/api/v1/tenants/c1/metrics',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data.client_id).toBe('c1');
+    expect(res.json().data.tenant_id).toBe('c1');
   });
 
   it('should allow read-only', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/metrics',
+      url: '/api/v1/tenants/c1/metrics',
       headers: { authorization: `Bearer ${readOnlyToken}` },
     });
     expect(res.statusCode).toBe(200);
@@ -77,7 +77,7 @@ describe('metrics routes', () => {
   it('should accept period query param', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/clients/c1/metrics?period=7d',
+      url: '/api/v1/tenants/c1/metrics?period=7d',
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);

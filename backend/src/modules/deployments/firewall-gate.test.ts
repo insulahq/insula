@@ -133,7 +133,7 @@ describe('enforceHostPortGate', () => {
     });
   });
 
-  it('defaults to worker role when workerNodeName is null/undefined', async () => {
+  it('defaults to worker role when nodeName is null/undefined', async () => {
     mockGetSettings.mockResolvedValue({ allowHostPortsServer: true, allowHostPortsWorker: false });
     const db = makeDb('worker');
     const components: ComponentInput[] = [{ name: 'coturn', type: 'deployment', image: 'c:1', ports: [] }];

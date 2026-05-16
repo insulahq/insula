@@ -2,7 +2,7 @@
  * List cert-manager ClusterIssuers so the Admin Panel can render a
  * dropdown instead of a free-text input.
  *
- * Runs against the in-cluster k8s API via the same client we use for
+ * Runs against the in-cluster k8s API via the same tenant we use for
  * ingress reconciliation. If the API call fails (RBAC, connectivity,
  * cert-manager not installed) we return an empty list — the UI falls
  * back to a plain text input rather than breaking the page.
@@ -31,8 +31,8 @@ export async function listClusterIssuers(
   kubeconfigPath?: string,
 ): Promise<ClusterIssuerInfo[]> {
   try {
-    const clients = createK8sClients(kubeconfigPath);
-    const res = await clients.custom.listClusterCustomObject({
+    const tenants = createK8sClients(kubeconfigPath);
+    const res = await tenants.custom.listClusterCustomObject({
       group: 'cert-manager.io',
       version: 'v1',
       plural: 'clusterissuers',

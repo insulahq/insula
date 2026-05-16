@@ -5,7 +5,7 @@ export interface SystemSettings {
   readonly id: string;
   readonly platformName: string;
   readonly adminPanelUrl: string | null;
-  readonly clientPanelUrl: string | null;
+  readonly tenantPanelUrl: string | null;
   readonly supportEmail: string | null;
   readonly supportUrl: string | null;
   readonly ingressBaseDomain: string | null;
@@ -21,9 +21,9 @@ export interface SystemSettings {
   readonly allowHostPortsWorker: boolean;
   // Node-defaults (migration 0063). When TRUE (default), the
   // cluster-side node reconciler labels freshly-joined SERVER nodes
-  // as hosting client workloads when bootstrap.sh did not stamp an
+  // as hosting tenant workloads when bootstrap.sh did not stamp an
   // explicit value.
-  readonly newServerHostsClientWorkloads: boolean;
+  readonly newServerHostsTenantWorkloads: boolean;
   // Kubelet image-GC thresholds (migration 0065). Applied via
   // bootstrap.sh --kubelet-arg flags on new nodes.
   readonly imageGcHighThreshold: number;

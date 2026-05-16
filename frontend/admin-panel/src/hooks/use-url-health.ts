@@ -24,7 +24,7 @@ export interface PanelUrlHealth {
 
 export interface UrlHealthResponse {
   readonly admin: PanelUrlHealth;
-  readonly client: PanelUrlHealth;
+  readonly tenant: PanelUrlHealth;
 }
 
 /**

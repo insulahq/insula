@@ -6,7 +6,7 @@
  * modal (type-the-node-name) → POST to one of these endpoints. Each
  * action:
  *
- *   - Refuses to touch tenant pods (namespace `client-*`) and CNPG
+ *   - Refuses to touch tenant pods (namespace `tenant-*`) and CNPG
  *     cluster instances (label `cnpg.io/instance` set). Tenant data
  *     and stateful primaries should never get force-deleted from a
  *     button — those have their own lifecycle paths.
@@ -73,7 +73,7 @@ function isStatefulCnpgInstance(pod: RawPod): boolean {
 }
 
 function ensureSafeNamespace(namespace: string): void {
-  if (namespace.startsWith('client-')) {
+  if (namespace.startsWith('tenant-')) {
     throw new ApiError(
       'RECOVERY_FORBIDDEN_NAMESPACE',
       `Refusing to operate on tenant namespace '${namespace}'. Recovery actions are limited to platform-system namespaces.`,
@@ -209,7 +209,7 @@ export async function cleanStalePodsOnNode(input: {
     const ns = pod.metadata?.namespace ?? '';
     const name = pod.metadata?.name ?? '';
     if (!ns || !name) continue;
-    if (ns.startsWith('client-')) continue;
+    if (ns.startsWith('tenant-')) continue;
     if (!SAFE_NAMESPACES.has(ns)) continue;
     if (isStatefulCnpgInstance(pod)) continue;
 
