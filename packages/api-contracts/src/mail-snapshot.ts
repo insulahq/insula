@@ -73,6 +73,12 @@ export type MailSnapshotBackupTargetUpdate = z.infer<typeof mailSnapshotBackupTa
 export const mailSnapshotTriggerResponseSchema = z.object({
   jobName: z.string().min(1),
   startedAt: z.string().datetime(),
+  /**
+   * Task-center row id (2026-05-16). Frontend uses this to open the
+   * progress modal immediately on click. Null when the caller is a
+   * service-account (no user.sub) — the chip needs a user owner.
+   */
+  taskId: z.string().uuid().nullable().optional(),
 });
 export type MailSnapshotTriggerResponse = z.infer<typeof mailSnapshotTriggerResponseSchema>;
 

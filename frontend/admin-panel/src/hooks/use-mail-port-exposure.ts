@@ -1,12 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import type {
   MailPortExposureResponse,
   MailPortExposureUpdate,
+  MailPortExposureUpdateResponse,
 } from '@k8s-hosting/api-contracts';
 
 interface PortExposureEnvelope {
   readonly data: MailPortExposureResponse;
+}
+
+interface PortExposureUpdateEnvelope {
+  readonly data: MailPortExposureUpdateResponse;
 }
 
 const PORT_EXPOSURE_KEY = ['mail', 'port-exposure'] as const;
@@ -20,11 +26,20 @@ export function useMailPortExposure() {
   });
 }
 
+/**
+ * Trigger a port-exposure flip.
+ *
+ * 2026-05-16: the backend now runs the 30-60s flip in the background
+ * and returns `taskId` immediately. The mutation resolves to
+ * `{ updated: true, taskId }`. Callers open `MailTaskProgressModal`
+ * with that `taskId` for live progress.
+ */
 export function useUpdateMailPortExposure() {
   const qc = useQueryClient();
+  const refreshTasks = useRefreshTaskCenter();
   return useMutation({
     mutationFn: (input: MailPortExposureUpdate) =>
-      apiFetch<PortExposureEnvelope>('/api/v1/admin/mail/port-exposure', {
+      apiFetch<PortExposureUpdateEnvelope>('/api/v1/admin/mail/port-exposure', {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
@@ -32,17 +47,17 @@ export function useUpdateMailPortExposure() {
     // hostPort vs. haproxy DS). Both the port-exposure card AND the
     // MailHealthBanner read derived state from the health endpoint
     // (probe reachability, DS readiness). Invalidate both so the
-    // operator sees consistent state immediately, not after the 30s
-    // health staleTime expires.
-    //
-    // Return the awaited Promise.all so TanStack Query holds the
-    // mutation as `isPending` until the invalidations have actually
-    // queued — without that, the component can re-render between the
-    // mutation settling and the cache being marked stale, which
-    // racy-flashes "succeeded" with the OLD data still in view.
-    onSuccess: () => Promise.all([
-      qc.invalidateQueries({ queryKey: PORT_EXPOSURE_KEY }),
-      qc.invalidateQueries({ queryKey: ['mail', 'health'] }),
-    ]),
+    // operator sees consistent state immediately when the background
+    // task completes — TanStack Query refetches automatically when
+    // the task chip shows the row as terminal.
+    onSuccess: () => {
+      // Refresh the task chip immediately so the new task surfaces
+      // without waiting for the next 3s poll tick.
+      refreshTasks();
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: PORT_EXPOSURE_KEY }),
+        qc.invalidateQueries({ queryKey: ['mail', 'health'] }),
+      ]);
+    },
   });
 }

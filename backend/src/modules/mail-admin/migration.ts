@@ -83,6 +83,13 @@ export interface MigrationDeps {
   /** Pass-through so safety snapshot can load its own k8s clients. */
   readonly kubeconfigPath: string | undefined;
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
+  /**
+   * Authenticated user id from the JWT. When set, the state machine
+   * writes a task-center row (kind='mail.migration') so the operator
+   * gets a chip indicator + progress modal. When null (DR-watcher /
+   * system trigger) the migration runs without a chip entry.
+   */
+  readonly userId?: string | null;
 }
 
 // ── Row shape for mail_migration_runs ─────────────────────────────────────────
@@ -121,7 +128,7 @@ const INTENT_TRIGGERED_BY: Record<MigrationIntent['kind'], string> = {
 export async function startMailMigration(
   intent: MigrationIntent,
   deps: MigrationDeps,
-): Promise<{ runId: string }> {
+): Promise<{ runId: string; taskId: string | null }> {
   const { db, core } = deps;
 
   // Guard: no concurrent migration
@@ -195,17 +202,57 @@ export async function startMailMigration(
     VALUES (${runId}, ${sourceNode}, ${targetNode}, 'queued', ${triggeredBy}, 'preflight')
   `);
 
+  // Task-center wiring (2026-05-16): write a task row keyed by runId so
+  // re-triggers are idempotent. The chip's modalProps include runId
+  // (the existing MailMigrationProgressModal polls /admin/mail/migrate/:runId).
+  let taskId: string | null = null;
+  if (deps.userId) {
+    try {
+      const { start: startTask } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const label = intent.kind === 'failover'
+        ? `Failover mail to ${targetNode}`
+        : intent.kind === 'failback'
+          ? `Fail mail back to primary (${targetNode})`
+          : `Migrate mail to ${targetNode}`;
+      const started = await startTask(db, {
+        kind: 'mail.migration',
+        refId: runId,
+        scope: 'admin',
+        userId: deps.userId,
+        label: toSafeText(label),
+        target: {
+          type: 'modal',
+          modal: 'mail-migration',
+          modalProps: { runId },
+        },
+        progressPct: 0,
+        progressText: toSafeText(`${sourceNode} → ${targetNode}: preflight`),
+      });
+      taskId = started.id;
+    } catch (err) {
+      const log = deps.logger ?? { warn: console.warn, info: console.info };
+      log.warn('[migration] task-center enroll failed (non-fatal):', err);
+    }
+  }
+
   // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId
-  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB).catch(async (err) => {
+  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, undefined, taskId).catch(async (err) => {
     const errMsg = err instanceof Error ? err.message : String(err);
     await db.execute(sql`
       UPDATE mail_migration_runs
       SET state = 'failed', error_message = ${errMsg}, finished_at = now()
       WHERE id = ${runId}
     `).catch(() => { /* best-effort */ });
+    if (taskId) {
+      try {
+        const { finish: finishTask } = await import('../tasks/service.js');
+        await finishTask(db, taskId, { status: 'failed', error: errMsg });
+      } catch { /* best-effort */ }
+    }
   });
 
-  return { runId };
+  return { runId, taskId };
 }
 
 interface PlacementRow {
@@ -340,20 +387,71 @@ interface MigrationOptions {
   readonly skipFreshSnapshot?: boolean;
 }
 
-async function setStep(db: Database, runId: string, step: string, state = 'running'): Promise<void> {
+/**
+ * Map state-machine step keys to operator-visible progress text +
+ * pct. The order matches `runMigrationStateMachine` exactly.
+ */
+const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
+  preflight: { label: 'Preflight checks', pct: 5 },
+  snapshotting: { label: 'Triggering fresh snapshot', pct: 15 },
+  'scaling-down': { label: 'Scaling Stalwart to 0', pct: 30 },
+  'swapping-pvc': { label: 'Swapping PVC to target node', pct: 50 },
+  'scaling-up': { label: 'Restoring DataStore on target node', pct: 80 },
+  verifying: { label: 'Verifying RocksDB sentinel', pct: 95 },
+  done: { label: 'Migration complete', pct: 100 },
+};
+
+async function setStep(
+  db: Database,
+  runId: string,
+  step: string,
+  state = 'running',
+  taskId?: string | null,
+): Promise<void> {
   await db.execute(sql`
     UPDATE mail_migration_runs
     SET current_step = ${step}, state = ${state}
     WHERE id = ${runId}
   `);
+
+  // Task-center progress (2026-05-16): every state-machine step also
+  // writes the chip's progress so the operator sees live state in the
+  // top-bar chip + on the inline MailMigrationProgressModal which
+  // polls the same data.
+  if (taskId) {
+    const meta = MIGRATION_STEP_META[step] ?? { label: step, pct: null };
+    try {
+      const { progress: progressTask } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      await progressTask(db, taskId, {
+        pct: meta.pct,
+        text: toSafeText(meta.label),
+      });
+    } catch {
+      /* best-effort — never block the migration on a task-center write */
+    }
+  }
 }
 
-async function failRun(db: Database, runId: string, message: string): Promise<void> {
+async function failRun(
+  db: Database,
+  runId: string,
+  message: string,
+  taskId?: string | null,
+): Promise<void> {
   await db.execute(sql`
     UPDATE mail_migration_runs
     SET state = 'failed', error_message = ${message}, finished_at = now()
     WHERE id = ${runId}
   `);
+  if (taskId) {
+    try {
+      const { finish: finishTask } = await import('../tasks/service.js');
+      await finishTask(db, taskId, { status: 'failed', error: message });
+    } catch {
+      /* best-effort */
+    }
+  }
 }
 
 async function runMigrationStateMachine(
@@ -363,12 +461,13 @@ async function runMigrationStateMachine(
   deps: MigrationDeps,
   newGiB?: number,
   opts: MigrationOptions = {},
+  taskId?: string | null,
 ): Promise<void> {
   const { db, core, apps, kubeconfigPath } = deps;
   const log = deps.logger ?? { warn: console.warn, info: console.info };
 
   // Step 1: Preflight — validate target node is schedulable + has disk
-  await setStep(db, runId, 'preflight');
+  await setStep(db, runId, 'preflight', 'running', taskId);
   const usedBytes = await getMailPvcRequestedBytes(core);
   const requiredBytes = Math.ceil(usedBytes * DISK_HEADROOM_RATIO);
   // Real free-disk probe would spawn a Job on targetNode. For now we
@@ -379,7 +478,7 @@ async function runMigrationStateMachine(
 
   // Step 2: Trigger a fresh snapshot (skip for DR — source is dead)
   if (!opts.skipFreshSnapshot) {
-    await setStep(db, runId, 'snapshotting');
+    await setStep(db, runId, 'snapshotting', 'running', taskId);
     try {
       await triggerMailSnapshot({ kubeconfigPath });
       // Wait until the snapshot completes. The snapshot CronJob runs
@@ -392,7 +491,7 @@ async function runMigrationStateMachine(
   }
 
   // Step 3: Scale Stalwart to 0 (releases the source PVC mount)
-  await setStep(db, runId, 'scaling-down');
+  await setStep(db, runId, 'scaling-down', 'running', taskId);
   await patchDeploymentReplicas(apps, 0);
   await waitForReplicaCount(apps, 0, 90);
 
@@ -411,7 +510,7 @@ async function runMigrationStateMachine(
   //
   // The PVC name never changes → no Flux/platform-api ownership war.
   // Affinity is NOT declared in the manifest → Flux's reconcile ignores it.
-  await setStep(db, runId, 'swapping-pvc');
+  await setStep(db, runId, 'swapping-pvc', 'running', taskId);
 
   const pvcSizeGiB = newGiB ?? Math.ceil(await getMailPvcRequestedBytes(core) / (1024 ** 3));
 
@@ -430,7 +529,7 @@ async function runMigrationStateMachine(
   try {
     await deletePvcAndWait(core, MAIL_PVC_NAME, 120);
   } catch (err) {
-    await failRun(db, runId, `failed to delete source PVC: ${(err as Error).message}`);
+    await failRun(db, runId, `failed to delete source PVC: ${(err as Error).message}`, taskId);
     // Re-enable the snapshot CronJob even on failure so backups resume.
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     return;
@@ -439,14 +538,14 @@ async function runMigrationStateMachine(
   try {
     await createMailPvc(core, targetNode, pvcSizeGiB);
   } catch (err) {
-    await failRun(db, runId, `failed to recreate PVC on target node: ${(err as Error).message}`);
+    await failRun(db, runId, `failed to recreate PVC on target node: ${(err as Error).message}`, taskId);
     return;
   }
 
   try {
     await applyDeploymentAffinity(apps, targetNode, /* allowRestore */ true);
   } catch (err) {
-    await failRun(db, runId, `failed to apply target-node affinity: ${(err as Error).message}`);
+    await failRun(db, runId, `failed to apply target-node affinity: ${(err as Error).message}`, taskId);
     return;
   }
 
@@ -457,19 +556,19 @@ async function runMigrationStateMachine(
   //
   // Longer timeout than usual because the restore can take 1-5 min
   // depending on DataStore size and BackupStore latency.
-  await setStep(db, runId, 'scaling-up');
+  await setStep(db, runId, 'scaling-up', 'running', taskId);
   await patchDeploymentReplicas(apps, 1);
   await waitForReplicaCount(apps, 1, 600);
 
   // Step 6: Verify the CURRENT sentinel (RocksDB MANIFEST file) exists
   // in the new PVC. Its presence proves the restore completed AND
   // Stalwart successfully opened the DataStore.
-  await setStep(db, runId, 'verifying');
+  await setStep(db, runId, 'verifying', 'running', taskId);
   const podName = await findStalwartPod(core);
   if (podName) {
     const verified = await verifySentinelExists(podName);
     if (!verified) {
-      await failRun(db, runId, 'DataStore CURRENT sentinel not found after migration — restore may have failed');
+      await failRun(db, runId, 'DataStore CURRENT sentinel not found after migration — restore may have failed', taskId);
       return;
     }
   }
@@ -500,6 +599,20 @@ async function runMigrationStateMachine(
     SET state = 'done', current_step = 'complete', finished_at = now()
     WHERE id = ${runId}
   `);
+
+  // Task-center finalisation (success path).
+  if (taskId) {
+    try {
+      const { finish: finishTask } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      await finishTask(db, taskId, {
+        status: 'succeeded',
+        text: toSafeText(`Mail relocated to ${targetNode}`),
+      });
+    } catch (err) {
+      log.warn('[migration] task-center finalise (success) failed (non-fatal):', err);
+    }
+  }
 
   log.info(`[migration] run ${runId}: migration to ${targetNode} complete`);
 }
