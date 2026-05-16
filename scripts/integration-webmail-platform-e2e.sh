@@ -219,9 +219,9 @@ else
 fi
 
 # ── Phase 10: hit the URL ───────────────────────────────────────────
+COOKIES=$(mktemp)
 if [[ "$SKIP_WEBMAIL_HIT" != "1" ]]; then
   phase "10. Follow webmail URL"
-  COOKIES=$(mktemp)
   HIT_CODE=$(curl "${CURL_OPTS[@]}" -i "$WEBMAIL_URL" \
     -c "$COOKIES" -o /tmp/webmail-hit.txt -w '%{http_code}')
   if [[ "$ENGINE" == "bulwark" ]]; then
@@ -235,11 +235,51 @@ if [[ "$SKIP_WEBMAIL_HIT" != "1" ]]; then
       && pass "10.1 roundcube — handshake responded (HTTP ${HIT_CODE})" \
       || fail "10.1 roundcube — bad code ${HIT_CODE}"
   fi
-  rm -f "$COOKIES" /tmp/webmail-hit.txt
 fi
 
-# ── Phase 11: cleanup is in trap; report ────────────────────────────
-phase "11. Cleanup (deferred to trap)"
+# ── Phase 11: SPA-equivalent session probe ──────────────────────────
+# Reproduces what the user's BROWSER does after the impersonator's
+# 303 redirect lands them on `webmail.<apex>/`. The Bulwark SPA loads
+# and immediately XHRs `/api/account/stalwart/jmap` with the
+# jmap_stalwart_ctx cookie + Origin header. If Bulwark's session was
+# pinned to a DIFFERENT origin during the impersonator's
+# stalwart-context call (the old "PUBLIC_ORIGIN baked to bulwark.<apex>"
+# bug), this XHR comes back 401 "Not authenticated" — and the user
+# sees what they perceive as a "Stalwart login page" because the SPA
+# either errors out or redirects to the JMAP server URL.
+#
+# This phase catches that regression directly.
+if [[ "$SKIP_WEBMAIL_HIT" != "1" && "$ENGINE" == "bulwark" ]]; then
+  phase "11. SPA-equivalent JMAP probe (session works)"
+  # Derive the apex origin the way a browser would (whatever the
+  # webmail URL setting points to).
+  WEBMAIL_ORIGIN=$(echo "$WEBMAIL_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
+  JMAP_PROBE=$(mktemp)
+  curl "${CURL_OPTS[@]}" -X POST "${WEBMAIL_ORIGIN}/api/account/stalwart/jmap" \
+    -b "$COOKIES" \
+    -H 'Content-Type: application/json' \
+    -H "Origin: ${WEBMAIL_ORIGIN}" \
+    -d '{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],"methodCalls":[["Mailbox/get",{"accountId":"b","ids":null},"a"]]}' \
+    -o "$JMAP_PROBE" -w '%{http_code}' > /tmp/jmap-code.txt
+  CODE=$(cat /tmp/jmap-code.txt)
+  if grep -q '"Not authenticated"' "$JMAP_PROBE"; then
+    fail "11.1 SPA session probe — Bulwark returned 'Not authenticated' (HTTP ${CODE}). Origin/session mismatch. Body: $(head -c 200 "$JMAP_PROBE")"
+  elif grep -q '"Mailbox/get"' "$JMAP_PROBE" || grep -q '"list":' "$JMAP_PROBE"; then
+    pass "11.1 SPA session probe — Mailbox/get returned a valid JMAP response"
+  elif [[ "$CODE" == "200" ]]; then
+    pass "11.1 SPA session probe — HTTP 200 (Stalwart accepted the cookie)"
+  else
+    # Empty mailbox lists are valid for a freshly-created mailbox. As
+    # long as the response isn't 401 / 'Not authenticated', the session
+    # is working.
+    fail "11.1 SPA session probe — unexpected response (HTTP ${CODE}): $(head -c 200 "$JMAP_PROBE")"
+  fi
+  rm -f "$JMAP_PROBE" /tmp/jmap-code.txt
+fi
+
+# ── Phase 12: cleanup is in trap; report ────────────────────────────
+phase "12. Cleanup (deferred to trap)"
+rm -f "$COOKIES" /tmp/webmail-hit.txt
 
 echo
 echo "════════════════════════════════════════════════"
