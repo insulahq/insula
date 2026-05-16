@@ -10,6 +10,14 @@
 
 import { z } from 'zod';
 
+// ISO 4217 currency code — three uppercase letters. The actual list of
+// real-world codes is finite (~180) but enumerating them here adds churn
+// every few years as ISO adds/retires codes; the format check + the
+// frontend's `Intl.NumberFormat` fallback is enough to reject typos.
+export const currencyCodeSchema = z
+  .string()
+  .regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter ISO 4217 code (e.g. USD)');
+
 // ─── Update Schema ─────────────────────────────────────────────────────────
 //
 // Mirrors the Zod schema in backend/src/modules/system-settings/routes.ts.
@@ -25,6 +33,7 @@ export const updateSystemSettingsSchema = z.object({
   ingressBaseDomain: z.string().max(255).nullable().optional(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   timezone: z.string().min(1).max(50).optional(),
+  currency: currencyCodeSchema.optional(),
   // Deprecated — moved to /admin/webmail-settings. Retained here so
   // older callers don't break; the backend silently ignores them.
   mailHostname: z.string().max(255).nullable().optional(),
@@ -73,6 +82,7 @@ export const systemSettingsResponseSchema = z.object({
   webmailUrl: z.string().nullable(),
   apiRateLimit: z.number(),
   currencySymbol: z.string(),
+  currency: z.string(),
   timezone: z.string(),
   allowHostPortsServer: z.boolean(),
   allowHostPortsWorker: z.boolean(),

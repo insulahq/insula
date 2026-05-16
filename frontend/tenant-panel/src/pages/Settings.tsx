@@ -2,10 +2,14 @@ import { Settings as SettingsIcon, CreditCard, Bell, Loader2, Lock, Shield, Netw
 import { Link } from 'react-router-dom';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useSubscription } from '@/hooks/use-subscription';
+import { useSystemInfo } from '@/hooks/use-system-info';
+import { formatCurrency } from '@/lib/format-currency';
 
 export default function Settings() {
   const { tenantId } = useTenantContext();
   const { data, isLoading } = useSubscription(tenantId ?? undefined);
+  const { data: sysInfo } = useSystemInfo();
+  const currency = sysInfo?.currency ?? 'USD';
   const sub = data?.data;
   const plan = sub?.plan;
 
@@ -74,7 +78,7 @@ export default function Settings() {
             <div>
               <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Monthly Price</dt>
               <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-                {plan?.monthlyPriceUsd ? `$${plan.monthlyPriceUsd}` : '—'}
+                {formatCurrency(plan?.monthlyPriceUsd, currency)}
               </dd>
             </div>
             <div>

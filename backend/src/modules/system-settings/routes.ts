@@ -46,6 +46,9 @@ const updateSchema = z.object({
   // specify their own timezone, and as the global default for UI date
   // rendering when a user has no per-user override.
   timezone: z.string().min(1).max(50).optional(),
+  // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat for
+  // every monetary amount shown in both panels. Default 'USD'.
+  currency: z.string().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter ISO 4217 code (e.g. USD)').optional(),
   // Deprecated here — mailHostname + webmailUrl moved to /admin/webmail-settings
   // in the 2026-04-19 consolidation. Accept silently for backwards compat so
   // existing tooling doesn't break; the service layer ignores them.
@@ -95,6 +98,9 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
       supportUrl: settings.supportUrl ?? null,
       adminPanelUrl: settings.adminPanelUrl ?? null,
       tenantPanelUrl: settings.tenantPanelUrl ?? null,
+      // ISO 4217 currency code — public so the tenant-panel can format
+      // plan prices without an authenticated round-trip to /admin/*.
+      currency: settings.currency,
     });
   });
 
