@@ -44,7 +44,10 @@
 set -uo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
-DEX_HOST="${DEX_HOST:-https://dex.staging.example.test}"
+# DEX_HOST default: derived from ADMIN_HOST (admin → dex) when not
+# explicitly set. Avoids the hardcoded staging URL breaking runs
+# against testing.example.test or any other cluster.
+DEX_HOST="${DEX_HOST:-$(echo "$ADMIN_HOST" | sed 's|//admin\.|//dex.|')}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
