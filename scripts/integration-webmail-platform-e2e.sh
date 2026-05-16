@@ -110,7 +110,9 @@ api() {
 # ── Phase 2: create test client ─────────────────────────────────────
 phase "2. Create client"
 # Discover a plan + region. The API requires both as UUIDs at create time.
-PLAN_ID=$(api GET /api/v1/plans | jq -r '.data[0].id // empty')
+# Pick the SMALLEST active plan (by storageLimit) so capacity-constrained
+# single-node testing installs aren't rejected by the storage tier check.
+PLAN_ID=$(api GET /api/v1/plans | jq -r '[.data[] | select(.status == "active")] | sort_by(.storageLimit | tonumber)[0].id // empty')
 REGION_ID=$(api GET /api/v1/regions | jq -r '.data[0].id // empty')
 [[ -z "$PLAN_ID"   ]] && { fail "2.0a no plans available"; exit 1; } || pass "2.0a discovered plan=${PLAN_ID}"
 [[ -z "$REGION_ID" ]] && { fail "2.0b no regions available"; exit 1; } || pass "2.0b discovered region=${REGION_ID}"
