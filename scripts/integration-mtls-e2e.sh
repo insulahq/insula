@@ -85,20 +85,20 @@ cleanup() {
   if [[ "$SKIP_CLEANUP" != "1" && -n "$TOKEN" ]]; then
     log "Cleanup"
     [[ -n "$CERT_ID"     && -n "$PROVIDER_ID" && -n "$TENANT_ID" ]] && \
-      api DELETE "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT_ID" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT_ID" >/dev/null 2>&1 || true
     [[ -n "$CERT2_ID"    && -n "$PROVIDER_ID" && -n "$TENANT_ID" ]] && \
-      api DELETE "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT2_ID" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT2_ID" >/dev/null 2>&1 || true
     # Unbind provider from the ingress route's mtls config (so we can
     # delete the provider — the FK is RESTRICT).
     if [[ -n "$ROUTE_ID" && -n "$TENANT_ID" ]]; then
-      api PATCH "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" '{"enabled":false}' >/dev/null 2>&1 || true
+      api PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" '{"enabled":false}' >/dev/null 2>&1 || true
     fi
     [[ -n "$PROVIDER_ID" && -n "$TENANT_ID" ]] && \
-      api DELETE "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID" >/dev/null 2>&1 || true
     [[ -n "$ROUTE_ID"    && -n "$TENANT_ID" ]] && \
-      api DELETE "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID" >/dev/null 2>&1 || true
     [[ -n "$TENANT_ID" ]] && \
-      api DELETE "/clients/$TENANT_ID" >/dev/null 2>&1 || true
+      api DELETE "/tenants/$TENANT_ID" >/dev/null 2>&1 || true
   fi
   rm -rf "$WORK"
   exit "$code"
@@ -160,14 +160,14 @@ scenario_1_bootstrap() {
   local hostname="mtls-e2e-${RUN_ID}.${INGRESS_DOMAIN_BASE}"
 
   local resp
-  resp=$(api POST "/clients" "$(jq -nc --arg n "$cname" '{
+  resp=$(api POST "/tenants" "$(jq -nc --arg n "$cname" '{
     companyName:$n, contactEmail:($n + "@e2e.test"),
     timezone:"UTC", plan:"test"
   }')")
   TENANT_ID=$(jq -r '.data.id // empty' <<<"$resp")
   [[ -n "$TENANT_ID" ]] && ok "client $TENANT_ID" || { fail "client create: $resp"; return; }
 
-  resp=$(api POST "/clients/$TENANT_ID/ingress-routes" "$(jq -nc --arg h "$hostname" '{
+  resp=$(api POST "/tenants/$TENANT_ID/ingress-routes" "$(jq -nc --arg h "$hostname" '{
     hostname:$h, path:"/", targetServiceName:"echo", targetServicePort:8080
   }')")
   ROUTE_ID=$(jq -r '.data.id // empty' <<<"$resp")
@@ -177,7 +177,7 @@ scenario_1_bootstrap() {
 scenario_2_create_provider() {
   run "2. Create mTLS provider (generate CA)"
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/mtls-providers" '{
+  resp=$(api POST "/tenants/$TENANT_ID/mtls-providers" '{
     "source":"generate","name":"e2e-ca",
     "commonName":"e2e-test-ca","validityDays":30,"organization":"E2E"
   }')
@@ -192,7 +192,7 @@ scenario_2_create_provider() {
 scenario_3_bind_provider() {
   run "3. Bind provider to route (verify_mode=on)"
   local resp
-  resp=$(api PATCH "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" "$(jq -nc --arg pid "$PROVIDER_ID" '{
+  resp=$(api PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" "$(jq -nc --arg pid "$PROVIDER_ID" '{
     enabled:true, providerId:$pid, verifyMode:"on", passDnToUpstream:true
   }')")
   local enabled
@@ -205,7 +205,7 @@ scenario_4_wait_reconcile() {
   local waited=0
   while (( waited < RECONCILE_WAIT )); do
     local crl_meta
-    crl_meta=$(api GET "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/crl" || true)
+    crl_meta=$(api GET "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/crl" || true)
     # When reconciler has run, the provider has a crl_pem populated
     # (crlNumber >= 1).
     local n
@@ -223,7 +223,7 @@ scenario_4_wait_reconcile() {
 scenario_6_issue_cert() {
   run "6. Issue user cert"
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/issue-cert" '{
+  resp=$(api POST "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/issue-cert" '{
     "commonName":"e2e-user","validityDays":7
   }')
   CERT_ID=$(jq -r '.data.id // empty' <<<"$resp")
@@ -252,7 +252,7 @@ scenario_6_issue_cert() {
 scenario_7_curl_without_cert() {
   run "5/7. curl ingress WITHOUT cert (expect 4xx)"
   local hostname
-  hostname=$(api GET "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID" \
+  hostname=$(api GET "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID" \
     | jq -r '.data.hostname // empty')
   if [[ -z "$hostname" ]]; then
     warn "no hostname found — skipping ingress curl"
@@ -275,7 +275,7 @@ scenario_7_curl_without_cert() {
 scenario_8_curl_with_cert() {
   run "7. curl ingress WITH cert (expect 200/upstream)"
   local hostname
-  hostname=$(api GET "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID" \
+  hostname=$(api GET "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID" \
     | jq -r '.data.hostname // empty')
   [[ -n "$hostname" ]] || { warn "no hostname"; return; }
   # The upstream service in scenario_1 is a placeholder ("echo") that
@@ -298,7 +298,7 @@ scenario_8_curl_with_cert() {
 scenario_9_list_certs() {
   run "8. List certs → assert our cert is 'active'"
   local resp
-  resp=$(api GET "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates")
+  resp=$(api GET "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates")
   local status
   status=$(jq -r --arg id "$CERT_ID" '.data.items[] | select(.id==$id) | .status' <<<"$resp")
   if [[ "$status" == "active" ]]; then
@@ -310,7 +310,7 @@ scenario_9_list_certs() {
 
 scenario_10_crl_empty() {
   run "9. GET CRL → valid + 0 revoked entries"
-  api GET "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/crl.pem" > "$WORK/crl-pre.pem"
+  api GET "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/crl.pem" > "$WORK/crl-pre.pem"
   if openssl crl -in "$WORK/crl-pre.pem" -noout -CAfile "$WORK/ca.pem" 2>/dev/null; then
     ok "CRL verifies against CA"
   else
@@ -326,7 +326,7 @@ scenario_10_crl_empty() {
 scenario_11_revoke() {
   run "10/11. Revoke cert (reason=keyCompromise) → assert status=revoked"
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT_ID/revoke" '{
+  resp=$(api POST "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT_ID/revoke" '{
     "reason":"keyCompromise"
   }')
   local status reason revokedAt
@@ -341,7 +341,7 @@ scenario_11_revoke() {
 
   # Idempotent re-revoke should not error.
   local code
-  code=$(api_status POST "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT_ID/revoke" '{"reason":"keyCompromise"}')
+  code=$(api_status POST "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates/$CERT_ID/revoke" '{"reason":"keyCompromise"}')
   if [[ "$code" == "200" ]]; then
     ok "re-revoke is idempotent ($code)"
   else
@@ -351,7 +351,7 @@ scenario_11_revoke() {
 
 scenario_12_crl_lists_cert() {
   run "12. GET CRL → contains our serial"
-  api GET "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/crl.pem" > "$WORK/crl-post.pem"
+  api GET "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/crl.pem" > "$WORK/crl-post.pem"
   local serial_upper
   serial_upper=$(openssl x509 -in "$WORK/cert.pem" -noout -serial | awk -F'=' '{print toupper($2)}')
   if openssl crl -in "$WORK/crl-post.pem" -noout -text 2>/dev/null \
@@ -365,7 +365,7 @@ scenario_12_crl_lists_cert() {
 scenario_13_curl_revoked() {
   run "13. curl with revoked cert (expect 4xx after reconcile lag)"
   local hostname
-  hostname=$(api GET "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID" \
+  hostname=$(api GET "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID" \
     | jq -r '.data.hostname // empty')
   [[ -n "$hostname" ]] || { warn "no hostname"; return; }
 
@@ -391,7 +391,7 @@ scenario_13_curl_revoked() {
 scenario_14_second_cert() {
   run "14. Issue 2nd cert → not affected by revocation of 1st"
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/issue-cert" '{
+  resp=$(api POST "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/issue-cert" '{
     "commonName":"e2e-user-2","validityDays":7
   }')
   CERT2_ID=$(jq -r '.data.id // empty' <<<"$resp")
@@ -404,7 +404,7 @@ scenario_14_second_cert() {
     return
   fi
   local hostname
-  hostname=$(api GET "/clients/$TENANT_ID/ingress-routes/$ROUTE_ID" \
+  hostname=$(api GET "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID" \
     | jq -r '.data.hostname // empty')
   [[ -n "$hostname" ]] || { warn "no hostname"; return; }
   local code
@@ -423,7 +423,7 @@ scenario_14_second_cert() {
 scenario_15_filter_status() {
   run "15. List filter by status=revoked → only the revoked one"
   local resp
-  resp=$(api GET "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates?status=revoked")
+  resp=$(api GET "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates?status=revoked")
   local count first_id
   count=$(jq -r '.data.items | length' <<<"$resp")
   first_id=$(jq -r '.data.items[0].id // empty' <<<"$resp")
@@ -433,7 +433,7 @@ scenario_15_filter_status() {
     fail "expected 1 revoked, got $count. first=$first_id expected=$CERT_ID"
   fi
 
-  resp=$(api GET "/clients/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates?status=active")
+  resp=$(api GET "/tenants/$TENANT_ID/mtls-providers/$PROVIDER_ID/certificates?status=active")
   count=$(jq -r '.data.items | length' <<<"$resp")
   if [[ "$count" == "1" ]]; then
     ok "filter status=active returns 1 row"

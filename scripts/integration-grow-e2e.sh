@@ -68,7 +68,7 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 log "── creating client ──"
 STAMP=$(date +%s)
 COMPANY="Grow E2E $STAMP"
-RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"grow-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"grow-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
@@ -78,7 +78,7 @@ trap cleanup EXIT
 log "── waiting for full provisioning ──"
 STATUS=""
 for _ in $(seq 1 60); do
-  STATUS=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
+  STATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
   [[ "$STATUS" == "provisioned" ]] && break
   sleep 2
 done
@@ -97,10 +97,10 @@ log "initial PVC size = $PVC_SIZE_INITIAL"
 # the corresponding ready node and disk". Start the file-manager so a
 # pod attaches the volume and Longhorn schedules a replica.
 log "── starting file-manager to attach the volume before grow ──"
-api POST "/clients/$CID/files/start" "" >/dev/null
+api POST "/tenants/$CID/files/start" "" >/dev/null
 FM_READY="false"
 for _ in $(seq 1 30); do
-  FM_READY=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+  FM_READY=$(api GET "/tenants/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
   [[ "$FM_READY" == "true" ]] && break
   sleep 4
 done
@@ -114,7 +114,7 @@ log "file-manager pod before grow = ${FM_POD_BEFORE:-<none>}"
 
 # ─── PATCH storage_limit_override 10 → 15 GiB (auto-grow trigger) ────
 log "── PATCH storage_limit_override=15 (UI: Save Resource Limits) ──"
-PATCH_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":15}')
+PATCH_RESP=$(api PATCH "/tenants/$CID" '{"storage_limit_override":15}')
 GROW_OP_ID=$(echo "$PATCH_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('storageGrowOperationId') or '')" 2>/dev/null)
 NEW_OVERRIDE=$(echo "$PATCH_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('storageLimitOverride') or '')" 2>/dev/null)
 
@@ -239,7 +239,7 @@ print("|".join(bad) if bad else "OK")
 log "── storage-placement reflects new size ──"
 NEW_SIZE_BYTES=""
 for _ in $(seq 1 15); do
-  PLACEMENT=$(api GET "/clients/$CID/storage-placement")
+  PLACEMENT=$(api GET "/tenants/$CID/storage-placement")
   NEW_SIZE_BYTES=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print(d[0].get('sizeBytes',0) if d else 0)" 2>/dev/null)
   # 15 GiB = 16106127360 bytes
   if [[ "$NEW_SIZE_BYTES" -ge $((15 * 1024 * 1024 * 1024)) ]]; then
@@ -264,7 +264,7 @@ FM_POD_FOR_SEED=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpat
 if [[ -n "$FM_POD_FOR_SEED" ]]; then
   ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- truncate -s 950M /data/shrink-marker" || true
   log "── PATCH storage_limit_override=1 + confirm — must reject RESIZE_UNSAFE ──"
-  UNSAFE_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":1,"confirm_destructive_shrink":true}')
+  UNSAFE_RESP=$(api PATCH "/tenants/$CID" '{"storage_limit_override":1,"confirm_destructive_shrink":true}')
   UNSAFE_CODE=$(echo "$UNSAFE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
   [[ "$UNSAFE_CODE" == "RESIZE_UNSAFE" ]] && ok "shrink-with-confirm rejected by pre-flight dryrun (RESIZE_UNSAFE — used would not fit)" \
     || fail "shrink-with-confirm code=$UNSAFE_CODE (expected RESIZE_UNSAFE) — body: $(echo "$UNSAFE_RESP" | head -c 400)"
@@ -274,7 +274,7 @@ fi
 
 # ─── shrink without confirm flag: still rejected (safety belt) ──────
 log "── PATCH storage_limit_override=5 (shrink, no confirm flag) — must reject ──"
-SHRINK_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":5}')
+SHRINK_RESP=$(api PATCH "/tenants/$CID" '{"storage_limit_override":5}')
 SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
 [[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "shrink correctly rejected with STORAGE_RESIZE_REQUIRED (safety belt)" \
   || fail "shrink response code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
@@ -287,7 +287,7 @@ SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(
 # PVC at 8Gi, FM pod recreated (same Deployment, new pod since we
 # quiesced + unquiesced).
 log "── PATCH storage_limit_override=8 + confirm_destructive_shrink:true ──"
-SHRINK_OP_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":8,"confirm_destructive_shrink":true}')
+SHRINK_OP_RESP=$(api PATCH "/tenants/$CID" '{"storage_limit_override":8,"confirm_destructive_shrink":true}')
 SHRINK_OP_ID=$(echo "$SHRINK_OP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('storageShrinkOperationId') or '')" 2>/dev/null)
 [[ -n "$SHRINK_OP_ID" ]] && ok "PATCH carried storageShrinkOperationId=${SHRINK_OP_ID:0:8}" \
   || { fail "PATCH did not return storageShrinkOperationId — body: $(echo "$SHRINK_OP_RESP" | head -c 400)"; exit 1; }
@@ -325,7 +325,7 @@ SNAP_ID=$(echo "$SHRINK_FINAL_OP" | python3 -c "import json,sys;print(json.load(
   || fail "no snapshotId on destructive op (rollback insurance missing)"
 
 # storage_limit_override must reflect the shrunk size.
-NEW_OVERRIDE=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageLimitOverride') or '')" 2>/dev/null)
+NEW_OVERRIDE=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageLimitOverride') or '')" 2>/dev/null)
 case "$NEW_OVERRIDE" in
   8|8.0|8.00) ok "storageLimitOverride=$NEW_OVERRIDE persists (shrink committed)" ;;
   *) fail "storageLimitOverride=$NEW_OVERRIDE (expected 8.00)" ;;

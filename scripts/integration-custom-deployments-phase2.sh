@@ -130,7 +130,7 @@ info "Admin login OK"
 
 TENANT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
 if [[ -z "$TENANT_ID" ]]; then
-  TENANT_ID=$(api GET "/clients?limit=20" | python3 -c "
+  TENANT_ID=$(api GET "/tenants?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:
@@ -141,7 +141,7 @@ fi
 [[ -z "$TENANT_ID" ]] && { echo "FATAL: no active client" >&2; exit 2; }
 info "Client: $TENANT_ID"
 
-TENANT_NS=$(api GET "/clients/$TENANT_ID" | python3 -c "
+TENANT_NS=$(api GET "/tenants/$TENANT_ID" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
 " 2>/dev/null || true)
 [[ -z "$TENANT_NS" ]] && { echo "FATAL: client has no kubernetesNamespace" >&2; exit 2; }
@@ -180,7 +180,7 @@ cleanup() {
   for id in "${CREATED_IDS[@]:-}"; do
     [[ -z "$id" ]] && continue
     local s
-    s=$(api_status DELETE "/clients/$TENANT_ID/custom-deployments/$id" "")
+    s=$(api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$id" "")
     info "Cleanup: DELETE /custom-deployments/$id → $s"
   done
 
@@ -228,7 +228,7 @@ trap cleanup EXIT
 create_deployment() {
   local body="$1"
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   local id
   id=$(echo "$resp" | python3 -c "
 import json,sys
@@ -494,7 +494,7 @@ scenario_kill_master() {
 
   # POST a new deployment — must return 403.
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" \
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" \
     '{"mode":"simple","name":"kill-probe-should-fail","image":"nginx:1.27-alpine"}')
   local code
   code=$(echo "$resp" | python3 -c "
@@ -503,7 +503,7 @@ d=json.load(sys.stdin)
 print(d.get('error',{}).get('code','?') if 'error' in d else '?')
 " 2>/dev/null || echo "?")
   local http
-  http=$(api_status POST "/clients/$TENANT_ID/custom-deployments" \
+  http=$(api_status POST "/tenants/$TENANT_ID/custom-deployments" \
     '{"mode":"simple","name":"kill-probe-should-fail","image":"nginx:1.27-alpine"}')
 
   if [[ "$http" == "403" && "$code" == "CUSTOM_DEPLOYMENTS_DISABLED" ]]; then
@@ -538,8 +538,8 @@ import json, os
 print(json.dumps({'mode':'compose','name':'kill-compose-probe','compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
   local http code
-  http=$(api_status POST "/clients/$TENANT_ID/custom-deployments" "$body")
-  code=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body" | python3 -c "
+  http=$(api_status POST "/tenants/$TENANT_ID/custom-deployments" "$body")
+  code=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 print(d.get('error',{}).get('code','?') if 'error' in d else '?')
@@ -562,7 +562,7 @@ import json
 print(json.dumps({'mode':'simple','name':'$name','image':'nginx:1.27-alpine'}))
 ")
   local id
-  id=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body" | python3 -c "
+  id=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body" | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin)['data']['id'])
 except Exception: pass
@@ -575,9 +575,9 @@ except Exception: pass
     api_status PATCH "/admin/system-settings" '{"customDeploymentsAllowPrivateRegistries":false}' >/dev/null
     sleep 6
 
-    http=$(api_status PUT "/clients/$TENANT_ID/custom-deployments/$id/pull-credentials" \
+    http=$(api_status PUT "/tenants/$TENANT_ID/custom-deployments/$id/pull-credentials" \
       '{"registry_host":"ghcr.io","username":"e2e","token":"ghp_fake"}')
-    code=$(api PUT "/clients/$TENANT_ID/custom-deployments/$id/pull-credentials" \
+    code=$(api PUT "/tenants/$TENANT_ID/custom-deployments/$id/pull-credentials" \
       '{"registry_host":"ghcr.io","username":"e2e","token":"ghp_fake"}' | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -613,8 +613,8 @@ print(json.dumps({
 }))
 ")
   local http issues
-  http=$(api_status POST "/clients/$TENANT_ID/custom-deployments" "$body")
-  issues=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body" | python3 -c "
+  http=$(api_status POST "/tenants/$TENANT_ID/custom-deployments" "$body")
+  issues=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 issues=d.get('error',{}).get('details',{}).get('issues',[])
@@ -656,13 +656,13 @@ scenario_validate_ep() {
 import json, os
 print(json.dumps({'mode':'compose','name':'p2-val-probe-$STAMP','compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
   ok=$(echo "$resp" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
 print(d.get('ok','?'))
 " 2>/dev/null || echo "?")
-  http=$(api_status POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  http=$(api_status POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
 
   if [[ "$http" == "200" && "$ok" == "True" ]]; then
     pass "T11: valid compose → 200 {ok:true} ✓"
@@ -681,7 +681,7 @@ print(d.get('ok','?'))
 import json, os
 print(json.dumps({'mode':'compose','name':'p2-val-bad-$STAMP','compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
   ok=$(echo "$resp" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
@@ -700,7 +700,7 @@ d=json.load(sys.stdin).get('data',{})
 issues=d.get('issues',[])
 print(sum(1 for i in issues if i.get('severity')=='error'))
 " 2>/dev/null || echo "0")
-  http=$(api_status POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  http=$(api_status POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
 
   # The parser strips unsupported fields (privileged:true → COMPOSE_FIELD_REJECTED)
   # and still generates a valid spec → ok=true. The test verifies the issue is
@@ -767,7 +767,7 @@ print(t.get('exitCode','?'))
     info "T12: init state: $init_state (may still be running after 80s — checking API status)"
     # Alternative: check the deployment's lastError via the API.
     local last_error
-    last_error=$(api GET "/clients/$TENANT_ID/custom-deployments/$id" | python3 -c "
+    last_error=$(api GET "/tenants/$TENANT_ID/custom-deployments/$id" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
 print(d.get('lastError',''))
@@ -948,7 +948,7 @@ print(json.dumps({
   pass "T14: deployment created with image nginx:1.25-alpine"
 
   local resp status latest
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments/check-updates-batch" \
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments/check-updates-batch" \
     "{\"deployment_ids\":[\"$id\"]}")
   status=$(echo "$resp" | python3 -c "
 import json,sys
@@ -1007,7 +1007,7 @@ print(json.dumps({
   'resources': {'memory_request': '$excess', 'memory_limit': '$excess'},
 }))
 ")
-  quota_resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  quota_resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   http=$(echo "$quota_resp" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -1084,7 +1084,7 @@ YAML
 
   # Validate first
   local vresp
-  vresp=$(api POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  vresp=$(api POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
   local vok
   vok=$(echo "$vresp" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['ok'])" 2>/dev/null || echo "false")
   if [[ "$vok" == "True" ]]; then
@@ -1095,7 +1095,7 @@ YAML
   fi
 
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
@@ -1171,7 +1171,7 @@ YAML
   body=$(python3 -c "import json,sys; print(json.dumps({'mode':'compose','name':'$name','compose_yaml':sys.stdin.read()}))" <<< "$yaml_content")
 
   local vresp
-  vresp=$(api POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  vresp=$(api POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
   local errs
   errs=$(echo "$vresp" | python3 -c "
 import json,sys; d=json.load(sys.stdin)['data']
@@ -1184,7 +1184,7 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   fi
 
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
@@ -1238,7 +1238,7 @@ scenario_multi_port_ingress() {
 }' "$name")
 
   local vresp
-  vresp=$(api POST "/clients/$TENANT_ID/custom-deployments/validate" "$body")
+  vresp=$(api POST "/tenants/$TENANT_ID/custom-deployments/validate" "$body")
   local vok
   vok=$(echo "$vresp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['ok'])" 2>/dev/null || echo "false")
   if [[ "$vok" != "True" ]]; then
@@ -1261,7 +1261,7 @@ print(len(bad))
   fi
 
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
@@ -1304,7 +1304,7 @@ scenario_allow_root_endpoint() {
 }' "$name")
 
   local resp
-  resp=$(api POST "/clients/$TENANT_ID/custom-deployments" "$body")
+  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
@@ -1326,7 +1326,7 @@ scenario_allow_root_endpoint() {
 
   # 2) Confirm allowRoot is reflected in the deployment spec
   local ar
-  ar=$(api GET "/clients/$TENANT_ID/custom-deployments/$dep_id" | python3 -c "
+  ar=$(api GET "/tenants/$TENANT_ID/custom-deployments/$dep_id" | python3 -c "
 import json,sys; d=json.load(sys.stdin)['data']
 spec = d.get('customSpec') or {}
 print(spec.get('allowRoot', False))

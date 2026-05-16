@@ -72,7 +72,7 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 log "── scenario: local tier + auto worker pick ──"
 STAMP=$(date +%s)
 COMPANY="PVC Test L $STAMP"
-RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-l-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-l-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
@@ -98,7 +98,7 @@ SC=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.storageCla
 [[ "$SC" == "longhorn-tenant" ]] && ok "SC=longhorn-tenant" || fail "SC=$SC (expected longhorn-tenant)"
 
 # Auto-pick: clients.workerNodeName should be populated for Local tier.
-WORKER=$(api GET "/clients/$CID" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('workerNodeName') or '')")
+WORKER=$(api GET "/tenants/$CID" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('workerNodeName') or '')")
 [[ -n "$WORKER" ]] && ok "auto-picked workerNodeName=$WORKER" || fail "workerNodeName empty (autoPickWorkerNode didn't fire)"
 
 # Volume.spec.numberOfReplicas should be 1 for local tier.
@@ -107,7 +107,7 @@ REPL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jso
 
 # ─── scenario 2: tier flip local → ha live ───────────────────────────
 log "── scenario: tier flip local→ha live ──"
-FLIP=$(api PATCH "/clients/$CID" '{"storage_tier":"ha"}')
+FLIP=$(api PATCH "/tenants/$CID" '{"storage_tier":"ha"}')
 echo "$FLIP" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('data',{}).get('storageTier')=='ha'" 2>/dev/null \
   && ok "client storageTier flipped to ha" || fail "tier flip failed: $(echo $FLIP | head -c 200)"
 
@@ -140,7 +140,7 @@ done
 log "── scenario: fast create+delete (cascade race) ──"
 STAMP=$(date +%s)
 COMPANY="PVC Race $STAMP"
-RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-race-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-race-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID2=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID2" ]] && ok "race client created cid=$CID2" || { fail "race create failed"; exit 1; }
 

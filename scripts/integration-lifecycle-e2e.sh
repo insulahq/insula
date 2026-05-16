@@ -90,7 +90,7 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 log "── creating client ──"
 STAMP=$(date +%s)
 COMPANY="Lifecycle E2E $STAMP"
-RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"lifecycle-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"lifecycle-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
@@ -100,7 +100,7 @@ trap cleanup EXIT
 log "── waiting for full provisioning ──"
 STATUS=""
 for _ in $(seq 1 90); do
-  STATUS=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
+  STATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
   [[ "$STATUS" == "provisioned" ]] && break
   sleep 2
 done
@@ -111,10 +111,10 @@ NS=$(ssh_cp "kubectl get ns -l client=$CID -o jsonpath='{.items[0].metadata.name
 
 # Start file-manager so we have a real workload to suspend/resume.
 log "── starting file-manager so suspend/resume has a workload to scale ──"
-api POST "/clients/$CID/files/start" "" >/dev/null
+api POST "/tenants/$CID/files/start" "" >/dev/null
 FM_READY="false"
 for _ in $(seq 1 30); do
-  FM_READY=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+  FM_READY=$(api GET "/tenants/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
   [[ "$FM_READY" == "true" ]] && break
   sleep 4
 done
@@ -122,7 +122,7 @@ done
 
 # ─── Scenario 2: suspend ─────────────────────────────────────────────
 log "── Scenario 2: PATCH status:suspended ──"
-SUSP_RESP=$(api PATCH "/clients/$CID" '{"status":"suspended"}')
+SUSP_RESP=$(api PATCH "/tenants/$CID" '{"status":"suspended"}')
 SUSP_STATUS=$(echo "$SUSP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 SUSP_OP_ID=$(echo "$SUSP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageOperationId') or '')" 2>/dev/null)
 [[ "$SUSP_STATUS" == "suspended" ]] && ok "status=suspended in PATCH response" \
@@ -145,7 +145,7 @@ done
 [[ "$SUSP_FINAL" == "idle" ]] && ok "suspend op reached idle terminal" \
   || fail "suspend op state=$SUSP_FINAL (expected idle)"
 
-FM_READY_AFTER_SUSPEND=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+FM_READY_AFTER_SUSPEND=$(api GET "/tenants/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
 [[ "$FM_READY_AFTER_SUSPEND" == "false" ]] && ok "file-manager scaled down on suspend" \
   || fail "file-manager still ready after suspend (status=$FM_READY_AFTER_SUSPEND)"
 
@@ -158,7 +158,7 @@ NONZERO_REPLICAS=$(echo "$DEP_REPLICAS" | { grep -v -E '^(0|)$' || true; } | wc 
 
 # ─── Scenario 3: resume ──────────────────────────────────────────────
 log "── Scenario 3: PATCH status:active (resume) ──"
-RES_RESP=$(api PATCH "/clients/$CID" '{"status":"active"}')
+RES_RESP=$(api PATCH "/tenants/$CID" '{"status":"active"}')
 RES_STATUS=$(echo "$RES_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 RES_OP_ID=$(echo "$RES_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageOperationId') or '')" 2>/dev/null)
 [[ "$RES_STATUS" == "active" ]] && ok "status=active in PATCH response" \
@@ -180,13 +180,13 @@ done
 [[ "$RES_FINAL" == "idle" ]] && ok "resume op reached idle terminal" \
   || fail "resume op state=$RES_FINAL (expected idle)"
 
-ACT_STATUS_DB=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
+ACT_STATUS_DB=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 [[ "$ACT_STATUS_DB" == "active" ]] && ok "client.status=active after resume" \
   || fail "client.status=$ACT_STATUS_DB (expected active)"
 
 # ─── Scenario 7 (early): PATCH archive_retention_days alone — no-op ──
 log "── Scenario 7: PATCH archive_retention_days alone (no status) — must be no-op ──"
-NOOP_RESP=$(api PATCH "/clients/$CID" '{"archive_retention_days":42}')
+NOOP_RESP=$(api PATCH "/tenants/$CID" '{"archive_retention_days":42}')
 NOOP_STATUS=$(echo "$NOOP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 NOOP_OPID=$(echo "$NOOP_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('storageArchiveOperationId') or '')" 2>/dev/null)
 [[ "$NOOP_STATUS" == "active" ]] && ok "client.status unchanged (still active) on retention-only PATCH" \
@@ -196,7 +196,7 @@ NOOP_OPID=$(echo "$NOOP_RESP" | python3 -c "import json,sys;d=json.load(sys.stdi
 
 # ─── Scenario 4: archive ─────────────────────────────────────────────
 log "── Scenario 4: PATCH status:archived archive_retention_days:30 ──"
-ARCH_RESP=$(api PATCH "/clients/$CID" '{"status":"archived","archive_retention_days":30}')
+ARCH_RESP=$(api PATCH "/tenants/$CID" '{"status":"archived","archive_retention_days":30}')
 ARCH_OP_ID=$(echo "$ARCH_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('storageArchiveOperationId') or '')" 2>/dev/null)
 [[ -n "$ARCH_OP_ID" ]] && ok "PATCH carried storageArchiveOperationId=${ARCH_OP_ID:0:8}" \
   || { fail "PATCH did not return storageArchiveOperationId — body: $(echo "$ARCH_RESP" | head -c 400)"; exit 1; }
@@ -232,7 +232,7 @@ for s in data:
   || fail "pre-archive snapshot status=$SNAP_STATUS (expected ready)"
 
 # Client.status must be 'archived' now.
-ARCH_STATUS_DB=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
+ARCH_STATUS_DB=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 [[ "$ARCH_STATUS_DB" == "archived" ]] && ok "client.status=archived" \
   || fail "client.status=$ARCH_STATUS_DB (expected archived)"
 
@@ -250,7 +250,7 @@ PVC_PRESENT=$(echo "$PVC_PRESENT" | tr -d ' \n')
 
 # ─── Scenario 5: restore from archive ────────────────────────────────
 log "── Scenario 5: PATCH status:active on archived (restore) ──"
-RESTORE_RESP=$(api PATCH "/clients/$CID" '{"status":"active"}')
+RESTORE_RESP=$(api PATCH "/tenants/$CID" '{"status":"active"}')
 RESTORE_OP_ID=$(echo "$RESTORE_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('storageRestoreOperationId') or '')" 2>/dev/null)
 [[ -n "$RESTORE_OP_ID" ]] && ok "PATCH carried storageRestoreOperationId=${RESTORE_OP_ID:0:8}" \
   || { fail "PATCH did not return storageRestoreOperationId — body: $(echo "$RESTORE_RESP" | head -c 400)"; }
@@ -276,14 +276,14 @@ PVC_PRESENT_AFTER=$(echo "$PVC_PRESENT_AFTER" | tr -d ' \n')
   || fail "tenant PVC missing after restore ($PVC_PRESENT_AFTER)"
 
 # Status flipped back to active.
-RESTORE_STATUS_DB=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
+RESTORE_STATUS_DB=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 [[ "$RESTORE_STATUS_DB" == "active" ]] && ok "client.status=active after restore" \
   || fail "client.status=$RESTORE_STATUS_DB (expected active)"
 
 # ─── Scenario 6: shrink rejection via plan_id ────────────────────────
 if [[ -n "$SMALLER_PLAN_ID" ]]; then
   log "── Scenario 6: PATCH plan_id to smaller plan — must reject ──"
-  SHRINK_RESP=$(api PATCH "/clients/$CID" "{\"plan_id\":\"$SMALLER_PLAN_ID\"}")
+  SHRINK_RESP=$(api PATCH "/tenants/$CID" "{\"plan_id\":\"$SMALLER_PLAN_ID\"}")
   SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
   [[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "smaller-plan PATCH rejected with STORAGE_RESIZE_REQUIRED" \
     || fail "smaller-plan PATCH code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
@@ -349,7 +349,7 @@ fi
 log "── Scenario 9: orphan-prevention hooks fire on client delete ──"
 
 DEL_NAME="lifecycle-del-$(date +%s)"
-DEL_RESP=$(api POST "/clients" "{\"name\":\"$DEL_NAME\",\"primary_email\":\"$DEL_NAME@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+DEL_RESP=$(api POST "/tenants" "{\"name\":\"$DEL_NAME\",\"primary_email\":\"$DEL_NAME@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 DEL_CID=$(echo "$DEL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
 if [[ -z "$DEL_CID" ]]; then
   fail "could not provision throwaway client for delete-cleanup scenario — body: $(echo "$DEL_RESP" | head -c 200)"
@@ -455,8 +455,8 @@ RETRY_404_CODE=$(echo "$RETRY_404" | python3 -c "import json,sys;d=json.load(sys
 TX_RESP=$(api GET "/admin/tenants/$CID/lifecycle/transitions")
 TX_COUNT=$(echo "$TX_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('data',{}).get('transitions',[])))" 2>/dev/null || echo "0")
 [[ "$TX_COUNT" -ge 3 ]] \
-  && ok "GET .../clients/$CID/lifecycle/transitions returned $TX_COUNT rows" \
-  || fail "GET .../clients/$CID/lifecycle/transitions returned $TX_COUNT rows (expected ≥3)"
+  && ok "GET .../tenants/$CID/lifecycle/transitions returned $TX_COUNT rows" \
+  || fail "GET .../tenants/$CID/lifecycle/transitions returned $TX_COUNT rows (expected ≥3)"
 
 # ─── Scenario 11: Phase A1 explicit `restored` transition ─────────────
 # Phase A1 split applyActive/applyRestored so the audit trail
@@ -475,7 +475,7 @@ BULK_NAMES=()
 BULK_IDS=()
 for i in 1 2; do
   BN="lifecycle-bulk-$(date +%s)-$i"
-  BR=$(api POST "/clients" "{\"name\":\"$BN\",\"primary_email\":\"$BN@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+  BR=$(api POST "/tenants" "{\"name\":\"$BN\",\"primary_email\":\"$BN@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
   BID=$(echo "$BR" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   [[ -n "$BID" ]] && BULK_NAMES+=("$BN") && BULK_IDS+=("$BID")
 done
