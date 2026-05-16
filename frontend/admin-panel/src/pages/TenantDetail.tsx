@@ -19,6 +19,7 @@ import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { usePlans } from '@/hooks/use-plans';
+import { formatCurrency } from '@/lib/format-currency';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
 import { useMigrateTenantToWorker } from '@/hooks/use-tenant-migration';
@@ -1520,6 +1521,8 @@ function ResourceLimitsCard({
   const updateTenant = useUpdateTenant(tenantId);
   const { data: plansData } = usePlans();
   const { data: metricsData, isLoading: metricsLoading } = useTenantMetrics(tenantId);
+  const { data: sysInfo } = useSystemInfo();
+  const currency = sysInfo?.currency ?? 'USD';
   const plans = plansData?.data ?? [];
   const plan = plans.find((p) => p.id === tenant.planId);
 
@@ -1726,7 +1729,7 @@ function ResourceLimitsCard({
           {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, 'number', '1')}
           {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, 'number', '1')}
           {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, 'number', '1')}
-          {renderField('Monthly Price', 'USD', effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, 'number', '0.01')}
+          {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, 'number', '0.01')}
         </div>
 
         {updateTenant.error && editing && (
@@ -1953,6 +1956,8 @@ function SubscriptionCard({
 }) {
   const updateSub = useUpdateSubscription(tenantId);
   const { data: plansData } = usePlans();
+  const { data: sysInfo } = useSystemInfo();
+  const currency = sysInfo?.currency ?? 'USD';
   const plans = plansData?.data ?? [];
 
   const [editing, setEditing] = useState(false);
@@ -2042,7 +2047,7 @@ function SubscriptionCard({
               >
                 <option value="">No plan</option>
                 {plans.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} — ${p.monthlyPriceUsd}/mo</option>
+                  <option key={p.id} value={p.id}>{p.name} — {formatCurrency(p.monthlyPriceUsd, currency)}/mo</option>
                 ))}
               </select>
             </div>

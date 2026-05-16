@@ -6,6 +6,8 @@ import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { usePlans, useRegions } from '@/hooks/use-plans';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
+import { useSystemSettings } from '@/hooks/use-system-settings';
+import { formatCurrency } from '@/lib/format-currency';
 import ProvisioningProgressModal from './ProvisioningProgressModal';
 
 /**
@@ -76,6 +78,8 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
 
   const plans = plansData?.data ?? [];
   const regions = regionsData?.data ?? [];
+  const { data: sysResp } = useSystemSettings();
+  const currency = sysResp?.data?.currency ?? 'USD';
 
   const resetForm = () => {
     setName('');
@@ -421,7 +425,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
                 <option value="">Select plan...</option>
                 {plans.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} (${p.monthlyPriceUsd}/mo)
+                    {p.name} ({formatCurrency(p.monthlyPriceUsd, currency)}/mo)
                   </option>
                 ))}
               </select>
