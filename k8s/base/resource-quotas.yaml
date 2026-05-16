@@ -1,4 +1,4 @@
-# Resource quota for the hosting namespace (client workloads)
+# Resource quota for the hosting namespace (tenant workloads)
 apiVersion: v1
 kind: ResourceQuota
 metadata:

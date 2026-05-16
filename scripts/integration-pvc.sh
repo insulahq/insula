@@ -72,7 +72,7 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 log "── scenario: local tier + auto worker pick ──"
 STAMP=$(date +%s)
 COMPANY="PVC Test L $STAMP"
-RESP=$(api POST "/clients" "{\"company_name\":\"$COMPANY\",\"company_email\":\"pvc-l-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-l-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
@@ -122,7 +122,7 @@ done
 
 # ─── scenario 3: client delete cascade fires ─────────────────────────
 log "── scenario: cascade cleans tenant PV ──"
-DEL=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
+DEL=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
 echo "$DEL" | tail -1 | grep -q "204" && ok "client deleted (204)" || { fail "delete failed: $DEL"; exit 1; }
 
 # Wait up to 90s for the orphan PV to disappear.
@@ -140,7 +140,7 @@ done
 log "── scenario: fast create+delete (cascade race) ──"
 STAMP=$(date +%s)
 COMPANY="PVC Race $STAMP"
-RESP=$(api POST "/clients" "{\"company_name\":\"$COMPANY\",\"company_email\":\"pvc-race-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-race-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID2=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID2" ]] && ok "race client created cid=$CID2" || { fail "race create failed"; exit 1; }
 
@@ -156,7 +156,7 @@ done
 # DELETE within ~3s — Longhorn won't have bound the PV yet, exercising
 # the late-binding tracking in the pv-cleanup-released hook.
 sleep 1
-DEL2=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID2" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
+DEL2=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID2" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
 echo "$DEL2" | tail -1 | grep -q "204" && ok "race delete 204" || fail "race delete failed: $DEL2"
 
 # After 90s, no PV should reference this namespace.

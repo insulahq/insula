@@ -253,7 +253,7 @@ section "Check 4 — Tenant namespace PSS enforce=baseline"
 
 CLIENT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
 if [[ -z "$CLIENT_ID" ]]; then
-  CLIENT_ID=$(api GET "/admin/clients?limit=20" | python3 -c "
+  CLIENT_ID=$(api GET "/admin/tenants?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:

@@ -13,14 +13,14 @@
 #   4. GET /auth/oidc/status reports each provider on its correct panel
 #      and NOT on the other panel (cross-panel isolation).
 #   5. GET /auth/oidc/authorize/:id redirects to Dex with the correct
-#      client_id, scope, response_type, code_challenge_method, and a
+#      tenant_id, scope, response_type, code_challenge_method, and a
 #      working PKCE state for both panels.
 #   6. Drive the Dex static-password login form end-to-end for the admin
 #      provider — assert the platform issues a JWT scoped panel=admin.
 #   7. Drive the same flow for the client provider — assert the
 #      platform issues a JWT scoped panel=client.
 #   8. Cross-panel token rejection: admin JWT cannot call a
-#      client-panel-only route; client JWT cannot call /admin/clients.
+#      tenant-panel-only route; client JWT cannot call /admin/tenants.
 #   9. Cleanup: delete both providers — assert /auth/oidc/status returns
 #      empty arrays again so the next harness run starts clean.
 #  10. CVE-2026-42945 guard: enable proxy protection, verify the
@@ -124,24 +124,24 @@ fi
 
 # Dex static-client probe: hit /token with bogus code — Dex should reply
 # "invalid_grant" / "invalid_request" (NOT "invalid_client") proving the
-# client_id is recognized.
+# tenant_id is recognized.
 probe_static_client() {
   local cid="$1" cs="$2" label="$3"
   local res code err
   res=$(curl -sk --max-time 5 -X POST \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=authorization_code&code=bogus&redirect_uri=https://example.invalid/cb&client_id=${cid}&client_secret=${cs}&code_verifier=verifier_at_least_43_chars_aaaaaaaaaaaaaaaaaaa" \
+    -d "grant_type=authorization_code&code=bogus&redirect_uri=https://example.invalid/cb&tenant_id=${cid}&client_secret=${cs}&code_verifier=verifier_at_least_43_chars_aaaaaaaaaaaaaaaaaaa" \
     "$DEX_HOST/dex/token")
   err=$(echo "$res" | jq -r '.error // empty')
   case "$err" in
     invalid_grant|invalid_request)
-      ok "Dex recognises $label client_id=${cid} (error=$err for bogus code)"
+      ok "Dex recognises $label tenant_id=${cid} (error=$err for bogus code)"
       ;;
     invalid_client|"")
-      fail "Dex did NOT recognise $label client_id=${cid}: $res"
+      fail "Dex did NOT recognise $label tenant_id=${cid}: $res"
       ;;
     *)
-      ok "Dex recognises $label client_id=${cid} (error=$err — non-fatal)"
+      ok "Dex recognises $label tenant_id=${cid} (error=$err — non-fatal)"
       ;;
   esac
 }
@@ -153,7 +153,7 @@ probe_static_client "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "client"
 log "Scenario 2: register OIDC providers"
 
 create_provider() {
-  local panel="$1" client_id="$2" client_secret="$3" display="$4"
+  local panel="$1" tenant_id="$2" client_secret="$3" display="$4"
   local body
   # enabled:true is REQUIRED — service.createProvider stores enabled=0
   # by default, and getAuthStatus filters by enabled=1 so a disabled
@@ -161,16 +161,16 @@ create_provider() {
   body=$(jq -nc \
     --arg dn "$display" \
     --arg iu "$DEX_HOST/dex" \
-    --arg ci "$client_id" \
+    --arg ci "$tenant_id" \
     --arg cs "$client_secret" \
     --arg ps "$panel" \
-    '{display_name:$dn, issuer_url:$iu, client_id:$ci, client_secret:$cs, panel_scope:$ps, enabled:true, auto_provision:true}')
+    '{display_name:$dn, issuer_url:$iu, tenant_id:$ci, client_secret:$cs, panel_scope:$ps, enabled:true, auto_provision:true}')
   curl -sk --max-time 10 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
     -d "$body" "$ADMIN_HOST/api/v1/admin/oidc/providers"
 }
 
 # Tear down any leftover providers from prior runs (defensive — the
-# unique constraint on (issuer_url, client_id) would otherwise reject
+# unique constraint on (issuer_url, tenant_id) would otherwise reject
 # a re-register).
 log "  cleaning leftover providers (if any)"
 EXISTING=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/providers" | jq -r '.data[] | select(.issuerUrl == "'"$DEX_HOST"'/dex") | .id')
@@ -189,7 +189,7 @@ fi
 CLIENT_PROVIDER_RES=$(create_provider client "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "Dex (integration-test client)")
 CLIENT_PROVIDER_ID=$(echo "$CLIENT_PROVIDER_RES" | jq -r '.data.id // empty')
 if [[ -z "$CLIENT_PROVIDER_ID" || "$CLIENT_PROVIDER_ID" == "null" ]]; then
-  fail "create client provider returned no id: $CLIENT_PROVIDER_RES"
+  fail "create tenant provider returned no id: $CLIENT_PROVIDER_RES"
 else
   ok "client provider id=$CLIENT_PROVIDER_ID"
 fi
@@ -264,8 +264,8 @@ check_authorize_redirect() {
     *) fail "$panel: Location does not point to Dex /dex/auth: $loc"; return 1 ;;
   esac
   case "$loc" in
-    *"client_id=$expected_cid"*) ok "$panel: redirect carries client_id=$expected_cid" ;;
-    *) fail "$panel: redirect missing client_id=$expected_cid (got: $loc)" ;;
+    *"tenant_id=$expected_cid"*) ok "$panel: redirect carries tenant_id=$expected_cid" ;;
+    *) fail "$panel: redirect missing tenant_id=$expected_cid (got: $loc)" ;;
   esac
   case "$loc" in
     *"response_type=code"*) ok "$panel: redirect carries response_type=code" ;;
@@ -283,7 +283,7 @@ check_authorize_redirect() {
 }
 
 ADMIN_AUTHORIZE_LOC=$(check_authorize_redirect "$ADMIN_PROVIDER_ID" "$ADMIN_CLIENT_ID" admin "$ADMIN_HOST/login" | tail -1)
-CLIENT_AUTHORIZE_LOC=$(check_authorize_redirect "$CLIENT_PROVIDER_ID" "$CLIENT_CLIENT_ID" client "$ADMIN_HOST/client-login" | tail -1)
+CLIENT_AUTHORIZE_LOC=$(check_authorize_redirect "$CLIENT_PROVIDER_ID" "$CLIENT_CLIENT_ID" client "$ADMIN_HOST/tenant-login" | tail -1)
 
 # ─── Scenarios 6 & 7: drive Dex login → assert platform JWT ──────────────────
 
@@ -313,7 +313,7 @@ drive_dex_login() {
     /dex/auth/local*) ;;
     "")
       # No Location at all — Dex may have rejected the request (bad
-      # client_id / redirect_uri mismatch / internal error). Surface
+      # tenant_id / redirect_uri mismatch / internal error). Surface
       # the response status line for diagnosis.
       local status_line
       status_line=$(echo "$resp" | head -1)
@@ -418,7 +418,7 @@ log "Scenario 6: end-to-end Dex login → platform JWT (admin panel)"
 drive_dex_login admin "$ADMIN_PROVIDER_ID" "$DEX_ADMIN_USER" "$DEX_ADMIN_PW" "$ADMIN_HOST/login"
 
 log "Scenario 7: end-to-end Dex login → platform JWT (client panel)"
-drive_dex_login client "$CLIENT_PROVIDER_ID" "$DEX_CLIENT_USER" "$DEX_CLIENT_PW" "$ADMIN_HOST/client-login"
+drive_dex_login client "$CLIENT_PROVIDER_ID" "$DEX_CLIENT_USER" "$DEX_CLIENT_PW" "$ADMIN_HOST/tenant-login"
 
 # ─── Scenario 8: cross-panel token rejection ─────────────────────────────────
 
@@ -429,14 +429,14 @@ if [[ -n "${OIDC_ADMIN_TOKEN:-}" && -n "${OIDC_CLIENT_TOKEN:-}" ]]; then
   # panel JWT must be rejected with 401/403/404 regardless of the
   # OIDC-provider's default_role mapping.
   CODE=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $OIDC_CLIENT_TOKEN" "$ADMIN_HOST/api/v1/admin/clients?limit=1")
+    -H "Authorization: Bearer $OIDC_CLIENT_TOKEN" "$ADMIN_HOST/api/v1/admin/tenants?limit=1")
   if [[ "$CODE" == "200" ]]; then
-    fail "client JWT was accepted on /admin/clients (should be 401/403/404)"
+    fail "client JWT was accepted on /admin/tenants (should be 401/403/404)"
   else
-    ok "client JWT rejected on /admin/clients (HTTP $CODE)"
+    ok "client JWT rejected on /admin/tenants (HTTP $CODE)"
   fi
   # Admin JWT must be VALID (signature + exp + sub claim verified by
-  # the platform). It does NOT need to grant /admin/clients access —
+  # the platform). It does NOT need to grant /admin/tenants access —
   # the OIDC provider's default_role decides what the auto-provisioned
   # user can do, and on this harness the test admin is provisioned
   # with read_only role (current platform default for OIDC-created
@@ -456,13 +456,13 @@ fi
 
 # ─── Scenario 10: lifecycle-driven protected ingress route ──────────────────
 #
-# Drive the full client-lifecycle path that an operator would walk
+# Drive the full tenant-lifecycle path that an operator would walk
 # through the admin panel to put a real tenant URL behind Dex:
-#   POST /clients                                        (active transition)
-#   POST /clients/:cid/domains                           (oidc-test.<DOMAIN>)
-#   POST /clients/:cid/domains/:did/routes               (route at /)
-#   POST /clients/:cid/oidc-providers                    (per-client Dex)
-#   PATCH /clients/:cid/ingress-routes/:rid/auth         (gate enabled)
+#   POST /tenants                                        (active transition)
+#   POST /tenants/:cid/domains                           (oidc-test.<DOMAIN>)
+#   POST /tenants/:cid/domains/:did/routes               (route at /)
+#   POST /tenants/:cid/oidc-providers                    (per-client Dex)
+#   PATCH /tenants/:cid/ingress-routes/:rid/auth         (gate enabled)
 #
 # Then assert:
 #   - the platform persisted the auth config and reconciled the cluster
@@ -473,7 +473,7 @@ fi
 #     (000/502/503/504) because that's a side-channel and not the OIDC
 #     harness's scope.
 #
-# Cleanup goes through DELETE /clients/:cid which fires the `deleted`
+# Cleanup goes through DELETE /tenants/:cid which fires the `deleted`
 # transition — the cascade reaps domains, routes, the auth config row,
 # and the per-client OIDC provider via FK CASCADE.
 
@@ -490,11 +490,11 @@ cleanup_lifecycle_client() {
     # harness has to also work against pre-0088 staging).
     if [[ -n "${LIFECYCLE_ROUTE_ID:-}" ]]; then
       curl -sk --max-time 10 -X DELETE "${AUTH_H[@]}" \
-        "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth" \
+        "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth" \
         >/dev/null 2>&1 || true
     fi
     curl -sk --max-time 30 -X DELETE "${AUTH_H[@]}" \
-      "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID" >/dev/null 2>&1 || true
+      "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID" >/dev/null 2>&1 || true
   fi
 }
 
@@ -503,23 +503,23 @@ cleanup_lifecycle_client() {
 # state with the domain attached, blocking domain create with 409.
 cleanup_orphan_test_clients() {
   local list
-  list=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients?search=oidc-harness&limit=20" \
+  list=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants?search=oidc-harness&limit=20" \
     | jq -r '.data[]?.id // empty' 2>/dev/null || true)
   for cid in $list; do
     # Best-effort unwind: domains → routes → auth → client
     local doms
-    doms=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$cid/domains" \
+    doms=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$cid/domains" \
       | jq -r '.data[]?.id // empty' 2>/dev/null || true)
     for did in $doms; do
       local rids
-      rids=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$cid/domains/$did/routes" \
+      rids=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$cid/domains/$did/routes" \
         | jq -r '.data[]?.id // empty' 2>/dev/null || true)
       for rid in $rids; do
         curl -sk --max-time 5 -X DELETE "${AUTH_H[@]}" \
-          "$ADMIN_HOST/api/v1/clients/$cid/ingress-routes/$rid/auth" >/dev/null 2>&1 || true
+          "$ADMIN_HOST/api/v1/tenants/$cid/ingress-routes/$rid/auth" >/dev/null 2>&1 || true
       done
     done
-    curl -sk --max-time 30 -X DELETE "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$cid" >/dev/null 2>&1 || true
+    curl -sk --max-time 30 -X DELETE "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$cid" >/dev/null 2>&1 || true
   done
 }
 trap 'cleanup_providers; cleanup_lifecycle_client; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
@@ -540,19 +540,19 @@ if [[ -z "$PLAN_ID" || -z "$REGION_ID" ]]; then
 else
   ok "plan_id=$PLAN_ID region_id=$REGION_ID"
 
-  # Step 1: create client (fires `active` lifecycle transition)
+  # Step 1: create tenant (fires `active` lifecycle transition)
   RUN_TAG=$(date +%s)
   CLIENT_BODY=$(jq -nc \
     --arg n "oidc-harness-${RUN_TAG}" \
     --arg e "oidc-harness-${RUN_TAG}@k8s-platform.test" \
     --arg p "$PLAN_ID" \
     --arg r "$REGION_ID" \
-    '{company_name:$n, company_email:$e, plan_id:$p, region_id:$r}')
+    '{name:$n, primary_email:$e, plan_id:$p, region_id:$r}')
   CLIENT_RES=$(curl -sk --max-time 30 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-    -d "$CLIENT_BODY" "$ADMIN_HOST/api/v1/clients")
+    -d "$CLIENT_BODY" "$ADMIN_HOST/api/v1/tenants")
   LIFECYCLE_CLIENT_ID=$(echo "$CLIENT_RES" | jq -r '.data.id // empty')
   if [[ -z "$LIFECYCLE_CLIENT_ID" || "$LIFECYCLE_CLIENT_ID" == "null" ]]; then
-    fail "create client failed: $CLIENT_RES"
+    fail "create tenant failed: $CLIENT_RES"
   else
     ok "client created id=$LIFECYCLE_CLIENT_ID"
 
@@ -563,7 +563,7 @@ else
     # returns RECONCILE_FAILED. Poll up to 90s.
     PROV_OK=0
     for i in $(seq 1 30); do
-      PROV_STATUS=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID" \
+      PROV_STATUS=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID" \
         | jq -r '.data.provisioningStatus // .data.provisioning_status // empty')
       if [[ "$PROV_STATUS" == "provisioned" || "$PROV_STATUS" == "active" ]]; then
         PROV_OK=1; break
@@ -579,7 +579,7 @@ else
     # Step 2: add the test domain (dns_mode=cname — won't try to migrate DNS)
     DOMAIN_BODY=$(jq -nc --arg d "$OIDC_TEST_HOST" '{domain_name:$d, dns_mode:"cname"}')
     DOMAIN_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-      -d "$DOMAIN_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/domains")
+      -d "$DOMAIN_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/domains")
     LIFECYCLE_DOMAIN_ID=$(echo "$DOMAIN_RES" | jq -r '.data.id // empty')
     if [[ -z "$LIFECYCLE_DOMAIN_ID" || "$LIFECYCLE_DOMAIN_ID" == "null" ]]; then
       fail "create domain failed: $DOMAIN_RES"
@@ -589,7 +589,7 @@ else
       # Step 3: create an ingress route on that domain at '/'
       ROUTE_BODY=$(jq -nc --arg h "$OIDC_TEST_HOST" '{hostname:$h, path:"/"}')
       ROUTE_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-        -d "$ROUTE_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/domains/$LIFECYCLE_DOMAIN_ID/routes")
+        -d "$ROUTE_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/domains/$LIFECYCLE_DOMAIN_ID/routes")
       LIFECYCLE_ROUTE_ID=$(echo "$ROUTE_RES" | jq -r '.data.id // empty')
       if [[ -z "$LIFECYCLE_ROUTE_ID" || "$LIFECYCLE_ROUTE_ID" == "null" ]]; then
         fail "create ingress-route failed: $ROUTE_RES"
@@ -605,7 +605,7 @@ else
           --arg cs "$CLIENT_CLIENT_SECRET" \
           '{name:"dex-harness", issuerUrl:$iu, oauthClientId:$ci, oauthClientSecret:$cs}')
         PROV_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-          -d "$PROV_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/oidc-providers")
+          -d "$PROV_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/oidc-providers")
         LIFECYCLE_PROVIDER_ID=$(echo "$PROV_RES" | jq -r '.data.id // empty')
         if [[ -z "$LIFECYCLE_PROVIDER_ID" || "$LIFECYCLE_PROVIDER_ID" == "null" ]]; then
           fail "create per-client provider failed: $PROV_RES"
@@ -621,7 +621,7 @@ else
           # annotations actually appear.
           AUTH_BODY=$(jq -nc --arg pid "$LIFECYCLE_PROVIDER_ID" '{enabled:true, providerId:$pid}')
           AUTH_RES=$(curl -sk --max-time 30 -X PATCH "${AUTH_H[@]}" -H "Content-Type: application/json" \
-            -d "$AUTH_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth")
+            -d "$AUTH_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth")
           AUTH_OK=$(echo "$AUTH_RES" | jq -r '.data.enabled // empty')
           AUTH_ERR_CODE=$(echo "$AUTH_RES" | jq -r '.error.code // empty')
           if [[ "$AUTH_OK" == "true" ]]; then
@@ -700,7 +700,7 @@ else
     DEL_CODE=000
     for i in 1 2 3 4 5; do
       DEL_CODE=$(curl -sk --max-time 30 -X DELETE -o /dev/null -w '%{http_code}' \
-        "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID")
+        "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID")
       [[ "$DEL_CODE" =~ ^(200|202|204|404)$ ]] && break
       sleep 5
     done

@@ -61,7 +61,7 @@ fi
 # List all known client namespaces from the DB
 # (pagination: use a very large limit; platforms with >1000 clients
 # should paginate, but for cleanup context this is sufficient)
-clients_json=$(curl -s "$API_URL/api/v1/clients?limit=100" \
+clients_json=$(curl -s "$API_URL/api/v1/tenants?limit=100" \
   -H "Authorization: Bearer $TOKEN")
 DB_NAMESPACES=$(echo "$clients_json" | python3 -c '
 import sys,json

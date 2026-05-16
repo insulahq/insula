@@ -16,7 +16,7 @@ questions around scope kept surfacing during design discussions:
    (admin / client), or should it also gate customer-deployed
    applications?
 2. If a customer's app ever rides behind oauth2-proxy, does the cookie
-   secret sharing with admin/client-panel sessions compromise tenant
+   secret sharing with admin/tenant-panel sessions compromise tenant
    isolation?
 
 This ADR records the answer we committed to in the 2026-04-19 domain
@@ -105,7 +105,7 @@ the design MUST address:
   but only one value per instance, so "shared instance, per-tenant
   cookie" requires upstream work.
 - **Per-tenant Dex client.** Rather than one OIDC client with N
-  redirect URIs, each tenant would get its own `client_id` so scopes
+  redirect URIs, each tenant would get its own `tenant_id` so scopes
   and claims can differ. Auto-provisioning on tenant creation would
   need to be wired.
 - **Meta-router.** A proxy in front of the per-tenant oauth2-proxy

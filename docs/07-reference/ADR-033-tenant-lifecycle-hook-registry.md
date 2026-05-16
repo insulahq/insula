@@ -1,9 +1,9 @@
-# ADR-033: Client Lifecycle Hook Registry
+# ADR-033: Tenant Lifecycle Hook Registry
 
 **Status:** Accepted (2026-05-02)
 **Author:** Sebastian Buchweitz
 **Supersedes:** Inline `Promise.allSettled` cascade blocks in
-`backend/src/modules/client-lifecycle/cascades.ts` (deleted in Phase 6).
+`backend/src/modules/tenant-lifecycle/cascades.ts` (deleted in Phase 6).
 
 ## Context
 
@@ -22,14 +22,14 @@ The pre-2026-05 implementation buried these in `applyActive`,
 `Promise.allSettled` blocks. Three problems:
 
 1. **Silent orphans on bulk delete.** `bulkDeleteClients` in the
-   `/admin/clients/bulk` route bypassed `applyDeleted` entirely —
+   `/admin/tenants/bulk` route bypassed `applyDeleted` entirely —
    wrote DB and namespace inline, skipped every external-cleanup
    call. DNS zones, backup bundles, Released PVs all leaked.
 2. **No retry, no audit.** A failed cleanup printed `console.warn`
    and disappeared. Operators had no visibility, no way to retry,
    no audit trail.
 3. **Hard to add new cleanup steps.** Each new external system
-   (NetBird peers, Stalwart per-client config, OIDC client
+   (NetBird peers, Stalwart per-tenant config, OIDC client
    deregister) required editing `cascades.ts`, adding more inline
    `try`/`catch` chains, and hoping the order was right.
 
@@ -120,15 +120,15 @@ not transient external outage.
   + Reset-breaker buttons.
 * **Durable.** Failed hooks retry on a 2-minute scheduler tick. A
   pod restart mid-transition no longer leaves orphan PVs.
-* **Bulk-safe.** `/admin/clients/bulk` (POST + DELETE) routes through
-  the cascade, so every per-client transition triggers all hooks.
+* **Bulk-safe.** `/admin/tenants/bulk` (POST + DELETE) routes through
+  the cascade, so every per-tenant transition triggers all hooks.
   Each transition is tagged with `detail.bulkOpId` so the UI can
   fan out queries.
 * **Operator UX.** PATCH /clients/:id/status from the admin panel
   opens a `TransitionProgressModal` that polls per-hook state at
   1.5s intervals and renders failed hook envelopes inline.
   Bulk operations open a `BulkProgressModal` showing N rows with
-  per-client transition + hook_runs detail.
+  per-tenant transition + hook_runs detail.
 
 ### Negative
 
@@ -145,11 +145,11 @@ not transient external outage.
 
 ## Adding a hook
 
-1. New file `backend/src/modules/client-lifecycle/hooks/my-hook.ts`.
+1. New file `backend/src/modules/tenant-lifecycle/hooks/my-hook.ts`.
    Export a `LifecycleHook` and a `registerMyHook()` function with
    a module-local `_registered` guard.
 2. Add the register call to
-   `backend/src/modules/client-lifecycle/hooks/index.ts:registerAllLifecycleHooks()`.
+   `backend/src/modules/tenant-lifecycle/hooks/index.ts:registerAllLifecycleHooks()`.
 3. Unit-test with the established pattern: mock `vi.hoisted` spies
    for K8s/db, drive the hook with a stub `HookCtx`, assert on
    result status + envelope fields.
@@ -171,9 +171,9 @@ not transient external outage.
 
 ## Reference implementation
 
-* Registry + dispatcher: `backend/src/modules/client-lifecycle/registry/`
-* Scheduler + retry: `backend/src/modules/client-lifecycle/scheduler.ts`
-* Hooks (today): `backend/src/modules/client-lifecycle/hooks/`
+* Registry + dispatcher: `backend/src/modules/tenant-lifecycle/registry/`
+* Scheduler + retry: `backend/src/modules/tenant-lifecycle/scheduler.ts`
+* Hooks (today): `backend/src/modules/tenant-lifecycle/hooks/`
   * `pv-cleanup-released.ts` — Released PVs + Longhorn volume CRs
   * `db-domains.ts`, `db-cronjobs.ts`, `db-mailboxes.ts`,
     `db-email-aliases.ts`, `db-deployments.ts`, `db-clients-stamp.ts`

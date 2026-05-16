@@ -45,7 +45,7 @@ When no `resourceShare` is declared on a multi-component app, an even split with
    ```
    If pods show CPU usage **above their `requests.cpu`**, they're successfully bursting — no problem. If they show usage **at exactly `requests.cpu` repeatedly under load**, they're being cgroup-throttled by neighbours on the node.
 4. If neighbour contention is the cause, options are:
-   - Pin the noisy neighbour to a dedicated node (set `clients.worker_node_name`).
+   - Pin the noisy neighbour to a dedicated node (set `clients.node_name`).
    - Raise the customer's plan CPU.
    - Add a new node and rebalance.
 

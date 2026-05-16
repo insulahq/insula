@@ -856,7 +856,7 @@ POST /api/v1/admin/ftp/users/bulk-action
 
 ---
 
-## Web UI (Client Panel)
+## Web UI (Tenant Panel)
 
 ### 1. FTP/SFTP Users Management Page
 

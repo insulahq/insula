@@ -10,7 +10,7 @@
 #   6. PATCH /auth/passkey-mode mode=null → 200 (no-op when no passkeys)
 #   7. PATCH /auth/passkey-mode invalid mode → 400
 #   8. Verify no regression in normal password login
-#   9. Same surface on the client panel for client_admin user
+#   9. Same surface on the client panel for tenant_admin user
 #
 # The full register+authenticate ceremony requires a software authenticator
 # and is deferred to the Playwright E2E suite (per Phase 6 of the plan).
@@ -203,9 +203,9 @@ run_panel_suite "admin" "$ADMIN_HOST" "$ADMIN_EMAIL" "$ADMIN_PASSWORD"
 
 # ─── Client panel ────────────────────────────────────────────────────
 # Find the most recently created provisioned client and use its
-# auto-generated client_admin user. This mirrors the harness's pattern
+# auto-generated tenant_admin user. This mirrors the harness's pattern
 # of "use whatever's already there, don't fabricate test fixtures".
-log "── locating a client_admin user for client-panel suite ──"
+log "── locating a tenant_admin user for tenant-panel suite ──"
 
 # Login as admin to query clients.
 ADMIN_TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
@@ -214,7 +214,7 @@ ADMIN_TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null)
 
 if [[ -z "$ADMIN_TOKEN" ]]; then
-  fail "could not obtain admin token; skipping client-panel suite"
+  fail "could not obtain admin token; skipping tenant-panel suite"
 else
   # Create a fresh client just for this test so we know the credentials.
   STAMP=$(date +%s)
@@ -222,24 +222,24 @@ else
     | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];p=sorted(d,key=lambda x:int(float(x.get('storageLimit') or 0)));print(p[0]['id'])" 2>/dev/null)
   REGION_ID=$(curl -sk -H "Authorization: Bearer $ADMIN_TOKEN" "$ADMIN_HOST/api/v1/regions" \
     | python3 -c "import json,sys;print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null)
-  CREATE_RESP=$(curl -sk -X POST "$ADMIN_HOST/api/v1/clients" \
+  CREATE_RESP=$(curl -sk -X POST "$ADMIN_HOST/api/v1/tenants" \
     -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-    -d "{\"company_name\":\"Passkey E2E $STAMP\",\"company_email\":\"passkey-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+    -d "{\"name\":\"Passkey E2E $STAMP\",\"primary_email\":\"passkey-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
   CID=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   CLIENT_USER_PWD=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['clientUser']['generatedPassword'])" 2>/dev/null || echo "")
   CLIENT_USER_EMAIL="passkey-e2e-$STAMP@example.test"
 
   if [[ -n "$CID" && -n "$CLIENT_USER_PWD" ]]; then
-    ok "created test client + auto-generated client_admin (cid=${CID:0:8})"
+    ok "created test client + auto-generated tenant_admin (cid=${CID:0:8})"
     cleanup_client() {
-      curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" \
+      curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" \
         -H "Authorization: Bearer $ADMIN_TOKEN" >/dev/null 2>&1 || true
     }
     trap cleanup_client EXIT
 
     run_panel_suite "client" "$CLIENT_HOST" "$CLIENT_USER_EMAIL" "$CLIENT_USER_PWD"
   else
-    fail "client provisioning failed for passkey suite; skipping client-panel checks. body: $(echo "$CREATE_RESP" | head -c 300)"
+    fail "client provisioning failed for passkey suite; skipping tenant-panel checks. body: $(echo "$CREATE_RESP" | head -c 300)"
   fi
 fi
 

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Kubernetes-based web hosting platform replacing Plesk. Targets 50-100 clients initially on self-managed k3s clusters (Hetzner VPS, <$200/month budget).
+Kubernetes-based web hosting platform replacing Plesk. Targets 50-100 tenants initially on self-managed k3s clusters (Hetzner VPS, <$200/month budget).
 
 **Status:** Phase 1 implementation (12-week MVP)
 
@@ -14,7 +14,7 @@ packages/
 backend/                  # Node.js/Fastify management API (port 3000)
 frontend/
   admin-panel/            # React 18 + Vite + shadcn/ui (port 5173)
-  client-panel/           # React 18 + Vite + shadcn/ui (port 5174)
+  tenant-panel/           # React 18 + Vite + shadcn/ui (port 5174)
 k8s/
   base/                   # Kustomize base manifests
   overlays/               # dev, production overlays
@@ -66,7 +66,7 @@ npm run typecheck        # tsc --noEmit
 npm run test             # Vitest
 ```
 
-### Frontend Client (`frontend/client-panel/`)
+### Frontend Tenant (`frontend/tenant-panel/`)
 ```bash
 npm run dev              # Vite dev server (port 5174)
 npm run build            # Production build
@@ -89,7 +89,7 @@ docker compose down      # Stop services
 packages/api-contracts/src/
   shared.ts           # PaginationParams (limit max: 100), response envelopes
   auth.ts             # Login, password change, profile update schemas
-  clients.ts          # Client CRUD schemas + response types
+  tenants.ts          # Tenant CRUD schemas + response types
   domains.ts          # Domain CRUD schemas + response types
   databases.ts        # Database CRUD schemas + response types
   workload-repos.ts   # Workload catalog repository management (ADR-025)
@@ -130,16 +130,16 @@ packages/api-contracts/src/
 - **Immutability:** Prefer new objects over mutation
 - **Test coverage target:** 80%+ (Phase 1: 70%+)
 
-## Client lifecycle hook registry (ADR-033)
+## Tenant lifecycle hook registry (ADR-033)
 
 Every state transition (`active`, `suspended`, `archived`, `restored`,
-`deleted`) goes through `backend/src/modules/client-lifecycle/registry/`
+`deleted`) goes through `backend/src/modules/tenant-lifecycle/registry/`
 — a runtime that dispatches a topo-sorted set of `LifecycleHook`s per
-transition, persists each run to `client_lifecycle_hook_runs`, and a
+transition, persists each run to `tenant_lifecycle_hook_runs`, and a
 2-min scheduler retries failed `retry`-status hooks with exponential
 backoff.
 
-**Adding a hook:** create `backend/src/modules/client-lifecycle/hooks/<name>.ts`
+**Adding a hook:** create `backend/src/modules/tenant-lifecycle/hooks/<name>.ts`
 exporting a `LifecycleHook` and a `register*Hook()` function with a
 module-local `_registered` guard. Add the register call to
 `hooks/index.ts:registerAllLifecycleHooks()`. Unit-test with the
@@ -147,13 +147,13 @@ module-local `_registered` guard. Add the register call to
 `scripts/integration-lifecycle-e2e.sh`.
 
 **Adding a transition kind:** edit `Transition` type in `registry/types.ts`,
-extend the migration enum (`client_lifecycle_transition_kind`), and add
+extend the migration enum (`tenant_lifecycle_transition_kind`), and add
 an `applyXxx()` entry in `cascades.ts` that calls `dispatchTransition`.
 
 **Operator surfaces:**
 - `Settings → Lifecycle Hooks` (admin panel) — per-hook last-7d success
   rate, recent transitions tree, Retry Now / Reset Breaker buttons.
-- `TransitionProgressModal` — opens on every client-detail action.
+- `TransitionProgressModal` — opens on every tenant-detail action.
 - `BulkProgressModal` — opens on every Clients-page bulk action.
 
 **Operator kill-switches:** for hooks with no legacy fallback,
@@ -193,6 +193,6 @@ These services are managed by **separate projects** — this platform consumes t
 - Pagination: `docs/04-deployment/API_PAGINATION_STRATEGY.md`
 - Phase 1 roadmap: `docs/04-deployment/PHASE_1_ROADMAP.md`
 - ADRs: `docs/07-reference/ARCHITECTURE_DECISION_RECORDS.md`
-- Client lifecycle hook registry: `docs/07-reference/ADR-033-client-lifecycle-hook-registry.md`
+- Tenant lifecycle hook registry: `docs/07-reference/ADR-033-tenant-lifecycle-hook-registry.md`
 - **Tenant Backup operator runbook**: `docs/02-operations/TENANT_BACKUP.md` — bundle architecture, Plesk-style restore cart, schedule, retention, GDPR data export, rollback, list-recent-carts. Authoritative; supersedes the legacy `BACKUP_STRATEGY.md` + `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` which describe the deprecated SSHFS architecture.
 - **Bulwark webmail (JMAP-native)**: `docs/06-features/BULWARK_WEBMAIL.md` + ADR-039. Coexists with Roundcube; `platform_config.default_webmail_engine` selects per-platform default. Architecture: `k8s/base/bulwark/` (the SPA) + `k8s/base/bulwark-impersonator/` (JWT-signed master-user handoff sidecar matching Roundcube's `jwt_auth.php` pattern). Local dev: `./scripts/local.sh bulwark-up`. E2E: `./scripts/integration-bulwark-e2e.sh`.

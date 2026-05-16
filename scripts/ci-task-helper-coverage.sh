@@ -24,8 +24,8 @@ set -euo pipefail
 # the SKIP list silently — every entry needs a one-line rationale.
 
 SURFACE_FILE_MARKERS=(
-  # client-lifecycle transitions (admin + bulk + per-client)
-  "backend/src/modules/client-lifecycle/registry/dispatcher.ts|tasks/service.js"
+  # tenant-lifecycle transitions (admin + bulk + per-client)
+  "backend/src/modules/tenant-lifecycle/registry/dispatcher.ts|tasks/service.js"
   # bulk client ops parent fan-out
   "backend/src/modules/clients/bulk.ts|createBulkParentTask"
   # storage ops

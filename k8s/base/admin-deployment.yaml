@@ -41,11 +41,11 @@ spec:
           env:
             # API_URL intentionally omitted — defaults to '' (same-origin).
             # Frontend nginx proxies /api/* to platform-api:3000 internally.
-            - name: CLIENT_PANEL_URL
+            - name: TENANT_PANEL_URL
               valueFrom:
                 configMapKeyRef:
                   name: platform-config
-                  key: client-url
+                  key: tenant-url
                   optional: true
             # Separate hostname for Stalwart's embedded web-admin SPA.
             # Gated by ingress auth_request — the browser's platform_session

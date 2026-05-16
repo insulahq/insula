@@ -10,7 +10,7 @@
 
 All customer and subscription management is **admin-only**. There is **no customer self-service billing or plan upgrades**.
 
-- **Customers:** Can only manage their hosting infrastructure (domains, databases, backups, files, email) via the Client Panel. Customers may pay a renewal online (via "Renew Now" in the client panel) **only if** the admin has assigned a payment gateway to their account.
+- **Customers:** Can only manage their hosting infrastructure (domains, databases, backups, files, email) via the Tenant Panel. Customers may pay a renewal online (via "Renew Now" in the client panel) **only if** the admin has assigned a payment gateway to their account.
 - **Admins:** Manage customer accounts, subscriptions, and expiry dates via the Admin Panel and Management API.
 - **Billing:** **Optional.** The platform works fully without any payment gateway. Admins can renew subscriptions manually (set expiry date directly). Payment gateways (Stripe, PayPal, DPO, Chargebee, Paddle, etc.) are configured globally and assigned per customer as needed.
 - **Plan Changes:** Require admin action via API (customers cannot self-service).
@@ -190,7 +190,7 @@ Initiating a drain from the admin panel:
 
 ### C.3 Cluster Networking
 
-**Requirement:** View and monitor the cluster networking layer — NGINX Ingress DaemonSet status, hostPort 80/443 binding per node, per-client Ingress rules, NetworkPolicy inventory, and DNS-to-node IP mapping health.
+**Requirement:** View and monitor the cluster networking layer — NGINX Ingress DaemonSet status, hostPort 80/443 binding per node, per-tenant Ingress rules, NetworkPolicy inventory, and DNS-to-node IP mapping health.
 
 This section is read-only monitoring and inspection. Firewall rule management is in **SA.5 Node Firewall Management**. NetBird mesh status is in **SA.6 NetBird Mesh Management**.
 
@@ -270,7 +270,7 @@ Filter: by namespace, client, TLS status, status.
 | `GET` | `/api/v1/admin/networking/ingress-dns` | Current `ingress.platform.com` A record set — node IPs, last update, discrepancy check |
 | `POST` | `/api/v1/admin/networking/ingress-dns/add` | Add a node IP to `ingress.platform.com` (`node_name`, `ip`) — audit logged |
 | `POST` | `/api/v1/admin/networking/ingress-dns/remove` | Remove a node IP from `ingress.platform.com` (`node_name`, `ip`) — audit logged |
-| `GET` | `/api/v1/admin/networking/ingress-rules` | List all Kubernetes Ingress objects (filter: `namespace`, `client_id`, `tls`, `status`) |
+| `GET` | `/api/v1/admin/networking/ingress-rules` | List all Kubernetes Ingress objects (filter: `namespace`, `tenant_id`, `tls`, `status`) |
 | `GET` | `/api/v1/admin/networking/network-policies` | List all NetworkPolicies across all namespaces |
 | `GET` | `/api/v1/admin/networking/services` | List all Kubernetes Services with port mappings and endpoint health |
 
@@ -486,7 +486,7 @@ See also: `WORKLOAD_DEPLOYMENT.md` (catalog repo structure), `DATABASE_SCHEMA.md
 
 ### W.2 Container Lifecycle Management
 
-**Requirement:** Manage per-client container deployment and upgrades — catalog image switching (zero-downtime blue/green), rollback, scale-to-zero, deployment health monitoring, and file deployment history. This section covers the admin view of client workload lifecycle; the catalog image library management (enable/deprecate/force-migrate) is in **W.1**.
+**Requirement:** Manage per-tenant container deployment and upgrades — catalog image switching (zero-downtime blue/green), rollback, scale-to-zero, deployment health monitoring, and file deployment history. This section covers the admin view of client workload lifecycle; the catalog image library management (enable/deprecate/force-migrate) is in **W.1**.
 
 See also: `WORKLOAD_DEPLOYMENT.md`, `DEPLOYMENT_PROCESS.md`, `DATABASE_SCHEMA.md` (`workloads`, `deployment_history`, `container_images` tables).
 
@@ -727,7 +727,7 @@ Adding or removing a variable triggers a pod restart after confirmation.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/workloads` | List all client workloads (filter: `plan`, `image`, `status`, `client_id`) |
+| `GET` | `/api/v1/admin/workloads` | List all client workloads (filter: `plan`, `image`, `status`, `tenant_id`) |
 | `GET` | `/api/v1/admin/customers/{id}/workloads` | List workloads for a specific client |
 | `GET` | `/api/v1/admin/customers/{id}/workloads/{workload_id}` | Workload detail: image, status, resources, health probes, pod reference |
 | `POST` | `/api/v1/admin/customers/{id}/workloads/{workload_id}/switch` | Initiate catalog image switch (`target_image_id`, `backup_before`, `auto_rollback`, `reason`) — returns `switch_id` |
@@ -893,7 +893,7 @@ Adding or removing a variable triggers a pod restart after confirmation.
 - The API returns a `job_id` immediately; progress is tracked via WebSocket (same pattern as provisioning: `POST → job_id → WebSocket /ws/admin/jobs/{job_id}`).
 - Each client within the batch is processed independently — partial failures are reported per client without aborting the remaining batch.
 - Progress events are emitted every 2 seconds with `{ processed, total, failed, current_client_id }`.
-- A final `complete` event includes a full per-client result summary (success / skipped / error + reason).
+- A final `complete` event includes a full per-tenant result summary (success / skipped / error + reason).
 - All bulk actions are logged to `audit_logs` with `bulk_operation_id` grouping all child events.
 
 **Progress WebSocket event schema:**
@@ -907,7 +907,7 @@ Adding or removing a variable triggers a pod restart after confirmation.
   "failed": 1,
   "current_client_id": "client-xyz",
   "errors": [
-    { "client_id": "client-foo", "reason": "Client is already suspended" }
+    { "tenant_id": "client-foo", "reason": "Client is already suspended" }
   ]
 }
 ```
@@ -916,11 +916,11 @@ Adding or removing a variable triggers a pod restart after confirmation.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/v1/admin/clients/bulk/suspend` | Suspend multiple clients (`client_ids[]`, optional `reason`) |
-| `POST` | `/api/v1/admin/clients/bulk/unsuspend` | Unsuspend multiple clients (`client_ids[]`) |
-| `POST` | `/api/v1/admin/clients/bulk/plan-change` | Change plan for multiple clients (`client_ids[]`, `plan_id`) |
-| `POST` | `/api/v1/admin/clients/bulk/expiry-update` | Set new expiry date for multiple clients (`client_ids[]`, `expires_at`) |
-| `POST` | `/api/v1/admin/clients/bulk/notify` | Send notification to multiple clients (`client_ids[]`, `subject`, `body`, `channel`: `email`/`panel`/`both`) |
+| `POST` | `/api/v1/admin/tenants/bulk/suspend` | Suspend multiple clients (`client_ids[]`, optional `reason`) |
+| `POST` | `/api/v1/admin/tenants/bulk/unsuspend` | Unsuspend multiple clients (`client_ids[]`) |
+| `POST` | `/api/v1/admin/tenants/bulk/plan-change` | Change plan for multiple clients (`client_ids[]`, `plan_id`) |
+| `POST` | `/api/v1/admin/tenants/bulk/expiry-update` | Set new expiry date for multiple clients (`client_ids[]`, `expires_at`) |
+| `POST` | `/api/v1/admin/tenants/bulk/notify` | Send notification to multiple clients (`client_ids[]`, `subject`, `body`, `channel`: `email`/`panel`/`both`) |
 | `GET` | `/api/v1/admin/jobs/{job_id}` | Poll bulk job status (fallback for non-WebSocket clients) |
 
 ---
@@ -935,10 +935,10 @@ Adding or removing a variable triggers a pod restart after confirmation.
 
 | Feature | Specification | Phase |
 |---------|---------------|-------|
-| **Namespace list** | All namespaces: `platform` and per-client `client-{id}` namespaces — with pod count, CPU/memory used, ResourceQuota status | 1 |
+| **Namespace list** | All namespaces: `platform` and per-tenant `client-{id}` namespaces — with pod count, CPU/memory used, ResourceQuota status | 1 |
 | **Namespace detail** | Per-namespace: pod list, resource usage, active NetworkPolicies, ResourceQuota, LimitRange | 1 |
 | **ResourceQuota status** | View per-namespace quota (CPU, memory, storage, pod count) vs. actual usage — visual gauge | 1 |
-| **Namespace creation** | Create a new client namespace with ResourceQuota and default-deny NetworkPolicy (Phase 2 — currently done by Management API automatically) | 2 |
+| **Namespace creation** | Create a new tenant namespace with ResourceQuota and default-deny NetworkPolicy (Phase 2 — currently done by Management API automatically) | 2 |
 | **Namespace deletion** | Delete a namespace (only when client is fully terminated and data exported) — Phase 2 | 2 |
 | **NetworkPolicy viewer** | Read-only list of NetworkPolicies in a namespace — ingress/egress rules, selectors | 1 |
 
@@ -1092,7 +1092,7 @@ Unhealthy services display a Critical banner. Clicking any row navigates to the 
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/pods` | List all pods (filter: `namespace`, `status`, `node`, `client_id`) |
+| `GET` | `/api/v1/admin/pods` | List all pods (filter: `namespace`, `status`, `node`, `tenant_id`) |
 | `GET` | `/api/v1/admin/pods/platform` | Platform service pod health summary (grouped by service) |
 | `GET` | `/api/v1/admin/namespaces/{ns}/pods/{pod}` | Pod detail: containers, resources, health checks, volumes, events |
 | `GET` | `/api/v1/admin/namespaces/{ns}/pods/{pod}/logs` | Pod logs (`container`, `tail_lines`, `follow`) |
@@ -1213,7 +1213,7 @@ Admin override: Platform Admins can expand beyond plan quota by explicitly confi
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/volumes` | List all PVCs (filter: `namespace`, `client_id`, `health`, `orphaned`) |
+| `GET` | `/api/v1/admin/volumes` | List all PVCs (filter: `namespace`, `tenant_id`, `health`, `orphaned`) |
 | `GET` | `/api/v1/admin/volumes/{pvc}` | PVC detail: Longhorn health, replicas, mount path, quota usage |
 | `GET` | `/api/v1/admin/volumes/{pvc}/snapshots` | List Longhorn snapshots for a PVC |
 | `POST` | `/api/v1/admin/volumes/{pvc}/snapshots` | Create on-demand Longhorn snapshot |
@@ -1390,7 +1390,7 @@ For complete architecture, database schema, and API specification, see **CUSTOME
 
 ### SD.1 Shared Database Management
 
-**Requirement:** Manage the shared MariaDB (Percona Operator) and PostgreSQL (CloudNativePG) instances in the `platform` namespace — health monitoring, per-client database provisioning, quota enforcement, credential rotation, connection metrics, and Longhorn storage management.
+**Requirement:** Manage the shared MariaDB (Percona Operator) and PostgreSQL (CloudNativePG) instances in the `platform` namespace — health monitoring, per-tenant database provisioning, quota enforcement, credential rotation, connection metrics, and Longhorn storage management.
 
 Connection pooling (PgBouncer) is deferred to Phase 2. See also: `STORAGE_DATABASES.md`, `DATABASE_SCHEMA.md`, `SLI_SLO_DEFINITION.md`.
 
@@ -1403,13 +1403,13 @@ Connection pooling (PgBouncer) is deferred to Phase 2. See also: `STORAGE_DATABA
 | **Provision database** | Create a new MariaDB or PostgreSQL database for a client (within plan quota) | 1 |
 | **Delete database** | Remove a client database with confirmation; requires prior backup | 1 |
 | **Credential rotation** | Rotate a database user's password; old password remains valid for 7 days | 1 |
-| **Quota management** | View and edit per-client database count and storage GB allowances | 1 |
+| **Quota management** | View and edit per-tenant database count and storage GB allowances | 1 |
 | **Connection metrics** | Per-client active connections, connection saturation vs. `max_connections` | 1 |
 | **Slow query log** | View slow queries (> 2s threshold) from MariaDB slow query log, grouped by client | 1 |
-| **Storage breakdown** | MariaDB and PostgreSQL PV usage: total used, per-client breakdown, growth trend | 1 |
+| **Storage breakdown** | MariaDB and PostgreSQL PV usage: total used, per-tenant breakdown, growth trend | 1 |
 | **Longhorn volume list** | List Longhorn PVCs for DB volumes — size, replication factor, health, snapshots | 1 |
 | **Connection pooling status** | PgBouncer pool stats (Phase 2) | 2 |
-| **Dedicated DB provisioning** | Provision a dedicated MariaDB/PG StatefulSet in a Premium/Custom client namespace and migrate data | 2 |
+| **Dedicated DB provisioning** | Provision a dedicated MariaDB/PG StatefulSet in a Premium/Custom tenant namespace and migrate data | 2 |
 
 ---
 
@@ -1467,7 +1467,7 @@ Form fields:
 | Initial size | 1–500 GB (capped at plan `storage_gb` remaining) |
 | Backup enabled | Toggle (default: on) |
 
-On submit: database provisioned on shared instance, dedicated user created (`{db_name}_u`), credentials stored in client namespace Secret, backup scheduling configured, credentials emailed to client. If plan quota (`max_databases`) would be exceeded, provisioning is blocked with a clear error.
+On submit: database provisioned on shared instance, dedicated user created (`{db_name}_u`), credentials stored in tenant namespace Secret, backup scheduling configured, credentials emailed to client. If plan quota (`max_databases`) would be exceeded, provisioning is blocked with a clear error.
 
 ---
 
@@ -1475,7 +1475,7 @@ On submit: database provisioned on shared instance, dedicated user created (`{db
 
 Rotating a database password:
 1. Admin clicks **Rotate password** for a database
-2. New password generated and stored in client namespace Secret
+2. New password generated and stored in tenant namespace Secret
 3. Old password remains valid for **7 days** (grace period for application reconfiguration)
 4. New credentials displayed once in a modal (masked by default, reveal button)
 5. Action logged to admin audit trail
@@ -1571,8 +1571,8 @@ Link to Longhorn native UI for advanced management.
 |--------|----------|-------------|
 | `GET` | `/api/v1/admin/databases/health` | MariaDB and PostgreSQL health: pod status, connections, storage, SLO availability |
 | `GET` | `/api/v1/admin/databases/connections` | Per-client active connection counts and slow query counts |
-| `GET` | `/api/v1/admin/databases/slow-queries` | Slow query log (filter: `client_id`, `database`, `min_duration`, `from`, `to`) |
-| `GET` | `/api/v1/admin/databases/storage` | DB storage usage: total, per-client breakdown, growth trend |
+| `GET` | `/api/v1/admin/databases/slow-queries` | Slow query log (filter: `tenant_id`, `database`, `min_duration`, `from`, `to`) |
+| `GET` | `/api/v1/admin/databases/storage` | DB storage usage: total, per-tenant breakdown, growth trend |
 | `GET` | `/api/v1/admin/databases/longhorn` | Longhorn PVC list with health, replication, snapshot count |
 | `GET` | `/api/v1/admin/customers/{id}/databases` | List databases for a client |
 | `POST` | `/api/v1/admin/customers/{id}/databases` | Provision a database (`engine`, `name`, `size_gb`, `backup_enabled`) |
@@ -1586,7 +1586,7 @@ Link to Longhorn native UI for advanced management.
 
 ### SD.2 Backup Management
 
-**Requirement:** Admin view of all backup activity across all customers. Provides the storage-layer summary: overall backup health, per-client storage usage, quota enforcement, and quick links into the detailed per-tier views (BR.1 for admin/system tiers, BR.2 for client-initiated tier).
+**Requirement:** Admin view of all backup activity across all customers. Provides the storage-layer summary: overall backup health, per-tenant storage usage, quota enforcement, and quick links into the detailed per-tier views (BR.1 for admin/system tiers, BR.2 for client-initiated tier).
 
 > **Authoritative specs:**
 > - [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) — bundle format
@@ -2212,7 +2212,7 @@ Filterable by: client, domain, cert type, status, expiry range, auto-renew.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/certificates` | List all certificates (supports filter params: `client_id`, `domain_id`, `type`, `status`, `expiry_before`) |
+| `GET` | `/api/v1/admin/certificates` | List all certificates (supports filter params: `tenant_id`, `domain_id`, `type`, `status`, `expiry_before`) |
 | `GET` | `/api/v1/admin/certificates/{cert_id}` | Get full certificate detail |
 | `POST` | `/api/v1/domains/{id}/certificates/renew` | Force immediate renewal |
 | `POST` | `/api/v1/domains/{id}/certificates/revoke` | Revoke certificate |
@@ -2327,10 +2327,10 @@ Filterable by: client, domain, cert type, status, expiry range, auto-renew.
 - `PUT /api/v1/admin/dns-template` — Update template
 - `POST /api/v1/admin/dns-template/preview` — Preview rendered for a domain
 - `POST /api/v1/admin/dns-template/reapply` — Non-destructive re-apply to selected or all Primary-mode domains
-- `GET /api/v1/clients/{id}/domains/{domain_id}/records` — List all DNS records for a domain
-- `POST /api/v1/clients/{id}/domains/{domain_id}/records` — Add a record
-- `PUT /api/v1/clients/{id}/domains/{domain_id}/records/{record_id}` — Update a record
-- `DELETE /api/v1/clients/{id}/domains/{domain_id}/records/{record_id}` — Delete a record
+- `GET /api/v1/tenants/{id}/domains/{domain_id}/records` — List all DNS records for a domain
+- `POST /api/v1/tenants/{id}/domains/{domain_id}/records` — Add a record
+- `PUT /api/v1/tenants/{id}/domains/{domain_id}/records/{record_id}` — Update a record
+- `DELETE /api/v1/tenants/{id}/domains/{domain_id}/records/{record_id}` — Delete a record
 
 **Reference:** See `../01-core/DNS_ZONE_TEMPLATES.md` for full specification.
 
@@ -2399,7 +2399,7 @@ Every application that authenticates via the OIDC provider must be registered as
 
 | Client ID | Application | Redirect URIs | Grant types |
 |-----------|-------------|---------------|-------------|
-| `management-api` | Admin/Client Panel | `https://panel.platform.com/auth/callback` | `authorization_code`, `refresh_token` |
+| `management-api` | Admin/Tenant Panel | `https://panel.platform.com/auth/callback` | `authorization_code`, `refresh_token` |
 | `netbird` | NetBird VPN dashboard | `https://netbird.platform.com/auth/callback` | `authorization_code` |
 | `filebrowser` | FileBrowser (client file manager) | `https://files.{domain}/auth/callback` | `authorization_code` |
 | `grafana` | Grafana monitoring | `https://grafana.platform.com/login/generic_oauth` | `authorization_code` |
@@ -2514,15 +2514,15 @@ The six built-in roles from `AUTHORIZATION_MATRIX.md` are selectable from a drop
 | Role | Scope required | Notes |
 |------|---------------|-------|
 | `Platform Admin` | None (global) | Full wildcard permissions on all resources |
-| `Region Admin` | Region | Full CRUD within assigned region; can assign `client_admin` to clients in region |
-| `Client Admin` | Client | Full CRUD on own client resources; can assign `client_user` to team members |
+| `Region Admin` | Region | Full CRUD within assigned region; can assign `tenant_admin` to clients in region |
+| `Client Admin` | Client | Full CRUD on own client resources; can assign `tenant_user` to team members |
 | `Client User` | Client | Read + limited start/stop on own resources |
 | `Support Staff` | None (global read-only) | Read-only across all; can create/update support tickets |
 | `Viewer` | Client | Pure read-only on assigned client |
 
 Assignment constraints enforced by the panel (from `AUTHORIZATION_MATRIX.md`):
 - `Support Staff` cannot assign any role to anyone
-- `Region Admin` can only assign `client_admin` — not `platform_admin` or `region_admin`
+- `Region Admin` can only assign `tenant_admin` — not `platform_admin` or `region_admin`
 - `Platform Admin` can assign any role
 - A user cannot assign a role higher than their own
 
@@ -3294,7 +3294,7 @@ Log retention policy (from `MONITORING_OBSERVABILITY.md`):
 | **Log search** | Full-text and label-based search via LogQL across all log sources | 1 |
 | **Log stream browser** | Browse available Loki streams by label (namespace, pod, job, component) | 1 |
 | **Predefined queries** | Library of common LogQL queries for platform troubleshooting — see query library below | 1 |
-| **Per-client log view** | Filter logs to a specific client namespace | 1 |
+| **Per-client log view** | Filter logs to a specific tenant namespace | 1 |
 | **Time range selector** | Absolute or relative time range for all queries | 1 |
 | **Log export** | Download filtered log results as plain text or JSON (up to 100,000 lines) | 1 |
 | **Tail (live stream)** | Real-time log tail for a selected stream — auto-scrolling | 1 |
@@ -3316,7 +3316,7 @@ Streams are browseable by label. Common labels available:
 | `pod` | `nginx-ingress-controller-xxx`, `dex-0`, `postfix-0` |
 | `job` | `database-audit`, `mail-logs`, `waf-events`, `fail2ban` |
 | `component` | `postfix`, `dovecot`, `rspamd`, `powerdns`, `netbird` |
-| `client_id` | UUID of a specific client (for client namespace logs) |
+| `tenant_id` | UUID of a specific client (for tenant namespace logs) |
 
 ---
 
@@ -3381,7 +3381,7 @@ Streams are browseable by label. Common labels available:
 | Alert name | e.g. `EmailIPBlacklisted`, `CertExpiryCritical`, `PowerDNSAPIUnreachable` |
 | Severity | `Critical` / `Warning` / `Info` — colour-coded |
 | Component | Derived from alert labels (e.g. `email`, `dns`, `tls`, `cluster`) |
-| Labels | Key label pairs (e.g. `domain=example.com`, `client_id=abc`) |
+| Labels | Key label pairs (e.g. `domain=example.com`, `tenant_id=abc`) |
 | Firing since | Duration alert has been active |
 | Summary | Alert annotation summary text |
 | Actions | Silence, View runbook, View in Grafana |
@@ -3570,7 +3570,7 @@ Anomaly indicators appear as a subtle `↑ Unusual` badge alongside the metric v
 | `GET` | `/api/v1/admin/health/clients` | Per-client health scores — sortable, filterable by score range |
 | `GET` | `/api/v1/admin/health/clients/{id}` | Single client health detail — signal breakdown and 7-day trend |
 | `GET` | `/api/v1/admin/health/anomalies` | Current anomaly indicators across all services and clients |
-| `GET` | `/api/v1/admin/health/history` | Historical score snapshots (filter: `service`, `client_id`, `from`, `to`) |
+| `GET` | `/api/v1/admin/health/history` | Historical score snapshots (filter: `service`, `tenant_id`, `from`, `to`) |
 
 ---
 
@@ -4083,7 +4083,7 @@ Admin can manually advance or roll back the warm-up week, or mark an IP as fully
 | SMTP host | Provider endpoint |
 | SMTP port | `587` (STARTTLS) or `465` (implicit TLS) |
 | Username | Provider SMTP username or `apikey` |
-| Password / API key | Stored as Sealed Secret in client namespace — never shown after save |
+| Password / API key | Stored as Sealed Secret in tenant namespace — never shown after save |
 | From domain | Domain being routed through relay |
 | Status | `Enabled` / `Disabled` |
 
@@ -4249,7 +4249,7 @@ When an admin restores a bundle whose `clients.id` no longer exists in the platf
 
 ### BR.1 Backup Management (System + Admin Tiers)
 
-**Requirement:** View and manage Tier 1 (system) and Tier 2 (admin-initiated) backups — component capture health, per-client bundle listing, manual triggers, and restore initiation. Tier 3 (client-initiated) is covered in BR.2. Tier 4 (Velero cluster DR) is operator-facing tooling external to this panel.
+**Requirement:** View and manage Tier 1 (system) and Tier 2 (admin-initiated) backups — component capture health, per-tenant bundle listing, manual triggers, and restore initiation. Tier 3 (client-initiated) is covered in BR.2. Tier 4 (Velero cluster DR) is operator-facing tooling external to this panel.
 
 **Features:**
 
@@ -4688,7 +4688,7 @@ Quota usage bar: `15 GB used of 50 GB customer backup quota`.
 
 **API Endpoint:**
 ```bash
-PATCH /api/v1/clients/{id}/subscription
+PATCH /api/v1/tenants/{id}/subscription
 {
   "expiry_date": "2027-03-01",
   "status": "active",
@@ -4735,7 +4735,7 @@ PATCH /api/v1/clients/{id}/subscription
 
 **API Endpoint:**
 ```bash
-POST /api/v1/clients/{id}/subscription/send-payment-link
+POST /api/v1/tenants/{id}/subscription/send-payment-link
 {
   "gateway_id": "dpo_africa",
   "amount": 19.99,
@@ -4976,9 +4976,9 @@ Exports are themselves logged as `DATA_EXPORT` events with the exporting user's 
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/audit/logs` | Query audit logs (filter: `category`, `severity`, `event_type`, `actor_id`, `client_id`, `resource_type`, `status`, `from`, `to`) |
+| `GET` | `/api/v1/admin/audit/logs` | Query audit logs (filter: `category`, `severity`, `event_type`, `actor_id`, `tenant_id`, `resource_type`, `status`, `from`, `to`) |
 | `GET` | `/api/v1/admin/audit/logs/{event_id}` | Get full event detail including before/after JSON |
-| `GET` | `/api/v1/admin/audit/security-events` | Query `security_events` table (filter: `severity`, `resolved`, `client_id`, `from`, `to`) |
+| `GET` | `/api/v1/admin/audit/security-events` | Query `security_events` table (filter: `severity`, `resolved`, `tenant_id`, `from`, `to`) |
 | `PATCH` | `/api/v1/admin/audit/security-events/{id}` | Mark security event resolved; add remediation note |
 | `GET` | `/api/v1/admin/audit/overview` | Real-time security dashboard metrics (login failures, permission denials, privilege escalations, etc.) |
 | `POST` | `/api/v1/admin/audit/export` | Export filtered audit log as CSV or JSON — async, returns download URL; requires `reason` field; logs `DATA_EXPORT` |
@@ -5015,7 +5015,7 @@ Exports are themselves logged as `DATA_EXPORT` events with the exporting user's 
 
 | Mode | Description |
 |------|-------------|
-| **Quick search** | Single text input — searches `company_name`, `company_email`, `contact_email`, and primary domain simultaneously; results appear as you type (debounced 300ms) |
+| **Quick search** | Single text input — searches `name`, `primary_email`, `secondary_email`, and primary domain simultaneously; results appear as you type (debounced 300ms) |
 | **Advanced search** | Multi-field form — AND/OR logic across: company name, email, domain, contact email, contact phone, notes, namespace; results shown with active filter summary |
 | **Preset filters** | One-click presets: `Active`, `Suspended`, `New This Month`, `At Risk` (expiring ≤ 30 days), `High Value` (Premium plan), `Overdue` (expired subscription) |
 | **Saved filters** | Save any filter combination with a name; load, update, or delete saved filters; sharable across admin users |
@@ -5050,27 +5050,27 @@ Exports are themselves logged as `DATA_EXPORT` events with the exporting user's 
 
 - Search response < 500ms (at 1000+ clients).
 - Pagination: 50 items per page.
-- Full-text search backed by `FULLTEXT INDEX` on `(company_name, company_email, contact_email)` in the `clients` table — **note:** this index must be added to the schema DDL (not yet present).
+- Full-text search backed by `FULLTEXT INDEX` on `(name, primary_email, secondary_email)` in the `clients` table — **note:** this index must be added to the schema DDL (not yet present).
 - Filterable fields (`plan_id`, `status`, `subscription_expires_at`, `region_id`) covered by standard B-tree indexes.
 
 **API Endpoints:**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/clients` | Search and list clients. Query params: `search` (full-text), `plan` (plan slug), `status` (active/suspended/cancelled), `subscription_status` (active/expiring/expired), `sort` (company_name/created_at/subscription_expires_at/storage_used), `dir` (asc/desc), `page`, `limit` (default 50) |
-| `GET` | `/api/v1/admin/clients/search/stats` | Quick stats for current filter (total, active, expiring_soon, suspended) — same filter params as above |
-| `GET` | `/api/v1/admin/clients/search/export` | Export filtered client list as CSV or JSON (`format`: `csv`/`json`) — same filter params |
-| `GET` | `/api/v1/admin/clients/saved-filters` | List saved search filters for the current admin user |
-| `POST` | `/api/v1/admin/clients/saved-filters` | Save a new filter (`name`, filter param set) |
-| `PUT` | `/api/v1/admin/clients/saved-filters/{id}` | Update a saved filter |
-| `DELETE` | `/api/v1/admin/clients/saved-filters/{id}` | Delete a saved filter |
+| `GET` | `/api/v1/admin/tenants` | Search and list clients. Query params: `search` (full-text), `plan` (plan slug), `status` (active/suspended/cancelled), `subscription_status` (active/expiring/expired), `sort` (name/created_at/subscription_expires_at/storage_used), `dir` (asc/desc), `page`, `limit` (default 50) |
+| `GET` | `/api/v1/admin/tenants/search/stats` | Quick stats for current filter (total, active, expiring_soon, suspended) — same filter params as above |
+| `GET` | `/api/v1/admin/tenants/search/export` | Export filtered client list as CSV or JSON (`format`: `csv`/`json`) — same filter params |
+| `GET` | `/api/v1/admin/tenants/saved-filters` | List saved search filters for the current admin user |
+| `POST` | `/api/v1/admin/tenants/saved-filters` | Save a new filter (`name`, filter param set) |
+| `PUT` | `/api/v1/admin/tenants/saved-filters/{id}` | Update a saved filter |
+| `DELETE` | `/api/v1/admin/tenants/saved-filters/{id}` | Delete a saved filter |
 
 **Schema note — required migration:**
 
 ```sql
--- Add full-text index to clients table (not yet in schema DDL)
+-- Add full-text index to tenants table (not yet in schema DDL)
 ALTER TABLE clients
-  ADD FULLTEXT INDEX idx_clients_fulltext (company_name, company_email, contact_email);
+  ADD FULLTEXT INDEX idx_clients_fulltext (name, primary_email, secondary_email);
 ```
 
 ---

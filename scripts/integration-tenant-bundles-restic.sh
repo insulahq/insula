@@ -7,7 +7,7 @@
 # What it exercises:
 #   1. POST /admin/backup-configs to register the S3 target (Hetzner
 #      Object Storage) using creds from ~/k8s-staging/servers.txt.
-#   2. POST /clients to create (or reuse) a test tenant.
+#   2. POST /tenants to create (or reuse) a test tenant.
 #   3. Wait for the tenant namespace + PVC + file-manager pod ready.
 #   4. Write known-content fixture data into the PVC via file-manager.
 #   5. POST /admin/tenant-bundles to trigger a backup. Async path —
@@ -30,7 +30,7 @@
 #
 # This script is idempotent on re-runs:
 #   - Backup config: matched by name; created only if missing.
-#   - Test client: matched by company_email; reused if present.
+#   - Test client: matched by primary_email; reused if present.
 #   - Fixture data: overwritten each run (same path).
 #   - restic repo on S3: snapshots accumulate. Run with
 #     INTEGRATE_FORGET=1 to forget+prune at the end.
@@ -108,14 +108,14 @@ echo "  PLATFORM_OIDC_KEY length: ${#PLATFORM_OIDC_KEY} chars"
 
 # ── HKDF helper (matches restic-driver.deriveResticPassword exactly) ────────
 hkdf_password() {
-  local secret_hex="$1" client_id="$2"
+  local secret_hex="$1" tenant_id="$2"
   node -e '
     const c = require("crypto");
     const secret = Buffer.from(process.argv[1], "hex");
     const out = c.hkdfSync("sha256", secret, Buffer.alloc(0),
       Buffer.from("restic-tenant-" + process.argv[2]), 32);
     process.stdout.write(Buffer.from(out).toString("hex"));
-  ' "$secret_hex" "$client_id"
+  ' "$secret_hex" "$tenant_id"
 }
 
 # ── HTTP helpers ────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ if [ -n "${CLIENT_ID_OVERRIDE:-}" ]; then
   CID="$CLIENT_ID_OVERRIDE"
   echo "  reusing operator-supplied CLIENT_ID_OVERRIDE: $CID"
 else
-  CID=$(apij "$API_BASE/api/v1/clients?limit=100" \
+  CID=$(apij "$API_BASE/api/v1/tenants?limit=100" \
     | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
@@ -214,20 +214,20 @@ for p in sorted(plans, key=lambda x: float(x['storageLimit'])):
     REGION_ID=$(apij "$API_BASE/api/v1/regions?limit=1" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')
     echo "    plan=$PLAN_ID region=$REGION_ID"
-    CREATE_RESP=$(apij -X POST "$API_BASE/api/v1/clients" \
+    CREATE_RESP=$(apij -X POST "$API_BASE/api/v1/tenants" \
       -d "$(python3 -c "
 import json
 print(json.dumps({
-  'company_name': 'itest-restic',
-  'company_email': '$TEST_EMAIL',
+  'name': 'itest-restic',
+  'primary_email': '$TEST_EMAIL',
   'plan_id': '$PLAN_ID',
   'region_id': '$REGION_ID',
 }))
 ")")
     CID=$(echo "$CREATE_RESP" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["data"]["id"]) if "data" in r else None')
     if [ -z "$CID" ]; then
-      echo "FAIL: could not create client. Response was:"; echo "$CREATE_RESP" | python3 -m json.tool | head -20
-      echo "Hint: pass CLIENT_ID_OVERRIDE=<existing-active-client-id> to reuse a tenant."
+      echo "FAIL: could not create tenant. Response was:"; echo "$CREATE_RESP" | python3 -m json.tool | head -20
+      echo "Hint: pass CLIENT_ID_OVERRIDE=<existing-active-tenant-id> to reuse a tenant."
       exit 1
     fi
   fi
@@ -235,7 +235,7 @@ fi
 echo "  client id: $CID"
 
 # Resolve the namespace from the API.
-NS=$(apij "$API_BASE/api/v1/clients/$CID" \
+NS=$(apij "$API_BASE/api/v1/tenants/$CID" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["kubernetesNamespace"])')
 echo "  namespace: $NS"
 
@@ -316,7 +316,7 @@ BUNDLE_RESP=$(apij -X POST "$API_BASE/api/v1/admin/tenant-bundles" \
   -d "$(python3 -c "
 import json
 print(json.dumps({
-  'clientId': '$CID',
+  'tenantId': '$CID',
   'async': True,
   'targetConfigId': '$EXISTING_CFG',
   'label': 'itest-restic-s3',
@@ -358,7 +358,7 @@ export RESTIC_PASSWORD_FILE="$PASS_FILE"
 
 # Resolve the actual storage target from the bundle target_kind so
 # the local restic CLI knows whether to read S3 or SFTP. Both repo
-# layouts use restic-files/<clientId> per ADR-036 §"repo URI portability".
+# layouts use restic-files/<tenantId> per ADR-036 §"repo URI portability".
 # No GET-by-id endpoint exists; read storageType from the list response.
 TARGET_KIND=$(apij "$API_BASE/api/v1/admin/backup-configs" \
   | python3 -c "

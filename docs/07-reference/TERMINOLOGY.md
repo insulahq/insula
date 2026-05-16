@@ -92,7 +92,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **GitOps** — Infrastructure-as-Code practice: Git repository is source of truth, controller syncs cluster to match Git state.
 
-**Grafana** — Visualization tool for Prometheus metrics. Dashboards for platform health, per-client usage, etc.
+**Grafana** — Visualization tool for Prometheus metrics. Dashboards for platform health, per-tenant usage, etc.
 
 ## H
 
@@ -218,7 +218,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Secret** — Kubernetes object storing sensitive data (passwords, API keys, TLS certs, etc.). Encrypted at rest.
 
-**SFTP** — SSH File Transfer Protocol. Secure file upload/download. Platform provides per-client SFTP access.
+**SFTP** — SSH File Transfer Protocol. Secure file upload/download. Platform provides per-tenant SFTP access.
 
 **Shared Pod** — _(Superseded by ADR-024)_ Previously described a pod serving multiple Starter clients. All clients now use dedicated pods.
 

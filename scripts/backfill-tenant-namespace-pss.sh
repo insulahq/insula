@@ -71,7 +71,7 @@ echo
 # ---------- Preview violators ----------
 # For each pod in each candidate namespace, check whether its
 # `securityContext` would survive PSS baseline enforcement. We do
-# this client-side rather than via dry-run because baseline's checks
+# this tenant-side rather than via dry-run because baseline's checks
 # are well-defined and short.
 #
 # A pod violates baseline if it sets ANY of:

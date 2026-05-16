@@ -188,7 +188,7 @@ scenario_lifecycle() {
 
   local stamp; stamp=$(date +%s)
   local company="Integration Test $stamp"
-  local resp; resp=$(api POST "/clients" "{\"company_name\":\"$company\",\"company_email\":\"int-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  local resp; resp=$(api POST "/clients" "{\"name\":\"$company\",\"primary_email\":\"int-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "client create failed: $resp"; return 1; }
   ok "client created cid=$cid"
@@ -384,7 +384,7 @@ scenario_reprovision() {
   # registry shipped — see clients/routes.ts.) Accept either: 200 is
   # the current contract; 204 stays accepted in case an older cluster
   # is being tested.
-  local del; del=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
+  local del; del=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
   local del_code; del_code=$(echo "$del" | tail -1 | awk '{print $NF}')
   [[ "$del_code" == "200" || "$del_code" == "204" ]] || { fail "client delete failed (HTTP $del_code) — body: $(echo "$del" | sed '$d' | head -c 300)"; return 1; }
   ok "client deleted (HTTP $del_code)"
@@ -458,16 +458,16 @@ scenario_reaper() {
   local stamp; stamp=$(date +%s)
   local company="Reaper Test $stamp"
   local resp; resp=$(api POST "/clients" \
-    "{\"company_name\":\"$company\",\"company_email\":\"reaper-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+    "{\"name\":\"$company\",\"primary_email\":\"reaper-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "reaper: client create failed"; return 1; }
   ok "reaper: client created cid=$cid"
   # Persist for the file-scope EXIT trap so any subsequent failure
   # (including SIGKILL / CI timeout) reliably drops this client via
-  # the cascading client-lifecycle DELETE — same pattern as
+  # the cascading tenant-lifecycle DELETE — same pattern as
   # scenario_mail's _persist_mail_cid. Without this, every reaper-
   # scenario early-return between here and the final DELETE leaks
-  # a `client-reaper-test-*` namespace and ~1 GB of tenant PVC,
+  # a `tenant-reaper-test-*` namespace and ~1 GB of tenant PVC,
   # which on staging accumulated to ~150 GB of orphan capacity
   # observed 2026-05-04.
   echo "$cid" >> /tmp/integration.cids
@@ -578,7 +578,7 @@ print(json.dumps(out))
 
   local stamp; stamp=$(date +%s)
   local resp; resp=$(api POST "/clients" \
-    "{\"company_name\":\"Bundle Test $stamp\",\"company_email\":\"bundle-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+    "{\"name\":\"Bundle Test $stamp\",\"primary_email\":\"bundle-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "bundle: client create failed"; return 1; }
   ok "bundle: client created cid=$cid"
@@ -602,7 +602,7 @@ print(json.dumps(out))
     # per target even on an empty tenant PVC).
     local include_files="false"
     if [[ "${BUNDLE_INCLUDE_FILES:-}" == "1" ]]; then include_files="true"; fi
-    local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"$label\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":$include_files,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+    local body; body="{\"tenantId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"$label\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":$include_files,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
     local b_resp; b_resp=$(api POST "/admin/tenant-bundles" "$body")
     local bundle_id status
     bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
@@ -680,7 +680,7 @@ print(json.dumps({
 # Why this scenario:
 #   It exercises bundle-browse + cart CRUD + the dispatch executor +
 #   identifier-safe upsert against a real Postgres + the cross-tenant
-#   guard (the bundle's clientId === cart's clientId path). The five
+#   guard (the bundle's tenantId === cart's tenantId path). The five
 #   pieces had passing unit tests, but only the harness proves they
 #   talk to each other across HTTP + the off-site target.
 scenario_restore() {
@@ -711,7 +711,7 @@ for c in (items if isinstance(items, list) else []):
 
   local stamp; stamp=$(date +%s)
   local resp; resp=$(api POST "/clients" \
-    "{\"company_name\":\"Restore Test $stamp\",\"company_email\":\"restore-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+    "{\"name\":\"Restore Test $stamp\",\"primary_email\":\"restore-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "restore: client create failed"; return 1; }
   ok "restore: client created cid=$cid"
@@ -726,7 +726,7 @@ for c in (items if isinstance(items, list) else []):
   ok "restore: domain created id=$domain_id hostname=$hostname"
 
   # Create a bundle (config component captures the domains row).
-  local body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+  local body="{\"tenantId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
   local b_resp; b_resp=$(api POST "/admin/tenant-bundles" "$body")
   local bundle_id; bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
   local b_status; b_status=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
@@ -745,7 +745,7 @@ for c in (items if isinstance(items, list) else []):
   ok "restore: domain deleted from live DB"
 
   # Create cart + add domains-by-id item.
-  local cart_resp; cart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E restore test $stamp\"}")
+  local cart_resp; cart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E restore test $stamp\"}")
   local cart_id; cart_id=$(echo "$cart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cart_id" ]] || { fail "restore: cart create failed: $(echo "$cart_resp" | head -c 300)"; api DELETE "/admin/tenant-bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: cart created $cart_id"
@@ -813,7 +813,7 @@ for c in (items if isinstance(items, list) else []):
     [[ "${fpods:-0}" -eq 0 ]] || { fail "restore/files: FM pod still around after 120s"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
 
     # Capture a NEW bundle that includes files.
-    local fbody; fbody="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-files-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":true,\"mailboxes\":false,\"config\":false,\"secrets\":false}}"
+    local fbody; fbody="{\"tenantId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-files-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":true,\"mailboxes\":false,\"config\":false,\"secrets\":false}}"
     local fb_resp; fb_resp=$(api POST "/admin/tenant-bundles" "$fbody")
     local fbundle_id; fbundle_id=$(echo "$fb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
     local fb_status; fb_status=$(echo "$fb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
@@ -875,7 +875,7 @@ for c in (items if isinstance(items, list) else []):
     # format — the executor's path-injection regex accepts both.
     # Strip a leading ./ if present.
     local cart_path="$marker_path"
-    local fcart_resp; fcart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E files restore $stamp\"}")
+    local fcart_resp; fcart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E files restore $stamp\"}")
     local fcart_id; fcart_id=$(echo "$fcart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
     [[ -n "$fcart_id" ]] || { fail "restore/files: cart create failed: $(echo "$fcart_resp" | head -c 300)"; api DELETE "/admin/tenant-bundles/$fbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/files: cart $fcart_id created"
@@ -1093,7 +1093,7 @@ EOF
     fi
 
     # Capture bundle with mailboxes=true.
-    local mbody; mbody="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-mbox-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":true,\"config\":false,\"secrets\":false}}"
+    local mbody; mbody="{\"tenantId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-mbox-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":true,\"config\":false,\"secrets\":false}}"
     local mb_b_resp; mb_b_resp=$(api POST "/admin/tenant-bundles" "$mbody")
     local mbundle_id; mbundle_id=$(echo "$mb_b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
     local mb_b_status; mb_b_status=$(echo "$mb_b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
@@ -1136,7 +1136,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
     ok "restore/mbox: bundle browse confirms $mb_addr in dump"
 
     # Build a cart with mailboxes-by-address.
-    local mcart_resp; mcart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E mbox restore $stamp\"}")
+    local mcart_resp; mcart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E mbox restore $stamp\"}")
     local mcart_id; mcart_id=$(echo "$mcart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
     [[ -n "$mcart_id" ]] || { fail "restore/mbox: cart create failed"; api DELETE "/admin/tenant-bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/mbox: cart $mcart_id created"
@@ -1194,7 +1194,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
       # ── Idempotency: a second cart with merge-skip-duplicates must
       # leave the INBOX size unchanged (Message-ID dedup actually works
       # against Stalwart).
-      local idem_cart_resp; idem_cart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E mbox idem $stamp\"}")
+      local idem_cart_resp; idem_cart_resp=$(api POST "/admin/restores/carts" "{\"tenantId\":\"$cid\",\"description\":\"E2E mbox idem $stamp\"}")
       local idem_cart_id; idem_cart_id=$(echo "$idem_cart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
       if [[ -n "$idem_cart_id" ]]; then
         api POST "/admin/restores/carts/$idem_cart_id/items" "$mitem" >/dev/null
@@ -1223,7 +1223,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
 
 # ─── scenario: mail ───────────────────────────────────────────────
 #
-# End-to-end mail flow: create client + domain + email_domain + mailbox,
+# End-to-end mail flow: create tenant + domain + email_domain + mailbox,
 # send SMTP, receive IMAP, verify DKIM key generated, exercise quota
 # notifier, check Stalwart admin gate, and clean up.
 #
@@ -1287,7 +1287,7 @@ scenario_mail() {
   [[ -n "$plan_id" && -n "$region_id" ]] || { fail "mail: could not resolve plan/region"; cleanup_mail; return 1; }
 
   local c_resp; c_resp=$(api POST "/clients" \
-    "{\"company_name\":\"Mail E2E $stamp\",\"company_email\":\"mail-e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+    "{\"name\":\"Mail E2E $stamp\",\"primary_email\":\"mail-e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   mail_cid=$(echo "$c_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_cid" ]] || { fail "mail: client create failed: $(echo "$c_resp" | head -c 300)"; cleanup_mail; return 1; }
   _persist_mail_cid  # HIGH fix: SIGKILL-resilient cleanup
@@ -1322,7 +1322,7 @@ scenario_mail() {
   # ── Step 4b: assert Stalwart-side x:Domain exists ───────────────────
   # Cut 3 (2026-05-04): use x:Domain/get with ids:null (server-side
   # filtering on x:Domain/query is broken — silently returns []),
-  # then grep client-side for the expected name. The kubectl run
+  # then grep tenant-side for the expected name. The kubectl run
   # output may include kubelet bookkeeping lines after the JMAP
   # response, so we just grep for the literal domain name.
   local x_domain_blob
@@ -1956,7 +1956,7 @@ cleanup() {
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null || true)
   if [[ -n "$cid" ]]; then
     log "cleanup: deleting test client $cid"
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
     rm -f /tmp/integration.cid
   fi
   # HIGH fix: drain mail-scenario clients persisted to /tmp/integration.cids
@@ -1967,7 +1967,7 @@ cleanup() {
     while IFS= read -r mcid; do
       [[ -n "$mcid" ]] || continue
       log "cleanup: deleting mail-scenario client $mcid"
-      curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$mcid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+      curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$mcid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
     done < /tmp/integration.cids
     rm -f /tmp/integration.cids
   fi

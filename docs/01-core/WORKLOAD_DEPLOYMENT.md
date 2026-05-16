@@ -6,7 +6,7 @@ The Workload Catalog provides **composable building blocks** — runtimes, datab
 
 **Workloads are generic runtimes, not pre-installed applications.** Clients upload their own application files via SFTP/Git Deploy and manage their software manually. For managed, pre-configured application stacks (WordPress, Nextcloud, Jitsi, etc.) see the **Application Catalog** (PLATFORM_ARCHITECTURE.md Section 3).
 
-This centralized approach eliminates per-client CI/CD pipelines, simplifies security patching, and provides consistent, isolated environments for every client.
+This centralized approach eliminates per-tenant CI/CD pipelines, simplifies security patching, and provides consistent, isolated environments for every client.
 
 ## Deployment Model: Dedicated Pod Per Client (ADR-024)
 
@@ -21,7 +21,7 @@ Every client — regardless of plan tier — gets their own dedicated pod in a `
 
 **Characteristics:**
 - Guaranteed CPU/memory limits per plan (enforced via ResourceQuota)
-- Dedicated database available as premium add-on (MariaDB StatefulSet in client namespace)
+- Dedicated database available as premium add-on (MariaDB StatefulSet in tenant namespace)
 - Scale-to-zero capability via KEDA for idle sites
 - Custom PHP/runtime configuration per client
 - Full pod-level and namespace-level isolation
@@ -78,7 +78,7 @@ Each catalog image includes:
 | Storage | Per-client PVC mounted at `/storage/customers/{id}/` (canonical path — ADR-016) |
 | Resource limits | Enforced via ResourceQuota per namespace (varies by plan) |
 | Scale-to-zero | KEDA-based for idle sites (configurable per plan) |
-| Database | Optional premium add-on: dedicated MariaDB StatefulSet in client namespace |
+| Database | Optional premium add-on: dedicated MariaDB StatefulSet in tenant namespace |
 
 ### Storage Strategy
 
@@ -98,7 +98,7 @@ spec:
       storage: 5Gi  # Varies by plan: Starter 5Gi, Business 20Gi, Premium 50Gi
 ```
 
-**Phase 2 (Longhorn, multi-node):** Per-client PVCs with Longhorn replication and per-client snapshots.
+**Phase 2 (Longhorn, multi-node):** Per-client PVCs with Longhorn replication and per-tenant snapshots.
 
 **Disk quota enforcement:**
 - ResourceQuota limits PVC size per namespace
@@ -109,10 +109,10 @@ spec:
 When a new client is created (any plan):
 
 1. Management API creates `client-{id}` namespace with ResourceQuota matching the plan
-2. PVC provisioned in client namespace
+2. PVC provisioned in tenant namespace
 3. Pod created with selected catalog image, PVC mounted at `/storage/customers/{id}/`
 4. Ingress rule created pointing client's domain to the client pod Service
-5. NetworkPolicy applied to isolate client namespace
+5. NetworkPolicy applied to isolate tenant namespace
 6. Optional: MariaDB StatefulSet provisioned if database add-on is enabled
 
 ### Plan Upgrades
@@ -267,8 +267,8 @@ Clients can switch between catalog images at any time without downtime:
 | **Full isolation** | Every client gets dedicated pod with namespace-level isolation |
 | **Lower resource usage** | Shared base layers across clients (Docker layer caching on nodes) |
 | **Simplified support** | Known environments reduce debugging complexity |
-| **No build infrastructure** | Eliminates per-client CI/CD pipelines |
-| **Simplified scaling** | Add nodes instead of managing per-client infrastructure |
+| **No build infrastructure** | Eliminates per-tenant CI/CD pipelines |
+| **Simplified scaling** | Add nodes instead of managing per-tenant infrastructure |
 
 ## Integration with Hosting Plans
 

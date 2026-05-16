@@ -104,7 +104,7 @@ To proceed:
 2. The modal explains: "shrink will quiesce your workloads,
    snapshot the PVC, drop and recreate it at the new size, then
    restore from the snapshot. Snapshot retained 7d as rollback."
-3. Confirm → calls `POST /admin/clients/:id/storage/resize` →
+3. Confirm → calls `POST /admin/tenants/:id/storage/resize` →
    `runResizeDestructive` orchestrator runs.
 4. Same progress modal as grow polls
    `/admin/storage/operations/:opId`. Expect tenant downtime ≈

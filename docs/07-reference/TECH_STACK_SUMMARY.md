@@ -68,7 +68,7 @@ A consolidated summary of all major technology choices made for the Kubernetes W
 | --- | --- | --- | --- |
 | **MariaDB** | Percona MariaDB Operator | Latest | Production-grade, replication support, operator-managed |
 | **PostgreSQL** | CloudNativePG | Latest | Cloud-native, excellent HA features, operator-managed |
-| **Caching** | Redis | Latest | Fast, single-threaded, per-client key prefix isolation |
+| **Caching** | Redis | Latest | Fast, single-threaded, per-tenant key prefix isolation |
 | **Session Storage** | Redis or PostgreSQL | Latest | Database-backed for pod restarts |
 
 ### Backup & Disaster Recovery
@@ -76,7 +76,7 @@ A consolidated summary of all major technology choices made for the Kubernetes W
 | Component | Choice | Version | Rationale |
 | --- | --- | --- | --- |
 | **Kubernetes Backup** | Velero | Latest | Snapshots, cluster state, incremental backups |
-| **Database Backups** | CronJob: mysqldump / pg_dump | Standard | Simple, reliable, per-client database exports |
+| **Database Backups** | CronJob: mysqldump / pg_dump | Standard | Simple, reliable, per-tenant database exports |
 | **File Backups** | rsync --archive | Standard | Plain filesystem copy, individually browseable. See ADR-015. |
 | **Offsite Backup** | SSHFS mount (direct write) | Standard | Mount on demand → write backups → unmount. Via NetBird mesh. Zero local disk. See ADR-014 backup notes. |
 
@@ -86,7 +86,7 @@ A consolidated summary of all major technology choices made for the Kubernetes W
 | --- | --- | --- | --- |
 | **Metrics** | Prometheus | Latest | Standard, flexible querying, PromQL |
 | **Logs** | Loki + Promtail | Latest | 10x less memory than ELK, Grafana integration |
-| **Dashboards** | Grafana | Latest | Rich visualization, alerting, per-client dashboards |
+| **Dashboards** | Grafana | Latest | Rich visualization, alerting, per-tenant dashboards |
 | **Alerting** | Alertmanager | Latest | Integrated with Prometheus, flexible routing |
 | **Distributed Tracing** | Tempo (Phase 2) | Latest | Low resource usage, Loki integration, deferred |
 

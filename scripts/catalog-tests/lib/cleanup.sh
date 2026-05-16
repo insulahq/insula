@@ -6,12 +6,12 @@
 # tenant namespace. Idempotent; suppresses errors so we don't leave a
 # half-cleaned tenant blocking the next run.
 tear_down_tenant() {
-  local client_id="$1" ns="$2"
-  if [[ -n "$client_id" ]]; then
+  local tenant_id="$1" ns="$2"
+  if [[ -n "$tenant_id" ]]; then
     # Soft-delete first so the platform's lifecycle hooks unwind in
     # order; force-delete only if the soft-delete didn't take.
-    api DELETE "/clients/${client_id}" >/dev/null 2>&1 || true
-    api DELETE "/clients/${client_id}?force=true" >/dev/null 2>&1 || true
+    api DELETE "/clients/${tenant_id}" >/dev/null 2>&1 || true
+    api DELETE "/clients/${tenant_id}?force=true" >/dev/null 2>&1 || true
   fi
   if [[ -n "$ns" ]]; then
     # The platform's client lifecycle deletes the namespace via its own

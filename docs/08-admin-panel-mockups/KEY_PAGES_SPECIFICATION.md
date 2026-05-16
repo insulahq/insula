@@ -93,7 +93,7 @@ This document details the layout, components, and interactions for the most crit
 
 ## Clients Management Page
 
-**URL:** `/admin/clients`  
+**URL:** `/admin/tenants`  
 **Role:** Admin, Billing Admin, Support Admin  
 **Permissions:** View all, Create, Edit, Suspend, Delete
 
@@ -177,7 +177,7 @@ This document details the layout, components, and interactions for the most crit
 
 ## Client Details Page
 
-**URL:** `/admin/clients/:clientId`  
+**URL:** `/admin/tenants/:clientId`  
 **Role:** Admin, Support Admin  
 **Permissions:** View, Edit, Manage Resources
 
@@ -584,7 +584,7 @@ Content includes:
 
 ## Application Instances Page
 
-**URL:** `/admin/clients/:clientId/applications`  
+**URL:** `/admin/tenants/:clientId/applications`  
 **Role:** Admin, Support  
 **Permissions:** View, Manage
 
@@ -801,7 +801,7 @@ Content includes:
 ```json
 {
   "id": "app-nextcloud-client-12345",
-  "client_id": "client-12345",
+  "tenant_id": "client-12345",
   "app_id": "nextcloud",
   "app_name": "Nextcloud",
   "version": "28.0",

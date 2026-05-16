@@ -1,7 +1,7 @@
 # Bulwark webmail IngressRoute for staging/production.
 #
 # Routes through the bulwark-impersonator sidecar (lives in the
-# Bulwark Pod) so /_impersonate handoffs from client-panel work.
+# Bulwark Pod) so /_impersonate handoffs from tenant-panel work.
 # The cert is issued via Let's Encrypt prod by cert-manager.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

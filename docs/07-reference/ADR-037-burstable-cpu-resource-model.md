@@ -1,7 +1,7 @@
 # ADR-037 — Asymmetric QoS Resource Model (Burstable CPU, Guaranteed Memory)
 
 **Status:** Accepted · 2026-05-12
-**Supersedes / related:** ADR-025 (Workload Catalog), ADR-026 (Application Catalog), ADR-033 (Client Lifecycle Hooks), ADR-036 (Custom Deployments)
+**Supersedes / related:** ADR-025 (Workload Catalog), ADR-026 (Application Catalog), ADR-033 (Tenant Lifecycle Hooks), ADR-036 (Custom Deployments)
 
 ## Context
 
@@ -100,7 +100,7 @@ Future work: a `plan.cpuMode = 'burstable' | 'reserved'` column for a paid tier 
 - **Risk**: Wrong ratios in a catalog manifest under-provision a component.
   - Mitigation: per-component `minCpu`/`minMemory` floors. Manifest authors derive ratios from upstream Helm charts. Integration test runs each app through E2E.
 - **Risk**: Noisy CPU-bursting tenant degrades quiet-tenant's perceived latency.
-  - Mitigation: cgroup CPU shares give proportional fair sharing under contention. Operators can isolate noisy tenants to dedicated nodes via `worker_node_name` pinning. Future `plan.cpuMode = 'reserved'` for paid guarantees.
+  - Mitigation: cgroup CPU shares give proportional fair sharing under contention. Operators can isolate noisy tenants to dedicated nodes via `node_name` pinning. Future `plan.cpuMode = 'reserved'` for paid guarantees.
 - **Risk**: Memory eviction on node pressure can still kill a Burstable pod (kubelet evicts Burstable-over-request first). Tenants declaring `requests.memory == limits.memory` are Guaranteed and protected.
   - Mitigation: already protected by our policy — every tenant container is Guaranteed for memory.
 - **Risk**: Custom-deployment containers (ADR-036) may pin their own CPU limit through `cpuLimit` in the spec.

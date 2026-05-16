@@ -43,7 +43,7 @@
 #                              default threshold) references THIS name.
 #                              One Coraza engine instance covers all of
 #                              them, keeping per-pod memory bounded.
-#   * coraza-platform@traefik — platform-ingress (admin / client panel)
+#   * coraza-platform@traefik — platform-ingress (admin / tenant panel)
 #                              variant. Same CRS but with the
 #                              platform-specific exclusions baked in:
 #                                - 911100 (Method Not Allowed) — admin

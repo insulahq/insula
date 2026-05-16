@@ -101,10 +101,10 @@ prereq_resolve_target() {
   log "── prereq: resolve target ingress ──"
   if [[ -n "$ROUTE_ID" ]]; then
     local row
-    row=$(psql_q "SELECT ir.id, ir.hostname, d.client_id, c.kubernetes_namespace
+    row=$(psql_q "SELECT ir.id, ir.hostname, d.tenant_id, c.kubernetes_namespace
                   FROM ingress_routes ir
                   JOIN domains d ON d.id = ir.domain_id
-                  JOIN clients c ON c.id = d.client_id
+                  JOIN clients c ON c.id = d.tenant_id
                   WHERE ir.id='${ROUTE_ID}';" 2>/dev/null | head -1)
     [[ -z "$row" ]] && { fail "ROUTE_ID=$ROUTE_ID not found"; return 1; }
     ROUTE_ID=$(echo "$row" | cut -d'|' -f1)
@@ -115,10 +115,10 @@ prereq_resolve_target() {
     return 0
   fi
   local row
-  row=$(psql_q "SELECT ir.id, ir.hostname, d.client_id, c.kubernetes_namespace
+  row=$(psql_q "SELECT ir.id, ir.hostname, d.tenant_id, c.kubernetes_namespace
                 FROM ingress_routes ir
                 JOIN domains d ON d.id = ir.domain_id
-                JOIN clients c ON c.id = d.client_id
+                JOIN clients c ON c.id = d.tenant_id
                 WHERE ir.hostname LIKE '%${HTTPS_TEST_DOMAIN_BASE}'
                   AND ir.status = 'active'
                 ORDER BY ir.created_at DESC
@@ -144,7 +144,7 @@ prereq_provision_tenant() {
   local stamp; stamp=$(date +%s)
   local company="oauth2-e2e-$stamp"
   local resp
-  resp=$(api POST "/clients" "{\"company_name\":\"$company\",\"company_email\":\"oauth2e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  resp=$(api POST "/clients" "{\"name\":\"$company\",\"primary_email\":\"oauth2e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   CLIENT_ID=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$CLIENT_ID" ]] || { fail "client create failed: $resp"; return 1; }
   PROVISIONED_CID="$CLIENT_ID"
@@ -253,7 +253,7 @@ scenario_enable() {
 {
   "enabled": true,
   "issuerUrl": "$OIDC_ISSUER",
-  "clientId": "$OIDC_CLIENT_ID",
+  "tenantId": "$OIDC_CLIENT_ID",
   "clientSecret": "$OIDC_CLIENT_SECRET",
   "authMethod": "client_secret_basic",
   "responseType": "code",
@@ -353,7 +353,7 @@ scenario_rotate_config() {
   local payload='{
     "enabled": true,
     "issuerUrl": "'$OIDC_ISSUER'",
-    "clientId": "'$OIDC_CLIENT_ID'",
+    "tenantId": "'$OIDC_CLIENT_ID'",
     "clientSecret": "'$OIDC_CLIENT_SECRET'",
     "authMethod": "client_secret_basic",
     "responseType": "code",

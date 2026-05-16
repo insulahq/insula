@@ -30,7 +30,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORKLOADS=(
   "platform|Deployment|admin-panel|0"
   "platform|Deployment|platform-api|0"
-  "platform|Deployment|client-panel|0"
+  "platform|Deployment|tenant-panel|0"
   "platform|Deployment|platform-suspended|0"
   "platform|Deployment|oauth2-proxy|0"
   "platform-system|Deployment|sftp-gateway|0"

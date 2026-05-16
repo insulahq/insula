@@ -17,11 +17,11 @@ rules:
     verbs: ["*"]
   # Traefik migration 2026-05-15: the system-settings/ingress-reconciler,
   # ingress-routes/traefik-apply helpers, mtls-providers, oidc/ingress-
-  # proxy-manager, tenant-provisioner, client-lifecycle/ingress-suspend,
+  # proxy-manager, tenant-provisioner, tenant-lifecycle/ingress-suspend,
   # private-workers/reconciler, domains/k8s-ingress, and ingress-auth/
   # reconciler create / get / replace IngressRoute + Middleware CRDs via
   # the kubernetes-client CustomObjectsApi. Without this rule the
-  # reconcilers 403 on every call and no admin/client/api/tenant
+  # reconcilers 403 on every call and no admin/tenant/api/tenant
   # IngressRoute is ever created — the cluster bootstraps but every
   # route 404s through Traefik. Phase 2 of the migration added the
   # emission code; the matching RBAC slipped through.
@@ -67,7 +67,7 @@ rules:
   # Subresource: pods/exec — used directly by SQL Manager (kubectl exec into
   # DB pods to run queries) and indirectly via RBAC privilege-escalation
   # prevention (platform-api must hold any permission it grants to
-  # sub-roles like sftp-gateway's file-manager role). @kubernetes/client-node
+  # sub-roles like sftp-gateway's file-manager role). @kubernetes/tenant-node
   # v1 establishes the exec channel via a WebSocket GET, so `get` is also
   # required alongside `create`.
   - apiGroups: [""]
@@ -116,11 +116,11 @@ rules:
     verbs: ["*"]
   # Traefik migration 2026-05-15: the system-settings/ingress-reconciler,
   # ingress-routes/traefik-apply helpers, mtls-providers, oidc/ingress-
-  # proxy-manager, tenant-provisioner, client-lifecycle/ingress-suspend,
+  # proxy-manager, tenant-provisioner, tenant-lifecycle/ingress-suspend,
   # private-workers/reconciler, domains/k8s-ingress, and ingress-auth/
   # reconciler create / get / replace IngressRoute + Middleware CRDs via
   # the kubernetes-client CustomObjectsApi. Without this rule the
-  # reconcilers 403 on every call and no admin/client/api/tenant
+  # reconcilers 403 on every call and no admin/tenant/api/tenant
   # IngressRoute is ever created — the cluster bootstraps but every
   # route 404s through Traefik. Phase 2 of the migration added the
   # emission code; the matching RBAC slipped through.
@@ -148,7 +148,7 @@ rules:
     verbs: ["get", "list"]
   # Node awareness: list/get for health checks and M1 node pinning,
   # plus patch so the admin API can update platform-managed labels
-  # (node-role, host-client-workloads, ingress-mode) + taints
+  # (node-role, host-tenant-workloads, ingress-mode) + taints
   # (server-only). `delete` is required for the M-NS-1 Drain-then-
   # Delete flow which removes a node from k8s after a successful drain.
   - apiGroups: [""]

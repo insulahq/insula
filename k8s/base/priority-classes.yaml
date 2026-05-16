@@ -4,11 +4,11 @@
 #
 #   tenant-default            (priority 0, globalDefault=true)
 #     Default for every Pod that doesn't set priorityClassName explicitly.
-#     The per-client ResourceQuota counts these Pods.
+#     The per-tenant ResourceQuota counts these Pods.
 #
 #   platform-tenant-overhead  (priority 100)
-#     For platform-managed Pods that LIVE IN a client namespace because
-#     they need to mount a client PVC (file-manager). Tenant ResourceQuota
+#     For platform-managed Pods that LIVE IN a tenant namespace because
+#     they need to mount a tenant PVC (file-manager). Tenant ResourceQuota
 #     EXEMPTS this class via scopeSelector — eliminates the previous
 #     SYSTEM_CPU_RESERVE/SYSTEM_MEMORY_RESERVE padding.
 #     Priority > tenant-default so file-manager survives cluster
@@ -30,7 +30,7 @@ metadata:
   name: tenant-default
 value: 0
 globalDefault: true
-description: "Default priority for tenant workloads. Counts against the client ResourceQuota."
+description: "Default priority for tenant workloads. Counts against the tenant ResourceQuota."
 preemptionPolicy: PreemptLowerPriority
 ---
 apiVersion: scheduling.k8s.io/v1

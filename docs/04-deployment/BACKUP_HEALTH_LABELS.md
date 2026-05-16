@@ -52,7 +52,7 @@ platform.example.test/client-id: "<uuid>"
 ```
 
 When present, failure notifications route to that client's
-`client_admin` users via `getClientNotificationRecipients` instead of
+`tenant_admin` users via `getClientNotificationRecipients` instead of
 the platform admin pool. Useful for tenant-initiated backup Jobs.
 
 ## Optional annotation: display name

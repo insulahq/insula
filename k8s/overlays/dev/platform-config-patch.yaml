@@ -11,7 +11,7 @@ data:
   # bootstrap's envsubst pass) from the platform-cluster-config CM in
   # flux-system. local.sh sets DOMAIN=k8s-platform.test by default.
   ingress-base-domain: "${DOMAIN}"
-  # Canonical apex domain. Drives admin/client/dex/webmail/mail subdomains.
+  # Canonical apex domain. Drives admin/tenant/dex/webmail/mail subdomains.
   # Prefer this over ingress-base-domain on new deploys — both are read as
   # fallbacks by backend/src/config/domains.ts, so the rename is backwards-
   # compatible.
@@ -21,7 +21,7 @@ data:
   # operator visits in their browser, so they include the dev NodePort :2010.
   # NOT what the in-cluster services use for routing.
   admin-url: "http://admin.${DOMAIN}:2010"
-  client-url: "http://client.${DOMAIN}:2010"
+  tenant-url: "http://client.${DOMAIN}:2010"
   # Canonical public URL for CRL distribution URLs (mTLS provider metadata).
   public-url: "http://admin.${DOMAIN}:2010"
   support-email: "admin@${DOMAIN}"
@@ -41,7 +41,7 @@ data:
   # Passkey (WebAuthn) RP — placeholder-templated. Resolved by Flux
   # postBuild.substituteFrom (or bootstrap envsubst).
   passkey-rp-id: "${DOMAIN}"
-  passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
+  passkey-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
   # Private Worker — local dev uses ws:// (no TLS) so the agent can dial
   # in without a self-signed cert dance. Wildcard host needs an
   # /etc/hosts line: `127.0.0.1  tunnels.k8s-platform.test`.

@@ -41,7 +41,7 @@
 #   STAGING_HOST                root@staging1.example.test
 #   SERVERS_TXT                 ~/k8s-staging/servers.txt
 #   TARGET_CFG_ID               6476f958-... (integration-test-s3)
-#   CLIENT_ID                   b4384ca8-c5c9-4e1e-8c1c-f864c7a2419d
+#   TENANT_ID                   b4384ca8-c5c9-4e1e-8c1c-f864c7a2419d
 #   TEST_ADDR                   jack@x.staging.example.test
 #   RESTORE_ADDR                john@x.staging.example.test
 #   COUNT                       1000
@@ -57,7 +57,7 @@ SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 STAGING_HOST="${STAGING_HOST:-root@staging1.example.test}"
 SERVERS_TXT="${SERVERS_TXT:-$HOME/k8s-staging/servers.txt}"
 TARGET_CFG_ID="${TARGET_CFG_ID:-6476f958-2c4b-4ec2-bba0-6d4f1764b24b}"
-CLIENT_ID="${CLIENT_ID:-b4384ca8-c5c9-4e1e-8c1c-f864c7a2419d}"
+TENANT_ID="${TENANT_ID:-b4384ca8-c5c9-4e1e-8c1c-f864c7a2419d}"
 TEST_ADDR="${TEST_ADDR:-jack@x.staging.example.test}"
 RESTORE_ADDR="${RESTORE_ADDR:-john@x.staging.example.test}"
 COUNT="${COUNT:-1000}"
@@ -247,7 +247,7 @@ RESP=$(apij -X POST "$API_BASE/api/v1/admin/tenant-bundles" \
   -d "$(python3 -c "
 import json
 print(json.dumps({
-  'clientId': '$CLIENT_ID',
+  'tenantId': '$TENANT_ID',
   'async': True,
   'targetConfigId': '$TARGET_CFG_ID',
   'label': 'jmap-full-e2e-$MARKER',
@@ -288,13 +288,13 @@ const c = require("crypto");
 const secret = Buffer.from(process.argv[1], "hex");
 const out = c.hkdfSync("sha256", secret, Buffer.alloc(0), Buffer.from("restic-tenant-" + process.argv[2]), 32);
 process.stdout.write(Buffer.from(out).toString("hex"));
-' "$PLATFORM_OIDC_KEY" "$CLIENT_ID")
+' "$PLATFORM_OIDC_KEY" "$TENANT_ID")
 PASS_FILE="$WORK/pw"
 ( umask 077 && printf '%s' "$PASS" > "$PASS_FILE" )
 export RESTIC_PASSWORD_FILE="$PASS_FILE"
 export AWS_ACCESS_KEY_ID="$S3_KEY"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET"
-REPO="s3:$S3_ENDPOINT/$S3_BUCKET/tenant-bundles-itest/restic-mailboxes/$CLIENT_ID"
+REPO="s3:$S3_ENDPOINT/$S3_BUCKET/tenant-bundles-itest/restic-mailboxes/$TENANT_ID"
 
 SNAPS=$("$RESTIC_BIN" --quiet --repo "$REPO" snapshots --tag "bundle-id=$BUNDLE1" --json)
 SNAP1_ID=$(echo "$SNAPS" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
@@ -389,7 +389,7 @@ RESP=$(apij -X POST "$API_BASE/api/v1/admin/tenant-bundles" \
   -d "$(python3 -c "
 import json
 print(json.dumps({
-  'clientId': '$CLIENT_ID',
+  'tenantId': '$TENANT_ID',
   'async': True,
   'targetConfigId': '$TARGET_CFG_ID',
   'label': 'jmap-incr-e2e-$MARKER',

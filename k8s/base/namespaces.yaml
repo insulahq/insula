@@ -20,7 +20,7 @@ metadata:
   name: hosting
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    purpose: client-workloads
+    purpose: tenant-workloads
 ---
 apiVersion: v1
 kind: Namespace

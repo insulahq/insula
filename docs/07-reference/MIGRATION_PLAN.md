@@ -46,7 +46,7 @@ All panels (Plesk, cPanel, Virtualmin):
 
 ### K8s Platform Creation
 
-- [ ] Provision client namespace on K8s
+- [ ] Provision tenant namespace on K8s
 - [ ] Create PersistentVolumeClaim for site files
 - [ ] Deploy dedicated web pod with matched catalog image in `client-{id}` namespace (ADR-024)
 - [ ] Apply ResourceQuota and LimitRange based on hosting plan
@@ -153,7 +153,7 @@ Plesk RPC API + SSH file access
    - Select appropriate catalog image (Apache+PHP version)
    - Generate namespace configuration
 8. **Create K8s resources**:
-   - Create client namespace
+   - Create tenant namespace
    - Create PersistentVolumeClaim
    - Deploy pod (shared or dedicated based on plan)
    - Create Ingress rules for all domains

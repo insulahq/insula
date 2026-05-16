@@ -83,7 +83,7 @@ External DNS servers (managed by infrastructure project):
 
 **Management API Request:**
 ```bash
-curl -X POST http://api.platform.com/api/v1/clients/client_001/domains \
+curl -X POST http://api.platform.com/api/v1/tenants/client_001/domains \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -217,7 +217,7 @@ Customer's website on platform
 
 **Management API Request:**
 ```bash
-curl -X POST http://api.platform.com/api/v1/clients/client_001/domains \
+curl -X POST http://api.platform.com/api/v1/tenants/client_001/domains \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -354,7 +354,7 @@ Both nameservers respond to queries
 
 **Management API Request:**
 ```bash
-curl -X POST http://api.platform.com/api/v1/clients/client_001/domains \
+curl -X POST http://api.platform.com/api/v1/tenants/client_001/domains \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

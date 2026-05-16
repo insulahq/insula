@@ -12,7 +12,7 @@ the design rationale.
 - Existing tenants keep their current webmail until they delete their
   email domain and re-enable it under the new default.
 - Roundcube and Bulwark share Stalwart's master-user account
-  (`master@master.local`) for client-panel "Open Webmail" handoff.
+  (`master@master.local`) for tenant-panel "Open Webmail" handoff.
   Both engines verify JWTs signed with the same platform `JWT_SECRET`.
 - Bulwark requires three sibling Deployments in the `mail` namespace:
   `bulwark`, `bulwark-impersonator`, and (dev DinD only)
@@ -33,7 +33,7 @@ the design rationale.
                                           Stalwart mgmt :8080
 
 
-   Browser (client_admin clicks "Open Webmail" on a tenant mailbox)
+   Browser (tenant_admin clicks "Open Webmail" on a tenant mailbox)
      │  (1) POST /api/v1/email/webmail-token { mailbox_id, engine?: 'bulwark' }
      ▼
    platform-api ──► mints HS256 JWT { iss:'platform-api/webmail', mailbox,
@@ -54,7 +54,7 @@ the design rationale.
 | Component | Where | Purpose |
 |---|---|---|
 | `bulwark` Deployment | `mail/bulwark` | The Bulwark Next.js SPA |
-| `bulwark-impersonator` Deployment | `mail/bulwark-impersonator` | Reverse-proxy + JWT-signed master-user handoff for client-panel "Open Webmail" |
+| `bulwark-impersonator` Deployment | `mail/bulwark-impersonator` | Reverse-proxy + JWT-signed master-user handoff for tenant-panel "Open Webmail" |
 | `stalwart-url-rewriter` Deployment | `mail/stalwart-url-rewriter` (**dev DinD only**) | Rewrites Stalwart self-reported URLs (port injection, JSON unzip, credentialed CORS) |
 | `platform_settings.default_webmail_engine` | `system-db` | `'roundcube'` or `'bulwark'`. Set via webmail-settings update endpoint |
 | `bulwark-impersonator-secrets` | `mail` ns | `JWT_SECRET` (shared with platform-api) + `STALWART_MASTER_USER` / `STALWART_MASTER_PASSWORD` |

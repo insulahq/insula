@@ -20,12 +20,12 @@ resources:
   - database.yaml
   - backend-deployment.yaml
   - admin-deployment.yaml
-  - client-deployment.yaml
+  - tenant-deployment.yaml
   - platform-suspended.yaml
   # k8s/base/ingress.yaml was REMOVED in the Traefik migration. The
   # platform-ingress is no longer a static placeholder Kustomize resource —
   # platform-api's ingress-reconciler creates an IngressRoute (traefik.io/
-  # v1alpha1) from scratch on startup using the admin/client panel URLs
+  # v1alpha1) from scratch on startup using the admin/tenant panel URLs
   # stored in system_settings. See backend/src/modules/system-settings/
   # ingress-reconciler.ts.
   - sftp-gateway.yaml
@@ -53,7 +53,7 @@ resources:
   # private-worker-tunnel — cluster-wide singletons for the Private
   # Worker feature: cert-manager Certificate for tunnels.${DOMAIN} and
   # the anchor Ingress that holds the TLS cert + catch-all backend.
-  # Per-client tunnel-{slug} Ingresses + ExternalName Services + frps
+  # Per-tenant tunnel-{slug} Ingresses + ExternalName Services + frps
   # Deployments are materialised at runtime by the backend reconciler
   # in backend/src/modules/private-workers/. See
   # docs/04-deployment/PRIVATE_WORKER.md for the full design.

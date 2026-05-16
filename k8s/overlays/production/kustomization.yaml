@@ -62,5 +62,5 @@ images:
     newTag: "0.0.0"  # Updated by release.yml PR
   - name: ghcr.io/insulahq/hosting-platform/admin-panel
     newTag: "0.0.0"  # Updated by release.yml PR
-  - name: ghcr.io/insulahq/hosting-platform/client-panel
+  - name: ghcr.io/insulahq/hosting-platform/tenant-panel
     newTag: "0.0.0"  # Updated by release.yml PR

@@ -50,6 +50,6 @@ images:
   - name: ghcr.io/insulahq/hosting-platform/admin-panel
     newName: hosting-platform/admin-panel
     newTag: local
-  - name: ghcr.io/insulahq/hosting-platform/client-panel
-    newName: hosting-platform/client-panel
+  - name: ghcr.io/insulahq/hosting-platform/tenant-panel
+    newName: hosting-platform/tenant-panel
     newTag: local

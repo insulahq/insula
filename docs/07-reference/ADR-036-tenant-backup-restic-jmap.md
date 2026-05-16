@@ -49,7 +49,7 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 
 ### Primitive 3 — pre-capture logical dump of tenant application databases
 
-- Before the files-component restic capture runs, a small **platform-api-side helper** (`tenant-bundles/components/database-predump.ts`) iterates `SELECT * FROM databases WHERE client_id = ?` and for each row calls the **existing** SQL Manager primitive `db-manager.ts:exportDatabaseToPvc`.
+- Before the files-component restic capture runs, a small **platform-api-side helper** (`tenant-bundles/components/database-predump.ts`) iterates `SELECT * FROM databases WHERE tenant_id = ?` and for each row calls the **existing** SQL Manager primitive `db-manager.ts:exportDatabaseToPvc`.
 - `exportDatabaseToPvc` runs `mysqldump`/`mariadb-dump` (with `--routines --triggers`) or `pg_dump` **inside the live tenant DB pod** via `execInPod`, using the credentials already owned by the SQL Manager. The dump file lands on the tenant PVC under `/exports/<filename>.sql` (moved there by the existing file-manager step in that helper).
 - The files-component restic capture then snapshots the PVC including the dumps that are now already there. Restore offers two paths: full PVC re-hydrate (raw on-disk files; engine-specific recovery may be needed) OR logical re-import via the existing `db-manager.ts:importSqlFromPvcFile` (replays the SQL through the live DB pod; guaranteed consistent).
 - This is **not** a new bundle component. The `databases` table stays under the `config` component (metadata only). The `files` component continues to claim `{ns}-storage` per ADR-035 — its capture content now happens to include guaranteed-consistent dumps as well as raw bytes.

@@ -48,26 +48,26 @@ check_status() {
   fi
 }
 
-# IMAP Phase 5: track all clients created during this run so we can
+# IMAP Phase 5: track all tenants created during this run so we can
 # clean them up even if the script exits early (trap handler). This
 # prevents the orphaned-namespace leak that exhausted node pod capacity.
-CREATED_CLIENT_IDS=()
+CREATED_TENANT_IDS=()
 
-cleanup_smoke_clients() {
-  if [[ ${#CREATED_CLIENT_IDS[@]} -eq 0 ]]; then return; fi
+cleanup_smoke_tenants() {
+  if [[ ${#CREATED_TENANT_IDS[@]} -eq 0 ]]; then return; fi
   echo ""
-  echo "  [cleanup] Deleting ${#CREATED_CLIENT_IDS[@]} smoke-test client(s)..."
-  for cid in "${CREATED_CLIENT_IDS[@]}"; do
+  echo "  [cleanup] Deleting ${#CREATED_TENANT_IDS[@]} smoke-test tenant(s)..."
+  for cid in "${CREATED_TENANT_IDS[@]}"; do
     curl -sS -o /dev/null -w "" -X DELETE \
       -H "Authorization: Bearer ${TOKEN:-}" \
-      "${API_URL}/api/v1/clients/${cid}" 2>/dev/null || true
+      "${API_URL}/api/v1/tenants/${cid}" 2>/dev/null || true
     echo "    ✓ $cid"
   done
 }
-trap cleanup_smoke_clients EXIT
+trap cleanup_smoke_tenants EXIT
 
 # IMAP Phase 5: orphan-namespace startup warning. If there are many
-# client-smoke-test-* namespaces in k3s with no matching DB row,
+# tenant-smoke-test-* namespaces in k3s with no matching DB row,
 # alert the operator before adding more.
 K3S_CONTAINER="${K3S_CONTAINER:-}"
 if [[ -z "$K3S_CONTAINER" ]]; then
@@ -82,10 +82,10 @@ fi
 ORPHAN_COUNT=0
 if [[ -n "$K3S_CONTAINER" ]]; then
   ORPHAN_COUNT=$(docker exec "$K3S_CONTAINER" kubectl get ns --no-headers 2>/dev/null \
-    | awk '/client-smoke-test/ {n++} END {print n+0}' || echo "0")
+    | awk '/tenant-smoke-test/ {n++} END {print n+0}' || echo "0")
 fi
 if (( ORPHAN_COUNT > 10 )); then
-  echo "  ⚠ WARNING: $ORPHAN_COUNT orphaned client-smoke-test-* namespaces found in k3s."
+  echo "  ⚠ WARNING: $ORPHAN_COUNT orphaned tenant-smoke-test-* namespaces found in k3s."
   echo "    Run ./scripts/cleanup-orphaned-namespaces.sh to reclaim pod capacity."
   echo ""
 fi
@@ -147,15 +147,15 @@ fi
 # ─── Clients (same params as frontend) ─────────────────────────────────────────
 
 log "── Clients ──"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/clients?limit=100")
-check_status "GET /clients?limit=100 (frontend default)" "200" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants?limit=100")
+check_status "GET /tenants?limit=100 (frontend default)" "200" "$STATUS"
 
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/clients?limit=50")
-check_status "GET /clients?limit=50" "200" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants?limit=50")
+check_status "GET /tenants?limit=50" "200" "$STATUS"
 
 # Verify limit=200 fails (frontend should never send this)
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/clients?limit=200")
-check_status "GET /clients?limit=200 rejected" "400" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants?limit=200")
+check_status "GET /tenants?limit=200 rejected" "400" "$STATUS"
 
 # ─── CRUD: Create → Read → Delete ──────────────────────────────────────────────
 
@@ -167,36 +167,36 @@ if [[ -n "$PLAN_ID" && -n "$REGION_ID" ]]; then
   # Create
   CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
-    -d "{\"company_name\":\"smoke-test-$(date +%s)\",\"company_email\":\"smoke@test.local\",\"plan_id\":\"${PLAN_ID}\",\"region_id\":\"${REGION_ID}\"}" \
-    "${API_URL}/api/v1/clients")
+    -d "{\"name\":\"smoke-test-$(date +%s)\",\"primary_email\":\"smoke@test.local\",\"plan_id\":\"${PLAN_ID}\",\"region_id\":\"${REGION_ID}\"}" \
+    "${API_URL}/api/v1/tenants")
   CREATE_CODE=$(echo "$CREATE_RESPONSE" | tail -1)
   CREATE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
   CLIENT_ID=$(echo "$CREATE_BODY" | jq -r '.data.id // empty')
   # IMAP Phase 5: register for trap cleanup so an early exit
   # doesn't leak the namespace.
   if [[ -n "$CLIENT_ID" ]]; then
-    CREATED_CLIENT_IDS+=("$CLIENT_ID")
+    CREATED_TENANT_IDS+=("$CLIENT_ID")
   fi
   # 200 or 201 are both valid for creation
   if [[ "$CREATE_CODE" == "200" || "$CREATE_CODE" == "201" ]]; then
-    pass "POST /clients (create) (HTTP $CREATE_CODE)"
+    pass "POST /tenants (create) (HTTP $CREATE_CODE)"
   else
-    fail "POST /clients (create)" "expected 200/201, got $CREATE_CODE"
+    fail "POST /tenants (create)" "expected 200/201, got $CREATE_CODE"
   fi
 
   if [[ -n "$CLIENT_ID" ]]; then
     # Read
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${CLIENT_ID}")
-    check_status "GET /clients/:id (read)" "200" "$STATUS"
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${CLIENT_ID}")
+    check_status "GET /tenants/:id (read)" "200" "$STATUS"
 
     # Delete WITHOUT Content-Type header (same as fixed frontend)
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${CLIENT_ID}")
-    check_status "DELETE /clients/:id (no Content-Type)" "204" "$STATUS"
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${CLIENT_ID}")
+    check_status "DELETE /tenants/:id (no Content-Type)" "204" "$STATUS"
 
     # Delete WITH Content-Type: known Fastify limitation (empty JSON body rejected)
     # Our frontend avoids this by not sending Content-Type on bodyless requests
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH_HEADER" \
-      -H "Content-Type: application/json" "${API_URL}/api/v1/clients/${CLIENT_ID}")
+      -H "Content-Type: application/json" "${API_URL}/api/v1/tenants/${CLIENT_ID}")
     if [[ "$STATUS" == "500" || "$STATUS" == "400" || "$STATUS" == "404" ]]; then
       pass "DELETE with Content-Type:application/json → HTTP $STATUS (known Fastify behavior, frontend avoids)"
     else
@@ -277,8 +277,8 @@ check_status "GET /admin/ingress-settings" "200" "$STATUS"
 # ─── Auth Protected (no token) ─────────────────────────────────────────────────
 
 log "── Auth Protection ──"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/clients")
-check_status "GET /clients without auth → 401" "401" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/tenants")
+check_status "GET /tenants without auth → 401" "401" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/admin/dashboard")
 check_status "GET /admin/dashboard without auth → 401" "401" "$STATUS"
@@ -395,7 +395,7 @@ fi
 #     the admin-API principal creation does not flow to the SQL backend.
 #
 #   MAIL_E2E_SQL=1  (Phase 2a — canonical)
-#     Uses the backend's real APIs to provision a client → domain → email
+#     Uses the backend's real APIs to provision a tenant → domain → email
 #     domain → mailbox, then authenticates to Stalwart using those
 #     credentials. Proves the SQL directory sees platform-provisioned users.
 #
@@ -463,7 +463,7 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
     fail "SQL E2E bootstrap" "no admin token — cannot provision test data"
   else
     # Unique suffix so re-runs don't conflict. Capture once so the domain,
-    # client, and password all share the same epoch.
+    # tenant, and password all share the same epoch.
     SQL_E2E_SUFFIX="$(date +%s)"
     SQL_E2E_CLIENT_NAME="sql-e2e-${SQL_E2E_SUFFIX}"
     SQL_E2E_DOMAIN_NAME="sqltest${SQL_E2E_SUFFIX}.mail.local"
@@ -480,21 +480,21 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
     if [[ -z "$SQL_PLAN_ID" || -z "$SQL_REGION_ID" ]]; then
       fail "SQL E2E prereqs" "no plan or region seeded"
     else
-      # 1) Create client
+      # 1) Create tenant
       CLIENT_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
-        -d "{\"company_name\":\"${SQL_E2E_CLIENT_NAME}\",\"company_email\":\"sqltest@test.local\",\"plan_id\":\"${SQL_PLAN_ID}\",\"region_id\":\"${SQL_REGION_ID}\"}" \
-        "${API_URL}/api/v1/clients")
+        -d "{\"name\":\"${SQL_E2E_CLIENT_NAME}\",\"primary_email\":\"sqltest@test.local\",\"plan_id\":\"${SQL_PLAN_ID}\",\"region_id\":\"${SQL_REGION_ID}\"}" \
+        "${API_URL}/api/v1/tenants")
       SQL_E2E_CLIENT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id // empty')
       # IMAP Phase 5: register for trap cleanup
-      [[ -n "$SQL_E2E_CLIENT_ID" ]] && CREATED_CLIENT_IDS+=("$SQL_E2E_CLIENT_ID")
+      [[ -n "$SQL_E2E_CLIENT_ID" ]] && CREATED_TENANT_IDS+=("$SQL_E2E_CLIENT_ID")
 
       if [[ -z "$SQL_E2E_CLIENT_ID" ]]; then
-        fail "SQL E2E create client" "${CLIENT_RESP:0:200}"
+        fail "SQL E2E create tenant" "${CLIENT_RESP:0:200}"
       else
-        # 2) Create domain under that client
+        # 2) Create domain under that tenant
         DOMAIN_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
           -d "{\"domain_name\":\"${SQL_E2E_DOMAIN_NAME}\"}" \
-          "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/domains")
+          "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}/domains")
         SQL_E2E_DOMAIN_ID=$(echo "$DOMAIN_RESP" | jq -r '.data.id // empty')
 
         if [[ -z "$SQL_E2E_DOMAIN_ID" ]]; then
@@ -503,7 +503,7 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
           # 3) Enable email on the domain
           ED_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
             -d '{}' \
-            "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_DOMAIN_ID}/enable")
+            "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_DOMAIN_ID}/enable")
           SQL_E2E_EMAIL_DOMAIN_ID=$(echo "$ED_RESP" | jq -r '.data.id // empty')
 
           if [[ -z "$SQL_E2E_EMAIL_DOMAIN_ID" ]]; then
@@ -512,7 +512,7 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
             # 4) Create a mailbox with a known password
             MB_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
               -d "{\"local_part\":\"${SQL_E2E_LOCAL_PART}\",\"password\":\"${SQL_E2E_PASSWORD}\",\"display_name\":\"SQL E2E Bob\",\"quota_mb\":100}" \
-              "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_EMAIL_DOMAIN_ID}/mailboxes")
+              "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_EMAIL_DOMAIN_ID}/mailboxes")
             SQL_E2E_MAILBOX_ID=$(echo "$MB_RESP" | jq -r '.data.id // empty')
 
             if [[ -z "$SQL_E2E_MAILBOX_ID" ]]; then
@@ -567,14 +567,14 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
                 pass "SQL E2E bounce: 5xx for nonexistent local recipient (G2)"
               fi
 
-              # ─── G7 — Suspend lifecycle: suspending the client via the
+              # ─── G7 — Suspend lifecycle: suspending the tenant via the
               # admin API must immediately block SMTP AUTH. The
               # `stalwart.principals` view filters mailboxes whose
-              # owning client is suspended (migration 0009 +
+              # owning tenant is suspended (migration 0009 +
               # subsequent enforcement work).
               curl -sS -X PATCH -H "$AUTH_HEADER" -H "Content-Type: application/json" \
                 -d '{"status":"suspended"}' \
-                "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
+                "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
               # Stalwart caches the principal lookup briefly (≤1s); a
               # tiny sleep prevents a flaky pass on a stale cache.
               sleep 2
@@ -592,13 +592,13 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
               if [[ "$SUSPENDED_OUTPUT" == *'SUS_EXIT=0'* ]]; then
                 fail "SQL E2E suspend" "expected AUTH failure; got: ${SUSPENDED_OUTPUT:0:500}"
               else
-                pass "SQL E2E suspend: AUTH blocked while client suspended (G7)"
+                pass "SQL E2E suspend: AUTH blocked while tenant suspended (G7)"
               fi
 
               # Reactivate and prove AUTH works again.
               curl -sS -X PATCH -H "$AUTH_HEADER" -H "Content-Type: application/json" \
                 -d '{"status":"active"}' \
-                "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
+                "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
               sleep 2
               REACT_OUTPUT=$(docker exec "$K3S_CONTAINER" kubectl -n mail run sql-e2e-reactivate --rm -i \
                 --image=curlimages/curl:latest --restart=Never --quiet --command -- \
@@ -624,13 +624,13 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
           # the domain (removes email_domains), then the domain itself.
           if [[ -n "${SQL_E2E_MAILBOX_ID:-}" ]]; then
             curl -sS -X DELETE -H "$AUTH_HEADER" \
-              "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/mailboxes/${SQL_E2E_MAILBOX_ID}" >/dev/null 2>&1 || true
+              "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}/mailboxes/${SQL_E2E_MAILBOX_ID}" >/dev/null 2>&1 || true
           fi
-          curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_DOMAIN_ID}/disable" >/dev/null 2>&1 || true
-          curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/domains/${SQL_E2E_DOMAIN_ID}" >/dev/null 2>&1 || true
+          curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_DOMAIN_ID}/disable" >/dev/null 2>&1 || true
+          curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}/domains/${SQL_E2E_DOMAIN_ID}" >/dev/null 2>&1 || true
         fi
 
-        curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
+        curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
       fi
     fi
   fi
@@ -639,9 +639,9 @@ fi
 # ─── Webmail SSO E2E (Phase 2b) ──────────────────────────────────────────────
 #
 # Exercises the full webmail SSO chain:
-#   1. Create a client + domain + email domain + mailbox + client_user
+#   1. Create a tenant + domain + email domain + mailbox + tenant_user
 #   2. Grant the user mailbox access
-#   3. Log in as the client user
+#   3. Log in as the tenant user
 #   4. POST /api/v1/email/webmail-token → verify response shape
 #   5. Decode the JWT, assert mailbox claim + 30s exp
 #   6. (If webmail container is reachable) GET the returned webmailUrl and
@@ -677,33 +677,33 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
     fail "Webmail E2E prereqs" "no plan or region seeded"
   else
     WM_CLIENT_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
-      -d "{\"company_name\":\"${WM_CLIENT_NAME}\",\"company_email\":\"wm@test.local\",\"plan_id\":\"${WM_PLAN_ID}\",\"region_id\":\"${WM_REGION_ID}\"}" \
-      "${API_URL}/api/v1/clients" | jq -r '.data.id // empty')
+      -d "{\"name\":\"${WM_CLIENT_NAME}\",\"primary_email\":\"wm@test.local\",\"plan_id\":\"${WM_PLAN_ID}\",\"region_id\":\"${WM_REGION_ID}\"}" \
+      "${API_URL}/api/v1/tenants" | jq -r '.data.id // empty')
     # IMAP Phase 5: register for trap cleanup
-    [[ -n "$WM_CLIENT_ID" ]] && CREATED_CLIENT_IDS+=("$WM_CLIENT_ID")
+    [[ -n "$WM_CLIENT_ID" ]] && CREATED_TENANT_IDS+=("$WM_CLIENT_ID")
 
     if [[ -z "$WM_CLIENT_ID" ]]; then
-      fail "Webmail E2E create client" ""
+      fail "Webmail E2E create tenant" ""
     else
       WM_DOMAIN_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"domain_name\":\"${WM_DOMAIN_NAME}\"}" \
-        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/domains" | jq -r '.data.id // empty')
+        "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/domains" | jq -r '.data.id // empty')
 
       WM_EDOMAIN_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" -d '{}' \
-        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/email/domains/${WM_DOMAIN_ID}/enable" | jq -r '.data.id // empty')
+        "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/email/domains/${WM_DOMAIN_ID}/enable" | jq -r '.data.id // empty')
 
       WM_MB_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"local_part\":\"alice\",\"password\":\"WmE2E-${WM_SFX}\",\"quota_mb\":50}" \
-        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/email/domains/${WM_EDOMAIN_ID}/mailboxes" | jq -r '.data.id // empty')
+        "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/email/domains/${WM_EDOMAIN_ID}/mailboxes" | jq -r '.data.id // empty')
 
       WM_USER_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"full_name\":\"WM Client User\",\"password\":\"WmCu-${WM_SFX}\"}" \
-        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/users")
+        "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/users")
       WM_USER_ID=$(echo "$WM_USER_RESP" | jq -r '.data.id // empty')
 
       curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"user_id\":\"${WM_USER_ID}\"}" \
-        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/mailboxes/${WM_MB_ID}/access" >/dev/null
+        "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/mailboxes/${WM_MB_ID}/access" >/dev/null
 
       WM_CU_TOKEN=$(curl -sS "${API_URL}/api/v1/auth/login" -H "Content-Type: application/json" \
         -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"password\":\"WmCu-${WM_SFX}\"}" | jq -r '.data.token // empty')
@@ -737,13 +737,13 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
           fi
 
           # Phase 2c.5: verify the webmail Ingress was created in the
-          # client's namespace (the backend calls ensureWebmailIngress
+          # tenant's namespace (the backend calls ensureWebmailIngress
           # from enableEmailForDomain). Poll for up to 5 seconds because
           # the Ingress is created in the same HTTP handler as the email
           # domain — normally it's ready when the POST returns, but k3s
           # can lag a moment on busy dev boxes.
           if [[ -n "${K3S_CONTAINER:-}" ]]; then
-            WM_NS=$(curl -sS -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}" | jq -r '.data.kubernetesNamespace // empty')
+            WM_NS=$(curl -sS -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}" | jq -r '.data.kubernetesNamespace // empty')
             if [[ -n "$WM_NS" ]]; then
               # Mirror backend logic: email-domains/service.ts uses
               #   hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50)
@@ -758,7 +758,7 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
                 sleep 1
               done
               if [[ "$WM_ING_CHECK" == "webmail.${WM_DOMAIN_NAME}" ]]; then
-                pass "webmail Ingress created in client namespace ${WM_NS}"
+                pass "webmail Ingress created in tenant namespace ${WM_NS}"
               else
                 # Non-fatal — k8s may not be reachable in all smoke test envs
                 echo "  ⊘ webmail Ingress check skipped (result: ${WM_ING_CHECK:0:80})"
@@ -810,10 +810,10 @@ print(p.get('mailbox','') + '|' + str(p.get('exp',0) - p.get('iat',0)))
       fi
 
       # Cleanup
-      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/mailboxes/${WM_MB_ID}" >/dev/null 2>&1 || true
-      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/email/domains/${WM_DOMAIN_ID}/disable" >/dev/null 2>&1 || true
-      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/domains/${WM_DOMAIN_ID}" >/dev/null 2>&1 || true
-      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/mailboxes/${WM_MB_ID}" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/email/domains/${WM_DOMAIN_ID}/disable" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}/domains/${WM_DOMAIN_ID}" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${WM_CLIENT_ID}" >/dev/null 2>&1 || true
     fi
   fi
 fi
@@ -822,33 +822,33 @@ fi
 
 log "── SFTP Users ──"
 
-# SFTP smoke tests need a live client — create a dedicated one (the CRUD test
-# client is deleted before this section runs).
+# SFTP smoke tests need a live tenant — create a dedicated one (the CRUD test
+# tenant is deleted before this section runs).
 SFTP_CREATE_CLIENT=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
   -H "Content-Type: application/json" \
-  -d "{\"company_name\":\"sftp-smoke-test-$(date +%s)\",\"company_email\":\"sftp-test@smoke.local\",\"plan_id\":\"${PLAN_ID}\",\"region_id\":\"${REGION_ID}\"}" \
-  "${API_URL}/api/v1/clients")
+  -d "{\"name\":\"sftp-smoke-test-$(date +%s)\",\"primary_email\":\"sftp-test@smoke.local\",\"plan_id\":\"${PLAN_ID}\",\"region_id\":\"${REGION_ID}\"}" \
+  "${API_URL}/api/v1/tenants")
 SFTP_CLIENT_ID=$(echo "$SFTP_CREATE_CLIENT" | head -n -1 | jq -r '.data.id // empty')
 if [[ -n "$SFTP_CLIENT_ID" ]]; then
-  CREATED_CLIENT_IDS+=("$SFTP_CLIENT_ID")
+  CREATED_TENANT_IDS+=("$SFTP_CLIENT_ID")
 fi
 
 if [[ -n "$SFTP_CLIENT_ID" ]]; then
   # Connection info
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
-    "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/connection-info")
+    "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-users/connection-info")
   check_status "GET /sftp-users/connection-info" "200" "$STATUS"
 
   # List (empty or populated)
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
-    "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users")
+    "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-users")
   check_status "GET /sftp-users (list)" "200" "$STATUS"
 
   # Create
   SFTP_CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
     -d "{\"auth_method\":\"password\",\"description\":\"smoke-test-$(date +%s)\"}" \
-    "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users")
+    "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-users")
   SFTP_CREATE_CODE=$(echo "$SFTP_CREATE_RESPONSE" | tail -1)
   SFTP_CREATE_BODY=$(echo "$SFTP_CREATE_RESPONSE" | head -n -1)
   SFTP_USER_ID=$(echo "$SFTP_CREATE_BODY" | jq -r '.data.id // empty')
@@ -870,28 +870,28 @@ if [[ -n "$SFTP_CLIENT_ID" ]]; then
 
     # Read single user
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
-      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}")
+      "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}")
     check_status "GET /sftp-users/:id (read)" "200" "$STATUS"
 
     # Rotate password
     ROTATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
       -H "Content-Type: application/json" -d '{}' \
-      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}/rotate-password")
+      "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}/rotate-password")
     ROTATE_CODE=$(echo "$ROTATE_RESPONSE" | tail -1)
     check_status "POST /sftp-users/:id/rotate-password" "200" "$ROTATE_CODE"
 
     # Audit log
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
-      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-audit?limit=10")
+      "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-audit?limit=10")
     check_status "GET /sftp-audit (audit log)" "200" "$STATUS"
 
     # Delete
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH_HEADER" \
-      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}")
+      "${API_URL}/api/v1/tenants/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}")
     check_status "DELETE /sftp-users/:id" "204" "$STATUS"
   fi
 else
-  log "⚠ Skipping SFTP tests — no client available"
+  log "⚠ Skipping SFTP tests — no tenant available"
 fi
 
 # ─── Summary ───────────────────────────────────────────────────────────────────

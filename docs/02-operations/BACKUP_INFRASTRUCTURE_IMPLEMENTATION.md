@@ -24,7 +24,7 @@ Each component has its own capture mechanism, executed either inline in `backend
 |---|---|---|
 | `files` | `tar cf - . \| gzip -1 > archive.tar.gz` + tree-index emitter | k8s Job in tenant namespace, mounts tenant PVC read-only |
 | `mailboxes` | `stalwart-cli account export` per mailbox address | k8s Job against Stalwart admin API |
-| `config` | SELECT across ~29 `client_id`-scoped tables → gzipped JSON | Inline in `backend`, no k8s involvement |
+| `config` | SELECT across ~29 `tenant_id`-scoped tables → gzipped JSON | Inline in `backend`, no k8s involvement |
 | `secrets` | List tenant-namespace `type=kubernetes.io/tls` Secrets → AES-256-GCM encrypt | Inline in `backend`, Job if cross-namespace reads required |
 
 Storage targets are served via a common `BackupStore` abstraction (see BACKUP_COMPONENT_MODEL.md § Storage targets). Each Job uses a one-shot upload step (either mounted PVC for hostpath, AWS SDK for s3, or `ssh`/`sftp` for ssh) — no persistent mounts, no FUSE device plugin, no SSHFS.

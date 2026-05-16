@@ -135,7 +135,7 @@ Hit the admin API:
 
 ```bash
 curl -H "Authorization: Bearer ${TOKEN}" \
-  https://admin.example.test/api/v1/admin/clients
+  https://admin.example.test/api/v1/admin/tenants
 ```
 
 ### 6. Decommission the old StatefulSet

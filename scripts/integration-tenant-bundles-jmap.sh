@@ -32,7 +32,7 @@
 #   STAGING_HOST         — root@<host> (default root@staging1.example.test)
 #   SERVERS_TXT          — credential source. Default ~/k8s-staging/servers.txt
 #   TARGET_CFG_ID        — backup-config id (default integration-test-s3)
-#   CLIENT_ID            — tenant to capture (auto-detected if unset:
+#   TENANT_ID            — tenant to capture (auto-detected if unset:
 #                          first client that has >=1 mailbox row)
 #   PLATFORM_OIDC_KEY    — for HKDF-deriving the restic password locally
 #   SKIP_INCREMENTAL=1   — skip the second-run incremental check
@@ -85,14 +85,14 @@ fi
 
 # HKDF helper (matches restic-driver.deriveResticPassword)
 hkdf_password() {
-  local secret_hex="$1" client_id="$2"
+  local secret_hex="$1" tenant_id="$2"
   node -e '
     const c = require("crypto");
     const secret = Buffer.from(process.argv[1], "hex");
     const out = c.hkdfSync("sha256", secret, Buffer.alloc(0),
       Buffer.from("restic-tenant-" + process.argv[2]), 32);
     process.stdout.write(Buffer.from(out).toString("hex"));
-  ' "$secret_hex" "$client_id"
+  ' "$secret_hex" "$tenant_id"
 }
 
 # ── HTTP helpers ────────────────────────────────────────────────────────────
@@ -112,17 +112,17 @@ apij() { api -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/jso
 apij -X POST "$API_BASE/api/v1/admin/backup-configs/$TARGET_CFG_ID/activate" -d '{}' > /dev/null
 
 # ── Resolve test tenant (first client with >=1 mailbox) ─────────────────────
-if [ -z "${CLIENT_ID:-}" ]; then
+if [ -z "${TENANT_ID:-}" ]; then
   echo "[4/8] auto-detecting tenant with mailboxes…"
-  CLIENT_ID=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "
+  TENANT_ID=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "
     PG_PW=\$(kubectl -n platform get secret system-db-app -o jsonpath='{.data.password}' | base64 -d)
     PG_POD=\$(kubectl -n platform get pods -l cnpg.io/cluster=system-db -o name 2>/dev/null | head -1 | sed 's|pod/||')
     kubectl -n platform exec \$PG_POD -c postgres -- env PGPASSWORD=\"\$PG_PW\" psql -h system-db-rw -U platform -d hosting_platform -tAc \
-      \"SELECT client_id FROM mailboxes GROUP BY client_id ORDER BY count(*) DESC LIMIT 1;\" 2>/dev/null
+      \"SELECT tenant_id FROM mailboxes GROUP BY tenant_id ORDER BY count(*) DESC LIMIT 1;\" 2>/dev/null
   " | strip_cr)
 fi
-[ -n "$CLIENT_ID" ] || { echo "ERROR: no tenant with mailboxes found" >&2; exit 2; }
-echo "  CLIENT_ID: $CLIENT_ID"
+[ -n "$TENANT_ID" ] || { echo "ERROR: no tenant with mailboxes found" >&2; exit 2; }
+echo "  TENANT_ID: $TENANT_ID"
 
 # ── Trigger first capture ───────────────────────────────────────────────────
 echo "[5/8] triggering first (full-pull) mailboxes capture…"
@@ -130,7 +130,7 @@ RESP=$(apij -X POST "$API_BASE/api/v1/admin/tenant-bundles" \
   -d "$(python3 -c "
 import json
 print(json.dumps({
-  'clientId': '$CLIENT_ID',
+  'tenantId': '$TENANT_ID',
   'async': True,
   'targetConfigId': '$TARGET_CFG_ID',
   'label': 'jmap-itest-full',
@@ -162,13 +162,13 @@ fi
 
 # ── Validate restic snapshot ───────────────────────────────────────────────
 echo "[6/8] validating restic snapshot for component=mailboxes…"
-PASS=$(hkdf_password "$PLATFORM_OIDC_KEY" "$CLIENT_ID")
+PASS=$(hkdf_password "$PLATFORM_OIDC_KEY" "$TENANT_ID")
 PASS_FILE="$WORK/pw"
 ( umask 077 && printf '%s' "$PASS" > "$PASS_FILE" )
 export RESTIC_PASSWORD_FILE="$PASS_FILE"
 export AWS_ACCESS_KEY_ID="$S3_KEY"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET"
-REPO="s3:$S3_ENDPOINT/$S3_BUCKET/tenant-bundles-itest/restic-mailboxes/$CLIENT_ID"
+REPO="s3:$S3_ENDPOINT/$S3_BUCKET/tenant-bundles-itest/restic-mailboxes/$TENANT_ID"
 
 SNAPS=$("$RESTIC" --quiet --repo "$REPO" snapshots --tag "bundle-id=$BUNDLE1" --json)
 SNAP_COUNT=$(echo "$SNAPS" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else 0)')
@@ -194,15 +194,15 @@ echo "  ✓ Maildir paths in snapshot:"
 echo "$MAILDIR_PATHS" | sed 's/^/    /'
 
 # ── Validate tenant_jmap_state was persisted ────────────────────────────────
-echo "[7/8] checking tenant_jmap_state rows for client $CLIENT_ID…"
+echo "[7/8] checking tenant_jmap_state rows for client $TENANT_ID…"
 ROWS=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "
   PG_PW=\$(kubectl -n platform get secret system-db-app -o jsonpath='{.data.password}' | base64 -d)
   PG_POD=\$(kubectl -n platform get pods -l cnpg.io/cluster=system-db -o name 2>/dev/null | head -1 | sed 's|pod/||')
   kubectl -n platform exec \$PG_POD -c postgres -- env PGPASSWORD=\"\$PG_PW\" psql -h system-db-rw -U platform -d hosting_platform -tAc \
-    \"SELECT count(*) FROM tenant_jmap_state WHERE client_id='$CLIENT_ID';\" 2>/dev/null
+    \"SELECT count(*) FROM tenant_jmap_state WHERE tenant_id='$TENANT_ID';\" 2>/dev/null
 " | strip_cr)
-[ "$ROWS" -gt 0 ] || { echo "ERROR: tenant_jmap_state has 0 rows for $CLIENT_ID (post-ack persist failed)" >&2; exit 1; }
-echo "  ✓ tenant_jmap_state: $ROWS row(s) for $CLIENT_ID"
+[ "$ROWS" -gt 0 ] || { echo "ERROR: tenant_jmap_state has 0 rows for $TENANT_ID (post-ack persist failed)" >&2; exit 1; }
+echo "  ✓ tenant_jmap_state: $ROWS row(s) for $TENANT_ID"
 
 # ── Second run — should be incremental ─────────────────────────────────────
 if [ "${SKIP_INCREMENTAL:-0}" != "1" ]; then
@@ -211,7 +211,7 @@ if [ "${SKIP_INCREMENTAL:-0}" != "1" ]; then
     -d "$(python3 -c "
 import json
 print(json.dumps({
-  'clientId': '$CLIENT_ID',
+  'tenantId': '$TENANT_ID',
   'async': True,
   'targetConfigId': '$TARGET_CFG_ID',
   'label': 'jmap-itest-incr',

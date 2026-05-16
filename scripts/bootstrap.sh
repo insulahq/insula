@@ -201,10 +201,10 @@ fi
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 NODE_ROLE=""
-# M1: host-client-workloads. Controls whether this node accepts tenant
+# M1: host-tenant-workloads. Controls whether this node accepts tenant
 # pods in addition to system ones. "" means "derive from role"
 # (server→false, worker→true) so existing single-node installs keep
-# working unchanged. Set explicitly via --host-client-workloads.
+# working unchanged. Set explicitly via --host-tenant-workloads.
 HOST_CLIENT_WORKLOADS=""
 PLATFORM_ENV="production"
 PLATFORM_DOMAIN=""
@@ -378,7 +378,7 @@ REQUIRED:
 
 OPTIONS:
   --domain <FQDN>        Base domain (required for first server)
-  --host-client-workloads <true|false>
+  --host-tenant-workloads <true|false>
                          Whether this node accepts tenant pods. Default:
                          false for servers, true for workers. When false
                          on a server, applies the
@@ -730,7 +730,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --join-as)         NODE_ROLE="$2"; shift 2 ;;
-      --host-client-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
+      --host-tenant-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
       --env)             PLATFORM_ENV="$2"; shift 2 ;;
       --domain)          PLATFORM_DOMAIN="$2"; shift 2 ;;
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
@@ -787,7 +787,7 @@ parse_args() {
     fi
   fi
   if [[ "$HOST_CLIENT_WORKLOADS" != "true" && "$HOST_CLIENT_WORKLOADS" != "false" ]]; then
-    error "Invalid --host-client-workloads: ${HOST_CLIENT_WORKLOADS}. Must be 'true' or 'false'."
+    error "Invalid --host-tenant-workloads: ${HOST_CLIENT_WORKLOADS}. Must be 'true' or 'false'."
   fi
 
   if [[ "$PLATFORM_ENV" != "dev" && "$PLATFORM_ENV" != "staging" && "$PLATFORM_ENV" != "production" ]]; then
@@ -1841,7 +1841,7 @@ pin_system_components_to_servers() {
 
   # Runs on every node (DaemonSets) — needs toleration only so it
   # schedules onto tainted servers. Without this, a server that opts
-  # into server-only (host-client-workloads=false) would lose
+  # into server-only (host-tenant-workloads=false) would lose
   # the Traefik DaemonSet and break public traffic to tenants on other nodes.
   for ns_name in \
       "traefik:traefik" \
@@ -1921,7 +1921,7 @@ pin_system_components_to_servers() {
   for ns_name_label in \
       "platform:platform-api:app=platform-api" \
       "platform:admin-panel:app=admin-panel" \
-      "platform:client-panel:app=client-panel" \
+      "platform:tenant-panel:app=tenant-panel" \
       "platform:dex:app=dex" \
       "platform:oauth2-proxy:app.kubernetes.io/name=oauth2-proxy"; do
     local ns="${ns_name_label%%:*}"
@@ -1949,7 +1949,7 @@ pin_system_components_to_servers() {
   log "Helm component pinning applied."
 }
 
-# M1: apply the platform-managed role + host-client-workloads labels
+# M1: apply the platform-managed role + host-tenant-workloads labels
 # (and the server-only taint when applicable) to this node. The backend
 # node-sync reconciler treats these labels as authoritative — changing
 # them via `kubectl label --overwrite` is the operator-supported path
@@ -1969,14 +1969,14 @@ apply_node_labels_and_taints() {
     log "Worker node labelling must be applied from the control plane."
     log "  After this script completes, run on the server:"
     log "    kubectl label node ${node_name} platform.example.test/node-role=worker --overwrite"
-    log "    kubectl label node ${node_name} platform.example.test/host-client-workloads=${HOST_CLIENT_WORKLOADS} --overwrite"
+    log "    kubectl label node ${node_name} platform.example.test/host-tenant-workloads=${HOST_CLIENT_WORKLOADS} --overwrite"
     log "  (Unlabeled nodes default to worker/true — skipping the above is fine for vanilla workers.)"
     return 0
   fi
 
   # Server path: kubeconfig is local, kubectl works.
   export KUBECONFIG
-  log "Labelling ${node_name}: role=${NODE_ROLE}, host-client-workloads=${HOST_CLIENT_WORKLOADS}"
+  log "Labelling ${node_name}: role=${NODE_ROLE}, host-tenant-workloads=${HOST_CLIENT_WORKLOADS}"
 
   # --overwrite makes this idempotent so re-bootstrap / upgrade runs
   # silently no-op if the labels already match.
@@ -1984,10 +1984,10 @@ apply_node_labels_and_taints() {
     "platform.example.test/node-role=${NODE_ROLE}" \
     --overwrite
   kubectl label node "${node_name}" \
-    "platform.example.test/host-client-workloads=${HOST_CLIENT_WORKLOADS}" \
+    "platform.example.test/host-tenant-workloads=${HOST_CLIENT_WORKLOADS}" \
     --overwrite
 
-  # server + host-client-workloads=false → keep the NoSchedule taint so
+  # server + host-tenant-workloads=false → keep the NoSchedule taint so
   # the scheduler refuses tenant pods. Any other combo → remove it
   # (kubectl taint with a trailing - is the documented delete syntax,
   # 0 status on deletion OR when the taint wasn't present).
@@ -4071,7 +4071,7 @@ RCEOF
   # ADR-039 Phase 8 — Bulwark webmail secrets.
   #
   # Bulwark coexists with Roundcube; both use the same Stalwart
-  # master-user for client-panel "Open Webmail" handoff so the
+  # master-user for tenant-panel "Open Webmail" handoff so the
   # master password is SHARED across them. JWT_SECRET is also
   # shared (=WEBMAIL_JWT_SECRET set above for Roundcube) so the
   # bulwark-impersonator sidecar verifies the same platform-minted
@@ -4160,7 +4160,7 @@ create_platform_configmap() {
     --from-literal=ingress-default-ipv4="${PUBLIC_IP:-}" \
     --from-literal=api-url="https://api.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=admin-url="https://admin.${PLATFORM_DOMAIN:-localhost}" \
-    --from-literal=client-url="https://client.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=tenant-url="https://client.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=cors-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=support-email="$support_email" \
     --from-literal=support-url="${SUPPORT_URL:-}" \
@@ -5513,7 +5513,7 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   fi
   log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}) and applying..."
   # SSA with field-manager=kustomize-controller (Flux's default). Without
-  # this, bootstrap uses client-side apply and stashes the manifest in
+  # this, bootstrap uses tenant-side apply and stashes the manifest in
   # `last-applied-configuration`. When Flux later reconciles via SSA, k8s
   # has already added system-managed labels to live Job pods (controller-
   # uid, batch.kubernetes.io/job-name) — Flux sees a phantom diff in
@@ -6073,7 +6073,7 @@ main() {
   if [[ "$NODE_ROLE" == "server" ]]; then
     # Calico + platform components only on the control plane.
     # NOTE: apply_node_labels_and_taints (and the server-only NoSchedule
-    # taint it carries when host-client-workloads=false) is intentionally
+    # taint it carries when host-tenant-workloads=false) is intentionally
     # deferred to AFTER pin_system_components_to_servers — applying the
     # taint earlier blocks the Helm pre-install hooks (ingress-nginx,
     # cert-manager) from scheduling on a single-server install.

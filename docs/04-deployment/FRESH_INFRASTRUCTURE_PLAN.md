@@ -29,7 +29,7 @@ This document defines the infrastructure architecture for the fresh deployment o
 
 | Server | Public IP | Role | Location | Specs |
 |--------|-----------|------|----------|-------|
-| **admin1.example.test** | `192.0.2.58` | k3s + Management API + Admin Panel + Client Panel + Phase 1 Workloads | Hetzner (TBD location) | CX32 (4 vCPU, 8GB RAM, 80GB NVMe) |
+| **admin1.example.test** | `192.0.2.58` | k3s + Management API + Admin Panel + Tenant Panel + Phase 1 Workloads | Hetzner (TBD location) | CX32 (4 vCPU, 8GB RAM, 80GB NVMe) |
 
 **Note:** This is a **single-node k3s** cluster in Phase 1, expanding to HA (multi-node) later.
 
@@ -97,7 +97,7 @@ The following services must be running **before** the k3s platform can be deploy
 **Workloads:**
 - Management API (Fastify backend + MariaDB)
 - Admin Panel (Vite + React frontend)
-- Client Panel (Vite + React frontend)
+- Tenant Panel (Vite + React frontend)
 - Phase 1 customer workloads (Starter/Business plan pods)
 
 **Storage:**
@@ -120,7 +120,7 @@ The following services must be running **before** the k3s platform can be deploy
 **API endpoints:**
 - `POST /api/v1/auth/token` — JWT authentication
 - `GET /api/v1/admin/status` — Health check
-- Client CRUD: `GET/POST/PATCH/DELETE /api/v1/admin/clients`
+- Client CRUD: `GET/POST/PATCH/DELETE /api/v1/admin/tenants`
 - Domain CRUD: `GET/POST/PATCH/DELETE /api/v1/admin/domains`
 - PowerDNS integration: Create zones, add/update/delete records
 
@@ -130,7 +130,7 @@ The following services must be running **before** the k3s platform can be deploy
 
 **Public endpoint:** `https://admin.example.test/api/v1` (NGINX ingress)
 
-### 5. Admin Panel & Client Panel (admin1 — k3s pods)
+### 5. Admin Panel & Tenant Panel (admin1 — k3s pods)
 
 **Admin Panel:**
 - React 18 + Vite + TypeScript + shadcn/ui + Tailwind CSS
@@ -138,7 +138,7 @@ The following services must be running **before** the k3s platform can be deploy
 - Public endpoint: `https://admin.example.test`
 - Features: Client management, DNS management, billing, monitoring (see `docs/02-operations/ADMIN_PANEL_REQUIREMENTS.md`)
 
-**Client Panel:**
+**Tenant Panel:**
 - React 18 + Vite + TypeScript + shadcn/ui + Tailwind CSS
 - Deployed as static site (nginx container)
 - Public endpoint: `https://client.example.test`
@@ -371,7 +371,7 @@ table inet filter {
 | **k3s Cluster** | k3s (single-node Phase 1) | Ansible | admin1 |
 | **Management API** | Fastify + MariaDB | k3s pod | admin1 |
 | **Admin Panel** | React + Vite | k3s pod (nginx) | admin1 |
-| **Client Panel** | React + Vite | k3s pod (nginx) | admin1 |
+| **Tenant Panel** | React + Vite | k3s pod (nginx) | admin1 |
 | **Backups** | Restic → Storagebox | Systemd timer | admin1 |
 | **Firewall** | nftables (simple rules) | Ansible | admin1 |
 | **Automation** | Ansible 2.15+ | Local workstation | — |

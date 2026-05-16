@@ -4,7 +4,7 @@
 # the exclusion allowlist.
 #
 # Why: the config component dumps a hand-curated list of tables. Every
-# time someone adds a new client-scoped table (ziti, zrok, mTLS
+# time someone adds a new tenant-scoped table (ziti, zrok, mTLS
 # providers all landed in the last month), they must also wire it into
 # the dump — otherwise that table silently stops being backed up.
 # Unit tests don't catch this; only an explicit audit does.

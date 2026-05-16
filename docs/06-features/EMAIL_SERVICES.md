@@ -43,7 +43,7 @@ Roundcube runs as a **single shared instance** in the `mail` namespace, serving 
 
 ### Client-Level Webmail Domains
 
-Roundcube is reachable via both a **platform-level default domain** and **per-client custom domains**, allowing clients to offer branded webmail access to their users.
+Roundcube is reachable via both a **platform-level default domain** and **per-tenant custom domains**, allowing clients to offer branded webmail access to their users.
 
 | Access Method | Domain Example | How It Works |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ Application passwords are the primary credential for email access outside of OID
 | --- | --- |
 | Format | High-entropy random string (e.g., 32-char base62: `xK9m2pL7...`) |
 | Scope | One app password per email account per purpose (or multiple per account) |
-| Storage | Hashed (bcrypt/argon2) in app password database; plaintext stored **only** in client namespace Secret and platform vault for admin access |
+| Storage | Hashed (bcrypt/argon2) in app password database; plaintext stored **only** in tenant namespace Secret and platform vault for admin access |
 | Rotation | Client can regenerate via management panel; admin can rotate via admin panel |
 | Revocation | Instant — delete the app password, Dovecot rejects it on next auth attempt |
 | Multiple per account | Yes — client can create multiple app passwords (e.g., one for phone, one for desktop) with labels |
@@ -162,7 +162,7 @@ When a new client is created with `max_email_accounts > 0`:
 
 1. Management API creates email accounts as configured
 2. One default app password is auto-generated per account
-3. Credentials stored in client namespace Secret
+3. Credentials stored in tenant namespace Secret
 4. Roundcube database initialized with empty sessions/contacts/identities
 5. Webmail domain configured (platform default or custom)
 6. OIDC providers configured if enabled
@@ -191,7 +191,7 @@ Clients can manage their email accounts and app passwords through the control pa
 | CPU | 200m-500m Roundcube + 500m-1000m mail server (lightweight) |
 | Memory | 256Mi-512Mi Roundcube + 512Mi-1Gi mail server |
 | Database | 1 small database on shared MariaDB/PG (sessions, contacts, identities, app passwords) |
-| Storage | Minimal — no per-client PVs (all data in DB + Dovecot) |
+| Storage | Minimal — no per-tenant PVs (all data in DB + Dovecot) |
 | Ingress rules | 1 platform default + 1 per client with custom webmail domain |
 | TLS certificates | 1 platform + 1 per client custom webmail domain |
 | App Password Service | Minimal footprint — lightweight API, uses shared DB |

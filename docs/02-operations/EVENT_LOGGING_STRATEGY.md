@@ -47,11 +47,11 @@ Comprehensive event logging ensures:
 
 | Event | Code | Severity | Fields |
 | --- | --- | --- | --- |
-| Client Created | `RESOURCE_CLIENT_CREATED` | INFO | client_id, created_by, plan |
-| Client Updated | `RESOURCE_CLIENT_UPDATED` | INFO | client_id, changed_fields |
-| Client Suspended | `RESOURCE_CLIENT_SUSPENDED` | WARNING | client_id, reason |
-| Client Deleted | `RESOURCE_CLIENT_DELETED` | WARNING | client_id, deleted_by |
-| Workload Created | `RESOURCE_WORKLOAD_CREATED` | INFO | workload_id, client_id |
+| Client Created | `RESOURCE_CLIENT_CREATED` | INFO | tenant_id, created_by, plan |
+| Client Updated | `RESOURCE_CLIENT_UPDATED` | INFO | tenant_id, changed_fields |
+| Client Suspended | `RESOURCE_CLIENT_SUSPENDED` | WARNING | tenant_id, reason |
+| Client Deleted | `RESOURCE_CLIENT_DELETED` | WARNING | tenant_id, deleted_by |
+| Workload Created | `RESOURCE_WORKLOAD_CREATED` | INFO | workload_id, tenant_id |
 | Workload Updated | `RESOURCE_WORKLOAD_UPDATED` | INFO | workload_id, changed_fields |
 | Workload Deleted | `RESOURCE_WORKLOAD_DELETED` | INFO | workload_id |
 | Workload Started | `RESOURCE_WORKLOAD_STARTED` | DEBUG | workload_id |
@@ -76,11 +76,11 @@ Comprehensive event logging ensures:
 
 | Event | Code | Severity | Fields |
 | --- | --- | --- | --- |
-| Plan Changed | `CONFIG_PLAN_CHANGED` | INFO | client_id, from_plan, to_plan |
+| Plan Changed | `CONFIG_PLAN_CHANGED` | INFO | tenant_id, from_plan, to_plan |
 | Settings Updated | `CONFIG_SETTINGS_UPDATED` | INFO | setting_name, from_value, to_value |
 | Webhook Added | `CONFIG_WEBHOOK_ADDED` | INFO | webhook_id, events |
 | Webhook Deleted | `CONFIG_WEBHOOK_DELETED` | INFO | webhook_id |
-| Branding Updated | `CONFIG_BRANDING_UPDATED` | INFO | client_id, changed_fields |
+| Branding Updated | `CONFIG_BRANDING_UPDATED` | INFO | tenant_id, changed_fields |
 
 #### 6. System Events (SYSTEM)
 
@@ -90,7 +90,7 @@ Comprehensive event logging ensures:
 | Backup Failed | `SYSTEM_BACKUP_FAILED` | ERROR | backup_id, error_reason |
 | Database Migration | `SYSTEM_DB_MIGRATION` | INFO | migration_id, duration_ms |
 | API Error | `SYSTEM_API_ERROR` | ERROR | endpoint, error_code, error_msg |
-| Rate Limit Hit | `SYSTEM_RATE_LIMIT_HIT` | WARNING | client_id, limit_type |
+| Rate Limit Hit | `SYSTEM_RATE_LIMIT_HIT` | WARNING | tenant_id, limit_type |
 | Certificate Renewed | `SYSTEM_CERT_RENEWED` | INFO | domain_id |
 
 #### 7. Security Events (SECURITY)
@@ -100,7 +100,7 @@ Comprehensive event logging ensures:
 | SQL Injection Detected | `SECURITY_SQL_INJECTION` | CRITICAL | endpoint, query_param |
 | Cross-Site Scripting | `SECURITY_XSS_DETECTED` | CRITICAL | endpoint, payload |
 | DDoS Detected | `SECURITY_DDOS_DETECTED` | CRITICAL | source_ip, request_rate |
-| Suspicious API Usage | `SECURITY_SUSPICIOUS_API` | WARNING | client_id, reason |
+| Suspicious API Usage | `SECURITY_SUSPICIOUS_API` | WARNING | tenant_id, reason |
 | Failed MFA Attempts | `SECURITY_MFA_FAILED` | WARNING | user_id, attempt_count |
 | Unauthorized Access Attempt | `SECURITY_UNAUTHORIZED_ACCESS` | WARNING | resource_id, ip_address |
 | Certificate Error | `SECURITY_CERT_ERROR` | ERROR | domain, error_type |
@@ -132,7 +132,7 @@ Comprehensive event logging ensures:
     "ip_address": "192.168.1.1",
     "user_agent": "Mozilla/5.0..."
   },
-  "client_id": "client-456",
+  "tenant_id": "client-456",
   "resource": {
     "type": "workload",
     "id": "workload-789",
@@ -224,7 +224,7 @@ app.post('/api/workloads', authorize('workloads:create:own'), async (req, reply)
     event_type: 'RESOURCE_WORKLOAD_CREATED',
     severity: 'INFO',
     actor: { id: req.user.id },
-    client_id: req.user.tenant_id,
+    tenant_id: req.user.tenant_id,
     resource: {
       type: 'workload',
       id: workload.id,
@@ -300,7 +300,7 @@ ORDER BY timestamp DESC;
 -- Who accessed sensitive data
 SELECT * FROM audit_logs
 WHERE event_type LIKE 'DATA_%'
-  AND client_id = 'client-123'
+  AND tenant_id = 'client-123'
   AND timestamp > DATE_SUB(NOW(), INTERVAL 30 DAY);
 
 -- Workload creation timeline
@@ -310,7 +310,7 @@ SELECT
   DATE(timestamp) as date
 FROM audit_logs
 WHERE event_type = 'RESOURCE_WORKLOAD_CREATED'
-  AND client_id = 'client-123'
+  AND tenant_id = 'client-123'
 GROUP BY DATE(timestamp), actor_id;
 
 -- Failed operations (errors)
@@ -387,7 +387,7 @@ SELECT
   severity,
   COUNT(*) as count,
   COUNT(DISTINCT actor_id) as unique_actors,
-  COUNT(DISTINCT client_id) as unique_clients
+  COUNT(DISTINCT tenant_id) as unique_clients
 FROM audit_logs
 WHERE timestamp >= DATE_TRUNC('month', NOW())
 GROUP BY event_type, severity
@@ -401,7 +401,7 @@ ORDER BY count DESC;
 ### Partitioning
 
 ```sql
--- Partition by client_id and month for fast queries
+-- Partition by tenant_id and month for fast queries
 CREATE TABLE audit_logs (
   ...
 ) PARTITION BY RANGE (YEAR_MONTH(timestamp)) (
@@ -416,7 +416,7 @@ CREATE TABLE audit_logs (
 ```sql
 -- Composite indexes for common queries
 CREATE INDEX idx_event_timestamp ON audit_logs (event_type, timestamp DESC);
-CREATE INDEX idx_actor_client ON audit_logs (actor_id, client_id, timestamp DESC);
+CREATE INDEX idx_actor_client ON audit_logs (actor_id, tenant_id, timestamp DESC);
 CREATE INDEX idx_resource ON audit_logs (resource_type, resource_id);
 ```
 

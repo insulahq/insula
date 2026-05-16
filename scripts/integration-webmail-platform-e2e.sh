@@ -7,18 +7,18 @@
 # platform-api directly:
 #
 #   1. Admin login → JWT
-#   2. POST /api/v1/clients         → create test client
-#   3. POST /api/v1/clients/:id/domains
+#   2. POST /api/v1/tenants         → create test client
+#   3. POST /api/v1/tenants/:id/domains
 #                                   → attach a test domain (no DNS check)
-#   4. POST /api/v1/clients/:id/email/domains/:domainId/enable
+#   4. POST /api/v1/tenants/:id/email/domains/:domainId/enable
 #                                   → enable mail for the domain
-#   5. POST /api/v1/clients/:id/email/domains/:emailDomainId/mailboxes
+#   5. POST /api/v1/tenants/:id/email/domains/:emailDomainId/mailboxes
 #                                   → create a mailbox + password
 #   6. GET  /api/v1/admin/webmail-settings
 #                                   → confirm active engine
 #   7. POST /api/v1/admin/impersonate/:id
-#                                   → mint a client_admin JWT
-#   8. POST /api/v1/email/webmail-token  (as client_admin)
+#                                   → mint a tenant_admin JWT
+#   8. POST /api/v1/email/webmail-token  (as tenant_admin)
 #                                   → engine-shaped URL
 #   9. Validate URL shape:
 #       roundcube → webmail.<apex>/?_task=login&_jwt=<jwt>  OR
@@ -26,7 +26,7 @@
 #       bulwark   → webmail.<apex>/_impersonate?token=<jwt>
 #  10. GET <webmailUrl>             → expect 303 + jmap_stalwart_ctx
 #                                     cookie (bulwark) or 200 (roundcube)
-#  11. Cleanup: DELETE /api/v1/clients/:id (cascades mailboxes + domains)
+#  11. Cleanup: DELETE /api/v1/tenants/:id (cascades mailboxes + domains)
 #
 # Engine is read from the platform setting — flip ahead of time via
 # PATCH /admin/webmail-settings {"defaultWebmailEngine":"bulwark"} or
@@ -64,16 +64,16 @@ fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
 phase() { printf '\n\033[36m── %s ──\033[0m\n' "$*"; }
 
 # Track resources to clean up on exit (even on failure).
-CLIENT_ID=""
+TENANT_ID=""
 trap 'cleanup_on_exit' EXIT
 
 cleanup_on_exit() {
-  if [[ -n "$CLIENT_ID" && -n "${ADMIN_TOKEN:-}" ]]; then
+  if [[ -n "$TENANT_ID" && -n "${ADMIN_TOKEN:-}" ]]; then
     # Cleanup is slow — cascade deletes mailboxes, email-domains, DNS
     # records, etc. Give it 60s so a busy cluster doesn't bail mid-way.
     local opts=(-sS -m 60)
     [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
-    curl "${opts[@]}" -X DELETE "${API_BASE}/api/v1/clients/${CLIENT_ID}" \
+    curl "${opts[@]}" -X DELETE "${API_BASE}/api/v1/tenants/${TENANT_ID}" \
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -o /dev/null -w 'cleanup: client delete %{http_code}\n' || true
   fi
@@ -117,22 +117,22 @@ REGION_ID=$(api GET /api/v1/regions | jq -r '.data[0].id // empty')
 [[ -z "$PLAN_ID"   ]] && { fail "2.0a no plans available"; exit 1; } || pass "2.0a discovered plan=${PLAN_ID}"
 [[ -z "$REGION_ID" ]] && { fail "2.0b no regions available"; exit 1; } || pass "2.0b discovered region=${REGION_ID}"
 
-CLIENT_RESP=$(api POST /api/v1/clients "{
-  \"company_name\":\"Webmail E2E Harness\",
-  \"company_email\":\"e2e-$(date +%s)@${TEST_DOMAIN}\",
+CLIENT_RESP=$(api POST /api/v1/tenants "{
+  \"name\":\"Webmail E2E Harness\",
+  \"primary_email\":\"e2e-$(date +%s)@${TEST_DOMAIN}\",
   \"plan_id\":\"${PLAN_ID}\",
   \"region_id\":\"${REGION_ID}\"
 }")
-CLIENT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id // empty')
-if [[ -z "$CLIENT_ID" ]]; then
-  fail "2.1 create client failed: $(echo "$CLIENT_RESP" | head -c 300)"
+TENANT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id // empty')
+if [[ -z "$TENANT_ID" ]]; then
+  fail "2.1 create tenant failed: $(echo "$CLIENT_RESP" | head -c 300)"
   exit 1
 fi
-pass "2.1 client created (id=${CLIENT_ID})"
+pass "2.1 client created (id=${TENANT_ID})"
 
 # ── Phase 3: attach domain ──────────────────────────────────────────
 phase "3. Attach domain"
-DOM_RESP=$(api POST "/api/v1/clients/${CLIENT_ID}/domains" "{
+DOM_RESP=$(api POST "/api/v1/tenants/${TENANT_ID}/domains" "{
   \"domain_name\":\"${TEST_DOMAIN}\"
 }")
 DOMAIN_ID=$(echo "$DOM_RESP" | jq -r '.data.id // empty')
@@ -144,7 +144,7 @@ pass "3.1 domain attached (${TEST_DOMAIN} id=${DOMAIN_ID})"
 
 # ── Phase 4: enable email on domain ─────────────────────────────────
 phase "4. Enable email on domain"
-ENABLE_RESP=$(api POST "/api/v1/clients/${CLIENT_ID}/email/domains/${DOMAIN_ID}/enable" "{}")
+ENABLE_RESP=$(api POST "/api/v1/tenants/${TENANT_ID}/email/domains/${DOMAIN_ID}/enable" "{}")
 EMAIL_DOMAIN_ID=$(echo "$ENABLE_RESP" | jq -r '.data.id // empty')
 if [[ -z "$EMAIL_DOMAIN_ID" ]]; then
   fail "4.1 enable email failed: $(echo "$ENABLE_RESP" | head -c 300)"
@@ -156,7 +156,7 @@ pass "4.1 email enabled (email_domain_id=${EMAIL_DOMAIN_ID})"
 phase "5. Create mailbox"
 MBOX_LOCAL="e2e-$(date +%s)"
 MBOX_PASSWORD="Harness-Pass-$(openssl rand -hex 8)"
-MBOX_RESP=$(api POST "/api/v1/clients/${CLIENT_ID}/email/domains/${EMAIL_DOMAIN_ID}/mailboxes" "{
+MBOX_RESP=$(api POST "/api/v1/tenants/${TENANT_ID}/email/domains/${EMAIL_DOMAIN_ID}/mailboxes" "{
   \"local_part\":\"${MBOX_LOCAL}\",
   \"password\":\"${MBOX_PASSWORD}\",
   \"display_name\":\"E2E Test\"
@@ -177,15 +177,15 @@ ENGINE=$(echo "$SETTINGS" | jq -r '.data.defaultWebmailEngine // "roundcube"')
 WEBMAIL_DEFAULT_URL=$(echo "$SETTINGS" | jq -r '.data.defaultWebmailUrl // empty')
 pass "6.1 active engine = ${ENGINE} (default URL: ${WEBMAIL_DEFAULT_URL})"
 
-# ── Phase 7: impersonate to client_admin ────────────────────────────
-phase "7. Impersonate as client_admin"
-IMP_RESP=$(api POST "/api/v1/admin/impersonate/${CLIENT_ID}" "{}")
+# ── Phase 7: impersonate to tenant_admin ────────────────────────────
+phase "7. Impersonate as tenant_admin"
+IMP_RESP=$(api POST "/api/v1/admin/impersonate/${TENANT_ID}" "{}")
 CLIENT_TOKEN=$(echo "$IMP_RESP" | jq -r '.data.token // empty')
 if [[ -z "$CLIENT_TOKEN" ]]; then
   fail "7.1 impersonate failed: $(echo "$IMP_RESP" | head -c 300)"
   exit 1
 fi
-pass "7.1 client_admin token issued"
+pass "7.1 tenant_admin token issued"
 
 # ── Phase 8: mint webmail token ─────────────────────────────────────
 phase "8. Mint webmail token"

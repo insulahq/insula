@@ -325,10 +325,10 @@ All management API calls go to ns1 via NetBird mesh:
 
 ```bash
 # Create/Update DNS records
-PUT /api/v1/clients/{clientId}/domains/{domainId}/records
+PUT /api/v1/tenants/{clientId}/domains/{domainId}/records
 
 # Check DNS propagation (checks both ns1 and ns2)
-GET /api/v1/clients/{clientId}/domains/{domainId}/dns-status
+GET /api/v1/tenants/{clientId}/domains/{domainId}/dns-status
 ```
 
 ### Phase 2+ (Multi-Region)
@@ -336,10 +336,10 @@ GET /api/v1/clients/{clientId}/domains/{domainId}/dns-status
 ```bash
 # Create/Update DNS records (only in primary region)
 # Returns 403 if customer is in different region
-PUT /api/v1/clients/{clientId}/domains/{domainId}/records
+PUT /api/v1/tenants/{clientId}/domains/{domainId}/records
 
 # Get zone status (works in all regions, read-only elsewhere)
-GET /api/v1/clients/{clientId}/domains/{domainId}/dns-status
+GET /api/v1/tenants/{clientId}/domains/{domainId}/dns-status
 ```
 
 ---

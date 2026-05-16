@@ -58,7 +58,7 @@ hosting-platform/
 ├── backend/                  # Node.js / Fastify management API
 ├── frontend/
 │   ├── admin-panel/          # React admin panel (Vite)
-│   └── client-panel/         # React client panel (Vite)
+│   └── tenant-panel/         # React client panel (Vite)
 ├── migration-service/        # Plesk extractor + migration tooling
 ├── k8s/                      # Kubernetes manifests (Kustomize overlays)
 │   ├── base/

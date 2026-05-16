@@ -126,7 +126,7 @@ reclaimPolicy: Retain
 volumeBindingMode: Immediate
 parameters:
   # Initial value only. The k8s-provisioner patches Volume.spec.
-  # numberOfReplicas to the per-client tier setting after PVC binding.
+  # numberOfReplicas to the per-tenant tier setting after PVC binding.
   # Subsequent tier changes also live-patch via applyTenantTier.
   numberOfReplicas: "1"
   staleReplicaTimeout: "30"
@@ -137,7 +137,7 @@ parameters:
   # formatted 10 GiB Longhorn volume already report ~228 MiB of
   # `Volume.status.actualSize`. XFS allocates inodes dynamically as
   # files are created, so a fresh empty 10 GiB volume reports
-  # ~40 MiB instead — a visible win on the per-client storage page
+  # ~40 MiB instead — a visible win on the per-tenant storage page
   # when tenants only store a few MB of code + assets.
   #
   # Why this is safe for us specifically:
@@ -160,7 +160,7 @@ parameters:
   fsType: "xfs"
   dataLocality: "best-effort"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
-  # No nodeSelector — tenant volumes land on any host-client-workloads
+  # No nodeSelector — tenant volumes land on any host-tenant-workloads
   # node. The `system` tag is reserved for platform PVCs.
 ---
 apiVersion: storage.k8s.io/v1

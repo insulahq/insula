@@ -207,12 +207,12 @@ Complete configuration for entire customer account:
     {
       "email": "admin@acme.com",
       "name": "Jane Doe",
-      "roles": ["client_admin"]
+      "roles": ["tenant_admin"]
     },
     {
       "email": "developer@acme.com",
       "name": "John Smith",
-      "roles": ["client_user"]
+      "roles": ["tenant_user"]
     }
   ],
   

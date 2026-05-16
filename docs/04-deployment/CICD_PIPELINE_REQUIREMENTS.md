@@ -97,14 +97,14 @@ services:
     environment:
       VITE_API_URL: http://localhost:3000
 
-  client-panel:
+  tenant-panel:
     build:
-      context: ./frontend/client-panel
+      context: ./frontend/tenant-panel
       dockerfile: Dockerfile.dev
     ports:
       - "5174:5174"
     volumes:
-      - ./frontend/client-panel:/app
+      - ./frontend/tenant-panel:/app
       - /app/node_modules
     environment:
       VITE_API_URL: http://localhost:3000
@@ -384,12 +384,12 @@ jobs:
           flags: frontend-admin
 
   frontend-client-ci:
-    name: Client Panel CI
+    name: Tenant Panel CI
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: frontend/client-panel
+        working-directory: frontend/tenant-panel
 
     steps:
       - name: Checkout
@@ -400,7 +400,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: frontend/client-panel/package-lock.json
+          cache-dependency-path: frontend/tenant-panel/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -423,7 +423,7 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          directory: frontend/client-panel/coverage
+          directory: frontend/tenant-panel/coverage
           flags: frontend-client
 ```
 
@@ -953,7 +953,7 @@ jobs:
         run: npm audit --audit-level=high
 
       - name: Audit frontend client dependencies
-        working-directory: frontend/client-panel
+        working-directory: frontend/tenant-panel
         run: npm audit --audit-level=high
 
   trivy-repo-scan:

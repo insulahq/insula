@@ -6,7 +6,7 @@
 #   2. Wait for full provisioning
 #   3. Record the running tenant pod name (we want to assert it does NOT
 #      restart during the grow)
-#   4. PATCH /clients/:id with storage_limit_override=15 (grow 10→15 GiB)
+#   4. PATCH /tenants/:id with storage_limit_override=15 (grow 10→15 GiB)
 #   5. Assert response carries storageGrowOperationId
 #   6. Poll /admin/storage/operations/:opId until terminal
 #   7. Assert op.params.mode === 'grow_online' and state==='idle'
@@ -68,11 +68,11 @@ REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.std
 log "── creating client ──"
 STAMP=$(date +%s)
 COMPANY="Grow E2E $STAMP"
-RESP=$(api POST "/clients" "{\"company_name\":\"$COMPANY\",\"company_email\":\"grow-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
+RESP=$(api POST "/clients" "{\"name\":\"$COMPANY\",\"primary_email\":\"grow-e2e-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
-cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
+cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 log "── waiting for full provisioning ──"
@@ -213,7 +213,7 @@ fi
 # resizing = expected for grow_online, restoring = also expected (the
 # state we use while waiting for kubelet to clear FileSystemResizePending).
 # quiescing/snapshotting/replacing should NEVER appear.
-OPS_LIST=$(api GET "/admin/clients/$CID/storage/operations")
+OPS_LIST=$(api GET "/admin/tenants/$CID/storage/operations")
 # Pipe ops list to a single python -c call. Avoids the SC2259 pitfall
 # where a heredoc and a piped stdin both fight for fd 0.
 DESTRUCTIVE_STATES=$(printf '%s' "$OPS_LIST" | python3 -c '
@@ -280,7 +280,7 @@ SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(
   || fail "shrink response code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
 
 # ─── destructive shrink via PATCH+confirm_destructive_shrink (15 → 8 GiB) ─────
-# We grew 10 → 15 above. Now shrink 15 → 8 via PATCH /clients/:id with
+# We grew 10 → 15 above. Now shrink 15 → 8 via PATCH /tenants/:id with
 # confirm_destructive_shrink:true. updateClient dispatches resizeClient
 # which routes to the destructive shrink orchestrator: quiesce → snapshot
 # → drop PVC → recreate at 8 GiB → restore data → unquiesce. End state:

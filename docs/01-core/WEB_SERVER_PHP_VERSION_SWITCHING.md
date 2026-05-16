@@ -495,7 +495,7 @@ T+70s:  Cleanup complete
 
 #### 1. Get Available Options
 
-**GET** `/api/v1/clients/{id}/catalog`
+**GET** `/api/v1/tenants/{id}/catalog`
 
 **Description:** Get available catalog images for this client (filtered by plan).
 
@@ -551,7 +551,7 @@ T+70s:  Cleanup complete
 
 #### 2. Pre-Flight Compatibility Check
 
-**POST** `/api/v1/clients/{id}/catalog/{image_id}/compatibility-check`
+**POST** `/api/v1/tenants/{id}/catalog/{image_id}/compatibility-check`
 
 **Description:** Run pre-flight checks before switching. Returns compatibility score and issues.
 
@@ -615,7 +615,7 @@ T+70s:  Cleanup complete
 
 #### 3. Initiate Switch
 
-**PATCH** `/api/v1/clients/{id}/catalog_image`
+**PATCH** `/api/v1/tenants/{id}/catalog_image`
 
 **Description:** Switch to a new catalog image. Requires approval if compatibility issues exist.
 
@@ -657,8 +657,8 @@ T+70s:  Cleanup complete
       "total_steps": 6,
       "step_name": "Running pre-flight checks"
     },
-    "status_url": "/api/v1/clients/{id}/catalog_image/sw_abc123xyz",
-    "cancel_url": "/api/v1/clients/{id}/catalog_image/sw_abc123xyz/cancel"
+    "status_url": "/api/v1/tenants/{id}/catalog_image/sw_abc123xyz",
+    "cancel_url": "/api/v1/tenants/{id}/catalog_image/sw_abc123xyz/cancel"
   }
 }
 ```
@@ -679,7 +679,7 @@ T+70s:  Cleanup complete
 
 #### 4. Get Switch Status
 
-**GET** `/api/v1/clients/{id}/catalog_image/{switch_id}`
+**GET** `/api/v1/tenants/{id}/catalog_image/{switch_id}`
 
 **Description:** Poll for switch progress.
 
@@ -739,7 +739,7 @@ T+70s:  Cleanup complete
 
 #### 5. Cancel Switch (In-Progress)
 
-**POST** `/api/v1/clients/{id}/catalog_image/{switch_id}/cancel`
+**POST** `/api/v1/tenants/{id}/catalog_image/{switch_id}/cancel`
 
 **Description:** Cancel an in-progress switch. Only possible before ingress update.
 
@@ -763,7 +763,7 @@ T+70s:  Cleanup complete
 
 #### 6. Rollback to Previous Image
 
-**POST** `/api/v1/clients/{id}/catalog_image/rollback`
+**POST** `/api/v1/tenants/{id}/catalog_image/rollback`
 
 **Description:** Rollback to the previous catalog image (if switch failed or user wants to revert).
 
@@ -795,7 +795,7 @@ T+70s:  Cleanup complete
 
 #### 7. Get Switch History
 
-**GET** `/api/v1/clients/{id}/catalog_image/history`
+**GET** `/api/v1/tenants/{id}/catalog_image/history`
 
 **Description:** View all switches with timeline and outcomes.
 
@@ -836,7 +836,7 @@ T+70s:  Cleanup complete
 
 ---
 
-## Client Panel Features
+## Tenant Panel Features
 
 ### New Section: Web Server & PHP Version
 
@@ -1157,14 +1157,14 @@ test('PHP 8.4 deprecated functions detected', () => {
 
 ```bash
 # 1. Create test client on Apache PHP 8.3
-curl -X POST /api/v1/clients \
+curl -X POST /api/v1/tenants \
   -d '{"name": "test", "plan": "business", "catalog_image": "apache-php83"}'
 
 # 2. Run compatibility check for NGINX
-curl -X POST /api/v1/clients/test/catalog/nginx-php84/compatibility-check
+curl -X POST /api/v1/tenants/test/catalog/nginx-php84/compatibility-check
 
 # 3. Initiate switch
-curl -X PATCH /api/v1/clients/test/catalog_image \
+curl -X PATCH /api/v1/tenants/test/catalog_image \
   -d '{"target_image": "nginx-php84"}'
 
 # 4. Poll status until complete
@@ -1252,7 +1252,7 @@ Test 4: High error rate post-switch
 - [ ] POST .../rollback (rollback to previous)
 - [ ] GET .../history (view switch history)
 
-### Phase 3: Client Panel UI (Week 2-3)
+### Phase 3: Tenant Panel UI (Week 2-3)
 
 - [ ] Display current web server/PHP version
 - [ ] List available options (filtered by plan)

@@ -1,4 +1,4 @@
-# Client Lifecycle (status-driven)
+# Tenant Lifecycle (status-driven)
 
 > Operator runbook. As of 2026-04-28 the client lifecycle is driven
 > directly from the client row — status dropdown, resource limits,
@@ -11,13 +11,13 @@
 | Operator intent           | UI surface                                                     | Backend dispatch                                            |
 | ------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------- |
 | Bump storage (online)     | ResourceLimits → Storage Limit ↑                               | PATCH /clients/:id { storage_limit_override } → online grow |
-| Shrink storage            | ResourceLimits → Storage Limit ↓ → confirm destructive dialog | POST /admin/clients/:id/storage/resize { newGi }            |
+| Shrink storage            | ResourceLimits → Storage Limit ↓ → confirm destructive dialog | POST /admin/tenants/:id/storage/resize { newGi }            |
 | Suspend                   | Status dropdown → suspended                                    | PATCH /clients/:id { status: 'suspended' }                  |
 | Resume                    | Status dropdown → active                                       | PATCH /clients/:id { status: 'active' }                     |
 | Archive (with retention)  | Status dropdown → archived (+ retention_days input)            | PATCH /clients/:id { status: 'archived', archive_retention_days } |
 | Restore from archive      | Status dropdown → active (with confirm modal)                  | PATCH /clients/:id { status: 'active' }                     |
-| Manual snapshot           | Storage Operations → "Take snapshot"                           | POST /admin/clients/:id/storage/snapshot                    |
-| Reset stuck failed state  | Storage Operations → "Reset to idle" (visible only on failed)  | POST /admin/clients/:id/storage/clear-failed                |
+| Manual snapshot           | Storage Operations → "Take snapshot"                           | POST /admin/tenants/:id/storage/snapshot                    |
+| Reset stuck failed state  | Storage Operations → "Reset to idle" (visible only on failed)  | POST /admin/tenants/:id/storage/clear-failed                |
 | Hard delete               | Top-bar → Delete                                               | DELETE /clients/:id                                         |
 
 The status dropdown is the single switch the operator flips. Anything
@@ -50,14 +50,14 @@ are still called by:
 
 | Endpoint                                            | Trigger from row-edit                            |
 | --------------------------------------------------- | ------------------------------------------------ |
-| POST /admin/clients/:id/storage/resize/dry-run     | (none — used by ResizeStorageModal directly)     |
-| POST /admin/clients/:id/storage/resize             | ResourceLimits shrink confirm                    |
-| POST /admin/clients/:id/storage/snapshot           | Storage Operations card "Take snapshot"          |
-| POST /admin/clients/:id/storage/suspend            | (script-only; status flip uses cascade path)     |
-| POST /admin/clients/:id/storage/resume             | (script-only; status flip uses cascade path)     |
-| POST /admin/clients/:id/storage/archive            | PATCH /clients status:archived                   |
-| POST /admin/clients/:id/storage/restore            | PATCH /clients status:active (when archived)     |
-| POST /admin/clients/:id/storage/clear-failed       | Storage Operations "Reset to idle" (failed only) |
+| POST /admin/tenants/:id/storage/resize/dry-run     | (none — used by ResizeStorageModal directly)     |
+| POST /admin/tenants/:id/storage/resize             | ResourceLimits shrink confirm                    |
+| POST /admin/tenants/:id/storage/snapshot           | Storage Operations card "Take snapshot"          |
+| POST /admin/tenants/:id/storage/suspend            | (script-only; status flip uses cascade path)     |
+| POST /admin/tenants/:id/storage/resume             | (script-only; status flip uses cascade path)     |
+| POST /admin/tenants/:id/storage/archive            | PATCH /clients status:archived                   |
+| POST /admin/tenants/:id/storage/restore            | PATCH /clients status:active (when archived)     |
+| POST /admin/tenants/:id/storage/clear-failed       | Storage Operations "Reset to idle" (failed only) |
 | GET  /admin/storage/operations/:opId               | OperationProgressModal poll                      |
 
 ## Status transitions and the orchestrators

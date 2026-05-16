@@ -97,17 +97,17 @@ prereq_resolve_target() {
   log "── prereq: discover target ingress ──"
   local row
   if [[ -n "$ROUTE_ID" ]]; then
-    row=$(psql_q "SELECT ir.id, ir.hostname, d.client_id, c.kubernetes_namespace
+    row=$(psql_q "SELECT ir.id, ir.hostname, d.tenant_id, c.kubernetes_namespace
                   FROM ingress_routes ir
                   JOIN domains d ON d.id = ir.domain_id
-                  JOIN clients c ON c.id = d.client_id
+                  JOIN clients c ON c.id = d.tenant_id
                   WHERE ir.id='${ROUTE_ID}';" | head -1)
     [[ -z "$row" ]] && { fail "ROUTE_ID=$ROUTE_ID not found in DB"; return 1; }
   else
-    row=$(psql_q "SELECT ir.id, ir.hostname, d.client_id, c.kubernetes_namespace
+    row=$(psql_q "SELECT ir.id, ir.hostname, d.tenant_id, c.kubernetes_namespace
                   FROM ingress_routes ir
                   JOIN domains d ON d.id = ir.domain_id
-                  JOIN clients c ON c.id = d.client_id
+                  JOIN clients c ON c.id = d.tenant_id
                   WHERE ir.hostname LIKE '%${HTTPS_TEST_DOMAIN_BASE}'
                     AND ir.status = 'active'
                   ORDER BY ir.created_at DESC

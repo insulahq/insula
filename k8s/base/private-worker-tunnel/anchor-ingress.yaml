@@ -4,7 +4,7 @@
 # tunnels.${DOMAIN} and serves a catch-all default backend (the platform
 # suspended page) for unrouted requests.
 #
-# Per-client IngressRoutes (tunnel-{slug}) are created at runtime by the
+# Per-tenant IngressRoutes (tunnel-{slug}) are created at runtime by the
 # backend reconciler on the SAME host (tunnels.${DOMAIN}) with rule
 # PathPrefix(`/c/{slug}/`) + a higher route priority so they win over
 # the anchor's catch-all `/` match.
@@ -17,7 +17,7 @@
 # (cluster-default ServersTransport applies; tenant routes that need
 # tighter behaviour patch their own).
 #
-# Rate-limit anchor catch-all to defend against scanning. The per-client
+# Rate-limit anchor catch-all to defend against scanning. The per-tenant
 # tunnel-<slug> IngressRoutes created at runtime layer their own tighter
 # RateLimit Middleware on top.
 #
@@ -50,7 +50,7 @@ spec:
       protocol: TCP
 ---
 # Rate-limit Middleware for the anchor catch-all. 10 req/s steady-state
-# (average), 20 burst (max queued). Per-client tunnel-{slug} routes
+# (average), 20 burst (max queued). Per-tenant tunnel-{slug} routes
 # layer their own tighter limits on top via separate Middlewares.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -79,7 +79,7 @@ spec:
   routes:
     - match: "Host(`tunnels.${DOMAIN}`)"
       kind: Rule
-      # Low priority so per-client `PathPrefix(/c/{slug}/)` routes
+      # Low priority so per-tenant `PathPrefix(/c/{slug}/)` routes
       # always win for tunneled traffic.
       priority: 1
       middlewares:

@@ -5,7 +5,7 @@ set -euo pipefail
 # patchNamespaced* / patchClusterCustomObject without an explicit
 # Content-Type override.
 #
-# Background: @kubernetes/client-node v1.4 always sends
+# Background: @kubernetes/tenant-node v1.4 always sends
 # `application/json-patch+json` (RFC 6902 op array) by default — every
 # patch method bakes that as the first entry of its `consumes` list,
 # and ObjectSerializer.getPreferredMediaType picks the first entry. A
@@ -111,7 +111,7 @@ if [ $FAIL -ne 0 ]; then
   echo "       'backend/src/shared/k8s-patch.ts' and pass it as the second"
   echo "       positional argument to the patch call."
   echo
-  echo "  Why: @kubernetes/client-node v1.4 defaults Content-Type to"
+  echo "  Why: @kubernetes/tenant-node v1.4 defaults Content-Type to"
   echo "       'application/json-patch+json' regardless of body shape;"
   echo "       merge-object bodies without the override are rejected by"
   echo "       the apiserver with 'cannot unmarshal object into Go value"

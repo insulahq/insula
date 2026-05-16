@@ -152,7 +152,7 @@ rollback safety net, see RESTORE_SPECIFICATION.md).
 
 ### `config` — platform-DB rows scoped to the client
 
-**Capture.** A SELECT across every table with a `client_id` foreign key,
+**Capture.** A SELECT across every table with a `tenant_id` foreign key,
 emitted as a single gzipped JSON document:
 
 ```jsonc
@@ -175,7 +175,7 @@ emitted as a single gzipped JSON document:
     "cron_jobs":      [ ... ],
     "resource_quotas":[ ... ],
     "ssl_certificates":[ ... ]
-    // ...every table with client_id FK
+    // ...every table with tenant_id FK
   }
 }
 ```

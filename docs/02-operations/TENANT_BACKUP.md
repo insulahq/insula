@@ -1,7 +1,7 @@
 # Tenant Backup — Operator Runbook
 
 This doc is the single authoritative reference for the Phase-4
-**Tenant Backup** stack (per-client off-site bundles + Plesk-style
+**Tenant Backup** stack (per-tenant off-site bundles + Plesk-style
 restore cart). It supersedes the legacy [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md)
 and [BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md](BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md)
 which describe the deprecated SSHFS architecture.
@@ -9,7 +9,7 @@ which describe the deprecated SSHFS architecture.
 > **Tenant Backup** ≠ **System Backup**. System Backup (cluster
 > state, etcd, Postgres, secrets bundles) lives separately under
 > `backend/src/modules/system-backup/`. This doc covers tenant
-> data: per-client files, mailboxes, config rows, secrets.
+> data: per-tenant files, mailboxes, config rows, secrets.
 
 ## Concept
 
@@ -66,7 +66,7 @@ so only one replica runs each due client. Frequencies: `daily`,
 - Stuck `running` bundles >24h are GC'd to `failed` so they don't
   hang forever.
 - Plan-bound retention: `hosting_plans.max_backup_retention_days`
-  caps both ad-hoc creates and per-client schedule retention. The
+  caps both ad-hoc creates and per-tenant schedule retention. The
   client panel + admin API both reject `retentionDays > plan_cap`
   with `VALIDATION_ERROR`.
 
@@ -216,7 +216,7 @@ follow-up.
    have been removed in the 0.16 admin API rework.
 
 2. *Whole-store `stalwart -e <path>`* — works but exports EVERY
-   tenant's mail in a single tarball. Unsafe to ship as a per-client
+   tenant's mail in a single tarball. Unsafe to ship as a per-tenant
    bundle; would leak cross-tenant data.
 
 3. *IMAP master-user impersonation `<addr>%master` + master password*
@@ -250,7 +250,7 @@ a Stalwart-side config detail, not a fundamental block.
 - `backup_jobs` — one row per bundle (id, clientId, initiator, status, target, retentionDays, expiresAt, sizeBytes, exportMode, exportArtifact, …)
 - `backup_components` — one row per component artefact within a bundle
 - `backup_configurations` — backup target rows (S3/SSH credentials, encrypted)
-- `client_backup_schedules` — per-client schedule (frequency, hourOfDayUtc, retentionDays, last_run_at, last_run_status)
+- `client_backup_schedules` — per-tenant schedule (frequency, hourOfDayUtc, retentionDays, last_run_at, last_run_status)
 - `restore_jobs` — one row per cart
 - `restore_items` — items within a cart (seq, type, selector, status, progressMessage, lastError)
 - `storage_snapshots` (kind=`pre-restore`) — pre-restore PVC snapshots
@@ -278,7 +278,7 @@ backend/src/modules/tenant-bundles/
   meta.ts                         meta.json schema + helpers
   orchestrator.ts                 runBundle — drives the per-component capture
   routes.ts                       admin endpoints (bundles, configs, schedule)
-  client-routes.ts                client-panel endpoints (self-service)
+  client-routes.ts                tenant-panel endpoints (self-service)
   internal-upload-route.ts        HMAC-token upload from tenant Jobs
   internal-download-route.ts      HMAC-token download to tenant Jobs (restore)
   retention.ts                    expired-bundle sweeper + stuck-running GC
@@ -306,9 +306,9 @@ frontend/admin-panel/src/
   pages/RestoreCart.tsx           Plesk-style cart picker
   pages/RestoreCartsList.tsx      Recent-carts list with Resume buttons
   components/BackupBundlesSection.tsx  bundle list + create + GDPR export
-  components/BackupScheduleEditor.tsx  per-client schedule UI (Backups tab)
+  components/BackupScheduleEditor.tsx  per-tenant schedule UI (Backups tab)
 
-frontend/client-panel/src/
+frontend/tenant-panel/src/
   pages/Backups.tsx               customer self-service (list + schedule + GDPR)
-  hooks/use-tenant-backups.ts     client-panel hooks
+  hooks/use-tenant-backups.ts     tenant-panel hooks
 ```

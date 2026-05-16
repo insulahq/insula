@@ -128,8 +128,8 @@ print(nginx.get("id","") if nginx else "")' 2>/dev/null)
 [[ -n "$catalog_id" ]] || { fail "catalog: nginx-php entry not found"; exit 1; }
 
 create_resp=$(api POST "/clients" "{
-  \"company_name\": \"coverage-$stamp\",
-  \"company_email\": \"coverage-$stamp@example.test\",
+  \"name\": \"coverage-$stamp\",
+  \"primary_email\": \"coverage-$stamp@example.test\",
   \"plan_id\": \"$plan_id\",
   \"region_id\": \"$region_id\",
   \"storage_tier\": \"local\"
@@ -158,7 +158,7 @@ ok "domain created hostname=$hostname"
 # ─── Capture full bundle ────────────────────────────────────────
 
 log "capturing bundle (all components)…"
-body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"coverage-$stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":true,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+body="{\"tenantId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"coverage-$stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":true,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
 b_resp=$(api POST "/admin/tenant-bundles" "$body")
 bundle_id=$(echo "$b_resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("bundleId",""))' 2>/dev/null)
 b_status=$(echo "$b_resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("status",""))' 2>/dev/null)

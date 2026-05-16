@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ci-mail-sdk-shape.sh — fail CI when a call site in backend/src/modules/mail-admin/
 # uses the SDK v0-style positional-args calling convention for any
-# @kubernetes/client-node API method.
+# @kubernetes/tenant-node API method.
 #
-# Background. @kubernetes/client-node went through a v0 → v1 rewrite. v0
+# Background. @kubernetes/tenant-node went through a v0 → v1 rewrite. v0
 # took positional args:
 #   await core.readNode(name)
 #   await apps.readNamespacedDeployment(name, namespace)
@@ -22,7 +22,7 @@
 #   dr-watcher.ts:isNodeReady false-negatives for the same reason
 #   migration.ts:waitForReplicaCount silently timing out
 #
-# Rule. Every call to a known @kubernetes/client-node API method MUST
+# Rule. Every call to a known @kubernetes/tenant-node API method MUST
 # be either:
 #   (a) Direct: `await client.method({ ... })` with object args, OR
 #   (b) Cast: `await (client as ...).method({ ... }, override)` with
@@ -85,7 +85,7 @@ if hits:
     for h in hits:
         print(f"  {h}")
     print()
-    print("❌ ci-mail-sdk-shape: v0-positional @kubernetes/client-node call(s) in mail-admin/")
+    print("❌ ci-mail-sdk-shape: v0-positional @kubernetes/tenant-node call(s) in mail-admin/")
     print()
     print("  Switch to v1 object-args:")
     print("    BEFORE:  await (core as unknown as { readNode: (name: string) => ... }).readNode(name)")

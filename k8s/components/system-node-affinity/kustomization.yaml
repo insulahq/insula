@@ -5,7 +5,7 @@
 # labelled `platform.example.test/node-role=server`, and adds a
 # toleration for the `platform.example.test/server-only:NoSchedule`
 # taint so those pods still schedule on servers that refuse tenant
-# workloads (`--host-client-workloads=false`).
+# workloads (`--host-tenant-workloads=false`).
 #
 # Apply order (CRITICAL — see docs/07-reference/NODE_ROLE_TAXONOMY.md):
 # the staging / production node MUST already carry
@@ -39,7 +39,7 @@ patches:
     path: affinity-patch.yaml
   - target: { kind: Deployment, name: platform-api, namespace: platform }
     path: affinity-patch.yaml
-  - target: { kind: Deployment, name: client-panel, namespace: platform }
+  - target: { kind: Deployment, name: tenant-panel, namespace: platform }
     path: affinity-patch.yaml
   - target: { kind: Deployment, name: platform-suspended, namespace: platform }
     path: affinity-patch.yaml

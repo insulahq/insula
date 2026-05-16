@@ -8,7 +8,7 @@
 #   Host 2018 → NodePort 30180 → OAuth2 Proxy
 #   Host 2019 → NodePort 30222 → SFTP Gateway
 #
-# Backend API is deliberately NOT exposed — admin/client panels reverse-proxy
+# Backend API is deliberately NOT exposed — admin/tenant panels reverse-proxy
 # /api/* to platform-api.platform.svc.cluster.local:3000 via their nginx sidecars.
 ---
 apiVersion: v1
