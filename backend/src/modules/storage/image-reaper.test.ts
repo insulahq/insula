@@ -12,20 +12,24 @@ const mockDb = {
 const mockGetInUseImages = vi.fn<[], Promise<Set<string>>>();
 const mockRunPurgeOnNode = vi.fn();
 
-vi.mock('./service.js', () => ({
-  getInUseImages: mockGetInUseImages,
-  runPurgeOnNode: mockRunPurgeOnNode,
-  // Real implementation re-exported for the in-use guard normalisation path
-  isAnyNameInUse: (names: readonly string[], set: ReadonlySet<string>): boolean => {
-    for (const n of names) {
-      if (set.has(n)) return true;
-      const stripped = n.replace(/^docker\.io\/library\//, '');
-      if (set.has(stripped)) return true;
-      if (!n.includes('/') && set.has(`docker.io/library/${n}`)) return true;
-    }
-    return false;
-  },
-}));
+vi.mock('./service.js', async () => {
+  // Use the REAL canonicalImageRef from the shared utility so this mock
+  // stays in lockstep with production behaviour automatically (no copy-
+  // paste sync discipline needed).
+  const { canonicalImageRef } = await import('./image-ref-utils.js');
+  return {
+    getInUseImages: mockGetInUseImages,
+    runPurgeOnNode: mockRunPurgeOnNode,
+    isAnyNameInUse: (names: readonly string[], set: ReadonlySet<string>): boolean => {
+      const canonSet = new Set<string>();
+      for (const u of set) canonSet.add(canonicalImageRef(u));
+      for (const n of names) {
+        if (canonSet.has(canonicalImageRef(n))) return true;
+      }
+      return false;
+    },
+  };
+});
 
 vi.mock('../../db/schema.js', () => ({
   imageReapLog: {},
@@ -174,6 +178,150 @@ describe('image-reaper', () => {
       }).not.toThrow();
 
       vi.useRealTimers();
+    });
+  });
+
+  describe('canonicalImageRef equivalence (2026-05-17 reaper regression)', () => {
+    // The reaper used to compare the catalog's image ref directly against
+    // node.status.images[].names — a string equality check that missed
+    // `serversideup/php:tag` vs `docker.io/serversideup/php:tag`. The
+    // canonicalImageRef helper normalises both sides to the long Docker
+    // form. These tests pin the matching behaviour for every shape we
+    // expect to see in production.
+    it('matches a Docker Hub user/image catalog ref against the canonical docker.io/user/image node ref', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set()); // not in use
+      mockRunPurgeOnNode.mockResolvedValue({ removedDisplayNames: ['serversideup/php:tag'], failedDisplayNames: [], freedBytes: 100_000 });
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['docker.io/serversideup/php:tag'], sizeBytes: 100_000 }] },
+      ]);
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'serversideup/php:tag',
+        triggeredBy: 'deployment_delete',
+      });
+
+      // Old code: skipped=true reason=not_present (catalog ref didn't
+      // match docker.io/-prefixed node ref). New code: a node is found,
+      // runPurgeOnNode is invoked, the reap is recorded.
+      expect(result.skipped).toBe(false);
+      expect(result.nodes).toEqual(['n1']);
+      expect(mockRunPurgeOnNode).toHaveBeenCalledOnce();
+    });
+
+    it('matches the bare-name (no /) catalog ref against docker.io/library/<name>', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set());
+      mockRunPurgeOnNode.mockResolvedValue({ removedDisplayNames: ['nginx:latest'], failedDisplayNames: [], freedBytes: 50_000 });
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['docker.io/library/nginx:latest'], sizeBytes: 50_000 }] },
+      ]);
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'nginx:latest',
+        triggeredBy: 'deployment_delete',
+      });
+
+      expect(result.skipped).toBe(false);
+      expect(result.nodes).toEqual(['n1']);
+    });
+
+    it('does NOT normalise refs that already specify a non-Docker-Hub registry', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set());
+      mockRunPurgeOnNode.mockResolvedValue({ removedDisplayNames: [], failedDisplayNames: [], freedBytes: 0 });
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['ghcr.io/foo/bar:v1'], sizeBytes: 0 }] },
+      ]);
+
+      // Catalog ref is `ghcr.io/foo/bar:v2` — different tag, MUST NOT match
+      // the v1 on the node.
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'ghcr.io/foo/bar:v2',
+        triggeredBy: 'deployment_delete',
+      });
+
+      expect(result.skipped).toBe(true);
+      expect(result.reason).toBe('not_present');
+    });
+
+    it('matches identical fully-qualified refs without alteration', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set());
+      mockRunPurgeOnNode.mockResolvedValue({ removedDisplayNames: ['ghcr.io/foo/bar:v1'], failedDisplayNames: [], freedBytes: 10_000 });
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['ghcr.io/foo/bar:v1'], sizeBytes: 10_000 }] },
+      ]);
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'ghcr.io/foo/bar:v1',
+        triggeredBy: 'deployment_delete',
+      });
+
+      expect(result.skipped).toBe(false);
+      expect(result.nodes).toEqual(['n1']);
+    });
+
+    it('in-use guard catches the canonical form when the pod spec uses the short ref', async () => {
+      // Pod spec shows `serversideup/php:tag` (short); node reports
+      // `docker.io/serversideup/php:tag` (canonical). The in-use guard
+      // must recognise these as the same image and SKIP the reap.
+      mockGetInUseImages.mockResolvedValue(new Set(['serversideup/php:tag']));
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['docker.io/serversideup/php:tag'], sizeBytes: 1000 }] },
+      ]);
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'docker.io/serversideup/php:tag', // caller uses the canonical form
+        triggeredBy: 'deployment_delete',
+      });
+
+      expect(result.skipped).toBe(true);
+      expect(result.reason).toBe('in_use');
+      expect(mockRunPurgeOnNode).not.toHaveBeenCalled();
+    });
+
+    it('passes the canonical (FQDN) ref to crictl, even when the catalog ref is short', async () => {
+      // cri-o requires the FQDN form to remove an image. The reaper used
+      // to pass the short catalog ref directly to crictl, which only
+      // worked on containerd. Pin the canonical-form contract.
+      mockGetInUseImages.mockResolvedValue(new Set());
+      mockRunPurgeOnNode.mockResolvedValue({ removedDisplayNames: ['serversideup/php:tag'], failedDisplayNames: [], freedBytes: 100_000 });
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['docker.io/serversideup/php:tag'], sizeBytes: 100_000 }] },
+      ]);
+
+      await reapImageNow(mockDb, k8s, {
+        image: 'serversideup/php:tag',
+        triggeredBy: 'deployment_delete',
+      });
+
+      expect(mockRunPurgeOnNode).toHaveBeenCalledOnce();
+      const [, , imgs] = mockRunPurgeOnNode.mock.calls[0];
+      const img = imgs[0] as { crictlName: string; displayName: string };
+      expect(img.crictlName).toBe('docker.io/serversideup/php:tag'); // canonical
+      expect(img.displayName).toBe('serversideup/php:tag'); // operator-facing
+    });
+
+    it('leaves bare digest refs (sha256:abc...) unchanged in canonical form', async () => {
+      // Pure digest refs like `sha256:abc...` are reported by kubelet as-
+      // is on node.status.images[].names. Expanding to
+      // `docker.io/library/sha256:abc...` would silently miss the match
+      // and the reaper would log a false no-op success. Regression
+      // guard against re-introducing the expansion.
+      mockGetInUseImages.mockResolvedValue(new Set());
+      mockRunPurgeOnNode.mockResolvedValue({ removedDisplayNames: ['sha256:abc'], failedDisplayNames: [], freedBytes: 1 });
+      const k8s = makeK8s([
+        { name: 'n1', images: [{ names: ['sha256:abc'], sizeBytes: 1 }] },
+      ]);
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'sha256:abc',
+        triggeredBy: 'deployment_delete',
+      });
+
+      expect(result.skipped).toBe(false);
+      expect(result.nodes).toEqual(['n1']);
+      // crictlName MUST be the bare digest — no docker.io/library/ prefix
+      const [, , imgs] = mockRunPurgeOnNode.mock.calls[0];
+      const img = imgs[0] as { crictlName: string };
+      expect(img.crictlName).toBe('sha256:abc');
     });
   });
 });
