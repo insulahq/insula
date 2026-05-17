@@ -1,19 +1,39 @@
-# Management IngressRoute for Stalwart 0.16 web-admin.
+# Public listener for Stalwart 0.16 — split into two routes:
+#
+#   1. JMAP protocol endpoints (Stalwart enforces its own auth)
+#      - /jmap, /jmap/*       — JMAP API + Blob upload/download + EventSource
+#      - /.well-known/jmap    — JMAP discovery
+#      Bypasses `admin-auth-cookie` middleware so platform-api-minted
+#      master-user impersonation JWTs that Bulwark's server-side proxy
+#      forwards to Stalwart with (Basic <target>%<master>:<pw>) reach
+#      Stalwart's own auth. Without this split, browser-driven webmail
+#      flows fail with 401 at the Traefik gate before Stalwart sees the
+#      Authorization header.
+#
+#      Why exposing /jmap on a public route is safe: Stalwart
+#      authenticates EVERY request to /jmap via its own credential
+#      store. There is no Stalwart endpoint reachable under /jmap that
+#      skips authentication. The previous behaviour of forcing a
+#      separate `platform_session` cookie was therefore a
+#      defence-in-depth layer that legitimate JMAP clients (webmail,
+#      mobile, calendar) cannot satisfy without the platform cookie
+#      minting flow — turning a usability requirement into a hard fail.
+#
+#   2. WebAdmin SPA + admin REST API + everything else
+#      - /admin/*  — WebAdmin Single-Page App
+#      - /api/*    — Stalwart REST admin endpoints (account CRUD, etc.)
+#      - default   — anything not matched by route 1
+#      KEEPS the `admin-auth-gate-cookie` (or oauth2) component-supplied
+#      middleware. CI guard scripts/ci-admin-auth-check.sh still passes
+#      because the IngressRoute resource itself carries the admin-ui
+#      label + auth-gate annotation.
 #
 # URL: https://stalwart.${DOMAIN}/
 # Backend: stalwart-mgmt.mail.svc.cluster.local:8080
 #
-# Access control: ForwardAuth middleware admin-auth-cookie (supplied by
-# the overlay's admin-auth-gate-cookie or admin-auth-gate-oauth2 component).
-#
 # TLS: cert-manager Certificate CR below provides the Secret; Traefik
-# references it via tls.secretName. The Certificate uses letsencrypt-
-# prod-http01 by default; overlays can patch it to a DNS-01 issuer.
-#
-# The `platform.example.test/admin-ui: "true"` label is kept here
-# for CI guard compatibility (scripts/ci-admin-auth-check.sh). The
-# admin-auth-gate component no longer needs to patch this resource —
-# it creates the ForwardAuth Middleware that this route references directly.
+# references it via tls.secretName. The Certificate uses
+# letsencrypt-prod-http01 by default; overlays can patch it to a DNS-01 issuer.
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -31,6 +51,18 @@ spec:
   entryPoints:
     - websecure
   routes:
+    # Route 1 — JMAP protocol (no admin-auth-cookie gate).
+    # Stalwart owns auth here. PathPrefix matches are higher priority
+    # than the Host-only catch-all below, so /jmap requests land here.
+    - match: "Host(`stalwart.${DOMAIN}`) && (PathPrefix(`/jmap`) || Path(`/.well-known/jmap`))"
+      kind: Rule
+      middlewares:
+        - name: compress
+          namespace: traefik
+      services:
+        - name: stalwart-mgmt
+          port: 8080
+    # Route 2 — WebAdmin SPA + admin REST API + catch-all (cookie gate).
     - match: "Host(`stalwart.${DOMAIN}`)"
       kind: Rule
       middlewares:
