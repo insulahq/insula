@@ -27,6 +27,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { imageReapLog } from '../../db/schema.js';
 import { getInUseImages, runPurgeOnNode, isAnyNameInUse } from './service.js';
+import { canonicalImageRef } from './image-ref-utils.js';
 
 export interface ReapInput {
   /** Canonical image ref — with tag or digest (e.g. `ghcr.io/foo/bar:v1.2.3`). */
@@ -97,16 +98,18 @@ export async function reapImageNow(
     return { reclaimedBytes: 0, nodes: [], skipped: false, reason: 'k8s_error' };
   }
 
+  // Normalize the caller's image ref to its canonical Docker form so we
+  // can compare against whatever shape kubelet reports under
+  // node.status.images[].names (which is always a canonical
+  // `<registry>/<repo>:<tag>` or `<registry>/<repo>@<digest>` string).
+  const wantedCanonical = canonicalImageRef(image);
   const nodePresences: { node: string; sizeBytes: number }[] = [];
   for (const node of nodeList) {
     const nodeName = node.metadata?.name ?? 'unknown';
     const images = node.status?.images ?? [];
     for (const img of images) {
       const names = img.names ?? [];
-      const matches = names.some(n =>
-        n === image ||
-        n.replace(/^docker\.io\/library\//, '') === image.replace(/^docker\.io\/library\//, ''),
-      );
+      const matches = names.some((n) => canonicalImageRef(n) === wantedCanonical);
       if (matches) {
         nodePresences.push({ node: nodeName, sizeBytes: img.sizeBytes ?? 0 });
         break;
@@ -126,8 +129,13 @@ export async function reapImageNow(
   const errors: string[] = [];
 
   for (const presence of nodePresences) {
+    // Pass the CANONICAL form to crictl so the rmi call works on every
+    // runtime. containerd accepts short refs and resolves them against
+    // the default registry, but cri-o requires the FQDN form to remove
+    // an image. The original short ref stays as `displayName` so audit
+    // logs (image_reap_log.image_name) keep the operator-facing string.
     const result = await runPurgeOnNode(k8s, presence.node, [{
-      crictlName: image,
+      crictlName: wantedCanonical,
       displayName: image,
       sizeBytes: presence.sizeBytes,
     }]);

@@ -3,6 +3,7 @@ import type { Database } from '../../db/index.js';
 import { sql } from 'drizzle-orm';
 import { tenants } from '../../db/schema.js';
 import { getRedis } from '../../shared/redis.js';
+import { canonicalImageRef } from './image-ref-utils.js';
 import type {
   StorageOverviewResponse,
   ImageInventoryResponse,
@@ -377,14 +378,22 @@ export async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
 }
 
 export function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySet<string>): boolean {
+  // Build a canonicalised in-use set ONCE per call so we can compare on
+  // the canonical form regardless of whether the caller/pod spec used
+  // the short ref (`nginx:latest`, `serversideup/php:tag`) or the long
+  // canonical (`docker.io/library/nginx:latest`,
+  // `docker.io/serversideup/php:tag`). 2026-05-17 reaper bug fix: the
+  // previous logic only normalised `docker.io/library/` and missed
+  // `docker.io/<user>/` Docker Hub refs (e.g. catalog
+  // `serversideup/php:tag` vs node `docker.io/serversideup/php:tag`),
+  // so reapImageNow's in-use guard and presence check both false-
+  // negatived and the reaper logged a no-op "success".
+  const canonicalInUse = new Set<string>();
+  for (const u of inUseSet) {
+    canonicalInUse.add(canonicalImageRef(u));
+  }
   for (const name of allNames) {
-    if (inUseSet.has(name)) return true;
-    const normalized = name.replace(/^docker\.io\/library\//, '');
-    if (inUseSet.has(normalized)) return true;
-    // Also accept the docker.io/library/ form when the in-use set has the bare name
-    if (!name.includes('/')) {
-      if (inUseSet.has(`docker.io/library/${name}`)) return true;
-    }
+    if (canonicalInUse.has(canonicalImageRef(name))) return true;
   }
   return false;
 }
