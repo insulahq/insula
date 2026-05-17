@@ -95,7 +95,6 @@ export default function SpeedtestProgressModal({
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [operationId, targetId]);
 
   const status = task?.status ?? 'running';
