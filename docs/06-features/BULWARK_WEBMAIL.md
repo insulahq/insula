@@ -6,8 +6,9 @@ the design rationale.
 
 ## Architecture change (2026-05-17): impersonator sidecar retired
 
-Bulwark's upstream `/api/auth/impersonate` route shipped on the
-beta channel (issue [#296](https://github.com/bulwarkmail/webmail/issues/296)).
+Bulwark's upstream `/api/auth/impersonate` route shipped in v1.6.7
+stable (issue [#296](https://github.com/bulwarkmail/webmail/issues/296),
+published 2026-05-17T16:28).
 The platform's previously-shipped `bulwark-impersonator` sidecar +
 ConfigMap is therefore retired — the new route implements the exact
 same JWT contract (HS256, iss/iat/exp/jti/mailbox claims, lifetime
@@ -16,9 +17,9 @@ IngressRoute now targets the `bulwark` Service directly.
 
 **What changed for the platform:**
 - `k8s/base/bulwark-impersonator/` deleted
-- Image bumped to `ghcr.io/bulwarkmail/webmail-beta` (built from
-  upstream main — see Bulwark's `docker-publish.yml`; the package
-  name is `<repo>-beta` for main-branch builds)
+- Image bumped to `ghcr.io/bulwarkmail/webmail@sha256:4ee0f0b5…`
+  (v1.6.7 stable; the first release tag with the impersonation
+  route)
 - 3 new envs on the `bulwark` container: `BULWARK_JWT_AUTH_SECRET`
   (= platform-api's `WEBMAIL_JWT_SECRET`, one shared HMAC key),
   `BULWARK_STALWART_MASTER_USER`, `BULWARK_STALWART_MASTER_PASSWORD`

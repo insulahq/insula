@@ -119,16 +119,16 @@ The integration tracks Bulwark v1.6.x, current `v1.6.5` (May 13, 2026). Image di
 The platform's `bulwark-impersonator` sidecar was an interim solution
 to a missing upstream feature. On 2026-05-16 Bulwark merged native
 support (issue [#296](https://github.com/bulwarkmail/webmail/issues/296))
-and shipped it on the beta channel (`ghcr.io/bulwarkmail/webmail-beta`).
-The native route's contract is identical to what our sidecar enforced;
-side-by-side verification ran in local DinD on 2026-05-17 and passed
-all positive + 9 negative scenarios.
+and cut v1.6.7 stable on 2026-05-17 (the first release tag with the
+impersonation route). The native route's contract is identical to
+what our sidecar enforced; side-by-side verification ran in local
+DinD on 2026-05-17 and passed all positive + 9 negative scenarios.
 
 ### What changed
 
 | Layer | Before | After |
 |---|---|---|
-| Bulwark image | `webmail@sha256:78c691…` (1.6.5) | `webmail-beta@sha256:958c8e87…` (main) |
+| Bulwark image | `webmail@sha256:78c691…` (1.6.5) | `webmail@sha256:4ee0f0b5…` (v1.6.7 stable) |
 | Impersonation handler | `bulwark-impersonator` sidecar in the Bulwark Pod | Bulwark's native `/api/auth/impersonate` route |
 | URL path | `webmail.<apex>/_impersonate?token=<jwt>` | `webmail.<apex>/api/auth/impersonate?token=<jwt>` |
 | Bulwark Service | Front-ended by `bulwark-impersonator` Service | Direct `bulwark` Service |
@@ -150,11 +150,14 @@ matches what the SPA already expected (`jmap_session`,
 
 ### Out of scope for this amendment
 
-- Production rollout — gated on a stable Bulwark release that includes
-  the impersonation route (currently only on the `webmail-beta`
-  channel). Track `bulwarkmail/webmail` releases for the first
-  post-`1.6.6` version with `ca1108f4` in main.
 - A Kubernetes Job for orphan-`.enc`-file cleanup when a tenant is
   archived (the retired `bulwark-settings-purge` hook used to do this
   via the sidecar; the files are inert without a matching tenant but
   may accumulate over time). Tracked in `BULWARK_DEFERRED_WORK.md`.
+
+### Production-readiness
+
+v1.6.7 is a stable release (not a rolling channel). Production
+rollout is unblocked at the upstream level. The platform's
+`platform_config.default_webmail_engine` mutex still gates per-
+tenant cutover.

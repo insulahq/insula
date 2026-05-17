@@ -1,17 +1,15 @@
 # Bulwark webmail — JMAP-native client for Stalwart Mail Server.
 #
 # Master-user impersonation is handled by Bulwark's native
-# /api/auth/impersonate route (upstream issue #296, shipped on
-# webmail-beta:latest 2026-05-16). Our previous impersonator sidecar
+# /api/auth/impersonate route (upstream issue #296, shipped in v1.6.7
+# stable on 2026-05-17). Our previous impersonator sidecar
 # (k8s/base/bulwark-impersonator/) is retired.
 #
 # The Deployment ships as part of the platform base but is NOT included
 # by k8s/base/kustomization.yaml — overlays opt-in.
 #
-# Image is pinned by digest. Source: ghcr.io/bulwarkmail/webmail-beta
-# (built from the main branch — see Bulwark's docker-publish.yml which
-# names main-branch builds `<repo>-beta`). Bump procedure documented in
-# ADR-039.
+# Image is pinned by digest. Source: ghcr.io/bulwarkmail/webmail (the
+# stable release channel). Bump procedure documented in ADR-039.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,10 +76,10 @@ spec:
           type: RuntimeDefault
       containers:
         - name: bulwark
-          # ghcr.io/bulwarkmail/webmail-beta@sha256:958c8e87... — beta
-          # channel built from upstream main. Includes the
+          # ghcr.io/bulwarkmail/webmail@sha256:4ee0f0b5... — Bulwark
+          # v1.6.7 stable (2026-05-17). First stable release with the
           # /api/auth/impersonate route (issue #296). Bump per ADR-039.
-          image: ghcr.io/bulwarkmail/webmail-beta@sha256:958c8e872026087c10a65bd1d16543fb44027c924c1e6314f30888115acc9089
+          image: ghcr.io/bulwarkmail/webmail@sha256:4ee0f0b505287555f814654fec12bd07c8bde098ee80a92b2dc13d556f576431
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
