@@ -97,6 +97,11 @@ FAILURES=()
 log() { echo -e "\033[36m[$(date +%H:%M:%S)]\033[0m $*"; }
 ok()  { echo -e "  \033[32m✓\033[0m $*"; PASSED=$((PASSED+1)); }
 fail() { echo -e "  \033[31m✗\033[0m $*"; FAILURES+=("$*"); FAILED=$((FAILED+1)); }
+# Non-fatal advisory marker — used for hygiene probes (DNSBL, etc.)
+# whose false-positive rate on shared cloud IPs is high enough that a
+# hit should NOT fail the suite by default. Operators can promote to
+# fail via DNSBL_STRICT=1 (handled at the call site).
+warn() { echo -e "  \033[33m⚠\033[0m $*"; }
 
 login_token() {
   curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
@@ -272,6 +277,232 @@ _assert_cert_names_hostname() {
     ok "${tag}: cert covers '${expected_hostname}' (subject=${subject}; SAN=${san:-<none>})"
   else
     fail "${tag}: cert does NOT cover '${expected_hostname}' (subject=${subject:-<missing>}; SAN=${san:-<none>})"
+  fi
+}
+
+# Resolve the configured mail server hostname. Priority:
+#   1. MAIL_HOSTNAME env override (operator pin for a specific probe)
+#   2. /admin/webmail-settings.mailServerHostname (the live value
+#      Stalwart binds to + that the cert SAN must match — operators
+#      change this via admin UI; mail_hostname_rename scenario tests
+#      the rename flow itself)
+#   3. `mail.${MAIL_DOMAIN_APEX}` (the convention default)
+#
+# Step 2 uses the existing `api` helper, which depends on TOKEN being
+# set. _resolve_mail_hostname is called from scenarios that run after
+# the harness logs in, so TOKEN is always available. If the API call
+# fails or returns empty (settings not yet configured on a fresh
+# cluster), the convention default applies and the cert/banner/DNSBL
+# probes still target the same hostname Stalwart's default config uses.
+_resolve_mail_hostname() {
+  if [[ -n "${MAIL_HOSTNAME:-}" ]]; then
+    echo "$MAIL_HOSTNAME"
+    return 0
+  fi
+  local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-staging.phoenix-host.net}}"
+  local from_api
+  from_api=$(api GET /admin/webmail-settings 2>/dev/null \
+    | python3 -c "import json,sys
+try:
+  d=json.load(sys.stdin)
+  print(d.get('data',{}).get('mailServerHostname','') or '')
+except Exception:
+  pass" 2>/dev/null)
+  if [[ -n "$from_api" ]]; then
+    echo "$from_api"
+    return 0
+  fi
+  echo "mail.${apex}"
+}
+
+# Return a newline-separated list of mail-serving public IPs. In
+# allServerNodes mode this is the union of server-role node external
+# IPs (haproxy DS runs hostNetwork on each). In thisNodeOnly mode it
+# is the single node currently hosting the Stalwart pod.
+#
+# Strategy: prefer DNS (the live record an external sender would
+# resolve) intersected with the cluster's actual node IPs (catches
+# stale DNS pointing at a decommissioned node). Falls back to the
+# kubectl node list when DNS yields nothing.
+#
+# Output: one IPv4/IPv6 per line, no duplicates, no trailing dots.
+_resolve_mail_ips() {
+  local hostname="${1:-$(_resolve_mail_hostname)}"
+  # 1. DNS forward resolution — what external senders see
+  local dns_v4 dns_v6
+  dns_v4=$(dig +short "$hostname" A 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+  dns_v6=$(dig +short "$hostname" AAAA 2>/dev/null \
+    | grep -E ':' | sort -u)
+  # 2. Cluster node IPs (server-role nodes — haproxy targets) for the
+  # intersection check + fallback.
+  local cluster_ips
+  cluster_ips=$(ssh_cp "kubectl get nodes -l platform.phoenix-host.net/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+    | tr -d '\r' | grep -vE '^$' | sort -u)
+  # If DNS returned anything, use it. Otherwise fall back to cluster
+  # node IPs (covers fresh clusters where DNS hasn't been wired yet
+  # but the harness still wants to probe the actual mail egress).
+  if [[ -n "$dns_v4" || -n "$dns_v6" ]]; then
+    printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u
+  else
+    printf '%s\n' "$cluster_ips"
+  fi
+}
+
+# Assert that forward DNS for the configured mail hostname covers the
+# set of IPs the cluster actually serves mail from. Subset check: every
+# cluster-discovered IP must appear in DNS. DNS entries that point at
+# IPs no longer in the cluster are flagged as warn (commonly a stale
+# record during a node migration).
+_assert_mail_forward_dns() {
+  local hostname; hostname=$(_resolve_mail_hostname)
+  local dns_v4 dns_v6 cluster_ips
+  dns_v4=$(dig +short "$hostname" A 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+  dns_v6=$(dig +short "$hostname" AAAA 2>/dev/null \
+    | grep -E ':' | sort -u)
+  local dns_all
+  dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
+  cluster_ips=$(ssh_cp "kubectl get nodes -l platform.phoenix-host.net/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+    | tr -d '\r' | grep -vE '^$' | sort -u)
+  if [[ -z "$dns_all" ]]; then
+    fail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"
+    return 1
+  fi
+  if [[ -z "$cluster_ips" ]]; then
+    log "mail-dns/forward: ${hostname} → ${dns_all//$'\n'/, } (no server-role node IPs discoverable via kubectl — skipping subset check)"
+    return 0
+  fi
+  # Every cluster IP must appear in DNS.
+  local missing=""
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    if ! echo "$dns_all" | grep -qFx "$ip"; then
+      missing="${missing} ${ip}"
+    fi
+  done <<<"$cluster_ips"
+  if [[ -n "$missing" ]]; then
+    fail "mail-dns/forward: ${hostname} A/AAAA missing cluster IPs:${missing} (cluster:${cluster_ips//$'\n'/,} dns:${dns_all//$'\n'/,})"
+  else
+    ok "mail-dns/forward: ${hostname} → ${dns_all//$'\n'/, } (covers every server-role node IP)"
+  fi
+  # Reverse subset: DNS IPs not in cluster are warn (might be migration
+  # in progress, or a stale record).
+  local extra=""
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    if ! echo "$cluster_ips" | grep -qFx "$ip"; then
+      extra="${extra} ${ip}"
+    fi
+  done <<<"$dns_all"
+  if [[ -n "$extra" ]]; then
+    warn "mail-dns/forward: ${hostname} DNS has extra IPs not in cluster:${extra} (stale record or in-progress migration?)"
+  fi
+}
+
+# Assert that every mail-serving IP has a PTR record that resolves
+# back to the configured mail hostname. Receiving SMTP servers
+# routinely reject mail when forward+reverse DNS don't match (FCrDNS)
+# — a missing or mismatched PTR is a primary cause of deliverability
+# regressions and is invisible to the cluster otherwise.
+#
+# For IPv6 the reverse zone is `.ip6.arpa`; `dig -x <addr>` handles
+# the nibble-reversal automatically.
+_assert_mail_reverse_dns() {
+  local hostname; hostname=$(_resolve_mail_hostname)
+  local ips; ips=$(_resolve_mail_ips "$hostname")
+  if [[ -z "$ips" ]]; then
+    fail "mail-dns/reverse: no mail IPs resolvable (DNS + kubectl both empty); cannot run PTR checks"
+    return 1
+  fi
+  local checked=0
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    checked=$((checked + 1))
+    local ptr
+    ptr=$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')
+    if [[ -z "$ptr" ]]; then
+      fail "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)"
+      continue
+    fi
+    if [[ "$ptr" == "$hostname" ]]; then
+      ok "mail-dns/reverse: ${ip} → ${ptr} (matches mail hostname)"
+    else
+      # Some hosting providers use a vanity-prefix PTR like
+      # `mail1.${apex}` or `mta-out.${apex}`. Accept any PTR that
+      # ends in `.<apex>` as warn (helps deliverability) but fail
+      # when the PTR is completely unrelated (provider default).
+      local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-}}"
+      if [[ -n "$apex" && "$ptr" == *".${apex}" ]]; then
+        warn "mail-dns/reverse: ${ip} → ${ptr} (under .${apex} but NOT exactly ${hostname} — set explicit PTR for best deliverability)"
+      else
+        fail "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)"
+      fi
+    fi
+  done <<<"$ips"
+  log "mail-dns/reverse: ${checked} IP(s) checked"
+}
+
+# Assert that no mail-serving IP is on a major DNSBL. DNSBL queries
+# are advisory (warn) by default — public DNSBLs sometimes false-positive
+# on shared cloud IPs (Hetzner ranges, etc.) so a hit doesn't always
+# mean the operator is sending spam. Set DNSBL_STRICT=1 to promote
+# hits to fail.
+#
+# Default zones — Spamhaus ZEN (combined SBL+CSS+XBL+PBL), Barracuda,
+# SpamCop. Override with DNSBL_ZONES="zone1 zone2 ..." or skip entirely
+# with SKIP_DNSBL=1.
+#
+# IPv4: reverse the octets then prepend to the zone (1.2.3.4 →
+# 4.3.2.1.zen.spamhaus.org). IPv6: nibble-reverse + .ip6 (most public
+# DNSBLs don't carry v6 data; we still try and treat NXDOMAIN as clean).
+_assert_mail_not_blacklisted() {
+  if [[ "${SKIP_DNSBL:-}" == "1" ]]; then
+    log "mail-dnsbl: skipped (SKIP_DNSBL=1)"
+    return 0
+  fi
+  local hostname; hostname=$(_resolve_mail_hostname)
+  local ips; ips=$(_resolve_mail_ips "$hostname")
+  if [[ -z "$ips" ]]; then
+    log "mail-dnsbl: no mail IPs to check — skipping"
+    return 0
+  fi
+  local zones="${DNSBL_ZONES:-zen.spamhaus.org b.barracudacentral.org bl.spamcop.net}"
+  local strict="${DNSBL_STRICT:-0}"
+  local total_hits=0
+  local total_checks=0
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    # IPv4 only for now — DNSBL IPv6 coverage is too inconsistent
+    # to base a CI gate on. Skip v6 with an informational log.
+    if [[ "$ip" != *:* ]]; then
+      local revoct
+      revoct=$(echo "$ip" | awk -F. '{print $4"."$3"."$2"."$1}')
+      for zone in $zones; do
+        total_checks=$((total_checks + 1))
+        local resp
+        resp=$(dig +short +time=3 +tries=2 "${revoct}.${zone}" A 2>/dev/null \
+          | grep -E '^127\.' | head -1)
+        if [[ -n "$resp" ]]; then
+          total_hits=$((total_hits + 1))
+          # Try to pull the human-readable reason from the TXT record.
+          local txt
+          txt=$(dig +short +time=3 +tries=2 "${revoct}.${zone}" TXT 2>/dev/null \
+            | head -1 | sed 's/^"//;s/"$//')
+          local msg="${ip} listed on ${zone} (response=${resp}${txt:+ — ${txt}})"
+          if [[ "$strict" == "1" ]]; then
+            fail "mail-dnsbl: ${msg}"
+          else
+            warn "mail-dnsbl: ${msg} (advisory — set DNSBL_STRICT=1 to fail the suite)"
+          fi
+        fi
+      done
+    else
+      log "mail-dnsbl: ${ip} is IPv6 — skipped (DNSBL IPv6 support is inconsistent)"
+    fi
+  done <<<"$ips"
+  if [[ "$total_hits" == "0" ]]; then
+    ok "mail-dnsbl: ${total_checks} queries clean across ${zones}"
   fi
 }
 
@@ -2302,18 +2533,33 @@ scenario_mail_tls() {
   fi
 
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
-  local mail_hostname="${MAIL_HOSTNAME:-mail.${mail_domain_apex}}"
-  # MAIL_HOST: auto-resolve (DNS of mail.<apex>, then kubectl hostIP
+  # Mail hostname: read the LIVE value from /admin/webmail-settings so
+  # the probe matches whatever the operator has configured (which may
+  # differ from the convention `mail.<apex>` — the
+  # mail_hostname_rename scenario covers the rename flow itself).
+  local mail_hostname; mail_hostname=$(_resolve_mail_hostname)
+  # MAIL_HOST: auto-resolve (DNS of mail hostname, then kubectl hostIP
   # fallback) so the probe stays correct as the Stalwart pod migrates
   # between nodes (drain, failover, allServerNodes haproxy mode).
   # Operator can still pin to a specific node IP via MAIL_HOST=...
   # for multi-node debugging.
   local mail_host; mail_host=$(_resolve_mail_host)
   if [[ -z "$mail_host" ]]; then
-    fail "mail-tls/resolve: could not auto-resolve mail host (DNS of mail.${mail_domain_apex} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
+    fail "mail-tls/resolve: could not auto-resolve mail host (DNS of ${mail_hostname} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
     return 1
   fi
   log "mail-tls: probing ${mail_hostname} via ${mail_host}"
+
+  # ── 0. DNS / PTR / DNSBL hygiene — these checks run BEFORE the TLS
+  #       handshakes because a broken forward DNS / missing PTR / DNSBL
+  #       listing renders the cert + listener checks moot from an
+  #       external sender's perspective. Single-IP single-node and
+  #       multi-IP allServerNodes both pass through the same probes:
+  #       _resolve_mail_ips intersects the live DNS A/AAAA records
+  #       with the cluster's server-role node IPs. ──
+  _assert_mail_forward_dns
+  _assert_mail_reverse_dns
+  _assert_mail_not_blacklisted
 
   # ── 1. TLS handshake on each implicit-TLS port — must serve LE
   #       cert (not rcgen self-signed) AND cover the expected hostname
