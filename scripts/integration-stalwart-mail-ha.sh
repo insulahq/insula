@@ -356,6 +356,28 @@ get_port_exposure_mode() {
 }
 
 # ── Phase A — read-only Stalwart health ───────────────────────────────
+
+# A7 helper: enumerate the public IPs that should serve mail. For
+# allServerNodes mode that's every server-role node IP (haproxy DS
+# runs hostNetwork on each); for thisNodeOnly it's the single
+# Stalwart hostIP. The intersection with live DNS catches stale
+# records pointing at decommissioned nodes.
+_ha_mail_ips() {
+  local dns_v4 dns_v6
+  dns_v4=$(dig +short "$STALWART_DOMAIN" A 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+  dns_v6=$(dig +short "$STALWART_DOMAIN" AAAA 2>/dev/null \
+    | grep -E ':' | sort -u)
+  if [[ -n "$dns_v4" || -n "$dns_v6" ]]; then
+    printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u
+  else
+    # Fallback: server-role node InternalIPs from the cluster.
+    kctl get nodes -l platform.example.test/node-role=server \
+      -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null \
+      | tr -d '\r' | grep -vE '^$' | sort -u
+  fi
+}
+
 phase_a_health() {
   echo "## Phase A — Stalwart health"
 
@@ -550,6 +572,115 @@ print(' '.join(str(p) for p in sorted(ports)))" 2>/dev/null || echo '')"
       note_pass "A6/${port}. EHLO 250 line names '${ehlo_host}' (matches greeting)"
     fi
   done
+
+  # A7. Forward DNS (mail hostname → IPs) covers every server-role
+  # node IP. In allServerNodes mode the haproxy DaemonSet runs on every
+  # server node so each node IP must resolve; in thisNodeOnly mode
+  # there's a single node and the assertion still holds. Missing IPs
+  # break inbound mail from any external sender resolving the DNS.
+  local dns_v4 dns_v6 cluster_ips
+  dns_v4=$(dig +short "$STALWART_DOMAIN" A 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+  dns_v6=$(dig +short "$STALWART_DOMAIN" AAAA 2>/dev/null \
+    | grep -E ':' | sort -u)
+  local dns_all
+  dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
+  cluster_ips=$(kctl get nodes -l platform.example.test/node-role=server \
+    -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null \
+    | tr -d '\r' | grep -vE '^$' | sort -u)
+  if [[ -z "$dns_all" ]]; then
+    note_fail "A7. ${STALWART_DOMAIN} has NO A/AAAA records — no external sender can deliver"
+  elif [[ -z "$cluster_ips" ]]; then
+    echo "  A7. ${STALWART_DOMAIN} → ${dns_all//$'\n'/, } (no server-role nodes discoverable — subset check skipped)"
+  else
+    local missing="" extra=""
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      echo "$dns_all" | grep -qFx "$ip" || missing="${missing} ${ip}"
+    done <<<"$cluster_ips"
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      echo "$cluster_ips" | grep -qFx "$ip" || extra="${extra} ${ip}"
+    done <<<"$dns_all"
+    if [[ -n "$missing" ]]; then
+      note_fail "A7. ${STALWART_DOMAIN} A/AAAA missing cluster IPs:${missing} (cluster:${cluster_ips//$'\n'/,} dns:${dns_all//$'\n'/,})"
+    else
+      note_pass "A7. ${STALWART_DOMAIN} → ${dns_all//$'\n'/, } (covers every server-role node IP)"
+    fi
+    if [[ -n "$extra" ]]; then
+      note_warn "A7. ${STALWART_DOMAIN} DNS has extra IPs not in cluster:${extra} (stale record or in-progress migration?)"
+    fi
+  fi
+
+  # A8. Reverse DNS (PTR) for every mail IP resolves back to the
+  # configured mail hostname. Receiving SMTP servers routinely reject
+  # mail when forward+reverse DNS don't match (FCrDNS).
+  local mail_ips; mail_ips=$(_ha_mail_ips)
+  if [[ -z "$mail_ips" ]]; then
+    note_fail "A8. no mail IPs resolvable (DNS + cluster both empty)"
+  else
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      local ptr
+      ptr=$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')
+      if [[ -z "$ptr" ]]; then
+        note_fail "A8/${ip}. NO PTR record (FCrDNS fails — mail will be rejected by most receivers)"
+      elif [[ "$ptr" == "$STALWART_DOMAIN" ]]; then
+        note_pass "A8/${ip}. PTR → ${ptr}"
+      else
+        # Vanity-prefix PTR (mail1.<apex>, mta-out.<apex>) is workable;
+        # provider-default PTR (e.g. static.X.hetzner.de) is not.
+        local apex; apex=$(echo "$STALWART_DOMAIN" | sed 's/^[^.]*\.//')
+        if [[ -n "$apex" && "$ptr" == *".${apex}" ]]; then
+          note_warn "A8/${ip}. PTR → ${ptr} (under .${apex} but NOT exactly ${STALWART_DOMAIN} — set explicit PTR for best deliverability)"
+        else
+          note_fail "A8/${ip}. PTR → ${ptr} (does NOT match ${STALWART_DOMAIN} — FCrDNS fails)"
+        fi
+      fi
+    done <<<"$mail_ips"
+  fi
+
+  # A9. DNSBL hygiene — every mail IP must NOT be listed on a major
+  # blocklist. Spamhaus ZEN + Barracuda + SpamCop cover most
+  # reject-by-default policies in the wild. Advisory by default
+  # (DNSBL hits on shared cloud ranges have a non-zero false-positive
+  # rate); promote to fail with DNSBL_STRICT=1 or skip entirely with
+  # SKIP_DNSBL=1.
+  if [[ "${SKIP_DNSBL:-}" == "1" ]]; then
+    echo "  A9. skipped (SKIP_DNSBL=1)"
+  elif [[ -z "$mail_ips" ]]; then
+    echo "  A9. skipped (no mail IPs)"
+  else
+    local zones="${DNSBL_ZONES:-zen.spamhaus.org b.barracudacentral.org bl.spamcop.net}"
+    local strict="${DNSBL_STRICT:-0}"
+    local hits=0 checks=0
+    while IFS= read -r ip; do
+      [[ -z "$ip" || "$ip" == *:* ]] && continue   # IPv4 only
+      local revoct; revoct=$(echo "$ip" | awk -F. '{print $4"."$3"."$2"."$1}')
+      for zone in $zones; do
+        checks=$((checks + 1))
+        local resp
+        resp=$(dig +short +time=3 +tries=2 "${revoct}.${zone}" A 2>/dev/null \
+          | grep -E '^127\.' | head -1)
+        if [[ -n "$resp" ]]; then
+          hits=$((hits + 1))
+          local txt
+          txt=$(dig +short +time=3 +tries=2 "${revoct}.${zone}" TXT 2>/dev/null \
+            | head -1 | sed 's/^"//;s/"$//')
+          local msg="${ip} listed on ${zone} (${resp}${txt:+ — ${txt}})"
+          if [[ "$strict" == "1" ]]; then
+            note_fail "A9. ${msg}"
+          else
+            note_warn "A9. ${msg} (advisory — set DNSBL_STRICT=1 to fail)"
+          fi
+        fi
+      done
+    done <<<"$mail_ips"
+    if [[ "$hits" == "0" ]]; then
+      note_pass "A9. ${checks} DNSBL queries clean across ${zones}"
+    fi
+  fi
+
   echo ""
 }
 
