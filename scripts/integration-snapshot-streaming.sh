@@ -508,8 +508,163 @@ test_quota_enforcement() {
   pass "plan cap restored to $original_cap"
 }
 
+test_cifs_create() {
+  step "J: CIFS/SMB target create + redact password (Phase 9)"
+  # POST a CIFS target — host is bogus, this only validates the
+  # config-create path + response shape + password redaction.
+  local resp http
+  resp=$(api_with_status POST /api/v1/admin/backup-configs '{
+    "name": "e2e-cifs-test",
+    "storage_type": "cifs",
+    "cifs_host": "samba.example.invalid",
+    "cifs_port": 445,
+    "cifs_share": "backups",
+    "cifs_user": "smbuser",
+    "cifs_password": "smbpass123-secret-do-not-leak",
+    "cifs_domain": "WORKGROUP",
+    "cifs_path": "/test",
+    "retention_days": 7
+  }')
+  http=$(echo "$resp" | tail -1)
+  if [ "$http" = "201" ] || [ "$http" = "200" ]; then
+    pass "CIFS target created (HTTP $http)"
+  else
+    fail "CIFS create returned $http: $(echo "$resp" | head -1 | head -c 200)"
+    return
+  fi
+  local cifs_id
+  cifs_id=$(echo "$resp" | head -n -1 | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
+
+  # Password must NEVER appear in the API response.
+  if echo "$resp" | grep -q "smbpass123-secret-do-not-leak"; then
+    fail "password leaked in CIFS create response"
+  else
+    pass "password NOT in response (redacted)"
+  fi
+
+  # GET all configs — password must still not be exposed.
+  local list_resp
+  list_resp=$(api GET /api/v1/admin/backup-configs)
+  if echo "$list_resp" | grep -q "smbpass123-secret-do-not-leak"; then
+    fail "password leaked in list response"
+  else
+    pass "password NOT in list response"
+  fi
+
+  # CIFS field shape: cifsHost/cifsShare/cifsUser/cifsDomain/cifsPath present.
+  if echo "$resp" | grep -q '"cifsHost":"samba.example.invalid"' \
+     && echo "$resp" | grep -q '"cifsShare":"backups"' \
+     && echo "$resp" | grep -q '"cifsUser":"smbuser"' \
+     && echo "$resp" | grep -q '"cifsDomain":"WORKGROUP"'; then
+    pass "CIFS fields round-trip correctly"
+  else
+    fail "CIFS field shape mismatch"
+  fi
+
+  # Cleanup
+  api DELETE "/api/v1/admin/backup-configs/$cifs_id" >/dev/null 2>&1 || true
+}
+
+test_speedtest() {
+  step "K: speedtest endpoint against S3 minio target (Phase 10)"
+  local resp http target_id
+  resp=$(api_with_status POST /api/v1/admin/backup-configs '{
+    "name": "e2e-speedtest-minio",
+    "storage_type": "s3",
+    "s3_endpoint": "http://minio.dev-minio.svc.cluster.local:9000",
+    "s3_bucket": "snapshots",
+    "s3_region": "us-east-1",
+    "s3_access_key": "minio-dev-access-key",
+    "s3_secret_key": "minio-dev-secret-key",
+    "retention_days": 7
+  }')
+  http=$(echo "$resp" | tail -1)
+  target_id=$(echo "$resp" | head -n -1 | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
+  if [ -z "$target_id" ]; then
+    fail "could not create speedtest target ($http)"
+    return
+  fi
+  pass "speedtest target created (id=$target_id)"
+
+  # Run a small (2 MiB) speedtest — should complete in <30 s.
+  local st_resp st_http
+  st_resp=$(api_with_status POST "/api/v1/admin/backup-configs/$target_id/speedtest" '{"payloadBytes": 2097152}')
+  st_http=$(echo "$st_resp" | tail -1)
+  if [ "$st_http" != "200" ]; then
+    fail "speedtest returned $st_http: $(echo "$st_resp" | head -1 | head -c 300)"
+    api DELETE "/api/v1/admin/backup-configs/$target_id" >/dev/null 2>&1 || true
+    return
+  fi
+  pass "speedtest HTTP 200"
+
+  # Parse result fields.
+  local up_mbps down_mbps lat_ms ok task_id
+  up_mbps=$(echo "$st_resp" | head -n -1 | grep -oE '"uploadMbps":[0-9.]+' | head -1 | cut -d: -f2)
+  down_mbps=$(echo "$st_resp" | head -n -1 | grep -oE '"downloadMbps":[0-9.]+' | head -1 | cut -d: -f2)
+  lat_ms=$(echo "$st_resp" | head -n -1 | grep -oE '"latencyMs":[0-9]+' | head -1 | cut -d: -f2)
+  ok=$(echo "$st_resp" | head -n -1 | grep -oE '"ok":(true|false)' | head -1 | cut -d: -f2)
+  task_id=$(echo "$st_resp" | head -n -1 | grep -oE '"taskId":"[^"]+"' | head -1 | sed 's/"taskId":"//;s/"$//')
+
+  if [ "$ok" = "true" ]; then
+    pass "speedtest ok=true"
+  else
+    fail "speedtest ok=$ok"
+  fi
+  if [ -n "$up_mbps" ] && [ "$(echo "$up_mbps > 0" | awk '{print ($1 + 0 > 0)}')" = "1" ]; then
+    pass "uploadMbps populated ($up_mbps Mbps)"
+  else
+    fail "uploadMbps missing or zero"
+  fi
+  if [ -n "$down_mbps" ] && [ "$(echo "$down_mbps > 0" | awk '{print ($1 + 0 > 0)}')" = "1" ]; then
+    pass "downloadMbps populated ($down_mbps Mbps)"
+  else
+    fail "downloadMbps missing or zero"
+  fi
+  if [ -n "$lat_ms" ]; then
+    pass "latencyMs populated ($lat_ms ms)"
+  else
+    fail "latencyMs missing"
+  fi
+
+  # Task-center: verify task row was created with kind=backup.speedtest.
+  if [ -n "$task_id" ]; then
+    local task_kind
+    task_kind=$(psql_exec "SELECT kind FROM tasks WHERE id='$task_id';")
+    if [ "$task_kind" = "backup.speedtest" ]; then
+      pass "task-center: row created with kind=backup.speedtest"
+    else
+      fail "task-center kind mismatch: '$task_kind'"
+    fi
+  else
+    fail "speedtest response missing taskId"
+  fi
+
+  # Persisted to backup_configurations.
+  local last_up
+  last_up=$(psql_exec "SELECT last_speedtest_upload_mbps FROM backup_configurations WHERE id='$target_id';")
+  if [ -n "$last_up" ] && [ "$last_up" != "" ]; then
+    pass "last_speedtest_upload_mbps persisted ($last_up)"
+  else
+    fail "last_speedtest_upload_mbps not persisted"
+  fi
+
+  # Negative: speedtest against disabled target → 400.
+  psql_exec "UPDATE backup_configurations SET enabled = 0 WHERE id='$target_id';" >/dev/null
+  local neg
+  neg=$(api_with_status POST "/api/v1/admin/backup-configs/$target_id/speedtest" '{"payloadBytes": 1048576}')
+  if echo "$neg" | head -1 | grep -q "TARGET_DISABLED"; then
+    pass "disabled target → TARGET_DISABLED 400"
+  else
+    fail "expected TARGET_DISABLED, got: $(echo "$neg" | head -1 | head -c 200)"
+  fi
+
+  # Cleanup
+  api DELETE "/api/v1/admin/backup-configs/$target_id" >/dev/null 2>&1 || true
+  psql_exec "DELETE FROM tasks WHERE kind='backup.speedtest' AND ref_id='$task_id';" >/dev/null 2>&1 || true
+}
+
 main() {
-  echo "$(c_bold "═══ Phase 4+5+6 snapshot streaming + restore + quota E2E harness ═══")"
+  echo "$(c_bold "═══ Phase 4+5+6+9+10 snapshot streaming + restore + quota + CIFS + speedtest E2E ═══")"
   acquire_jwt
 
   create_tenant_with_pvc
@@ -521,6 +676,8 @@ main() {
   test_happy_streaming_snapshot
   test_streaming_restore
   test_quota_enforcement
+  test_cifs_create
+  test_speedtest
 
   echo
   echo "$(c_bold "═══ Results ═══")"
