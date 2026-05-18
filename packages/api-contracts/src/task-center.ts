@@ -94,6 +94,7 @@ export const TASK_KIND_REGISTRY = [
   'mail.port-exposure',
   'mail.migration',
   'mail.snapshot.trigger',
+  'webmail.engine-flip',
   'cache.purge',
   'restore.cart',
   // 2026-05-17: Phase 10 of snapshot-storage overhaul — speedtest

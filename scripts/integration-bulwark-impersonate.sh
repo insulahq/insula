@@ -393,10 +393,16 @@ if [[ $RUN_MUTEX -eq 1 ]]; then
     }
     api_flip_engine() {
       local target="$1"
+      # Capture the response so we can verify task-center wiring.
       curl "${CURL_OPTS[@]}" -X PATCH -H "Content-Type: application/json" \
         -H "Authorization: Bearer $ADMIN_TOKEN" \
         -d "{\"defaultWebmailEngine\":\"${target}\"}" \
-        "$API_BASE/api/v1/admin/webmail-settings" > /dev/null
+        "$API_BASE/api/v1/admin/webmail-settings"
+    }
+    # Read replicas of either engine deployment.
+    deploy_replicas() {
+      local name="$1"
+      "${KCTL[@]}" get deploy "$name" -n mail -o jsonpath='{.spec.replicas}' 2>/dev/null
     }
     # Poll until $1 evaluates to expected $2, up to $3 seconds (default 30).
     # $1 is a command whose stdout is compared to $2.
@@ -434,11 +440,21 @@ if [[ $RUN_MUTEX -eq 1 ]]; then
 
     # ─── D2: flip engine via API ───
     OTHER_ENGINE="bulwark"; [[ $INITIAL_ENGINE == "bulwark" ]] && OTHER_ENGINE="roundcube"
-    api_flip_engine "$OTHER_ENGINE"
+    FLIP_RESP="$(api_flip_engine "$OTHER_ENGINE")"
+    FLIP_TASK_ID="$(echo "$FLIP_RESP" | node -e "
+try { const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j.data?.taskId ?? ''); } catch { console.log(''); }
+")"
     if wait_for "api_get_engine" "$OTHER_ENGINE" 10; then
       pass "D2 setting flipped to $OTHER_ENGINE (DB round-trip)"
     else
       fail "D2 setting did not flip to $OTHER_ENGINE within 10s"
+    fi
+
+    # ─── D2-task: task-center emitted a taskId for the engine flip ───
+    if [[ -n "$FLIP_TASK_ID" ]]; then
+      pass "D2-task PATCH response carries taskId=${FLIP_TASK_ID:0:8}… (task-center wired)"
+    else
+      fail "D2-task PATCH response missing taskId — task-center not wired or fell back silently"
     fi
 
     # ─── D2b: webmail-router reconciler flipped IngressRoute target ───
@@ -468,6 +484,17 @@ if [[ $RUN_MUTEX -eq 1 ]]; then
       pass "D2e active engine ($OTHER_ENGINE) annotation cleared (was '$NEW_ACTIVE_ANNOT')"
     else
       fail "D2e active engine still has disabled=true annotation — reconciler regression"
+    fi
+
+    # ─── D2f: active engine scaled to ≥1 (2026-05-18 fix) ───
+    # Was the root cause of staging's "no available server" — on flip
+    # back to the previously-inactive engine, that Deployment was at 0
+    # replicas and storage-policy didn't scale it up in time.
+    if wait_for "deploy_replicas $OTHER_ENGINE" "1" 60 \
+       || [[ "$(deploy_replicas "$OTHER_ENGINE")" -gt 1 ]]; then
+      pass "D2f active engine ($OTHER_ENGINE) scaled to $(deploy_replicas "$OTHER_ENGINE") replicas (floor=1)"
+    else
+      fail "D2f active engine ($OTHER_ENGINE) stuck at 0 replicas after 60s — floor-scale regression"
     fi
 
     # ─── D3: flip back ───

@@ -225,7 +225,7 @@ describe('reconcileEngineDeployments', () => {
     vi.mocked(getDefaultWebmailEngine).mockReset();
   });
 
-  it('engine=roundcube: scales bulwark to 0 + annotates; leaves roundcube alone', async () => {
+  it('engine=roundcube: scales bulwark to 0 + annotates; leaves roundcube alone (already at 1)', async () => {
     vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
     const apps = makeApps({
       activeName: 'roundcube',
@@ -243,15 +243,73 @@ describe('reconcileEngineDeployments', () => {
     expect(result?.activeDeployment.name).toBe('roundcube');
     expect(result?.inactiveDeployment.name).toBe('bulwark');
     expect(result?.activeAnnotationCleared).toBe(false); // wasn't annotated
+    expect(result?.activeScaledUp).toBe(false); // already at 1, no scale needed
     expect(result?.inactiveScaledToZero).toBe(true);
     expect(result?.inactiveAnnotated).toBe(true);
-    expect(apps.replaceNamespacedDeploymentScale).toHaveBeenCalledOnce();
-    const scaleCall = apps.replaceNamespacedDeploymentScale.mock.calls[0][0] as {
-      name: string;
-      body: { spec: { replicas: number } };
-    };
-    expect(scaleCall.name).toBe('bulwark');
-    expect(scaleCall.body.spec.replicas).toBe(0);
+
+    const scaleCalls = apps.replaceNamespacedDeploymentScale.mock.calls;
+    // Only the inactive engine should have been scaled (active was at 1).
+    expect(scaleCalls).toHaveLength(1);
+    const inactiveScale = scaleCalls[0][0] as { name: string; body: { spec: { replicas: number } } };
+    expect(inactiveScale.name).toBe('bulwark');
+    expect(inactiveScale.body.spec.replicas).toBe(0);
+  });
+
+  it('engine=roundcube + active at 0: floor-scales active to 1 (2026-05-18 fix)', async () => {
+    // Repro: operator flipped to bulwark previously (roundcube scaled to 0 + annotated),
+    // then flipped back to roundcube. Without the floor-scale, roundcube stays at 0
+    // → users see "no available server" until platform-storage-policy fires.
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
+    const apps = makeApps({
+      activeName: 'roundcube',
+      activeReplicas: 0,
+      activeAnnotated: true,
+      inactiveName: 'bulwark',
+      inactiveReplicas: 1,
+      inactiveAnnotated: false,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.activeAnnotationCleared).toBe(true);
+    expect(result?.activeScaledUp).toBe(true);
+    expect(result?.inactiveScaledToZero).toBe(true);
+
+    const scaleCalls = apps.replaceNamespacedDeploymentScale.mock.calls;
+    const activeScaleCall = scaleCalls.find((c: unknown[]) => {
+      const arg = c[0] as { name: string; body: { spec: { replicas: number } } };
+      return arg.name === 'roundcube';
+    });
+    expect(activeScaleCall).toBeDefined();
+    const args = activeScaleCall![0] as { body: { spec: { replicas: number } } };
+    expect(args.body.spec.replicas).toBe(1); // ACTIVE_ENGINE_MIN_REPLICAS
+  });
+
+  it('does NOT scale DOWN active when storage-policy has scaled it to 3 (HA)', async () => {
+    // HA cluster: storage-policy bumped active to 3 replicas. Reconciler
+    // must respect that and not undo the HA scale.
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    const apps = makeApps({
+      activeName: 'bulwark',
+      activeReplicas: 3,
+      activeAnnotated: false,
+      inactiveName: 'roundcube',
+      inactiveReplicas: 0,
+      inactiveAnnotated: true,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.activeScaledUp).toBe(false); // already >= ACTIVE_ENGINE_MIN_REPLICAS
+    // No scale call against bulwark (the active engine).
+    const scaleCalls = apps.replaceNamespacedDeploymentScale.mock.calls;
+    const bulwarkScale = scaleCalls.find((c: unknown[]) => {
+      const arg = c[0] as { name: string };
+      return arg.name === 'bulwark';
+    });
+    expect(bulwarkScale).toBeUndefined();
   });
 
   it('engine=bulwark: scales roundcube to 0 + annotates; leaves bulwark alone', async () => {

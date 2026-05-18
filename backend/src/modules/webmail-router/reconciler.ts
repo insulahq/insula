@@ -180,9 +180,21 @@ export interface EngineDeploymentReconcileResult {
   readonly activeDeployment: EngineDeployment;
   readonly inactiveDeployment: EngineDeployment;
   readonly activeAnnotationCleared: boolean;
+  readonly activeScaledUp: boolean;
   readonly inactiveScaledToZero: boolean;
   readonly inactiveAnnotated: boolean;
 }
+
+/**
+ * Active engine target replicas — the "is the webmail running?" floor.
+ * platform-storage-policy may scale this higher on HA tiers (up to 3),
+ * but the reconciler always guarantees ≥1 so a freshly-flipped engine
+ * is reachable immediately. Below this floor an operator engine flip
+ * leaves the active Service with 0 endpoints and the webmail URL
+ * returns 503 "no available server" until storage-policy's next tick
+ * (which can be minutes).
+ */
+export const ACTIVE_ENGINE_MIN_REPLICAS = 1;
 
 /**
  * Make the engine selection mutex at the Pod level — when the operator
@@ -190,16 +202,19 @@ export interface EngineDeploymentReconcileResult {
  * they pick Bulwark, no Roundcube Pods run.
  *
  * Implementation:
- *   • Active engine's Deployment: ensure the webmail-engine-disabled
- *     annotation is absent so platform-storage-policy is free to scale
- *     it to the tier-correct replica count (1 in local, up to 3 in HA).
+ *   • Active engine's Deployment: clear the webmail-engine-disabled
+ *     annotation AND scale to `ACTIVE_ENGINE_MIN_REPLICAS` if currently 0.
+ *     The annotation-clear lets platform-storage-policy take over for
+ *     tier-correct scaling on HA (up to 3 replicas); the floor-scale-up
+ *     is the immediate "make the webmail reachable" guarantee operators
+ *     expect from an engine flip.
  *   • Inactive engine's Deployment: scale to 0 via /scale subresource
  *     AND stamp the `webmail-engine-disabled=true` annotation so
  *     storage-policy skips it on subsequent ticks.
  *
- * Failures are non-fatal — overlays that ship only one engine will get
- * 404 on the missing Deployment, which the reconciler logs and
- * continues past.
+ * Failures on individual deployments are non-fatal — overlays that
+ * ship only one engine will get 404 on the missing Deployment, which
+ * the reconciler logs and continues past.
  */
 export async function reconcileEngineDeployments(
   db: Database,
@@ -211,16 +226,18 @@ export async function reconcileEngineDeployments(
   const inactive = deploymentForEngine(otherEngine(engine));
 
   let activeAnnotationCleared = false;
+  let activeScaledUp = false;
   let inactiveScaledToZero = false;
   let inactiveAnnotated = false;
 
-  // ─── Active engine: clear the disabled annotation if set ───
+  // ─── Active engine: clear the disabled annotation if set + scale up ───
   try {
     const live = (await apps.readNamespacedDeployment({
       namespace: active.namespace,
       name: active.name,
     } as unknown as Parameters<typeof apps.readNamespacedDeployment>[0])) as {
       metadata?: { annotations?: Record<string, string> };
+      spec?: { replicas?: number };
     };
     if (live.metadata?.annotations?.[WEBMAIL_ENGINE_DISABLED_ANNOTATION] === 'true') {
       // JSON-patch with `remove` for a single annotation key is the
@@ -240,10 +257,26 @@ export async function reconcileEngineDeployments(
       );
       activeAnnotationCleared = true;
     }
+    // Floor-scale the active engine to ACTIVE_ENGINE_MIN_REPLICAS. We
+    // don't ever scale DOWN here — platform-storage-policy may have
+    // scaled to >=2 for HA, and that's not our call to undo. We only
+    // ensure the engine isn't sitting at 0 right after a flip.
+    const currentReplicas = live.spec?.replicas ?? 0;
+    if (currentReplicas < ACTIVE_ENGINE_MIN_REPLICAS) {
+      await apps.replaceNamespacedDeploymentScale({
+        namespace: active.namespace,
+        name: active.name,
+        body: {
+          metadata: { name: active.name, namespace: active.namespace },
+          spec: { replicas: ACTIVE_ENGINE_MIN_REPLICAS },
+        },
+      } as unknown as Parameters<typeof apps.replaceNamespacedDeploymentScale>[0]);
+      activeScaledUp = true;
+    }
   } catch (err) {
     log.warn(
       { err, name: active.name, namespace: active.namespace },
-      'webmail-router: active-engine Deployment unreachable (skipping annotation clear)',
+      'webmail-router: active-engine Deployment unreachable (skipping annotation clear + scale-up)',
     );
   }
 
@@ -294,13 +327,14 @@ export async function reconcileEngineDeployments(
     );
   }
 
-  if (activeAnnotationCleared || inactiveScaledToZero || inactiveAnnotated) {
+  if (activeAnnotationCleared || activeScaledUp || inactiveScaledToZero || inactiveAnnotated) {
     log.info(
       {
         engine,
         active: `${active.namespace}/${active.name}`,
         inactive: `${inactive.namespace}/${inactive.name}`,
         activeAnnotationCleared,
+        activeScaledUp,
         inactiveScaledToZero,
         inactiveAnnotated,
       },
@@ -313,7 +347,63 @@ export async function reconcileEngineDeployments(
     activeDeployment: active,
     inactiveDeployment: inactive,
     activeAnnotationCleared,
+    activeScaledUp,
     inactiveScaledToZero,
     inactiveAnnotated,
   };
+}
+
+/**
+ * Wait until the active engine's Deployment reports
+ * `status.readyReplicas >= ACTIVE_ENGINE_MIN_REPLICAS`. Used by the
+ * task-center flip handler so the operator's progress modal only
+ * reports "engine reachable" once the Pod is actually serving traffic
+ * (matters when flipping from a long-cold engine — Bulwark cold-start
+ * is ~30s on testing.phoenix-host.net).
+ *
+ * Polls every `pollIntervalMs` (default 2s) up to `timeoutMs` (default
+ * 120s). Returns `{ ready: boolean, replicas: number, elapsedMs: number }`
+ * — caller can decide whether to fail the task or just warn.
+ */
+export interface WaitForActiveReadyOpts {
+  readonly pollIntervalMs?: number;
+  readonly timeoutMs?: number;
+}
+
+export interface WaitForActiveReadyResult {
+  readonly ready: boolean;
+  readonly readyReplicas: number;
+  readonly elapsedMs: number;
+}
+
+export async function waitForActiveEngineReady(
+  db: Database,
+  apps: k8s.AppsV1Api,
+  opts: WaitForActiveReadyOpts = {},
+): Promise<WaitForActiveReadyResult> {
+  const pollIntervalMs = opts.pollIntervalMs ?? 2000;
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const engine = await getDefaultWebmailEngine(db);
+  const active = deploymentForEngine(engine);
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const live = (await apps.readNamespacedDeployment({
+        namespace: active.namespace,
+        name: active.name,
+      } as unknown as Parameters<typeof apps.readNamespacedDeployment>[0])) as {
+        status?: { readyReplicas?: number };
+      };
+      const readyReplicas = live.status?.readyReplicas ?? 0;
+      if (readyReplicas >= ACTIVE_ENGINE_MIN_REPLICAS) {
+        return { ready: true, readyReplicas, elapsedMs: Date.now() - startedAt };
+      }
+    } catch {
+      // Transient read errors — keep polling until timeout.
+    }
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  }
+
+  return { ready: false, readyReplicas: 0, elapsedMs: Date.now() - startedAt };
 }
