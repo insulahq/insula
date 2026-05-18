@@ -1,3 +1,6 @@
+import { eq } from 'drizzle-orm';
+import type { Database } from '../../db/index.js';
+import { systemSettings } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
@@ -172,7 +175,10 @@ function resolveRecurringJobsForVolume(
   return Array.from(applied).sort();
 }
 
-export async function listSystemPvcSnapshots(k8s: K8sClients): Promise<readonly SystemPvcSnapshotSummary[]> {
+export async function listSystemPvcSnapshots(
+  k8s: K8sClients,
+  db?: Database,
+): Promise<readonly SystemPvcSnapshotSummary[]> {
   // Fan out the K8s LIST calls in parallel — same pattern as the
   // orphan classifier. PVC list is per-namespace; volumes/snapshots/
   // recurring-jobs all live in longhorn-system. CNPG clusters are
@@ -271,6 +277,40 @@ export async function listSystemPvcSnapshots(k8s: K8sClients): Promise<readonly 
       });
     }
   }
+
+  // Mail-restic stats merge: the stalwart-rocksdb-data PVC is on the
+  // local-path storage class, so the Longhorn-snapshot query above
+  // always returns 0 snapshots for it. The actual mail backups go to
+  // restic in S3/SFTP/CIFS and the sidecar reports
+  // {totalSnapshotSizeBytes, snapshotCount, runAt} to
+  // system_settings.mail_snapshot_last_run_stats. Merge those into
+  // the row so the UI shows real numbers without us having to write
+  // per-snapshot rows into storage_snapshots (Option B, deferred).
+  if (db) {
+    try {
+      const mailRow = result.find((r) => r.namespace === 'mail' && r.pvcName === 'stalwart-rocksdb-data');
+      if (mailRow) {
+        const [s] = await db.select({ stats: systemSettings.mailSnapshotLastRunStats })
+          .from(systemSettings)
+          .where(eq(systemSettings.id, 'system'));
+        const stats = s?.stats as
+          | { totalSnapshotSizeBytes?: number; snapshotCount?: number; runAt?: string }
+          | null
+          | undefined;
+        if (stats && (stats.snapshotCount ?? 0) > 0) {
+          // Mutate the row in place — it's a shape we own.
+          (mailRow as { snapshotCount: number }).snapshotCount = stats.snapshotCount ?? 0;
+          (mailRow as { snapshotBytesTotal: number }).snapshotBytesTotal = stats.totalSnapshotSizeBytes ?? 0;
+          if (stats.runAt) {
+            (mailRow as { newestSnapshotAt: string | null }).newestSnapshotAt = stats.runAt;
+          }
+        }
+      }
+    } catch {
+      // DB read is best-effort — fall back to Longhorn-only counts.
+    }
+  }
+
   result.sort((a, b) => b.snapshotBytesTotal - a.snapshotBytesTotal);
   return result;
 }

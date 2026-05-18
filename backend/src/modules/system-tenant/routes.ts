@@ -36,11 +36,15 @@ function safeTokenEqual(received: string, expected: string): boolean {
 }
 
 function requireInternalToken(req: FastifyRequest): void {
-  const expected = process.env.PLATFORM_INTERNAL_TOKEN;
+  // Canonical env var is PLATFORM_INTERNAL_SECRET (matches config/index.ts
+  // + every Deployment manifest); keep PLATFORM_INTERNAL_TOKEN as a
+  // transitional fallback for old dev shells.
+  const expected = process.env.PLATFORM_INTERNAL_SECRET
+    ?? process.env.PLATFORM_INTERNAL_TOKEN;
   if (!expected) {
     throw new ApiError(
       'INTERNAL_TOKEN_NOT_CONFIGURED',
-      'PLATFORM_INTERNAL_TOKEN env var must be set for /internal/* endpoints',
+      'PLATFORM_INTERNAL_SECRET env var must be set for /internal/* endpoints',
       503,
     );
   }
