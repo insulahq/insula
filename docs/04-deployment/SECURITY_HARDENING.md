@@ -195,6 +195,9 @@ A: Your `trusted_ranges_v{4,6}` saddr fallback still works — the SSH-via-mesh 
 **Q: Does this affect Calico WG (UDP/51821) or pod-to-pod traffic?**
 A: No. Calico WG is a separate concern (pod-to-pod encryption with public-key auth, always exposed on UDP/51821). The Phase 2.5.1 "Calico WG verification" card on the Overview tab confirms it remains operational.
 
+**Q: Mesh tab shows the interface IP but peers/last-handshake are empty for NetBird/Tailscale. Bug?**
+A: Expected behaviour. NetBird and Tailscale ship userspace WireGuard implementations (boringtun / wireguard-go / netstack) which do NOT populate the kernel's `/proc/net/wireguard`. Only the in-kernel WireGuard module exposes peer state there. The probe correctly reports `null` rather than fabricating data. For kernel WireGuard (`wg-quick@wg0`) on Linux ≥ 5.6, peers + handshake age WILL populate.
+
 **Q: My probe ConfigMap is stale — what's wrong?**
 A: Check `kubectl -n platform-system logs daemonset/security-probe`. Common causes: kube-API outage (probe can't write), node out of disk, image pull stuck. The Refresh button bumps an annotation that triggers a rolling restart of probe pods.
 
