@@ -1113,17 +1113,19 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/internal/mail/snapshot-last-run',
     async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
-      // SECURITY: fail closed when PLATFORM_INTERNAL_TOKEN isn't set.
-      // The previous behaviour (skip check when env unset) meant a
-      // fresh / misconfigured deployment silently exposed this write
-      // endpoint to anyone who could reach the platform-api Service.
-      // Now an unset token returns 503 so the operator sees the
-      // misconfiguration immediately instead of silently-open.
-      const expectedToken = process.env.PLATFORM_INTERNAL_TOKEN;
+      // SECURITY: fail closed when the internal token is unset.
+      // Earlier versions of this code read only PLATFORM_INTERNAL_TOKEN,
+      // but the canonical env var across config/index.ts, file-manager
+      // and private-workers is PLATFORM_INTERNAL_SECRET — and that's
+      // what every Deployment actually sets. Accept either name with
+      // PLATFORM_INTERNAL_SECRET preferred so this endpoint works on
+      // existing installs without a Deployment-side rename.
+      const expectedToken = process.env.PLATFORM_INTERNAL_SECRET
+        ?? process.env.PLATFORM_INTERNAL_TOKEN;
       if (!expectedToken) {
         throw new ApiError(
           'INTERNAL_TOKEN_NOT_CONFIGURED',
-          'PLATFORM_INTERNAL_TOKEN env var must be set for /internal/* endpoints',
+          'PLATFORM_INTERNAL_SECRET env var must be set for /internal/* endpoints',
           503,
         );
       }
