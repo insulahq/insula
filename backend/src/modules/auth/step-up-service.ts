@@ -48,7 +48,7 @@ export async function getStepUpStatus(
       passwordHash: users.passwordHash,
       passkeyMode: users.passkeyMode,
       status: users.status,
-      lastCredentialCheckAt: users.lastCredentialCheckAt,
+      lastStepUpAt: users.lastStepUpAt,
     })
     .from(users)
     .where(eq(users.id, userId))
@@ -64,7 +64,11 @@ export async function getStepUpStatus(
     methods.push('passkey');
   }
 
-  const last = user.lastCredentialCheckAt;
+  // Gate on lastStepUpAt — bumped ONLY by explicit step-up endpoints,
+  // NOT by login/passkey-verify/OIDC. The first privileged action
+  // after login therefore always requires step-up; subsequent actions
+  // within the freshness window skip the prompt.
+  const last = user.lastStepUpAt;
   if (!last) {
     return { required: true, methods, lastCredentialCheckAt: null, maxAgeMs };
   }
@@ -113,9 +117,12 @@ export async function verifyStepUpPassword(
   }
 
   const now = new Date();
+  // Bump BOTH timestamps — lastCredentialCheckAt for any general
+  // "was the user active recently" check, and lastStepUpAt for the
+  // explicit step-up freshness clock the privileged-action gate uses.
   await db
     .update(users)
-    .set({ lastCredentialCheckAt: now })
+    .set({ lastCredentialCheckAt: now, lastStepUpAt: now })
     .where(eq(users.id, userId));
   return now;
 }
