@@ -143,6 +143,12 @@ export const users = pgTable('users', {
   // lastLoginAt (one event per session) — this is renewable inside an
   // existing session. NULL = stale.
   lastCredentialCheckAt: timestamp('last_credential_check_at'),
+  // EXPLICIT step-up timestamp (ADR-041 evolved spec). Bumped ONLY by
+  // /me/step-up/* endpoints — login + passkey-verify do NOT count.
+  // Privileged actions (node-terminal session create) gate on THIS
+  // column, not lastCredentialCheckAt, so the very first terminal
+  // open after login always requires an explicit step-up prompt.
+  lastStepUpAt: timestamp('last_step_up_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),
