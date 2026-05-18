@@ -36,6 +36,7 @@ FIXTURE_PREFIX="e2e-snap-streaming"
 TENANT_ID=""
 TARGET_ID=""
 SAMBA_TARGET_ID=""
+SFTP_TARGET_ID=""
 
 # ─── helpers ───────────────────────────────────────────────────────────
 
@@ -133,6 +134,10 @@ cleanup() {
   # Best-effort samba share clean (Phase M+N+O leftovers).
   kubectl_dind exec -n dev-samba deploy/samba -- sh -c \
     "rm -rf /share/snapshots/tenant_snapshot 2>/dev/null" >/dev/null 2>&1 || true
+
+  # Best-effort SFTP share clean (Phase Q leftovers).
+  kubectl_dind exec -n dev-sftp deploy/sftp -- sh -c \
+    "rm -rf /home/e2etest/speedtest/snapshots 2>/dev/null" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -1188,6 +1193,260 @@ test_speedtest_auth_failure() {
   api DELETE "/api/v1/admin/backup-configs/$target_id" >/dev/null 2>&1 || true
 }
 
+configure_sftp_target() {
+  step "Configure dev SFTP as SSH backup target (Phase 12.5)"
+  # Read the dev SFTP private key from the Secret created by
+  # local.sh sftp-dev-up. Must be JSON-encoded (newlines → \n) so it
+  # round-trips through the API as a JSON string.
+  local pem pem_json
+  pem=$(kubectl_dind get secret -n dev-sftp sftp-dev-key -o jsonpath='{.data.ssh_key}' 2>/dev/null | base64 -d 2>/dev/null)
+  if [ -z "$pem" ]; then
+    fail "dev SFTP not deployed — run ./scripts/local.sh sftp-dev-up first"
+    return 1
+  fi
+  # JSON-escape newlines + quotes for embedding into the request body.
+  pem_json=$(printf '%s' "$pem" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+  local body
+  body=$(cat <<EOF
+{
+  "name": "$FIXTURE_PREFIX-sftp",
+  "storage_type": "ssh",
+  "ssh_host": "sftp.dev-sftp.svc.cluster.local",
+  "ssh_port": 22,
+  "ssh_user": "e2etest",
+  "ssh_key": $pem_json,
+  "ssh_path": "speedtest",
+  "retention_days": 7
+}
+EOF
+  )
+  local resp http
+  resp=$(api_with_status POST /api/v1/admin/backup-configs "$body")
+  http=$(echo "$resp" | tail -1)
+  if [ "$http" != "200" ] && [ "$http" != "201" ]; then
+    fail "POST sftp target returned $http: $(echo "$resp" | head -c 200)"
+    return 1
+  fi
+  SFTP_TARGET_ID=$(echo "$resp" | head -n -1 | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
+  pass "SFTP backup target created (id=$SFTP_TARGET_ID)"
+}
+
+test_ssh_snapshot_full_cycle() {
+  step "Q: full SSH/SFTP snapshot cycle (Phase 12.5 — upload → readSidecar → restore → delete via Phase 11)"
+  configure_sftp_target
+  if [ -z "$SFTP_TARGET_ID" ]; then return; fi
+
+  # Reassign tenant_snapshot from minio → sftp (sftp primary).
+  api PUT "/api/v1/admin/snapshots/classes/tenant_snapshot/assignments" \
+    "{\"assignments\":[{\"targetId\":\"$SFTP_TARGET_ID\",\"priority\":10}]}" >/dev/null
+  pass "tenant_snapshot → sftp (primary)"
+
+  # Reset op lock from prior phase failure, if any.
+  psql_exec "UPDATE tenants SET storage_lifecycle_state='idle', active_storage_op_id=NULL WHERE id='$TENANT_ID';" >/dev/null 2>&1 || true
+  psql_exec "DELETE FROM storage_operations WHERE tenant_id='$TENANT_ID' AND state != 'idle';" >/dev/null 2>&1 || true
+
+  # Trigger a snapshot.
+  local snap_resp snap_http snap_id
+  snap_resp=$(api_with_status POST "/api/v1/admin/tenants/$TENANT_ID/storage/snapshot" \
+    '{"label":"e2e-ssh","retentionDays":1}')
+  snap_http=$(echo "$snap_resp" | tail -1)
+  if [ "$snap_http" != "201" ] && [ "$snap_http" != "200" ]; then
+    local snap_pod
+    snap_pod=$(kubectl_dind get pods -n "$FIXTURE_NS" -l platform.io/component=snapshot -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    local snap_log=""
+    [ -n "$snap_pod" ] && snap_log=$(kubectl_dind logs -n "$FIXTURE_NS" "$snap_pod" 2>&1 | tail -25)
+    fail "snapshot via SSH returned $snap_http: $(echo "$snap_resp" | head -c 300); pod log: $snap_log"
+    return
+  fi
+  snap_id=$(echo "$snap_resp" | head -n -1 | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
+  pass "SSH snapshot created (id=$snap_id)"
+
+  local snap_status
+  for i in $(seq 1 60); do
+    snap_status=$(psql_exec "SELECT status FROM storage_snapshots WHERE id='$snap_id';")
+    [ "$snap_status" = "ready" ] && break
+    [ "$snap_status" = "failed" ] && break
+    sleep 2
+  done
+  if [ "$snap_status" = "ready" ]; then
+    pass "storage_snapshots.status = ready (SSH upload succeeded)"
+  else
+    local snap_pod
+    snap_pod=$(kubectl_dind get pods -n "$FIXTURE_NS" -l platform.io/component=snapshot -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    local snap_log=""
+    [ -n "$snap_pod" ] && snap_log=$(kubectl_dind logs -n "$FIXTURE_NS" "$snap_pod" 2>&1 | tail -25)
+    fail "snapshot stuck/failed: status=$snap_status; last error: $(psql_exec "SELECT last_error FROM storage_snapshots WHERE id='$snap_id';"); pod log: $snap_log"
+    return
+  fi
+
+  # target_id stamped?
+  local stamped
+  stamped=$(psql_exec "SELECT target_id FROM storage_snapshots WHERE id='$snap_id';")
+  if [ "$stamped" = "$SFTP_TARGET_ID" ]; then
+    pass "target_id stamped to sftp"
+  else
+    fail "target_id mismatch: got '$stamped' expected '$SFTP_TARGET_ID'"
+  fi
+
+  # Verify the archive landed on the SFTP server.
+  local sftp_files
+  sftp_files=$(kubectl_dind exec -n dev-sftp deploy/sftp -- find /home/e2etest/speedtest -type f 2>&1 | head -10)
+  if echo "$sftp_files" | grep -q "$snap_id"; then
+    pass "archive present on SFTP server"
+  else
+    fail "archive NOT on SFTP server. Found: $sftp_files"
+  fi
+  if echo "$sftp_files" | grep -q "$snap_id.*\.sha256"; then
+    pass "sha256 sidecar present on SFTP server"
+  else
+    fail "sha256 sidecar NOT on SFTP server"
+  fi
+
+  # Phase 11 readSidecar populated sha256 in DB?
+  local db_sha
+  db_sha=$(psql_exec "SELECT sha256 FROM storage_snapshots WHERE id='$snap_id';")
+  if [ -n "$db_sha" ] && [ ${#db_sha} -eq 64 ]; then
+    pass "storage_snapshots.sha256 populated via Phase 11 SSH readSidecar (${db_sha:0:16}...)"
+  else
+    fail "sha256 missing or wrong length (got '${db_sha}', expected 64-hex)"
+  fi
+
+  # Mutate PVC, then restore.
+  cat > /tmp/ssh-mutate.yaml <<EOF
+apiVersion: v1
+kind: Pod
+metadata: { name: ssh-mutator, namespace: ${FIXTURE_NS} }
+spec:
+  restartPolicy: OnFailure
+  containers:
+    - name: m
+      image: busybox:1.36
+      command: ['sh','-c','rm -f /data/file-*.txt; echo "SSH-TAMPERED" > /data/tampered.txt; sleep 5']
+      volumeMounts: [{ name: data, mountPath: /data }]
+  volumes:
+    - name: data
+      persistentVolumeClaim: { claimName: ${FIXTURE_NS}-storage }
+EOF
+  docker cp /tmp/ssh-mutate.yaml hosting-platform-k3s-server-1:/tmp/ssh-mutate.yaml >/dev/null
+  kubectl_dind apply -f /tmp/ssh-mutate.yaml >/dev/null
+  for i in $(seq 1 30); do
+    local phase
+    phase=$(kubectl_dind get pod -n "$FIXTURE_NS" ssh-mutator -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    [ "$phase" = "Succeeded" ] && break
+    sleep 1
+  done
+  kubectl_dind delete pod -n "$FIXTURE_NS" ssh-mutator --wait=true --timeout=15s >/dev/null
+  pass "PVC mutated via SSH path (tampered.txt added, originals removed)"
+
+  local rb_resp rb_http
+  rb_resp=$(api_with_status POST "/api/v1/admin/tenants/$TENANT_ID/storage/rollback" \
+    "{\"snapshotId\":\"$snap_id\"}")
+  rb_http=$(echo "$rb_resp" | tail -1)
+  if [ "$rb_http" = "200" ] || [ "$rb_http" = "202" ]; then
+    pass "SSH rollback returned $rb_http"
+  else
+    fail "SSH rollback returned $rb_http: $(echo "$rb_resp" | head -c 300)"
+    return
+  fi
+  local op_state
+  for i in $(seq 1 60); do
+    op_state=$(psql_exec "SELECT state FROM storage_operations WHERE tenant_id='$TENANT_ID' AND op_type='restore' ORDER BY created_at DESC LIMIT 1;")
+    [ "$op_state" = "idle" ] && break
+    [ "$op_state" = "failed" ] && break
+    sleep 3
+  done
+  if [ "$op_state" = "idle" ]; then
+    pass "SSH restore operation reached state=idle"
+  else
+    fail "SSH restore operation state=$op_state"
+  fi
+
+  # Verify restored content via a verify pod.
+  cat > /tmp/ssh-verify.yaml <<EOF
+apiVersion: v1
+kind: Pod
+metadata: { name: ssh-verify, namespace: ${FIXTURE_NS} }
+spec:
+  restartPolicy: OnFailure
+  containers:
+    - name: v
+      image: busybox:1.36
+      command: ['sh','-c','[ -f /data/file-1.txt ] && echo SSH_FILE_1_OK; [ -f /data/tampered.txt ] && echo TAMPER_REMAINS || echo SSH_TAMPER_GONE; sleep 3']
+      volumeMounts: [{ name: data, mountPath: /data }]
+  volumes:
+    - name: data
+      persistentVolumeClaim: { claimName: ${FIXTURE_NS}-storage }
+EOF
+  docker cp /tmp/ssh-verify.yaml hosting-platform-k3s-server-1:/tmp/ssh-verify.yaml >/dev/null
+  kubectl_dind apply -f /tmp/ssh-verify.yaml >/dev/null
+  for i in $(seq 1 30); do
+    local phase
+    phase=$(kubectl_dind get pod -n "$FIXTURE_NS" ssh-verify -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    [ "$phase" = "Succeeded" ] && break
+    [ "$phase" = "Failed" ] && break
+    sleep 2
+  done
+  local vlog
+  vlog=$(kubectl_dind logs -n "$FIXTURE_NS" ssh-verify 2>&1)
+  kubectl_dind delete pod -n "$FIXTURE_NS" ssh-verify --wait=false >/dev/null 2>&1 || true
+  if echo "$vlog" | grep -q "SSH_FILE_1_OK"; then
+    pass "SSH restore: original file-1.txt present"
+  else
+    fail "SSH restore: file-1.txt missing — verify log: $vlog"
+  fi
+  if echo "$vlog" | grep -q "SSH_TAMPER_GONE"; then
+    pass "SSH restore: tampered.txt removed (destructive restore worked)"
+  else
+    fail "SSH restore: tampered.txt persists — verify log: $vlog"
+  fi
+
+  # Phase 11 SSH delete — DELETE the snapshot, verify SFTP files gone.
+  local del_resp del_http
+  del_resp=$(api_with_status DELETE "/api/v1/admin/storage/snapshots/$snap_id" '')
+  del_http=$(echo "$del_resp" | tail -1)
+  if [ "$del_http" = "200" ] || [ "$del_http" = "204" ]; then
+    pass "snapshot DELETE returned $del_http"
+  else
+    fail "snapshot DELETE returned $del_http: $(echo "$del_resp" | head -c 200)"
+  fi
+  local remaining
+  for i in $(seq 1 30); do
+    remaining=$(kubectl_dind exec -n dev-sftp deploy/sftp -- sh -c "find /home/e2etest/speedtest -type f 2>/dev/null | grep -c '$snap_id' || true")
+    [ "$remaining" = "0" ] && break
+    sleep 2
+  done
+  if [ "$remaining" = "0" ]; then
+    pass "Phase 11 SSH delete reaped archive + sidecar from SFTP (0 remaining)"
+  else
+    fail "Phase 11 SSH delete left $remaining file(s) on SFTP"
+  fi
+
+  # Speedtest against the SSH target (this is the user-visible "I shipped
+  # SSH without a speedtest" regression guard).
+  local st_resp st_http st_body st_ok st_up
+  st_resp=$(api_with_status POST "/api/v1/admin/backup-configs/$SFTP_TARGET_ID/speedtest" '{"payloadBytes": 2097152}')
+  st_http=$(echo "$st_resp" | tail -1)
+  st_body=$(echo "$st_resp" | head -n -1)
+  st_ok=$(echo "$st_body" | grep -oE '"ok":(true|false)' | head -1 | cut -d: -f2)
+  st_up=$(echo "$st_body" | grep -oE '"uploadMbps":[0-9.]+' | head -1 | cut -d: -f2)
+  if [ "$st_http" = "200" ] && [ "$st_ok" = "true" ]; then
+    pass "SSH speedtest ok=true (uploadMbps=$st_up)"
+  else
+    fail "SSH speedtest returned http=$st_http ok=$st_ok: $(echo "$st_body" | head -c 300)"
+  fi
+  # Sanity bound (regression guard for the busybox-date bug across SSH).
+  if [ -n "$st_up" ] && [ "$(awk "BEGIN{print ($st_up + 0 < 100000)}")" = "1" ]; then
+    pass "SSH speedtest uploadMbps within realistic bound: $st_up"
+  else
+    fail "SSH speedtest uploadMbps implausible: $st_up"
+  fi
+
+  # Reassign tenant_snapshot back to minio so subsequent phases work.
+  api PUT "/api/v1/admin/snapshots/classes/tenant_snapshot/assignments" \
+    "{\"assignments\":[{\"targetId\":\"$TARGET_ID\",\"priority\":100}]}" >/dev/null
+  pass "tenant_snapshot reassigned to minio (cleanup)"
+}
+
 main() {
   echo "$(c_bold "═══ Phase 4+5+6+9+10 snapshot streaming + restore + quota + CIFS + speedtest E2E ═══")"
   acquire_jwt
@@ -1206,6 +1465,7 @@ main() {
   test_strict_primary_failover
   test_target_deletion_graceful_restore
   test_phase12_credential_isolation
+  test_ssh_snapshot_full_cycle
   test_speedtest
   test_speedtest_auth_failure
 
