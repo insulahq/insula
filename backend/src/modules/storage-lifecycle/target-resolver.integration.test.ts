@@ -51,7 +51,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
     const tA = await insertTarget('tr-test-a');
     const tB = await insertTarget('tr-test-b');
     const tC = await insertTarget('tr-test-c');
-    await setAssignments(db, 'system_etcd', {
+    await setAssignments(db, 'system_backup', {
       assignments: [
         { targetId: tA, priority: 300 },
         { targetId: tB, priority: 50 },
@@ -59,7 +59,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
       ],
     });
 
-    const resolved = await resolveTargetFor(db, 'system_etcd');
+    const resolved = await resolveTargetFor(db, 'system_backup');
     expect(resolved.targetId).toBe(tB);
     expect(resolved.targetName).toBe('tr-test-b');
   });
@@ -71,11 +71,11 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
 
   it('maybeResolveTargetFor returns target when assigned', async () => {
     const t1 = await insertTarget('tr-test-maybe');
-    await setAssignments(db, 'system_secrets', {
+    await setAssignments(db, 'system_backup', {
       assignments: [{ targetId: t1, priority: 100 }],
     });
 
-    const result = await maybeResolveTargetFor(db, 'system_secrets');
+    const result = await maybeResolveTargetFor(db, 'system_backup');
     expect(result).not.toBeNull();
     expect(result!.targetId).toBe(t1);
   });
@@ -84,10 +84,10 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
     const tA = await insertTarget('tr-test-x');
     const tB = await insertTarget('tr-test-y');
     await setAssignments(db, 'tenant_snapshot', { assignments: [{ targetId: tA, priority: 100 }] });
-    await setAssignments(db, 'system_etcd', { assignments: [{ targetId: tB, priority: 100 }] });
+    await setAssignments(db, 'system_backup', { assignments: [{ targetId: tB, priority: 100 }] });
 
     const r1 = await resolveTargetFor(db, 'tenant_snapshot');
-    const r2 = await resolveTargetFor(db, 'system_etcd');
+    const r2 = await resolveTargetFor(db, 'system_backup');
     expect(r1.targetId).toBe(tA);
     expect(r2.targetId).toBe(tB);
   });

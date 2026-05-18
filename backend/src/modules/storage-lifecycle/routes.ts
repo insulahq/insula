@@ -268,7 +268,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   //
   // Per-tenant: current vs plan cap. Admin UI uses this on the
   // per-tenant storage page to show the fill bar. Cluster-wide:
-  // system_snapshot usage for the Storage > Overview tile.
+  // system_backup usage for the Storage > Overview tile.
   app.get('/admin/tenants/:tenantId/storage/snapshot-quota', {
     onRequest: adminGate,
     schema: {

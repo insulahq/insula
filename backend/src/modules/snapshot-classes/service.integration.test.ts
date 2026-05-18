@@ -37,14 +37,12 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
     await db.execute(sql`DELETE FROM backup_configurations WHERE name LIKE 'test-%'`);
   });
 
-  it('listClasses returns all 5 classes with empty assignments by default', async () => {
+  it('listClasses returns all 3 classes with empty assignments by default', async () => {
     const result = await listClasses(db);
-    expect(result.classes).toHaveLength(5);
+    expect(result.classes).toHaveLength(3);
     const names = result.classes.map((c) => c.snapshotClass).sort();
     expect(names).toEqual([
-      'system_etcd',
-      'system_secrets',
-      'system_snapshot',
+      'system_backup',
       'tenant_bundle',
       'tenant_snapshot',
     ]);
@@ -116,10 +114,10 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
 
   it('setAssignments with empty array clears the class', async () => {
     const t1 = await insertTarget('test-clear');
-    await setAssignments(db, 'system_etcd', {
+    await setAssignments(db, 'system_backup', {
       assignments: [{ targetId: t1, priority: 100 }],
     });
-    const cleared = await setAssignments(db, 'system_etcd', { assignments: [] });
+    const cleared = await setAssignments(db, 'system_backup', { assignments: [] });
     expect(cleared.assignments).toEqual([]);
   });
 
@@ -143,20 +141,20 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
   });
 
   it('resolvePrimaryTarget returns null when no assignment exists', async () => {
-    const primary = await resolvePrimaryTarget(db, 'system_secrets');
+    const primary = await resolvePrimaryTarget(db, 'system_backup');
     expect(primary).toBeNull();
   });
 
   it('getTargetAssignmentsSummary lists classes routed to a target', async () => {
     const t1 = await insertTarget('test-summary');
     await setAssignments(db, 'tenant_snapshot', { assignments: [{ targetId: t1, priority: 100 }] });
-    await setAssignments(db, 'system_etcd', { assignments: [{ targetId: t1, priority: 200 }] });
+    await setAssignments(db, 'system_backup', { assignments: [{ targetId: t1, priority: 200 }] });
 
     const summary = await getTargetAssignmentsSummary(db, t1);
     expect(summary.targetId).toBe(t1);
     expect(summary.classes).toHaveLength(2);
     const classes = summary.classes.map((c) => c.snapshotClass).sort();
-    expect(classes).toEqual(['system_etcd', 'tenant_snapshot']);
+    expect(classes).toEqual(['system_backup', 'tenant_snapshot']);
   });
 
   it('getAllTargetAssignmentsSummaries groups by target', async () => {

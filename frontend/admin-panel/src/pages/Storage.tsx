@@ -340,9 +340,7 @@ function OverviewTab() {
 const CLASS_LABELS: Record<string, { label: string; color: string }> = {
   tenant_snapshot: { label: 'Tenant PVC', color: 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' },
   tenant_bundle: { label: 'Tenant Bundle', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
-  system_snapshot: { label: 'System', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
-  system_etcd: { label: 'System etcd', color: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' },
-  system_secrets: { label: 'System Secrets', color: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300' },
+  system_backup: { label: 'System Backup', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
 };
 
 function classLabel(snapshotClass: string): { label: string; color: string } {
@@ -944,7 +942,7 @@ function SecretInput({ label, isSet, onChange, onClear }: {
   );
 }
 
-// ─── System Snapshots ────────────────────────────────────────────────────────
+// ─── System Backup ────────────────────────────────────────────────────────
 
 /**
  * Inventory section for platform/system PVCs (postgres, stalwart-mail,
@@ -1003,7 +1001,7 @@ function SystemSnapshotsSection() {
   return (
     <section className="space-y-3" data-testid="system-snapshots-section">
       <div className="flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">System Snapshots</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">System Backup</h2>
         {!isLoading && (
           <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
             {totalRows} workload(s)

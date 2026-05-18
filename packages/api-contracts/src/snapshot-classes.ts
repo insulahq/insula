@@ -90,7 +90,7 @@ export type TestClassResponse = z.infer<typeof testClassResponseSchema>;
 // Reverse view: "which classes route to this target?" Drives the
 // per-target pill on the backup-settings page so the operator can see
 // at a glance "this target is the primary for tenant_snapshot +
-// system_etcd."
+// system_backup."
 
 export const targetAssignmentsSummarySchema = z.object({
   targetId: z.string().uuid(),

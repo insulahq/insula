@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// ─── System Snapshots ────────────────────────────────────────────────────────
+// ─── System Backup ───────────────────────────────────────────────────────────
 //
 // Inventory + per-volume snapshot management for platform/system PVCs
 // (postgres, stalwart-mail, monitoring, etc). Distinct from the

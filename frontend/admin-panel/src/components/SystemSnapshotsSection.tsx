@@ -1,5 +1,5 @@
 /**
- * Lifted from pages/Storage.tsx so both the Storage page and the new
+ * Lifted from pages/Storage.tsx so both the Storage page and the
  * System Backup → Longhorn Snapshots tab share one implementation.
  *
  * Self-contained: hits /admin/system-snapshots, groups CNPG cluster
@@ -69,7 +69,7 @@ function SystemSnapshotsSection() {
   return (
     <section className="space-y-3" data-testid="system-snapshots-section">
       <div className="flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">System Snapshots</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">System Backup</h2>
         {!isLoading && (
           <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
             {totalRows} workload(s)
