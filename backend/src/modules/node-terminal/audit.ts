@@ -50,7 +50,10 @@ export async function recordNodeTerminalAudit(
       actorType: 'user',
       httpMethod: input.request.method,
       httpPath: input.request.url.slice(0, 500),
-      httpStatus: input.httpStatus ?? (input.action.endsWith('failed') || input.action.endsWith('rejected') ? 4_403 : 200),
+      // 403 for failure/rejection paths; 200 for success rows.
+      // (Previously had a typo of 4_403 — would never show up on a
+      // dashboard filtering on "http_status = 403".)
+      httpStatus: input.httpStatus ?? (input.action.endsWith('failed') || input.action.endsWith('rejected') ? 403 : 200),
       changes: {
         nodeName: input.nodeName,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),

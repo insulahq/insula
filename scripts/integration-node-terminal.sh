@@ -260,16 +260,17 @@ if [[ $NEG_ONLY -eq 0 ]]; then
         // — never our container's 'sleep'. Universally available; no
         // dependency on machine-id which Alpine variants omit.
         send({ type: 'stdin', data: 'whoami; hostname; cat /proc/1/comm\\n' });
-        // Give the host shell ~3s to execute + return output before
+        // Give the host shell ~5s to execute + return output before
         // closing. (Using a marker fails because the TTY echoes the
         // command back including the marker, racing the real output.)
+        // 5s — comfortable headroom for slow nodes / busy clusters.
         setTimeout(() => {
           const lines = buffer.split('\\n')
             .map(l => l.replace(/\\r$/, ''))
             .filter(l => l.length > 0 && !l.includes('whoami;') && !l.includes('# '));
           console.log('LINES ' + JSON.stringify(lines));
           ws.close();
-        }, 3000);
+        }, 5000);
       }
     });
   " 2>&1 || true)"
@@ -296,13 +297,11 @@ if [[ $NEG_ONLY -eq 0 ]]; then
     # /proc/1/comm reveals the host's PID 1. It must NOT be "sleep"
     # (which is our container's PID 1) — that would mean nsenter
     # didn't actually swap into the host namespaces.
-    if echo "$ALL_LINES" | grep -qv 'sleep'; then
-      HOST_INIT="$(echo "$ALL_LINES" | tail -1)"
-      if [[ -n "$HOST_INIT" && "$HOST_INIT" != sleep ]]; then
-        pass "B5 host PID 1 is '$HOST_INIT' (not 'sleep' — host namespace confirmed)"
-      else
-        fail "B5 host PID 1 unexpectedly 'sleep' or empty — namespace swap failed?"
-      fi
+    HOST_INIT="$(echo "$ALL_LINES" | tail -1)"
+    if [[ -n "$HOST_INIT" && "$HOST_INIT" != sleep ]]; then
+      pass "B5 host PID 1 is '$HOST_INIT' (not 'sleep' — host namespace confirmed)"
+    else
+      fail "B5 host PID 1 unexpectedly 'sleep' or empty — namespace swap failed?"
     fi
   else
     fail "B3-B5 no LINES output from WS run"
@@ -380,9 +379,58 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
   else
     fail "D5 missing-token close was: $(echo "$D5_OUT" | grep WS_CLOSE)"
   fi
+  # D6 — token replay. Re-open the SAME ws URL (token already
+  # consumed by D5's connection-then-close cycle? Actually D5 closed
+  # before consuming because the token check happens on upgrade.
+  # Make a fresh session, consume once, then attempt replay.
+  CREATE_JSON_D6="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  WS_URL_D6="$(echo "$CREATE_JSON_D6" | jq -r '.data.websocketUrl')"
+  SESSION_ID_D6="$(echo "$CREATE_JSON_D6" | jq -r '.data.sessionId')"
+  # First connect consumes the token successfully.
+  ws_drive "$WS_URL_D6" "ws.on('message',()=>{ setTimeout(()=>ws.close(),200); })" >/dev/null 2>&1 || true
+  sleep 1
+  # Second connect with the same URL — token already consumed.
+  D6_OUT="$(ws_drive "$WS_URL_D6" "ws.on('message',()=>{})" 2>&1 || true)"
+  if echo "$D6_OUT" | grep -q "WS_CLOSE 4401\|TOKEN_INVALID\|SESSION_NOT_FOUND\|WS_CLOSE 4404"; then
+    pass "D6 replayed wsToken → 4401/4404 close"
+  else
+    fail "D6 replay was: $(echo "$D6_OUT" | grep WS_CLOSE | head -1)"
+  fi
+  curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$SESSION_ID_D6" >/dev/null 2>&1 || true
+
+  # D7 — stale step-up. Null out lastCredentialCheckAt for the admin
+  # and assert createSession returns 403 STEP_UP_REQUIRED. Best-effort:
+  # restore the timestamp afterward so subsequent runs are clean.
+  # D7 needs a way to mutate users.last_credential_check_at directly.
+  # KUBECTL must be set to a command that reaches the cluster — for
+  # DinD that's `docker exec hosting-platform-k3s-server-1 kubectl`;
+  # for staging it's just `kubectl` with the right context.
+  KUBECTL_CMD="${KUBECTL:-kubectl}"
+  EMAIL="${ADMIN_EMAIL_OVERRIDE:-admin@k8s-platform.test}"
+  # Inline-test that the kubectl bridge actually reaches our database.
+  if $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
+    SAVED_AT="$($KUBECTL_CMD --namespace=$NAMESPACE exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT to_char(last_credential_check_at,'YYYY-MM-DD HH24:MI:SS.US') FROM users WHERE email='$EMAIL'" 2>/dev/null | head -1)"
+    $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "UPDATE users SET last_credential_check_at=NULL WHERE email='$EMAIL'" >/dev/null 2>&1
+    D7_BODY="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+    D7_CODE="$(echo "$D7_BODY" | jq -r '.error.code // "none"')"
+    D7_METHODS="$(echo "$D7_BODY" | jq -r '.error.details.methods | join(",") // ""' 2>/dev/null)"
+    if [[ "$D7_CODE" == "STEP_UP_REQUIRED" && -n "$D7_METHODS" ]]; then
+      pass "D7 stale freshness → STEP_UP_REQUIRED + methods=$D7_METHODS"
+    else
+      fail "D7 expected STEP_UP_REQUIRED, got code=$D7_CODE methods=$D7_METHODS"
+    fi
+    # Restore so subsequent assertions pass and a future re-run of
+    # the harness doesn't immediately demand a step-up.
+    if [[ -n "$SAVED_AT" ]]; then
+      $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "UPDATE users SET last_credential_check_at='$SAVED_AT' WHERE email='$EMAIL'" >/dev/null 2>&1
+    fi
+  else
+    warn "D7 skipped — set KUBECTL='docker exec <dind-container> kubectl' (DinD) or ensure kubectl is on PATH"
+  fi
+
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$SESSION_ID_D" >/dev/null
 else
-  warn "D5 skipped (no NODE_NAME or --neg-only path)"
+  warn "D5/D6/D7 skipped (no NODE_NAME or --neg-only path)"
 fi
 
 # D8. Invalid node name — uses uppercase chars (rejected by RFC-1123

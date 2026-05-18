@@ -144,7 +144,6 @@ async function deleteSession(nodeName: string, sessionId: string): Promise<void>
 
 export function useNodeTerminal(nodeName: string): UseNodeTerminalResult {
   const wsRef = useRef<WebSocket | null>(null);
-  const onDataRef = useRef<((chunk: string) => void) | null>(null);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +165,6 @@ export function useNodeTerminal(nodeName: string): UseNodeTerminalResult {
       : `${url}?jwt=${encodeURIComponent(authToken())}`;
     const ws = new WebSocket(fullUrl);
     wsRef.current = ws;
-    onDataRef.current = onData;
     ws.onopen = () => {
       setConnected(true);
       setError(null);
