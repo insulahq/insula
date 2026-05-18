@@ -116,20 +116,27 @@ export async function runSpeedtest(
 
   try {
     // Build the rclone env block + script for the resolved target type.
-    const { publicEnv, secretEnv, remoteRef, kindLabel } = buildRcloneEnv(target, key);
+    const { publicEnv, secretEnv, secretFiles, remoteRef, kindLabel } = buildRcloneEnv(target, key);
 
     const script = buildSpeedtestScript({ payloadBytes, remoteFile, remoteRef });
 
-    // Phase 12: ephemeral credentials Secret, GC'd via Job ownerRef.
+    // Phase 12 / 12.5: ephemeral credentials Secret(s), GC'd via Job
+    // ownerRef. Env-Secret holds inline values; file-Secret (for SSH
+    // PEM) is mounted as a Volume so multi-line content doesn't break
+    // envFrom parsing.
     const {
       createEphemeralCredentialsSecret,
       attachOwnerToSecret,
       deleteSecretBestEffort,
       buildEnvFromSecret,
       credSecretNameFor,
+      credFilesSecretNameFor,
+      buildSecretFileMount,
     } = await import('../storage-lifecycle/streaming-store.js');
     const credSecretName = credSecretNameFor(jobName);
+    const filesSecretName = credFilesSecretNameFor(jobName);
     const hasSecretEnv = Object.keys(secretEnv).length > 0;
+    const hasFiles = !!secretFiles && Object.keys(secretFiles).length > 0;
     if (hasSecretEnv) {
       await createEphemeralCredentialsSecret(
         k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
@@ -138,6 +145,15 @@ export async function runSpeedtest(
         secretEnv,
       );
     }
+    if (hasFiles) {
+      await createEphemeralCredentialsSecret(
+        k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+        PLATFORM_NAMESPACE,
+        filesSecretName,
+        secretFiles!,
+      );
+    }
+    const fileMount = hasFiles ? buildSecretFileMount(filesSecretName, secretFiles!) : null;
 
     const jobBody = {
       metadata: {
@@ -169,11 +185,13 @@ export async function runSpeedtest(
               command: ['sh', '-c', script],
               env: publicEnv,
               envFrom: hasSecretEnv ? buildEnvFromSecret(credSecretName) : undefined,
+              volumeMounts: fileMount ? [fileMount.volumeMount] : undefined,
               resources: {
                 requests: { cpu: '100m', memory: '128Mi' },
                 limits: { cpu: '500m', memory: '256Mi' },
               },
             }],
+            volumes: fileMount ? [fileMount.volume] : undefined,
           },
         },
       },
@@ -190,6 +208,7 @@ export async function runSpeedtest(
         createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
       }).createNamespacedJob({ namespace: PLATFORM_NAMESPACE, body: jobBody });
     } catch (err) {
+      // Clean up BOTH orphan Secrets on Job-create failure.
       if (hasSecretEnv) {
         await deleteSecretBestEffort(
           k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
@@ -197,17 +216,33 @@ export async function runSpeedtest(
           credSecretName,
         );
       }
+      if (hasFiles) {
+        await deleteSecretBestEffort(
+          k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+          PLATFORM_NAMESPACE,
+          filesSecretName,
+        );
+      }
       throw err;
     }
-    if (hasSecretEnv) {
-      const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
-        ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
-      if (jobUid) {
+    const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+      ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+    if (jobUid) {
+      const owner = { name: jobName, uid: jobUid };
+      if (hasSecretEnv) {
         await attachOwnerToSecret(
           k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
           PLATFORM_NAMESPACE,
           credSecretName,
-          { name: jobName, uid: jobUid },
+          owner,
+        ).catch(() => { /* cron picks up */ });
+      }
+      if (hasFiles) {
+        await attachOwnerToSecret(
+          k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+          PLATFORM_NAMESPACE,
+          filesSecretName,
+          owner,
         ).catch(() => { /* cron picks up */ });
       }
     }
@@ -329,9 +364,11 @@ function buildRcloneEnv(
   encryptionKey: string,
 ): {
   // Phase 12: split into publicEnv (inline, visible in pod spec) +
-  // secretEnv (mounted via ephemeral Secret).
+  // secretEnv (mounted via ephemeral Secret) + secretFiles (mounted
+  // as Volume — SSH PEM keys can't survive env-var serialisation).
   publicEnv: Array<{ name: string; value: string }>;
   secretEnv: Record<string, string>;
+  secretFiles?: Record<string, string>;
   remoteRef: string;
   kindLabel: string;
 } {
@@ -393,9 +430,44 @@ function buildRcloneEnv(
     const remoteRef = `REMOTE:${target.cifsShare}${basePath ? `/${basePath}` : ''}`;
     return { publicEnv, secretEnv, remoteRef, kindLabel: 'cifs' };
   }
+  if (target.storageType === 'ssh') {
+    // Phase 12.5: SSH/SFTP via rclone sftp backend. PEM private key
+    // is mounted as a file (Phase 12.5 secretFiles), NOT as an env
+    // var — rclone's `key_pem` parser rejects literal newlines.
+    if (!target.sshHost || !target.sshUser || !target.sshKeyEncrypted) {
+      throw new ApiError(
+        'TARGET_INCOMPLETE',
+        `SSH target ${target.name} is missing host/user/key`,
+        400,
+      );
+    }
+    const plainKey = decrypt(target.sshKeyEncrypted, encryptionKey);
+    const publicEnv: Array<{ name: string; value: string }> = [
+      { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'sftp' },
+      { name: 'RCLONE_CONFIG_REMOTE_HOST', value: target.sshHost },
+      { name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(target.sshPort ?? 22) },
+      // File-mounted PEM at the deterministic Phase-12.5 path.
+      { name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' },
+      // TOFU host-key acceptance (no known_hosts_file). Acceptable for
+      // operator-supplied backup targets; tighten later if needed.
+      { name: 'RCLONE_CONFIG_REMOTE_KNOWN_HOSTS_FILE', value: '' },
+      { name: 'RCLONE_CONTIMEOUT', value: '60s' },
+      { name: 'RCLONE_TIMEOUT', value: '300s' },
+    ];
+    const secretEnv: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_USER: target.sshUser,
+    };
+    const secretFiles: Record<string, string> = { ssh_key: plainKey };
+    // SFTP path: relative to user's home unless absolute. Match the
+    // S3/CIFS pattern — strip both leading and trailing slashes from
+    // the configured path and let rclone handle the join.
+    const basePath = target.sshPath ? target.sshPath.replace(/^\/+|\/+$/g, '') : '';
+    const remoteRef = `REMOTE:${basePath}`;
+    return { publicEnv, secretEnv, secretFiles, remoteRef, kindLabel: 'ssh' };
+  }
   throw new ApiError(
     'TARGET_KIND_UNSUPPORTED',
-    `Speedtest does not yet support target kind '${target.storageType}'. Use s3 or cifs.`,
+    `Speedtest does not yet support target kind '${target.storageType}'. Use s3, cifs, or ssh.`,
     400,
   );
 }
