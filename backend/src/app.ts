@@ -738,26 +738,31 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const webmailReconTimer = startWebmailReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => stopWebmailReconciler(webmailReconTimer));
 
-        // ADR-039 Phase 10: on boot, ensure the platform-webmail-ingress
-        // IngressRoute targets whichever engine the DB says is active.
-        // Idempotent — no-op if already correct. Non-blocking so a
-        // missing IR or transient k8s error doesn't gate platform-api
-        // startup; the same reconcile runs again on every engine flip
-        // via /admin/webmail-settings.
+        // ADR-039 Phase 10: webmail engine mutex reconciler.
+        //
+        // 2026-05-18 update: was a boot-only one-shot; now scheduled on
+        // a 5-min tick (`startWebmailRouterReconciler`) so the IR + Pod
+        // mutex auto-recover from drift (Flux re-apply, kubectl edit,
+        // storage-policy annotation churn). The scheduler fires once
+        // immediately via setImmediate so cold-start convergence is the
+        // same speed as the previous boot-block. PATCH-time engine
+        // flips now run through the task-center handler in
+        // webmail-settings/routes.ts which calls the same reconcilers
+        // directly for instant progress feedback.
         try {
-          const {
-            reconcileWebmailIngress,
-            reconcileEngineDeployments,
-          } = await import('./modules/webmail-router/reconciler.js');
-          await reconcileWebmailIngress(app.db, k8sForImapsync.custom, app.log);
-          // 2026-05-16: mutex engine Pods. Idempotent — scales the
-          // inactive engine Deployment to 0 and stamps it with the
-          // disabled annotation so storage-policy leaves it alone.
-          await reconcileEngineDeployments(app.db, k8sForImapsync.apps, app.log);
+          const { startWebmailRouterReconciler } = await import(
+            './modules/webmail-router/scheduler.js'
+          );
+          const webmailRouterHandle = startWebmailRouterReconciler(
+            app.db,
+            { custom: k8sForImapsync.custom, apps: k8sForImapsync.apps },
+            app.log,
+          );
+          app.addHook('onClose', () => webmailRouterHandle.stop());
         } catch (err) {
           app.log.warn(
             { err },
-            'webmail-router: boot-time reconcile failed (non-blocking)',
+            'webmail-router: scheduler start failed (non-blocking)',
           );
         }
 

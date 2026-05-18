@@ -49,7 +49,14 @@ spec:
         - name: compress
           namespace: traefik
       services:
-        - name: roundcube
+        # Initial value MUST match the fresh-install default in
+        # backend/src/modules/webmail-settings/service.ts:getDefaultWebmailEngine()
+        # (currently `bulwark`). The webmail-router reconciler patches
+        # this on engine flip via the admin UI and re-stamps the
+        # kustomize.toolkit.fluxcd.io/reconcile: disabled annotation
+        # so Flux doesn't revert. If you change the bootstrap default
+        # engine, also flip this services[0].name to match.
+        - name: bulwark
           port: 80
   tls:
     secretName: platform-webmail-tls

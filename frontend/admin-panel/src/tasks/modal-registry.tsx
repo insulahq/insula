@@ -44,7 +44,7 @@ const SpeedtestProgressModal = lazy(() => import('@/components/SpeedtestProgress
 //   operation             → OperationProgressModal      (storage.*)
 //   provisioning          → ProvisioningProgressModal   (tenant.provision)
 //   platform-storage-apply→ ApplyHaProgressModal        (storage.tier-flip)
-//   mail-operation        → MailTaskProgressModal       (mail.port-exposure, mail.snapshot.trigger)
+//   mail-operation        → MailTaskProgressModal       (mail.port-exposure, mail.snapshot.trigger, webmail.engine-flip)
 //   mail-migration        → MailMigrationProgressModal  (mail.migration)
 //
 // Surfaces without a dedicated modal use `target.type = 'route'`
