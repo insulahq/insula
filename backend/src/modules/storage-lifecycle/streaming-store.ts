@@ -58,6 +58,16 @@ export interface StreamingJobEnvelope {
    */
   readonly publicEnv: Array<{ name: string; value: string }>;
   readonly secretEnv: Record<string, string>;
+  /**
+   * Phase 12.5: file-form secrets — content materialised inside the
+   * Pod as files at `/etc/rclone/<basename>` (mode 0400). Used for
+   * payloads that don't survive env-var serialisation: PEM-encoded
+   * SSH private keys (multi-line; rclone's `key_pem` env-var parser
+   * rejects literal newlines), TLS client certs, known_hosts files.
+   * The Job orchestrator mounts these via a sibling ephemeral Secret
+   * owned by the Job. Keys are basenames only (no slashes).
+   */
+  readonly secretFiles?: Record<string, string>;
   readonly remoteUri: string;
   readonly shaUri: string;
 }
@@ -237,25 +247,19 @@ export class SshStreamingStore implements StreamingSnapshotStore {
     };
   }
 
-  getStreamingJob(archivePath: string): StreamingJobEnvelope {
-    const remotePath = this.config.basePath.replace(/\/+$/, '') + '/' + archivePath;
-    const remoteUri = `REMOTE:${remotePath}`;
-    const shaUri = `REMOTE:${remotePath}.sha256`;
-    // Phase 12: split public env (connection metadata) from secret env
-    // (host-user + key-file path). The PRIVATE KEY itself is mounted
-    // via a separate Secret volume by the Job orchestrator (see
-    // sshKeyFile field in StreamingJobEnvelope.secretFiles when
-    // Phase 5.5 lands).
-    const publicEnv: Array<{ name: string; value: string }> = [
+  private buildPublicEnv(): Array<{ name: string; value: string }> {
+    return [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'sftp' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: this.config.host },
       { name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(this.config.port) },
-      // Key path inside the container — the Job spec must mount the
-      // Secret at /etc/rclone/ssh_key (read-only).
+      // Phase 12.5: PEM is mounted as a file via the Job orchestrator's
+      // file-Secret pattern. RCLONE_CONFIG_REMOTE_KEY_FILE points at
+      // the deterministic mount path; the file is created via
+      // `envelope.secretFiles` below.
       { name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' },
-      // Disable strict host-key checking — operator may add a known-hosts
-      // file later; for Phase 4 we accept TOFU since rclone validates
-      // the host fingerprint after first connection.
+      // Empty `known_hosts_file` = rclone skips host-key verification
+      // (TOFU). Acceptable for managed-cluster backup targets where
+      // the host's authenticity is implicit (operator-supplied creds).
       { name: 'RCLONE_CONFIG_REMOTE_KNOWN_HOSTS_FILE', value: '' },
       { name: 'RCLONE_LOW_LEVEL_RETRIES', value: '3' },
       { name: 'RCLONE_USE_JSON_LOG', value: 'true' },
@@ -264,10 +268,33 @@ export class SshStreamingStore implements StreamingSnapshotStore {
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
-    const secretEnv: Record<string, string> = {
-      RCLONE_CONFIG_REMOTE_USER: this.config.user,
+  }
+
+  private buildSecretEnv(): Record<string, string> {
+    // USER is mildly sensitive (account name on the target server) but
+    // SSH considers it part of the credential — keep with the key.
+    return { RCLONE_CONFIG_REMOTE_USER: this.config.user };
+  }
+
+  private buildSecretFiles(): Record<string, string> {
+    // PEM private key — mounted at /etc/rclone/ssh_key, mode 0400.
+    // The rclone sftp backend reads it via key_file at startup.
+    return { ssh_key: this.config.privateKey };
+  }
+
+  getStreamingJob(archivePath: string): StreamingJobEnvelope {
+    const remotePath = this.config.basePath.replace(/\/+$/, '') + '/' + archivePath;
+    const remoteUri = `REMOTE:${remotePath}`;
+    const shaUri = `REMOTE:${remotePath}.sha256`;
+    return {
+      image: RCLONE_IMAGE,
+      script: buildStreamingScript(),
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: this.buildSecretEnv(),
+      secretFiles: this.buildSecretFiles(),
+      remoteUri,
+      shaUri,
     };
-    return { image: RCLONE_IMAGE, script: buildStreamingScript(), publicEnv, secretEnv, remoteUri, shaUri };
   }
 
   getStreamingRestoreJob(archivePath: string): StreamingJobEnvelope {
@@ -277,19 +304,97 @@ export class SshStreamingStore implements StreamingSnapshotStore {
       script: buildStreamingRestoreScript(),
       publicEnv: upload.publicEnv,
       secretEnv: upload.secretEnv,
+      secretFiles: upload.secretFiles,
       remoteUri: upload.remoteUri,
       shaUri: upload.shaUri,
     };
   }
 
-  async stat(_archivePath: string): Promise<{ sizeBytes: number } | null> {
-    throw new Error('SshStreamingStore.stat — read path not yet implemented (Phase 5)');
+  // ─── SSH read paths (Phase 11 parity with CIFS) ───────────────────
+  //
+  // Same one-shot-rclone-Job pattern as CifsStreamingStore. The k8s
+  // context is attached at construction-time by `resolveSnapshotStore*`
+  // (see snapshot-store.ts). Falls back to a clear error when called
+  // without context (unit tests that don't need read paths).
+
+  private k8sCtx: { k8s: unknown; namespace: string } | null = null;
+  setK8sContext(ctx: { k8s: unknown; namespace: string }): void {
+    this.k8sCtx = ctx;
   }
-  async delete(_archivePath: string): Promise<boolean> {
-    throw new Error('SshStreamingStore.delete — read path not yet implemented (Phase 5)');
+
+  private buildRemoteUri(archivePath: string): string {
+    const remotePath = this.config.basePath.replace(/\/+$/, '') + '/' + archivePath;
+    return `REMOTE:${remotePath}`;
   }
-  async readSidecar(_archivePath: string, _suffix: string): Promise<string | null> {
-    throw new Error('SshStreamingStore.readSidecar — read path not yet implemented (Phase 5)');
+
+  async stat(archivePath: string): Promise<{ sizeBytes: number } | null> {
+    if (!this.k8sCtx) {
+      throw new Error('SshStreamingStore.stat — no k8s context attached');
+    }
+    const remoteUri = this.buildRemoteUri(archivePath);
+    const result = await runRcloneOneShot(this.k8sCtx, {
+      name: `ssh-stat-${shortId(archivePath)}`,
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: Object.entries(this.buildSecretEnv()).map(([name, value]) => ({ name, value })),
+      secretFiles: this.buildSecretFiles(),
+      args: ['size', '--json', '--max-depth', '1', remoteUri],
+      timeoutMs: 60_000,
+    });
+    if (result.exitCode !== 0) {
+      // rclone exits non-zero when the file doesn't exist — surface as
+      // null so callers can treat that as "not found" without parsing.
+      return null;
+    }
+    const m = result.stdout.match(/"bytes":\s*(\d+)/);
+    if (!m) return null;
+    return { sizeBytes: parseInt(m[1], 10) };
+  }
+
+  async delete(archivePath: string): Promise<boolean> {
+    if (!this.k8sCtx) {
+      throw new Error('SshStreamingStore.delete — no k8s context attached');
+    }
+    const remoteUri = this.buildRemoteUri(archivePath);
+    const result = await runRcloneOneShot(this.k8sCtx, {
+      name: `ssh-del-${shortId(archivePath)}`,
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: Object.entries(this.buildSecretEnv()).map(([name, value]) => ({ name, value })),
+      secretFiles: this.buildSecretFiles(),
+      args: ['deletefile', remoteUri],
+      timeoutMs: 60_000,
+    });
+    const existed = result.exitCode === 0;
+    // Best-effort sidecar delete — separate Job so the archive delete
+    // result isn't blocked by sidecar issues. Ignore errors.
+    if (existed) {
+      await runRcloneOneShot(this.k8sCtx, {
+        name: `ssh-del-sha-${shortId(archivePath)}`,
+        publicEnv: this.buildPublicEnv(),
+        secretEnv: Object.entries(this.buildSecretEnv()).map(([name, value]) => ({ name, value })),
+        secretFiles: this.buildSecretFiles(),
+        args: ['deletefile', `${remoteUri}.sha256`],
+        timeoutMs: 30_000,
+      }).catch(() => { /* sidecar may already be gone */ });
+    }
+    return existed;
+  }
+
+  async readSidecar(archivePath: string, suffix: string): Promise<string | null> {
+    if (!this.k8sCtx) {
+      throw new Error('SshStreamingStore.readSidecar — no k8s context attached');
+    }
+    const remoteUri = this.buildRemoteUri(archivePath) + suffix;
+    const result = await runRcloneOneShot(this.k8sCtx, {
+      name: `ssh-cat-${shortId(archivePath + suffix)}`,
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: Object.entries(this.buildSecretEnv()).map(([name, value]) => ({ name, value })),
+      secretFiles: this.buildSecretFiles(),
+      args: ['cat', remoteUri],
+      timeoutMs: 60_000,
+    });
+    if (result.exitCode !== 0) return null;
+    const trimmed = result.stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
   }
 }
 
@@ -518,6 +623,13 @@ interface RcloneOneShotOpts {
   readonly name: string;
   readonly publicEnv: Array<{ name: string; value: string }>;
   readonly secretEnv: Array<{ name: string; value: string }>;
+  /**
+   * Phase 12.5: file-form secrets (basename → content). Mounted at
+   * `/etc/rclone/<basename>` mode 0400 via a sibling ephemeral Secret.
+   * Required for SSH PEM keys (which can't go in env vars — rclone's
+   * `key_pem` parser rejects literal newlines).
+   */
+  readonly secretFiles?: Record<string, string>;
   readonly args: string[];
   readonly timeoutMs?: number;
 }
@@ -565,11 +677,26 @@ async function runRcloneOneShot(
   for (const e of opts.secretEnv) {
     secretData[e.name] = e.value;
   }
-  let secretCreated = false;
+  let envSecretCreated = false;
   if (Object.keys(secretData).length > 0) {
     await createEphemeralCredentialsSecret(k8s, k8sCtx.namespace, secretName, secretData);
-    secretCreated = true;
+    envSecretCreated = true;
   }
+
+  // Phase 12.5: optional file-form Secret (PEM keys / TLS certs).
+  // Kept SEPARATE from the env Secret so envFrom doesn't try to
+  // inject multi-line file content as bogus env vars (rclone would
+  // refuse to start). Mounted as a Volume at /etc/rclone/.
+  const filesSecretName = credFilesSecretNameFor(jobName);
+  const hasFiles = !!opts.secretFiles && Object.keys(opts.secretFiles).length > 0;
+  let filesSecretCreated = false;
+  if (hasFiles) {
+    await createEphemeralCredentialsSecret(k8s, k8sCtx.namespace, filesSecretName, opts.secretFiles!);
+    filesSecretCreated = true;
+  }
+  const fileMount = hasFiles
+    ? buildSecretFileMount(filesSecretName, opts.secretFiles!)
+    : null;
 
   const jobBody = {
     metadata: {
@@ -581,7 +708,7 @@ async function runRcloneOneShot(
       backoffLimit: 0,
       // Auto-cleanup after 5 min so the platform namespace doesn't
       // accumulate completed Jobs from a high-frequency expire cron.
-      // The owned Secret cascades with the Job's GC.
+      // The owned Secret(s) cascade with the Job's GC.
       ttlSecondsAfterFinished: 300,
       activeDeadlineSeconds: Math.floor(timeoutMs / 1000),
       template: {
@@ -599,12 +726,14 @@ async function runRcloneOneShot(
             // readSidecar's return value — the caller stores .stdout
             // directly as the sha256 sidecar contents.
             env: [...opts.publicEnv, { name: 'RCLONE_LOG_LEVEL', value: 'ERROR' }],
-            envFrom: secretCreated ? buildEnvFromSecret(secretName) : undefined,
+            envFrom: envSecretCreated ? buildEnvFromSecret(secretName) : undefined,
+            volumeMounts: fileMount ? [fileMount.volumeMount] : undefined,
             resources: {
               requests: { cpu: '50m', memory: '64Mi' },
               limits: { cpu: '500m', memory: '256Mi' },
             },
           }],
+          volumes: fileMount ? [fileMount.volume] : undefined,
         },
       },
     },
@@ -615,21 +744,29 @@ async function runRcloneOneShot(
     const resp = await k8s.batch.createNamespacedJob({ namespace: k8sCtx.namespace, body: jobBody });
     createdJob = (resp as { body?: { metadata?: { uid?: string } } }).body ?? (resp as { metadata?: { uid?: string } });
   } catch (err) {
-    // Clean up the orphan Secret on Job-create failure — TTL cascade
+    // Clean up orphan Secret(s) on Job-create failure — TTL cascade
     // can't fire because no owning Job exists yet.
-    if (secretCreated) {
+    if (envSecretCreated) {
       await deleteSecretBestEffort(k8s, k8sCtx.namespace, secretName);
+    }
+    if (filesSecretCreated) {
+      await deleteSecretBestEffort(k8s, k8sCtx.namespace, filesSecretName);
     }
     throw err;
   }
 
-  // Bind the Secret to the Job via ownerReferences so GC cascades.
+  // Bind both Secrets to the Job via ownerReferences so GC cascades.
   // Best-effort: orphan-cleanup cron is the safety net.
-  if (secretCreated && createdJob?.metadata?.uid) {
-    await attachOwnerToSecret(k8s, k8sCtx.namespace, secretName, {
-      name: jobName,
-      uid: createdJob.metadata.uid,
-    }).catch(() => { /* cron will pick it up */ });
+  if (createdJob?.metadata?.uid) {
+    const owner = { name: jobName, uid: createdJob.metadata.uid };
+    if (envSecretCreated) {
+      await attachOwnerToSecret(k8s, k8sCtx.namespace, secretName, owner)
+        .catch(() => { /* cron will pick it up */ });
+    }
+    if (filesSecretCreated) {
+      await attachOwnerToSecret(k8s, k8sCtx.namespace, filesSecretName, owner)
+        .catch(() => { /* cron will pick it up */ });
+    }
   }
 
   // Poll until terminal.
@@ -970,3 +1107,64 @@ export function credSecretNameFor(jobName: string): string {
 }
 
 export const RCLONE_CREDS_LABEL_SELECTOR = `${RCLONE_CREDS_LABEL}=${RCLONE_CREDS_LABEL_VALUE}`;
+
+/**
+ * Phase 12.5 — file-form secrets. Used when the payload doesn't
+ * survive env serialisation (PEM keys, TLS certs). The file Secret
+ * is SEPARATE from the env Secret so envFrom doesn't try to inject
+ * multi-line file contents as bogus env vars. Mounted as a Volume.
+ */
+export function credFilesSecretNameFor(jobName: string): string {
+  const base = `${jobName}-files`;
+  return base.length <= 63 ? base : base.slice(0, 63);
+}
+
+/**
+ * Build the Volume + VolumeMount pair for a file-Secret. The mount
+ * point `/etc/rclone` is the same on every consumer so backend code
+ * (SshStreamingStore et al.) can reference `/etc/rclone/<basename>`
+ * unconditionally. Items are restricted to `secretFiles` keys with
+ * mode 0400 (rclone's sftp backend refuses keys with broader perms).
+ */
+export function buildSecretFileMount(
+  secretName: string,
+  files: Record<string, string>,
+): {
+  volume: Record<string, unknown>;
+  volumeMount: Record<string, unknown>;
+} {
+  // Enforce the "basename only" contract at runtime — a key
+  // containing a slash would cause k8s to mount the file at a
+  // subdir of /etc/rclone, making it invisible at the expected path
+  // and producing a silent auth failure that's painful to debug.
+  for (const key of Object.keys(files)) {
+    if (key.length === 0 || key.includes('/') || key === '.' || key === '..') {
+      throw new Error(
+        `secretFiles key must be a non-empty basename (no slashes, no dot-dirs); got: ${JSON.stringify(key)}`,
+      );
+    }
+  }
+  return {
+    volume: {
+      name: 'rclone-creds-files',
+      secret: {
+        secretName,
+        // 0400 (-r--------) — rclone sftp rejects 0644+. Number form
+        // because the K8s JS SDK serialises this as int.
+        defaultMode: 256,
+        items: Object.keys(files).map((basename) => ({
+          key: basename,
+          path: basename,
+        })),
+      },
+    },
+    volumeMount: {
+      name: 'rclone-creds-files',
+      // Hardcoded mount path — by contract there is at most ONE
+      // secretFiles bundle per Job. Adding a second bundle to the
+      // same Job (none today) would require a non-colliding name.
+      mountPath: '/etc/rclone',
+      readOnly: true,
+    },
+  };
+}

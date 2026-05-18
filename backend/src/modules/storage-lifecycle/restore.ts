@@ -128,11 +128,23 @@ export async function restoreTenantPVC(
         limits: { cpu: '500m', memory: '512Mi' },
       };
 
-  // Phase 12: ephemeral credentials Secret for streaming restore Jobs.
-  const { createEphemeralCredentialsSecret, attachOwnerToSecret, deleteSecretBestEffort, buildEnvFromSecret, credSecretNameFor } =
-    await import('./streaming-store.js');
+  // Phase 12 + 12.5: ephemeral env Secret + optional file Secret for
+  // streaming restore Jobs (SSH PEM key).
+  const {
+    createEphemeralCredentialsSecret,
+    attachOwnerToSecret,
+    deleteSecretBestEffort,
+    buildEnvFromSecret,
+    credSecretNameFor,
+    credFilesSecretNameFor,
+    buildSecretFileMount,
+  } = await import('./streaming-store.js');
   const credSecretName = streamEnvelope ? credSecretNameFor(jobName) : null;
+  const filesSecretName = streamEnvelope ? credFilesSecretNameFor(jobName) : null;
   const hasSecretEnv = streamEnvelope && Object.keys(streamEnvelope.secretEnv).length > 0;
+  const hasSecretFiles = streamEnvelope
+    && !!streamEnvelope.secretFiles
+    && Object.keys(streamEnvelope.secretFiles).length > 0;
   if (streamEnvelope && hasSecretEnv && credSecretName) {
     await createEphemeralCredentialsSecret(
       k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
@@ -141,6 +153,23 @@ export async function restoreTenantPVC(
       streamEnvelope.secretEnv,
     );
   }
+  if (streamEnvelope && hasSecretFiles && filesSecretName) {
+    await createEphemeralCredentialsSecret(
+      k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+      opts.namespace,
+      filesSecretName,
+      streamEnvelope.secretFiles!,
+    );
+  }
+  const fileMount = (hasSecretFiles && filesSecretName)
+    ? buildSecretFileMount(filesSecretName, streamEnvelope!.secretFiles!)
+    : null;
+  const containerVolumeMountsAll = fileMount
+    ? [...containerVolumeMounts, fileMount.volumeMount]
+    : containerVolumeMounts;
+  const podVolumesAll = fileMount
+    ? [...podVolumes, fileMount.volume]
+    : podVolumes;
 
   const jobBody = {
     metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId, 'platform.io/pipeline': streamEnvelope ? 'streaming-rclone' : 'legacy' } },
@@ -166,9 +195,9 @@ export async function restoreTenantPVC(
               ? buildEnvFromSecret(credSecretName)
               : undefined,
             resources,
-            volumeMounts: containerVolumeMounts,
+            volumeMounts: containerVolumeMountsAll,
           }],
-          volumes: podVolumes,
+          volumes: podVolumesAll,
         },
       },
     },
@@ -187,18 +216,34 @@ export async function restoreTenantPVC(
         credSecretName,
       );
     }
+    if (filesSecretName && hasSecretFiles) {
+      await deleteSecretBestEffort(
+        k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+        opts.namespace,
+        filesSecretName,
+      );
+    }
     throw err;
   }
-  // Bind the Secret to the Job for cascade GC.
-  if (credSecretName && hasSecretEnv) {
-    const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
-      ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
-    if (jobUid) {
+  // Bind Secret(s) to the Job for cascade GC.
+  const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+    ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+  if (jobUid) {
+    const owner = { name: jobName, uid: jobUid };
+    if (credSecretName && hasSecretEnv) {
       await attachOwnerToSecret(
         k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
         opts.namespace,
         credSecretName,
-        { name: jobName, uid: jobUid },
+        owner,
+      ).catch(() => { /* cron picks up */ });
+    }
+    if (filesSecretName && hasSecretFiles) {
+      await attachOwnerToSecret(
+        k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+        opts.namespace,
+        filesSecretName,
+        owner,
       ).catch(() => { /* cron picks up */ });
     }
   }

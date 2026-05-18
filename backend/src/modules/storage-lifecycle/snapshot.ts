@@ -169,14 +169,27 @@ export async function snapshotTenantPVC(
         limits: { cpu: '500m', memory: '512Mi' },
       };
 
-  // Phase 12: for streaming Jobs, create the credentials Secret BEFORE
-  // the Job so the Pod's envFrom resolves at startup. The Secret is
-  // bound to the Job via ownerReferences post-creation so cluster GC
-  // cascades the delete when the Job's TTL fires.
-  const { createEphemeralCredentialsSecret, attachOwnerToSecret, deleteSecretBestEffort, buildEnvFromSecret, credSecretNameFor } =
-    await import('./streaming-store.js');
+  // Phase 12: for streaming Jobs, create the credentials Secret(s)
+  // BEFORE the Job so the Pod's envFrom + volume mounts resolve at
+  // startup. Bound to the Job via ownerReferences post-creation so
+  // cluster GC cascades the delete when the Job's TTL fires.
+  // Phase 12.5: SSH needs a SECOND Secret for file-mount content
+  // (PEM key) — multi-line PEM can't go through envFrom.
+  const {
+    createEphemeralCredentialsSecret,
+    attachOwnerToSecret,
+    deleteSecretBestEffort,
+    buildEnvFromSecret,
+    credSecretNameFor,
+    credFilesSecretNameFor,
+    buildSecretFileMount,
+  } = await import('./streaming-store.js');
   const credSecretName = streamEnvelope ? credSecretNameFor(jobName) : null;
+  const filesSecretName = streamEnvelope ? credFilesSecretNameFor(jobName) : null;
   const hasSecretEnv = streamEnvelope && Object.keys(streamEnvelope.secretEnv).length > 0;
+  const hasSecretFiles = streamEnvelope
+    && !!streamEnvelope.secretFiles
+    && Object.keys(streamEnvelope.secretFiles).length > 0;
   if (streamEnvelope && hasSecretEnv && credSecretName) {
     await createEphemeralCredentialsSecret(
       k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
@@ -185,6 +198,24 @@ export async function snapshotTenantPVC(
       streamEnvelope.secretEnv,
     );
   }
+  if (streamEnvelope && hasSecretFiles && filesSecretName) {
+    await createEphemeralCredentialsSecret(
+      k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+      opts.namespace,
+      filesSecretName,
+      streamEnvelope.secretFiles!,
+    );
+  }
+  const fileMount = (hasSecretFiles && filesSecretName)
+    ? buildSecretFileMount(filesSecretName, streamEnvelope!.secretFiles!)
+    : null;
+
+  const containerVolumeMountsAll = fileMount
+    ? [...containerVolumeMounts, fileMount.volumeMount]
+    : containerVolumeMounts;
+  const podVolumesAll = fileMount
+    ? [...podVolumes, fileMount.volume]
+    : podVolumes;
 
   const jobBody = {
     metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'snapshot', 'platform.io/tenant-id': opts.tenantId, 'platform.io/pipeline': streamEnvelope ? 'streaming-rclone' : 'legacy' } },
@@ -192,7 +223,7 @@ export async function snapshotTenantPVC(
       backoffLimit: 0, // don't retry on failure — fail fast, orchestrator decides
       // Streaming Jobs may run for hours; bump the auto-cleanup TTL so
       // the operator can inspect the pod log post-mortem on a failure.
-      // When TTL fires, k8s GC cascades to the owned credentials Secret.
+      // When TTL fires, k8s GC cascades to the owned credentials Secret(s).
       ttlSecondsAfterFinished: streamEnvelope ? 3600 : 600,
       // Phase 4: cap Job runtime at 6h ceiling. Legacy stays at 30 min
       // (the previous default) since it requires the scratch volume to
@@ -216,9 +247,9 @@ export async function snapshotTenantPVC(
               ? buildEnvFromSecret(credSecretName)
               : undefined,
             resources,
-            volumeMounts: containerVolumeMounts,
+            volumeMounts: containerVolumeMountsAll,
           }],
-          volumes: podVolumes,
+          volumes: podVolumesAll,
         },
       },
     },
@@ -231,7 +262,7 @@ export async function snapshotTenantPVC(
     }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
   } catch (err) {
     // Phase 12: Job creation failed AFTER we created the credentials
-    // Secret — cascade GC won't fire, so explicitly clean up.
+    // Secret(s) — cascade GC won't fire, so explicitly clean up both.
     if (credSecretName && hasSecretEnv) {
       await deleteSecretBestEffort(
         k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
@@ -239,20 +270,35 @@ export async function snapshotTenantPVC(
         credSecretName,
       );
     }
+    if (filesSecretName && hasSecretFiles) {
+      await deleteSecretBestEffort(
+        k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+        opts.namespace,
+        filesSecretName,
+      );
+    }
     throw err;
   }
 
-  // Phase 12: bind the Secret to the Job so cluster GC cascades on TTL.
-  // Best-effort — the orphan-cleanup cron handles failure here.
-  if (credSecretName && hasSecretEnv) {
-    const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
-      ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
-    if (jobUid) {
+  // Phase 12: bind Secret(s) to the Job so cluster GC cascades on TTL.
+  const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+    ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+  if (jobUid) {
+    const owner = { name: jobName, uid: jobUid };
+    if (credSecretName && hasSecretEnv) {
       await attachOwnerToSecret(
         k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
         opts.namespace,
         credSecretName,
-        { name: jobName, uid: jobUid },
+        owner,
+      ).catch(() => { /* cron picks up orphans */ });
+    }
+    if (filesSecretName && hasSecretFiles) {
+      await attachOwnerToSecret(
+        k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+        opts.namespace,
+        filesSecretName,
+        owner,
       ).catch(() => { /* cron picks up orphans */ });
     }
   }

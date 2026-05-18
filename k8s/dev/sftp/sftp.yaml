@@ -1,0 +1,123 @@
+---
+# Dev-only SFTP server for snapshot-storage E2E testing (SSH target type).
+#
+# Phase 12.5 of the snapshot-storage overhaul un-gated SSH/SFTP backup
+# targets — full parity with S3 + CIFS (upload, restore, Phase 11
+# stat/delete/readSidecar, per-class scoping, ephemeral PEM Secret).
+# Without a real SFTP server in dev the SSH code path can only be
+# exercised against a remote host. This deployment closes that gap.
+#
+# Configured via local.sh --with-sftp (see scripts/local.sh).
+#
+# NOT for production.
+#
+# The Secret holding the ed25519 keypair is created by `local.sh
+# sftp-up` (which generates a fresh keypair at deploy time so the
+# private + public halves actually match — embedding a hardcoded
+# keypair in YAML risks copy/paste errors that produce non-matching
+# halves and silent auth failure).
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev-sftp
+  labels:
+    platform.phoenix-host.net/env: dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sftp
+  namespace: dev-sftp
+  labels:
+    app: sftp
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sftp
+  template:
+    metadata:
+      labels:
+        app: sftp
+    spec:
+      containers:
+        - name: sftp
+          # atmoz/sftp is a small, widely-used OpenSSH + sftp-only image
+          # (~100 MB). Pinned to a stable tag.
+          image: atmoz/sftp:alpine-3.7
+          imagePullPolicy: IfNotPresent
+          # User definitions per atmoz/sftp: user:pass[:e][:UID][:GID[:dirs]]
+          # Empty pass (key-only auth), uid/gid 1001, writable subdir
+          # "speedtest". The postStart hook below creates it.
+          args:
+            - "e2etest::1001:1001"
+          ports:
+            - name: ssh
+              containerPort: 22
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            # The Secret is created by local.sh sftp-up — contains
+            # `authorized_keys` (matching private key in a sibling
+            # Secret read by the harness).
+            - name: auth-keys
+              mountPath: /home/e2etest/.ssh/keys
+              readOnly: true
+            - name: home
+              mountPath: /home/e2etest
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - |
+                    mkdir -p /home/e2etest/.ssh
+                    cp /home/e2etest/.ssh/keys/authorized_keys /home/e2etest/.ssh/authorized_keys
+                    chown 1001:1001 /home/e2etest/.ssh/authorized_keys
+                    chmod 600 /home/e2etest/.ssh/authorized_keys
+                    mkdir -p /home/e2etest/speedtest
+                    chown -R 1001:1001 /home/e2etest/speedtest
+          readinessProbe:
+            tcpSocket:
+              port: ssh
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: ssh
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: auth-keys
+          secret:
+            secretName: sftp-authorized-keys
+            items:
+              - key: authorized_keys
+                path: authorized_keys
+        - name: home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sftp
+  namespace: dev-sftp
+  labels:
+    app: sftp
+spec:
+  type: ClusterIP
+  selector:
+    app: sftp
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
