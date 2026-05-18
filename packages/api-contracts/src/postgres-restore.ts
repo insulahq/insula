@@ -3,7 +3,7 @@ import { z } from 'zod';
 // ─── Postgres PITR Restore ───────────────────────────────────────────────────
 //
 // Snapshot-only point-in-time-recovery for CNPG-managed Postgres.
-// Operator picks a Longhorn snapshot in the System Snapshots modal,
+// Operator picks a Longhorn snapshot in the System Backup modal,
 // optionally a sub-hour PITR target, and the orchestrator auto-promotes
 // the restored cluster (replaces the source).
 //

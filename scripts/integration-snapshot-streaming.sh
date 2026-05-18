@@ -109,7 +109,7 @@ cleanup() {
   echo
   step "Cleanup"
   # Empty assignments so RESTRICT doesn't block target delete.
-  for class in tenant_snapshot tenant_bundle system_snapshot system_etcd system_secrets; do
+  for class in tenant_snapshot tenant_bundle system_backup; do
     api PUT "/api/v1/admin/snapshots/classes/$class/assignments" '{"assignments":[]}' >/dev/null 2>&1 || true
   done
 
@@ -266,7 +266,7 @@ test_negative_target_disabled() {
   psql_exec "INSERT INTO backup_configurations (id, name, \"storageType\", retention_days, schedule_expression, enabled, active, created_at, updated_at)
              VALUES ('$dis_id', '$FIXTURE_PREFIX-disabled', 's3', 30, '0 2 * * *', 0, false, NOW(), NOW());" >/dev/null
   local resp http
-  resp=$(api_with_status PUT "/api/v1/admin/snapshots/classes/system_snapshot/assignments" \
+  resp=$(api_with_status PUT "/api/v1/admin/snapshots/classes/system_backup/assignments" \
     "{\"assignments\":[{\"targetId\":\"$dis_id\",\"priority\":100}]}")
   http=$(echo "$resp" | tail -1)
   if [ "$http" = "400" ] && echo "$resp" | grep -q "TARGET_DISABLED"; then
