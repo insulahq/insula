@@ -43,7 +43,7 @@ describe('getStepUpStatus', () => {
       passwordHash: 'h',
       passkeyMode: null,
       status: 'disabled',
-      lastCredentialCheckAt: new Date(),
+      lastStepUpAt: new Date(),
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.required).toBe(true);
@@ -55,7 +55,7 @@ describe('getStepUpStatus', () => {
       passwordHash: 'h',
       passkeyMode: null,
       status: 'active',
-      lastCredentialCheckAt: new Date(),
+      lastStepUpAt: new Date(),
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.methods).toEqual(['password']);
@@ -67,7 +67,7 @@ describe('getStepUpStatus', () => {
       passwordHash: null,
       passkeyMode: 'alternative',
       status: 'active',
-      lastCredentialCheckAt: new Date(),
+      lastStepUpAt: new Date(),
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.methods).toEqual(['passkey']);
@@ -79,7 +79,7 @@ describe('getStepUpStatus', () => {
       passwordHash: 'h',
       passkeyMode: 'second_factor',
       status: 'active',
-      lastCredentialCheckAt: new Date(),
+      lastStepUpAt: new Date(),
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.methods).toEqual(['password', 'passkey']);
@@ -90,7 +90,7 @@ describe('getStepUpStatus', () => {
       passwordHash: null,
       passkeyMode: null,
       status: 'active',
-      lastCredentialCheckAt: new Date(),
+      lastStepUpAt: new Date(),
     });
     const status = await getStepUpStatus(db, 'u1');
     // OIDC-only users CANNOT step up; the caller must surface this as
@@ -100,16 +100,31 @@ describe('getStepUpStatus', () => {
     expect(status.required).toBe(false);
   });
 
-  it('required=true when lastCredentialCheckAt is NULL', async () => {
+  it('required=true when lastStepUpAt is NULL (no explicit step-up yet)', async () => {
     const { db } = mockDbWithUser({
       passwordHash: 'h',
       passkeyMode: null,
       status: 'active',
-      lastCredentialCheckAt: null,
+      lastStepUpAt: null,
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.required).toBe(true);
     expect(status.lastCredentialCheckAt).toBeNull();
+  });
+
+  it('required=true when only lastCredentialCheckAt is fresh (login alone does not satisfy step-up)', async () => {
+    // ADR-041 evolved spec: a fresh login bumps lastCredentialCheckAt
+    // but NOT lastStepUpAt. The first terminal open after login must
+    // always demand explicit step-up.
+    const { db } = mockDbWithUser({
+      passwordHash: 'h',
+      passkeyMode: null,
+      status: 'active',
+      lastCredentialCheckAt: new Date(), // fresh login
+      lastStepUpAt: null,                // but no step-up yet
+    });
+    const status = await getStepUpStatus(db, 'u1');
+    expect(status.required).toBe(true);
   });
 
   it('required=false at boundary - 1ms inside the window', async () => {
@@ -119,7 +134,7 @@ describe('getStepUpStatus', () => {
       passwordHash: 'h',
       passkeyMode: null,
       status: 'active',
-      lastCredentialCheckAt: lastAt,
+      lastStepUpAt: lastAt,
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.required).toBe(false);
@@ -132,7 +147,7 @@ describe('getStepUpStatus', () => {
       passwordHash: 'h',
       passkeyMode: null,
       status: 'active',
-      lastCredentialCheckAt: lastAt,
+      lastStepUpAt: lastAt,
     });
     const status = await getStepUpStatus(db, 'u1');
     expect(status.required).toBe(true);
@@ -145,7 +160,7 @@ describe('getStepUpStatus', () => {
       passwordHash: 'h',
       passkeyMode: null,
       status: 'active',
-      lastCredentialCheckAt: lastAt,
+      lastStepUpAt: lastAt,
     });
     const status = await getStepUpStatus(db, 'u1', 60_000);
     expect(status.required).toBe(true);
@@ -208,7 +223,7 @@ describe('verifyStepUpPassword', () => {
     });
   });
 
-  it('bumps lastCredentialCheckAt on success and returns the timestamp', async () => {
+  it('bumps BOTH lastCredentialCheckAt AND lastStepUpAt on success', async () => {
     const { db, updateFn, updateSet } = mockDbWithUser({
       id: 'u1',
       passwordHash: await hashNewPassword('correct'),
@@ -222,7 +237,10 @@ describe('verifyStepUpPassword', () => {
     expect(at.getTime()).toBeLessThanOrEqual(after);
     expect(updateFn).toHaveBeenCalled();
     expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ lastCredentialCheckAt: expect.any(Date) }),
+      expect.objectContaining({
+        lastCredentialCheckAt: expect.any(Date),
+        lastStepUpAt: expect.any(Date),
+      }),
     );
   });
 

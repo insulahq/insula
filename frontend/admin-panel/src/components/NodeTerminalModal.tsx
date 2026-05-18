@@ -36,7 +36,8 @@ export default function NodeTerminalModal({ nodeName, onClose }: NodeTerminalMod
     const x = new Terminal({
       theme: TERMINAL_THEME,
       fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
-      fontSize: 13,
+      fontSize: 15,
+      lineHeight: 1.2,
       cursorBlink: true,
       scrollback: 5000,
       convertEol: true,
@@ -46,13 +47,18 @@ export default function NodeTerminalModal({ nodeName, onClose }: NodeTerminalMod
     x.loadAddon(fit);
     x.loadAddon(links);
     x.open(terminalRef.current);
-    fit.fit();
+    // Defer the first fit() to the next animation frame so flexbox has
+    // laid the container out before xterm measures it. Without this,
+    // fit() sees a 0×0 container and pins cols/rows to the minimum.
+    requestAnimationFrame(() => {
+      try { fit.fit(); } catch { /* container detached during mount */ }
+    });
     x.onData((data) => send(data));
     xtermRef.current = x;
     fitAddonRef.current = fit;
 
     const observer = new ResizeObserver(() => {
-      fit.fit();
+      try { fit.fit(); } catch { return; }
       if (term.connected) resize(x.cols, x.rows);
     });
     observer.observe(terminalRef.current);
@@ -106,59 +112,70 @@ export default function NodeTerminalModal({ nodeName, onClose }: NodeTerminalMod
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Root terminal on ${nodeName}`}
-      className="fixed inset-0 z-50 flex flex-col bg-black/90 p-4"
-      data-testid={`node-terminal-modal-${nodeName}`}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
+      data-testid={`node-terminal-backdrop-${nodeName}`}
     >
-      {/* Header — break-glass banner stays sticky so the operator can't miss it. */}
-      <div className="flex items-center justify-between gap-3 rounded-t-lg border border-b-0 border-red-600 bg-red-600/20 px-4 py-2 text-red-100">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <ShieldAlert size={16} aria-hidden="true" />
-          <span data-testid="node-terminal-banner">
-            [BREAK-GLASS] root shell on <code className="rounded bg-red-900/40 px-1.5 py-0.5">{nodeName}</code> — every command is audited.
-          </span>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Root terminal on ${nodeName}`}
+        className="flex h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-red-600 shadow-2xl"
+        data-testid={`node-terminal-modal-${nodeName}`}
+      >
+        {/* Header — break-glass banner stays sticky so the operator can't miss it. */}
+        <div className="flex items-center justify-between gap-3 border-b border-red-600 bg-red-600/20 px-4 py-2 text-red-100">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <ShieldAlert size={16} aria-hidden="true" />
+            <span data-testid="node-terminal-banner">
+              [BREAK-GLASS] root shell on <code className="rounded bg-red-900/40 px-1.5 py-0.5">{nodeName}</code> — every command is audited.
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <StatusPill connected={connected} connecting={connecting} hasStepUp={!!stepUpRequired} />
+            <button
+              type="button"
+              onClick={handleClose}
+              className="rounded-md p-1.5 text-red-100 hover:bg-red-800/30 focus:outline-none focus:ring-2 focus:ring-red-300"
+              aria-label="Close terminal"
+              data-testid={`node-terminal-close-${nodeName}`}
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <StatusPill connected={connected} connecting={connecting} hasStepUp={!!stepUpRequired} />
-          <button
-            type="button"
-            onClick={handleClose}
-            className="rounded-md p-1.5 text-red-100 hover:bg-red-800/30 focus:outline-none focus:ring-2 focus:ring-red-300"
-            aria-label="Close terminal"
-            data-testid={`node-terminal-close-${nodeName}`}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-      </div>
 
-      {/* Body — either the terminal, the step-up prompt, or an error pane. */}
-      <div className="flex-1 overflow-hidden rounded-b-lg border border-t-0 border-red-600 bg-[#1a1b26] p-2">
-        {stepUpRequired ? (
-          <StepUpDialog
-            methods={stepUpRequired.methods}
-            onPassword={async (pw) => {
-              await verifyStepUpPassword(pw);
-              // Caller (the dialog) clears its state; we re-fire connect()
-              // once the hook's stepUpRequired drops to null.
-            }}
-            onPasskey={async () => {
-              await verifyStepUpPasskey();
-            }}
-            error={error}
-            onAfterSuccess={handleReconnect}
+        {/* Body — either the terminal, the step-up prompt, or an error pane.
+            min-h-0 is essential: without it, flex items default to min-content
+            (their intrinsic height) and the terminal would overflow the modal
+            instead of shrinking to fit. */}
+        <div className="relative flex min-h-0 flex-1 flex-col bg-[#1a1b26] p-2">
+          {stepUpRequired ? (
+            <StepUpDialog
+              methods={stepUpRequired.methods}
+              onPassword={async (pw) => {
+                await verifyStepUpPassword(pw);
+                // Caller (the dialog) clears its state; we re-fire connect()
+                // once the hook's stepUpRequired drops to null.
+              }}
+              onPasskey={async () => {
+                await verifyStepUpPasskey();
+              }}
+              error={error}
+              onAfterSuccess={handleReconnect}
+            />
+          ) : error && !connected && !connecting ? (
+            <DropPane message={error} onReconnect={handleReconnect} />
+          ) : null}
+          {/* xterm container — min-h-0 so flex shrinking works; the xterm
+              FitAddon measures this element on every ResizeObserver tick. */}
+          <div
+            ref={terminalRef}
+            className="min-h-0 flex-1"
+            data-testid={`node-terminal-xterm-${nodeName}`}
+            style={{ display: stepUpRequired ? 'none' : 'block' }}
           />
-        ) : error && !connected && !connecting ? (
-          <DropPane message={error} onReconnect={handleReconnect} />
-        ) : null}
-        <div
-          ref={terminalRef}
-          className="h-full w-full"
-          data-testid={`node-terminal-xterm-${nodeName}`}
-          style={{ display: stepUpRequired ? 'none' : 'block' }}
-        />
+        </div>
       </div>
     </div>
   );

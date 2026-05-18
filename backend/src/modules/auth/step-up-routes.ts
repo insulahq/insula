@@ -193,17 +193,25 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
       if (result.user.id !== payload.sub) {
         throw new ApiError('STEP_UP_FAILED', 'Step-up authentication failed', 401);
       }
+      // completeAuthentication bumped lastCredentialCheckAt; we additionally
+      // bump lastStepUpAt here because this code path IS an explicit
+      // step-up (the privileged-action gate reads lastStepUpAt). Without
+      // this, passkey step-up succeeds without satisfying the gate.
+      await app.db
+        .update(users)
+        .set({ lastStepUpAt: new Date() })
+        .where(eq(users.id, payload.sub));
       await recordStepUpAudit(app.db, payload.sub, 'step_up.passkey.success', request, {
         passkeyId: result.passkeyId,
       });
       const method: StepUpMethod = 'passkey';
       // Security finding M3: read back the DB-committed
-      // last_credential_check_at value rather than minting a wall-clock
-      // timestamp here. If the row write failed mid-transaction, the
-      // re-read surfaces the truth and the client sees the right
-      // freshness boundary.
+      // lastStepUpAt value rather than minting a wall-clock timestamp
+      // here. If the row write failed mid-transaction, the re-read
+      // surfaces the truth and the client sees the right freshness
+      // boundary.
       const [row] = await app.db
-        .select({ at: users.lastCredentialCheckAt })
+        .select({ at: users.lastStepUpAt })
         .from(users)
         .where(eq(users.id, payload.sub))
         .limit(1);
