@@ -11,7 +11,7 @@ interface Envelope<T> { readonly data: T }
 
 /**
  * Inventory of platform/system PVCs with snapshot counters. Drives the
- * "System Snapshots" section on the Backups & Snapshots → Snapshots tab.
+ * "System Backup" section on the Backups & Snapshots → Snapshots tab.
  */
 export function useSystemSnapshots() {
   return useQuery({

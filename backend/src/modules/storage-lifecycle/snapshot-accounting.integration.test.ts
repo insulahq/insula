@@ -97,21 +97,21 @@ describe.skipIf(!dbAvailable)('loadSnapshotAccounting', () => {
       tenantId: 'tnt-acme',
       status: 'ready',
       sizeBytes: 200,
-      snapshotClass: 'system_snapshot',
+      snapshotClass: 'system_backup',
       subsystem: 'system-etcd',
     });
     await insertSnapshot({
       tenantId: 'tnt-acme',
       status: 'ready',
       sizeBytes: 400,
-      snapshotClass: 'system_snapshot',
+      snapshotClass: 'system_backup',
       subsystem: 'system-etcd',
     });
 
     const result = await loadSnapshotAccounting(db);
     expect(result.byClass).toHaveLength(2);
     const tenant = result.byClass.find((r) => r.snapshotClass === 'tenant_snapshot');
-    const system = result.byClass.find((r) => r.snapshotClass === 'system_snapshot');
+    const system = result.byClass.find((r) => r.snapshotClass === 'system_backup');
     expect(tenant).toMatchObject({ subsystem: 'tenant-pvc', totalCount: 1, totalBytes: 100 });
     expect(system).toMatchObject({ subsystem: 'system-etcd', totalCount: 2, totalBytes: 600 });
   });
