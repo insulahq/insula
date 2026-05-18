@@ -118,14 +118,22 @@ spec:
             - name: proc-sys-kernel-osrelease
               mountPath: /host/proc/sys/kernel/osrelease
               readOnly: true
-            # /proc/net narrowed to the two files the probe reads.
-            # Excludes /proc/net/tcp, /proc/net/udp, /proc/net/arp etc.
-            # which would expose tenant connection state cluster-wide.
+            # /proc/net narrowed to the specific files the probe
+            # reads. Excludes /proc/net/tcp, /proc/net/udp,
+            # /proc/net/arp etc. which would expose tenant connection
+            # state cluster-wide.
+            #
+            # /proc/net/wireguard is INTENTIONALLY NOT mounted: the
+            # file is created by the WireGuard kernel module. On
+            # nodes without the module loaded, hostPath FileOrCreate
+            # cannot create a file in /proc (procfs rejects writes),
+            # which would crashloop the DaemonSet. The probe's
+            # mesh.go gracefully handles ENOENT on this path — peer
+            # counts simply report null when unavailable. Operators
+            # using WireGuard mesh on every node can re-add this
+            # mount with a `type: File` to assert presence.
             - name: proc-net-conntrack
               mountPath: /host/proc/net/nf_conntrack
-              readOnly: true
-            - name: proc-net-wireguard
-              mountPath: /host/proc/net/wireguard
               readOnly: true
             - name: proc-stat
               mountPath: /host/proc/stat
@@ -162,10 +170,6 @@ spec:
         - name: proc-net-conntrack
           hostPath:
             path: /proc/net/nf_conntrack
-            type: FileOrCreate
-        - name: proc-net-wireguard
-          hostPath:
-            path: /proc/net/wireguard
             type: FileOrCreate
         - name: proc-stat
           hostPath:
