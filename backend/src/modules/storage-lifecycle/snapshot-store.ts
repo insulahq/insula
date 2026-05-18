@@ -565,28 +565,48 @@ export async function resolveSnapshotStoreForClass(
   }
 
   if (cfg.storageType === 'ssh') {
-    // Phase 4 of the snapshot-storage overhaul: SSH/SFTP targets are
-    // gated at the resolver until Phase 5 lands the full streaming
-    // read+write story (restore, stat, delete, sidecar). The
-    // SshStreamingStore code path exists but its read methods throw
-    // "not yet implemented" — surfacing them today would break the
-    // post-snapshot stat() + future restore path.
-    //
-    // Code-review HIGH (TOFU host-key checking disabled) is also
-    // mitigated by this gate — no SSH target ever gets used until
-    // Phase 5 wires `RCLONE_CONFIG_REMOTE_KNOWN_HOSTS_FILE` via a
-    // `knownHostsSecret` operator-provided file.
-    //
-    // Reference the unused import so TypeScript noUnusedLocals stays
-    // happy until Phase 5 wires SshStreamingStore for real.
-    void SshStreamingStore;
-    throw new ApiError(
-      'TARGET_KIND_UNSUPPORTED',
-      `SSH targets are not yet supported for snapshot class '${snapshotClass}'. ` +
-      `Use an S3-compatible target (minio, AWS S3, Hetzner Object Storage). ` +
-      `SSH streaming + read paths land in Phase 5.`,
-      400,
-    );
+    // Phase 12.5: SSH/SFTP via rclone sftp backend. PEM private key
+    // is mounted as a Secret-volume file (multi-line PEM can't go in
+    // env vars — rclone's `key_pem` parser rejects literal newlines).
+    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted) {
+      throw new ApiError(
+        'TARGET_INCOMPLETE',
+        `SSH target ${cfg.name} is missing host/user/key`,
+        400,
+      );
+    }
+    let plainKey: string;
+    try {
+      plainKey = decrypt(cfg.sshKeyEncrypted, key);
+    } catch (err) {
+      throw new ApiError(
+        'TARGET_CREDENTIAL_DECRYPT_FAILED',
+        `SSH key decrypt failed for target ${cfg.name} (key rotated?): ${(err as Error).message}`,
+        500,
+      );
+    }
+    // Per-class scoping — mirrors S3 (`s3_prefix/snapshots/<class>`)
+    // and CIFS (`cifs_path/snapshots/<class>`). Without this every
+    // snapshot class would land in the same dir → silent collisions.
+    const basePath = cfg.sshPath
+      ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
+      : `snapshots/${snapshotClass}`;
+    const sshStream = new SshStreamingStore({
+      host: cfg.sshHost,
+      port: cfg.sshPort ?? 22,
+      user: cfg.sshUser,
+      privateKey: plainKey,
+      basePath,
+    });
+    // Phase 11 parity: attach k8s ctx so stat/delete/readSidecar can
+    // spawn one-shot rclone Jobs.
+    if (opts?.k8sCtx) {
+      sshStream.setK8sContext(opts.k8sCtx);
+    }
+    return {
+      store: sshStream,
+      targetId: resolved.targetId,
+    };
   }
 
   // Phase 9: CIFS/SMB streaming target. rclone smb backend; password
@@ -641,7 +661,7 @@ export async function resolveSnapshotStoreForClass(
   throw new ApiError(
     'TARGET_KIND_UNKNOWN',
     `Target ${cfg.name} has unsupported storage type: ${cfg.storageType}. ` +
-    `Supported types: s3, cifs.`,
+    `Supported types: s3, ssh, cifs.`,
     400,
   );
 }
@@ -683,7 +703,7 @@ export async function resolveSnapshotStoreByTargetId(
   const { getRawBackupConfig } = await import('../backup-config/service.js');
   const { decrypt } = await import('../oidc/crypto.js');
   const { ApiError } = await import('../../shared/errors.js');
-  const { S3StreamingStore, CifsStreamingStore } = await import('./streaming-store.js');
+  const { S3StreamingStore, SshStreamingStore, CifsStreamingStore } = await import('./streaming-store.js');
   const { rcloneObscure } = await import('./rclone-obscure.js');
 
   const key = process.env.PLATFORM_ENCRYPTION_KEY;
@@ -769,7 +789,29 @@ export async function resolveSnapshotStoreByTargetId(
     return cifsStream;
   }
 
-  // SSH restore via stamped target_id remains gated until Phase 5.5.
+  if (cfg.storageType === 'ssh') {
+    // Phase 12.5: SSH restore via stamped target_id. Same shape as
+    // CIFS — decrypt PEM, build store, attach k8s ctx for read paths.
+    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${cfg.name} is missing required fields`, 400);
+    }
+    const plainKey = decrypt(cfg.sshKeyEncrypted, key);
+    const basePath = cfg.sshPath
+      ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
+      : `snapshots/${snapshotClass}`;
+    const sshStream = new SshStreamingStore({
+      host: cfg.sshHost,
+      port: cfg.sshPort ?? 22,
+      user: cfg.sshUser,
+      privateKey: plainKey,
+      basePath,
+    });
+    if (opts?.k8sCtx) {
+      sshStream.setK8sContext(opts.k8sCtx);
+    }
+    return sshStream;
+  }
+
   throw new ApiError(
     'TARGET_KIND_UNSUPPORTED',
     `Restore from ${cfg.storageType} target is not yet supported`,

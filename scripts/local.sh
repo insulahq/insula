@@ -1261,6 +1261,67 @@ cmd_samba_status() {
   echo "════════════════════════════════════════════════"
 }
 
+# ─── sftp (snapshot-storage Phase 12.5, SSH target) ───────────────────
+#
+# Dev-only SFTP server so the SSH streaming + Phase 11 SSH read paths
+# can be exercised end-to-end. Generates a fresh ed25519 keypair at
+# deploy time and stashes BOTH halves so the harness can drive a
+# round-trip via the platform-api.
+
+cmd_sftp_dev_up() {
+  echo "Deploying dev SFTP (SSH/SFTP backend for snapshot E2E)..."
+  # Apply namespace first so the Secret can land in it.
+  printf '%s\n' "apiVersion: v1" "kind: Namespace" "metadata: { name: dev-sftp, labels: { platform.phoenix-host.net/env: dev } }" \
+    | docker exec -i "${K3S_CONTAINER}" kubectl apply -f - >/dev/null
+  # Generate a throwaway ed25519 keypair on the HOST (k3s container
+  # is minimal and lacks ssh-keygen). The keys exist only in transit
+  # — we read them out once, push to Secret, then delete the temp.
+  local sftp_keydir
+  sftp_keydir=$(mktemp -d)
+  ssh-keygen -t ed25519 -N '' -C 'snapshot-e2e-dev' -f "${sftp_keydir}/key" >/dev/null
+  local sftp_priv sftp_pub
+  sftp_priv=$(cat "${sftp_keydir}/key")
+  sftp_pub=$(cat "${sftp_keydir}/key.pub")
+  rm -rf "${sftp_keydir}"
+
+  # 2 Secrets: (a) authorized_keys (mounted into the sftp pod —
+  # postStart copies it to ~/.ssh/), (b) ssh_key (readable by the
+  # harness via kubectl get secret, to configure the backup target).
+  # Use --dry-run + pipe-into-apply for idempotent re-create.
+  docker exec "${K3S_CONTAINER}" kubectl create secret generic sftp-authorized-keys \
+    --from-literal="authorized_keys=$sftp_pub" -n dev-sftp \
+    --dry-run=client -o yaml | docker exec -i "${K3S_CONTAINER}" kubectl apply -f - >/dev/null
+  docker exec "${K3S_CONTAINER}" kubectl create secret generic sftp-dev-key \
+    --from-literal="ssh_key=$sftp_priv" --from-literal="ssh_pub=$sftp_pub" \
+    -n dev-sftp --dry-run=client -o yaml | docker exec -i "${K3S_CONTAINER}" kubectl apply -f - >/dev/null
+
+  docker cp "${PROJECT_DIR}/k8s/dev/sftp/sftp.yaml" "${K3S_CONTAINER}:/tmp/sftp.yaml" >/dev/null
+  k3s_exec kubectl apply -f /tmp/sftp.yaml >/dev/null
+  k3s_exec kubectl wait --for=condition=available --timeout=60s -n dev-sftp deploy/sftp
+  echo ""
+  echo "SFTP deployed."
+  echo "  SSH endpoint (cluster-internal): sftp.dev-sftp.svc.cluster.local:22"
+  echo "  User: e2etest"
+  echo "  Path: /speedtest"
+  echo "  PEM key in Secret: dev-sftp/sftp-dev-key data.ssh_key (base64)"
+  echo ""
+  echo "Harness reads the PEM via:"
+  echo "  kubectl get secret -n dev-sftp sftp-dev-key -o jsonpath='{.data.ssh_key}' | base64 -d"
+}
+
+cmd_sftp_dev_down() {
+  echo "Removing dev SFTP..."
+  k3s_exec kubectl delete namespace dev-sftp --ignore-not-found 2>&1 | tail -1
+}
+
+cmd_sftp_dev_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  SFTP (snapshot-storage SSH target — Phase 12.5)"
+  echo "════════════════════════════════════════════════"
+  k3s_exec kubectl get pods -n dev-sftp 2>/dev/null | sed 's/^/    /' || echo "  Not deployed. Run: ./scripts/local.sh sftp-dev-up"
+  echo "════════════════════════════════════════════════"
+}
+
 # ─── Help & dispatch ─────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -1301,6 +1362,9 @@ case "${1:-help}" in
   samba-up)       cmd_samba_up ;;
   samba-down)     cmd_samba_down ;;
   samba-status)   cmd_samba_status ;;
+  sftp-dev-up)    cmd_sftp_dev_up ;;
+  sftp-dev-down)  cmd_sftp_dev_down ;;
+  sftp-dev-status) cmd_sftp_dev_status ;;
   help|-h)        cmd_help ;;
   *)              echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac
