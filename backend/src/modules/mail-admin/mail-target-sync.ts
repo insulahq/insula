@@ -32,6 +32,14 @@ import type { CoreV1Api } from '@kubernetes/client-node';
 export const MAIL_NAMESPACE = 'mail';
 export const RESTIC_SECRET_NAME = 'stalwart-snapshot-restic-repo';
 export const RESTIC_PASSWORD_SECRET = 'stalwart-snapshot-restic-password';
+/**
+ * Secret the snapshot CronJob's upload sidecar reads to POST stats back
+ * to /internal/mail/snapshot-last-run. Pre-existing CronJob YAML
+ * references this name with key `token`; we provision the value here
+ * so operators don't have to manually mirror PLATFORM_INTERNAL_SECRET
+ * into the mail namespace.
+ */
+export const PLATFORM_API_TOKEN_SECRET = 'platform-api-sa-token';
 
 type BackupConfig = typeof backupConfigurations.$inferSelect;
 
@@ -209,6 +217,69 @@ export async function deleteResticSecret(core: CoreV1Api): Promise<void> {
   }
 }
 
+// ── platform-api-sa-token Secret ─────────────────────────────────────────────
+//
+// The snapshot upload sidecar's curl callback to /internal/mail/snapshot-last-run
+// requires a bearer token equal to the platform's PLATFORM_INTERNAL_SECRET env
+// var. Without this Secret, every restic run skips its stats report and
+// system_settings.mail_snapshot_last_run_stats stays NULL. We provision the
+// Secret here so the feedback loop closes automatically when system_mail is
+// bound, without operator intervention.
+//
+// Returns the env-resolved internal token, or null when unset (in which case
+// we delete the Secret rather than write a bogus value).
+
+function resolveInternalToken(): string | null {
+  const fromSecret = process.env.PLATFORM_INTERNAL_SECRET;
+  const fromToken = process.env.PLATFORM_INTERNAL_TOKEN;
+  const t = (fromSecret && fromSecret.length > 0) ? fromSecret
+    : (fromToken && fromToken.length > 0) ? fromToken
+    : null;
+  return t;
+}
+
+export async function applyPlatformApiTokenSecret(core: CoreV1Api): Promise<void> {
+  const tok = resolveInternalToken();
+  if (!tok) {
+    // No internal token configured on this platform-api → the
+    // /internal/* endpoint would refuse anyway. Mirror that by NOT
+    // creating a placeholder Secret with empty value.
+    return;
+  }
+  const body = {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: { name: PLATFORM_API_TOKEN_SECRET, namespace: MAIL_NAMESPACE },
+    type: 'Opaque',
+    data: { token: Buffer.from(tok).toString('base64') },
+  };
+  try {
+    await core.replaceNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      name: PLATFORM_API_TOKEN_SECRET,
+      body: body as unknown as object,
+    });
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    // backup-coverage: excluded:cluster-infrastructure
+    await core.createNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      body: body as unknown as object,
+    });
+  }
+}
+
+export async function deletePlatformApiTokenSecret(core: CoreV1Api): Promise<void> {
+  try {
+    await core.deleteNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      name: PLATFORM_API_TOKEN_SECRET,
+    });
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+}
+
 // ── k8s client loader (mirrors snapshot-settings.ts:loadK8sTenants) ──────────
 
 async function loadCore(kubeconfigPath: string | undefined): Promise<CoreV1Api> {
@@ -258,6 +329,7 @@ export async function syncMailResticSecretFromAssignment(
 
   if (!primary) {
     await deleteResticSecret(core);
+    await deletePlatformApiTokenSecret(core);
     await db.update(systemSettings)
       .set({ mailSnapshotBackupStoreId: null })
       .where(eq(systemSettings.id, 'system'));
@@ -271,6 +343,7 @@ export async function syncMailResticSecretFromAssignment(
   // operator has explicitly marked unavailable.
   if (primary.targetEnabled !== 1) {
     await deleteResticSecret(core);
+    await deletePlatformApiTokenSecret(core);
     await db.update(systemSettings)
       .set({ mailSnapshotBackupStoreId: null })
       .where(eq(systemSettings.id, 'system'));
@@ -291,6 +364,15 @@ export async function syncMailResticSecretFromAssignment(
   const password = await getOrCreateResticPassword(core);
   const env = buildResticSecretEnv(config, encryptionKey, password);
   await applyResticSecret(core, env);
+  // Closes the stats-reporting loop: the upload sidecar reads the
+  // `token` key from this Secret as PLATFORM_API_TOKEN and posts
+  // {totalSnapshotSizeBytes,snapshotCount} back to the platform-api.
+  // Without it the sidecar logs "no PLATFORM_API_TOKEN — skipping
+  // stats report" and system_settings.mail_snapshot_last_run_stats
+  // never populates → the Mail Backup Health card + System Backup
+  // PVC inventory both show 0 snapshots for stalwart-rocksdb-data
+  // even when restic is uploading successfully.
+  await applyPlatformApiTokenSecret(core);
 
   await db.update(systemSettings)
     .set({ mailSnapshotBackupStoreId: primary.targetId })

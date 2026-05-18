@@ -37,7 +37,7 @@ export async function systemSnapshotsRoutes(app: FastifyInstance): Promise<void>
   }, async () => {
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
-    const items = await listSystemPvcSnapshots(k8s);
+    const items = await listSystemPvcSnapshots(k8s, app.db);
     return success({ items });
   });
 
