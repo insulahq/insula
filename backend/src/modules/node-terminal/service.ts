@@ -428,6 +428,9 @@ export async function attachExec(
     } catch { void finalize('error'); }
   });
   stdout.on('end', () => { void finalize('shell_exited'); });
+  // Some k8s exec TTY paths close stderr first; without an `end`
+  // listener the streams + heartbeat would leak until idle timeout.
+  stderr.on('end', () => { void finalize('shell_exited'); });
 
   // Heartbeat at 30s — also keeps mid-NAT proxies from culling the
   // socket. Idle timeout is enforced separately by the scheduler.
