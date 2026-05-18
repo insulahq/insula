@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Save, Loader2, CheckCircle, Mail, ExternalLink } from 'lucide-react';
 import { useWebmailSettings, useUpdateWebmailSettings } from '@/hooks/use-webmail-settings';
+import MailTaskProgressModal from '@/components/MailTaskProgressModal';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -57,6 +58,12 @@ export default function WebmailSettingsTab() {
   const [engine, setEngine] = useState<WebmailEngine>('roundcube');
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // taskId returned by the PATCH response when the engine changes. The
+  // backend kicks off a 5-step background task (IR flip → Pod mutex →
+  // wait-ready → URL probe → finalize); we mount MailTaskProgressModal
+  // here so the operator sees the live checklist. Closing the modal
+  // only dismisses the UI — the chip in the top bar keeps tracking.
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -88,9 +95,17 @@ export default function WebmailSettingsTab() {
     }
 
     update.mutate(payload, {
-      onSuccess: () => {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
+      onSuccess: (resp) => {
+        // Engine-flip path: backend emits a taskId. Open the progress
+        // modal so the operator sees IR flip → Pod scale → wait-ready
+        // → URL verify instead of a green-checkmark-and-out (which
+        // would have lied — the IR flip can take 5-30s to converge).
+        if (resp.data.taskId) {
+          setActiveTaskId(resp.data.taskId);
+        } else {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 3000);
+        }
       },
       onError: (err) => {
         setSaveError(err instanceof Error ? err.message : 'Failed to save webmail settings');
@@ -240,6 +255,19 @@ export default function WebmailSettingsTab() {
 
         {saveError && <span className="text-sm text-red-600 dark:text-red-400">{saveError}</span>}
       </div>
+
+      {activeTaskId && (
+        <MailTaskProgressModal
+          taskId={activeTaskId}
+          onClose={() => {
+            setActiveTaskId(null);
+            // After the task completes the operator may want the
+            // "Saved" pill; show it once they dismiss the modal.
+            setSaved(true);
+            setTimeout(() => setSaved(false), 3000);
+          }}
+        />
+      )}
     </form>
   );
 }
