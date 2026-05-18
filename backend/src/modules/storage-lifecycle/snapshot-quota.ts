@@ -18,10 +18,10 @@
 // System-initiated snapshots (pre-resize, pre-archive) bypass the
 // tenant quota because they're not operator-discretionary and refusing
 // them would block the resize/archive flow mid-execution. They count
-// toward the platform-wide system_snapshot quota instead (deferred to
+// toward the platform-wide system_backup quota instead (deferred to
 // a follow-up — Phase 6 ships per-tenant only).
 
-import { sql, eq, and, inArray } from 'drizzle-orm';
+import { sql, eq, and } from 'drizzle-orm';
 import { hostingPlans, storageSnapshots, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { ApiError } from '../../shared/errors.js';
@@ -69,8 +69,8 @@ export async function getSnapshotQuotaUsage(
     .where(and(
       eq(storageSnapshots.tenantId, tenantId),
       // Only tenant_snapshot class counts against the tenant's quota.
-      // tenant_bundle has its own backup-bundle quota; system_* classes
-      // count against the platform quota (Phase 6.5).
+      // tenant_bundle has its own backup-bundle quota; system_backup
+      // counts against the platform quota (Phase 6.5).
       eq(storageSnapshots.snapshotClass, 'tenant_snapshot'),
     ))) as Array<{ currentBytes: string; currentCount: number }>;
 
@@ -128,9 +128,9 @@ export async function enforceSnapshotQuota(
 }
 
 /**
- * Cluster-wide system snapshot byte total — sum across all
- * `system_*` classes. Used by the admin UI tile + the system-initiated
- * snapshot path's optional quota check (Phase 6.5).
+ * Cluster-wide system snapshot byte total — sum across the unified
+ * `system_backup` class. Used by the admin UI tile + the
+ * system-initiated snapshot path's optional quota check (Phase 6.5).
  */
 export async function getSystemSnapshotUsage(db: Database): Promise<{
   readonly currentBytes: number;
@@ -142,11 +142,7 @@ export async function getSystemSnapshotUsage(db: Database): Promise<{
       currentCount: sql<number>`COUNT(*) FILTER (WHERE ${storageSnapshots.status} IN ('ready', 'creating'))::int`,
     })
     .from(storageSnapshots)
-    .where(inArray(storageSnapshots.snapshotClass, [
-      'system_snapshot',
-      'system_etcd',
-      'system_secrets',
-    ]))) as Array<{ currentBytes: string; currentCount: number }>;
+    .where(eq(storageSnapshots.snapshotClass, 'system_backup'))) as Array<{ currentBytes: string; currentCount: number }>;
   const row = rows[0] ?? { currentBytes: '0', currentCount: 0 };
   return {
     currentBytes: Number(row.currentBytes),

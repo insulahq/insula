@@ -30,17 +30,9 @@ const CLASS_META: Record<SnapshotClass, { label: string; description: string }> 
     label: 'Tenant Backup Bundle',
     description: 'Plesk-style restore bundles (files + mailboxes + config + secrets). Operator + tenant-scheduled.',
   },
-  system_snapshot: {
-    label: 'System Snapshot',
-    description: 'Generic platform metadata snapshots. Falls back here when no more specific class applies.',
-  },
-  system_etcd: {
-    label: 'System etcd',
-    description: 'etcd cluster backups. Recommended target: separate from tenant data for blast-radius isolation.',
-  },
-  system_secrets: {
-    label: 'System Secrets',
-    description: 'Tier-1 secrets bundle (encryption keys, root CA). Should target a separate / air-gapped location.',
+  system_backup: {
+    label: 'System Backup',
+    description: 'Platform-side snapshots (etcd, secrets, Longhorn metadata, postgres). All system subsystems route here — the subsystem field distinguishes them for observability.',
   },
 };
 
