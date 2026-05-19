@@ -349,6 +349,14 @@ FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it ex
 FORCE_DOMAIN_CHANGE=false
 SECRETS_BUNDLE_PATH=""         # --secrets-bundle <path|http(s) URL> — pre-Flux import
 SECRETS_BUNDLE_KEY=""          # --age-key <path> to operator-private.key for decrypt
+# DR-bundle bundle-everything restore profiles. Default is the safest:
+# only tier-1-platform Secrets land on a fresh cluster, so an unattended
+# bootstrap can't overwrite an existing healthy cluster's per-tenant
+# state. See scripts/lib/apply-secrets-bundle.sh for the full matrix.
+RESTORE_PROFILE="conservative"
+RESTORE_DRY_RUN="0"
+RESTORE_EXTRACT_TO=""
+RESTORE_OVERRIDE_SKIP_AT_RESTORE="0"
 # --backup-target-s3-*: optional post-install configuration of the
 # Longhorn + DR cluster backup-target. Credentials are NEVER accepted
 # on the command line — they MUST come from the env vars
@@ -469,6 +477,24 @@ OPTIONS:
                          is the artifact downloaded from the System
                          Backup admin UI or the on-host
                          /var/lib/hosting-platform/bundles/ directory.
+  --restore-profile <name>
+                         Which Secrets to apply from --secrets-bundle:
+                         'conservative' (default) — tier-1-platform only.
+                         'full' — tier-1 + tier-2 + unclassified.
+                         Entries in MANIFEST.json.skipAtRestore are SKIPPED
+                         under both unless --override-skip-at-restore.
+  --restore-dry-run
+                         Log what would be applied; change nothing. Pairs
+                         with --restore-extract-to for a real preview.
+  --restore-extract-to <dir>
+                         Extract decrypted YAMLs to <dir> instead of
+                         applying. Honours --restore-profile gating —
+                         only files that WOULD be applied land there.
+                         Operator must `shred -u` the dir when done.
+  --override-skip-at-restore
+                         Apply Secrets the bundle marked skip-at-restore
+                         anyway. Use only for forensic / replay scenarios.
+
   --age-key <path>       Operator's age private key for --secrets-bundle.
                          Required if --secrets-bundle is set. The key
                          is read once at import time and never copied
@@ -811,6 +837,10 @@ parse_args() {
       --force-domain-change) FORCE_DOMAIN_CHANGE=true; shift ;;
       --secrets-bundle)  SECRETS_BUNDLE_PATH="$2"; shift 2 ;;
       --age-key)         SECRETS_BUNDLE_KEY="$2"; shift 2 ;;
+      --restore-profile) RESTORE_PROFILE="$2"; shift 2 ;;
+      --restore-dry-run) RESTORE_DRY_RUN="1"; shift ;;
+      --restore-extract-to) RESTORE_EXTRACT_TO="$2"; shift 2 ;;
+      --override-skip-at-restore) RESTORE_OVERRIDE_SKIP_AT_RESTORE="1"; shift ;;
       --backup-target-s3-endpoint) BACKUP_TARGET_S3_ENDPOINT="$2"; shift 2 ;;
       --backup-target-s3-bucket)   BACKUP_TARGET_S3_BUCKET="$2"; shift 2 ;;
       --backup-target-s3-region)   BACKUP_TARGET_S3_REGION="$2"; shift 2 ;;
@@ -3975,66 +4005,26 @@ import_secrets_bundle() {
   }
   trap _bundle_import_cleanup RETURN EXIT
 
-  # Decrypt + extract in a single pipeline. Format is `tar | age` —
-  # both the in-cluster export (modules/system-backup/secrets-bundle.ts)
-  # and the on-host `bundle_bootstrap_secrets` produce the SAME bytes.
-  if ! ( set -o pipefail; age -d -i "$SECRETS_BUNDLE_KEY" "$bundle_local" \
-           | tar -C "$stage" -xf - ); then
-    error "Bundle decrypt/extract failed. Wrong --age-key? Corrupt bundle?"
+  # Delegate to the shared profile-aware applier. Same helper used
+  # by `make secrets-restore` so both surfaces honour identical
+  # semantics. Defence-in-depth: the helper sha256-verifies each
+  # YAML against MANIFEST.json before kubectl apply.
+  local apply_lib
+  apply_lib="$(cd "$(dirname "$0")" && pwd)/lib/apply-secrets-bundle.sh"
+  if [[ ! -r "$apply_lib" ]]; then
+    error "apply-secrets-bundle.sh helper missing at ${apply_lib}"
+  fi
+  # shellcheck source=lib/apply-secrets-bundle.sh
+  source "$apply_lib"
+
+  log "Importing secrets bundle (profile=${RESTORE_PROFILE})"
+  export RESTORE_PROFILE RESTORE_DRY_RUN RESTORE_EXTRACT_TO RESTORE_OVERRIDE_SKIP_AT_RESTORE
+  export KCTL=kctl
+  if ! apply_secrets_bundle "$bundle_local" "$SECRETS_BUNDLE_KEY"; then
+    error "apply-secrets-bundle failed (see [restore] log lines above)"
   fi
 
-  # Sanity: the bundle must contain a MANIFEST.txt and at least one .yaml.
-  if [[ ! -s "${stage}/MANIFEST.txt" ]]; then
-    error "Bundle missing MANIFEST.txt — refusing to apply (provenance unknown)."
-  fi
-  log "Bundle MANIFEST.txt:"
-  while IFS= read -r line; do log "  $line"; done < "${stage}/MANIFEST.txt"
-
-  # Ensure the destination namespaces exist before kubectl apply.
-  for ns in platform mail; do
-    kctl create namespace "$ns" --dry-run=client -o yaml | kctl apply -f -
-  done
-
-  local applied=0
-  for f in "$stage"/*.yaml; do
-    [[ -f "$f" ]] || continue
-    # Defence in depth: refuse to apply anything that isn't a Secret.
-    # The bundle is age-encrypted so external tampering is mitigated,
-    # but a future operator-key compromise must not let an attacker
-    # smuggle ClusterRoleBindings or Deployments through this path.
-    if ! grep -qE '^kind: Secret[[:space:]]*$' "$f"; then
-      error "Refusing to apply non-Secret manifest from bundle: $f"
-    fi
-    if ! kctl apply -f "$f" >/dev/null; then
-      error "Failed to apply secret manifest: $f"
-    fi
-    applied=$((applied+1))
-  done
-
-  log "Imported $applied secret(s) from bundle."
-
-  # If the bundle includes operator-private.key, stash it under
-  # /var/lib/hosting-platform/operator-key/ so generate_operator_recipient
-  # picks it up for ConfigMap reconciliation. The age private key is
-  # then under MARKER_DIR with chmod 0400 — same shape as fresh install.
-  if [[ -f "${stage}/operator-private.key" ]]; then
-    local key_dir="${MARKER_DIR}/operator-key"
-    mkdir -p "$key_dir"
-    chmod 700 "$key_dir"
-    cp -p "${stage}/operator-private.key" "${key_dir}/operator-private.key"
-    chmod 0400 "${key_dir}/operator-private.key"
-    log "Restored operator-private.key from bundle to ${key_dir}/"
-  fi
-  if [[ -f "${stage}/operator-recipient.pub" ]]; then
-    local key_dir="${MARKER_DIR}/operator-key"
-    mkdir -p "$key_dir"
-    cp -p "${stage}/operator-recipient.pub" "${key_dir}/operator-recipient.pub"
-    chmod 0444 "${key_dir}/operator-recipient.pub"
-  fi
-
-  # Fire trap; explicit so the import path is auditable.
-  _bundle_import_cleanup
-  trap - RETURN EXIT
+  # Trap fires on RETURN to wipe staging dir + curl-downloaded copy.
   marker_set "secrets-bundle-imported"
 }
 
@@ -4733,67 +4723,114 @@ bundle_bootstrap_secrets() {
     || mktemp -d)
   chmod 700 "$stage"
 
-  # Bundled secret list. Each entry: <namespace> <name>. Append here
-  # when bootstrap adds a new platform-level secret.
-  local items=(
-    "platform platform-admin-seed"
-    "platform platform-db-credentials"
-    "platform platform-jwt-secret"
-    "platform platform-secrets"
-    "platform oauth2-proxy-config"
-    "platform sftp-host-keys"
-    "platform stalwart-secrets"
-    "mail stalwart-admin-creds"
-  )
+  # Bundle-everything redesign: list ALL Secrets, filter via the
+  # shared denylist (mirrors backend/src/modules/system-backup/
+  # secrets-denylist.ts), tag each survivor with its restore tier.
+  # No hardcoded allowlist — the cluster's actual Secret inventory
+  # IS the bundle contents.
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "jq binary not found — skipping bundle. Run install_packages."
+    return 0
+  fi
+  local denylist_jq
+  denylist_jq="$(cd "$(dirname "$0")" && pwd)/lib/secrets-denylist.jq"
+  if [[ ! -r "$denylist_jq" ]]; then
+    warn "secrets-denylist.jq not found at ${denylist_jq} — skipping bundle."
+    return 0
+  fi
+
+  # Namespace → restore tier mirror of secrets-tiers.ts. Drift caught
+  # by scripts/ci-secrets-denylist-check.sh.
+  local tier_jq='
+    def tier_for_namespace($ns):
+      if ($ns | IN("platform","platform-system","mail","longhorn-system","cnpg-system","cert-manager","dex","oauth2-proxy","traefik","crowdsec")) then "tier-1-platform"
+      elif ($ns | test("^client-.+")) then "tier-2-tenant"
+      else "unclassified"
+      end ;
+    .'
+
+  # Optional: read skip-at-restore from the in-cluster ConfigMap so
+  # operator decisions ride along in MANIFEST.json. Absent CM → [].
+  local skip_at_restore_json
+  skip_at_restore_json=$(kctl get configmap -n platform-system secrets-audit-allowlist \
+      -o jsonpath='{.data.allowlist\.yaml}' 2>/dev/null \
+    | (command -v yq >/dev/null 2>&1 && yq -o=json '. // {entries:[]} | .entries // []' \
+        || echo '[]'))
+  [[ -z "$skip_at_restore_json" ]] && skip_at_restore_json='[]'
+
+  local count=0
+  local manifest_json="${stage}/MANIFEST.json"
+  local entries_json_file="${stage}/.entries.json"
+  echo '[]' > "$entries_json_file"
+
+  # Stream all Secrets through the denylist filter, write each survivor's
+  # YAML to the stage dir + compute sha256, accumulate entries[]. If
+  # jq fails (malformed input from kubectl), error loudly — silent
+  # empty-bundle on bootstrap is a DR-readiness bug, not a non-event.
+  local stream
+  if ! stream=$(kctl get secrets -A -o json 2>/dev/null | jq -c -f "$denylist_jq" 2>&1); then
+    error "Failed to list/filter secrets via jq: $stream"
+  fi
+  if [[ -z "$stream" ]]; then
+    warn "kubectl get secrets returned no items — bundle will be empty (cluster appears bare)"
+  fi
+  while IFS= read -r decision; do
+    [[ -z "$decision" ]] && continue
+    local d_denied d_ns d_name d_type
+    d_denied=$(echo "$decision" | jq -r '.decision.denied')
+    [[ "$d_denied" == "true" ]] && continue
+    d_ns=$(echo "$decision" | jq -r '.namespace')
+    d_name=$(echo "$decision" | jq -r '.name')
+    d_type=$(echo "$decision" | jq -r '.type')
+    local out_file="${stage}/${d_ns}__${d_name}.yaml"
+    if ! kctl get secret -n "$d_ns" "$d_name" -o yaml \
+        | yq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp,
+                  .metadata.managedFields, .metadata.ownerReferences, .metadata.annotations,
+                  .metadata.generation, .metadata.selfLink)' > "$out_file" 2>/dev/null; then
+      # Fall back to raw kubectl output if yq is unavailable; restore
+      # tooling has its own server-side fields to ignore.
+      kctl get secret -n "$d_ns" "$d_name" -o yaml > "$out_file" 2>/dev/null || { rm -f "$out_file"; continue; }
+    fi
+    local sha
+    sha=$(sha256sum "$out_file" | awk '{print $1}')
+    local tier
+    tier=$(echo "{\"ns\":\"$d_ns\"}" | jq -r "$tier_jq | tier_for_namespace(.ns)")
+    jq --arg ns "$d_ns" --arg name "$d_name" --arg type "$d_type" \
+       --arg tier "$tier" --arg sha "$sha" \
+       '. + [{namespace: $ns, name: $name, type: $type, restoreTier: $tier, sha256OfYaml: $sha}]' \
+       "$entries_json_file" > "${entries_json_file}.tmp" && mv "${entries_json_file}.tmp" "$entries_json_file"
+    count=$((count+1))
+  done <<< "$stream"
+
+  # Write v2 MANIFEST.json + MANIFEST.txt
+  jq -n --argjson entries "$(cat "$entries_json_file")" \
+        --argjson skip "$skip_at_restore_json" \
+        --arg ts "$(date -u +%FT%TZ)" \
+        --arg recipient "$recipient" \
+        --arg host "$(hostname)" \
+        '{
+           bundleFormat: 2,
+           generatedAt: $ts,
+           generator: "bootstrap.sh",
+           operatorRecipient: $recipient,
+           clusterHostname: $host,
+           entries: ($entries | sort_by(.namespace, .name)),
+           skipAtRestore: $skip
+         }' > "$manifest_json"
+  rm -f "$entries_json_file"
 
   local manifest="${stage}/MANIFEST.txt"
   {
-    echo "bootstrap-secrets bundle"
-    echo "cluster:    $(hostname)"
-    echo "created:    $(date -u +%FT%TZ)"
-    echo "kubectl-rev: $(kctl version --short 2>/dev/null | head -1 || true)"
-    echo "recipient:  ${recipient}"
+    echo "secrets bundle (v2 — bundle-everything)"
+    echo "generator:   bootstrap.sh"
+    echo "cluster:     $(hostname)"
+    echo "created:     $(date -u +%FT%TZ)"
+    echo "recipient:   ${recipient}"
+    echo "entries:     ${count}"
     echo ""
-    echo "contents:"
+    echo "contents (see MANIFEST.json for tier classification):"
+    jq -r '.entries[] | "  \(.namespace)/\(.name)  [\(.restoreTier)]"' "$manifest_json"
   } > "$manifest"
-
-  local item ns name out_file count=0
-  for item in "${items[@]}"; do
-    ns="${item% *}"
-    name="${item#* }"
-    out_file="${stage}/${ns}__${name}.yaml"
-    if kctl get secret -n "$ns" "$name" -o yaml >"$out_file" 2>/dev/null; then
-      echo "  ${ns}/${name}" >> "$manifest"
-      count=$((count+1))
-    else
-      # `>` may have left an empty / partial file when kctl errored — drop it
-      # so the encrypted bundle doesn't ship zero-byte placeholders.
-      rm -f "$out_file" 2>/dev/null
-      if [[ "$item" == "platform platform-admin-seed" ]]; then
-        # platform-admin-seed is auto-deleted by the platform-api on the
-        # first successful PATCH /auth/password (see
-        # backend/src/modules/auth/seed-cleanup.ts). Absence here is the
-        # POST-FIRST-LOGIN steady state, not a bug. Document it in the
-        # manifest so DR-restore operators know not to chase a missing
-        # Secret. Break-glass path: scripts/admin-password-reset.sh.
-        echo "  ${ns}/${name}    (cleared by platform-api after first password change — break-glass via scripts/admin-password-reset.sh)" >> "$manifest"
-      fi
-    fi
-  done
-
-  # Bundle the operator key files too if present (so a fresh bundle
-  # rebuild after the operator already retrieved the on-host key
-  # files still has them captured for the next retrieval cycle).
-  local key_dir="${MARKER_DIR}/operator-key"
-  if [[ -f "${key_dir}/operator-private.key" ]]; then
-    cp -p "${key_dir}/operator-private.key" "${stage}/operator-private.key"
-    echo "  operator-private.key" >> "$manifest"
-    count=$((count+1))
-  fi
-  if [[ -f "${key_dir}/operator-recipient.pub" ]]; then
-    cp -p "${key_dir}/operator-recipient.pub" "${stage}/operator-recipient.pub"
-    echo "  operator-recipient.pub" >> "$manifest"
-  fi
 
   if [[ $count -eq 0 ]]; then
     rm -rf "$stage"

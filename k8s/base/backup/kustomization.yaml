@@ -20,6 +20,11 @@ resources:
   # Empty ConfigMap by default; backend reads + patches the
   # `allowlist.yaml` data key on writes from the admin UI.
   - secrets-audit-allowlist.yaml
+  # DR-bundle bundle-everything redesign — shared jq denylist mounted
+  # into the secrets-backup CronJob. Parity with the TS predicate +
+  # the scripts/lib/secrets-denylist.jq file enforced by
+  # scripts/ci-secrets-denylist-check.sh.
+  - secrets-denylist-configmap.yaml
   # Phase 5 of snapshot-storage overhaul: hostpath-snapshot-cronjob
   # retired. The per-Job rclone streaming pipeline (Phase 4) uploads
   # tenant snapshots directly to the assigned target — no second
