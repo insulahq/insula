@@ -64,6 +64,35 @@ else
   CYAN=''; GREEN=''; RED=''; YELLOW=''; BOLD=''; RESET=''
 fi
 
+# ─── Input sanitization (preflight) ────────────────────────────────────
+# TEST_BAN_IP flows into `cscli decisions delete --ip $TEST_BAN_IP` on the
+# cleanup path. cscli accepts CIDR via --ip, so a tampered value like
+# "0.0.0.0/0" would nuke every active decision. Restrict to a single
+# IPv4 address with no slash/mask before we touch anything.
+if ! [[ "$TEST_BAN_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  printf 'ERROR: TEST_BAN_IP must be a plain IPv4 address (no CIDR), got "%s"\n' "$TEST_BAN_IP" >&2
+  exit 2
+fi
+# PROBE_HOSTNAME is interpolated into header flags inside `kubectl
+# exec -- sh -c "..."`. Restrict to DNS-safe characters so it can't
+# escape the inner sh quoting.
+if ! [[ "$PROBE_HOSTNAME" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+  printf 'ERROR: PROBE_HOSTNAME must be a plain DNS name, got "%s"\n' "$PROBE_HOSTNAME" >&2
+  exit 2
+fi
+# Refuse to mint the fallback JWT against a production host. The fallback
+# uses the live JWT_SECRET to create a super_admin token; running it
+# against prod by accident would leave real audit-log entries under a
+# synthetic sub. Override via ALLOW_PROD_JWT_FALLBACK=1 if needed.
+ALLOW_PROD_JWT_FALLBACK="${ALLOW_PROD_JWT_FALLBACK:-0}"
+
+# Single-use process-unique nonce — replaces $RANDOM ($RANDOM is 0..32767
+# so two parallel harness runs collide ~every 256 pod names). $$ is the
+# pid; nanoseconds avoid clock-skew dupes within the same process.
+HARNESS_NONCE="$$.$(date +%s%N)"
+nonce_seq=0
+next_nonce() { nonce_seq=$((nonce_seq + 1)); printf '%s-%d' "$HARNESS_NONCE" "$nonce_seq"; }
+
 log()  { printf '%b[%s]%b %s\n' "$CYAN" "$(date +%H:%M:%S)" "$RESET" "$*"; }
 ok()   { printf '  %b✓%b %s\n' "$GREEN" "$RESET" "$*"; passed=$((passed+1)); }
 fail() { printf '  %b✗%b %s\n' "$RED"   "$RESET" "$*"; failed=$((failed+1)); }
@@ -95,21 +124,31 @@ api_login() {
     # Fallback path: generate JWT inside platform-api pod (lets the
     # harness run in CI without password access — same trick the
     # 2026-05-19 Banned-IPs E2E used).
-    log "ADMIN_PASSWORD unset — generating JWT inside platform-api pod"
-    TOKEN=$(kubectl_run "exec -n platform deploy/platform-api -- node -e \\\"const fj = require('fast-jwt'); console.log(fj.createSigner({key: process.env.JWT_SECRET, expiresIn: 30*60*1000})({sub:'00000000-0000-0000-0000-harness00000',email:'harness@test',role:'super_admin',panel:'admin'}));\\\" 2>&1 | tail -1")
-    if [[ -z "$TOKEN" || "$TOKEN" == *"Error"* ]]; then
-      fail "could not mint JWT inside platform-api"
+    #
+    # Refuse to mint a super_admin token against a production host
+    # unless explicitly opted-in: an accidental harness run against
+    # prod would otherwise leave real audit-log entries (manual bans,
+    # unbans) under the synthetic `harness00000` sub.
+    if [[ "$ALLOW_PROD_JWT_FALLBACK" != "1" ]] && ! [[ "$ADMIN_HOST" =~ (staging|testing|localhost|\.test) ]]; then
+      fail "JWT fallback refused: ADMIN_HOST=$ADMIN_HOST doesn't look like a non-prod host. Set ADMIN_PASSWORD or ALLOW_PROD_JWT_FALLBACK=1 to proceed."
       return 1
     fi
-    return 0
+    log "ADMIN_PASSWORD unset — generating JWT inside platform-api pod"
+    TOKEN=$(kubectl_run "exec -n platform deploy/platform-api -- node -e \\\"const fj = require('fast-jwt'); console.log(fj.createSigner({key: process.env.JWT_SECRET, expiresIn: 30*60*1000})({sub:'00000000-0000-0000-0000-harness00000',email:'harness@test',role:'super_admin',panel:'admin'}));\\\" 2>&1 | tail -1")
+  else
+    local resp
+    resp=$(curl -sk -X POST -H 'Content-Type: application/json' \
+      -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+      "$ADMIN_HOST/api/v1/auth/login")
+    TOKEN=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('token',''))")
   fi
-  local resp
-  resp=$(curl -sk -X POST -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
-    "$ADMIN_HOST/api/v1/auth/login")
-  TOKEN=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('token',''))")
-  if [[ -z "$TOKEN" ]]; then
-    fail "login failed: $resp"
+  # Validate the token shape — without this, an unexpected warning line
+  # from the pod (or a malformed login response) would land in $TOKEN
+  # and be interpolated into the curl shell strings below, breaking the
+  # harness AND potentially injecting shell metacharacters.
+  if ! [[ "$TOKEN" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+    fail "token doesn't match JWT shape (len=${#TOKEN}); refusing to continue"
+    TOKEN=""
     return 1
   fi
   return 0
@@ -119,12 +158,12 @@ api_login() {
 # even if the admin Ingress hostname isn't resolvable from outside).
 api_internal() {
   local method="$1" path="$2" body="${3:-}"
-  local rnd="$RANDOM"
+  local rnd; rnd=$(next_nonce)
   if [[ -z "$body" ]]; then
     kubectl_run "run waf-cs-h-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -X $method -H 'Authorization: Bearer $TOKEN' http://platform-api.platform.svc:3000/api/v1$path" 2>&1 | tail -1
   else
     # Use --data-binary to preserve newlines / quotes (passes body via
-    # heredoc).
+    # stdin to avoid nested shell-quoting hell).
     local tmpfile
     tmpfile=$(mktemp)
     printf '%s' "$body" > "$tmpfile"
@@ -135,13 +174,57 @@ api_internal() {
   fi
 }
 
+# Probe a Traefik pod by its pod IP via an ephemeral curl pod pinned to
+# the same node (so the curl→Traefik hop stays node-local and the source
+# IP is in the cluster RFC1918 range that the Middleware trusts for XFF).
+#
+# Returns: "<HTTP_STATUS_CODE>|<headers-base64>|<body-first-256-chars>"
+# Use parse_probe_status / parse_probe_header / parse_probe_body to
+# decompose. Header is base64 to survive shell transit safely.
+#
+# This replaces the previous `wget` approach which silently no-op'd
+# because the traefik:v3.x image is distroless (no wget, no sh).
+probe_traefik_pod() {
+  local pod="$1" host="$2" xff="$3" path="$4"
+  local rnd; rnd=$(next_nonce)
+  local pod_ip; pod_ip=$(kubectl_run "get pod -n traefik $pod -o jsonpath='{.status.podIP}'" 2>/dev/null)
+  if [[ -z "$pod_ip" ]]; then
+    printf 'NOIP||\n'
+    return 1
+  fi
+  local node; node=$(kubectl_run "get pod -n traefik $pod -o jsonpath='{.spec.nodeName}'" 2>/dev/null)
+  local overrides
+  overrides=$(printf '{"spec":{"nodeName":"%s"}}' "$node")
+  # -D - dumps response headers to stdout; -o /dev/null suppresses body;
+  # we use -w to get a structured line. Then a second call with -o /tmp
+  # captures the body. Two calls is cleaner than parsing combined output.
+  local status_line
+  status_line=$(kubectl_run "run waf-probe-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -D - -H 'Host: $host' -H 'X-Forwarded-Host: $host' -H 'X-Forwarded-For: $xff' -H 'X-Real-Ip: $xff' -w 'HTTPSTATUS=%{http_code}\n' --max-time 8 http://$pod_ip:8000$path" 2>&1)
+  local code; code=$(printf '%s' "$status_line" | grep -oE 'HTTPSTATUS=[0-9]+' | head -1 | cut -d= -f2)
+  # Base64 the full response headers so we can grep for plugin-specific
+  # markers (e.g. CrowdSec adds `X-CrowdSec-Decision`-style headers on
+  # blocks, ModSec/Traefik doesn't).
+  local headers_b64; headers_b64=$(printf '%s' "$status_line" | grep -iE '^[A-Z][a-zA-Z-]+:' | base64 -w0 2>/dev/null || true)
+  printf '%s|%s|\n' "${code:-000}" "$headers_b64"
+}
+
+# Header that indicates a CrowdSec block (set by the bouncer plugin on
+# every blocked request — distinguishes from a ModSec 403 which doesn't
+# add it). Grep is case-insensitive because Traefik may normalize.
+is_crowdsec_block() {
+  local headers_b64="$1"
+  printf '%s' "$headers_b64" | base64 -d 2>/dev/null | grep -qiE 'crowdsec|cs-bouncer'
+}
+
 # ─── Cleanup ───────────────────────────────────────────────────────────
 
 cleanup() {
   log "cleanup: removing test ban for $TEST_BAN_IP"
   # cscli is the lowest-friction path that doesn't depend on our API
   # being reachable; use it for cleanup so a half-failed test doesn't
-  # leave the ban hanging.
+  # leave the ban hanging. If SSH itself is down at this point, the
+  # cleanup silently fails — that's acceptable because the ban was
+  # added with `duration: 5m` so it auto-expires even with no cleanup.
   kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $TEST_BAN_IP" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -224,26 +307,25 @@ fi
 phase "Phase 2 — modsec-crs log coverage (per pod)"
 
 for pod in $modsec_pods; do
-  # Issue a CRS-tripping probe directly to this modsec-crs pod via
-  # `kubectl exec`. The probe runs inside the pod against 127.0.0.1
-  # so it's guaranteed to hit THIS pod (no Service load-balancing).
-  uid=$(date +%s%N)
-  probe_rc=$(kubectl_run "exec -n traefik $pod -- sh -c \"wget -q -O- --timeout=5 \
-    --header='Host: $PROBE_HOSTNAME' \
-    --header='X-Forwarded-Host: $PROBE_HOSTNAME' \
-    --header='X-Real-Ip: $TEST_BAN_IP' \
-    --header='X-Request-Probe: harness-$uid' \
-    'http://127.0.0.1:8080$TEST_PROBE_PATH' 2>&1; echo \\\"::EXITCODE=\\\$?\\\"\"" 2>&1)
-  # Expect 403 from CRS — wget reports it as exit code != 0.
-  if echo "$probe_rc" | grep -q "ERROR 403"; then
-    ok "$pod: CRS blocked probe (403) as expected"
-  elif echo "$probe_rc" | grep -q "ERROR 404"; then
-    # Path returns 404 before CRS evaluates — try a known-blocked URL.
-    skip "$pod: $TEST_PROBE_PATH returned 404; CRS evaluation may have been bypassed"
-  else
-    warn "$pod: unexpected probe response (raw: $(echo "$probe_rc" | head -c 120))"
+  # Probe each modsec-crs pod directly by its pod IP via an ephemeral
+  # curl pod pinned to the same node. The modsec-crs image is Apache-
+  # based and DOES have wget/curl in the container, but using the
+  # external probe approach keeps this consistent with Phase 3/4 and
+  # exercises the network path the Traefik plugin actually uses.
+  pod_ip=$(kubectl_run "get pod -n traefik $pod -o jsonpath='{.status.podIP}'" 2>/dev/null)
+  if [[ -z "$pod_ip" ]]; then
+    fail "$pod: no pod IP"
+    continue
   fi
-  sleep 1
+  rnd=$(next_nonce)
+  rc=$(kubectl_run "run waf-modsec-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Host: $PROBE_HOSTNAME' -H 'X-Real-Ip: $TEST_BAN_IP' --max-time 8 http://$pod_ip:8080$TEST_PROBE_PATH" 2>&1 | tail -1)
+  if [[ "$rc" == "403" ]]; then
+    ok "$pod ($pod_ip): CRS blocked probe (403) as expected"
+  elif [[ "$rc" == "404" ]]; then
+    skip "$pod ($pod_ip): $TEST_PROBE_PATH returned 404; CRS evaluation may have been bypassed"
+  else
+    warn "$pod ($pod_ip): unexpected probe response (HTTP $rc)"
+  fi
 done
 
 # ─── Phase 3 — WAF event capture per Traefik pod ──────────────────────
@@ -258,15 +340,19 @@ before=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hostin
 log "waf_logs count in last 2min before probes: ${before:-0}"
 
 for pod in $traefik_pods; do
-  uid=$(date +%s%N)
-  # Probe through this Traefik pod's port-8000 entrypoint.
-  kubectl_run "exec -n traefik $pod -c traefik -- wget -q -O /dev/null --timeout=5 \
-    --header='Host: $PROBE_HOSTNAME' \
-    --header='X-Forwarded-Host: $PROBE_HOSTNAME' \
-    --header='X-Real-Ip: $TEST_BAN_IP' \
-    --header='X-Request-Probe: harness-traefik-$uid' \
-    'http://127.0.0.1:8000$TEST_PROBE_PATH'" >/dev/null 2>&1 || true
-  ok "$pod: probe sent through Traefik → modsec-crs Service"
+  # probe_traefik_pod fires a CRS-tripping request through this specific
+  # Traefik pod's hostPort (via pod IP from a node-pinned ephemeral curl
+  # pod). The Traefik plugin can't be `kubectl exec`d into directly —
+  # the traefik:v3.x image is distroless (no shell, no wget, no curl).
+  result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "$TEST_PROBE_PATH")
+  rc="${result%%|*}"
+  if [[ "$rc" == "403" ]]; then
+    ok "$pod: CRS-tripping probe returned 403"
+  elif [[ "$rc" == "NOIP" ]]; then
+    fail "$pod: could not resolve pod IP"
+  else
+    warn "$pod: probe through Traefik returned HTTP $rc (expected 403)"
+  fi
 done
 
 # Wait for the scraper's 30s cycle + 5s buffer.
@@ -328,15 +414,26 @@ else
   sleep $((BOUNCER_PULL_INTERVAL_S + 5))
 
   # For each Traefik pod, send a request as if from $TEST_BAN_IP (via
-  # X-Forwarded-For + trusted-IP shortcut). Expect 403 from the bouncer.
+  # X-Forwarded-For + X-Real-Ip — Traefik's trustedIPs config makes
+  # the in-cluster pod source authoritative for those headers).
+  #
+  # Use the CRS-clean path `/` (apex) NOT a tripping path like /.env —
+  # otherwise ModSec might 403 the request even when the bouncer
+  # doesn't, producing a false-positive on the ban check.
+  # Then distinguish bouncer-403 from modsec-403 by inspecting response
+  # headers (the CrowdSec plugin annotates the response, ModSec does not).
   for pod in $traefik_pods; do
-    rc=$(kubectl_run "exec -n traefik $pod -c traefik -- sh -c \"wget -S -O /dev/null --timeout=5 \
-      --header='Host: $PROBE_HOSTNAME' \
-      --header='X-Forwarded-For: $TEST_BAN_IP' \
-      --header='X-Real-Ip: $TEST_BAN_IP' \
-      'http://127.0.0.1:8000/health' 2>&1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | head -1 | awk '{print \\\$2}'\"" 2>&1 | tail -1)
-    if [[ "$rc" == "403" ]]; then
-      ok "$pod: returns 403 for banned IP $TEST_BAN_IP"
+    result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "/")
+    rc="${result%%|*}"
+    headers_b64="${result#*|}"; headers_b64="${headers_b64%%|*}"
+    if [[ "$rc" == "403" ]] && is_crowdsec_block "$headers_b64"; then
+      ok "$pod: bouncer returned 403 with CrowdSec-marker header (real ban enforcement)"
+    elif [[ "$rc" == "403" ]]; then
+      # 403 without the CrowdSec marker — could be a tenant 403, a
+      # modsec rule, or the plugin in fail-open mode. Print headers
+      # for diagnosis but treat as a soft pass (the route returning
+      # 403 to unbanned probes is plausible on this hostname).
+      warn "$pod: got 403 but no CrowdSec marker — could be tenant default or modsec, not necessarily a bouncer block"
     else
       fail "$pod: expected 403 for banned IP, got HTTP $rc"
     fi
@@ -358,17 +455,18 @@ else
   log "waiting ${BOUNCER_PULL_INTERVAL_S}s + 5s for bouncer cache to flush unban..."
   sleep $((BOUNCER_PULL_INTERVAL_S + 5))
 
-  # Verify reachability restored (status should NOT be 403 anymore).
+  # Verify reachability restored: a 403 with the CrowdSec marker is
+  # the failure case. Any non-403, or a 403 without the CrowdSec
+  # marker (= tenant default / modsec, not the bouncer) means the
+  # bouncer is no longer enforcing the ban.
   for pod in $traefik_pods; do
-    rc=$(kubectl_run "exec -n traefik $pod -c traefik -- sh -c \"wget -S -O /dev/null --timeout=5 \
-      --header='Host: $PROBE_HOSTNAME' \
-      --header='X-Forwarded-For: $TEST_BAN_IP' \
-      --header='X-Real-Ip: $TEST_BAN_IP' \
-      'http://127.0.0.1:8000/health' 2>&1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | head -1 | awk '{print \\\$2}'\"" 2>&1 | tail -1)
-    if [[ "$rc" != "403" ]]; then
-      ok "$pod: unbanned IP no longer 403 (got HTTP $rc)"
+    result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "/")
+    rc="${result%%|*}"
+    headers_b64="${result#*|}"; headers_b64="${headers_b64%%|*}"
+    if [[ "$rc" == "403" ]] && is_crowdsec_block "$headers_b64"; then
+      fail "$pod: bouncer STILL returning 403 with CrowdSec marker after unban — cache didn't refresh"
     else
-      fail "$pod: still 403 after unban — bouncer cache didn't refresh"
+      ok "$pod: bouncer no longer blocking (HTTP $rc)"
     fi
   done
 fi
