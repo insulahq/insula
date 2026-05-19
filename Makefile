@@ -44,22 +44,16 @@ secrets-fetch: ## Pull bootstrap secrets bundle + operator key off a server (HOS
 	  done; \
 	echo "done. Verify each file, then DELETE from server: ssh $(HOST) 'shred -u <path>'"
 
-secrets-restore: ## Restore Secrets from a local age-encrypted bundle (BUNDLE=path KEY=path required)
-	@if [ -z "$(BUNDLE)" ] || [ -z "$(KEY)" ]; then echo "usage: make secrets-restore BUNDLE=~/k8s-staging/bundle.tar.age KEY=~/k8s-staging/operator-private.key" >&2; exit 2; fi
+secrets-restore: ## Restore Secrets from a v2 bundle (BUNDLE=path KEY=path PROFILE=conservative|full DRY_RUN=0|1 EXTRACT_TO=path)
+	@if [ -z "$(BUNDLE)" ] || [ -z "$(KEY)" ]; then echo "usage: make secrets-restore BUNDLE=~/k8s-staging/bundle.tar.age KEY=~/k8s-staging/operator-private.key [PROFILE=conservative|full] [DRY_RUN=1] [EXTRACT_TO=/tmp/restore]" >&2; exit 2; fi
 	@if ! command -v age >/dev/null 2>&1; then echo "age not installed (apt-get install -y age)" >&2; exit 2; fi
 	@if [ -z "$$KUBECONFIG" ]; then echo "KUBECONFIG must be set" >&2; exit 2; fi
-	@TMP=$$(mktemp -d); \
-	echo "decrypting $(BUNDLE) → $$TMP/"; \
-	age -d -i "$(KEY)" "$(BUNDLE)" | tar -C "$$TMP" -xf -; \
-	echo "applying Secret manifests:"; \
-	for f in $$TMP/*.yaml; do \
-		[ -f "$$f" ] || continue; \
-		echo "  $$f"; \
-		kubectl apply -f "$$f"; \
-	  done; \
-	find "$$TMP" -type f -exec sh -c ': > "$$1"' _ {} \; 2>/dev/null; \
-	rm -rf "$$TMP"; \
-	echo "done. Pods may need restart to pick up new Secret values: kubectl rollout restart -n <ns> deploy/<name>"
+	@PROFILE=$${PROFILE:-conservative}; \
+	DRY_RUN=$${DRY_RUN:-0}; \
+	EXTRACT_TO=$${EXTRACT_TO:-}; \
+	OVERRIDE=$${OVERRIDE_SKIP_AT_RESTORE:-0}; \
+	bash -c "RESTORE_PROFILE=$$PROFILE RESTORE_DRY_RUN=$$DRY_RUN RESTORE_EXTRACT_TO=\"$$EXTRACT_TO\" RESTORE_OVERRIDE_SKIP_AT_RESTORE=$$OVERRIDE source $(CURDIR)/scripts/lib/apply-secrets-bundle.sh && apply_secrets_bundle \"$(BUNDLE)\" \"$(KEY)\""
+	@echo "done. Pods may need restart to pick up new Secret values: kubectl rollout restart -n <ns> deploy/<name>"
 
 diagnose:     ## Capture forensic snapshot (nodes/pods/Felix logs) under docs/diagnostics/<utc-stamp>/
 	@DST=docs/diagnostics/$$(date -u '+%Y%m%dT%H%M%SZ'); mkdir -p "$$DST"; \

@@ -1,41 +1,34 @@
 /**
- * Differential secrets-bundle coverage audit (DR-bundle roadmap, Phase 0).
+ * Secrets coverage audit (DR-bundle bundle-everything redesign).
  *
- * Lists EVERY Secret in the cluster and classifies each into one of
- * five categories: `denied`, `tier-1-bundle`, `tier-2-tenant-sweep`,
- * `allowlisted`, or `uncovered`. The UNCOVERED set is the silent DR
- * risk this module exists to surface.
+ * Lists every Secret in the cluster and classifies each into one of
+ * five buckets:
  *
- * Classifier rules (in priority order — first match wins):
+ *   - denied         → not in bundle at all (auto-managed by
+ *                      controllers — SA tokens, helm release state,
+ *                      cert-manager TLS, sealed-secrets, CNPG creds).
+ *                      Predicate is shared with the exporter +
+ *                      bootstrap.sh + CronJob via `secrets-denylist.ts`.
+ *   - skip-at-restore → in bundle, but operator-marked in the
+ *                      `secrets-audit-allowlist` ConfigMap with a
+ *                      documented reason. Restore profiles refuse
+ *                      to apply these by default.
+ *   - tier-1-platform → in bundle, applied by the `conservative`
+ *                      restore profile. Namespace-based assignment.
+ *   - tier-2-tenant   → in bundle, applied by the `full` restore
+ *                      profile. `client-*` namespace pattern.
+ *   - unclassified    → in bundle, applied by the `full` restore
+ *                      profile. Everything else.
  *
- *   1. DENIED — auto-managed by k8s/operators. NOT bundle candidates
- *      by design; restoring them would conflict with the owning
- *      controller. Examples:
- *        - type `kubernetes.io/service-account-token`
- *        - type `kubernetes.io/dockercfg` / `dockerconfigjson`
- *        - name prefix `sh.helm.release.v1.` (Helm release state)
- *        - ownerReference.kind = `Certificate` (cert-manager-issued TLS)
- *        - ownerReference.kind = `SealedSecret`
- *        - ownerReference.kind = `Cluster` AND apiVersion contains
- *          `postgresql.cnpg.io` (CNPG-managed cluster credentials)
+ * Under bundle-everything semantics there's no "uncovered" bucket —
+ * every non-denied Secret ends up in the bundle by default. The
+ * audit UI shows the breakdown for visibility but no longer flashes
+ * red. Operators who want to exclude specific Secrets from the
+ * apply step (e.g. session cookies) mark them as "skip at restore"
+ * via the allowlist.
  *
- *   2. TIER-1 BUNDLE — explicitly named in BUNDLE_SECRET_LIST.
- *      Covered by both the in-cluster exporter and the daily CronJob.
- *
- *   3. TIER-2 TENANT SWEEP — namespace matches `^client-.+` pattern.
- *      The nightly `platform-secrets-backup` CronJob sweeps every
- *      Secret in these namespaces by label selector.
- *
- *   4. ALLOWLISTED — operator-added entry in the
- *      `secrets-audit-allowlist` ConfigMap with a documented reason.
- *
- *   5. UNCOVERED — everything else. Silent DR risk.
- *
- * The result is computed on-demand (no DB persistence) with a short
- * cache to keep the operator UI responsive. Operator-triggered
- * "refresh" busts the cache.
- *
- * See docs/04-deployment/DR_BUNDLE_ROADMAP.md Phase 0 + 1.
+ * Result is computed on-demand (no DB persistence) with a short
+ * cache; operator-triggered "refresh" busts it.
  */
 
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -47,16 +40,14 @@ import {
 } from '@k8s-hosting/api-contracts';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { BUNDLE_SECRET_LIST } from './secrets-bundle.js';
+import { isAutoManaged } from './secrets-denylist.js';
+import { restoreTierForNamespace } from './secrets-tiers.js';
 
 /** Where the operator-curated allowlist lives. */
 export const ALLOWLIST_NAMESPACE = 'platform-system';
 export const ALLOWLIST_CONFIGMAP_NAME = 'secrets-audit-allowlist';
 /** Key inside the ConfigMap whose value is a YAML list of entries. */
 const ALLOWLIST_DATA_KEY = 'allowlist.yaml';
-
-/** Tenant namespace pattern. Mirrors the shell CronJob's selector. */
-const TENANT_NAMESPACE_RE = /^client-.+$/;
 
 /** Cache TTL — short, since the operator typically clicks Refresh
  *  while watching the page after fixing coverage gaps. */
@@ -107,7 +98,6 @@ export async function runSecretsAudit(
   for (const entry of allowlist) {
     allowlistMap.set(allowlistKey(entry.namespace, entry.name), entry);
   }
-  const bundleKeys = new Set(BUNDLE_SECRET_LIST.map((s) => allowlistKey(s.namespace, s.name)));
 
   const audited: AuditedSecret[] = [];
   for (const item of secretList) {
@@ -129,7 +119,6 @@ export async function runSecretsAudit(
       name,
       type,
       owner: owner ?? null,
-      bundleKeys,
       allowlistMap,
     });
 
@@ -148,18 +137,18 @@ export async function runSecretsAudit(
 
   const byCategory = {
     denied: 0,
-    tier1Bundle: 0,
-    tier2TenantSweep: 0,
-    allowlisted: 0,
-    uncovered: 0,
+    tier1Platform: 0,
+    tier2Tenant: 0,
+    unclassified: 0,
+    skipAtRestore: 0,
   };
   for (const a of audited) {
     switch (a.category) {
       case 'denied': byCategory.denied++; break;
-      case 'tier-1-bundle': byCategory.tier1Bundle++; break;
-      case 'tier-2-tenant-sweep': byCategory.tier2TenantSweep++; break;
-      case 'allowlisted': byCategory.allowlisted++; break;
-      case 'uncovered': byCategory.uncovered++; break;
+      case 'tier-1-platform': byCategory.tier1Platform++; break;
+      case 'tier-2-tenant': byCategory.tier2Tenant++; break;
+      case 'unclassified': byCategory.unclassified++; break;
+      case 'skip-at-restore': byCategory.skipAtRestore++; break;
     }
   }
 
@@ -167,9 +156,19 @@ export async function runSecretsAudit(
     generatedAt: now().toISOString(),
     totalSecretsCount: audited.length,
     byCategory,
-    healthy: byCategory.uncovered === 0,
-    uncoveredSecrets: audited.filter((a) => a.category === 'uncovered'),
-    allowlistedSecrets: audited.filter((a) => a.category === 'allowlisted'),
+    /** Under bundle-everything every non-denied Secret is bundled, so
+     *  there's nothing to flash red about. Field kept in the contract
+     *  for future use (e.g. flag "tier-1 namespace has zero secrets"
+     *  as a soft warning). */
+    healthy: true,
+    skipAtRestoreSecrets: audited.filter((a) => a.category === 'skip-at-restore'),
+    /** All Secrets, ordered by category then namespace/name. The UI
+     *  filters client-side rather than re-querying for each bucket. */
+    allSecrets: audited.sort((a, b) => {
+      if (a.category !== b.category) return a.category.localeCompare(b.category);
+      if (a.namespace !== b.namespace) return a.namespace.localeCompare(b.namespace);
+      return a.name.localeCompare(b.name);
+    }),
   };
   cached = { result, computedAt: now().getTime() };
   return result;
@@ -180,56 +179,35 @@ interface ClassifyInput {
   readonly name: string;
   readonly type: string;
   readonly owner: { kind?: string; apiVersion?: string } | null;
-  readonly bundleKeys: ReadonlySet<string>;
   readonly allowlistMap: ReadonlyMap<string, AllowlistEntry>;
 }
 
-/** Pure classifier — no IO. Exported for unit-testing the rule set. */
+/** Pure classifier — no IO. Exported for unit-testing.
+ *
+ *  Priority order (first match wins):
+ *    1. DENIED      → controller-managed, never bundled.
+ *    2. SKIP-AT-RESTORE → operator-marked in allowlist; in bundle but
+ *                         skipped by every restore profile by default.
+ *    3. TIER-1 / TIER-2 / UNCLASSIFIED → namespace-based assignment. */
 export function classify(input: ClassifyInput): { category: SecretCoverageCategory; reason: string } {
-  const { namespace, name, type, owner, bundleKeys, allowlistMap } = input;
+  const { namespace, name, type, owner, allowlistMap } = input;
 
-  // ── Rule 1: DENIED — auto-managed, not a bundle candidate ─────────
-  if (type === 'kubernetes.io/service-account-token') {
-    return { category: 'denied', reason: 'ServiceAccount token (auto-rotated by k8s)' };
-  }
-  if (type === 'kubernetes.io/dockercfg' || type === 'kubernetes.io/dockerconfigjson') {
-    return { category: 'denied', reason: 'Docker registry pull-secret (auto-generated)' };
-  }
-  if (name.startsWith('sh.helm.release.v1.')) {
-    return { category: 'denied', reason: 'Helm release state (recreatable from chart values)' };
-  }
-  if (owner) {
-    const kind = owner.kind ?? '';
-    const api = owner.apiVersion ?? '';
-    if (kind === 'Certificate' && api.includes('cert-manager.io')) {
-      return { category: 'denied', reason: 'cert-manager TLS (auto-issued from Certificate CR)' };
-    }
-    if (kind === 'SealedSecret') {
-      return { category: 'denied', reason: 'unsealed copy owned by SealedSecret (regenerated from seal)' };
-    }
-    if (kind === 'Cluster' && api.includes('postgresql.cnpg.io')) {
-      return { category: 'denied', reason: 'CNPG-managed (regenerated by the operator)' };
-    }
-  }
+  const den = isAutoManaged({ name, type, owner });
+  if (den.denied) return { category: 'denied', reason: den.reason };
 
-  // ── Rule 2: TIER-1 BUNDLE — explicit bundle inclusion ─────────────
-  if (bundleKeys.has(`${namespace}/${name}`)) {
-    return { category: 'tier-1-bundle', reason: 'BUNDLE_SECRET_LIST entry' };
-  }
-
-  // ── Rule 3: TIER-2 TENANT SWEEP — namespace pattern ───────────────
-  if (TENANT_NAMESPACE_RE.test(namespace)) {
-    return { category: 'tier-2-tenant-sweep', reason: 'tenant namespace (nightly CronJob sweep)' };
-  }
-
-  // ── Rule 4: ALLOWLISTED — operator-decided ────────────────────────
   if (allowlistMap.has(`${namespace}/${name}`)) {
     const entry = allowlistMap.get(`${namespace}/${name}`)!;
-    return { category: 'allowlisted', reason: entry.reason };
+    return { category: 'skip-at-restore', reason: entry.reason };
   }
 
-  // ── Rule 5: UNCOVERED — silent DR risk ────────────────────────────
-  return { category: 'uncovered', reason: 'no rule matched — extend bundle or add to allowlist' };
+  const tier = restoreTierForNamespace(namespace);
+  if (tier === 'tier-1-platform') {
+    return { category: 'tier-1-platform', reason: 'platform namespace (conservative profile applies)' };
+  }
+  if (tier === 'tier-2-tenant') {
+    return { category: 'tier-2-tenant', reason: 'tenant namespace (full profile applies)' };
+  }
+  return { category: 'unclassified', reason: 'non-platform/non-tenant namespace (full profile applies)' };
 }
 
 // ─── K8s IO ────────────────────────────────────────────────────────────
@@ -286,10 +264,6 @@ export async function readAllowlist(k8s: K8sClients): Promise<AllowlistEntry[]> 
     }
     return out;
   } catch (err) {
-    // Corrupt YAML — treat as empty + log so the silent denial-of-
-    // observability (every allowlisted Secret reappears as uncovered)
-    // surfaces in platform-api logs and the audit-log middleware.
-    // eslint-disable-next-line no-console
     console.warn('[secrets-audit] allowlist YAML parse failed; treating as empty', {
       err: err instanceof Error ? err.message : String(err),
     });
@@ -362,10 +336,6 @@ async function writeAllowlist(k8s: K8sClients, entries: AllowlistEntry[]): Promi
       namespace: ALLOWLIST_NAMESPACE,
       name: ALLOWLIST_CONFIGMAP_NAME,
     });
-    // Exists — patch the data key.
-    // STRATEGIC_MERGE_PATCH is the default for ConfigMap merges in
-    // @kubernetes/client-node; MERGE_PATCH (RFC 7396) is the right
-    // form for this {data: {key: value}} body.
     await core.patchNamespacedConfigMap(
       {
         namespace: ALLOWLIST_NAMESPACE,
@@ -387,7 +357,6 @@ async function writeAllowlist(k8s: K8sClients, entries: AllowlistEntry[]): Promi
         },
       });
     } catch (createErr) {
-      // TOCTOU: a concurrent caller raced us to Create. Patch instead.
       const createCode = (createErr as { code?: number; statusCode?: number }).code
         ?? (createErr as { statusCode?: number }).statusCode;
       if (createCode !== 409) throw createErr;
