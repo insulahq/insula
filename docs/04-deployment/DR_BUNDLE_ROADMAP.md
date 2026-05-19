@@ -1,8 +1,34 @@
 # Disaster Recovery (DR) Bundle — Roadmap
 
+**Status update (2026-05-19):** Phase 0 (Audit) + Phase 1 (DR drill) shipped 2026-05-18; **redesigned in same session** to a "bundle everything" model based on operator feedback. The original "operator curates what to bundle" approach was scrapped because it left silent DR risk every time a developer added a new Secret. See "Bundle-everything redesign" section below for the current architecture.
+
 **Status:** Planning (2026-05-18). Phase 0 (differential secrets audit) + Phase 1 (automated DR drill) start immediately. Phases 2–6 sequenced after.
 **Owner:** Platform team.
 **Related:** [SECRETS_LIFECYCLE.md](SECRETS_LIFECYCLE.md) (current 3-tier secrets model), [TENANT_BACKUP.md](../02-operations/TENANT_BACKUP.md) (per-tenant bundles), [HA_MODE.md](../05-storage/HA_MODE.md) (CNPG + Longhorn HA).
+
+## Bundle-everything redesign (2026-05-19, shipped)
+
+The original Phase 0 design relied on operators curating `BUNDLE_SECRET_LIST` + an allowlist of "secrets that don't need to be backed up." Live E2E on day 1 caught 23 uncovered Secrets on the dev cluster — including `mail/stalwart-secrets`, which was IN the curated list but under the wrong namespace (it lived in `mail/`, the list named `platform/`). This was the canary: every new Secret added to the platform is a fresh DR risk until someone remembers to edit the list. Operator-driven curation is too fragile for a DR-critical surface.
+
+**The redesign**: bundle EVERY Secret in the cluster that isn't auto-managed by a controller (cert-manager TLS, SA tokens, Helm release state, SealedSecrets, CNPG-owned). Decide WHAT TO APPLY at restore time via profile flags, not at bundle time:
+
+- `bootstrap.sh --restore-profile=conservative` (default) → applies `tier-1-platform` only
+- `bootstrap.sh --restore-profile=full` → applies tier-1 + tier-2-tenant + unclassified
+- `--restore-dry-run` + `--restore-extract-to=<dir>` → preview without applying
+- `--override-skip-at-restore` → ignore operator's skip-at-restore decisions
+- Operator marks ephemeral entries (session cookies, etc.) as "skip at restore" via the admin UI; the choice rides along inside the bundle's `MANIFEST.json.skipAtRestore[]` so it survives onto fresh clusters
+
+**Single source of truth for the denied predicate**: `backend/src/modules/system-backup/secrets-denylist.ts` (the `isAutoManaged()` predicate) is mirrored as a jq filter at `scripts/lib/secrets-denylist.jq` (used by `bootstrap.sh:bundle_bootstrap_secrets`) and as a ConfigMap-mounted file consumed by the nightly `secrets-backup-cronjob` (`k8s/base/backup/secrets-denylist-configmap.yaml`). All three must agree; `scripts/ci-secrets-denylist-check.sh` enforces parity.
+
+**Bundle format v2**: tar contains per-Secret YAMLs (named `<namespace>__<name>.yaml`) + `MANIFEST.txt` (operator-readable) + `MANIFEST.json` (machine-readable record consumed by the restore profile gating). Each entry carries `restoreTier`, `sha256OfYaml`, and the bundle's `skipAtRestore[]` snapshot. The apply helper at `scripts/lib/apply-secrets-bundle.sh` is shared between `bootstrap.sh` and `make secrets-restore PROFILE=…`.
+
+**No backward compatibility** — there are no production v1 bundles in existence. The old `BUNDLE_SECRET_LIST` + `OPERATOR_KEY_SECRETS` arrays are deleted; old code paths gone.
+
+**UI changes**: red "uncovered" banner is gone (nothing is uncovered if everything's bundled). The 5-bucket chip layout becomes `tier-1-platform / tier-2-tenant / unclassified / skip-at-restore / denied`. The action button on each row is now "Skip at restore" (was "Add to allowlist").
+
+The Phase 1 DR drill harness still applies — it now decrypts a v2 bundle, validates per-entry sha256OfYaml, and parses MANIFEST.json.
+
+---
 
 ## Why this exists
 

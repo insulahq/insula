@@ -23,7 +23,8 @@ import type { Database } from '../../db/index.js';
 import { systemBackupRuns, auditLogs } from '../../db/schema.js';
 import { and, eq, gt, isNotNull, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { exportSecretsBundle, BUNDLE_SECRET_LIST, OPERATOR_KEY_SECRETS, type BundleManifestItem } from './secrets-bundle.js';
+import { exportSecretsBundle, type BundleManifestItem } from './secrets-bundle.js';
+import { runSecretsAudit } from './secrets-audit.js';
 import { signDownloadToken, verifyDownloadToken, sha256Hex } from './download-token.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -305,36 +306,31 @@ export async function readManifest(
   items: Array<{ namespace: string; name: string; kind: 'Secret' | 'OperatorKey'; present: boolean }>;
   operatorRecipient: string | null;
 }> {
+  // Under bundle-everything semantics the manifest preview = "every
+  // non-denied Secret in the cluster" + the operator recipient. We
+  // derive it from the same audit data that drives the Coverage
+  // panel, so the two surfaces never disagree about what the next
+  // bundle will contain.
   const core = k8s.core as unknown as {
-    readNamespacedSecret: (a: { namespace: string; name: string }) => Promise<unknown>;
     readNamespacedConfigMap: (a: { namespace: string; name: string }) => Promise<{ data?: Record<string, string> }>;
   };
-
-  const probes = await Promise.all([
-    ...BUNDLE_SECRET_LIST.map(async (s) => ({
+  const audit = await runSecretsAudit(k8s);
+  const items = audit.allSecrets
+    .filter((s) => s.category !== 'denied')
+    .map((s) => ({
       namespace: s.namespace,
       name: s.name,
       kind: 'Secret' as const,
-      present: await core.readNamespacedSecret({ namespace: s.namespace, name: s.name })
-        .then(() => true)
-        .catch(() => false),
-    })),
-    ...OPERATOR_KEY_SECRETS.map(async (s) => ({
-      namespace: s.namespace,
-      name: s.name,
-      kind: 'OperatorKey' as const,
-      present: await core.readNamespacedSecret({ namespace: s.namespace, name: s.name })
-        .then(() => true)
-        .catch(() => false),
-    })),
-  ]);
-
+      // `present` is always true here — the audit listed it FROM
+      // the cluster moments ago. Kept in the contract for the UI's
+      // older "absent" presentation path; v2 callers can ignore.
+      present: true,
+    }));
   const operatorRecipient = await core.readNamespacedConfigMap({
     namespace: 'platform',
     name: 'platform-operator-recipient',
   })
     .then((cm) => cm.data?.recipient ?? null)
     .catch(() => null);
-
-  return { items: probes, operatorRecipient };
+  return { items, operatorRecipient };
 }

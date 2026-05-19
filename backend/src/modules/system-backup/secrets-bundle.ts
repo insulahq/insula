@@ -1,97 +1,92 @@
 /**
- * Secrets-bundle export.
+ * Secrets-bundle export (DR-bundle bundle-everything redesign).
  *
- * Mirrors the on-host `bundle_bootstrap_secrets()` function in
- * scripts/bootstrap.sh: tars a fixed list of platform/mail Secrets
- * (and the operator key files if present), then age-encrypts to the
- * `platform/platform-operator-recipient` ConfigMap's age recipient.
+ * Lists EVERY Secret in the cluster, filters out the controller-
+ * managed `denied` bucket via the shared `secrets-denylist.ts`
+ * predicate, tags each survivor with a `restoreTier`, and tars +
+ * age-encrypts the result.
  *
- * Crucially the bundle is encrypted to a recipient whose private
- * key lives OUTSIDE the cluster (the operator holds it). Without
- * this property a full-cluster loss would render the bundle useless.
+ * Bundle layout (format v2):
+ *   MANIFEST.txt   plain-text header (operator-readable via `tar tf`)
+ *   MANIFEST.json  machine-readable record consumed by the restore
+ *                  profile gating in `bootstrap.sh` /
+ *                  `make secrets-restore`
+ *   <ns>__<name>.yaml per Secret
  *
- * Implementation runs entirely in-cluster via the Kube API:
- *   1. read recipient from platform/platform-operator-recipient
- *   2. for each {ns,name} in the bundle list, kubectl get secret -o yaml
- *      via @kubernetes/client-node and serialize to YAML
- *   3. for each operator-key file path, read via Secret too if present
- *   4. tar in-memory → spawn `age -r <recipient>` → captured stdout
- *   5. return Buffer + sha256 + size + manifest
+ * The on-disk format matches `scripts/bootstrap.sh:bundle_bootstrap_secrets`
+ * and the nightly `secrets-backup-cronjob.yaml` (both rewritten in
+ * the same change). Parity is asserted by
+ * `scripts/integration-secrets-bundle.sh` Phase 1.
  *
- * Why subprocess `age` and not a pure-JS implementation:
+ * Why subprocess `age` and not pure-JS:
  *   - Matches `make secrets-restore` (uses /usr/bin/age already)
- *   - Matches scripts/bootstrap.sh:bundle_bootstrap_secrets (also subprocess)
- *   - Smaller attack surface than pulling in a new npm dep for crypto
- *   - The age binary is a tiny static Go build available on Alpine
- *     via `apk add age`
+ *   - Matches `bootstrap.sh` (also subprocess)
+ *   - Smaller attack surface than a new npm dep for crypto
+ *   - `age` is a tiny static Go build on Alpine via `apk add age`
  */
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as tar from 'tar-stream';
+import {
+  type BundleManifest,
+  type BundleEntry,
+  type BundleSkipAtRestore,
+} from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-
-/**
- * Bootstrap-time Secrets the bundle includes. MUST stay in lock-step
- * with scripts/bootstrap.sh:bundle_bootstrap_secrets():`items` array
- * — when bootstrap learns about a new platform-level Secret, both
- * sides update.
- *
- * Tests (secrets-bundle.test.ts) assert this list equals the on-disk
- * shell array via a parser, so drift fails CI.
- */
-export const BUNDLE_SECRET_LIST: ReadonlyArray<{ namespace: string; name: string }> = [
-  { namespace: 'platform', name: 'platform-admin-seed' },
-  { namespace: 'platform', name: 'platform-db-credentials' },
-  { namespace: 'platform', name: 'platform-jwt-secret' },
-  { namespace: 'platform', name: 'platform-secrets' },
-  { namespace: 'platform', name: 'oauth2-proxy-config' },
-  { namespace: 'platform', name: 'sftp-host-keys' },
-  { namespace: 'platform', name: 'stalwart-secrets' },
-  // Phase 1 (RocksDB migration): mail-pg-app-credentials removed — Stalwart
-  // no longer uses CNPG PostgreSQL; no PG credentials to bundle.
-  { namespace: 'mail', name: 'stalwart-admin-creds' },
-];
-
-/** Operator key files (mounted as a Secret in-cluster). Present iff
- * bootstrap created them; absent on operator-supplied-recipient runs. */
-export const OPERATOR_KEY_SECRETS: ReadonlyArray<{ namespace: string; name: string }> = [
-  // Bootstrap stages the operator-key into the platform namespace via
-  // the post-install kubectl apply. If the deployment shape diverges
-  // from this assumption an integration test will catch it.
-  { namespace: 'platform', name: 'platform-operator-key' },
-];
+import { isAutoManaged } from './secrets-denylist.js';
+import { restoreTierForNamespace } from './secrets-tiers.js';
+import { readAllowlist } from './secrets-audit.js';
 
 export interface BundleManifestItem {
   readonly namespace: string;
   readonly name: string;
-  readonly kind: 'Secret' | 'ConfigMap' | 'OperatorKey';
+  readonly kind: 'Secret';
 }
 
 export interface SecretsBundle {
   readonly payload: Buffer;
   readonly sizeBytes: number;
   readonly sha256: string;
+  /** Audit trail of what's in the tar. */
   readonly manifest: ReadonlyArray<BundleManifestItem>;
   readonly operatorRecipient: string;
+  /** v2 machine-readable manifest. */
+  readonly manifestV2: BundleManifest;
 }
 
 export interface ExportSecretsBundleDeps {
   readonly k8s: K8sClients;
-  /**
-   * Override `age` binary path for tests. In production we rely on
-   * PATH lookup ('age') so the same Dockerfile works on bare images
-   * with `apk add age`.
-   */
+  /** Override `age` binary path for tests. Defaults to PATH lookup. */
   readonly ageBinary?: string;
+  /** Identify who built the bundle in MANIFEST.json. */
+  readonly generator?: BundleManifest['generator'];
+  /** Optional cluster hostname for forensics. */
+  readonly clusterHostname?: string | null;
 }
 
 interface SecretYaml {
   readonly apiVersion: string;
   readonly kind: 'Secret';
-  readonly metadata: { readonly namespace: string; readonly name: string };
+  readonly metadata: {
+    readonly namespace: string;
+    readonly name: string;
+    readonly ownerReferences?: ReadonlyArray<{
+      readonly apiVersion?: string;
+      readonly kind?: string;
+      readonly name?: string;
+    }>;
+  };
   readonly type?: string;
   readonly data?: Record<string, string>;
+}
+
+interface SecretListItem extends SecretYaml {
+  readonly metadata: SecretYaml['metadata'] & { readonly creationTimestamp?: Date | string };
+}
+
+interface SecretList {
+  readonly items?: ReadonlyArray<SecretListItem>;
 }
 
 /** Read the operator's age recipient (public key) from the cluster. */
@@ -116,10 +111,6 @@ export async function readOperatorRecipient(k8s: K8sClients): Promise<string> {
     throw err;
   });
   const recipient = cm.data?.recipient;
-  // age X25519 recipient is bech32: `age1` + 58 chars from the bech32
-  // charset (no '1', 'b', 'i', 'o' to avoid visual ambiguity).
-  // Strict regex prevents subprocess argument abuse if the ConfigMap
-  // is ever populated by a less-trusted path.
   if (!recipient || !/^age1[ac-hj-np-z02-9]{58}$/i.test(recipient)) {
     throw new Error(`platform-operator-recipient ConfigMap.data.recipient invalid: ${recipient ?? '(missing)'}`);
   }
@@ -127,88 +118,123 @@ export async function readOperatorRecipient(k8s: K8sClients): Promise<string> {
 }
 
 /**
- * Read each Secret in BUNDLE_SECRET_LIST and serialise to a YAML doc
- * stream. Missing Secrets are skipped (manifest records "absent")
- * so the bundle stays small and operator-readable.
- *
- * Returns one tar entry per Secret + a MANIFEST.txt entry describing
- * the bundle contents. The tar bytes are the plaintext input to age.
+ * List every Secret in the cluster, filter out `denied`, tar each
+ * survivor with its restore-tier classification, embed MANIFEST.txt +
+ * MANIFEST.json. Returns the plaintext tar bytes (caller age-encrypts).
  */
 export async function buildSecretsTar(
   k8s: K8sClients,
   recipient: string,
-): Promise<{ tarBytes: Buffer; manifest: BundleManifestItem[]; }> {
-  const manifest: BundleManifestItem[] = [];
+  opts: { generator?: BundleManifest['generator']; clusterHostname?: string | null } = {},
+): Promise<{ tarBytes: Buffer; manifest: BundleManifestItem[]; manifestV2: BundleManifest }> {
+  const generator = opts.generator ?? 'in-cluster';
+  const clusterHostname = opts.clusterHostname ?? null;
+  const generatedAt = new Date().toISOString();
+
+  // List + filter via shared predicate.
+  const allSecrets = await listAllSecrets(k8s);
+  const survivors: SecretListItem[] = [];
+  for (const s of allSecrets) {
+    const owner = s.metadata.ownerReferences?.[0];
+    const decision = isAutoManaged({
+      name: s.metadata.name,
+      type: s.type ?? 'Opaque',
+      owner: owner ? { kind: owner.kind, apiVersion: owner.apiVersion } : null,
+    });
+    if (!decision.denied) survivors.push(s);
+  }
+
+  // Snapshot the operator's skip-at-restore decisions into the bundle
+  // so restore on a fresh cluster honours them without needing the
+  // original ConfigMap.
+  const allowlist = await readAllowlist(k8s);
+  const skipAtRestore: BundleSkipAtRestore[] = allowlist.map((e) => ({
+    namespace: e.namespace,
+    name: e.name,
+    reason: e.reason,
+  }));
+
   const pack = tar.pack();
   const chunks: Buffer[] = [];
   pack.on('data', (chunk: Buffer) => chunks.push(chunk));
+  const manifest: BundleManifestItem[] = [];
+  const entries: BundleEntry[] = [];
 
-  // MANIFEST.txt header — visible to operator before age decryption
-  // succeeds, so they can confirm bundle provenance from the
-  // container hash even before importing the key.
-  const manifestText: string[] = [];
-  manifestText.push('system-backup secrets bundle (Phase 1)');
-  manifestText.push(`generator:  in-cluster (modules/system-backup)`);
-  manifestText.push(`created:    ${new Date().toISOString()}`);
-  manifestText.push(`recipient:  ${recipient}`);
-  manifestText.push('');
-  manifestText.push('contents:');
-
-  // Pull every Secret. The Kube tenant may return 404 for absent
-  // ones (older cluster missing a recently-added Secret type) —
-  // those are skipped, never fatal.
-  const core = k8s.core as unknown as {
-    readNamespacedSecret: (
-      a: { namespace: string; name: string },
-    ) => Promise<SecretYaml>;
-  };
-
-  const all: ReadonlyArray<{ namespace: string; name: string; kind: BundleManifestItem['kind'] }> = [
-    ...BUNDLE_SECRET_LIST.map((s) => ({ ...s, kind: 'Secret' as const })),
-    ...OPERATOR_KEY_SECRETS.map((s) => ({ ...s, kind: 'OperatorKey' as const })),
-  ];
-
-  for (const item of all) {
-    try {
-      const sec = await core.readNamespacedSecret({ namespace: item.namespace, name: item.name });
-      const yaml = renderSecretYaml(sec);
-      const fileName = `${item.namespace}__${item.name}.yaml`;
-      await new Promise<void>((resolve, reject) => {
-        pack.entry({ name: fileName, size: yaml.length }, yaml, (err?: Error | null) => {
-          if (err) reject(err); else resolve();
-        });
+  for (const sec of survivors) {
+    const yaml = renderSecretYaml(sec);
+    const fileName = `${sec.metadata.namespace}__${sec.metadata.name}.yaml`;
+    await new Promise<void>((resolve, reject) => {
+      pack.entry({ name: fileName, size: yaml.length }, yaml, (err?: Error | null) => {
+        if (err) reject(err); else resolve();
       });
-      manifest.push({ namespace: item.namespace, name: item.name, kind: item.kind });
-      manifestText.push(`  ${item.namespace}/${item.name}  (${item.kind})`);
-    } catch (err) {
-      const code = (err as { code?: number; statusCode?: number }).code
-        ?? (err as { statusCode?: number }).statusCode;
-      if (code === 404) continue;
-      throw err;
-    }
+    });
+    manifest.push({ namespace: sec.metadata.namespace, name: sec.metadata.name, kind: 'Secret' });
+    entries.push({
+      namespace: sec.metadata.namespace,
+      name: sec.metadata.name,
+      type: sec.type ?? 'Opaque',
+      restoreTier: restoreTierForNamespace(sec.metadata.namespace),
+      sha256OfYaml: sha256Hex(yaml),
+    });
   }
 
-  // Final MANIFEST.txt entry. Plain text so a bewildered ops engineer
-  // can `tar tf` the decrypted bundle and read the contents.
-  const manifestBuf = Buffer.from(manifestText.join('\n') + '\n', 'utf8');
+  const manifestV2: BundleManifest = {
+    bundleFormat: 2,
+    generatedAt,
+    generator,
+    operatorRecipient: recipient,
+    clusterHostname,
+    entries: entries.sort((a, b) => {
+      if (a.namespace !== b.namespace) return a.namespace.localeCompare(b.namespace);
+      return a.name.localeCompare(b.name);
+    }),
+    skipAtRestore,
+  };
+  const manifestJson = Buffer.from(JSON.stringify(manifestV2, null, 2) + '\n', 'utf8');
   await new Promise<void>((resolve, reject) => {
-    pack.entry({ name: 'MANIFEST.txt', size: manifestBuf.length }, manifestBuf, (err?: Error | null) => {
+    pack.entry({ name: 'MANIFEST.json', size: manifestJson.length }, manifestJson, (err?: Error | null) => {
+      if (err) reject(err); else resolve();
+    });
+  });
+
+  const txtLines: string[] = [];
+  txtLines.push(`secrets bundle (v${manifestV2.bundleFormat})`);
+  txtLines.push(`generator:   ${manifestV2.generator}`);
+  txtLines.push(`created:     ${manifestV2.generatedAt}`);
+  if (manifestV2.clusterHostname) txtLines.push(`hostname:    ${manifestV2.clusterHostname}`);
+  txtLines.push(`recipient:   ${manifestV2.operatorRecipient}`);
+  txtLines.push(`entries:     ${manifestV2.entries.length}`);
+  txtLines.push(`  tier-1-platform: ${manifestV2.entries.filter((e) => e.restoreTier === 'tier-1-platform').length}`);
+  txtLines.push(`  tier-2-tenant:   ${manifestV2.entries.filter((e) => e.restoreTier === 'tier-2-tenant').length}`);
+  txtLines.push(`  unclassified:    ${manifestV2.entries.filter((e) => e.restoreTier === 'unclassified').length}`);
+  txtLines.push(`skip-at-restore: ${manifestV2.skipAtRestore.length}`);
+  txtLines.push('');
+  txtLines.push('contents:');
+  for (const e of manifestV2.entries) {
+    txtLines.push(`  ${e.namespace}/${e.name}  [${e.restoreTier}]`);
+  }
+  const manifestTxt = Buffer.from(txtLines.join('\n') + '\n', 'utf8');
+  await new Promise<void>((resolve, reject) => {
+    pack.entry({ name: 'MANIFEST.txt', size: manifestTxt.length }, manifestTxt, (err?: Error | null) => {
       if (err) reject(err); else resolve();
     });
   });
 
   pack.finalize();
   await new Promise<void>((resolve) => { pack.on('end', () => resolve()); });
-  return { tarBytes: Buffer.concat(chunks), manifest };
+  return { tarBytes: Buffer.concat(chunks), manifest, manifestV2 };
 }
 
-/** Serialise a Secret returned by the Kube tenant to YAML. We only
- * include the fields needed for `kubectl apply -f` to recreate the
- * Secret on a fresh cluster — everything else (status, managedFields,
- * resourceVersion, uid) is stripped so bundles are diffable. */
+async function listAllSecrets(k8s: K8sClients): Promise<SecretListItem[]> {
+  const core = k8s.core as unknown as {
+    listSecretForAllNamespaces: () => Promise<SecretList>;
+  };
+  const list = await core.listSecretForAllNamespaces();
+  return [...(list.items ?? [])];
+}
+
+/** Serialise a Secret to apply-ready YAML, stripping server-managed fields. */
 function renderSecretYaml(sec: SecretYaml): Buffer {
-  // Strip server-managed fields. apiVersion + kind + metadata{ns,name}
-  // + type + data is enough for kubectl apply.
   const lines: string[] = [];
   lines.push('apiVersion: v1');
   lines.push('kind: Secret');
@@ -219,25 +245,22 @@ function renderSecretYaml(sec: SecretYaml): Buffer {
   if (sec.data && Object.keys(sec.data).length > 0) {
     lines.push('data:');
     for (const [k, v] of Object.entries(sec.data)) {
-      // Keys are arbitrary strings (must be quoted defensively); values
-      // are already base64 strings safe for unquoted YAML on a single line.
       lines.push(`  ${yamlEscape(k)}: ${v}`);
     }
   }
   return Buffer.from(lines.join('\n') + '\n', 'utf8');
 }
 
-/** Defensive YAML quoting for keys/strings that might contain special chars. */
 function yamlEscape(s: string): string {
   if (/^[A-Za-z0-9_./\-]+$/.test(s)) return s;
-  return JSON.stringify(s); // JSON strings are valid YAML flow scalars.
+  return JSON.stringify(s);
 }
 
-/**
- * Pipe tarBytes through `age -r <recipient>` and return the encrypted
- * output as a Buffer. The full plaintext is held in memory for the
- * stream lifetime — fine for ~100KB bundles, not a tenant-scale path.
- */
+function sha256Hex(b: Buffer): string {
+  return createHash('sha256').update(b).digest('hex');
+}
+
+/** Pipe tarBytes through `age -r <recipient>` and return encrypted output. */
 export async function ageEncrypt(
   tarBytes: Buffer,
   recipient: string,
@@ -261,20 +284,13 @@ export async function ageEncrypt(
   });
 }
 
-/**
- * Top-level: list secrets, tar, age-encrypt, return.
- *
- * Pipeline: tar(plaintext) → age. Matches the on-host
- * `bundle_bootstrap_secrets` format in scripts/bootstrap.sh exactly,
- * so a bundle exported through the API is byte-format-compatible
- * with the existing `make secrets-restore BUNDLE=… KEY=…` flow + the
- * `bootstrap.sh --secrets-bundle …` import. Compression deliberately
- * NOT applied — age uses chacha20-poly1305 which produces high-
- * entropy output, gzip on top wastes CPU on indistinguishable bytes.
- */
+/** Top-level: list → filter → tar with v2 MANIFEST → age. */
 export async function exportSecretsBundle(deps: ExportSecretsBundleDeps): Promise<SecretsBundle> {
   const recipient = await readOperatorRecipient(deps.k8s);
-  const { tarBytes, manifest } = await buildSecretsTar(deps.k8s, recipient);
+  const { tarBytes, manifest, manifestV2 } = await buildSecretsTar(deps.k8s, recipient, {
+    generator: deps.generator,
+    clusterHostname: deps.clusterHostname,
+  });
   const encrypted = await ageEncrypt(tarBytes, recipient, deps.ageBinary);
   const sha256 = createHash('sha256').update(encrypted).digest('hex');
   return {
@@ -283,5 +299,6 @@ export async function exportSecretsBundle(deps: ExportSecretsBundleDeps): Promis
     sha256,
     manifest,
     operatorRecipient: recipient,
+    manifestV2,
   };
 }

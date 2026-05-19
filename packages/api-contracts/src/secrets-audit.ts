@@ -1,36 +1,39 @@
 /**
- * Secrets-bundle coverage audit (DR-bundle roadmap, Phase 0).
+ * Secrets coverage audit (DR-bundle bundle-everything redesign).
  *
- * Detects Secrets in the cluster that are NOT covered by any backup
- * mechanism so DR-readiness gaps surface at create-time, not at
- * disaster-time. See docs/04-deployment/DR_BUNDLE_ROADMAP.md.
+ * Under bundle-everything semantics, every Secret in the cluster
+ * that isn't auto-managed by a controller ends up in the bundle by
+ * default. There is no "uncovered" bucket. The audit's purpose is
+ * informational: it shows the breakdown so operators can see what
+ * the next bundle will contain.
  *
- * Classification:
- *   - DENIED   — auto-managed by k8s/operators (SA tokens, helm release
- *                state, cert-manager TLS, sealed-secret unsealed copies,
- *                CNPG-managed credentials). NOT bundle candidates by
- *                design; restoring them would conflict with the operator
- *                that owns them.
- *   - COVERED  — matches the Tier-1 BUNDLE_SECRET_LIST OR lives in a
- *                tenant namespace (`client-*`) the daily CronJob sweeps.
- *   - ALLOWED  — explicitly excluded via the secrets-audit-allowlist
- *                ConfigMap with an operator-supplied reason.
- *   - UNCOVERED — every other Secret. These represent silent DR risk.
+ * Five buckets:
+ *   - denied         → in `secrets-denylist.ts`; never bundled.
+ *   - skip-at-restore → in bundle, operator-marked "do not apply at
+ *                      restore time" with a documented reason.
+ *   - tier-1-platform → in bundle, applied by `conservative` restore
+ *                      profile (platform/mail/cnpg-system/etc.).
+ *   - tier-2-tenant   → in bundle, applied by `full` profile
+ *                      (`client-*` namespace pattern).
+ *   - unclassified    → in bundle, applied by `full` profile
+ *                      (third-party / operator-installed namespaces).
+ *
+ * See docs/04-deployment/DR_BUNDLE_ROADMAP.md.
  */
 
 import { z } from 'zod';
 
 export const secretCoverageCategorySchema = z.enum([
-  /** Auto-managed by k8s (SA token), Helm, cert-manager, sealed-secrets, CNPG, etc. */
+  /** Auto-managed by a controller; never enters the bundle. */
   'denied',
-  /** Matches BUNDLE_SECRET_LIST (Tier-1, fixed). */
-  'tier-1-bundle',
-  /** Namespace `client-*` — covered by the nightly secrets-backup CronJob's namespace sweep. */
-  'tier-2-tenant-sweep',
-  /** Operator added to the allowlist with a documented reason. */
-  'allowlisted',
-  /** UNCOVERED — silent DR risk. */
-  'uncovered',
+  /** In bundle but operator-marked "skip at restore" via the allowlist. */
+  'skip-at-restore',
+  /** In bundle, applied by `conservative` restore profile. */
+  'tier-1-platform',
+  /** In bundle, applied by `full` restore profile (tenant namespace). */
+  'tier-2-tenant',
+  /** In bundle, applied by `full` restore profile (everything else). */
+  'unclassified',
 ]);
 export type SecretCoverageCategory = z.infer<typeof secretCoverageCategorySchema>;
 
@@ -58,19 +61,21 @@ export const secretsAuditResultSchema = z.object({
   totalSecretsCount: z.number().int().min(0),
   byCategory: z.object({
     denied: z.number().int().min(0),
-    tier1Bundle: z.number().int().min(0),
-    tier2TenantSweep: z.number().int().min(0),
-    allowlisted: z.number().int().min(0),
-    uncovered: z.number().int().min(0),
+    tier1Platform: z.number().int().min(0),
+    tier2Tenant: z.number().int().min(0),
+    unclassified: z.number().int().min(0),
+    skipAtRestore: z.number().int().min(0),
   }),
-  /** True iff `byCategory.uncovered === 0`. Drives the UI banner colour. */
+  /** Always true under bundle-everything (kept for forward-compat). */
   healthy: z.boolean(),
-  /** Only the UNCOVERED rows. Operator should act on each: either add
-   *  to the allowlist (with a documented reason) or extend the bundle. */
-  uncoveredSecrets: z.array(auditedSecretSchema),
-  /** Allowlist as observed at audit time. Useful for the UI to surface
-   *  "X items currently allowlisted" without a second API call. */
-  allowlistedSecrets: z.array(auditedSecretSchema),
+  /** Operator-marked entries that won't be re-applied under the
+   *  default restore profiles. Useful for the UI to show "X items
+   *  skipped at restore" without a second API call. */
+  skipAtRestoreSecrets: z.array(auditedSecretSchema),
+  /** Every Secret in the cluster + its category. Sorted by
+   *  (category, namespace, name) for stable UI rendering. The UI
+   *  filters client-side rather than re-querying per bucket. */
+  allSecrets: z.array(auditedSecretSchema),
 });
 export type SecretsAuditResult = z.infer<typeof secretsAuditResultSchema>;
 
@@ -79,11 +84,14 @@ export type SecretsAuditResponse = z.infer<typeof secretsAuditResponseSchema>;
 
 // ─── Allowlist CRUD ────────────────────────────────────────────────────
 
-/** One entry in the secrets-audit-allowlist ConfigMap. */
+/** One entry in the secrets-audit-allowlist ConfigMap.
+ *  Semantics under bundle-everything: this Secret IS in the bundle,
+ *  but no restore profile will apply it unless the operator passes
+ *  `--override-skip-at-restore`. */
 export const allowlistEntrySchema = z.object({
   namespace: z.string().min(1).max(253),
   name: z.string().min(1).max(253),
-  /** Why this Secret is intentionally NOT in any bundle. Required. */
+  /** Why this Secret should NOT be re-applied at restore time. Required. */
   reason: z.string().min(10).max(500),
   /** Set by the API from req.user.sub on write. */
   addedBy: z.string().max(200),
