@@ -1,6 +1,10 @@
-# Allow Traefik bouncer (in `traefik` namespace) to reach the CrowdSec
-# LAPI on :8080. Also allow CrowdSec itself egress to api.crowdsec.net
-# for the community blocklist pull. Deny everything else.
+# Allow Traefik bouncer (in `traefik` namespace) AND platform-api (in
+# `platform` namespace) to reach the CrowdSec LAPI on :8080. platform-api
+# is required by /admin/security/crowdsec/* (Banned IPs tab in
+# /settings/security-hardening) — without it the list/status endpoints
+# time out with "This operation was aborted".
+# Also allow CrowdSec itself egress to api.crowdsec.net for the community
+# blocklist pull. Deny everything else.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -19,6 +23,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: traefik
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
       ports:
         - protocol: TCP
           port: 8080
