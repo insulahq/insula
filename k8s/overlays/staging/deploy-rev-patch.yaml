@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-84302f2"
+        platform.example.test/deploy-rev: "0.0.0-bc08af6"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-84302f2"
+        platform.example.test/deploy-rev: "0.0.0-bc08af6"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +34,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-84302f2"
+        platform.example.test/deploy-rev: "0.0.0-bc08af6"
 ---
 # firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
@@ -48,4 +48,4 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.0.0-84302f2"
+        platform.example.test/deploy-rev: "0.0.0-bc08af6"
