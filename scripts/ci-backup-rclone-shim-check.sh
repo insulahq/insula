@@ -206,4 +206,35 @@ if ! grep -q "patchClusterWalArchiver" "$POSTGRES_OBJECTSTORE"; then
 fi
 pass "Invariant 12: isWALArchiver is reconciler-owned (no static true)"
 
-echo "[ci-backup-rclone-shim] All 12 invariants pass."
+# ─── 13. etcd-snap-via-shim CronJob present + reconciler wired ────
+ETCD_CRONJOB_MANIFEST="$ROOT/k8s/base/backup/etcd-snap-via-shim-cronjob.yaml"
+ETCD_RECONCILER="$ROOT/backend/src/modules/backup-rclone-shim/etcd-cronjob.ts"
+BACKUP_KUSTOMIZATION="$ROOT/k8s/base/backup/kustomization.yaml"
+
+if [[ ! -f "$ETCD_CRONJOB_MANIFEST" ]]; then
+  fail "Invariant 13: k8s/base/backup/etcd-snap-via-shim-cronjob.yaml missing"
+fi
+if [[ ! -f "$ETCD_RECONCILER" ]]; then
+  fail "Invariant 13: etcd-cronjob reconciler missing"
+fi
+if ! grep -q "etcd-snap-via-shim-cronjob.yaml" "$BACKUP_KUSTOMIZATION"; then
+  fail "Invariant 13: k8s/base/backup/kustomization.yaml does not include etcd-snap-via-shim-cronjob.yaml"
+fi
+if ! grep -q "startEtcdCronJobReconciler" "$APP_TS"; then
+  fail "Invariant 13: etcd-cronjob scheduler not wired into app.ts"
+fi
+if ! grep -qE "^\s*suspend:\s*true" "$ETCD_CRONJOB_MANIFEST"; then
+  fail "Invariant 13: etcd-snap-via-shim CronJob must ship with suspend: true (reconciler flips it on)"
+fi
+if ! grep -q "backup-rclone-shim.platform.svc.cluster.local:9000" "$ETCD_CRONJOB_MANIFEST"; then
+  fail "Invariant 13: etcd CronJob must route through the shim ClusterIP, not a direct upstream endpoint"
+fi
+if ! grep -q "backup-rclone-shim-creds" "$ETCD_CRONJOB_MANIFEST"; then
+  fail "Invariant 13: etcd CronJob must reference the backup-rclone-shim-creds Secret"
+fi
+if grep -qE "name:\s*backup-credentials" "$ETCD_CRONJOB_MANIFEST"; then
+  fail "Invariant 13: etcd-snap-via-shim CronJob must NOT use the legacy backup-credentials Secret"
+fi
+pass "Invariant 13: etcd-snap-via-shim CronJob via shim"
+
+echo "[ci-backup-rclone-shim] All 13 invariants pass."
