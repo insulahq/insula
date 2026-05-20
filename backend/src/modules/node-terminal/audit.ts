@@ -13,7 +13,11 @@ export type NodeTerminalAuditAction =
   | 'node_terminal.session.create.failed'
   | 'node_terminal.session.ws.attached'
   | 'node_terminal.session.ws.rejected'
-  | 'node_terminal.session.closed';
+  | 'node_terminal.session.closed'
+  // Fresh wsToken minted for an existing session via POST /ws-token
+  // (Reconnect button or restoreFromStorage on app mount). Distinct
+  // from .create.success so audit-log queries can tell them apart.
+  | 'node_terminal.session.ws_token.refreshed';
 
 export interface NodeTerminalAuditInput {
   readonly actorId: string;
