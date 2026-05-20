@@ -1,10 +1,52 @@
 # Backup-rclone-shim operator runbook
 
-> **Status:** R-X1–R-X6 shipped. etcd CronJob
-> (R-X7), restic + rclone-push callers (R-X8/R-X9), UI (R-X10), restore
+> **Status:** R-X1–R-X7 shipped. Restic + rclone-push callers (R-X8/R-X9), UI (R-X10), restore
 > tooling (R-X11), DR drill (R-X12), legacy archive (R-X13), perf
 > benchmark (R-X14) follow. Operator-visible surfaces below are LIVE
 > from R-X5.
+
+## etcd snapshot upload via the shim (R-X7)
+
+The CronJob `platform/etcd-snap-via-shim` runs hourly on a control-plane
+node. It reads k3s's auto-snapshots from `/var/lib/rancher/k3s/server/db/snapshots/`
+(hostPath read-only), uploads each fresh snapshot to the shim bucket
+`s3://system/etcd/<host>-<ts>.db`, writes a `.meta` sidecar with the
+sha256, and prunes to keep the newest 24 in the bucket.
+
+`spec.suspend` is owned by `platform-api`'s `etcd-cronjob` reconciler:
+
+- SYSTEM target bound → `suspend: false` (cron fires every hour)
+- SYSTEM target unbound → `suspend: true` (no upload attempts; the
+  shim has no bucket configured for an unassigned class, so noisy
+  "bucket not found" failures are avoided)
+
+5-min reconciler tick. Idempotent — patches only when the live
+`spec.suspend` doesn't match the desired state.
+
+The legacy `etcd-snapshot-cronjob` (direct-to-S3 via aws-cli with the
+`backup-credentials` Secret) ships alongside in `k8s/base/backup/`
+during the transition. R-X13 archives it once shim coverage is
+proven on staging.
+
+### Recover from a shim-uploaded etcd snapshot
+
+(Full restore tooling lands in R-X11.) Until then:
+
+```bash
+# Pick the newest etcd snapshot in the shim bucket.
+kubectl -n platform exec -it deploy/backup-rclone-shim -- \
+  rclone lsf :s3:system/etcd/ | tail -5
+
+# Download it locally on the control-plane node.
+rclone copyto :s3:system/etcd/<host>-<ts>.db /var/lib/rancher/k3s/server/db/snapshots/restore.db
+
+# Stop k3s, restore, restart.
+systemctl stop k3s
+k3s etcd-snapshot restore --name restore /var/lib/rancher/k3s/server/db/snapshots/restore.db
+systemctl start k3s
+```
+
+---
 
 ## Postgres backups via the plugin (R-X6)
 

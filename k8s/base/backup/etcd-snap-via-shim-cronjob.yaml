@@ -1,0 +1,204 @@
+# R-X7: etcd snapshot upload via the universal backup-rclone-shim.
+#
+# Replaces `etcd-snapshot-cronjob.yaml`'s direct-to-S3 path with a
+# uniform shim flow:
+#
+#   k3s etcd snapshots (hostPath RO) → rclone copy → shim ClusterIP:9000
+#                                                       ↓
+#                                            s3://system/etcd/<host>-<ts>.db.zst
+#                                                       ↓
+#                                        upstream target (S3 / SFTP / CIFS / NFS)
+#
+# The shim's `s3://system` bucket is rclone-`crypt` wrapped — the
+# on-the-wire payload is encrypted with BACKUP_TARGET_KEY before it
+# reaches the upstream backend.
+#
+# `suspend: true` default — flipped by platform-api's
+# `etcd-cronjob` reconciler when the SYSTEM-class shim target is
+# bound. When SYSTEM is unassigned, this CronJob stays suspended so
+# the hourly tick doesn't generate noisy "shim bucket not found"
+# failures.
+#
+# Hourly schedule per RFC §13. The k3s side already keeps a 24-slot
+# rolling local-disk window via `--etcd-snapshot-schedule-cron 0 * * * *`
+# and `--etcd-snapshot-retention 24`; this CronJob is the off-box
+# (DR) copy on top.
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-snap-via-shim
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-backup
+    app.kubernetes.io/managed-by: platform-api-etcd-cronjob
+    platform.example.test/backup-health-watch: "true"
+    platform.example.test/backup-category: "dr"
+    platform.example.test/backup-severity: "critical"
+  annotations:
+    platform.example.test/backup-display-name: "etcd snapshot via shim"
+spec:
+  # Reconciler toggles off when SYSTEM target is bound.
+  suspend: true
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      # TTL keeps completed Job + Pod state around for one hour so
+      # operators can debug — but not forever (drift cleanup runs
+      # daily via job-gc-cronjob).
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: hosting-platform
+            app.kubernetes.io/component: dr-backup
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: default
+          # k3s snapshot dir is on the control-plane node only. On a
+          # HA cluster this pins to one of the 3 servers; on a
+          # single-node cluster the only node matches.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              effect: NoSchedule
+              operator: Exists
+            - key: node-role.kubernetes.io/master
+              effect: NoSchedule
+              operator: Exists
+          containers:
+            - name: rclone
+              # rclone image (~25 MiB) — same family as the shim
+              # image. We pin the upstream rclone/rclone tag here
+              # because the platform-api never edits this manifest at
+              # runtime; the reconciler only toggles spec.suspend.
+              image: rclone/rclone:1.66
+              imagePullPolicy: IfNotPresent
+              env:
+                # Shim S3 endpoint. ClusterIP + Service.internalTraffic
+                # Policy=Local mean kube-proxy routes this Pod's
+                # request to the on-node shim pod (zero cross-node
+                # data hops).
+                - name: RCLONE_S3_ENDPOINT
+                  value: http://backup-rclone-shim.platform.svc.cluster.local:9000
+                # HKDF-derived creds from BACKUP_TARGET_KEY. Same
+                # Secret the R-X6 postgres ObjectStore reads.
+                - name: RCLONE_S3_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-rclone-shim-creds
+                      key: access_key
+                - name: RCLONE_S3_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-rclone-shim-creds
+                      key: secret_key
+                - name: SHIM_BUCKET
+                  value: system
+                - name: SHIM_PREFIX
+                  value: etcd
+                # 24-snap retention — matches k3s side. The shim's
+                # crypt bucket re-encrypts on upload, so old objects
+                # are only useful with the current BACKUP_TARGET_KEY
+                # (post-rotation, all old objects are inert).
+                - name: RETENTION_COUNT
+                  value: "24"
+              # POSIX sh — alpine rclone image ships sh + coreutils
+              # only. No bash arrays.
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -eu
+                  SRC=/snapshots
+                  if [ ! -d "$$SRC" ]; then
+                    echo "[etcd-shim] snapshot dir missing — is this a k3s server node?"
+                    exit 1
+                  fi
+                  cd "$$SRC"
+                  # Pick snapshots modified in the last hour. We
+                  # bias toward the latest k3s auto-snapshot — if
+                  # the operator triggered a manual snapshot via
+                  # `make etcd-snapshot-now`, that one's also <1h
+                  # old and will land in the same upload batch.
+                  TMP=/tmp/etcd-files
+                  find . -maxdepth 1 -type f -mmin -75 2>/dev/null | sed 's|^\./||' > "$$TMP" || true
+                  if [ ! -s "$$TMP" ]; then
+                    echo "[etcd-shim] no snapshots <75min old. k3s auto-schedule defaults to 0 */12 * * *; first-cycle clusters may skip until the next auto-snap. Exiting clean."
+                    exit 0
+                  fi
+                  COUNT=$(wc -l < "$$TMP" | tr -d ' ')
+                  CFG_FLAGS="--s3-provider=Other \
+                             --s3-endpoint=$$RCLONE_S3_ENDPOINT \
+                             --s3-access-key-id=$$RCLONE_S3_ACCESS_KEY_ID \
+                             --s3-secret-access-key=$$RCLONE_S3_SECRET_ACCESS_KEY \
+                             --s3-force-path-style \
+                             --s3-region=auto \
+                             --s3-no-check-bucket"
+                  HOST=$(hostname)
+                  TS=$(date -u +%Y%m%dT%H%M%SZ)
+                  while IFS= read -r name; do
+                    [ -z "$$name" ] && continue
+                    DEST="$$HOST-$$TS-$$name.db"
+                    echo "[etcd-shim] upload $$name → s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$DEST"
+                    # rclone copy with the shim as :s3: remote. The
+                    # source is a single file; rclone reads the local
+                    # path and streams to S3 in one PUT.
+                    rclone $$CFG_FLAGS copyto "$$name" \
+                      ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$DEST"
+                    # Sidecar metadata (timestamp + sha256 + source
+                    # node) so operators can pick the right snapshot
+                    # to restore from without listing object content.
+                    SHA=$(sha256sum "$$name" | cut -d ' ' -f 1)
+                    META="{\"timestamp\":\"$$TS\",\"sha256\":\"$$SHA\",\"node\":\"$$HOST\",\"source\":\"$$name\"}"
+                    echo "$$META" | rclone $$CFG_FLAGS rcat \
+                      ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$DEST.meta"
+                  done < "$$TMP"
+                  # Retention: keep the newest 24. List, sort desc,
+                  # skip first 24, rm the rest. Both the .db and
+                  # .meta are subject to retention — we sort by name
+                  # which sorts the .db before its .meta alphabetically.
+                  TMP_EV=/tmp/etcd-evict
+                  rclone $$CFG_FLAGS lsf ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/" 2>/dev/null \
+                    | grep '\.db$$' \
+                    | sort -r \
+                    | tail -n +25 > "$$TMP_EV" || true
+                  while IFS= read -r f; do
+                    [ -z "$$f" ] && continue
+                    echo "[etcd-shim] evict $$SHIM_PREFIX/$$f (+ .meta)"
+                    rclone $$CFG_FLAGS deletefile ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$f" || true
+                    rclone $$CFG_FLAGS deletefile ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$f.meta" || true
+                  done < "$$TMP_EV"
+                  echo "[etcd-shim] done ($$COUNT uploaded)"
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /snapshots
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                runAsNonRoot: false
+                # k3s writes snapshot files as root; we read them.
+                runAsUser: 0
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
+          volumes:
+            - name: snapshots
+              hostPath:
+                path: /var/lib/rancher/k3s/server/db/snapshots
+                type: Directory
