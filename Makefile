@@ -10,7 +10,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
 
-.PHONY: help smoke smoke-public failover verdict diagnose secrets-fetch secrets-restore
+.PHONY: help smoke smoke-public failover verdict diagnose secrets-fetch secrets-restore backup-target-key-status backup-target-key-rotate
 
 # Default — list targets with one-line descriptions.
 help:
@@ -54,6 +54,22 @@ secrets-restore: ## Restore Secrets from a v2 bundle (BUNDLE=path KEY=path PROFI
 	OVERRIDE=$${OVERRIDE_SKIP_AT_RESTORE:-0}; \
 	bash -c "RESTORE_PROFILE=$$PROFILE RESTORE_DRY_RUN=$$DRY_RUN RESTORE_EXTRACT_TO=\"$$EXTRACT_TO\" RESTORE_OVERRIDE_SKIP_AT_RESTORE=$$OVERRIDE source $(CURDIR)/scripts/lib/apply-secrets-bundle.sh && apply_secrets_bundle \"$(BUNDLE)\" \"$(KEY)\""
 	@echo "done. Pods may need restart to pick up new Secret values: kubectl rollout restart -n <ns> deploy/<name>"
+
+backup-target-key-status: ## Show BACKUP_TARGET_KEY fingerprint + last rotation (needs KUBECONFIG)
+	@if [ -z "$$KUBECONFIG" ]; then echo "KUBECONFIG must be set" >&2; exit 2; fi
+	@FP=$$(kubectl get secret -n platform backup-target-key -o jsonpath='{.data.fingerprint}' 2>/dev/null | base64 -d 2>/dev/null); \
+	if [ -z "$$FP" ]; then echo "backup-target-key not found in platform/ (cluster bootstrapped?)" >&2; exit 1; fi; \
+	GEN=$$(kubectl get secret -n platform backup-target-key -o jsonpath='{.data.generated_at}' 2>/dev/null | base64 -d 2>/dev/null); \
+	ROT=$$(kubectl get secret -n platform backup-target-key -o jsonpath='{.data.rotated_at}' 2>/dev/null | base64 -d 2>/dev/null); \
+	FROM=$$(kubectl get secret -n platform backup-target-key -o jsonpath='{.data.rotated_from}' 2>/dev/null | base64 -d 2>/dev/null); \
+	echo "  fingerprint:   $$FP"; \
+	echo "  generated:     $$GEN"; \
+	if [ -n "$$ROT" ]; then echo "  last rotation: $$ROT"; fi; \
+	if [ -n "$$FROM" ]; then echo "  rotated from:  $$FROM"; fi
+
+backup-target-key-rotate: ## DESTRUCTIVE — rotate BACKUP_TARGET_KEY (invalidates all remote backups; see RFC §13b)
+	@if [ -z "$$KUBECONFIG" ]; then echo "KUBECONFIG must be set" >&2; exit 2; fi
+	@bash $(CURDIR)/scripts/backup-target-key-rotate.sh
 
 diagnose:     ## Capture forensic snapshot (nodes/pods/Felix logs) under docs/diagnostics/<utc-stamp>/
 	@DST=docs/diagnostics/$$(date -u '+%Y%m%dT%H%M%SZ'); mkdir -p "$$DST"; \
