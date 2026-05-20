@@ -35,6 +35,21 @@ export const WS_TOKEN_BYTES = 32; // 256 bits
 // Pod readiness wait. Aligned with image-pull-on-cold-node worst case.
 export const POD_READY_TIMEOUT_MS = 30_000;
 
+// Grace period: when a WS closes without an explicit terminate frame
+// (page reload, network blip, replica restart), the session sticks
+// around this long for a reconnect to save it. The scheduler reaps
+// rows whose terminate_after has elapsed if the in-memory timer died
+// with its replica.
+export const NODE_TERMINAL_GRACE_MS = 60_000; // 60s
+
+// In-memory grace timers, keyed by sessionId. Replica-local — the
+// authoritative state is `node_terminal_sessions.terminate_after` in
+// the DB. If a replica dies during the grace window, the next
+// scheduler sweep on any replica picks up the row via
+// session-store.findReadyForTermination(). The local timer is the
+// fast path; the DB row is the safety net.
+const graceTimers = new Map<string, NodeJS.Timeout>();
+
 export interface ServiceCtx {
   readonly db: Database;
   readonly kubeConfig: k8s.KubeConfig;
@@ -432,6 +447,10 @@ export async function attachExec(
   const session = getSession(sessionId)!;
 
   attachWs(sessionId, socket);
+  // Cancel any pending grace-period termination — a fresh attach
+  // means the session was successfully restored before the timer
+  // fired. Idempotent if no timer was set.
+  await cancelDelayedTermination(ctx, sessionId);
   if (replicaTransfer) {
     request.log.info({
       sessionId,
@@ -451,6 +470,10 @@ export async function attachExec(
   const stderr = new PassThrough();
   const stdin = new PassThrough();
   let closed = false;
+  // Tracks whether the client signalled deliberate termination (× on
+  // modal/dock) BEFORE the WS close fired. When true, finalize skips
+  // the grace period and runs terminateSession synchronously.
+  let explicitTerminate = false;
 
   // Resize forwarding to kubelet. The k8s exec WebSocket multiplexes
   // streams over channel-prefixed frames (V4 protocol):
@@ -509,6 +532,18 @@ export async function attachExec(
         sendResizeToKubelet(parsed.cols, parsed.rows);
         return;
       }
+      // Explicit termination signal — the client (× on modal/dock,
+      // DELETE keyboard shortcut) wants the session GONE immediately,
+      // bypassing the grace period that protects page reloads. We
+      // flag intent + close the socket; the close handler reads the
+      // flag and calls terminateSession synchronously.
+      if (parsed.type === 'terminate') {
+        explicitTerminate = true;
+        // Best-effort ack so the client knows the server got it.
+        try { sendFrame(socket, { type: 'exit', reason: 'client_close' }); } catch { /* ignore */ }
+        try { socket.close(1000, 'terminate'); } catch { /* already closed */ }
+        return;
+      }
       // Any other frame (ping/pong/etc.) is silently accepted but does
       // NOT count as activity. The WS-level protocol ping the server
       // sends every 30s + the browser's auto-pong already keeps the
@@ -535,7 +570,17 @@ export async function attachExec(
     stdin.destroy();
     stdout.destroy();
     stderr.destroy();
-    await terminateSession(ctx, sessionId, reason, request).catch(() => undefined);
+    // Three lifecycle paths after a WS close:
+    //  • explicitTerminate set by client-side {type:'terminate'} → kill now
+    //  • reason is 'shell_exited' → the host shell exited, no point keeping
+    //    a privileged Pod around to attach to
+    //  • everything else (page reload, browser tab kill, network blip,
+    //    replica restart) → grace-period; reconnect within 60s saves it
+    if (explicitTerminate || reason === 'shell_exited') {
+      await terminateSession(ctx, sessionId, reason, request).catch(() => undefined);
+    } else {
+      await scheduleDelayedTermination(ctx, sessionId, reason, request).catch(() => undefined);
+    }
     try { socket.close(1000, reason); } catch { /* already closed */ }
   };
 
@@ -607,6 +652,72 @@ export async function attachExec(
 }
 
 /**
+ * Schedule a delayed terminateSession call. Used by the WS close
+ * handler when the client did NOT signal explicit "I'm done" intent
+ * (i.e. ambiguous drops: page reload, browser tab kill, network blip,
+ * replica restart). Within the grace window a fresh exec attach or
+ * POST /ws-token cancels the timer.
+ *
+ * Idempotent — replaces any in-flight timer for the same sessionId.
+ * Updates both the in-memory map AND the DB row's terminate_after
+ * column (the latter is the scheduler's authoritative fallback if
+ * this replica dies before the timer fires).
+ */
+export async function scheduleDelayedTermination(
+  ctx: ServiceCtx,
+  sessionId: string,
+  reason: TerminateReason,
+  request: FastifyRequest,
+  graceMs: number = NODE_TERMINAL_GRACE_MS,
+): Promise<void> {
+  // Cancel any existing local timer — last close wins.
+  const existing = graceTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+
+  const fireAt = new Date(Date.now() + graceMs);
+  // Persist the deadline so cross-replica reaping works.
+  await sessionStore.setTerminateAfter(ctx.db, sessionId, fireAt).catch((err) => {
+    request.log.warn(
+      { sessionId, err: err instanceof Error ? err.message : err },
+      'failed to persist terminate_after — relying on in-memory timer',
+    );
+  });
+
+  const t = setTimeout(() => {
+    graceTimers.delete(sessionId);
+    void terminateSession(ctx, sessionId, reason, request).catch(() => undefined);
+  }, graceMs);
+  // Don't keep the Node event loop alive just for these timers.
+  t.unref?.();
+  graceTimers.set(sessionId, t);
+}
+
+/**
+ * Cancel an in-flight delayed termination — called when a reconnect
+ * lands (fresh exec attach OR refreshWsToken via the POST /ws-token
+ * route). Best-effort: refreshWsToken atomically clears the DB column
+ * in the same statement, so even if the in-memory timer fires due to
+ * a race, terminateSession's idempotency makes the worst case a no-op.
+ */
+export async function cancelDelayedTermination(
+  ctx: ServiceCtx,
+  sessionId: string,
+): Promise<void> {
+  const existing = graceTimers.get(sessionId);
+  if (existing) {
+    clearTimeout(existing);
+    graceTimers.delete(sessionId);
+  }
+  await sessionStore.clearTerminateAfter(ctx.db, sessionId).catch(() => undefined);
+}
+
+/** Test-only — wipe the local timer map. */
+export function _resetGraceTimersForTests(): void {
+  for (const t of graceTimers.values()) clearTimeout(t);
+  graceTimers.clear();
+}
+
+/**
  * Delete the privileged Pod + remove the session from the registry.
  * Idempotent — calling twice is a no-op on the second call.
  *
@@ -622,6 +733,16 @@ export async function terminateSession(
   request: FastifyRequest,
   requestingUserId?: string,
 ): Promise<void> {
+  // Clear any in-memory grace timer for this session. If we're being
+  // called BY the grace timer itself, the timer has already deleted
+  // itself from the map — this is a no-op. If we're being called by
+  // the DELETE endpoint or shell-exited path, this cancels the timer
+  // so it can't fire later on an already-terminated session.
+  const pending = graceTimers.get(sessionId);
+  if (pending) {
+    clearTimeout(pending);
+    graceTimers.delete(sessionId);
+  }
   // Look up the DB row FIRST so we have authoritative metadata even
   // when this replica didn't create the session (cross-replica close).
   const dbSession = await sessionStore.findById(ctx.db, sessionId);

@@ -22,6 +22,10 @@ export interface SessionRow {
   readonly createdAt: Date;
   readonly expiresAt: Date;
   readonly lastActivityAt: Date;
+  /** When non-null, the scheduler will terminate this session once
+   *  now() > terminateAfter. Set by the WS close handler; cleared by
+   *  refreshWsToken (reconnect) or by an explicit terminate frame. */
+  readonly terminateAfter: Date | null;
 }
 
 export interface InsertInput {
@@ -59,6 +63,7 @@ function rowToSession(r: NodeTerminalSessionRow): SessionRow {
     createdAt: r.createdAt,
     expiresAt: r.expiresAt,
     lastActivityAt: r.lastActivityAt,
+    terminateAfter: r.terminateAfter ?? null,
   };
 }
 
@@ -109,6 +114,13 @@ export async function findById(db: Database, sessionId: string): Promise<Session
  *  not already consumed. The hash slot is set to NULL atomically so
  *  the same token can never be replayed.
  *
+ *  Also CLEARS `terminate_after` in the same UPDATE — closes the
+ *  TOCTOU window where a scheduler sweep could read a still-pending
+ *  termination AFTER the WS has successfully re-attached but BEFORE
+ *  a follow-up cancelDelayedTermination round-trip lands. Without
+ *  this, a freshly-reconnected session could have its Pod deleted
+ *  out from under it. (Security review HIGH finding, 2026-05-20.)
+ *
  *  Note: the comparison is by exact hash equality at the DB level —
  *  Postgres compares bytea byte-for-byte without short-circuit, which
  *  is the same constant-time property we want.
@@ -123,7 +135,14 @@ export async function consumeWsToken(
   const cutoff = new Date(Date.now() - ttlMs);
   const [row] = await db
     .update(nodeTerminalSessions)
-    .set({ wsTokenHash: null, wsTokenIssuedAt: null, lastActivityAt: new Date() })
+    .set({
+      wsTokenHash: null,
+      wsTokenIssuedAt: null,
+      lastActivityAt: new Date(),
+      // Cancel any in-flight grace-period termination atomically with
+      // the token consume. See doc comment above.
+      terminateAfter: null,
+    })
     .where(
       and(
         eq(nodeTerminalSessions.id, sessionId),
@@ -141,6 +160,11 @@ export async function consumeWsToken(
  *  reconnect endpoint (POST .../sessions/:id/ws-token) to mint a
  *  fresh single-use token after the old one was consumed.
  *
+ *  Also CLEARS terminate_after — minting a fresh token implies the
+ *  user is actively reconnecting, so the grace-period termination
+ *  must be cancelled in the same atomic UPDATE. Otherwise an in-
+ *  flight reconnect could race with the scheduler's reap query.
+ *
  *  Returns the row IF the session exists and is owned by the calling
  *  user (caller checks ownership separately; this helper only sets
  *  the hash atomically). */
@@ -154,11 +178,64 @@ export async function refreshWsToken(
     .set({
       wsTokenHash: hashWsToken(newToken),
       wsTokenIssuedAt: new Date(),
+      terminateAfter: null, // cancel pending grace-period termination
     })
     .where(eq(nodeTerminalSessions.id, sessionId))
     .returning();
   if (!row) return null;
   return rowToSession(row);
+}
+
+/** Schedule a delayed termination for `sessionId`. Called from the
+ *  WS close handler when the client did NOT send an explicit
+ *  terminate frame — i.e. ambiguous drops (page reload, network blip,
+ *  replica restart) get a grace period during which a fresh reconnect
+ *  can save the session.
+ *
+ *  Idempotent — calling twice replaces the timestamp. */
+export async function setTerminateAfter(
+  db: Database,
+  sessionId: string,
+  terminateAfter: Date,
+): Promise<void> {
+  await db
+    .update(nodeTerminalSessions)
+    .set({ terminateAfter })
+    .where(eq(nodeTerminalSessions.id, sessionId));
+}
+
+/** Cancel a pending delayed termination. Called by refreshWsToken
+ *  implicitly (in the same atomic UPDATE), but also exported so the
+ *  in-memory grace timer can mirror cancellation when a re-attach
+ *  happens via a fresh exec stream without a /ws-token round-trip. */
+export async function clearTerminateAfter(
+  db: Database,
+  sessionId: string,
+): Promise<void> {
+  await db
+    .update(nodeTerminalSessions)
+    .set({ terminateAfter: null })
+    .where(eq(nodeTerminalSessions.id, sessionId));
+}
+
+/** Sessions whose grace period has elapsed — `terminate_after < now()`.
+ *  Used by the cross-replica scheduler as the authoritative reaper:
+ *  the in-memory setTimeout dies with its replica, but this query
+ *  catches the orphan on the next sweep tick. */
+export async function findReadyForTermination(db: Database): Promise<SessionRow[]> {
+  const now = new Date();
+  const rows = await db
+    .select()
+    .from(nodeTerminalSessions)
+    .where(
+      and(
+        // IS NOT NULL via sql template; Drizzle's isNotNull on a
+        // composed AND with lt was awkward, so use the SQL fragment.
+        sql`${nodeTerminalSessions.terminateAfter} IS NOT NULL`,
+        lt(nodeTerminalSessions.terminateAfter, now),
+      ),
+    );
+  return rows.map(rowToSession);
 }
 
 /** Update which replica last attached an exec stream for diagnostics

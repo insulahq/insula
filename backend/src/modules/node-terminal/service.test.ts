@@ -25,6 +25,9 @@ vi.mock('./session-store.js', () => ({
   listForNode: vi.fn().mockResolvedValue([]),
   listAll: vi.fn().mockResolvedValue([]),
   hashWsToken: vi.fn((t: string) => Buffer.from(t)),
+  setTerminateAfter: vi.fn().mockResolvedValue(undefined),
+  clearTerminateAfter: vi.fn().mockResolvedValue(undefined),
+  findReadyForTermination: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock the k8s exec so attachExec doesn't try to dial a real cluster.
@@ -384,6 +387,7 @@ describe('attachExec — DB-backed session lookup', () => {
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + 60_000),
       lastActivityAt: new Date(),
+      terminateAfter: null,
     });
     const { socket, sent, closeSpy } = makeSocket();
     await attachExec(makeCtx(), 'sess-1', 'tok', 'evil-user', socket, fakeRequest);
@@ -406,6 +410,7 @@ describe('attachExec — DB-backed session lookup', () => {
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + 60_000),
       lastActivityAt: new Date(),
+      terminateAfter: null,
     });
     vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(null);
     const { socket, sent, closeSpy } = makeSocket();
@@ -427,6 +432,7 @@ describe('attachExec — DB-backed session lookup', () => {
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + 60_000),
       lastActivityAt: new Date(),
+      terminateAfter: null,
       wsTokenHash: null,
       wsTokenIssuedAt: null,
     };
@@ -467,6 +473,7 @@ describe('attachExec — DB-backed session lookup', () => {
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + 60_000),
       lastActivityAt: new Date(),
+      terminateAfter: null,
     };
     vi.mocked(sessionStore.findById).mockResolvedValue(dbRow);
     vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(dbRow);
@@ -486,3 +493,97 @@ describe('attachExec — DB-backed session lookup', () => {
 //     the row when present, returns null when gone.
 //   • scripts/integration-node-terminal.sh Phase G — drives the full
 //     create → POST /ws-token → drive new WS → reject old URL flow.
+
+// ─── Grace-period reload survival ─────────────────────────────────────
+//
+// attachExec must:
+//   1. Clear any pending termination when a fresh attach lands
+//      (cancels in-flight grace timer).
+// finalize (triggered by socket.on('close')) must:
+//   2. Schedule a delayed termination via setTerminateAfter when the
+//      WS closes WITHOUT an explicit terminate frame (the reload /
+//      network blip path).
+//   3. Synchronously call terminateSession when the client sent
+//      {type:'terminate'} BEFORE closing (the × button path).
+
+describe('attachExec — grace-period reload survival', () => {
+  beforeEach(() => {
+    _resetForTests();
+    // mockReset would wipe the resolved-value defaults from vi.mock();
+    // mockClear preserves them and just zeroes the call history.
+    vi.mocked(sessionStore.findById).mockClear();
+    vi.mocked(sessionStore.consumeWsToken).mockClear();
+    vi.mocked(sessionStore.clearTerminateAfter).mockClear();
+    vi.mocked(sessionStore.setTerminateAfter).mockClear();
+    vi.mocked(sessionStore.deleteSession).mockClear();
+  });
+
+  it('on successful attach: clearTerminateAfter is called (cancels in-flight grace timer)', async () => {
+    const dbRow = {
+      id: 'sess-1',
+      nodeName: 'staging-1',
+      podName: 'pod-1',
+      podNamespace: 'platform',
+      userId: 'user-1',
+      userEmail: 'u@test',
+      clientIp: '10.0.0.1',
+      ownerReplica: 'platform-api-a',
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      lastActivityAt: new Date(),
+      terminateAfter: new Date(Date.now() + 30_000), // pending grace
+    };
+    vi.mocked(sessionStore.findById).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(dbRow);
+    const { socket } = makeSocket();
+    await attachExec(makeCtx(), 'sess-1', 'tok', 'user-1', socket, fakeRequest);
+    expect(sessionStore.clearTerminateAfter).toHaveBeenCalledWith(expect.anything(), 'sess-1');
+  });
+
+  it('WS close without terminate frame → schedules delayed termination (does NOT delete row immediately)', async () => {
+    const dbRow = {
+      id: 'sess-1', nodeName: 'staging-1', podName: 'pod-1', podNamespace: 'platform',
+      userId: 'user-1', userEmail: 'u@test', clientIp: '10.0.0.1', ownerReplica: 'platform-api-a',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), lastActivityAt: new Date(),
+      terminateAfter: null,
+    };
+    vi.mocked(sessionStore.findById).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(dbRow);
+    const { socket, ee } = makeSocket();
+    await attachExec(makeCtx(), 'sess-1', 'tok', 'user-1', socket, fakeRequest);
+    // Simulate a "page reload" — WS close arrives with NO prior terminate frame.
+    ee.emit('close');
+    // microtask drain
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sessionStore.setTerminateAfter).toHaveBeenCalledWith(
+      expect.anything(),
+      'sess-1',
+      expect.any(Date),
+    );
+    // CRITICAL: row must NOT have been deleted on close
+    expect(sessionStore.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it('terminate frame BEFORE WS close → synchronous terminateSession (bypasses grace period)', async () => {
+    const dbRow = {
+      id: 'sess-1', nodeName: 'staging-1', podName: 'pod-1', podNamespace: 'platform',
+      userId: 'user-1', userEmail: 'u@test', clientIp: '10.0.0.1', ownerReplica: 'platform-api-a',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), lastActivityAt: new Date(),
+      terminateAfter: null,
+    };
+    vi.mocked(sessionStore.findById).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.deleteSession).mockResolvedValue(true);
+    const { socket, ee } = makeSocket();
+    await attachExec(makeCtx(), 'sess-1', 'tok', 'user-1', socket, fakeRequest);
+    // Client sends terminate frame, then WS closes (× button path)
+    ee.emit('message', JSON.stringify({ type: 'terminate' }));
+    ee.emit('close');
+    await new Promise((r) => setTimeout(r, 0));
+    // setTerminateAfter MUST NOT have been called — explicit intent
+    // bypasses the grace period.
+    expect(sessionStore.setTerminateAfter).not.toHaveBeenCalled();
+    // terminateSession runs → deleteSession is called
+    expect(sessionStore.deleteSession).toHaveBeenCalled();
+  });
+});

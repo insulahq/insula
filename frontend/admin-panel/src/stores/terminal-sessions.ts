@@ -56,9 +56,112 @@ interface SessionRefs {
    *  hidden graveyard when not in the modal; moved into the modal body
    *  via appendChild when restored. */
   hostEl: HTMLDivElement;
+  /** Disposable returned by `term.onData(...)`. We re-register on every
+   *  reconnect so the stdin closure captures the latest WebSocket. The
+   *  previous registration MUST be disposed first — otherwise each
+   *  reconnect adds an additional listener that fires per keystroke
+   *  on a closed socket (review finding: xterm onData accumulation).
+   *  Optional because provisionSession/restoreFromStorage seed refs
+   *  BEFORE bindWsLifecycle attaches the first listener; the post-
+   *  bind sessionRefs.set always populates this. */
+  onDataDisposable?: { dispose: () => void };
 }
 
 const sessionRefs = new Map<string, SessionRefs>();
+
+// ─── Reload-survival sessionStorage mirror ────────────────────────────
+//
+// sessionStorage is per-tab, not per-window — exactly what we want for
+// "this tab's open terminals survive an F5". On every relevant state
+// change (open / minimize / restore / terminate), we mirror the
+// current sessions array (minus the volatile xterm + WS refs) to
+// sessionStorage. On app mount, NodeTerminalHost calls
+// `restoreFromStorage()` which iterates the saved sessionIds and
+// POSTs /ws-token to reattach each one.
+//
+// What we store: just enough to reconstruct the session UI state and
+// reach the server's reconnect endpoint:
+//   { id, nodeName, minimized, status }
+// xterm scrollback is lost — the browser's xterm instance is gone
+// when we restart. The shell on the host survives (server-side Pod +
+// 60s grace period), but its scrollback wasn't ours to keep.
+
+const STORAGE_KEY = 'node-terminal:open-sessions:v1';
+
+interface PersistedSession {
+  readonly id: string;
+  readonly nodeName: string;
+  readonly minimized: boolean;
+}
+
+interface PersistedState {
+  readonly sessions: readonly PersistedSession[];
+  /** The sessionId that was open in the modal at persist time, or null
+   *  if the modal was closed (all sessions minimized). Drives whether
+   *  the modal reopens on reload — and to which session. */
+  readonly activeId: string | null;
+}
+
+function persistSessions(sessions: readonly SessionSummary[], activeId: string | null): void {
+  try {
+    const payload: PersistedState = {
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        nodeName: s.nodeName,
+        minimized: s.minimized,
+      })),
+      activeId,
+    };
+    if (payload.sessions.length === 0) {
+      sessionStorage.removeItem(STORAGE_KEY);
+    } else {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    }
+  } catch {
+    // sessionStorage can throw QuotaExceededError or be disabled
+    // entirely in some browser privacy modes. Best-effort — reload
+    // survival is a quality-of-life feature, not load-bearing.
+  }
+}
+
+function loadPersistedState(): PersistedState {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return { sessions: [], activeId: null };
+    const parsed = JSON.parse(raw) as unknown;
+    // Migration tolerance: old v1 wrote a bare array. Coerce that
+    // shape to the new envelope.
+    if (Array.isArray(parsed)) {
+      return {
+        sessions: parsed.filter(
+          (p): p is PersistedSession =>
+            typeof p === 'object'
+            && p !== null
+            && typeof (p as { id?: unknown }).id === 'string'
+            && typeof (p as { nodeName?: unknown }).nodeName === 'string'
+            && typeof (p as { minimized?: unknown }).minimized === 'boolean',
+        ),
+        activeId: null,
+      };
+    }
+    if (typeof parsed !== 'object' || parsed === null) return { sessions: [], activeId: null };
+    const obj = parsed as { sessions?: unknown; activeId?: unknown };
+    const sessions = Array.isArray(obj.sessions)
+      ? obj.sessions.filter(
+          (p): p is PersistedSession =>
+            typeof p === 'object'
+            && p !== null
+            && typeof (p as { id?: unknown }).id === 'string'
+            && typeof (p as { nodeName?: unknown }).nodeName === 'string'
+            && typeof (p as { minimized?: unknown }).minimized === 'boolean',
+        )
+      : [];
+    const activeId = typeof obj.activeId === 'string' ? obj.activeId : null;
+    return { sessions, activeId };
+  } catch {
+    return { sessions: [], activeId: null };
+  }
+}
 
 // Lazy: get-or-create the hidden offscreen container that parks all
 // non-active xterm host elements.
@@ -224,6 +327,12 @@ interface TerminalSessionsState {
    *  Shell state (cwd, env) is fresh because k8s gives each exec its
    *  own PTY (P0 spike). */
   reconnect: (sessionId: string) => Promise<void>;
+  /** Called once at app mount by NodeTerminalHost. Reads sessionStorage,
+   *  iterates persisted sessions, and reconnects each one to the
+   *  server's still-running Pod (within the 60s grace period after
+   *  the WS dropped on page unload). xterm instances + scrollback are
+   *  reconstructed fresh; the shell state on the Pod is preserved. */
+  restoreFromStorage: () => Promise<void>;
   /** Attach a session's xterm host element into the modal body element. */
   attach: (sessionId: string, container: HTMLElement) => void;
   /** Move a session's xterm host element back to the graveyard. */
@@ -232,12 +341,26 @@ interface TerminalSessionsState {
   fit: (sessionId: string) => void;
 }
 
-export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
-  // ── Internal: open a session given a nodeName. Returns sessionId.
-  // Throws { stepUp: { methods } } if STEP_UP_REQUIRED.
-  async function provisionSession(nodeName: string): Promise<string> {
-    const created = await postCreateSession(nodeName);
+export const useTerminalSessions = create<TerminalSessionsState>((rawSet, get) => {
+  // Wrap set so every state update writes sessions + activeId to
+  // sessionStorage. Reload survival + modal-open-state restoration
+  // both hinge on this side effect.
+  const set: typeof rawSet = ((partial, replace) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (rawSet as any)(partial, replace);
+    const s = get();
+    persistSessions(s.sessions, s.activeId);
+  }) as typeof rawSet;
 
+  // Build a fresh xterm + host div for a given sessionId. Both
+  // provisionSession (POST /sessions) and restoreFromStorage (POST
+  // /ws-token after reload) need this — extracted so they share one
+  // path and the theme/font/scrollback defaults can't drift.
+  function buildTerminal(sessionId: string): {
+    term: Terminal;
+    fitAddon: FitAddon;
+    hostEl: HTMLDivElement;
+  } {
     const term = new Terminal({
       theme: TERMINAL_THEME,
       fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
@@ -254,11 +377,17 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
     const hostEl = document.createElement('div');
     hostEl.style.width = '100%';
     hostEl.style.height = '100%';
-    hostEl.setAttribute('data-session-id', created.sessionId);
-    // Park it in the graveyard initially. The modal's attach() moves
-    // it into its body the first time it renders this session.
+    hostEl.setAttribute('data-session-id', sessionId);
     getGraveyard().appendChild(hostEl);
     term.open(hostEl);
+    return { term, fitAddon, hostEl };
+  }
+
+  // ── Internal: open a session given a nodeName. Returns sessionId.
+  // Throws { stepUp: { methods } } if STEP_UP_REQUIRED.
+  async function provisionSession(nodeName: string): Promise<string> {
+    const created = await postCreateSession(nodeName);
+    const { term, fitAddon, hostEl } = buildTerminal(created.sessionId);
 
     // WS — JWT in ?jwt= since WebSocket can't carry Authorization.
     const wsUrl = created.websocketUrl.includes('?')
@@ -329,17 +458,27 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
         sessions: s.sessions.map((sess) => sess.id === sessionId ? { ...sess, status: 'disconnected' } : sess),
       }));
     };
-    term.onData((data) => {
+    // Dispose any previous term.onData registration before adding the
+    // new one. Without this, every reconnect accumulates an additional
+    // listener that fires per keystroke (the old ones target closed
+    // WebSockets, so they no-op via the readyState guard — but they
+    // still run and waste cycles). Review finding (2026-05-20).
+    const prior = sessionRefs.get(sessionId);
+    if (prior?.onDataDisposable) {
+      try { prior.onDataDisposable.dispose(); } catch { /* ignore */ }
+    }
+    const onDataDisposable = term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'stdin', data }));
       }
     });
-    // Update refs.ws so any later code (reconnect, term.onData) talks
-    // to the latest ws. term/fitAddon/hostEl are written by
-    // provisionSession before this helper is called.
+    // Update refs.ws + onDataDisposable so any later code (reconnect,
+    // term.onData) talks to the latest ws and disposes the latest
+    // listener. term/fitAddon/hostEl are written by provisionSession
+    // / restoreFromStorage before this helper is called.
     const existing = sessionRefs.get(sessionId);
     if (existing) {
-      sessionRefs.set(sessionId, { ...existing, ws });
+      sessionRefs.set(sessionId, { ...existing, ws, onDataDisposable });
     }
   }
 
@@ -441,6 +580,15 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
       const refs = sessionRefs.get(sessionId);
       const session = get().sessions.find((s) => s.id === sessionId);
       if (refs) {
+        // Send an explicit terminate frame BEFORE closing so the
+        // server bypasses the 60s grace period (which exists for
+        // page-reload/network-blip drops). Without this, clicking ×
+        // would leave the privileged Pod alive for another minute.
+        try {
+          if (refs.ws.readyState === WebSocket.OPEN) {
+            refs.ws.send(JSON.stringify({ type: 'terminate' }));
+          }
+        } catch { /* ws errored — server will grace-period reap it */ }
         try { refs.ws.close(1000, 'client_close'); } catch { /* socket gone */ }
         try { refs.term.dispose(); } catch { /* already disposed */ }
         try { refs.hostEl.remove(); } catch { /* not in DOM */ }
@@ -511,6 +659,113 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
         set((s) => ({
           sessions: s.sessions.map((sess) => sess.id === sessionId ? { ...sess, status: 'disconnected' } : sess),
           openError: (e as Error).message,
+        }));
+      }
+    },
+
+    restoreFromStorage: async () => {
+      // Idempotent — if we already have sessions in memory (StrictMode
+      // double-mount, or this got called twice somehow), skip.
+      if (get().sessions.length > 0) return;
+      const persisted = loadPersistedState();
+      if (persisted.sessions.length === 0) return;
+      // Seed the visible store with the persisted shapes BEFORE doing
+      // any network work, so the dock + modal scaffold render right
+      // away. Each entry starts in 'connecting' status; bindWsLifecycle
+      // flips to 'connected' when the WS opens, or 'disconnected' if
+      // the server's grace window expired before we got here.
+      const seeded: SessionSummary[] = persisted.sessions.map((p) => ({
+        id: p.id,
+        nodeName: p.nodeName,
+        createdAt: Date.now(),
+        minimized: p.minimized,
+        status: 'connecting',
+      }));
+      // Restore activeId — but only if that session is also in the
+      // persisted list (otherwise the modal would render with no
+      // session). null when the modal was closed pre-reload.
+      const restoredActiveId = persisted.activeId
+        && seeded.some((s) => s.id === persisted.activeId)
+          ? persisted.activeId
+          : null;
+      set({ sessions: seeded, activeId: restoredActiveId });
+
+      // Step-up freshness check ONCE up front — avoids N parallel
+      // POST /ws-token calls all racing to set pendingStepUp (review
+      // finding: "last writer wins" UX dead-end). If step-up is
+      // required, we raise the dialog and bail; the user completes
+      // step-up and then can reload (or wait for a future trigger)
+      // to retry restore. The persisted sessions stay in storage so
+      // the next mount picks them up.
+      const stepUpStatus = await fetchStepUpStatus().catch(() => null);
+      if (stepUpStatus?.required) {
+        // Pick a node name to display in the dialog header — first
+        // persisted entry. The dialog itself is shared across all
+        // sessions in the batch.
+        const firstNode = persisted.sessions[0]?.nodeName ?? '';
+        set({ pendingStepUp: { methods: stepUpStatus.methods, nodeName: firstNode } });
+        // Flip all seeded sessions to disconnected so the dock pill
+        // shows red — they're waiting on the user.
+        set((s) => ({
+          sessions: s.sessions.map((sess) => ({ ...sess, status: 'disconnected' })),
+        }));
+        return;
+      }
+
+      // Step-up is fresh — fan out the reconnects. The per-session
+      // 403/404 branches below are still here as defence-in-depth
+      // (e.g. step-up expired between our check above and the POST).
+      const results = await Promise.allSettled(
+        persisted.sessions.map(async (p) => {
+          const r = await fetch(
+            `${getApiBase()}/api/v1/admin/nodes/${encodeURIComponent(p.nodeName)}/terminal/sessions/${encodeURIComponent(p.id)}/ws-token`,
+            { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}' },
+          );
+          if (r.status === 403) {
+            const body = await r.json().catch(() => ({})) as {
+              error?: { code?: string; details?: { methods?: StepUpMethod[] } };
+            };
+            if (body.error?.code === 'STEP_UP_REQUIRED') {
+              set({ pendingStepUp: { methods: body.error.details?.methods ?? [], nodeName: p.nodeName } });
+              return { status: 'step_up' as const, sessionId: p.id };
+            }
+          }
+          if (r.status === 404) {
+            return { status: 'gone' as const, sessionId: p.id };
+          }
+          if (!r.ok) {
+            const body = await r.json().catch(() => ({})) as { error?: { message?: string } };
+            throw new Error(body.error?.message ?? `Restore failed (HTTP ${r.status})`);
+          }
+          const json = await r.json() as { data: { websocketUrl: string; nodeName: string; sessionId: string } };
+          // Build a fresh xterm + WS and wire them up. Same path as
+          // provisionSession but with a known sessionId from disk.
+          const { term, fitAddon, hostEl } = buildTerminal(p.id);
+          const wsUrl = json.data.websocketUrl.includes('?')
+            ? `${json.data.websocketUrl}&jwt=${encodeURIComponent(authToken())}`
+            : `${json.data.websocketUrl}?jwt=${encodeURIComponent(authToken())}`;
+          const ws = new WebSocket(wsUrl);
+          sessionRefs.set(p.id, { term, fitAddon, ws, hostEl });
+          bindWsLifecycle(term, ws, p.id, set);
+          term.writeln('\x1b[36m[reattached after reload — shell state preserved on the host]\x1b[0m');
+          return { status: 'ok' as const, sessionId: p.id };
+        }),
+      );
+
+      // Sweep any sessions the server already let go (grace period
+      // expired during the reload). Their seeded entries get pruned
+      // and their persisted entries roll off when persistSessions
+      // runs after the set() below.
+      const goneIds: string[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value.status === 'gone') {
+          goneIds.push(r.value.sessionId);
+        }
+      }
+      if (goneIds.length > 0) {
+        set((s) => ({
+          sessions: s.sessions.filter((sess) => !goneIds.includes(sess.id)),
+          activeId: goneIds.includes(s.activeId ?? '') ? null : s.activeId,
         }));
       }
     },
