@@ -43,6 +43,12 @@ const (
 	// Tenant-port reconciler sets — node-scope, inet_service (port) keyed.
 	setTenantTCP = "tenant_ports_tcp"
 	setTenantUDP = "tenant_ports_udp"
+	// F1 — CrowdSec L4 blocklist sets — cluster-scope, IP/CIDR keyed.
+	// Bootstrap.sh declares with `flags interval,timeout` so per-element
+	// TTLs from CrowdSec decisions auto-expire kernel-side as a safety
+	// net even if the reconciler stops running.
+	setCrowdsecV4 = "crowdsec_blocklist_v4"
+	setCrowdsecV6 = "crowdsec_blocklist_v6"
 )
 
 // peerNftSets — what the peer reconciler writes. Order is deterministic
@@ -85,6 +91,13 @@ type applier interface {
 	applyTenantPorts(s tenantPortSets) error
 	observePeerFingerprint() (string, error)
 	observeTenantPortsFingerprint() (string, error)
+	// F1 — CrowdSec L4 blocklist methods land in a follow-up commit
+	// alongside the new crowdsec_reconcile.go third goroutine. The set
+	// CONSTANTS above are declared now so bootstrap.sh's nft set
+	// declarations (which reference these names) are coherent in the
+	// same commit. The applier methods are intentionally absent from
+	// the interface until the goroutine implementation lands — adding
+	// them without implementations would break the realApplier compile.
 }
 
 // realApplier holds an open lasting netlink connection. Reused across

@@ -116,10 +116,36 @@ if ! grep -q 'ip  saddr @trusted_ranges_v4 tcp dport 22 accept' "$SCRIPT" || \
   failures=$((failures + 1))
 fi
 
+# Invariant 4 (F1): crowdsec_blocklist drop rules MUST appear AFTER the
+# `ct state established,related accept` line and BEFORE any port accept
+# rule. Wrong order means either:
+#   - drop BEFORE ct established → kills in-flight SSH sessions for
+#     operators whose IP just got banned (operator lockout)
+#   - drop AFTER any port accept → banned IP can still reach that port
+#     (enforcement bypass for the public surface)
+ct_line=$(grep -nE '^\s*ct state established,related accept' "$SCRIPT" | head -1 | cut -d: -f1)
+v4_drop_line=$(grep -nE '^\s*ip\s+saddr @crowdsec_blocklist_v4 drop' "$SCRIPT" | head -1 | cut -d: -f1)
+v6_drop_line=$(grep -nE '^\s*ip6 saddr @crowdsec_blocklist_v6 drop' "$SCRIPT" | head -1 | cut -d: -f1)
+first_accept_line=$(grep -nE '^\s*tcp dport [0-9]+ accept' "$SCRIPT" | head -1 | cut -d: -f1)
+
+if [[ -z "$v4_drop_line" || -z "$v6_drop_line" ]]; then
+  echo "FAIL F1: crowdsec_blocklist drop rules missing from input chain"
+  echo "      Expected: 'ip  saddr @crowdsec_blocklist_v4 drop' + 'ip6 saddr @crowdsec_blocklist_v6 drop'"
+  failures=$((failures + 1))
+elif [[ -z "$ct_line" ]] || (( v4_drop_line < ct_line )) || (( v6_drop_line < ct_line )); then
+  echo "FAIL F1: crowdsec_blocklist drop must appear AFTER 'ct state established,related accept'"
+  echo "      Otherwise banning an operator's own IP terminates their in-flight SSH session."
+  failures=$((failures + 1))
+elif [[ -n "$first_accept_line" ]] && ( (( v4_drop_line > first_accept_line )) || (( v6_drop_line > first_accept_line )) ); then
+  echo "FAIL F1: crowdsec_blocklist drop must appear BEFORE any 'tcp dport NNN accept'"
+  echo "      Otherwise banned IPs can still reach the public surface (e.g. SSH on :22, HTTPS on :443)."
+  failures=$((failures + 1))
+fi
+
 if (( failures > 0 )); then
   echo
   echo "✗ $failures firewall-rule violation(s) in $SCRIPT"
   exit 1
 fi
 
-echo "✓ bootstrap.sh firewall rules: $v4_count v4 / $v6_count v6 scoped, all public ports documented, --ssh-via-mesh paths verified."
+echo "✓ bootstrap.sh firewall rules: $v4_count v4 / $v6_count v6 scoped, all public ports documented, --ssh-via-mesh paths verified, F1 crowdsec_blocklist drop ordered correctly."
