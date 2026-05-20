@@ -1,0 +1,166 @@
+name: Backup-rclone CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/backup-rclone/**'
+      - '.github/workflows/ci-backup-rclone.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'images/backup-rclone/**'
+      - '.github/workflows/ci-backup-rclone.yml'
+  workflow_dispatch:
+
+# Default workflow permissions: minimal. Each job widens its own scope.
+# Token-scope hardening: PR builds NEVER get `packages: write` or
+# `id-token: write`, eliminating exfiltration risk from fork PRs.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/backup-rclone
+
+jobs:
+  # ---- PR smoke: build + smoke-test, no push, no signing ----
+  smoke:
+    name: Smoke (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: images/backup-rclone
+          load: true                          # load into local Docker
+          tags: backup-rclone:pr-${{ github.event.pull_request.number }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: rclone version
+        run: docker run --rm backup-rclone:pr-${{ github.event.pull_request.number }} /usr/local/bin/rclone version
+
+      - name: rclone serve s3 starts cleanly
+        run: |
+          docker run -d --name shim-smoke -p 127.0.0.1:9999:9999 \
+            backup-rclone:pr-${{ github.event.pull_request.number }} \
+            /usr/local/bin/rclone serve s3 --addr :9999 \
+            --auth-key=k1,k2 :memory:
+          sleep 3
+          # rclone serve s3 answers ANY S3 request, even from auth-less
+          # curl, with a structured XML error or 200/403 — verifies the
+          # process is bound and responding.
+          for i in 1 2 3 4 5; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9999/ || true)
+            case "$code" in
+              200|400|403) echo "shim up (HTTP $code)"; exit 0 ;;
+              *) sleep 1 ;;
+            esac
+          done
+          docker logs shim-smoke
+          exit 1
+        env:
+          DOCKER_BUILDKIT: 1
+
+  # ---- main: build + smoke + push + sign (multi-arch) ----
+  build-push-sign:
+    name: Build + smoke + push + sign
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push to GHCR
+      id-token: write       # cosign keyless OIDC
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- step 1: amd64-only local build for smoke-before-push ----
+      # We deliberately run the smoke test BEFORE pushing so that a bad
+      # binary never reaches the registry (and therefore can never be
+      # signed). The multi-arch push happens in a second build step
+      # using the same cache; no re-fetch of the rclone binary occurs.
+      - id: build_local
+        uses: docker/build-push-action@v5
+        with:
+          context: images/backup-rclone
+          load: true
+          tags: backup-rclone:smoke
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke — rclone version
+        run: docker run --rm backup-rclone:smoke /usr/local/bin/rclone version
+
+      - name: Smoke — serve s3 binds and responds
+        run: |
+          docker run -d --name shim-smoke -p 127.0.0.1:9999:9999 \
+            backup-rclone:smoke /usr/local/bin/rclone serve s3 \
+            --addr :9999 --auth-key=k1,k2 :memory:
+          sleep 3
+          for i in 1 2 3 4 5; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9999/ || true)
+            case "$code" in
+              200|400|403) echo "shim up (HTTP $code)"; exit 0 ;;
+              *) sleep 1 ;;
+            esac
+          done
+          docker logs shim-smoke
+          exit 1
+
+      # ---- step 2: multi-arch push (uses the same cache) ----
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - id: build_push
+        uses: docker/build-push-action@v5
+        with:
+          context: images/backup-rclone
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      # ---- step 3: sign (only after smoke + push succeed) ----
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless, OCI 1.1 referrers)
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            --registry-referrers-mode=oci-1.1 \
+            "${{ env.IMAGE }}@${DIGEST}"
+
+      - name: Output digest
+        run: |
+          echo "Image: ${{ env.IMAGE }}@${{ steps.build_push.outputs.digest }}"
+          echo "Tags: ${{ steps.meta.outputs.tags }}"
