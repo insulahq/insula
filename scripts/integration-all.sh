@@ -120,6 +120,11 @@ PARALLEL=(
   # Each phase 4 round takes ~70s for bouncer cache refresh, so the
   # whole suite is ~3 min; safely parallel with everything else.
   "waf-crowdsec:integration-waf-crowdsec.sh"
+  # Admin node-terminal: full A→E flow + F (HA replica handoff) + G
+  # (reconnect contract). Requires NODE_TERMINAL_ENABLED=true on the
+  # target platform-api and step-up freshness — pass --bump-freshness
+  # via env or pre-bump via INTEGRATION_TOKEN. ~90s.
+  "node-terminal:integration-node-terminal.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).

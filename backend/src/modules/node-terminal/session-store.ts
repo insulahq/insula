@@ -90,6 +90,15 @@ export async function findById(db: Database, sessionId: string): Promise<Session
   if (!row) return null;
   // Treat expired rows as not-found from the caller's POV. The
   // sweeper deletes them; we just don't honour them here.
+  //
+  // Why app-clock vs. SQL `WHERE expires_at > NOW()`: the sweeper
+  // already filters at the DB level (findExpired below), so a fully
+  // expired row that hits findById is almost certainly already on
+  // its way out — surfacing null here is purely defence-in-depth.
+  // App-clock comparison keeps findById a single round-trip without
+  // a NOW() roundtrip; clock skew between platform-api and the DB
+  // is bounded to seconds and the WS-token TTL (60s) is the real
+  // gate on freshness anyway.
   if (row.expiresAt.getTime() < Date.now()) return null;
   return rowToSession(row);
 }
