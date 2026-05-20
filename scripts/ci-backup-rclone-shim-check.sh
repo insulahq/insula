@@ -274,4 +274,45 @@ if ! grep -q "isShimModeActive" "$SNAPSHOT_STORE"; then
 fi
 pass "Invariant 15: rclone-push via shim wired"
 
-echo "[ci-backup-rclone-shim] All 15 invariants pass."
+# ─── 16. R-X13 legacy archival — no NEW legacy uses ───────────────
+# An allowlist of files that may keep using the legacy backup-
+# credentials Secret + aws-cli direct-to-S3 patterns. Any NEW file
+# (not on this list) that references either pattern fails the CI.
+# The intent: existing operators don't get disrupted, but every
+# new backup pipeline is forced to go through the shim.
+LEGACY_ALLOWLIST=(
+  "k8s/base/backup/etcd-snapshot-cronjob.yaml"          # R-X7 replaces; deprecated
+  "k8s/base/backup/postgres-dump-cronjob.yaml"          # R-X6 replaces; deprecated
+  "k8s/base/backup/cluster-state-cronjob.yaml"          # R-X9 will replace
+  "k8s/base/backup/secrets-backup-cronjob.yaml"         # R-X9 will replace
+  "k8s/base/backup/backup-audit-cronjob.yaml"           # read-only, no IO
+  "k8s/base/backup/hostpath-snapshot-cronjob.yaml"      # already retired (commented out)
+  "k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml" # legacy mail-target-sync owns
+)
+LEGACY_DOC="$ROOT/k8s/base/backup/LEGACY-DEPRECATED.md"
+if [[ ! -f "$LEGACY_DOC" ]]; then
+  fail "Invariant 16: k8s/base/backup/LEGACY-DEPRECATED.md missing — describes the deprecation window"
+fi
+# Find every YAML under k8s/base/ that names backup-credentials in a
+# NON-COMMENT context AND is NOT on the allowlist. The comment filter
+# (grep -v '^\s*#') means a file that only mentions backup-credentials
+# in a YAML comment doesn't trip the guard.
+VIOLATIONS=""
+while IFS= read -r f; do
+  if grep -E '^[^#]*\bbackup-credentials\b' "$f" >/dev/null 2>&1; then
+    VIOLATIONS="$VIOLATIONS $f"
+  fi
+done < <(grep -rl --include='*.yaml' 'backup-credentials' "$ROOT/k8s/base/" 2>/dev/null || true)
+for file in $VIOLATIONS; do
+  rel="${file#$ROOT/}"
+  matched=0
+  for allowed in "${LEGACY_ALLOWLIST[@]}"; do
+    if [[ "$rel" == "$allowed" ]]; then matched=1; break; fi
+  done
+  if [[ $matched -eq 0 ]]; then
+    fail "Invariant 16: NEW legacy reference: $rel uses backup-credentials Secret outside the deprecation allowlist. Use backup-rclone-shim-creds (HKDF-derived) instead. See k8s/base/backup/LEGACY-DEPRECATED.md."
+  fi
+done
+pass "Invariant 16: no new legacy backup-credentials uses"
+
+echo "[ci-backup-rclone-shim] All 16 invariants pass."
