@@ -430,7 +430,17 @@ function buildObjectStoreSpec(): Record<string, unknown> {
       // support yet (validation error: "Unsupported value: zstd").
       // gzip is the best balance of compatibility + ratio in v0.12.0.
       // Surfaced during staging E2E round-trip test 2026-05-20.
-      wal: { compression: 'gzip', maxParallel: 8 },
+      // maxParallel: 2 (was 8). plugin-barman-cloud spawns ONE Python
+      // subprocess per concurrent WAL-archive call; each subprocess
+      // sits at ~80Mi RSS just from CPython + boto3 imports before
+      // touching a byte. 8-way parallelism cost ~640Mi of baseline
+      // memory — enough to OOM the sidecar mid-base-backup even
+      // though the data being moved was tiny. WAL segments are 16Mi
+      // and arrive every few seconds; 2-way is plenty for throughput
+      // and the 4× memory savings keep peak RSS well below the
+      // sidecar's resource limit. Surfaced 2026-05-20 during staging
+      // E2E destructive round-trip.
+      wal: { compression: 'gzip', maxParallel: 2 },
       data: { compression: 'gzip' },
     },
     // Bump the sidecar memory ceiling. The default 384Mi limit OOM-kills
