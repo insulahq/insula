@@ -27,10 +27,41 @@ vi.mock('./session-store.js', () => ({
   hashWsToken: vi.fn((t: string) => Buffer.from(t)),
 }));
 
-import { createSession, type ServiceCtx, type RequestActor } from './service.js';
-import { _resetForTests } from './session-registry.js';
+// Mock the k8s exec so attachExec doesn't try to dial a real cluster.
+// We return a Promise-resolved fake exec ws handle that records send()
+// calls (for resize forwarding assertions) and exposes a close().
+vi.mock('@kubernetes/client-node', async () => {
+  const actual = await vi.importActual<typeof import('@kubernetes/client-node')>(
+    '@kubernetes/client-node',
+  );
+  class FakeExec {
+    public sentBuffers: Buffer[] = [];
+    constructor(_kc: unknown) {}
+    async exec(
+      _ns: string,
+      _pod: string,
+      _container: string,
+      _argv: string[],
+      _stdout: NodeJS.WritableStream,
+      _stderr: NodeJS.WritableStream,
+      _stdin: NodeJS.ReadableStream,
+      _tty: boolean,
+    ): Promise<{ close?: () => void; send?: (data: Buffer) => void }> {
+      return {
+        close: vi.fn(),
+        send: (data: Buffer) => { this.sentBuffers.push(data); },
+      };
+    }
+  }
+  return { ...actual, Exec: FakeExec };
+});
+
+import { createSession, attachExec, type ServiceCtx, type RequestActor } from './service.js';
+import { _resetForTests, getSession } from './session-registry.js';
 import * as nodesService from '../nodes/service.js';
 import * as stepUp from '../auth/step-up-service.js';
+import * as sessionStore from './session-store.js';
+import { EventEmitter } from 'node:events';
 
 const fakeRequest = {
   method: 'POST',
@@ -293,3 +324,165 @@ describe('createSession', () => {
     });
   });
 });
+
+// ─── attachExec — DB-backed lookup + cross-replica re-attach ──────────
+//
+// The point of PR1 was: any platform-api replica can serve any session
+// by looking it up in the DB. These tests pin that contract.
+
+/** Build a fake `TerminalSocket` backed by an EventEmitter so the
+ *  service can subscribe to 'message' / 'close' / 'error'. */
+function makeSocket(): {
+  socket: import('./session-registry.js').TerminalSocket;
+  sent: string[];
+  closeSpy: ReturnType<typeof vi.fn>;
+  ee: EventEmitter;
+} {
+  const ee = new EventEmitter();
+  const sent: string[] = [];
+  const closeSpy = vi.fn();
+  const socket = {
+    send: (data: string) => { sent.push(data); },
+    close: (code?: number, reason?: string) => { closeSpy(code, reason); },
+    ping: vi.fn(),
+    on: (ev: string, fn: (...args: unknown[]) => void) => { ee.on(ev, fn); },
+    once: (ev: string, fn: (...args: unknown[]) => void) => { ee.once(ev, fn); },
+  } as unknown as import('./session-registry.js').TerminalSocket;
+  return { socket, sent, closeSpy, ee };
+}
+
+describe('attachExec — DB-backed session lookup', () => {
+  beforeEach(() => {
+    _resetForTests();
+    vi.mocked(sessionStore.findById).mockReset();
+    vi.mocked(sessionStore.consumeWsToken).mockReset();
+    vi.mocked(sessionStore.updateOwnerReplica).mockReset();
+  });
+
+  it('SESSION_NOT_FOUND when DB has no row', async () => {
+    vi.mocked(sessionStore.findById).mockResolvedValue(null);
+    const { socket, sent, closeSpy } = makeSocket();
+    const ctx = makeCtx();
+    await attachExec(ctx, 'gone', 'tok', 'user-1', socket, fakeRequest);
+    const frames = sent.map((s) => JSON.parse(s) as { type: string; code?: string });
+    expect(frames.some((f) => f.type === 'error' && f.code === 'SESSION_NOT_FOUND')).toBe(true);
+    expect(closeSpy).toHaveBeenCalledWith(4404, 'No session');
+    // CRITICAL: must have done a DB lookup — NOT the in-memory registry alone
+    expect(sessionStore.findById).toHaveBeenCalledWith(ctx.db, 'gone');
+  });
+
+  it('OWNER_MISMATCH when the JWT user differs from the DB row userId', async () => {
+    vi.mocked(sessionStore.findById).mockResolvedValue({
+      id: 'sess-1',
+      nodeName: 'staging-1',
+      podName: 'pod-1',
+      podNamespace: 'platform',
+      userId: 'real-owner',
+      userEmail: 'owner@test',
+      clientIp: '10.0.0.1',
+      ownerReplica: 'platform-api-a',
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      lastActivityAt: new Date(),
+    });
+    const { socket, sent, closeSpy } = makeSocket();
+    await attachExec(makeCtx(), 'sess-1', 'tok', 'evil-user', socket, fakeRequest);
+    expect(sent.some((s) => s.includes('OWNER_MISMATCH'))).toBe(true);
+    expect(closeSpy).toHaveBeenCalledWith(4403, 'Forbidden');
+    // Token consume MUST NOT have been attempted
+    expect(sessionStore.consumeWsToken).not.toHaveBeenCalled();
+  });
+
+  it('TOKEN_INVALID when consumeWsToken returns null', async () => {
+    vi.mocked(sessionStore.findById).mockResolvedValue({
+      id: 'sess-1',
+      nodeName: 'staging-1',
+      podName: 'pod-1',
+      podNamespace: 'platform',
+      userId: 'user-1',
+      userEmail: 'u@test',
+      clientIp: '10.0.0.1',
+      ownerReplica: 'platform-api-a',
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      lastActivityAt: new Date(),
+    });
+    vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(null);
+    const { socket, sent, closeSpy } = makeSocket();
+    await attachExec(makeCtx(), 'sess-1', 'wrong', 'user-1', socket, fakeRequest);
+    expect(sent.some((s) => s.includes('TOKEN_INVALID'))).toBe(true);
+    expect(closeSpy).toHaveBeenCalledWith(4401, 'Unauthorized');
+  });
+
+  it('CROSS-REPLICA ATTACH: transfers ownership when ctx.replicaHost differs from DB row ownerReplica', async () => {
+    const dbRow = {
+      id: 'sess-1',
+      nodeName: 'staging-1',
+      podName: 'pod-1',
+      podNamespace: 'platform',
+      userId: 'user-1',
+      userEmail: 'u@test',
+      clientIp: '10.0.0.1',
+      ownerReplica: 'platform-api-a', // session was created on replica A
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      lastActivityAt: new Date(),
+      wsTokenHash: null,
+      wsTokenIssuedAt: null,
+    };
+    vi.mocked(sessionStore.findById).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.updateOwnerReplica).mockResolvedValue(undefined);
+    const { socket, sent } = makeSocket();
+    // This platform-api process is REPLICA B
+    const ctx = makeCtx({ replicaHost: 'platform-api-b' });
+    await attachExec(ctx, 'sess-1', 'tok', 'user-1', socket, fakeRequest);
+    // 1) Ownership MUST be transferred to the new replica
+    expect(sessionStore.updateOwnerReplica).toHaveBeenCalledWith(
+      ctx.db,
+      'sess-1',
+      'platform-api-b',
+    );
+    // 2) In-memory registry MUST be hydrated for this replica
+    expect(getSession('sess-1')).toBeDefined();
+    expect(getSession('sess-1')?.podName).toBe('pod-1');
+    // 3) A `connected` frame MUST have been sent (no REPLICA_MISMATCH error)
+    const frames = sent.map((s) => JSON.parse(s) as { type: string });
+    expect(frames.some((f) => f.type === 'connected')).toBe(true);
+    expect(frames.some((f) => f.type === 'error')).toBe(false);
+  });
+
+  it('SAME-REPLICA ATTACH: still hits the DB (no in-memory shortcut)', async () => {
+    // This test pins that PR1 removed the "if local memory has it, skip
+    // DB" optimization that previously broke HA stickiness.
+    const dbRow = {
+      id: 'sess-1',
+      nodeName: 'staging-1',
+      podName: 'pod-1',
+      podNamespace: 'platform',
+      userId: 'user-1',
+      userEmail: 'u@test',
+      clientIp: '10.0.0.1',
+      ownerReplica: 'platform-api-a',
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      lastActivityAt: new Date(),
+    };
+    vi.mocked(sessionStore.findById).mockResolvedValue(dbRow);
+    vi.mocked(sessionStore.consumeWsToken).mockResolvedValue(dbRow);
+    const { socket } = makeSocket();
+    const ctx = makeCtx({ replicaHost: 'platform-api-a' });
+    await attachExec(ctx, 'sess-1', 'tok', 'user-1', socket, fakeRequest);
+    expect(sessionStore.findById).toHaveBeenCalledTimes(1);
+    expect(sessionStore.consumeWsToken).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Reconnect contract (POST /sessions/:id/ws-token) is route-level
+// logic that lives in routes.ts. Mock-driven unit tests against this
+// path would be tautological (they'd validate the mock, not the code).
+// Coverage instead lives in:
+//   • session-store.test.ts — refreshWsToken hashes the new token, returns
+//     the row when present, returns null when gone.
+//   • scripts/integration-node-terminal.sh Phase G — drives the full
+//     create → POST /ws-token → drive new WS → reject old URL flow.
