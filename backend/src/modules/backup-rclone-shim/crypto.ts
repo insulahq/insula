@@ -46,8 +46,15 @@ import { createCipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
  *  read the conf without prompting for an interactive password. We
  *  pre-obscure values here so the rendered config is directly loadable.
  */
+// Source: https://github.com/rclone/rclone/blob/master/fs/config/obscure/obscure.go
+// Last 16 bytes were previously transcribed incorrectly (f6de27c0c2ce18ce) →
+// rclone's reveal produced binary garbage → upstream S3 returned
+// SignatureDoesNotMatch on every shim-routed request. Cross-checked against
+// `rclone obscure <plaintext>` output: our obscure now round-trips through
+// `rclone reveal`. See backend/src/modules/storage-lifecycle/rclone-obscure.ts
+// for the same constant + cross-check unit test (rclone-obscure.test.ts).
 const RCLONE_OBSCURE_KEY = Buffer.from(
-  '9c935b48730a554d6bfd7c63c886a92b' + 'd390198eb8128afbf6de27c0c2ce18ce',
+  '9c935b48730a554d6bfd7c63c886a92b' + 'd390198eb8128afbf4de162b8b95f638',
   'hex'
 );
 
