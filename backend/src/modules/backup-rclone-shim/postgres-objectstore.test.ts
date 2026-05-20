@@ -230,7 +230,7 @@ describe('reconcilePostgresObjectStore — happy path', () => {
         accessKeyId: { name: SHIM_S3_CREDS_SECRET_NAME, key: 'access_key' },
         secretAccessKey: { name: SHIM_S3_CREDS_SECRET_NAME, key: 'secret_key' },
       },
-      wal: { compression: 'gzip', maxParallel: 8 },
+      wal: { compression: 'gzip', maxParallel: 2 },
       data: { compression: 'gzip' },
     });
     expect((body.spec as Record<string, unknown>).retentionPolicy).toBe('30d');
