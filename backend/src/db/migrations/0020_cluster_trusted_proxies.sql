@@ -23,13 +23,18 @@
 -- CIDR uniqueness is enforced — preventing duplicate trust entries
 -- across sources. The UNIQUE on lower(cidr) handles IPv6 case folding.
 
+-- users.id is VARCHAR(36) in this codebase (Drizzle convention — see
+-- crowdsec_autoban_runs and similar tables). FK must match the
+-- referenced column's type exactly, so created_by uses VARCHAR(36)
+-- and id uses VARCHAR(36) for consistency (with gen_random_uuid()::text
+-- so the column receives the canonical text UUID form).
 CREATE TABLE IF NOT EXISTS cluster_trusted_proxy_ranges (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
   cidr TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL CHECK (source IN ('system', 'bootstrap', 'operator')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  created_by UUID REFERENCES users(id) ON DELETE SET NULL
+  created_by VARCHAR(36) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS cluster_trusted_proxy_ranges_cidr_idx
