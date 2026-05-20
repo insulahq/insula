@@ -75,10 +75,12 @@ if ! grep -B1 -A6 "NODE_TERMINAL_ENABLED" "$APP_TS" | grep -Eq "\?\?[[:space:]]*
   fail "app.ts NODE_TERMINAL_ENABLED default must remain 'false' (opt-in feature flag)."
 fi
 
-# 7. WS handler must check user.role === 'super_admin' (defence in depth
-#    against any future hook-bypass on the WS upgrade path).
+# 7. WS handler must reject any caller whose role is not super_admin
+#    (defence-in-depth against future hook-bypass on the WS upgrade
+#    path). The expected pattern is `if (user.role !== 'super_admin')`
+#    leading to a reject. We grep for the literal predicate.
 if ! grep -Eq "user\.role[[:space:]]*!==[[:space:]]*'super_admin'" "$ROUTES"; then
-  fail "routes.ts WS handler must verify user.role !== 'super_admin' as a belt-and-braces check."
+  fail "routes.ts WS handler must contain 'user.role !== \\'super_admin\\'' rejection predicate as a belt-and-braces check."
 fi
 
 # 8. WS handler must verify panel === 'admin' (security finding M2 —
@@ -114,4 +116,58 @@ if echo "$POD_SPEC_CODE2" | grep -Eq 'sessionId\.slice\(0,[[:space:]]*8\)'; then
   fail "pod-spec.ts must not truncate sessionId — use the full UUID (avoids collision)."
 fi
 
-echo "[ci-node-terminal-check] OK — all security invariants intact."
+# 13. attachExec MUST consult the DB via session-store.findById — the
+#     load-bearing fix for HA stickiness (PR1 of the ADR-041 follow-up).
+#     A future refactor that reintroduces an in-memory-only fast path
+#     would silently break re-attach across platform-api replicas.
+if ! echo "$SERVICE_CODE" | grep -Eq 'sessionStore\.findById|findById\('; then
+  fail "service.ts attachExec must call session-store findById — DB lookup is required for HA stickiness."
+fi
+
+# 14. createSession MUST persist the session row via insertSession.
+#     Without this, attachExec on any other replica returns
+#     SESSION_NOT_FOUND because the row never made it to the DB.
+if ! echo "$SERVICE_CODE" | grep -Eq 'sessionStore\.insertSession|insertSession\('; then
+  fail "service.ts createSession must call session-store insertSession — DB persistence is required."
+fi
+
+# 15. The raw wsToken MUST be hashed before being written to the DB.
+#     The store's insertSession + refreshWsToken implementations call
+#     hashWsToken(rawToken) inside the SET clause. Reject any code path
+#     that assigns wsTokenHash from a raw string (i.e. without
+#     hashWsToken(...) on the right-hand side).
+#
+#     NOTE: this guard is INTENTIONALLY strict — the RHS of every
+#     `wsTokenHash:` assignment in session-store.ts must contain either
+#     `hashWsToken(` or `null` literally. A maintainer introducing a
+#     helper like `wsTokenHash: alreadyHashedBytes` will trip this guard
+#     even if the bytes were produced upstream by hashWsToken. The
+#     intended escape hatch is to call `hashWsToken(...)` inline at the
+#     assignment site (the cost is one extra hash call; the benefit is
+#     trivial static review of "raw token never persisted").
+STORE_TS="$ROOT/backend/src/modules/node-terminal/session-store.ts"
+if [[ ! -f "$STORE_TS" ]]; then
+  fail "Cannot find $STORE_TS"
+fi
+STORE_CODE=$(sed -e 's://.*$::' -e '/\/\*/,/\*\//d' "$STORE_TS")
+# wsTokenHash must only ever be assigned from hashWsToken(...) or null.
+# Grep every assignment line and verify the RHS contains hashWsToken or
+# is exactly `null`. If we find any assignment that doesn't satisfy
+# that, fail loudly.
+ASSIGN_LINES=$(echo "$STORE_CODE" | grep -E 'wsTokenHash[[:space:]]*:' || true)
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  # A type-annotation in InsertInput interface looks like
+  # `wsToken: string;` — that's NOT an assignment, skip lines with no `,` or `(`.
+  if ! echo "$line" | grep -Eq 'hashWsToken\(|null'; then
+    fail "session-store.ts: wsTokenHash must only be assigned from hashWsToken(...) or null. Offending line: $line"
+  fi
+done <<< "$ASSIGN_LINES"
+
+# Defence-in-depth: insertSession's parameter is `wsToken` (raw), and
+# the implementation MUST call hashWsToken on it before persisting.
+if ! echo "$STORE_CODE" | grep -Eq 'hashWsToken\(input\.wsToken\)|hashWsToken\(newToken\)|hashWsToken\(rawToken\)'; then
+  fail "session-store.ts insertSession/refreshWsToken must hash the raw token (hashWsToken) before persistence."
+fi
+
+echo "[ci-node-terminal-check] OK — all 15 security invariants intact."
