@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# backup-rclone-shim — universal backup mediator.
+#
+# Per BACKUP_ARCHITECTURE_RFC §13a:
+#   - DaemonSet (one pod per node) running `rclone serve s3`
+#   - Service with internalTrafficPolicy: Local → zero cross-node hops
+#   - Per-class buckets (system / tenant / mail × crypt + raw variants)
+#   - Encryption driven by BACKUP_TARGET_KEY (Secret platform/backup-target-key)
+#
+# This package defines the static manifests. The dynamic config (rclone.conf
+# + buckets.txt) is rendered into the ConfigMap by platform-api's
+# backup-rclone-shim/config-renderer module (R-X4). Until that lands,
+# the shim's launcher script sleeps when buckets.txt is empty.
+
+resources:
+  - serviceaccount.yaml
+  - configmap-placeholder.yaml
+  - daemonset.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - pdb.yaml
+
+namespace: platform
