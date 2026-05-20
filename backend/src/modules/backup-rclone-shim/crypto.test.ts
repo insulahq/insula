@@ -220,4 +220,16 @@ describe('rcloneObscure', () => {
     // 16 IV + 32 plaintext = 48 bytes → 64 base64url chars
     expect(out.length).toBe(64);
   });
+
+  // Regression for the key-typo bug: the shim's RCLONE_OBSCURE_KEY had the
+  // last 16 bytes wrong, which let our own obscure/reveal round-trip but
+  // produced binary garbage when decoded by the real `rclone reveal` binary.
+  // The upstream S3 returned SignatureDoesNotMatch on every shim-routed
+  // request. Cross-check that our key matches rclone's hardcoded key.
+  it('uses rclone\'s exact hardcoded key (cross-check vs storage-lifecycle/rclone-obscure.ts)', async () => {
+    const { rcloneReveal } = await import('../storage-lifecycle/rclone-obscure.js');
+    const plaintext = 'h9nkE4j64YnBv2m4X3fOBIBdcocRmXWeNM8F4RwX';
+    const obscured = rcloneObscure(plaintext);
+    expect(rcloneReveal(obscured)).toBe(plaintext);
+  });
 });
