@@ -47,14 +47,35 @@ bootstrap or `kubectl patch` to change it later.
 
 The privileged Pod is destroyed by the FIRST of:
 
-| Trigger                                | Latency                       |
-|----------------------------------------|-------------------------------|
-| Operator closes the modal (HTTP DELETE)| ~5s                           |
-| WebSocket drop (network / browser kill)| ~5s (server-side finalize)    |
-| Shell `exit` from inside the terminal  | ~5s (stdout EOF → cleanup)    |
-| Idle 15 minutes (no I/O on the WS)     | Within the next 60s scheduler |
-| `activeDeadlineSeconds` 3600 (1 hour)  | k8s evicts; hard cap          |
-| Orphan sweeper (stale-safety 5 min)    | Within the next 60s scheduler |
+| Trigger                                | Latency                          |
+|----------------------------------------|----------------------------------|
+| Operator clicks × on modal/dock        | ~5s (explicit terminate frame)   |
+| Operator closes the modal (HTTP DELETE)| ~5s                              |
+| Shell `exit` from inside the terminal  | ~5s (stdout EOF → cleanup)       |
+| WebSocket drop without terminate frame | 60s grace + ≤60s scheduler tick  |
+| Idle 15 minutes (no I/O on the WS)     | Within the next 60s scheduler    |
+| `activeDeadlineSeconds` 3600 (1 hour)  | k8s evicts; hard cap             |
+| Orphan sweeper (stale-safety 5 min)    | Within the next 60s scheduler    |
+
+### Page reload / network blip survival (60s grace period)
+
+A WebSocket drop WITHOUT an explicit `{type:'terminate'}` frame is
+treated as ambiguous (page reload, sleeping laptop, transient network
+glitch) and the session sticks around for `NODE_TERMINAL_GRACE_MS`
+(default 60s). Within that window, a reconnect via the frontend's
+Reconnect button or an automatic restore on app mount mints a fresh
+`wsToken` via POST `/sessions/:id/ws-token` and reattaches to the
+still-running Pod. The shell state on the host filesystem (current
+directory, modified files) survives; the in-PTY scrollback does not
+(each `kubectl exec` opens a fresh PTY).
+
+**Worst-case overshoot if the replica that scheduled the grace timer
+dies during the window:** 60s grace + 60s next scheduler tick = up
+to **120s** of Pod-alive-without-active-session time. The DB column
+`terminate_after` is the authoritative deadline; the in-memory timer
+is the fast path. An incident responder shouldn't expect sub-60s
+cleanup after a platform-api crash — wait two scheduler ticks before
+investigating "lingering" Pods that look orphaned.
 
 Operator can force-close another super-admin's session via:
 

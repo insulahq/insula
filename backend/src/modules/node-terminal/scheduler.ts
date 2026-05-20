@@ -11,13 +11,16 @@ import {
 } from './service.js';
 
 /**
- * 60-second tick that does three things — all DB-backed so any
+ * 60-second tick that does four things — all DB-backed so any
  * platform-api replica can sweep any session cluster-wide:
  *  1. Terminate sessions whose `last_activity_at` is older than the
  *     idle timeout (15min default).
  *  2. Terminate sessions whose `expires_at` has elapsed (1h cap,
  *     belt-and-braces with k8s activeDeadlineSeconds).
- *  3. Reap labelled Pods that no longer have a DB row AND are
+ *  3. Terminate sessions whose grace-period `terminate_after` has
+ *     elapsed (page-reload survival fallback when the replica that
+ *     scheduled the in-memory timer died before it could fire).
+ *  4. Reap labelled Pods that no longer have a DB row AND are
  *     >5min old (covers platform-api-crashed-mid-create).
  *
  * All operations are best-effort. Failures are logged via Fastify's
@@ -62,7 +65,21 @@ export function startNodeTerminalScheduler(app: FastifyInstance, intervalMs: num
     } catch (err) {
       app.log.warn({ err }, 'node-terminal expired sweep failed');
     }
-    // 3) Orphan pod sweep (DB-aware — see service.ts).
+    // 3) Grace-period reaper — sessions whose terminate_after has
+    //    elapsed without a reconnect. The in-memory timer on the
+    //    originating replica is the fast path; this is the DB-backed
+    //    safety net for the replica-died-during-grace-window case.
+    try {
+      const dueForTermination = await sessionStore.findReadyForTermination(app.db);
+      for (const session of dueForTermination) {
+        await terminateSession(ctx, session.id, 'idle', fakeRequest).catch((err) => {
+          app.log.warn({ err, sessionId: session.id }, 'node-terminal grace-period terminate failed');
+        });
+      }
+    } catch (err) {
+      app.log.warn({ err }, 'node-terminal grace-period sweep failed');
+    }
+    // 4) Orphan pod sweep (DB-aware — see service.ts).
     try {
       await sweepOrphanPods(ctx);
     } catch (err) {

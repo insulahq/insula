@@ -40,6 +40,9 @@ import {
   findExpired,
   listForNode,
   listAll,
+  setTerminateAfter,
+  clearTerminateAfter,
+  findReadyForTermination,
 } from './session-store.js';
 import type { NodeTerminalSessionRow } from '../../db/schema.js';
 
@@ -147,6 +150,7 @@ function fakeRow(over: Partial<NodeTerminalSessionRow> = {}): NodeTerminalSessio
     createdAt: now,
     expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
     lastActivityAt: now,
+    terminateAfter: null,
     ...over,
   };
 }
@@ -276,6 +280,19 @@ describe('consumeWsToken', () => {
     expect(setArg.wsTokenHash).toBeNull();
     expect(setArg.wsTokenIssuedAt).toBeNull();
     expect(setArg.lastActivityAt).toBeInstanceOf(Date);
+  });
+
+  it('also clears terminate_after atomically (closes reconnect-vs-reap race)', async () => {
+    // Security review HIGH finding (2026-05-20). If consumeWsToken
+    // didn't clear terminate_after in the same UPDATE, the scheduler's
+    // findReadyForTermination could read a stale pending termination
+    // AFTER the WS has reattached but BEFORE cancelDelayedTermination
+    // lands its follow-up UPDATE.
+    const row = fakeRow();
+    const { db, calls } = makeDb({ updateResult: [row] });
+    await consumeWsToken(db, 'sess-1', 'tok');
+    const setArg = calls.updateSet.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.terminateAfter).toBeNull();
   });
 
   it('returns null when nothing was updated (token mismatch / already-consumed / expired)', async () => {
@@ -437,5 +454,68 @@ describe('hashWsToken — constant-time-ish properties', () => {
     expect(hashWsToken('').length).toBe(32);
     expect(hashWsToken('a').length).toBe(32);
     expect(hashWsToken('a'.repeat(10_000)).length).toBe(32);
+  });
+});
+
+// ─── Grace-period (terminate_after) helpers — reload survival ─────────
+
+describe('setTerminateAfter', () => {
+  it('writes terminate_after to the given timestamp', async () => {
+    const { db, calls } = makeDb({ updateResult: [] });
+    const fireAt = new Date('2026-05-20T10:01:00Z');
+    await setTerminateAfter(db, 'sess-1', fireAt);
+    const setArg = calls.updateSet.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.terminateAfter).toBe(fireAt);
+  });
+});
+
+describe('clearTerminateAfter', () => {
+  it('NULLs the terminate_after column', async () => {
+    const { db, calls } = makeDb({ updateResult: [] });
+    await clearTerminateAfter(db, 'sess-1');
+    const setArg = calls.updateSet.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.terminateAfter).toBeNull();
+  });
+});
+
+describe('refreshWsToken — also clears terminate_after', () => {
+  it('the same atomic UPDATE that mints the new token clears the pending termination', async () => {
+    // Reload→reconnect path: an in-flight grace timer must not race
+    // with the reconnect. Doing both updates in one statement closes
+    // the window — even if the scheduler's reaper query reads
+    // mid-flight, it sees either the old (pending) row or the new
+    // (no pending termination) row, never an inconsistent one.
+    const row = fakeRow();
+    const { db, calls } = makeDb({ updateResult: [row] });
+    await refreshWsToken(db, 'sess-1', 'new-token');
+    const setArg = calls.updateSet.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.terminateAfter).toBeNull();
+    // Sanity — the hash also got written
+    expect(setArg.wsTokenHash).toBeInstanceOf(Buffer);
+  });
+});
+
+describe('findReadyForTermination', () => {
+  it('returns rows whose terminate_after is in the past', async () => {
+    const due = fakeRow({ terminateAfter: new Date(Date.now() - 1000) });
+    const { db } = makeDb({ selectResult: [due] });
+    const result = await findReadyForTermination(db);
+    expect(result.length).toBe(1);
+    expect(result[0]?.id).toBe('sess-1');
+    expect(result[0]?.terminateAfter).toBeInstanceOf(Date);
+  });
+
+  it('returns [] when no row has terminate_after set', async () => {
+    const { db } = makeDb({ selectResult: [] });
+    const result = await findReadyForTermination(db);
+    expect(result).toEqual([]);
+  });
+
+  it('rowToSession surfaces terminate_after when present', async () => {
+    const fireAt = new Date('2026-05-20T11:00:00Z');
+    const row = fakeRow({ terminateAfter: fireAt });
+    const { db } = makeDb({ selectResult: [row] });
+    const got = await findById(db, 'sess-1');
+    expect(got?.terminateAfter).toEqual(fireAt);
   });
 });
