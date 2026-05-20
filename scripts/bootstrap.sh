@@ -4108,6 +4108,54 @@ generate_platform_secrets() {
     log "Platform secrets created."
   fi
 
+  # backup-target-key — the SINGLE root of all backup encryption.
+  # See docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13b.
+  #
+  # 32 cryptographically-random bytes, base64-encoded for storage. Used by:
+  #   - rclone `crypt` backends in the backup-rclone-shim DaemonSet
+  #   - restic RESTIC_PASSWORD for every restic CronJob
+  #   - shim's local S3 access/secret (HKDF-derived in platform-api)
+  #
+  # The Secret lives in the `platform` namespace, which is in the Tier-1
+  # bundle list (backend/src/modules/system-backup/secrets-tiers.ts) — so
+  # `make secrets-fetch` automatically captures it offline. Without the
+  # offline copy, all upstream backups are permanently unrecoverable
+  # after a cluster-loss event.
+  #
+  # NEVER regenerate this key in-place without explicit operator intent.
+  # Rotation is `make backup-target-key-rotate` and requires a 3-step
+  # confirmation gate; it INVALIDATES every existing remote backup.
+  # kubectl exit code is checked specifically for "not found" — any other
+  # error (RBAC, network) propagates a non-zero exit, falls through to the
+  # create branch, and `kctl create` then fails-loud because the Secret
+  # already exists. That's intentional: silently skipping under transient
+  # API errors would leave the cluster without this key.
+  if kctl get secret -n platform backup-target-key >/dev/null 2>&1; then
+    log "backup-target-key already exists, preserving (rotation requires explicit operator action)."
+  else
+    # 32 bytes = 256 bits of CSPRNG entropy. Stored base64-encoded.
+    # Consumers (rclone crypt, restic, HKDF for shim S3 creds) decode
+    # before use. Fingerprint is sha256 of the DECODED raw bytes — the
+    # rotation script and platform-api reconciler agree on this
+    # convention so cross-checks stay consistent. See RFC §13b.
+    local backup_target_key fingerprint
+    backup_target_key="$(openssl rand -base64 32 | tr -d '\n')"
+    fingerprint="$(printf '%s' "$backup_target_key" | base64 -d | sha256sum | cut -d' ' -f1 | head -c 16)"
+
+    kctl create secret generic backup-target-key \
+      --namespace=platform \
+      --from-literal=key="$backup_target_key" \
+      --from-literal=generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --from-literal=fingerprint="$fingerprint"
+
+    kctl annotate secret -n platform backup-target-key \
+      'platform.example.test/role=backup-target-key' \
+      'platform.example.test/restore-tier=tier-1-platform' \
+      --overwrite >/dev/null 2>&1 || true
+
+    log "backup-target-key created (fingerprint: ${fingerprint}…). MUST be backed up offline via 'make secrets-fetch'."
+  fi
+
   # OAuth2 Proxy config secret. Generation is split: the random secrets
   # (client_secret, cookie_secret) are computed ONCE on first creation
   # and preserved across re-runs to avoid invalidating active sessions /
