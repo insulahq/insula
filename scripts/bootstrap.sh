@@ -1526,6 +1526,19 @@ configure_firewall() {
     type ipv6_addr
     flags interval
   }
+  # F1 — L4 CrowdSec blocklist (populated by firewall-reconciler's third
+  # loop when security.crowdsec.l4_enabled platform_setting is on; stays
+  # empty otherwise). 'flags timeout' enables kernel-side per-element
+  # auto-expiry — belt-and-suspenders alongside the reconciler diff so a
+  # reconciler outage doesn't leave bans stuck past their CrowdSec TTL.
+  set crowdsec_blocklist_v4 {
+    type ipv4_addr
+    flags interval,timeout
+  }
+  set crowdsec_blocklist_v6 {
+    type ipv6_addr
+    flags interval,timeout
+  }
 "
 
   cat > /etc/nftables.conf <<NFT
@@ -1540,6 +1553,14 @@ ${set_decls}
 
     iif "lo" accept
     ct state established,related accept
+
+    # F1 — L4 CrowdSec blocklist drop. Placed AFTER ct established so an
+    # in-flight SSH session for an operator who just got their own IP
+    # banned isn't terminated mid-keystroke. Placed BEFORE every accept
+    # rule so banned IPs can't reach SSH/mail/web/anything. Empty set
+    # is a no-op — set is populated only when L4 enforcement is on.
+    ip  saddr @crowdsec_blocklist_v4 drop
+    ip6 saddr @crowdsec_blocklist_v6 drop
 
     ip protocol icmp accept
     ip6 nexthdr icmpv6 accept
