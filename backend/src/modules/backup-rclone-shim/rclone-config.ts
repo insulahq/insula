@@ -21,7 +21,7 @@ import {
   deriveShimSecretKey,
   deriveCryptCredentials,
   rcloneObscure,
-} from './crypto';
+} from './crypto.js';
 
 // ---------------------------------------------------------------------------
 // Types
