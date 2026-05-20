@@ -170,4 +170,33 @@ if ! echo "$STORE_CODE" | grep -Eq 'hashWsToken\(input\.wsToken\)|hashWsToken\(n
   fail "session-store.ts insertSession/refreshWsToken must hash the raw token (hashWsToken) before persistence."
 fi
 
-echo "[ci-node-terminal-check] OK — all 15 security invariants intact."
+# 16. Grace-period reload survival — the WS close handler MUST go
+#     through scheduleDelayedTermination, not call terminateSession
+#     synchronously. A regression here would re-introduce the bug
+#     where page reload immediately kills the privileged Pod.
+#
+#     The expected pattern (in finalize() inside attachExec):
+#       if (explicitTerminate || reason === 'shell_exited') {
+#         await terminateSession(...)
+#       } else {
+#         await scheduleDelayedTermination(...)
+#       }
+#     We grep for scheduleDelayedTermination's presence inside service.ts.
+if ! echo "$SERVICE_CODE" | grep -Eq 'scheduleDelayedTermination\('; then
+  fail "service.ts must call scheduleDelayedTermination on ambiguous WS close — load-bearing for page-reload survival."
+fi
+# Also: refreshWsToken in session-store MUST clear terminate_after so
+# the reconnect path can't race with an in-flight scheduler reap.
+if ! echo "$STORE_CODE" | grep -Eq 'refreshWsToken' || ! echo "$STORE_CODE" | grep -A20 'export async function refreshWsToken' | grep -Eq 'terminateAfter:[[:space:]]*null'; then
+  fail "session-store.ts refreshWsToken must clear terminate_after atomically with the token refresh (reconnect-vs-reap race fix)."
+fi
+
+# 17. consumeWsToken MUST also clear terminate_after atomically.
+# Without this, a scheduler sweep landing between token-consume and a
+# follow-up cancelDelayedTermination round-trip would terminate a
+# freshly-reconnected session. Same race class as 16, second site.
+if ! echo "$STORE_CODE" | grep -A20 'export async function consumeWsToken' | grep -Eq 'terminateAfter:[[:space:]]*null'; then
+  fail "session-store.ts consumeWsToken must clear terminate_after atomically with the token consume (closes WS-reattach vs scheduler-reap TOCTOU)."
+fi
+
+echo "[ci-node-terminal-check] OK — all 17 security + reliability invariants intact."

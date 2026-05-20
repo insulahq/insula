@@ -361,7 +361,10 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
         actorId: user.sub,
         nodeName,
         sessionId,
-        action: 'node_terminal.session.create.success',
+        // Use a dedicated action so audit-log queries filtering on
+        // `.create.success` don't see duplicate creates after every
+        // reconnect/reload (review finding: misleading audit label).
+        action: 'node_terminal.session.ws_token.refreshed',
         request,
         changes: {
           reason: 'ws_token_refresh',

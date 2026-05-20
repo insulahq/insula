@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useTerminalSessions } from '@/stores/terminal-sessions';
 import {
   NodeTerminalModal,
@@ -29,6 +30,20 @@ export function NodeTerminalHost() {
   const verifyStepUpPassword = useTerminalSessions((s) => s.verifyStepUpPassword);
   const verifyStepUpPasskey = useTerminalSessions((s) => s.verifyStepUpPasskey);
   const openFresh = useTerminalSessions((s) => s.openFresh);
+  const restoreFromStorage = useTerminalSessions((s) => s.restoreFromStorage);
+
+  // On app mount, ask the store to re-attach any sessions that were
+  // open when the user navigated away or reloaded. The store reads
+  // sessionStorage, POSTs /ws-token for each persisted entry, and
+  // reconstructs a fresh xterm + WebSocket for each — within the
+  // server's 60s grace period the privileged Pod is still alive on
+  // the host, so the shell state survives. Idempotent — fires once.
+  // restoreFromStorage is stable across renders (zustand action), so
+  // an empty deps array is correct here even though ESLint can't see
+  // through the zustand-returned identity stability.
+  useEffect(() => {
+    void restoreFromStorage();
+  }, [restoreFromStorage]);
 
   const active = activeId ? sessions.find((s) => s.id === activeId) : undefined;
   // Show the provisioning overlay only when: an open-flow is in

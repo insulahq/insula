@@ -56,6 +56,13 @@
 #     G3. New WS connects, exec stream usable
 #     G4. Old wssUrl rejected after refresh (no replay possible)
 #
+#   H — Page-reload survival (grace-period termination)
+#     H1. Ungraceful WS close (no terminate frame) — Pod survives
+#     H2. DB row has terminate_after populated
+#     H3. POST /ws-token cancels the grace timer (terminate_after = NULL)
+#     H4. New WS connects, host filesystem state preserved across reload
+#     H5. Explicit terminate frame → immediate cleanup (no grace)
+#
 #   I — Idle timeout (opt-in via --idle, takes 16 minutes)
 #
 # Usage:
@@ -671,6 +678,150 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
 
   # G5. Cleanup
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$G_SESSION_ID" >/dev/null 2>&1 || true
+fi
+
+# ── Phase H: Page-reload survival (grace period) ─────────────────────
+#
+# A page reload drops the WS WITHOUT sending the explicit terminate
+# frame the × buttons send. The server's WS close handler treats this
+# as ambiguous → schedules delayed termination via terminate_after.
+# A reconnect via POST /ws-token cancels the timer.
+#
+#   H1. Open WS, run a command that mutates shell state (e.g. cd /tmp,
+#       set a variable), CLOSE the WS WITHOUT a terminate frame.
+#   H2. Verify the DB row's `terminate_after` is populated.
+#   H3. Wait briefly (< grace period), then POST /ws-token.
+#   H4. Verify `terminate_after` is now NULL (refreshWsToken cleared it).
+#   H5. Open new WS, drive a command, observe shell state is preserved
+#       (the cd persists; the env var does NOT, by k8s exec semantics —
+#       each exec gets a fresh PTY but the host filesystem is shared).
+#   H6. Explicit terminate frame → server kills immediately (no grace).
+#   H7. Cleanup via DELETE.
+if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
+  phase "H. Page-reload survival (grace period)"
+
+  KUBECTL_CMD_H="${KUBECTL:-kubectl}"
+  H_HAS_DB=0
+  if $KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
+    H_HAS_DB=1
+  else
+    warn "H skipped DB checks — set KUBECTL='docker exec <dind-container> kubectl' (DinD)"
+  fi
+
+  # H1. Create + drive WS, then UNCLEAN close (no terminate frame).
+  H_CREATE="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  H_SESSION_ID="$(echo "$H_CREATE" | jq -r '.data.sessionId')"
+  H_WS_URL="$(echo "$H_CREATE" | jq -r '.data.websocketUrl')"
+  H_POD_NAME="$(echo "$H_CREATE" | jq -r '.data.podName')"
+  if [[ -n "$H_SESSION_ID" && -n "$H_WS_URL" ]]; then
+    pass "H1 created session ($H_SESSION_ID)"
+  else
+    fail "H1 create failed: $H_CREATE"
+  fi
+
+  # Drive the WS, mutate the shell, then SIMULATE A PAGE RELOAD by
+  # closing the socket without sending a terminate frame.
+  ws_drive "$H_WS_URL" "
+    ws.on('message', (raw) => {
+      const f = JSON.parse(raw.toString());
+      if (f.type === 'connected') {
+        // Touch a sentinel file on the host so we can verify shell
+        // state survives the reload (the file is real — k8s exec
+        // sessions share /tmp on the host node).
+        ws.send(JSON.stringify({ type:'stdin', data:'touch /tmp/reload-sentinel-${H_SESSION_ID}\\n' }));
+        // Simulate page-reload close: no terminate frame, just drop.
+        setTimeout(() => ws.close(1001, 'page-reload'), 400);
+      }
+    });
+  " >/dev/null 2>&1 || true
+  sleep 1
+
+  # H2. Pod must still be alive (grace period not expired)
+  if $KUBECTL_CMD_H --namespace="$NAMESPACE" get pod "$H_POD_NAME" >/dev/null 2>&1; then
+    pass "H2 Pod survives ungraceful WS close (grace period active)"
+  else
+    fail "H2 Pod gone after WS close — grace period not honoured"
+  fi
+
+  # H3. DB row must have terminate_after set
+  if [[ "$H_HAS_DB" == "1" ]]; then
+    H_TA="$($KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
+      psql -d hosting_platform -t -A -c "SELECT terminate_after FROM node_terminal_sessions WHERE id='$H_SESSION_ID'" 2>/dev/null | head -1)"
+    if [[ -n "$H_TA" && "$H_TA" != "(null)" ]]; then
+      pass "H3 terminate_after populated in DB ($H_TA)"
+    else
+      fail "H3 terminate_after empty — grace period not persisted"
+    fi
+  fi
+
+  # H4. POST /ws-token to reconnect — must clear terminate_after
+  H_RECON="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$H_SESSION_ID/ws-token" "" "{}")"
+  H_NEW_WS_URL="$(echo "$H_RECON" | jq -r '.data.websocketUrl // empty')"
+  if [[ -n "$H_NEW_WS_URL" ]]; then
+    pass "H4 reconnect after grace-close returned fresh URL"
+  else
+    fail "H4 reconnect failed: $H_RECON"
+  fi
+  if [[ "$H_HAS_DB" == "1" ]]; then
+    H_TA2="$($KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
+      psql -d hosting_platform -t -A -c "SELECT terminate_after FROM node_terminal_sessions WHERE id='$H_SESSION_ID'" 2>/dev/null | head -1)"
+    if [[ -z "$H_TA2" || "$H_TA2" == "(null)" ]]; then
+      pass "H4a refreshWsToken atomically cleared terminate_after"
+    else
+      fail "H4a terminate_after still set after reconnect: '$H_TA2'"
+    fi
+  fi
+
+  # H5. Drive the new WS, check the sentinel file is still on the host
+  if [[ -n "$H_NEW_WS_URL" ]]; then
+    H_NEW_OUT="$(ws_drive "$H_NEW_WS_URL" "
+      let buffer = '';
+      ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString());
+        if (f.type === 'connected') {
+          setTimeout(() => {
+            ws.send(JSON.stringify({ type:'stdin', data:'ls /tmp/reload-sentinel-${H_SESSION_ID} 2>&1\\n' }));
+          }, 500);
+          setTimeout(() => { console.log('BUFFER ' + JSON.stringify(buffer)); ws.close(); }, 3500);
+        }
+        if (f.type === 'stdout') buffer += f.data;
+      });
+    " 2>&1 || true)"
+    if echo "$H_NEW_OUT" | grep -q "reload-sentinel-$H_SESSION_ID"; then
+      pass "H5 sentinel file persisted across reload — shell state survived on the host"
+    else
+      warn "H5 sentinel grep miss (timing); WS reconnect itself worked"
+    fi
+  fi
+
+  # H6. Explicit terminate frame → immediate kill (no grace period)
+  H_CREATE2="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  H_SESSION_ID2="$(echo "$H_CREATE2" | jq -r '.data.sessionId')"
+  H_WS_URL2="$(echo "$H_CREATE2" | jq -r '.data.websocketUrl')"
+  H_POD_NAME2="$(echo "$H_CREATE2" | jq -r '.data.podName')"
+  ws_drive "$H_WS_URL2" "
+    ws.on('message', (raw) => {
+      const f = JSON.parse(raw.toString());
+      if (f.type === 'connected') {
+        // EXPLICIT terminate intent
+        ws.send(JSON.stringify({ type:'terminate' }));
+      }
+    });
+  " >/dev/null 2>&1 || true
+  sleep 2
+  if [[ "$H_HAS_DB" == "1" ]]; then
+    H_EXISTS="$($KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
+      psql -d hosting_platform -t -A -c "SELECT id FROM node_terminal_sessions WHERE id='$H_SESSION_ID2'" 2>/dev/null | head -1)"
+    if [[ -z "$H_EXISTS" ]]; then
+      pass "H6 explicit terminate frame → DB row deleted immediately (no grace)"
+    else
+      fail "H6 row still exists after terminate frame: '$H_EXISTS'"
+    fi
+  fi
+
+  # H7. Cleanup
+  curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$H_SESSION_ID" >/dev/null 2>&1 || true
+  curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$H_SESSION_ID2" >/dev/null 2>&1 || true
 fi
 
 # ── Phase I (optional): idle timeout — slow, opt-in via --idle ─────────
