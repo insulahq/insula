@@ -859,6 +859,109 @@ else
   fail "F4: ConfigMap still contains exclusion content: $(echo "$h_cm_final" | head -c 300)"
 fi
 
+# ─── Phase I — F1+F6 Stage C: L4 enforcement toggle (status + dryrun) ─
+#
+# Scope: verify the read + dryrun-toggle paths work end-to-end without
+# engaging actual kernel writes. Going to `enforce` against a live
+# staging cluster from an integration harness is a deliberate operator
+# decision, not something the auto-harness should do unattended — the
+# guard prevents that anyway when the harness's IP isn't trusted. The
+# Phase J test below proves the guard rejects untrusted-IP attempts.
+#
+# What this validates:
+#   - GET /admin/security/crowdsec/l4-enforcement returns a coherent
+#     status (mode, totalPods == 4 on staging, trust source counts,
+#     operatorIp).
+#   - PATCH to dryrun succeeds (regardless of operatorIpTrusted — dryrun
+#     is always allowed because no kernel writes).
+#   - DS env reflects the patched value within ~3 seconds.
+#   - Roll-back to disabled cleans up.
+
+phase "Phase I — F1+F6 L4 toggle + dryrun"
+
+# H1: GET reads coherent status.
+i_status=$(api_internal GET /admin/security/crowdsec/l4-enforcement)
+if echo "$i_status" | grep -q '"mode"'; then
+  ok "L4: GET status reachable"
+else
+  fail "L4: GET status failed: $(echo "$i_status" | head -c 200)"
+fi
+
+# H2: status has totalPods >= 1 (every staging node has a DS pod).
+i_pods=$(echo "$i_status" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['totalPods'])" 2>/dev/null || echo 0)
+if [[ "$i_pods" -ge 1 ]]; then
+  ok "L4: totalPods=$i_pods (DS observed)"
+else
+  fail "L4: totalPods=$i_pods (expected ≥1 — DS not running?)"
+fi
+
+# H3: PATCH to dryrun (always allowed — no kernel writes).
+i_dryrun=$(api_internal PATCH /admin/security/crowdsec/l4-enforcement '{"mode":"dryrun"}')
+if echo "$i_dryrun" | grep -q '"mode":"dryrun"'; then
+  ok "L4: PATCH to dryrun succeeded"
+else
+  fail "L4: PATCH dryrun failed: $(echo "$i_dryrun" | head -c 300)"
+fi
+
+# H4: DS env reflects the new value within ~5s (apiserver cache).
+sleep 3
+i_after=$(api_internal GET /admin/security/crowdsec/l4-enforcement)
+if echo "$i_after" | grep -q '"mode":"dryrun"'; then
+  ok "L4: status now reads as dryrun"
+else
+  fail "L4: status didn't update to dryrun: $(echo "$i_after" | head -c 300)"
+fi
+
+# H5: PATCH back to disabled (clean-up).
+i_off=$(api_internal PATCH /admin/security/crowdsec/l4-enforcement '{"mode":"disabled"}')
+if echo "$i_off" | grep -q '"mode":"disabled"'; then
+  ok "L4: PATCH back to disabled succeeded"
+else
+  fail "L4: PATCH to disabled failed: $(echo "$i_off" | head -c 300)"
+fi
+
+# ─── Phase J — F1+F6 Stage C: operator-IP-trust guard ────────────────
+#
+# Synthesizes a PATCH attempt from an untrusted IP via the X-Real-IP
+# header override. The backend's getOperatorIp reads X-Real-IP first
+# (this is how Traefik passes through the original client IP), so a
+# manually-set untrusted IP must result in OPERATOR_IP_NOT_TRUSTED 403
+# when the target mode is enforce.
+
+phase "Phase J — L4 operator-IP-trust guard"
+
+# The harness runs from inside the cluster, so api_internal hits
+# platform-api.platform.svc directly with X-Real-IP not set. To
+# simulate an "untrusted operator IP" we explicitly set X-Real-IP to
+# 198.51.100.7 (TEST-NET-2, never routable, never in trusted_ranges).
+untrusted_rc=$(kubectl_run "run waf-cs-j-untrusted-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.7' -d '{\"mode\":\"enforce\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1 | tail -1)
+if [[ "$untrusted_rc" == "403" ]]; then
+  ok "L4: untrusted-IP PATCH to enforce rejected (403)"
+else
+  fail "L4: untrusted-IP PATCH got HTTP $untrusted_rc (expected 403)"
+fi
+
+# Verify the rejection message body explicitly mentions OPERATOR_IP_NOT_TRUSTED.
+untrusted_body=$(kubectl_run "run waf-cs-j-body-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.8' -d '{\"mode\":\"enforce\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1)
+if echo "$untrusted_body" | grep -q '"OPERATOR_IP_NOT_TRUSTED"'; then
+  ok "L4: rejection body carries error code OPERATOR_IP_NOT_TRUSTED"
+else
+  fail "L4: rejection body missing OPERATOR_IP_NOT_TRUSTED: $(echo "$untrusted_body" | head -c 200)"
+fi
+
+# Even when target is dryrun, untrusted-IP PATCH should succeed
+# (dryrun is always allowed — no kernel writes).
+dryrun_rc=$(kubectl_run "run waf-cs-j-dr-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.9' -d '{\"mode\":\"dryrun\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1 | tail -1)
+if [[ "$dryrun_rc" == "200" ]]; then
+  ok "L4: untrusted-IP PATCH to dryrun allowed (200) — dryrun is always safe"
+else
+  fail "L4: untrusted-IP PATCH to dryrun got HTTP $dryrun_rc (expected 200)"
+fi
+
+# Restore disabled (cleanup, in case the dryrun-allowed test above left
+# the mode at dryrun).
+api_internal PATCH /admin/security/crowdsec/l4-enforcement '{"mode":"disabled"}' >/dev/null 2>&1 || true
+
 # ─── Phase 5 — Coverage finishing checks ──────────────────────────────
 
 phase "Phase 5 — Coverage finishing checks"
