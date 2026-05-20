@@ -12,6 +12,12 @@ kind: Kustomization
 
 resources:
   - etcd-snapshot-cronjob.yaml
+  # R-X7: etcd snapshot upload via the universal backup-rclone-shim.
+  # Suspend-default; platform-api's etcd-cronjob reconciler toggles
+  # spec.suspend on/off based on the SYSTEM-class shim target binding.
+  # Coexists with etcd-snapshot-cronjob (R-X13 archives the legacy
+  # CronJob once shim coverage is proven on staging).
+  - etcd-snap-via-shim-cronjob.yaml
   - postgres-dump-cronjob.yaml
   - cluster-state-cronjob.yaml
   - secrets-backup-cronjob.yaml

@@ -922,6 +922,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'mail-target-scheduler: failed to start (non-blocking)');
         }
 
+        // R-X7: etcd-snap-via-shim CronJob suspend toggle reconciler.
+        // Toggles spec.suspend on the static CronJob based on the
+        // SYSTEM-class shim target binding. 5-min tick, non-blocking
+        // on failure.
+        try {
+          const { startEtcdCronJobReconciler } = await import(
+            './modules/backup-rclone-shim/etcd-cronjob-scheduler.js'
+          );
+          const etcdHandle = startEtcdCronJobReconciler(
+            app.db,
+            { batch: k8sForImapsync.batch },
+            app.log,
+          );
+          app.addHook('onClose', () => etcdHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'etcd-cronjob: scheduler start failed (non-blocking)',
+          );
+        }
+
         // R-X6: postgres ObjectStore + ScheduledBackup reconciler.
         // Materialises the CNPG plugin-barman-cloud wiring whenever
         // the SYSTEM-class shim target binding changes. 5-min tick.
