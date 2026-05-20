@@ -36,6 +36,15 @@ metadata:
 spec:
   plugin:
     crowdsec:
+      # MUST be true — the plugin's Config struct defaults `Enabled: false`,
+      # which makes ServeHTTP immediately return without any cache lookup,
+      # IP check, or ban enforcement. Without this line the bouncer
+      # registers, pulls decisions, and looks healthy in `cscli bouncers
+      # list` — but it doesn't actually block anything. (This is the
+      # last and most insidious of the four pre-existing bugs uncovered
+      # by the 2026-05-19 Banned-IPs work; the others were the wrong
+      # config-field name, outdated plugin version, and live-mode default.)
+      enabled: true
       # CrowdSec LAPI URL inside the cluster — split into three fields
       # because the maxlerebourg plugin's `Config` struct has NO
       # `crowdsecLapiUrl` field despite the README using that name in

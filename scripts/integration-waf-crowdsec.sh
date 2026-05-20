@@ -89,8 +89,11 @@ ALLOW_PROD_JWT_FALLBACK="${ALLOW_PROD_JWT_FALLBACK:-0}"
 # Single-use process-unique nonce — replaces $RANDOM ($RANDOM is 0..32767
 # so two parallel harness runs collide ~every 256 pod names). $$ is the
 # pid; nanoseconds avoid clock-skew dupes within the same process.
-HARNESS_NONCE="$$.$(date +%s%N)"
+HARNESS_NONCE="$$-$(date +%s%N)"
 nonce_seq=0
+# K8s pod names must be DNS-1123 — lowercase + dash only, max 63 chars.
+# We use the nonce as a suffix on "waf-cs-h-" (9 chars) so up to 54 chars
+# of nonce are safe.
 next_nonce() { nonce_seq=$((nonce_seq + 1)); printf '%s-%d' "$HARNESS_NONCE" "$nonce_seq"; }
 
 log()  { printf '%b[%s]%b %s\n' "$CYAN" "$(date +%H:%M:%S)" "$RESET" "$*"; }
@@ -134,7 +137,31 @@ api_login() {
       return 1
     fi
     log "ADMIN_PASSWORD unset — generating JWT inside platform-api pod"
-    TOKEN=$(kubectl_run "exec -n platform deploy/platform-api -- node -e \\\"const fj = require('fast-jwt'); console.log(fj.createSigner({key: process.env.JWT_SECRET, expiresIn: 30*60*1000})({sub:'00000000-0000-0000-0000-harness00000',email:'harness@test',role:'super_admin',panel:'admin'}));\\\" 2>&1 | tail -1")
+    # Write the JS to a local file then cat it into kubectl exec — avoids
+    # double shell-quoting through ssh + bash that breaks the single
+    # quotes around 'fast-jwt' / property names.
+    local jstmp; jstmp=$(mktemp)
+    cat > "$jstmp" <<'JSEOF'
+const fj = require('fast-jwt');
+const sign = fj.createSigner({key: process.env.JWT_SECRET, expiresIn: 30 * 60 * 1000});
+console.log(sign({
+  sub: '00000000-0000-0000-0000-harness00000',
+  email: 'harness@test',
+  role: 'super_admin',
+  panel: 'admin',
+}));
+JSEOF
+    local podname
+    podname=$(kubectl_run "get pods -n platform -l app=platform-api -o jsonpath='{.items[0].metadata.name}'")
+    # Copy to /tmp (writable for the non-root container user) and run
+    # with NODE_PATH=/app/node_modules so node's require() finds
+    # fast-jwt without needing /app to be writable.
+    scp -i "$SSH_KEY" -q "$jstmp" "$SSH_HOST:/tmp/.harness-mint-jwt.js" >/dev/null
+    rm -f "$jstmp"
+    ssh_run "kubectl cp /tmp/.harness-mint-jwt.js platform/$podname:/tmp/.harness-mint-jwt.js" >/dev/null 2>&1
+    TOKEN=$(kubectl_run "exec -n platform $podname -- env NODE_PATH=/app/node_modules node /tmp/.harness-mint-jwt.js" 2>&1 | tail -1)
+    kubectl_run "exec -n platform $podname -- rm -f /tmp/.harness-mint-jwt.js" >/dev/null 2>&1 || true
+    ssh_run "rm -f /tmp/.harness-mint-jwt.js" >/dev/null 2>&1 || true
   else
     local resp
     resp=$(curl -sk -X POST -H 'Content-Type: application/json' \
@@ -199,7 +226,12 @@ probe_traefik_pod() {
   # we use -w to get a structured line. Then a second call with -o /tmp
   # captures the body. Two calls is cleaner than parsing combined output.
   local status_line
-  status_line=$(kubectl_run "run waf-probe-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -D - -H 'Host: $host' -H 'X-Forwarded-Host: $host' -H 'X-Forwarded-For: $xff' -H 'X-Real-Ip: $xff' -w 'HTTPSTATUS=%{http_code}\n' --max-time 8 http://$pod_ip:8000$path" 2>&1)
+  # Use https://<pod-ip>:8443 — the platform routes use the `websecure`
+  # entrypoint (HTTP/8000 returns 404 from the router for HTTPS-only
+  # hosts before the middleware chain even runs). --resolve makes curl
+  # use the pod IP while sending Host=<host> + SNI=<host> so the cert
+  # SNI lookup + Traefik router both match the real route.
+  status_line=$(kubectl_run "run waf-probe-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -D - -H 'X-Forwarded-Host: $host' -H 'X-Forwarded-For: $xff' -H 'X-Real-Ip: $xff' --resolve '$host:8443:$pod_ip' -w 'HTTPSTATUS=%{http_code}\n' --max-time 8 https://$host:8443$path" 2>&1)
   local code; code=$(printf '%s' "$status_line" | grep -oE 'HTTPSTATUS=[0-9]+' | head -1 | cut -d= -f2)
   # Base64 the full response headers so we can grep for plugin-specific
   # markers (e.g. CrowdSec adds `X-CrowdSec-Decision`-style headers on
@@ -400,76 +432,126 @@ if (( bouncers_online_before == 0 )); then
   warn "skipping Phase 4 enforcement checks; cleanup will still run"
   skipped=$((skipped + traefik_count * 2))
 else
-  # Place the ban via the admin API (same path the operator uses).
-  ban_resp=$(api_internal POST /admin/security/crowdsec/decisions \
-    "{\"value\":\"$TEST_BAN_IP\",\"scope\":\"Ip\",\"duration\":\"5m\",\"reason\":\"harness ban test\"}")
-  if echo "$ban_resp" | grep -q "Decision successfully added"; then
-    ok "ban added for $TEST_BAN_IP via admin API"
-  else
-    fail "admin API ban failed: $(echo "$ban_resp" | head -c 200)"
-    exit 1
-  fi
-
-  log "waiting ${BOUNCER_PULL_INTERVAL_S}s + 5s buffer for bouncer cache to refresh..."
-  sleep $((BOUNCER_PULL_INTERVAL_S + 5))
-
-  # For each Traefik pod, send a request as if from $TEST_BAN_IP (via
-  # X-Forwarded-For + X-Real-Ip — Traefik's trustedIPs config makes
-  # the in-cluster pod source authoritative for those headers).
+  # ENFORCEMENT TEST FROM OUTSIDE THE CLUSTER
   #
-  # Use the CRS-clean path `/` (apex) NOT a tripping path like /.env —
-  # otherwise ModSec might 403 the request even when the bouncer
-  # doesn't, producing a false-positive on the ban check.
-  # Then distinguish bouncer-403 from modsec-403 by inspecting response
-  # headers (the CrowdSec plugin annotates the response, ModSec does not).
-  for pod in $traefik_pods; do
-    result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "/")
-    rc="${result%%|*}"
-    headers_b64="${result#*|}"; headers_b64="${headers_b64%%|*}"
-    if [[ "$rc" == "403" ]] && is_crowdsec_block "$headers_b64"; then
-      ok "$pod: bouncer returned 403 with CrowdSec-marker header (real ban enforcement)"
-    elif [[ "$rc" == "403" ]]; then
-      # 403 without the CrowdSec marker — could be a tenant 403, a
-      # modsec rule, or the plugin in fail-open mode. Print headers
-      # for diagnosis but treat as a soft pass (the route returning
-      # 403 to unbanned probes is plausible on this hostname).
-      warn "$pod: got 403 but no CrowdSec marker — could be tenant default or modsec, not necessarily a bouncer block"
-    else
-      fail "$pod: expected 403 for banned IP, got HTTP $rc"
-    fi
-  done
-
-  # Unban + verify reachability restored.
-  decision_id=$(api_internal GET "/admin/security/crowdsec/decisions?q=$TEST_BAN_IP" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['decisions']; print(d[0]['id'] if d else '')")
-  if [[ -n "$decision_id" ]]; then
-    unban_resp=$(api_internal DELETE "/admin/security/crowdsec/decisions/$decision_id")
-    if echo "$unban_resp" | grep -q '"deleted":1'; then
-      ok "unban succeeded (decision id $decision_id)"
-    else
-      fail "unban failed: $unban_resp"
-    fi
+  # The maxlerebourg Traefik plugin BYPASSES its decision cache for any
+  # source IP that's in `forwardedHeadersTrustedIPs` (RFC1918). That's
+  # by design — trusted IPs are meant to be load-balancers / reverse
+  # proxies that you never want to ban (banning the LB bans everyone
+  # behind it). Pod-to-pod probes inside the cluster all have RFC1918
+  # source IPs and therefore bypass the bouncer entirely — they CAN'T
+  # exercise the ban path no matter what we put in XFF.
+  #
+  # Test the REAL enforcement path: probe from THIS harness's own
+  # outbound IP via each node's public hostPort 443. Ban that IP, expect
+  # 403 from each node, unban, expect baseline restored.
+  #
+  # NOTE: this briefly bans the harness operator's IP. Duration is set
+  # to 3 minutes so the ban auto-expires even if the harness crashes
+  # mid-test. If running in CI from a shared egress IP, set
+  # SKIP_PHASE_4_EXTERNAL=1 to skip this phase.
+  if [[ "${SKIP_PHASE_4_EXTERNAL:-0}" == "1" ]]; then
+    warn "SKIP_PHASE_4_EXTERNAL=1 — skipping external enforcement test"
+    skipped=$((skipped + traefik_count * 2))
   else
-    fail "ban not visible in API after ${BOUNCER_PULL_INTERVAL_S}s — list returned no decisions for $TEST_BAN_IP"
-  fi
-
-  log "waiting ${BOUNCER_PULL_INTERVAL_S}s + 5s for bouncer cache to flush unban..."
-  sleep $((BOUNCER_PULL_INTERVAL_S + 5))
-
-  # Verify reachability restored: a 403 with the CrowdSec marker is
-  # the failure case. Any non-403, or a 403 without the CrowdSec
-  # marker (= tenant default / modsec, not the bouncer) means the
-  # bouncer is no longer enforcing the ban.
-  for pod in $traefik_pods; do
-    result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "/")
-    rc="${result%%|*}"
-    headers_b64="${result#*|}"; headers_b64="${headers_b64%%|*}"
-    if [[ "$rc" == "403" ]] && is_crowdsec_block "$headers_b64"; then
-      fail "$pod: bouncer STILL returning 403 with CrowdSec marker after unban — cache didn't refresh"
+    # Discover our own outbound public IP.
+    HARNESS_OUTBOUND_IP=$(curl -s --max-time 5 https://api.ipify.org)
+    if ! [[ "$HARNESS_OUTBOUND_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      fail "could not detect harness outbound IP (got: $HARNESS_OUTBOUND_IP) — skipping enforcement"
     else
-      ok "$pod: bouncer no longer blocking (HTTP $rc)"
+      ok "harness outbound IP: $HARNESS_OUTBOUND_IP"
+
+      # Get every cluster node's External-IP (one per node = one Traefik
+      # pod via hostPort 443). `kubectl get nodes -o wide` is the most
+      # SSH-quote-resilient form — the `-o jsonpath` query with
+      # @.type==... has too many nested quote layers to survive
+      # ssh+bash+kubectl roundtripping reliably.
+      NODE_IPS=$(kubectl_run "get nodes -o wide --no-headers" 2>/dev/null | awk '{print $6}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+      node_count=$(echo "$NODE_IPS" | sed '/^$/d' | wc -l | tr -d ' ')
+      if (( node_count == 0 )); then
+        # Fallback: parse InternalIP column (5) if ExternalIP column (6) is empty.
+        NODE_IPS=$(kubectl_run "get nodes -o wide --no-headers" 2>/dev/null | awk '{print $5}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+        node_count=$(echo "$NODE_IPS" | sed '/^$/d' | wc -l | tr -d ' ')
+        warn "no ExternalIP on nodes — falling back to InternalIP ($node_count); enforcement test only meaningful if those are routable from \$HARNESS_OUTBOUND_IP"
+      fi
+      ok "discovered $node_count node IPs to probe: $(echo $NODE_IPS | tr '\n' ' ')"
+
+      # Baseline: probe each node — expect non-403 from at least one
+      # (sanity check that the route IS reachable from outside).
+      log "baseline probe from $HARNESS_OUTBOUND_IP to each node (no ban yet)"
+      baseline_403_count=0
+      for nip in $NODE_IPS; do
+        rc=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$PROBE_HOSTNAME:443:$nip" "https://$PROBE_HOSTNAME/" 2>&1 | tail -1)
+        if [[ "$rc" == "403" ]]; then baseline_403_count=$((baseline_403_count+1)); fi
+        log "  node $nip baseline HTTP $rc"
+      done
+      if (( baseline_403_count == node_count )); then
+        warn "every baseline probe returned 403 — harness IP $HARNESS_OUTBOUND_IP may already be banned by the community blocklist; skipping enforcement check"
+        skipped=$((skipped + node_count * 2))
+      else
+        # Ban the harness's outbound IP.
+        BAN_TARGET="$HARNESS_OUTBOUND_IP"
+        ban_resp=$(api_internal POST /admin/security/crowdsec/decisions \
+          "{\"value\":\"$BAN_TARGET\",\"scope\":\"Ip\",\"duration\":\"3m\",\"reason\":\"harness external enforcement test\"}")
+        if echo "$ban_resp" | grep -q "Decision successfully added"; then
+          ok "ban added for harness IP $BAN_TARGET via admin API (auto-expires in 3min)"
+        else
+          fail "admin API ban failed: $(echo "$ban_resp" | head -c 200)"
+        fi
+
+        log "waiting ${BOUNCER_PULL_INTERVAL_S}s + 5s for every bouncer to refresh cache..."
+        sleep $((BOUNCER_PULL_INTERVAL_S + 5))
+
+        # Probe each node's hostPort 443 from THIS host — bouncer's view
+        # of the client IP IS $BAN_TARGET so each node should 403.
+        for nip in $NODE_IPS; do
+          rc=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$PROBE_HOSTNAME:443:$nip" "https://$PROBE_HOSTNAME/" 2>&1 | tail -1)
+          if [[ "$rc" == "403" ]]; then
+            ok "node $nip: bouncer returned 403 for banned IP $BAN_TARGET"
+          else
+            fail "node $nip: expected 403 for banned IP $BAN_TARGET, got HTTP $rc"
+          fi
+        done
+
+        # Unban + verify reachability restored.
+        decision_id=$(api_internal GET "/admin/security/crowdsec/decisions?q=$BAN_TARGET" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['decisions']; print(d[0]['id'] if d else '')")
+        if [[ -n "$decision_id" ]]; then
+          unban_resp=$(api_internal DELETE "/admin/security/crowdsec/decisions/$decision_id")
+          if echo "$unban_resp" | grep -q '"deleted":1'; then
+            ok "unban succeeded (decision id $decision_id)"
+          else
+            fail "unban failed: $unban_resp"
+          fi
+        else
+          fail "ban not visible in API after ${BOUNCER_PULL_INTERVAL_S}s — list returned no decisions for $BAN_TARGET"
+        fi
+
+        log "waiting ${BOUNCER_PULL_INTERVAL_S}s + 5s for cache to flush unban..."
+        sleep $((BOUNCER_PULL_INTERVAL_S + 5))
+
+        # Verify reachability restored — each node back to baseline.
+        for nip in $NODE_IPS; do
+          rc=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$PROBE_HOSTNAME:443:$nip" "https://$PROBE_HOSTNAME/" 2>&1 | tail -1)
+          if [[ "$rc" != "403" ]]; then
+            ok "node $nip: bouncer no longer blocking (HTTP $rc)"
+          else
+            fail "node $nip: still 403 after unban — bouncer cache didn't refresh"
+          fi
+        done
+      fi
     fi
-  done
+  fi
 fi
+
+# Also clean up any test ban that targeted the harness's symbolic IP (in
+# case an earlier run created one).
+cleanup_test_ban_symbolic() {
+  kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $TEST_BAN_IP" >/dev/null 2>&1 || true
+  # Also clean the harness IP if we know it.
+  [[ -n "${HARNESS_OUTBOUND_IP:-}" ]] && \
+    kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $HARNESS_OUTBOUND_IP" >/dev/null 2>&1 || true
+}
+cleanup_test_ban_symbolic
 
 # ─── Phase 5 — Coverage finishing checks ──────────────────────────────
 
