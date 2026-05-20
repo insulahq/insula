@@ -2300,10 +2300,25 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
   const [err, setErr] = useState<string | null>(null);
   const mut = useCreateWafRuleExclusion();
 
+  // Mirror the backend's .refine(regexParseable) so the Submit button
+  // doesn't pretend to be enabled for input the backend will reject —
+  // a 400 round-trip would otherwise feel like a silent save-fail even
+  // though the error banner does eventually surface it.
+  const isParseableRegex = (value: string): boolean => {
+    try {
+      new RegExp(value);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const hostnameRegexTrimmed = hostnameRegex.trim();
   const valid =
     /^[0-9]+$/.test(ruleId.trim())
-    && hostnameRegex.trim().length > 0
-    && !hostnameRegex.includes('"')
+    && hostnameRegexTrimmed.length > 0
+    && !hostnameRegexTrimmed.includes('"')
+    && !hostnameRegexTrimmed.endsWith('\\')
+    && isParseableRegex(hostnameRegexTrimmed)
     && reason.trim().length > 0;
 
   return (
