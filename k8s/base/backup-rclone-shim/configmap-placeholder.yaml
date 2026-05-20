@@ -130,10 +130,17 @@ data:
     log "launching rclone serve s3 buckets: (combine of $${BUCKETS_OK})"
 
     # Performance flags carried from BACKUP_ARCHITECTURE_RFC §13a.
+    # --vfs-cache-mode writes (NOT off): rclone serve s3 stores in-flight
+    # multipart-upload parts in the VFS cache between InitiateMultipartUpload
+    # and CompleteMultipartUpload. With `off`, parts evict before completion
+    # and CompleteMultipartUpload returns NoSuchUpload — barman-cloud and
+    # restic both rely on multipart for large objects (base backup, big
+    # snapshots). `writes` keeps just the in-flight write data, not the
+    # whole VFS, so memory pressure stays bounded.
     exec rclone serve s3 \
       --config "$CONFIG" \
       --addr "$ADDR" \
-      --vfs-cache-mode off \
+      --vfs-cache-mode writes \
       --no-checksum \
       --s3-chunk-size 16M \
       --s3-upload-concurrency 4 \
