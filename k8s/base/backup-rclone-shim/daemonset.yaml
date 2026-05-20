@@ -1,0 +1,215 @@
+# backup-rclone-shim — universal backup mediator DaemonSet.
+#
+# One pod per node. Mounts:
+#   - ConfigMap backup-rclone-shim-config (rclone.conf, buckets.txt,
+#     launcher.sh) — populated by platform-api R-X4 renderer
+#   - Secret platform/backup-target-key — Tier-1 secret, drives all
+#     backup encryption (rclone crypt + restic + shim S3 creds via HKDF)
+#
+# Clients hit Service backup-rclone-shim.platform.svc.cluster.local:443
+# (see service.yaml) — internalTrafficPolicy: Local ensures every
+# request stays on-node.
+#
+# Resource sizing validated by the R-X14 benchmark (≥80% of round-5
+# eval baseline). Eval peaked at 671 MiB RSS under 16× CIFS concurrency;
+# the 1 GiB limit gives headroom. The 64 MiB request matches the
+# observed steady-state.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: backup-rclone-shim
+  namespace: platform
+  labels:
+    app: backup-rclone-shim
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: backup
+spec:
+  selector:
+    matchLabels:
+      app: backup-rclone-shim
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # PodDisruptionBudget enforces maxUnavailable=1; this matches.
+      # On a small cluster (3 control-plane nodes) a rolling restart
+      # walks one node at a time, ≤ ~30s per pod.
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: backup-rclone-shim
+        app.kubernetes.io/part-of: hosting-platform
+      annotations:
+        # platform-api R-X4 renderer bumps this annotation when the
+        # ConfigMap or backup-target-key Secret content changes. The
+        # rolling restart picks up the new config without us needing
+        # to touch the DaemonSet spec directly.
+        platform.example.test/config-hash: "placeholder-replace-via-renderer"
+    spec:
+      serviceAccountName: backup-rclone-shim
+      automountServiceAccountToken: false
+
+      # priority + tolerations: this is a critical-path component
+      # (every backup goes through it). Schedule on every node,
+      # including control-plane.
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+
+      # No hostNetwork — the shim talks ONLY to the cluster-internal
+      # Service. internalTrafficPolicy: Local handles the on-node
+      # routing without needing host net.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+
+      # Pod-level security context: non-root, drop everything.
+      # The container runs as the image's USER 65534 (nobody) by
+      # default; overriding here makes it explicit + future-proof
+      # against image regressions.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: shim
+          # Pinned by digest in Flux. The CI workflow at
+          # .github/workflows/ci-backup-rclone.yml publishes new
+          # tags on push to main; Flux image-policy controller
+          # bumps this line.
+          image: ghcr.io/insulahq/hosting-platform/backup-rclone:latest # {"$imagepolicy": "flux-system:backup-rclone"}
+          imagePullPolicy: IfNotPresent
+
+          # The image's ENTRYPOINT is tini; we exec the launcher
+          # script that wraps `rclone serve s3` with the bucket args
+          # read from the ConfigMap. See configmap-placeholder.yaml.
+          command: ["/sbin/tini", "--", "/bin/sh", "/etc/rclone/launcher.sh"]
+
+          ports:
+            - name: s3
+              containerPort: 9000
+              protocol: TCP
+
+          env:
+            # rclone respects HOME for default config lookup; force to
+            # a tmpfs-writeable path so the read-only rootfs doesn't
+            # confuse it.
+            - name: HOME
+              value: /tmp
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          # BACKUP_TARGET_KEY is consumed via env vars rendered into
+          # rclone.conf by R-X4 (HKDF derives the local S3
+          # access/secret + crypt password). The Secret is NOT mounted
+          # directly into the pod — the renderer reads it, derives
+          # the values, and writes them into the ConfigMap's
+          # rclone.conf alongside the per-class crypt password.
+          #
+          # No envFrom: the only secrets touched at runtime are
+          # already in the rendered rclone.conf (which itself lives
+          # in tmpfs via the ConfigMap mount and never on disk).
+
+          # Resource sizing from BACKUP_ARCHITECTURE_RFC §13a, refined
+          # against the R-X14 benchmark.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+
+          # Container security context: drop everything, read-only
+          # root, no privilege escalation.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: [ALL]
+
+          volumeMounts:
+            - name: rclone-config
+              mountPath: /etc/rclone
+              readOnly: true
+            - name: scratch
+              mountPath: /tmp
+            - name: scratch
+              mountPath: /var/run/backup-rclone
+              subPath: rclone-run
+
+          # No livenessProbe. Two states this pod can be in:
+          #   1. buckets.txt empty → launcher.sh enters a sleep loop;
+          #      port 9000 never binds. We DO NOT want kubelet to
+          #      crashloop-restart this pod — it's correctly idle.
+          #   2. rclone serve s3 running → port 9000 binds.
+          # The readinessProbe (TCP 9000) handles both: idle pods stay
+          # NotReady and are dropped from Service routing without
+          # being killed. tini (PID 1 in the image) cleanly reaps any
+          # crashed child. Kubelet's existing mechanisms (OOM kill on
+          # memory-limit breach, image-pull failures, etc.) cover the
+          # genuine "something is wrong" cases.
+          #
+          # When R-X4 populates buckets.txt the launcher's sleep loop
+          # is broken by the SIGTERM from the DaemonSet rollingUpdate
+          # (annotation-hash change), and the next pod starts rclone.
+
+          # Readiness: TCP-connect to the S3 port. When buckets.txt is
+          # empty the launcher sleeps; the port never binds; readiness
+          # fails; Service routing skips this pod (which is what we
+          # want — clients on this node get connection-refused on
+          # their next attempt rather than a half-broken response).
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # PreStop: SIGTERM goes via tini → rclone serve s3, which
+          # closes the listener and drains in-flight requests up to
+          # terminationGracePeriodSeconds. No special sleep needed —
+          # the platform-api drain orchestrator (R-X5) is responsible
+          # for waiting for in-flight BACKUPS to complete before
+          # triggering the rolling restart.
+          # lifecycle: not set — default SIGTERM handling is correct.
+
+      # 30 s grace: in-flight multipart upload chunks fail-fast on
+      # SIGTERM; clients (postgres barman-cloud, restic) retry.
+      # Longer grace just delays the roll without saving any data.
+      terminationGracePeriodSeconds: 30
+
+      volumes:
+        - name: rclone-config
+          configMap:
+            name: backup-rclone-shim-config
+            # 0o0400 (decimal 256) — owner-only read. rclone.conf will
+            # contain HKDF-derived S3 credentials and per-class crypt
+            # passwords once R-X4 populates the ConfigMap. We use the
+            # decimal form for cross-YAML-version safety; `0400` would
+            # be parsed as octal by some libraries and decimal by
+            # others. 256 = 0o0400. The launcher is invoked via
+            # `/bin/sh /etc/rclone/launcher.sh` (passing the file as
+            # an argument to sh), which doesn't require the exec bit.
+            defaultMode: 256
+
+        # tmpfs (memory-backed) for HOME / rclone temp / etc. Limits
+        # to 64 MiB so a runaway can't pressure node memory.
+        - name: scratch
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

@@ -1,0 +1,121 @@
+# Initial empty ConfigMap. Owned at runtime by platform-api's
+# backup-rclone-shim/config-renderer (R-X4): when an operator assigns
+# a target to a class, the renderer rewrites both rclone.conf and
+# buckets.txt + bumps the spec.template.annotations hash on the
+# DaemonSet, triggering a rolling restart.
+#
+# Until the renderer ships and the first target is assigned, the
+# launcher.sh wrapper detects an empty buckets.txt and sleeps the
+# container. `internalTrafficPolicy: Local` ensures clients on a node
+# whose shim is sleeping get connection-refused on the Service VIP,
+# which their retry logic handles as a transient outage. Backups
+# schedule on next cycle.
+#
+# launcher.sh is committed here so the initial cluster bring-up has
+# a working DaemonSet even before R-X4 is deployed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-rclone-shim-config
+  namespace: platform
+  labels:
+    app: backup-rclone-shim
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: backup
+  annotations:
+    # platform-api's renderer matches on this annotation to know it
+    # owns the resource; the static manifest only seeds the initial
+    # placeholder content.
+    platform.example.test/managed-by: backup-rclone-shim/config-renderer
+data:
+  # Empty until R-X4 renders real per-class remotes from the assigned
+  # backup_target rows. The format is the standard rclone.conf INI.
+  rclone.conf: |
+    # placeholder — populated by platform-api backup-rclone-shim/config-renderer
+    # when at least one backup_class_target_assignment row exists.
+
+  # Empty until R-X4. Each line is one bucket-spec arg for
+  # `rclone serve s3`, e.g. "system: system-raw: tenant:" etc.
+  buckets.txt: ""
+
+  # The shim's entrypoint. Reads buckets.txt; if empty, sleep
+  # indefinitely (the pod stays Ready=false from the readiness probe,
+  # so the Service doesn't route to it; clients get connection
+  # refused). If buckets exist, exec into rclone.
+  #
+  # buckets.txt is validated line-by-line against a strict allowlist
+  # before being passed to rclone. A malicious ConfigMap edit (by a
+  # `platform`-namespace admin or a buggy R-X4 renderer) writing
+  # shell metacharacters cannot inject extra arguments — each bucket
+  # token must match ^[a-z][a-z0-9-]*:$ (e.g. "system:", "mail-raw:").
+  launcher.sh: |
+    #!/bin/sh
+    set -eu
+
+    CONFIG=/etc/rclone/rclone.conf
+    BUCKETS_FILE=/etc/rclone/buckets.txt
+    ADDR=":9000"
+
+    log() { printf '[backup-rclone-shim] %s\n' "$*" >&2; }
+
+    if [ ! -s "$BUCKETS_FILE" ]; then
+      log "$BUCKETS_FILE empty — no class-target assignments."
+      log "Sleeping until platform-api renders config."
+      # Loop with a sleep so a SIGTERM (from a DaemonSet roll triggered
+      # by R-X4 once the ConfigMap is populated) terminates cleanly
+      # via tini's PID-1 signal handling.
+      while :; do sleep 30; done
+    fi
+
+    # Parse buckets.txt line-by-line. Each line must be a single bucket
+    # token matching the allowlist regex. Lines failing validation are
+    # rejected and the shim refuses to start, surfacing the corruption.
+    # This defends against:
+    #   - shell-meta injection (`; rm -rf /`, $(curl ...), backticks)
+    #   - argument injection (`--config /tmp/evil`, extra flags)
+    #   - IFS / whitespace pathology
+    BUCKETS_OK=""
+    LINE=""
+    # POSIX `while read` strips trailing whitespace; -r prevents
+    # backslash interpretation.
+    while IFS= read -r LINE || [ -n "$LINE" ]; do
+      # Trim leading/trailing whitespace.
+      LINE=$(printf '%s' "$LINE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+      [ -z "$LINE" ] && continue
+      # Strict allowlist: lowercase-letter-start, then [a-z0-9-]*, then ':'.
+      case "$LINE" in
+        [a-z]*:) ;;
+        *) log "FATAL: buckets.txt contains invalid line: '$LINE'"; exit 2 ;;
+      esac
+      # Additional defence: reject anything containing shell metacharacters.
+      case "$LINE" in
+        *[!a-z0-9-:]*) log "FATAL: buckets.txt contains forbidden char in: '$LINE'"; exit 2 ;;
+      esac
+      BUCKETS_OK="${BUCKETS_OK}${LINE} "
+    done < "$BUCKETS_FILE"
+
+    if [ -z "$BUCKETS_OK" ]; then
+      log "$BUCKETS_FILE present but yielded zero valid bucket tokens — sleeping."
+      while :; do sleep 30; done
+    fi
+
+    log "launching rclone serve s3 with buckets: ${BUCKETS_OK}"
+
+    # Performance flags carried from BACKUP_ARCHITECTURE_RFC §13a:
+    #   --vfs-cache-mode off   (no local buffering; minimal disk pressure)
+    #   --no-checksum          (multipart parts carry their own integrity)
+    #   --s3-chunk-size 16M    (typical backup-block sweet spot)
+    #   --s3-upload-concurrency 4
+    # set -- splits BUCKETS_OK on IFS=space; each token is a validated
+    # bucket spec (no shell metacharacters), so unquoted expansion is
+    # safe here.
+    # shellcheck disable=SC2086
+    set -- $BUCKETS_OK
+    exec rclone serve s3 \
+      --config "$CONFIG" \
+      --addr "$ADDR" \
+      --vfs-cache-mode off \
+      --no-checksum \
+      --s3-chunk-size 16M \
+      --s3-upload-concurrency 4 \
+      "$@"

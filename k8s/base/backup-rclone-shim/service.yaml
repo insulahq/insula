@@ -1,0 +1,46 @@
+# backup-rclone-shim Service.
+#
+# internalTrafficPolicy: Local is the critical knob — every backup
+# client's S3 request is routed to its OWN node's shim pod, never
+# crossing the cluster network. If the local pod is missing or
+# NotReady, the request fails with connection-refused (clients retry
+# on next backup schedule).
+#
+# This eliminates cross-node data routing while keeping the operator
+# UX of "one Service to point clients at" (rather than per-pod IPs
+# or hostPort acrobatics).
+#
+# Port 9000 is deliberately NOT 443 — until TLS is wired (follow-up
+# after R-X4), exposing the shim on the conventional HTTPS port
+# would mislead clients that auto-select HTTPS from the port number
+# (AWS SDK v3, barman-cloud, some restic configurations). Forcing
+# the operator to type ":9000" in client configs makes the
+# "this is HTTP" reality explicit.
+# Data is already encrypted application-layer — rclone crypt for
+# the encrypted buckets, restic for restic-using callers, age for
+# the secrets bundle. internalTrafficPolicy: Local keeps traffic
+# on-node. TLS termination via cert-manager will move this to 443
+# in a follow-up.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backup-rclone-shim
+  namespace: platform
+  labels:
+    app: backup-rclone-shim
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: backup
+spec:
+  type: ClusterIP
+  # Local: requests route ONLY to the local node's pod. If absent
+  # or NotReady, kube-proxy returns connection-refused (no fallback
+  # to other nodes). This is intentional — clients retry on backup
+  # cycle, and the per-node failure scope limits blast radius.
+  internalTrafficPolicy: Local
+  selector:
+    app: backup-rclone-shim
+  ports:
+    - name: s3
+      port: 9000
+      protocol: TCP
+      targetPort: 9000

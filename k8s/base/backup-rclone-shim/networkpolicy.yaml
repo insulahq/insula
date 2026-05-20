@@ -1,0 +1,97 @@
+# NetworkPolicy locking down which namespaces can reach the
+# backup-rclone-shim. Compromise of the shim = compromise of all
+# backup encryption (it holds BACKUP_TARGET_KEY derivations in the
+# rendered rclone.conf at runtime), so the ingress allowlist is
+# strictly the set of namespaces that contain known backup
+# clients.
+#
+# Egress is intentionally unrestricted — the shim's upstream
+# destinations are operator-chosen (S3 anywhere on the internet,
+# SFTP host of operator's choice, etc.). The host nftables firewall
+# (managed by firewall-reconciler) provides the outer perimeter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backup-rclone-shim
+  namespace: platform
+  labels:
+    app: backup-rclone-shim
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: backup-rclone-shim
+  policyTypes:
+    - Ingress
+    # Egress intentionally omitted — shim must reach arbitrary
+    # external backup destinations (operator-configured upstreams).
+  ingress:
+    # platform namespace — platform-api (target probes, drain
+    # orchestrator), other platform-managed CronJobs (secrets-bundle,
+    # tenant-bundle, snapshot-storage streaming-store).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # cnpg-system — CNPG instance pods running the
+    # plugin-barman-cloud sidecar.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # kube-system — narrowly scoped to the etcd-snap-via-shim CronJob
+    # only. `kube-system` is broad (coredns, traefik, metrics-server,
+    # local-path-provisioner, helm controllers, ...) so a bare
+    # namespaceSelector would let any compromised pod in that ns
+    # reach the shim. The podSelector below ties the allowance to
+    # pods carrying the etcd-snap CronJob's app label.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app: etcd-snap-via-shim
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # mail — Stalwart restic CronJob.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # platform-system — bulwark/crowdsec/monitoring restic CronJobs
+    # live here per the existing namespace layout.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform-system
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # Tenant namespaces (client-*) — tenant-bundle Jobs run inside
+    # the tenant's namespace and need to push to the shim's tenant
+    # bucket. Selector by label rather than name pattern; the
+    # tenant-lifecycle hook stamps `platform/tenant-backup-allowed=true`
+    # on each provisioned tenant namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              platform.example.test/tenant-backup-allowed: "true"
+      ports:
+        - protocol: TCP
+          port: 9000
