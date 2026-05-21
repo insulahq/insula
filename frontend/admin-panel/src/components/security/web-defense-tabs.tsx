@@ -126,6 +126,11 @@ export function WafEventsTab() {
     hostnameRegex: string;
     reason: string;
   } | null>(null);
+  // "Allowlist IP" — adds the row's source IP to CrowdSec allowlist
+  // directly (no modal). One-click false-positive recovery for a
+  // mistakenly-banned operator IP. Shared mutation so the button
+  // disables across all rows while the request is in flight.
+  const addAllowlistMut = useAddCrowdsecAllowlistEntry();
 
   // Debounce text inputs so a keystroke doesn't fan out into one request per
   // character — the backend would re-run the same expensive cluster-wide
@@ -304,18 +309,39 @@ export function WafEventsTab() {
               </span>
             )}
           </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm" data-testid="waf-events-table">
+          {/* 2026-05-21 layout fix:
+              - `table-fixed` + explicit colgroup widths so the table
+                NEVER exceeds the section width. Long Message / Request
+                values wrap inside their cell (`break-words`) instead of
+                forcing horizontal scroll.
+              - Action buttons moved inline into the relevant columns:
+                  Rule column     → Whitelist Rule button (per-rule false-positive)
+                  Source IP column → Ban IP + Allowlist IP buttons (per-ip)
+              - Column reorder: When · Rule · Severity · Host · Source IP
+                · Message · Request — Message moved next to the IP so the
+                operator can read "what triggered" right next to "who".
+              - The wrapping `overflow-x-auto` is replaced with `w-full`
+                so the table is locked to the parent's width. */}
+          <div className="w-full">
+            <table className="w-full table-fixed text-sm" data-testid="waf-events-table">
+              <colgroup>
+                <col className="w-[10rem]" />{/* When */}
+                <col className="w-[7rem]" /> {/* Rule + actions */}
+                <col className="w-[5rem]" /> {/* Severity */}
+                <col className="w-[10rem]" />{/* Host */}
+                <col className="w-[10rem]" />{/* Source IP + actions */}
+                <col />                       {/* Message — flex */}
+                <col />                       {/* Request — flex */}
+              </colgroup>
               <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
                 <tr>
-                  <th className="px-4 py-2 text-left">When</th>
-                  <th className="px-4 py-2 text-left">Rule</th>
-                  <th className="px-4 py-2 text-left">Severity</th>
-                  <th className="px-4 py-2 text-left">Host</th>
-                  <th className="px-4 py-2 text-left">Source IP</th>
-                  <th className="px-4 py-2 text-left">Request</th>
-                  <th className="px-4 py-2 text-left">Message</th>
-                  <th className="px-4 py-2 text-left">Action</th>
+                  <th className="px-2 py-2 text-left">When</th>
+                  <th className="px-2 py-2 text-left">Rule</th>
+                  <th className="px-2 py-2 text-left">Sev</th>
+                  <th className="px-2 py-2 text-left">Host</th>
+                  <th className="px-2 py-2 text-left">Source IP</th>
+                  <th className="px-2 py-2 text-left">Message</th>
+                  <th className="px-2 py-2 text-left">Request</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
@@ -323,17 +349,26 @@ export function WafEventsTab() {
                   <WafEventRow
                     key={ev.id}
                     ev={ev}
-                    onBan={(ip) => setBanModalPrefill({ value: ip, reason: `WAF: rule ${ev.ruleId} on ${ev.hostname} (${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'})` })}
+                    onBan={(ip) => setBanModalPrefill({
+                      value: ip,
+                      reason: `WAF: rule ${ev.ruleId} on ${ev.hostname} (${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'})`,
+                    })}
+                    onAllowlist={(ip) => addAllowlistMut.mutate({
+                      value: ip,
+                      scope: 'Ip',
+                      comment: `WAF: false-positive on rule ${ev.ruleId} (${ev.hostname})`,
+                    })}
                     onWhitelist={() => setWhitelistPrefill({
                       ruleId: ev.ruleId,
                       hostnameRegex: buildHostnameRegexFromEventHost(ev.hostname || ''),
                       reason: `False-positive on ${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'}`,
                     })}
+                    isAllowlistPending={addAllowlistMut.isPending}
                   />
                 ))}
                 {payload.events.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-gray-500 text-sm">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-sm">
                       <WafEmptyState
                         scraperStatus={payload.scraperStatus}
                         lastInsertAt={payload.stats.mostRecentAt}
@@ -561,10 +596,12 @@ function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
   );
 }
 
-function WafEventRow({ ev, onBan, onWhitelist }: {
+function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }: {
   ev: WafEvent;
   onBan: (ip: string) => void;
+  onAllowlist: (ip: string) => void;
   onWhitelist: () => void;
+  isAllowlistPending: boolean;
 }) {
   const sevTone =
     ev.severity === 'critical'
@@ -572,58 +609,74 @@ function WafEventRow({ ev, onBan, onWhitelist }: {
       : ev.severity === 'warning'
         ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200'
         : 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300';
-  // Don't offer a Ban button for the parser's "no IP extractable" placeholder.
-  const banAvailable = Boolean(ev.sourceIp && ev.sourceIp !== '0.0.0.0');
-  // Don't offer whitelist when hostname is empty — operator should
-  // craft a hostname regex manually from the Exclusions tab in that case.
+  // Don't offer Ban/Allowlist buttons when the parser couldn't
+  // extract a usable IP (sourceIp null or sentinel '0.0.0.0').
+  const ipAvailable = Boolean(ev.sourceIp && ev.sourceIp !== '0.0.0.0');
+  // Don't offer Whitelist Rule when hostname is empty — operator
+  // should craft a hostname regex manually from the Exclusions tab.
   const whitelistAvailable = Boolean(ev.hostname);
+  // table-fixed + colgroup widths constrain the columns; cells use
+  // `break-words` so long URIs / messages wrap inside the cell
+  // instead of overflowing the section.
   return (
     <tr>
-      <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 whitespace-nowrap">
+      <td className="px-2 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 whitespace-nowrap align-top">
         {new Date(ev.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}
       </td>
-      <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{ev.ruleId}</td>
-      <td className="px-4 py-2">
+      <td className="px-2 py-2 align-top">
+        <div className="font-mono text-xs text-gray-900 dark:text-gray-100">{ev.ruleId}</div>
+        {whitelistAvailable && (
+          <button
+            type="button"
+            onClick={onWhitelist}
+            className="mt-1 inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+            data-testid={`waf-whitelist-${ev.id}`}
+            title={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
+          >
+            <ShieldOff size={10} /> Whitelist
+          </button>
+        )}
+      </td>
+      <td className="px-2 py-2 align-top">
         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${sevTone}`}>
           {ev.severity}
         </span>
       </td>
-      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
+      <td className="px-2 py-2 text-xs text-gray-700 dark:text-gray-200 break-words align-top">
         <span className="font-mono">{ev.hostname || '(unknown)'}</span>
         {ev.scope === 'admin-host' && (
           <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">admin</span>
         )}
       </td>
-      <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{ev.sourceIp || '—'}</td>
-      <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">
-        {ev.requestMethod ? `${ev.requestMethod} ` : ''}{ev.requestUri || '/'}
-      </td>
-      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">{ev.message}</td>
-      <td className="px-4 py-2">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center">
-          {banAvailable && (
+      <td className="px-2 py-2 align-top break-words">
+        <div className="font-mono text-xs text-gray-700 dark:text-gray-200">{ev.sourceIp || '—'}</div>
+        {ipAvailable && (
+          <div className="mt-1 flex flex-wrap gap-1">
             <button
               type="button"
               onClick={() => onBan(ev.sourceIp as string)}
-              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
+              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
               data-testid={`waf-ban-${ev.id}`}
               title={`Ban ${ev.sourceIp} via CrowdSec`}
             >
-              <Ban size={11} /> Ban IP
+              <Ban size={10} /> Ban IP
             </button>
-          )}
-          {whitelistAvailable && (
             <button
               type="button"
-              onClick={onWhitelist}
-              className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
-              data-testid={`waf-whitelist-${ev.id}`}
-              title={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
+              onClick={() => onAllowlist(ev.sourceIp as string)}
+              disabled={isAllowlistPending}
+              className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50"
+              data-testid={`waf-allowlist-${ev.id}`}
+              title={`Add ${ev.sourceIp} to CrowdSec allowlist (will never be banned)`}
             >
-              <ShieldOff size={11} /> Whitelist
+              <ShieldOff size={10} /> Allowlist IP
             </button>
-          )}
-        </div>
+          </div>
+        )}
+      </td>
+      <td className="px-2 py-2 text-xs text-gray-700 dark:text-gray-200 break-words align-top">{ev.message}</td>
+      <td className="px-2 py-2 font-mono text-xs text-gray-700 dark:text-gray-200 break-all align-top">
+        {ev.requestMethod ? `${ev.requestMethod} ` : ''}{ev.requestUri || '/'}
       </td>
     </tr>
   );
