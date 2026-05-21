@@ -301,32 +301,46 @@ function renderS3Env(
   t: BackupTargetConfig,
   prefix: ReadonlyArray<string>,
 ): string {
-  if (!t.s3Endpoint || !t.s3AccessKey || !t.s3SecretKey) {
+  if (!t.s3Endpoint || !t.s3Bucket || !t.s3AccessKey || !t.s3SecretKey) {
     throw new Error(
-      `S3 target '${t.name}' is missing required fields (endpoint, access_key, secret_key)`,
+      `S3 target '${t.name}' is missing required fields (endpoint, bucket, access_key, secret_key)`,
     );
   }
-  // S3 mode: versitygw is a passthrough proxy. The operator must
-  // pre-create upstream buckets named `system`, `tenant`, `mail` on
-  // their S3 provider (Hetzner / AWS / MinIO / etc.). versitygw does
-  // not rewrite bucket names — the per-class isolation is operator-
-  // managed via the upstream provider's bucket-level ACLs / policies.
+  // R-X19 (2026-05-21): the shim no longer passes the client's bucket
+  // name through to the upstream. Instead, the operator-configured
+  // upstream bucket + prefix become the rclone serve s3 ROOT, and the
+  // client's bucket name (system/tenant/mail) becomes the FIRST PATH
+  // SEGMENT under that root — auto-created on first write.
+  //
+  // Example: target row { s3Bucket: 'k8s-staging', s3Prefix: 'staging' }
+  //   → REMOTE_PATH = 'upstream:k8s-staging/staging/'
+  //   Client PUT s3://system/postgres/x.tar →
+  //   upstream bucket=k8s-staging key=staging/system/postgres/x.tar
+  //
+  // Fixes the prior passthrough design where bucket names like
+  // 'system' had to literally exist on the upstream S3 provider —
+  // an operator footgun that caused the 2026-05-21 postgres backup
+  // failure observed during R-X19 staging E2E.
+  //
   // s3UsePathStyle: legacy rows (null/undefined) treated as true; only
-  // an explicit false suppresses --use-path-style. The launcher reads
-  // this env var; values not literally 'true' or 'false' are rejected.
+  // an explicit false suppresses path-style. The launcher reads this
+  // env var; values not literally 'true' or 'false' are rejected.
+  // 'true' = path-style URLs (legacy S3-compatible providers / Hetzner).
+  // 'false' = virtual-hosted-style URLs (AWS S3, modern providers).
   const usePathStyle = t.s3UsePathStyle === false ? 'false' : 'true';
-  return (
-    [
-      ...prefix,
-      'UPSTREAM_TYPE=s3',
-      shellQuote('UPSTREAM_ENDPOINT', t.s3Endpoint),
-      shellQuote('UPSTREAM_ACCESS_KEY', t.s3AccessKey),
-      shellQuote('UPSTREAM_SECRET_KEY', t.s3SecretKey),
-      shellQuote('UPSTREAM_REGION', t.s3Region ?? 'us-east-1'),
-      shellQuote('UPSTREAM_USE_PATH_STYLE', usePathStyle),
-      '',
-    ].join('\n')
-  );
+  const lines: string[] = [
+    ...prefix,
+    'UPSTREAM_TYPE=s3',
+    shellQuote('UPSTREAM_ENDPOINT', t.s3Endpoint),
+    shellQuote('UPSTREAM_ACCESS_KEY', t.s3AccessKey),
+    shellQuote('UPSTREAM_SECRET_KEY', t.s3SecretKey),
+    shellQuote('UPSTREAM_REGION', t.s3Region ?? 'us-east-1'),
+    shellQuote('UPSTREAM_USE_PATH_STYLE', usePathStyle),
+    shellQuote('UPSTREAM_S3_BUCKET', t.s3Bucket),
+  ];
+  if (t.s3Prefix) lines.push(shellQuote('UPSTREAM_S3_PREFIX', stripSlashes(t.s3Prefix)));
+  lines.push('');
+  return lines.join('\n');
 }
 
 function renderSftpEnv(
