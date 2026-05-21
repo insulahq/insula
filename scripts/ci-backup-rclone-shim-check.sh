@@ -369,7 +369,7 @@ fi
 if grep -E "^\s*-\s*name:\s*fuse-device\s*$" "$DS_MANIFEST" >/dev/null; then
   fail "Invariant 18: DaemonSet mounts /dev/fuse — R-X19 uses native rclone backends, no FUSE"
 fi
-if grep -E "^\s*hostPath:\s*$" "$DS_MANIFEST" >/dev/null | grep -q "fuse"; then
+if grep -E "^[^#]*\bpath:\s*/dev/fuse\b" "$DS_MANIFEST" >/dev/null; then
   fail "Invariant 18: DaemonSet has /dev/fuse hostPath — R-X19 forbids host devices"
 fi
 if grep -E "^\s*runAsUser:\s*0\s*$" "$DS_MANIFEST" >/dev/null; then
