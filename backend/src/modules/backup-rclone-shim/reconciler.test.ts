@@ -262,19 +262,25 @@ describe('reconcileBackupRcloneShim — STATE_OK first run', () => {
     expect(env.cmStore['backup-rclone-shim-config'].data['buckets.txt']).toBeUndefined();
     expect(env.cmStore['backup-rclone-shim-config'].data['rclone.conf']).toBeUndefined();
 
-    // Credentials Secret carries the rendered upstream.env with
-    // UPSTREAM_TYPE + the shim's ROOT_ACCESS_KEY/ROOT_SECRET_KEY.
+    // R-X20: Credentials Secret carries BOTH upstream.env (shim creds
+    // only) AND rclone.conf (the full rclone config with [combined] +
+    // per-target [upstream_<8hex>] sections).
     const credData = env.secretStore['backup-rclone-shim-credentials'].data;
     expect(credData['upstream.env']).toBeDefined();
-    expect(credData['rclone.conf']).toBeUndefined();
-    const decoded = Buffer.from(credData['upstream.env'], 'base64').toString('utf8');
-    expect(decoded).toMatch(/^UPSTREAM_TYPE=s3$/m);
-    expect(decoded).toMatch(/^ROOT_ACCESS_KEY='[0-9a-f]+'$/m);
-    expect(decoded).toMatch(/^ROOT_SECRET_KEY='[0-9a-f]+'$/m);
-    // Legacy rclone.conf sections must be gone.
-    expect(decoded).not.toContain('[upstream]');
-    expect(decoded).not.toContain('[encrypted]');
-    expect(decoded).not.toContain('[buckets]');
+    expect(credData['rclone.conf']).toBeDefined();
+    const env_decoded = Buffer.from(credData['upstream.env'], 'base64').toString('utf8');
+    // upstream.env is minimal — only shim's HKDF-derived creds
+    expect(env_decoded).toMatch(/^ROOT_ACCESS_KEY='[0-9a-f]+'$/m);
+    expect(env_decoded).toMatch(/^ROOT_SECRET_KEY='[0-9a-f]+'$/m);
+    // R-X20: UPSTREAM_TYPE and other upstream creds moved to rclone.conf
+    expect(env_decoded).not.toContain('UPSTREAM_TYPE');
+    expect(env_decoded).not.toContain('UPSTREAM_S3_BUCKET');
+    // rclone.conf has [combined] + at least one [upstream_<hash>] section
+    const conf_decoded = Buffer.from(credData['rclone.conf'], 'base64').toString('utf8');
+    expect(conf_decoded).toMatch(/^\[combined\]$/m);
+    expect(conf_decoded).toMatch(/^\[upstream_[0-9a-f]{8}\]$/m);
+    expect(conf_decoded).toMatch(/^type = s3$/m);
+    expect(conf_decoded).toMatch(/^upstreams = /m);
 
     // SSH-keys Secret created (empty for S3-only targets but the Secret
     // still exists so the DaemonSet's projected volume can mount it).
@@ -352,9 +358,12 @@ describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
     await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
 
     const secretData = env.secretStore['backup-rclone-shim-ssh-keys'].data;
-    expect(secretData['upstream.pem']).toBeDefined();
-    // Stored base64 — decode back and assert it matches.
-    const decoded = Buffer.from(secretData['upstream.pem'], 'base64').toString('utf8');
+    // R-X20: per-target PEM filename is upstream_<8hex>.pem; exactly
+    // one key materialised since the test bound one SFTP target.
+    const pemKeys = Object.keys(secretData).filter((k) => k.endsWith('.pem'));
+    expect(pemKeys).toHaveLength(1);
+    expect(pemKeys[0]).toMatch(/^upstream_[0-9a-f]{8}\.pem$/);
+    const decoded = Buffer.from(secretData[pemKeys[0]], 'base64').toString('utf8');
     expect(decoded).toContain('BEGIN PRIVATE KEY');
   });
 
@@ -385,7 +394,10 @@ describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
     });
     const env = mkClients();
     await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
-    expect(env.secretStore['backup-rclone-shim-ssh-keys'].data['upstream.pem']).toBeDefined();
+    const pemKeys1 = Object.keys(env.secretStore['backup-rclone-shim-ssh-keys'].data)
+      .filter((k) => k.endsWith('.pem'));
+    expect(pemKeys1).toHaveLength(1);
+    expect(pemKeys1[0]).toMatch(/^upstream_[0-9a-f]{8}\.pem$/);
 
     // Second pass: tenant flipped to S3 — SSH key no longer needed.
     mockedAssign.mockResolvedValue({
@@ -397,7 +409,9 @@ describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
       orphanedAssignments: [],
     });
     await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
-    expect(env.secretStore['backup-rclone-shim-ssh-keys'].data['upstream.pem']).toBeUndefined();
+    const pemKeys2 = Object.keys(env.secretStore['backup-rclone-shim-ssh-keys'].data)
+      .filter((k) => k.endsWith('.pem'));
+    expect(pemKeys2).toHaveLength(0);
   });
 });
 

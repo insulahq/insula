@@ -47,6 +47,7 @@ import {
   fingerprintRawKey,
   deriveShimAccessKey,
   deriveShimSecretKey,
+  rcloneObscure,
 } from './crypto.js';
 
 // ---------------------------------------------------------------------------
@@ -105,15 +106,24 @@ export interface ClassAssignment {
 /** What the renderer produces. The service writes these into the
  *  Secret + ConfigMap + DaemonSet patch. */
 export interface RenderedShimConfig {
-  /** env-file content for the shim launcher (UPSTREAM_TYPE + per-type
-   *  fields + the shim's ROOT_ACCESS_KEY / ROOT_SECRET_KEY). Written
-   *  to the credentials Secret (NOT a ConfigMap — contains the
-   *  upstream provider's plaintext secret_access_key). */
+  /** env-file content for the shim launcher. Contains only the shim's
+   *  HKDF-derived ROOT_ACCESS_KEY / ROOT_SECRET_KEY since R-X20 — all
+   *  upstream credentials moved to `rcloneConf` below. */
   readonly upstreamEnv: string;
+  /** Full rclone.conf content. R-X20 (always-combined): always emits
+   *  a [combined] section that aliases each bound class to its target's
+   *  scoped path. Single-target operators get one upstream section +
+   *  N class aliases pointing at the same upstream with class-name
+   *  suffix. Multi-target operators get N upstream sections + N class
+   *  aliases. The client-visible path layout is identical in both
+   *  cases: <bucket>/<prefix>/<class>/<key>.
+   *  Passwords are obscured at render time using the existing
+   *  rcloneObscure helper. */
+  readonly rcloneConf: string;
   /** One bound class per line. Written to the ConfigMap as
    *  `classes.txt`. */
   readonly classesTxt: string;
-  /** SHA-256 of upstreamEnv + classesTxt — used as the DaemonSet
+  /** SHA-256 of upstreamEnv + classesTxt + rcloneConf (R-X20) — used as the DaemonSet
    *  spec.template annotation hash so any change rolls the pods. */
   readonly configHash: string;
   /** Shim's own S3 access_key (HKDF-derived). Clients use this to
@@ -142,6 +152,11 @@ export interface RenderedShimConfig {
 }
 
 export interface SshKeyMaterialization {
+  /** Filename basename under /etc/rclone/ssh-keys/. R-X20: each
+   *  unique SFTP target gets its own filename matching the rclone.conf
+   *  section name (e.g. `upstream_a1b2c3d4.pem`) so multiple SFTP
+   *  targets in one shim don't collide. */
+  readonly fileName: string;
   readonly pemContent: string;
 }
 
@@ -165,11 +180,21 @@ const MOUNT_POINT = '/mnt/upstream';
  * Render the shim config from a 32-byte BACKUP_TARGET_KEY and a list
  * of class→target assignments.
  *
- * Constraint: all assignments must share one upstream target. The
- * shim runs ONE versitygw instance per pod which serves ONE upstream;
- * multi-target operators deploy separate shim DaemonSets per tier.
- * Multi-target binding → throw at render time with an actionable
- * error.
+ * R-X20 (2026-05-21): always-combined. The renderer emits an rclone
+ * `[combined]` section that aliases each bound class to its target's
+ * path with a class-name suffix. Single-target operators get ONE
+ * upstream section + N class aliases pointing at the same upstream;
+ * multi-target operators get N upstream sections + N class aliases.
+ * Client-visible path layout is identical:
+ *   <upstream-bucket>/<upstream-prefix>/<class>/<key>
+ *
+ * Mixed-protocol upstreams (S3 + SFTP + SMB at once) are supported
+ * — each class can target a different storage_type if the operator
+ * binds them that way.
+ *
+ * Passwords are obscured at render time using `rcloneObscure` from
+ * crypto.ts (AES-CTR with the rclone-canonical key). Operators get
+ * a self-contained rclone.conf that's safe to ship as a Secret.
  */
 export function renderShimConfig(
   rawKey: Buffer,
@@ -191,11 +216,13 @@ export function renderShimConfig(
   // The launcher detects this and sleeps until the reconciler renders
   // real content.
   if (sorted.length === 0) {
-    const upstreamEnv = renderEnvHeader();
+    const upstreamEnv = renderEnvHeader(shimAccessKey, shimSecretKey);
+    const rcloneConf = renderEmptyRcloneConf();
     return {
       upstreamEnv,
+      rcloneConf,
       classesTxt: '',
-      configHash: createHash('sha256').update(upstreamEnv).digest('hex'),
+      configHash: createHash('sha256').update(upstreamEnv).update('\n').update(rcloneConf).digest('hex'),
       shimAccessKey,
       shimSecretKey,
       keyFingerprint,
@@ -205,152 +232,213 @@ export function renderShimConfig(
     };
   }
 
-  // Enforce same-upstream-target invariant.
-  const firstTarget = sorted[0].target;
-  for (const { className, target } of sorted) {
-    if (target.id !== firstTarget.id) {
-      throw new Error(
-        `backup-rclone-shim: class '${className}' is bound to target '${target.name}' (${target.id}), but other classes are bound to '${firstTarget.name}' (${firstTarget.id}). All shim classes must share one upstream target. Either rebind all classes to the same target, or deploy separate shim DaemonSets per target.`,
-      );
-    }
-  }
-
-  const target = firstTarget;
   const assignedClasses = sorted.map((s) => s.className);
 
-  const { envBody, posixMount, sshKey } = renderUpstreamEnv(
-    target,
-    shimAccessKey,
-    shimSecretKey,
+  // R-X20: always-combined. Render N unique target sections + the
+  // [combined] aliases. SSH key materialisations and posix-mount
+  // hints are still per-target (an operator binding a SSH target gets
+  // their key extracted to a Secret, regardless of how many other
+  // targets are also bound).
+  const uniqueTargetsById = new Map<string, BackupTargetConfig>();
+  for (const a of sorted) {
+    if (!uniqueTargetsById.has(a.target.id)) {
+      uniqueTargetsById.set(a.target.id, a.target);
+    }
+  }
+  const uniqueTargets = [...uniqueTargetsById.values()];
+
+  // Stable section names: `upstream_<8-hex-of-target-id>`. Avoids
+  // dashes (rclone config section names accept them but they read
+  // poorly) and keeps the section name reasonably short.
+  const sectionNameFor = (targetId: string): string => {
+    const short = createHash('sha256').update(targetId).digest('hex').slice(0, 8);
+    return `upstream_${short}`;
+  };
+
+  const sshKeyMaterializations: SshKeyMaterialization[] = [];
+  const posixMounts: PosixMount[] = [];
+  const upstreamSections: string[] = [];
+
+  for (const target of uniqueTargets) {
+    const sec = sectionNameFor(target.id);
+    const { conf, sshKey, posixMount } = renderUpstreamSection(sec, target);
+    upstreamSections.push(conf);
+    if (sshKey) sshKeyMaterializations.push(sshKey);
+    if (posixMount) posixMounts.push(posixMount);
+  }
+
+  // Build the [combined] section. Each class maps to its target's
+  // path with the class name appended as the final path segment —
+  // so the client-visible layout is <upstream-root>/<class>/<key>
+  // regardless of whether classes share a target.
+  const upstreamPairs: string[] = [];
+  for (const { className, target } of sorted) {
+    const sec = sectionNameFor(target.id);
+    const root = upstreamRootPath(target);
+    // Path format: <section>:<root>/<class> — but when root is empty
+    // (e.g. SFTP target with no sshPath), avoid the leading slash so
+    // we get `<section>:<class>` (home-relative) instead of
+    // `<section>:/<class>` (absolute) which fails on remote storage
+    // that doesn't allow writes outside the user's home (e.g. Hetzner
+    // Storage Box SFTP).
+    const aliasPath = root ? `${root}/${className}` : className;
+    // Validate against rclone combine parser: spaces would break the
+    // `upstreams =` token split. S3 bucket names already reject spaces
+    // at the AWS layer, but CIFS share names and SFTP paths can
+    // contain them.
+    if (/\s/.test(aliasPath)) {
+      throw new Error(
+        `backup-rclone-shim: target '${target.name}' has a whitespace character in its path components; rclone combine parses 'upstreams =' as space-separated tokens and cannot tolerate this. Rename the share/path to avoid spaces.`,
+      );
+    }
+    upstreamPairs.push(`${className}=${sec}:${aliasPath}`);
+  }
+  upstreamSections.push(
+    [
+      '[combined]',
+      'type = combine',
+      `upstreams = ${upstreamPairs.join(' ')}`,
+      '',
+    ].join('\n'),
   );
 
-  const upstreamEnv = renderEnvHeader() + envBody;
+  const rcloneConf = renderRcloneConfHeader() + upstreamSections.join('\n');
+  const upstreamEnv = renderEnvHeader(shimAccessKey, shimSecretKey);
   const classesTxt = assignedClasses.join('\n') + '\n';
 
   const configHash = createHash('sha256')
     .update(upstreamEnv)
     .update('\n----\n')
     .update(classesTxt)
+    .update('\n----\n')
+    .update(rcloneConf)
     .digest('hex');
 
   return {
     upstreamEnv,
+    rcloneConf,
     classesTxt,
     configHash,
     shimAccessKey,
     shimSecretKey,
     keyFingerprint,
     assignedClasses,
-    posixMounts: posixMount ? [posixMount] : [],
-    sshKeyMaterializations: sshKey ? [sshKey] : [],
+    posixMounts,
+    sshKeyMaterializations,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Section renderers
+// Section renderers (R-X20 always-combined)
 // ---------------------------------------------------------------------------
 
-function renderEnvHeader(): string {
-  return [
-    '# upstream.env — backup-rclone-shim',
-    '# AUTO-GENERATED by platform-api backup-rclone-shim/config-renderer.',
-    '# Do NOT edit by hand. Operator changes flow via',
-    '# /admin/backup-rclone-shim/... endpoints.',
-    '#',
-    '# Sourced by /etc/shim/launcher.sh (POSIX shell `set -a; . upstream.env; set +a`).',
-    '# Values must NOT contain newlines or shell-meta chars; the renderer',
-    '# enforces this via the input-validation layer (zod schemas at the',
-    '# Drizzle row mapping in service.ts).',
-    '',
-  ].join('\n');
-}
-
-function renderUpstreamEnv(
-  target: BackupTargetConfig,
-  rootAccessKey: string,
-  rootSecretKey: string,
-): {
-  envBody: string;
-  posixMount?: PosixMount;
-  sshKey?: SshKeyMaterialization;
-} {
-  // ROOT_ACCESS_KEY / ROOT_SECRET_KEY are the shim's OWN credentials
-  // that clients authenticate with. Same regardless of upstream type.
-  const lines: string[] = [
-    shellQuote('ROOT_ACCESS_KEY', rootAccessKey),
-    shellQuote('ROOT_SECRET_KEY', rootSecretKey),
-  ];
-
-  switch (target.storageType) {
-    case 's3':
-      return { envBody: renderS3Env(target, lines) };
+/**
+ * Compose the upstream root path that the [combined] section appends
+ * the class-name suffix to.
+ *
+ * S3:    <s3_bucket>[/<s3_prefix>]
+ * SFTP:  [<ssh_path>]              (relative path on the SFTP server)
+ * CIFS:  <cifs_share>[/<cifs_path>]
+ * Local: '/'                       (PVC mount root)
+ *
+ * Slashes are stripped from operator-supplied paths to keep the final
+ * path joiner predictable. Empty path → just the section root.
+ */
+function upstreamRootPath(t: BackupTargetConfig): string {
+  switch (t.storageType) {
+    case 's3': {
+      if (!t.s3Bucket) throw new Error(`S3 target '${t.name}' missing bucket`);
+      const parts = [t.s3Bucket];
+      if (t.s3Prefix) parts.push(stripSlashes(t.s3Prefix));
+      return parts.join('/');
+    }
     case 'ssh':
-      return renderSftpEnv(target, lines);
-    case 'cifs':
-      return renderCifsEnv(target, lines);
+      return t.sshPath ? stripSlashes(t.sshPath) : '';
+    case 'cifs': {
+      if (!t.cifsShare) throw new Error(`CIFS target '${t.name}' missing share`);
+      const parts = [t.cifsShare];
+      if (t.cifsPath) parts.push(stripSlashes(t.cifsPath));
+      return parts.join('/');
+    }
     case 'nfs':
-      return renderNfsEnv(target, lines);
+      // Reachable via storageType union but no API path creates NFS
+      // targets — treat as POSIX with optional path.
+      return t.nfsPath ? stripSlashes(t.nfsPath) : '';
     default:
       throw new Error(
-        `Unsupported storage_type '${(target as { storageType: string }).storageType}'`,
+        `Unsupported storage_type '${(t as { storageType: string }).storageType}'`,
       );
   }
 }
 
-function renderS3Env(
+/**
+ * Render a single upstream section in rclone.conf format. Includes
+ * the credentials in obscured form where the backend requires it
+ * (SFTP `pass`, SMB `pass`). S3 credentials are stored in cleartext
+ * because rclone's S3 backend does not accept obscured access keys.
+ *
+ * Returns the conf section content + any sshKey/posixMount hints for
+ * the reconciler.
+ */
+function renderUpstreamSection(
+  sectionName: string,
   t: BackupTargetConfig,
-  prefix: ReadonlyArray<string>,
-): string {
+): {
+  conf: string;
+  sshKey?: SshKeyMaterialization;
+  posixMount?: PosixMount;
+} {
+  switch (t.storageType) {
+    case 's3':
+      return { conf: renderS3Section(sectionName, t) };
+    case 'ssh':
+      return renderSftpSection(sectionName, t);
+    case 'cifs':
+      return {
+        conf: renderCifsSection(sectionName, t),
+        // posixMount kept as a metric/log indicator only — R-X20
+        // doesn't kernel-mount CIFS, but the field is still useful
+        // for "how many POSIX-style backends are bound" logging.
+        posixMount: { mountPath: MOUNT_POINT, storageType: 'cifs', target: t },
+      };
+    case 'nfs':
+      // Same comment as upstreamRootPath: NFS is unreachable via API.
+      // If a row somehow exists, surface a clear error rather than
+      // silently misroute.
+      throw new Error(
+        `NFS storage_type is not supported via the rclone-serve-s3 unified architecture. NFS target '${t.name}' must be migrated to a PVC-backed Local target.`,
+      );
+    default:
+      throw new Error(
+        `Unsupported storage_type '${(t as { storageType: string }).storageType}'`,
+      );
+  }
+}
+
+function renderS3Section(name: string, t: BackupTargetConfig): string {
   if (!t.s3Endpoint || !t.s3Bucket || !t.s3AccessKey || !t.s3SecretKey) {
     throw new Error(
       `S3 target '${t.name}' is missing required fields (endpoint, bucket, access_key, secret_key)`,
     );
   }
-  // R-X19 (2026-05-21): the shim no longer passes the client's bucket
-  // name through to the upstream. Instead, the operator-configured
-  // upstream bucket + prefix become the rclone serve s3 ROOT, and the
-  // client's bucket name (system/tenant/mail) becomes the FIRST PATH
-  // SEGMENT under that root — auto-created on first write.
-  //
-  // Example: target row { s3Bucket: 'k8s-staging', s3Prefix: 'staging' }
-  //   → REMOTE_PATH = 'upstream:k8s-staging/staging/'
-  //   Client PUT s3://system/postgres/x.tar →
-  //   upstream bucket=k8s-staging key=staging/system/postgres/x.tar
-  //
-  // Fixes the prior passthrough design where bucket names like
-  // 'system' had to literally exist on the upstream S3 provider —
-  // an operator footgun that caused the 2026-05-21 postgres backup
-  // failure observed during R-X19 staging E2E.
-  //
-  // s3UsePathStyle: legacy rows (null/undefined) treated as true; only
-  // an explicit false suppresses path-style. The launcher reads this
-  // env var; values not literally 'true' or 'false' are rejected.
-  // 'true' = path-style URLs (legacy S3-compatible providers / Hetzner).
-  // 'false' = virtual-hosted-style URLs (AWS S3, modern providers).
   const usePathStyle = t.s3UsePathStyle === false ? 'false' : 'true';
-  const lines: string[] = [
-    ...prefix,
-    'UPSTREAM_TYPE=s3',
-    shellQuote('UPSTREAM_ENDPOINT', t.s3Endpoint),
-    shellQuote('UPSTREAM_ACCESS_KEY', t.s3AccessKey),
-    shellQuote('UPSTREAM_SECRET_KEY', t.s3SecretKey),
-    shellQuote('UPSTREAM_REGION', t.s3Region ?? 'us-east-1'),
-    shellQuote('UPSTREAM_USE_PATH_STYLE', usePathStyle),
-    shellQuote('UPSTREAM_S3_BUCKET', t.s3Bucket),
-  ];
-  if (t.s3Prefix) lines.push(shellQuote('UPSTREAM_S3_PREFIX', stripSlashes(t.s3Prefix)));
-  lines.push('');
-  return lines.join('\n');
+  return [
+    `[${name}]`,
+    'type = s3',
+    'provider = Other',
+    `endpoint = ${t.s3Endpoint}`,
+    `region = ${t.s3Region ?? 'us-east-1'}`,
+    `access_key_id = ${t.s3AccessKey}`,
+    `secret_access_key = ${t.s3SecretKey}`,
+    `force_path_style = ${usePathStyle}`,
+    '',
+  ].join('\n');
 }
 
-function renderSftpEnv(
+function renderSftpSection(
+  name: string,
   t: BackupTargetConfig,
-  prefix: ReadonlyArray<string>,
-): {
-  envBody: string;
-  posixMount: PosixMount;
-  sshKey?: SshKeyMaterialization;
-} {
+): { conf: string; sshKey?: SshKeyMaterialization; posixMount: PosixMount } {
   if (!t.sshHost || !t.sshUser) {
     throw new Error(
       `SFTP target '${t.name}' is missing required fields (host, user)`,
@@ -362,102 +450,101 @@ function renderSftpEnv(
     );
   }
   const lines: string[] = [
-    ...prefix,
-    'UPSTREAM_TYPE=sftp',
-    shellQuote('UPSTREAM_SFTP_HOST', t.sshHost),
-    shellQuote('UPSTREAM_SFTP_USER', t.sshUser),
-    shellQuote('UPSTREAM_SFTP_PORT', String(t.sshPort ?? 22)),
+    `[${name}]`,
+    'type = sftp',
+    `host = ${t.sshHost}`,
+    `user = ${t.sshUser}`,
+    `port = ${t.sshPort ?? 22}`,
+    'shell_type = unix',
   ];
-  if (t.sshPath) lines.push(shellQuote('UPSTREAM_SFTP_PATH', stripSlashes(t.sshPath)));
   let sshKey: SshKeyMaterialization | undefined;
   if (t.sshKey) {
-    // PEM file is projected at /etc/rclone/ssh-keys/upstream.pem by
-    // the reconciler-materialised Secret.
-    lines.push('UPSTREAM_SFTP_KEYFILE=/etc/rclone/ssh-keys/upstream.pem');
-    sshKey = { pemContent: t.sshKey };
+    // PEM material is projected at /etc/rclone/ssh-keys/<section>.pem
+    // by the reconciler so each target gets its own key file.
+    const pemFile = `${name}.pem`;
+    lines.push(`key_file = /etc/rclone/ssh-keys/${pemFile}`);
+    sshKey = { fileName: pemFile, pemContent: t.sshKey };
   } else if (t.sshPassword) {
-    lines.push(shellQuote('UPSTREAM_SFTP_PASSWORD', t.sshPassword));
+    // rclone's SFTP backend requires the obscured form, NEVER plaintext.
+    lines.push(`pass = ${rcloneObscure(t.sshPassword)}`);
   }
   lines.push('');
   return {
-    envBody: lines.join('\n'),
-    posixMount: { mountPath: MOUNT_POINT, storageType: 'sftp', target: t },
+    conf: lines.join('\n'),
     sshKey,
+    posixMount: { mountPath: MOUNT_POINT, storageType: 'sftp', target: t },
   };
 }
 
-function renderCifsEnv(
-  t: BackupTargetConfig,
-  prefix: ReadonlyArray<string>,
-): { envBody: string; posixMount: PosixMount } {
+function renderCifsSection(name: string, t: BackupTargetConfig): string {
   if (!t.cifsHost || !t.cifsShare || !t.cifsUser || !t.cifsPassword) {
     throw new Error(
       `CIFS target '${t.name}' is missing required fields (host, share, user, password)`,
     );
   }
   const lines: string[] = [
-    ...prefix,
-    'UPSTREAM_TYPE=cifs',
-    shellQuote('UPSTREAM_CIFS_HOST', t.cifsHost),
-    shellQuote('UPSTREAM_CIFS_SHARE', t.cifsShare),
-    shellQuote('UPSTREAM_CIFS_USER', t.cifsUser),
-    shellQuote('UPSTREAM_CIFS_PASSWORD', t.cifsPassword),
+    `[${name}]`,
+    'type = smb',
+    `host = ${t.cifsHost}`,
+    `user = ${t.cifsUser}`,
+    `pass = ${rcloneObscure(t.cifsPassword)}`,
   ];
-  if (t.cifsPort) lines.push(shellQuote('UPSTREAM_CIFS_PORT', String(t.cifsPort)));
-  if (t.cifsDomain) lines.push(shellQuote('UPSTREAM_CIFS_DOMAIN', t.cifsDomain));
-  if (t.cifsPath) lines.push(shellQuote('UPSTREAM_CIFS_PATH', stripSlashes(t.cifsPath)));
+  if (t.cifsDomain) lines.push(`domain = ${t.cifsDomain}`);
+  if (t.cifsPort) lines.push(`port = ${t.cifsPort}`);
   lines.push('');
-  return {
-    envBody: lines.join('\n'),
-    posixMount: { mountPath: MOUNT_POINT, storageType: 'cifs', target: t },
-  };
+  return lines.join('\n');
 }
 
-function renderNfsEnv(
-  t: BackupTargetConfig,
-  prefix: ReadonlyArray<string>,
-): { envBody: string; posixMount: PosixMount } {
-  if (!t.nfsServer || !t.nfsExport) {
-    throw new Error(
-      `NFS target '${t.name}' is missing required fields (server, export)`,
-    );
-  }
-  const lines: string[] = [
-    ...prefix,
-    'UPSTREAM_TYPE=nfs',
-    shellQuote('UPSTREAM_NFS_SERVER', t.nfsServer),
-    shellQuote('UPSTREAM_NFS_EXPORT', t.nfsExport),
-  ];
-  if (t.nfsVersion) lines.push(shellQuote('UPSTREAM_NFS_VERSION', t.nfsVersion));
-  if (t.nfsOptions) lines.push(shellQuote('UPSTREAM_NFS_OPTIONS', t.nfsOptions));
-  if (t.nfsPath) lines.push(shellQuote('UPSTREAM_NFS_PATH', stripSlashes(t.nfsPath)));
-  lines.push('');
-  return {
-    envBody: lines.join('\n'),
-    posixMount: { mountPath: MOUNT_POINT, storageType: 'nfs', target: t },
-  };
+function renderRcloneConfHeader(): string {
+  return [
+    '# rclone.conf — backup-rclone-shim (R-X20 always-combined)',
+    '# AUTO-GENERATED by platform-api backup-rclone-shim/config-renderer.',
+    '# Do NOT edit by hand. Operator changes flow via',
+    '# /admin/backup-rclone-shim/... endpoints.',
+    '#',
+    '# Layout: N [upstream_<8-hex>] sections (one per unique bound',
+    '# target) plus a [combined] section that maps each bound class',
+    '# (system/tenant/mail) to its target with a class-name path',
+    '# suffix. The launcher execs `rclone serve s3 combined:` so',
+    '# clients see <class> as the served bucket name and writes land',
+    '# at <upstream-root>/<class>/<client-key>.',
+    '#',
+    '# Passwords are obscured (rclone AES-CTR canonical) — required',
+    '# by the SFTP/SMB backends. S3 credentials are cleartext as the',
+    '# S3 backend does not accept obscured access keys.',
+    '',
+  ].join('\n');
 }
 
-/**
- * Emit a POSIX-shell env-file line: NAME='value' with single-quotes
- * around the value. Single quotes in the value are escaped as `'\''`
- * (close-quote, literal apostrophe, open-quote). This matches how
- * `bash` and busybox `sh` parse single-quoted strings.
- *
- * Validation: the value must not contain a NUL byte or newline. The
- * reconciler defends against malformed env files breaking the
- * launcher's `set -a; . upstream.env` step. NUL is rejected because
- * many shells truncate at NUL; newline is rejected because env files
- * are line-oriented.
- */
-function shellQuote(name: string, value: string): string {
-  if (value.includes('\0') || value.includes('\n')) {
-    throw new Error(
-      `upstream.env value for ${name} contains illegal character (NUL or newline)`,
-    );
-  }
-  return `${name}='${value.replace(/'/g, `'\\''`)}'`;
+function renderEmptyRcloneConf(): string {
+  return [
+    '# rclone.conf — backup-rclone-shim (no class assignments)',
+    '# AUTO-GENERATED. Reconciler renders content when an operator',
+    '# binds at least one class to a backup target.',
+    '',
+  ].join('\n');
 }
+
+function renderEnvHeader(shimAccessKey: string, shimSecretKey: string): string {
+  return [
+    '# upstream.env — backup-rclone-shim (R-X20: minimal — shim creds only)',
+    '# AUTO-GENERATED by platform-api backup-rclone-shim/config-renderer.',
+    '# Do NOT edit by hand.',
+    '#',
+    '# All upstream credentials are now in rclone.conf (rendered',
+    '# alongside this file in the credentials Secret). This file only',
+    '# carries the HKDF-derived shim creds that clients use to',
+    '# authenticate TO the shim.',
+    `ROOT_ACCESS_KEY='${shimAccessKey}'`,
+    `ROOT_SECRET_KEY='${shimSecretKey}'`,
+    '',
+  ].join('\n');
+}
+
+// R-X20: removed renderUpstreamEnv + per-type env renderers
+// (renderS3Env, renderSftpEnv, renderCifsEnv, renderNfsEnv, shellQuote)
+// — all credentials now live in rclone.conf rendered above. Helper
+// functions remain below for path normalization.
 
 function stripSlashes(s: string): string {
   return s.replace(/^\/+|\/+$/g, '');
@@ -486,7 +573,8 @@ export function computeInputHash(
   // the operator INPUTS are unchanged.
   // - v2-versitygw  : R-X17 versitygw launcher
   // - v3-rclone-bp  : R-X19 rclone-serve-s3 + bucket+prefix scoping
-  h.update('v3-rclone-bp\n');
+  // - v4-combine    : R-X20 always-combined renderer (rclone.conf-based)
+  h.update('v4-combine\n');
   h.update(`fp=${fingerprintRawKey(rawKey)}\n`);
   const sorted = [...assignments].sort((a, b) =>
     a.className.localeCompare(b.className),
