@@ -316,12 +316,17 @@ export default function Monitoring() {
             ? `${podCapacity.used} / ${podCapacity.allocatable}`
             : '—'}
           icon={Server}
+          // 'brand' is the neutral/informational tint — used when
+          // capacity isn't loaded yet (podUsedPct === null). Green
+          // would falsely imply "all clear" during an incident.
           accent={
-            podUsedPct !== null && podUsedPct >= 90
-              ? 'red'
-              : podUsedPct !== null && podUsedPct >= 70
-                ? 'amber'
-                : 'green'
+            podUsedPct === null
+              ? 'brand'
+              : podUsedPct >= 90
+                ? 'red'
+                : podUsedPct >= 70
+                  ? 'amber'
+                  : 'green'
           }
           data-testid="pod-capacity-tile"
         />
