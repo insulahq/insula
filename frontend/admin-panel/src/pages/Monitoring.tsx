@@ -1,11 +1,13 @@
-import { useState } from 'react';
-import { Activity, AlertTriangle, Clock, BarChart3, Server, Loader2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Activity, AlertTriangle, CheckCircle, XCircle, Server, Loader2, RefreshCw } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
-import ResourceBar from '@/components/ui/ResourceBar';
 import PaginationBar from '@/components/ui/PaginationBar';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
+import { useHealth } from '@/hooks/use-health';
 import { usePods, type PodEntry } from '@/hooks/use-pods';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
@@ -13,7 +15,11 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import StorageUsageTab from '@/components/StorageUsageTab';
 import NodeHealthPanel from '@/components/NodeHealthPanel';
 
-type Tab = 'active-alerts' | 'alert-history' | 'system-metrics' | 'storage' | 'pods' | 'node-health';
+type Tab = 'active-alerts' | 'alert-history' | 'health' | 'storage' | 'pods' | 'node-health';
+
+const VALID_TABS: ReadonlySet<Tab> = new Set([
+  'active-alerts', 'alert-history', 'health', 'storage', 'pods', 'node-health',
+]);
 
 interface Alert {
   readonly id: string;
@@ -81,8 +87,8 @@ function splitAlerts(entries: readonly AuditLogEntry[]): {
 const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
   { key: 'active-alerts', label: 'Active Alerts' },
   { key: 'alert-history', label: 'Alert History' },
+  { key: 'health', label: 'Health' },
   { key: 'node-health', label: 'Node Health' },
-  { key: 'system-metrics', label: 'System Metrics' },
   { key: 'storage', label: 'Storage Usage' },
   { key: 'pods', label: 'Pods' },
 ] as const;
@@ -161,19 +167,105 @@ function AlertTable({
   );
 }
 
-function SystemMetrics() {
+/**
+ * HealthTab — real platform-health checks. Replaces the placeholder
+ * SystemMetrics tab (which showed hardcoded `62%` / `45%` numbers)
+ * and the standalone HealthDashboard page (which had this view but
+ * was buried in Settings). Sources from /admin/health via useHealth.
+ */
+function HealthTab() {
+  const { data: response, isLoading, isFetching } = useHealth();
+  const qc = useQueryClient();
+  const health = response?.data;
+  const services = health?.services ?? [];
+  const overall = health?.overall ?? 'healthy';
+
+  const overallTone =
+    overall === 'healthy'
+      ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
+      : overall === 'degraded'
+        ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300'
+        : 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300';
+
   return (
-    <div className="grid grid-cols-1 gap-6 p-5 sm:grid-cols-2" data-testid="system-metrics">
-      <ResourceBar label="CPU Usage" used={62} total={100} unit="%" />
-      <ResourceBar label="Memory Usage" used={71} total={100} unit="%" />
-      <ResourceBar label="Disk Usage" used={45} total={100} unit="%" />
-      <ResourceBar label="Network I/O" used={33} total={100} unit="%" />
+    <div className="space-y-4 p-5" data-testid="health-tab">
+      <div className="flex items-center justify-between">
+        <div className={`flex-1 rounded-md border px-3 py-2 ${overallTone}`} data-testid="overall-health">
+          <span className="text-sm font-semibold capitalize">{overall}</span>
+          {health && (
+            <span className="ml-3 text-xs opacity-70">
+              checked {new Date(health.checkedAt).toLocaleString()}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => qc.invalidateQueries({ queryKey: ['health'] })}
+          disabled={isFetching}
+          className="ml-3 inline-flex items-center gap-1.5 rounded-md border border-gray-200 dark:border-gray-700 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+          data-testid="refresh-health"
+        >
+          <RefreshCw size={12} className={isFetching ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 size={20} className="animate-spin text-brand-500" />
+        </div>
+      )}
+
+      {!isLoading && services.length > 0 && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {services.map((s) => {
+            const ok = s.status === 'ok';
+            const Icon = ok ? CheckCircle : XCircle;
+            const tone = ok
+              ? 'border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
+              : s.status === 'degraded'
+                ? 'border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300'
+                : 'border-red-200 dark:border-red-800 text-red-700 dark:text-red-300';
+            return (
+              <div
+                key={s.name}
+                className={`rounded-md border bg-white dark:bg-gray-900 p-3 ${tone}`}
+                data-testid={`health-service-${s.name}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Icon size={14} />
+                    <span className="text-sm font-semibold capitalize">{s.name}</span>
+                  </div>
+                  <span className="text-[10px] opacity-70 font-mono">{s.latencyMs}ms</span>
+                </div>
+                {s.message && (
+                  <p className="mt-1 text-[11px] text-gray-600 dark:text-gray-400">{s.message}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 export default function Monitoring() {
-  const [activeTab, setActiveTab] = useState<Tab>('active-alerts');
+  // URL-driven tab so /monitoring/health redirects (and direct
+  // links from other surfaces) can deep-link to the Health view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get('tab');
+  const activeTab: Tab = useMemo(() => {
+    if (requested && VALID_TABS.has(requested as Tab)) return requested as Tab;
+    return 'active-alerts';
+  }, [requested]);
+  const setActiveTab = (key: Tab): void => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', key);
+    setSearchParams(next, { replace: true });
+  };
+
   const pagination = useCursorPagination({ defaultLimit: 20 });
   const { data: statusData } = usePlatformStatus();
   const { data: auditData, isLoading: auditLoading } = useAuditLogs({
@@ -200,11 +292,12 @@ export default function Monitoring() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Monitoring</h1>
 
-      <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
-        Metrics shown are placeholder values. Live monitoring data will be available after connecting Prometheus and deploying the monitoring stack.
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {/* Removed the "Avg Response Time 45ms" + "Error Rate 0.2%"
+          StatCards (2026-05-21 Wave 2) — they were hardcoded
+          placeholders. Real metrics live in the Health tab below
+          (sourced from /admin/health). The remaining 3 cards show
+          actual data so they stay. */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           title="Platform Status"
           value={platformStatus}
@@ -212,22 +305,10 @@ export default function Monitoring() {
           accent={platformStatus === 'healthy' ? 'green' : 'amber'}
         />
         <StatCard
-          title="Active Alerts"
+          title="Active Alerts (24h)"
           value={alertCount}
           icon={AlertTriangle}
           accent={alertCount > 0 ? 'red' : 'green'}
-        />
-        <StatCard
-          title="Avg Response Time"
-          value="45ms"
-          icon={Clock}
-          accent="brand"
-        />
-        <StatCard
-          title="Error Rate"
-          value="0.2%"
-          icon={BarChart3}
-          accent="green"
         />
         <StatCard
           title="Pod Usage"
@@ -273,7 +354,7 @@ export default function Monitoring() {
         {activeTab === 'alert-history' && (
           <AlertTable alerts={older} resolved isLoading={auditLoading} />
         )}
-        {activeTab === 'system-metrics' && <SystemMetrics />}
+        {activeTab === 'health' && <HealthTab />}
         {activeTab === 'storage' && <StorageUsageTab />}
         {activeTab === 'node-health' && <NodeHealthPanel />}
         {activeTab === 'pods' && (
@@ -284,7 +365,7 @@ export default function Monitoring() {
           />
         )}
 
-        {activeTab !== 'system-metrics' && activeTab !== 'storage' && activeTab !== 'pods' && activeTab !== 'node-health' && (
+        {activeTab !== 'health' && activeTab !== 'storage' && activeTab !== 'pods' && activeTab !== 'node-health' && (
           <PaginationBar
             totalCount={totalCount}
             pageSize={pagination.limit}

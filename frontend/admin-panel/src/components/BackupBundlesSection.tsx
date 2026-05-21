@@ -208,7 +208,7 @@ function BundleRow({
           </button>
           {bundle.status === 'completed' && (
             <Link
-              to={`/restore?bundleId=${encodeURIComponent(bundle.id)}&tenantId=${encodeURIComponent(bundle.tenantId)}`}
+              to={`/backups/restore?bundleId=${encodeURIComponent(bundle.id)}&tenantId=${encodeURIComponent(bundle.tenantId)}`}
               className="cursor-pointer flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
               title="Open the Plesk-style cart to selectively restore from this bundle"
             >
