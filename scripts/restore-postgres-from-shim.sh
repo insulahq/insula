@@ -23,6 +23,12 @@
 #   ./scripts/restore-postgres-from-shim.sh --latest
 #   ./scripts/restore-postgres-from-shim.sh --pitr 2026-05-20T10:00:00Z
 #   ./scripts/restore-postgres-from-shim.sh --dry-run --latest
+#   ./scripts/restore-postgres-from-shim.sh --latest --source-cluster system-db
+#
+# --source-cluster: the ORIGINAL CNPG cluster whose backups to restore.
+#                   Default 'system-db'. plugin-barman-cloud needs this
+#                   in externalClusters[].plugin.parameters.serverName
+#                   to find backups in the shared ObjectStore bucket.
 #
 # The script creates a NEW Cluster CR `system-db-restore-<ts>` with
 # `bootstrap.recovery` pointing at the same ObjectStore. Once the new
@@ -55,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)             DRY_RUN=1; shift ;;
     --timeout-seconds)     TIMEOUT_SECONDS="${2:?}"; shift 2 ;;
     --name)                RESTORE_CLUSTER_NAME="${2:?}"; shift 2 ;;
+    --source-cluster)      SOURCE_CLUSTER_NAME="${2:?--source-cluster requires the original CNPG cluster name}"; shift 2 ;;
     -h|--help)
       sed -n '1,/^set -euo/p' "$0" | sed 's/^# \?//'
       exit 0 ;;
@@ -70,6 +77,11 @@ fi
 TS=$(date -u +%Y%m%d-%H%M%S)
 RESTORE_CLUSTER_NAME="${RESTORE_CLUSTER_NAME:-system-db-restore-$TS}"
 PLATFORM_NS="platform"
+# Source cluster name — the ORIGINAL CNPG cluster whose backups we want
+# to restore. plugin-barman-cloud writes backups under <serverName>/
+# in the bucket prefix. For platform restores this is always "system-db".
+# Override via --source-cluster if restoring a non-default cluster.
+SOURCE_CLUSTER_NAME="${SOURCE_CLUSTER_NAME:-system-db}"
 
 # ── Pre-flight ───────────────────────────────────────────────────────
 log() { printf '\033[34m[restore-postgres]\033[0m %s\n' "$1"; }
@@ -144,6 +156,14 @@ $RECOVERY_SPEC
         name: barman-cloud.cloudnative-pg.io
         parameters:
           barmanObjectName: system-postgres-objectstore
+          # The original CNPG cluster name whose backups we're restoring.
+          # plugin-barman-cloud stores backups under <serverName>/base/
+          # in the bucket; without this parameter the restore cluster
+          # looks under its own name (system-db-restore-<ts>) and finds
+          # nothing. Hardcoded to "system-db" because this script only
+          # supports restoring the platform postgres cluster. Per-cluster
+          # restore tooling for tenants would need to parameterise this.
+          serverName: $SOURCE_CLUSTER_NAME
 EOF
 )
 
