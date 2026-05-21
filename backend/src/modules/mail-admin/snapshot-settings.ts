@@ -162,7 +162,7 @@ export async function updateMailSnapshotSchedule(
 /**
  * Read the currently configured backup store for mail snapshots.
  *
- * Source of truth: `backup_target_assignments[snapshot_class='system_mail']`
+ * Source of truth: `backup_target_assignments[backup_class='system_mail']`
  * (the assignment row resolves via strict-primary). Falls back to the
  * legacy `system_settings.mail_snapshot_backup_store_id` mirror only
  * if no assignment exists yet — that's the transitional path for
@@ -213,7 +213,7 @@ export async function getMailSnapshotBackupTarget(
 /**
  * Update the backup store for mail snapshots — DEPRECATED.
  *
- * Source of truth moved to `backup_target_assignments[snapshot_class='system_mail']`
+ * Source of truth moved to `backup_target_assignments[backup_class='system_mail']`
  * in migration 0010. This function survives as a passthrough so the
  * existing Mail Snapshot Settings UI keeps working until the frontend
  * switches to the unified Backup Class Assignments page. Both paths

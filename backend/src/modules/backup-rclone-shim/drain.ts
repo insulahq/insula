@@ -82,7 +82,7 @@ export const SHIM_CONSUMER_TASK_KINDS = [
  * SYSTEM target switch should not wait for TENANT backups).
  *
  * Tasks whose class can't be determined statically (e.g. `storage.*`
- * which depends on the snapshot's `snapshot_class`) are mapped to
+ * which depends on the snapshot's `backup_class`) are mapped to
  * `null` so they ALWAYS drain — defensive against a SYSTEM-class
  * snapshot blocking a SYSTEM-class target switch.
  */
@@ -115,6 +115,13 @@ export const INFLIGHT_SAMPLE_KIND_CAP = 20;
 // Types
 // ---------------------------------------------------------------------------
 
+export interface DrainTick {
+  readonly inflight: ReadonlyArray<InflightSample>;
+  readonly total: number;
+  readonly elapsedMs: number;
+  readonly timeoutMs: number;
+}
+
 export interface DrainOpts {
   /** Effective timeout in ms. */
   readonly timeoutMs: number;
@@ -127,6 +134,12 @@ export interface DrainOpts {
   readonly now?: () => number;
   /** Injectable sleeper for tests. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /** Optional per-poll-tick observer — invoked after each fresh sample
+   *  while waiting. Lets the orchestrator stream live in-flight counts
+   *  into the task-center chip so the operator sees progress mid-wait.
+   *  Best-effort: thrown errors are swallowed so a misbehaving observer
+   *  can never break the drain loop. */
+  readonly onTick?: (tick: DrainTick) => void | Promise<void>;
 }
 
 export interface InflightSample {
@@ -287,9 +300,36 @@ export async function waitForBackupDrain(
   );
 
   let lastSnap = initial;
+  // Emit a first tick BEFORE sleeping so the task chip shows the
+  // initial in-flight count immediately (otherwise the operator sees
+  // a static "Waiting…" until the first poll completes).
+  if (opts.onTick) {
+    try {
+      await opts.onTick({
+        inflight: initial.samples,
+        total: initial.total,
+        elapsedMs: 0,
+        timeoutMs,
+      });
+    } catch (e) {
+      log.warn({ err: e }, 'backup-rclone-shim drain: onTick threw — ignoring');
+    }
+  }
   while (now() - start < timeoutMs) {
     await sleep(pollMs);
     const snap = await snapshotInflightShimConsumers(db, classes);
+    if (opts.onTick) {
+      try {
+        await opts.onTick({
+          inflight: snap.samples,
+          total: snap.total,
+          elapsedMs: now() - start,
+          timeoutMs,
+        });
+      } catch (e) {
+        log.warn({ err: e }, 'backup-rclone-shim drain: onTick threw — ignoring');
+      }
+    }
     if (snap.total === 0) {
       const elapsedMs = now() - start;
       log.info(

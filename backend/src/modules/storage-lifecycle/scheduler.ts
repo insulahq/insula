@@ -84,14 +84,14 @@ export function startStorageLifecycleScheduler(
   // the caller catches and logs (auto-archive becomes a no-op for that
   // tenant until the operator configures an assignment).
   const buildSnapshotCtx = async (
-    snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+    backupClass: import('@k8s-hosting/api-contracts').SnapshotClass,
   ) => {
     const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
     const platformNamespace = (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
     const bundle = await resolveSnapshotStoreForClass(
       db,
       config as Record<string, string | undefined>,
-      snapshotClass,
+      backupClass,
       // Phase 11: k8s ctx for CIFS read paths.
       { k8sCtx: { k8s, namespace: platformNamespace } },
     );
@@ -101,7 +101,7 @@ export function startStorageLifecycleScheduler(
       store: bundle.store,
       platformNamespace,
       targetId: bundle.targetId,
-      snapshotClass,
+      backupClass,
     };
   };
 

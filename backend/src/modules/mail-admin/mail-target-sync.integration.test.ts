@@ -105,7 +105,7 @@ async function insertTarget(name: string, storageType: 's3' | 'ssh' | 'cifs' = '
 async function clearMail() {
   k8sMockCalls.applied = [];
   k8sMockCalls.deleted = 0;
-  await db.execute(sql`DELETE FROM backup_target_assignments WHERE snapshot_class = 'system_mail'`);
+  await db.execute(sql`DELETE FROM backup_target_assignments WHERE backup_class = 'system_mail'`);
   await db.execute(sql`DELETE FROM backup_configurations WHERE name LIKE 'mt-test-%'`);
   await db.update(systemSettings)
     .set({ mailSnapshotBackupStoreId: null })
@@ -170,7 +170,7 @@ describe.skipIf(!dbAvailable)('mail-target-sync', () => {
 
     // Assignment row exists, system_mail class.
     const rows = await db.execute(
-      sql`SELECT target_id FROM backup_target_assignments WHERE snapshot_class = 'system_mail'`,
+      sql`SELECT target_id FROM backup_target_assignments WHERE backup_class = 'system_mail'`,
     ) as unknown as Array<{ target_id: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].target_id).toBe(t);
@@ -189,7 +189,7 @@ describe.skipIf(!dbAvailable)('mail-target-sync', () => {
     );
 
     const rows = await db.execute(
-      sql`SELECT target_id FROM backup_target_assignments WHERE snapshot_class = 'system_mail'`,
+      sql`SELECT target_id FROM backup_target_assignments WHERE backup_class = 'system_mail'`,
     ) as unknown as Array<{ target_id: string }>;
     expect(rows).toHaveLength(0);
   });

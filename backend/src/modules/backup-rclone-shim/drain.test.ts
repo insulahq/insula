@@ -305,6 +305,56 @@ describe('waitForBackupDrain', () => {
     });
     expect(lastSleepMs).toBe(5_000); // default DRAIN_POLL_INTERVAL_MS
   });
+
+  it('onTick fires with initial sample BEFORE first poll', async () => {
+    const db = fakeDb([
+      [{ kind: 'backup.run', n: 4 }], // initial
+      [], // drain on first poll
+    ]);
+    const clock = makeInjectedClock();
+    const ticks: Array<{ total: number; elapsedMs: number }> = [];
+    await waitForBackupDrain(db, silentLog(), {
+      timeoutMs: 30_000,
+      now: clock.now,
+      sleep: clock.sleep,
+      pollIntervalMs: 5_000,
+      onTick: (t) => { ticks.push({ total: t.total, elapsedMs: t.elapsedMs }); },
+    });
+    // First tick = pre-sleep snapshot of initial state.
+    expect(ticks[0]).toEqual({ total: 4, elapsedMs: 0 });
+    // Second tick = first poll, post-sleep (5s elapsed).
+    expect(ticks[1].total).toBe(0);
+    expect(ticks[1].elapsedMs).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it('onTick errors are swallowed and do not abort the drain', async () => {
+    const db = fakeDb([
+      [{ kind: 'mail.archive', n: 1 }],
+      [], // drain on first poll
+    ]);
+    const clock = makeInjectedClock();
+    const r = await waitForBackupDrain(db, silentLog(), {
+      timeoutMs: 30_000,
+      now: clock.now,
+      sleep: clock.sleep,
+      pollIntervalMs: 5_000,
+      onTick: () => { throw new Error('observer kaboom'); },
+    });
+    // Drain still completes successfully even though every tick threw.
+    expect(r.phase).toBe('drain_waiting');
+    expect(r.drained).toBe(true);
+  });
+
+  it('does not invoke onTick when timeoutMs=0 (drain_skipped fast path)', async () => {
+    const db = fakeDb([[{ kind: 'backup.run', n: 1 }]]);
+    const onTick = vi.fn();
+    const r = await waitForBackupDrain(db, silentLog(), {
+      timeoutMs: 0,
+      onTick,
+    });
+    expect(r.phase).toBe('drain_skipped');
+    expect(onTick).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

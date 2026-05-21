@@ -164,7 +164,7 @@ D('backup-rclone-shim integration', () => {
     it('reflects an inserted binding via the new assignment table', async () => {
       const targetId = await insertTarget('rx5-test-sys-binding');
       await db.execute(sql`
-        INSERT INTO backup_target_assignments (snapshot_class, target_id, priority)
+        INSERT INTO backup_target_assignments (backup_class, target_id, priority)
         VALUES ('system', ${targetId}, 0)
       `);
       const rows = await listCurrentShimAssignments(db);
@@ -244,7 +244,7 @@ D('backup-rclone-shim integration', () => {
       const rows = await db.execute<{ count: string }>(sql`
         SELECT COUNT(*)::text AS count
           FROM backup_target_assignments
-         WHERE snapshot_class = 'tenant' AND target_id = ${targetId}
+         WHERE backup_class = 'tenant' AND target_id = ${targetId}
       `);
       expect(rows.rows?.[0]?.count).toBe('1');
       // Task must be marked succeeded.
@@ -264,7 +264,7 @@ D('backup-rclone-shim integration', () => {
       `);
       const targetId = await insertTarget('rx5-test-unassign');
       await db.execute(sql`
-        INSERT INTO backup_target_assignments (snapshot_class, target_id, priority)
+        INSERT INTO backup_target_assignments (backup_class, target_id, priority)
         VALUES ('mail', ${targetId}, 0)
       `);
       const result = await applyShimAssignmentChange(
@@ -283,7 +283,7 @@ D('backup-rclone-shim integration', () => {
       const rows = await db.execute<{ count: string }>(sql`
         SELECT COUNT(*)::text AS count
           FROM backup_target_assignments
-         WHERE snapshot_class = 'mail'
+         WHERE backup_class = 'mail'
       `);
       expect(rows.rows?.[0]?.count).toBe('0');
     });

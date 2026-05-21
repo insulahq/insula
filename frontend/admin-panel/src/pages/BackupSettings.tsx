@@ -34,7 +34,7 @@ export default function BackupSettings() {
   const { data: summariesData } = useTargetSummaries();
   // Build targetId → assigned classes map once per render. Empty
   // when no classes are routed to a given target — the pill omits.
-  const targetSummaries = new Map<string, { snapshotClass: string; priority: number }[]>();
+  const targetSummaries = new Map<string, { backupClass: string; priority: number }[]>();
   for (const s of summariesData?.data?.summaries ?? []) {
     targetSummaries.set(s.targetId, s.classes);
   }
@@ -689,12 +689,12 @@ export default function BackupSettings() {
                     <span className="text-gray-500 dark:text-gray-400">Used by:</span>
                     {usedBy.map((c) => (
                       <Link
-                        key={c.snapshotClass}
+                        key={c.backupClass}
                         to="/settings/backup-classes"
                         className="rounded bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900/60"
                         title={`priority ${c.priority}`}
                       >
-                        {c.snapshotClass}
+                        {c.backupClass}
                         {c.priority !== 100 && <span className="ml-1 text-indigo-500 dark:text-indigo-400">·p{c.priority}</span>}
                       </Link>
                     ))}

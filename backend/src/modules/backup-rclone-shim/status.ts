@@ -37,7 +37,7 @@ export async function listCurrentShimAssignments(
 ): Promise<ShimAssignmentRow[]> {
   const rows = await db
     .select({
-      className: backupTargetAssignments.snapshotClass,
+      className: backupTargetAssignments.backupClass,
       targetId: backupConfigurations.id,
       targetName: backupConfigurations.name,
       targetStorageType: backupConfigurations.storageType,
@@ -50,7 +50,7 @@ export async function listCurrentShimAssignments(
     )
     .where(
       inArray(
-        backupTargetAssignments.snapshotClass,
+        backupTargetAssignments.backupClass,
         SHIM_CLASSES as readonly string[] as string[],
       ),
     );

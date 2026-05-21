@@ -27,7 +27,7 @@ const TOP_TENANTS_LIMIT = 100;
 type TimestampLike = string | Date | null;
 
 interface ClassRow {
-  snapshotClass: string;
+  backupClass: string;
   subsystem: string;
   totalCount: number;
   totalBytes: string; // numeric → string from pg driver
@@ -45,7 +45,7 @@ interface TenantRow {
 
 interface TenantClassBreakdownRow {
   tenantId: string;
-  snapshotClass: string;
+  backupClass: string;
   count: number;
   bytes: string;
 }
@@ -61,7 +61,7 @@ function toIso(value: TimestampLike): string | null {
 }
 
 /**
- * Sum every snapshot row, grouped by (snapshot_class, subsystem), with
+ * Sum every snapshot row, grouped by (backup_class, subsystem), with
  * count, total bytes, and most-recent timestamps. Excludes status='failed'
  * from the byte total — failed snapshots stop short of a final size and
  * would distort accounting.
@@ -69,7 +69,7 @@ function toIso(value: TimestampLike): string | null {
 async function loadClassAggregates(db: Database): Promise<SnapshotClassAggregate[]> {
   const rows = (await db
     .select({
-      snapshotClass: storageSnapshots.snapshotClass,
+      backupClass: storageSnapshots.backupClass,
       subsystem: storageSnapshots.subsystem,
       totalCount: sql<number>`COUNT(*)::int`,
       totalBytes: sql<string>`COALESCE(SUM(CASE WHEN ${storageSnapshots.status} = 'ready' THEN ${storageSnapshots.sizeBytes} ELSE 0 END), 0)::text`,
@@ -77,10 +77,10 @@ async function loadClassAggregates(db: Database): Promise<SnapshotClassAggregate
       lastReadyAt: sql<TimestampLike>`MAX(CASE WHEN ${storageSnapshots.status} = 'ready' THEN ${storageSnapshots.createdAt} END)`,
     })
     .from(storageSnapshots)
-    .groupBy(storageSnapshots.snapshotClass, storageSnapshots.subsystem)) as ClassRow[];
+    .groupBy(storageSnapshots.backupClass, storageSnapshots.subsystem)) as ClassRow[];
 
   return rows.map((r) => ({
-    snapshotClass: r.snapshotClass,
+    backupClass: r.backupClass,
     subsystem: r.subsystem,
     totalCount: r.totalCount,
     totalBytes: Number(r.totalBytes),
@@ -117,19 +117,19 @@ async function loadTopTenants(db: Database): Promise<TenantSnapshotAggregate[]> 
   const breakdownRows = (await db
     .select({
       tenantId: storageSnapshots.tenantId,
-      snapshotClass: storageSnapshots.snapshotClass,
+      backupClass: storageSnapshots.backupClass,
       count: sql<number>`COUNT(*)::int`,
       bytes: sql<string>`COALESCE(SUM(CASE WHEN ${storageSnapshots.status} = 'ready' THEN ${storageSnapshots.sizeBytes} ELSE 0 END), 0)::text`,
     })
     .from(storageSnapshots)
     .where(inArray(storageSnapshots.tenantId, tenantIds))
-    .groupBy(storageSnapshots.tenantId, storageSnapshots.snapshotClass)) as TenantClassBreakdownRow[];
+    .groupBy(storageSnapshots.tenantId, storageSnapshots.backupClass)) as TenantClassBreakdownRow[];
 
   const breakdownByTenant = new Map<string, TenantSnapshotAggregate['byClass']>();
   for (const row of breakdownRows) {
     const list = breakdownByTenant.get(row.tenantId) ?? [];
     list.push({
-      snapshotClass: row.snapshotClass,
+      backupClass: row.backupClass,
       count: row.count,
       bytes: Number(row.bytes),
     });

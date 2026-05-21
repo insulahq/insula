@@ -7,7 +7,7 @@ import { loadSnapshotAccounting } from './snapshot-accounting.js';
 const db = getTestDb();
 const dbAvailable = await isDbAvailable();
 
-// Migration 0003 added subsystem + snapshot_class columns. Tests below
+// Migration 0003 added subsystem + backup_class columns. Tests below
 // exercise the aggregation paths (per-class, per-tenant, totals) using
 // the column defaults plus explicit overrides for new subsystems.
 
@@ -35,19 +35,19 @@ async function insertSnapshot(opts: {
   tenantId: string;
   status: string;
   sizeBytes: number;
-  snapshotClass?: string;
+  backupClass?: string;
   subsystem?: string;
 }): Promise<string> {
   const id = crypto.randomUUID();
   await db.execute(sql`
     INSERT INTO storage_snapshots (
       id, tenant_id, kind, status, archive_path, size_bytes, sha256,
-      subsystem, snapshot_class, created_at, updated_at
+      subsystem, backup_class, created_at, updated_at
     ) VALUES (
       ${id}, ${opts.tenantId}, 'manual', ${opts.status}, ${`${opts.tenantId}/${id}.tar.gz`},
       ${String(opts.sizeBytes)}, NULL,
       ${opts.subsystem ?? 'tenant-pvc'},
-      ${opts.snapshotClass ?? 'tenant_snapshot'},
+      ${opts.backupClass ?? 'tenant_snapshot'},
       NOW(), NOW()
     )
   `);
@@ -83,35 +83,35 @@ describe.skipIf(!dbAvailable)('loadSnapshotAccounting', () => {
     expect(result.total).toEqual({ count: 3, bytes: 3000 });
     expect(result.byClass).toHaveLength(1);
     expect(result.byClass[0]).toMatchObject({
-      snapshotClass: 'tenant_snapshot',
+      backupClass: 'tenant_snapshot',
       subsystem: 'tenant-pvc',
       totalCount: 3,
       totalBytes: 3000,
     });
   });
 
-  it('groups rows by (snapshot_class, subsystem)', async () => {
+  it('groups rows by (backup_class, subsystem)', async () => {
     await insertTenant('tnt-acme', 'Acme');
     await insertSnapshot({ tenantId: 'tnt-acme', status: 'ready', sizeBytes: 100 });
     await insertSnapshot({
       tenantId: 'tnt-acme',
       status: 'ready',
       sizeBytes: 200,
-      snapshotClass: 'system_backup',
+      backupClass: 'system_backup',
       subsystem: 'system-etcd',
     });
     await insertSnapshot({
       tenantId: 'tnt-acme',
       status: 'ready',
       sizeBytes: 400,
-      snapshotClass: 'system_backup',
+      backupClass: 'system_backup',
       subsystem: 'system-etcd',
     });
 
     const result = await loadSnapshotAccounting(db);
     expect(result.byClass).toHaveLength(2);
-    const tenant = result.byClass.find((r) => r.snapshotClass === 'tenant_snapshot');
-    const system = result.byClass.find((r) => r.snapshotClass === 'system_backup');
+    const tenant = result.byClass.find((r) => r.backupClass === 'tenant_snapshot');
+    const system = result.byClass.find((r) => r.backupClass === 'system_backup');
     expect(tenant).toMatchObject({ subsystem: 'tenant-pvc', totalCount: 1, totalBytes: 100 });
     expect(system).toMatchObject({ subsystem: 'system-etcd', totalCount: 2, totalBytes: 600 });
   });
@@ -138,7 +138,7 @@ describe.skipIf(!dbAvailable)('loadSnapshotAccounting', () => {
       tenantId: 'tnt-multi',
       status: 'ready',
       sizeBytes: 200,
-      snapshotClass: 'tenant_bundle',
+      backupClass: 'tenant_bundle',
       subsystem: 'mail-rocksdb',
     });
 
@@ -146,10 +146,10 @@ describe.skipIf(!dbAvailable)('loadSnapshotAccounting', () => {
     expect(result.topTenants).toHaveLength(1);
     const breakdown = result.topTenants[0].byClass;
     expect(breakdown).toHaveLength(2);
-    const tenantSnap = breakdown.find((b) => b.snapshotClass === 'tenant_snapshot');
-    const tenantBundle = breakdown.find((b) => b.snapshotClass === 'tenant_bundle');
-    expect(tenantSnap).toEqual({ snapshotClass: 'tenant_snapshot', count: 1, bytes: 100 });
-    expect(tenantBundle).toEqual({ snapshotClass: 'tenant_bundle', count: 1, bytes: 200 });
+    const tenantSnap = breakdown.find((b) => b.backupClass === 'tenant_snapshot');
+    const tenantBundle = breakdown.find((b) => b.backupClass === 'tenant_bundle');
+    expect(tenantSnap).toEqual({ backupClass: 'tenant_snapshot', count: 1, bytes: 100 });
+    expect(tenantBundle).toEqual({ backupClass: 'tenant_bundle', count: 1, bytes: 200 });
   });
 
   it('reports lastReadyAt distinct from lastSnapshotAt when only failed rows are recent', async () => {

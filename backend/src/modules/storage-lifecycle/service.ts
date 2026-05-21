@@ -61,9 +61,9 @@ interface ServiceCtx {
   /**
    * Phase 3: the snapshot class this ctx was built for. Defaults to
    * 'tenant_snapshot' at the routes layer for tenant-PVC operations.
-   * Stamped on `storage_snapshots.snapshot_class` at row creation.
+   * Stamped on `storage_snapshots.backup_class` at row creation.
    */
-  readonly snapshotClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
+  readonly backupClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
 }
 
 async function mustGetTenant(db: Database, tenantId: string) {
@@ -236,7 +236,7 @@ export async function snapshotTenant(
   // Pre-create DB rows in a single transaction so we don't orphan an op
   // if we crash before persisting the snapshot row.
   //
-  // Phase 3: stamp snapshot_class + target_id from the resolver context
+  // Phase 3: stamp backup_class + target_id from the resolver context
   // so every row records where it was routed and which class produced it.
   // When ctx.targetId is null (legacy single-active-target path) the
   // column stays NULL and forensic queries fall back to subsystem alone.
@@ -249,7 +249,7 @@ export async function snapshotTenant(
       archivePath,
       label: params.label ?? null,
       expiresAt,
-      snapshotClass: ctx.snapshotClass ?? 'tenant_snapshot',
+      backupClass: ctx.backupClass ?? 'tenant_snapshot',
       subsystem: 'tenant-pvc',
       targetId: ctx.targetId ?? null,
     });
@@ -584,7 +584,7 @@ async function resizeDestructive(
       label: `Pre-resize ${currentMib}MiB → ${newMib}MiB`,
       // Phase 3: pre-resize snapshots are tenant_snapshot class. They
       // route to the same target as a manual snapshot would.
-      snapshotClass: ctx.snapshotClass ?? 'tenant_snapshot',
+      backupClass: ctx.backupClass ?? 'tenant_snapshot',
       subsystem: 'tenant-pvc',
       targetId: ctx.targetId ?? null,
     });
@@ -1230,7 +1230,7 @@ export async function archiveTenant(
       archivePath, expiresAt,
       label: `Archive ${new Date().toISOString().slice(0, 10)}`,
       // Phase 3: pre-archive snapshots are tenant_snapshot class.
-      snapshotClass: ctx.snapshotClass ?? 'tenant_snapshot',
+      backupClass: ctx.backupClass ?? 'tenant_snapshot',
       subsystem: 'tenant-pvc',
       targetId: ctx.targetId ?? null,
     });
@@ -1460,7 +1460,7 @@ export async function rollbackToSnapshot(
  */
 async function resolveRestoreStore(
   ctx: ServiceCtx,
-  snap: { id: string; targetId: string | null; snapshotClass: string; subsystem?: string | null },
+  snap: { id: string; targetId: string | null; backupClass: string; subsystem?: string | null },
 ): Promise<SnapshotStore> {
   if (!snap.targetId) {
     // target_id is NULL. Two ways this can happen:
@@ -1492,7 +1492,7 @@ async function resolveRestoreStore(
     return ctx.store;
   }
   const { resolveSnapshotStoreByTargetId } = await import('./snapshot-store.js');
-  const cls = snap.snapshotClass as import('@k8s-hosting/api-contracts').SnapshotClass;
+  const cls = snap.backupClass as import('@k8s-hosting/api-contracts').SnapshotClass;
   // Phase 11: pass k8s ctx so CIFS-backed restore can do stat/delete/sidecar.
   const store = await resolveSnapshotStoreByTargetId(ctx.db, snap.targetId, cls, {
     k8sCtx: { k8s: ctx.k8s, namespace: ctx.platformNamespace },
@@ -1520,7 +1520,7 @@ async function runRollbackToSnapshot(
   const pvcName = `${namespace}-storage`;
   try {
     // Phase 5: re-fetch the snapshot row so we have its target_id +
-    // snapshot_class to drive per-target restore lookup.
+    // backup_class to drive per-target restore lookup.
     const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
     const restoreStore = snap
       ? await resolveRestoreStore(ctx, snap)
