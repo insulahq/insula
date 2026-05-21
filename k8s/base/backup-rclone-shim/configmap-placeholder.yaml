@@ -13,7 +13,8 @@
 # Memory tuning (v3-tuned per 2026-05-21 bench):
 #   - GOGC=20 + GOMEMLIMIT=200MiB (aggressive Go GC + soft cap)
 #   - --s3-disable-http2 (HTTP/1.1 = parallel TCP, no HoL blocking)
-#   - --s3-upload-concurrency 2 (upstream is the bottleneck)
+#   - --s3-upload-concurrency 3 (upstream is the bottleneck; ~15 MiB
+#     in-flight buffer per stream is the memory price for parallelism)
 #   - --buffer-size 2M (smaller per-file read buffer)
 #   - --s3-memory-pool-flush-time 30s (idle pool returns memory faster)
 #
@@ -130,11 +131,30 @@ data:
 
     case "$${UPSTREAM_TYPE}" in
       s3)
-        # S3 backend = pure passthrough proxy. Client bucket name
-        # flows through to upstream. Operator must pre-create the
-        # bucket on the upstream provider matching their class names
-        # (or use a shared bucket and rely on per-class prefixes —
-        # see docs/02-operations/BACKUP_RCLONE_SHIM.md).
+        # R-X19 (2026-05-21): the shim serves the operator-configured
+        # upstream bucket + optional prefix as the ROOT. The client's
+        # bucket name (system/tenant/mail) becomes the first path
+        # segment under that root. So:
+        #   target row { s3_bucket=k8s-staging, s3_prefix=staging }
+        #   client PUT s3://system/postgres/x.tar
+        #   → upstream://k8s-staging/staging/system/postgres/x.tar
+        # rclone auto-creates the intermediate directories.
+        #
+        # force_path_style is operator-configurable:
+        #   true (default)  → legacy path-style URLs `endpoint/bucket/key`
+        #                     (Hetzner, MinIO, Backblaze, R2, Wasabi)
+        #   false           → virtual-hosted DNS-style `bucket.endpoint/key`
+        #                     (AWS S3 with modern regions, Cloudflare R2
+        #                     with DNS configured, etc.)
+        if [ -z "$${UPSTREAM_S3_BUCKET:-}" ]; then
+          log "FATAL: S3 requires UPSTREAM_S3_BUCKET"
+          exit 2
+        fi
+        # Validate force_path_style flag — strict allowlist.
+        case "$${UPSTREAM_USE_PATH_STYLE:-true}" in
+          true|false) ;;
+          *) log "FATAL: UPSTREAM_USE_PATH_STYLE='$${UPSTREAM_USE_PATH_STYLE}' must be 'true' or 'false'"; exit 2 ;;
+        esac
         cat >> "$RCLONE_CONF" <<EOF
     [upstream]
     type = s3
@@ -145,10 +165,11 @@ data:
     secret_access_key = $${UPSTREAM_SECRET_KEY}
     force_path_style = $${UPSTREAM_USE_PATH_STYLE:-true}
     EOF
-        # rclone serve s3 with path "upstream:" → serves the upstream
-        # S3 endpoint's bucket namespace verbatim. boto3 PUT to
-        # bucket=system maps to upstream bucket=system.
-        REMOTE_PATH="upstream:"
+        # Compose REMOTE_PATH = upstream:bucket[/prefix]/  (trailing slash
+        # is important — rclone serve s3 needs to know this is a
+        # "directory" root so the first client path segment becomes the
+        # served bucket name).
+        REMOTE_PATH="upstream:$${UPSTREAM_S3_BUCKET}$${UPSTREAM_S3_PREFIX:+/$${UPSTREAM_S3_PREFIX}}/"
         VFS_CACHE_MODE="off"
         ;;
       sftp)
@@ -254,7 +275,7 @@ data:
       --no-modtime \
       --no-checksum \
       --s3-chunk-size 5M \
-      --s3-upload-concurrency 2 \
+      --s3-upload-concurrency 3 \
       --s3-memory-pool-flush-time 30s \
       --s3-disable-http2 \
       --cache-dir "$CACHE_DIR" \
