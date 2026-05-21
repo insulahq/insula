@@ -1,9 +1,104 @@
 # Backup-rclone-shim operator runbook
 
-> **Status:** R-X1–R-X8 + R-X11 (restore tooling) shipped. rclone-push callers (R-X9), UI (R-X10), restore
-> tooling (R-X11), DR drill (R-X12), legacy archive (R-X13), perf
-> benchmark (R-X14) follow. Operator-visible surfaces below are LIVE
-> from R-X5.
+> **Status:** R-X1–R-X19 shipped. R-X19 (2026-05-21) is the current
+> architecture — single `rclone serve s3` per pod handles all upstream
+> protocols (S3/SFTP/CIFS/Local-PVC) via rclone's native userspace
+> clients. No FUSE, no kernel mounts, no CAP_SYS_ADMIN. Pod runs as
+> `nobody` (UID 65534) with drop:[ALL] capabilities.
+
+## Architecture (R-X19)
+
+The shim is a DaemonSet pod (one per node) running a single
+`rclone serve s3` process. Clients (postgres barman-cloud, restic,
+etcd-snap CronJob, rclone-push) talk to the shim via its in-cluster
+S3 endpoint at `http://backup-rclone-shim.platform.svc:9000`.
+
+```
+client (S3 API)   →   rclone serve s3   →   upstream (native protocol)
+                       (one process,
+                        userspace clients)
+```
+
+Supported upstream types — each uses rclone's native backend client:
+
+| `storage_type` | rclone backend | Privilege | Notes |
+|---|---|---|---|
+| `s3` | `type=s3` (pure proxy) | none | Hetzner OS / Backblaze / R2 / Wasabi / MinIO / AWS |
+| `ssh` | `type=sftp` (userspace SSH/SFTP client) | none | Hetzner Storage Box SFTP, corporate SFTP |
+| `cifs` | `type=smb` (userspace SMB2/3 client) | none | Hetzner Storage Box SMB, on-prem NAS |
+| `local` | `type=local` (bind-mount via K8s PVC) | none | Hetzner Cloud Volume / Longhorn / hcloud-csi |
+
+### Bucket+prefix scoping (R-X19)
+
+The shim does NOT pass the client's bucket name through to the
+upstream. Instead, the operator-configured upstream `s3_bucket` +
+`s3_prefix` become the rclone-serve-s3 ROOT, and the client's bucket
+name (`system`/`tenant`/`mail`) becomes the FIRST PATH SEGMENT under
+that root — auto-created on first write.
+
+Example with `backup_configurations` row `{ s3_bucket: 'k8s-staging',
+s3_prefix: 'staging' }`:
+
+```
+client PUT s3://system/postgres/x.tar
+  → upstream://k8s-staging/staging/system/postgres/x.tar
+```
+
+Operators do NOT need to pre-create buckets named `system`/`tenant`/
+`mail` on their S3 provider. One operator-managed bucket holds
+everything under the configured prefix.
+
+### Memory tuning (v3-tuned per 2026-05-21 bench)
+
+| Setting | Value | Why |
+|---|---|---|
+| `GOGC` | `20` | More frequent Go GC (default 100) keeps heap small |
+| `GOMEMLIMIT` | `200MiB` | Soft cap; triggers GC at this point |
+| `--s3-disable-http2` | (present) | HTTP/1.1 = parallel TCP connections (avoids HoL blocking) |
+| `--s3-upload-concurrency` | `3` | Upstream is bottleneck; more buffers just waste memory |
+| `--s3-chunk-size` | `5M` | Balanced — bigger increases multipart RAM cost |
+| `--buffer-size` | `2M` | Per-file read buffer (vs default 16M) |
+| `--s3-memory-pool-flush-time` | `30s` | Idle pool returns memory faster |
+
+Steady-state RSS: ~60 MiB idle, ~130 MiB avg under bench load. Peak
+~280 MiB on concurrent multi-stream uploads. Pod memory limit is
+1Gi — well above the soft cap with headroom for transient spikes.
+
+### Path-style vs virtual-hosted S3
+
+`s3_use_path_style` column (migration 0021) drives rclone's
+`force_path_style` flag:
+
+- `true` (default): path-style URLs `endpoint/bucket/key`. Works for
+  Hetzner OS, MinIO, Backblaze B2's S3 API, Cloudflare R2, Wasabi,
+  Garage, Ceph RGW.
+- `false`: DNS-based virtual-hosted style `bucket.endpoint/key`.
+  Required for AWS S3 with newer regions and some CDN-fronted setups.
+
+Set per-target in the admin panel's backup-target form ("Use
+path-style URLs" checkbox).
+
+## High-throughput S3 — hybrid alternative (future option, not default)
+
+For operators with sustained high-concurrency S3 backups (≥16 parallel
+multipart streams against a single S3 endpoint), versitygw's
+S3-passthrough mode is ~1.5-2x faster on concurrent-stream workloads
+than rclone-serve-s3. The trade-off:
+
+| | rclone serve s3 (default) | versitygw hybrid (advanced) |
+|---|---|---|
+| Single-stream PUT 100 MiB | 32 MiB/s | 30 MiB/s (tie) |
+| Concurrent 16 × 10 MiB PUT | 51 MiB/s | 81 MiB/s (versitygw faster) |
+| Image size | ~20 MiB compressed | ~70 MiB (adds versitygw) |
+| Idle RSS | 60 MiB | 28 MiB |
+| Launcher complexity | 1 binary, single exec path | 2 binaries, dispatch logic |
+| SFTP/CIFS support | works (native userspace) | requires kernel mounts (CAP_SYS_ADMIN) |
+
+The hybrid is NOT implemented today — it would require restoring
+versitygw to the image and a launcher dispatch selecting versitygw
+for S3 + rclone for SFTP/CIFS. Defer until a real operator measurement
+shows the rclone bottleneck. The typical platform workload (≤4
+concurrent callers) is well-served by rclone-serve-s3 + v3 tuning.
 
 ## Restore tooling (R-X11)
 
