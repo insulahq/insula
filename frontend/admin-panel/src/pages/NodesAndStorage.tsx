@@ -1,13 +1,11 @@
 import { useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Server, HardDrive, Layers } from 'lucide-react';
+import { Server, HardDrive } from 'lucide-react';
 import clsx from 'clsx';
 import ClusterNodes from '@/pages/ClusterNodes';
 import StorageSettings from '@/pages/StorageSettings';
-import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
-import NodeDefaultsCard from '@/components/NodeDefaultsCard';
 
-type TabKey = 'nodes' | 'storage' | 'ha';
+type TabKey = 'nodes' | 'storage';
 
 const TABS: ReadonlyArray<{
   readonly key: TabKey;
@@ -27,15 +25,12 @@ const TABS: ReadonlyArray<{
     icon: HardDrive,
     hint: 'Longhorn dashboard + active backup target',
   },
-  {
-    key: 'ha',
-    label: 'Cluster Settings',
-    icon: Layers,
-    hint: 'Node defaults + platform storage replication tier (Local ↔ HA)',
-  },
+  // 2026-05-21 Wave 2: "Cluster Settings" tab (PlatformStoragePolicy
+  // + NodeDefaults) moved to /settings/system. They're operator-rare
+  // cluster-wide policy knobs that bloated a Day-1 ops surface.
 ];
 
-const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha']);
+const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage']);
 
 /**
  * Combined "Nodes & Storage" admin page.
@@ -58,12 +53,14 @@ export default function NodesAndStorage() {
   const navigate = useNavigate();
   const requested = searchParams.get('tab');
 
-  // Bookmark-compat: the old `?tab=trusted-proxies` URL moved to the
-  // Security Hub → Network Trust page on 2026-05-21. Redirect any
-  // surviving bookmark.
+  // Bookmark-compat (2026-05-21):
+  //  - `?tab=trusted-proxies` moved to Security Hub → Network Trust
+  //  - `?tab=ha` (Cluster Settings) moved to Settings → System (Wave 2)
   useEffect(() => {
     if (requested === 'trusted-proxies') {
       navigate('/security/network-trust?tab=trusted-proxies', { replace: true });
+    } else if (requested === 'ha' || requested === 'cluster-settings') {
+      navigate('/settings/system', { replace: true });
     }
   }, [requested, navigate]);
 
@@ -139,22 +136,6 @@ export default function NodesAndStorage() {
           aria-labelledby="nodes-and-storage-tab-storage"
         >
           <StorageSettings embedded />
-        </div>
-      )}
-      {activeTab === 'ha' && (
-        <div
-          role="tabpanel"
-          id="nodes-and-storage-panel-ha"
-          aria-labelledby="nodes-and-storage-tab-ha"
-          className="space-y-6"
-          // The Cluster Settings tab is also addressable by its
-          // historical name. Both test IDs render so existing
-          // selectors keep working.
-          data-testid="ha-settings-tab"
-        >
-          <span data-testid="cluster-settings-tab" className="sr-only" aria-hidden="true" />
-          <PlatformStoragePolicyCard />
-          <NodeDefaultsCard />
         </div>
       )}
     </div>

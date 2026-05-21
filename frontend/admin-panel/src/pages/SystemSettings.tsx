@@ -1,6 +1,8 @@
 import { SettingsIcon } from 'lucide-react';
 import SystemSettingsForm from '@/components/SystemSettings';
 import IntegrationsSettings from '@/components/IntegrationsSettings';
+import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
+import NodeDefaultsCard from '@/components/NodeDefaultsCard';
 
 export default function SystemSettings() {
   return (
@@ -12,12 +14,19 @@ export default function SystemSettings() {
             System Settings
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Configure platform identity, networking, mail, and rate limits.
+            Platform identity, networking, mail, rate limits, and cluster-wide policies.
           </p>
         </div>
       </div>
       <SystemSettingsForm />
       <IntegrationsSettings />
+
+      {/* 2026-05-21 Wave 2: PlatformStoragePolicyCard + NodeDefaultsCard
+          moved here from the "Cluster Settings" tab of Nodes & Storage.
+          Both are operator-rare cluster-wide policy knobs — they
+          belonged in Settings, not on the Day-1 operational page. */}
+      <PlatformStoragePolicyCard />
+      <NodeDefaultsCard />
     </div>
   );
 }

@@ -260,7 +260,7 @@ function TenantRow({ row }: { row: TenantBackupOverviewRow }) {
       </td>
       <td className="px-4 py-2 text-right">
         {row.openCartId
-          ? <Link to={`/restore?cartId=${row.openCartId}`} className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline">Open →</Link>
+          ? <Link to={`/backups/restore?cartId=${row.openCartId}`} className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline">Open →</Link>
           : <span className="text-gray-400">—</span>}
       </td>
       <td className="px-4 py-2 text-right">

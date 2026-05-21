@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu, Container, X, Network, GitBranch } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu, Container, X, Network, GitBranch, Workflow } from 'lucide-react';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { usePlatformVersion, useUpdateSettings, useTriggerUpdate } from '@/hooks/use-platform-updates';
 import { usePlatformImages } from '@/hooks/use-platform-images';
@@ -182,13 +182,9 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/nodes-and-storage" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="nodes-and-storage-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-sky-50 dark:bg-sky-900/20 text-sky-600 dark:text-sky-400"><Server size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Nodes &amp; Storage</h2><p className="text-sm text-gray-500 dark:text-gray-400">Cluster nodes (role / tenant opt-in) and Longhorn storage configuration</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
+      {/* Nodes & Storage card removed 2026-05-21 (Wave 1 UX cleanup):
+          the top-level sidebar already has this entry. Duplicate
+          navigation = "where is it?" friction. */}
 
       <Link to="/settings/load-balancer" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="load-balancer-settings-link">
         <div className="flex items-center gap-3">
@@ -222,10 +218,18 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/system/private-worker-tunnels" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="private-worker-tunnels-link">
+      <Link to="/settings/private-worker-tunnels" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="private-worker-tunnels-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400"><Network size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Private Worker Tunnels</h2><p className="text-sm text-gray-500 dark:text-gray-400">Per-worker cert issuance and ClusterIssuer selection (HTTP-01 / DNS-01)</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/lifecycle-hooks" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="lifecycle-hooks-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400"><Workflow size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Tenant Lifecycle Hooks</h2><p className="text-sm text-gray-500 dark:text-gray-400">Per-hook success rate (7d), transitions tree, Retry Now / Reset Breaker — needed when tenant transitions fail</p></div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
@@ -243,25 +247,18 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/backup-infrastructure" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="backup-infrastructure-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400"><GitBranch size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Backup Infrastructure</h2><p className="text-sm text-gray-500 dark:text-gray-400">Targets (S3/SSH/CIFS) + class routing (tenant snapshot / bundle / system / mail) — 2-tab page</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
+      {/* Backup Infrastructure card removed 2026-05-21 (Wave 1):
+          the Backups sidebar group already exposes this as the
+          third child item. */}
 
       {/* Admin Users card removed 2026-05-21 — moved to Security Hub
           → Identity & Sessions (/security/identity). Single navigation
           path keeps the operator from hopping between Settings + Hub. */}
 
-      <Link to="/monitoring/health" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="health-settings-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400"><Heart size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">System Health</h2><p className="text-sm text-gray-500 dark:text-gray-400">Database, DNS, and OIDC provider health checks</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
+      {/* System Health card removed 2026-05-21 (Wave 2): folded
+          into the Monitoring page as a "Health" tab — real metrics
+          replace the placeholder CPU/Mem/Disk tiles. The
+          /monitoring/health URL still works via redirect. */}
 
       <Link to="/settings/export-import" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="export-import-link">
         <div className="flex items-center gap-3">
