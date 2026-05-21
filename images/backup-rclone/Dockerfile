@@ -1,14 +1,20 @@
 # backup-rclone — universal backup mediator image.
 #
+# R-X19 (2026-05-21): rclone serve s3 unified architecture.
+# Single binary handles all four upstream types (S3, SFTP, CIFS,
+# Local-PVC) via rclone's native userspace clients — no FUSE,
+# no kernel mounts, no CAP_SYS_ADMIN. The image previously
+# carried versitygw + sshfs + cifs-utils + nfs-utils + fuse3
+# for the R-X17 versitygw + kernel-mount architecture; those
+# are no longer needed and have been removed (~80 MiB shrink).
+#
 # Used in two roles in the platform:
 #
 #  (1) backup-rclone-shim DaemonSet — runs `rclone serve s3` on every
 #      node, fronting all backup callers (postgres barman-cloud, k3s
 #      etcd snapshot CronJob, restic CronJobs, rclone-push jobs).
-#      Per-class buckets (system, system-raw, tenant, tenant-raw,
-#      mail, mail-raw) translate to whatever upstream backend the
-#      operator selected (S3, SFTP, CIFS via kernel mount, NFS via
-#      kernel mount).
+#      Per-class buckets translate via rclone's native backend
+#      adapters (no kernel mount layer).
 #
 #  (2) one-shot CronJob clients (etcd-snap-via-shim, restic wrappers,
 #      tenant-bundle uploader, secrets-bundle uploader) — invoked as
@@ -16,14 +22,14 @@
 #      to the shim's ClusterIP.
 #
 # DESIGN GOALS:
-#   - Small (~25 MiB compressed) — alpine base + static rclone +
-#     zstd + cifs-utils + nfs-utils on top of distroless-like minimum
+#   - Small (~20 MiB compressed) — alpine base + static rclone +
+#     zstd + minimal runtime libs
 #   - Pinned by digest in Flux; rclone version controlled here
 #   - tini as PID 1 for proper signal handling
 #   - No shell in the running image where avoidable; busybox sh kept
 #     for one-shot CronJobs that need to wire `pgrep` / `find` etc.
-#   - Non-root by default (uid 65534 / nobody) — the DaemonSet
-#     overrides where necessary (host-path mounts for etcd snapshot)
+#   - Non-root by default (uid 65534 / nobody) — pod runs fully
+#     unprivileged in R-X19 (no longer requires CAP_SYS_ADMIN)
 #   - Works on amd64 + arm64 (multi-arch GitHub Actions build)
 #
 # RCLONE VERSION:
@@ -76,81 +82,46 @@ RUN set -eux; \
     chmod +x /usr/local/bin/rclone; \
     /usr/local/bin/rclone version
 
-# ---- stage 1b: pull versitygw binary from upstream image ------------
-# versitygw replaces `rclone serve s3` as the shim's S3 server.
-# rclone's ListObjectsV2 returns CommonPrefixes WITHOUT a trailing
-# slash, which breaks barman-cloud-backup-show + restic enumeration.
-# versitygw emits trailing slashes correctly, supports POSIX + S3
-# backends, ~half RSS of rclone in serve mode. Apache 2.0 license,
-# multi-arch (amd64 + arm64) confirmed via `docker buildx imagetools`.
-FROM versity/versitygw:v1.4.1 AS versitygw-fetch
-
 # ---- stage 2: runtime image ------------------------------------------
 # alpine pinned by digest (same trust-anchor argument as stage 1).
 FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
-# Install runtime essentials + mount helpers for SFTP/CIFS/NFS upstreams.
-# The shim DaemonSet runs versitygw in two modes:
-#   - S3 upstream: `versitygw s3 --endpoint ...` (no mount needed)
-#   - POSIX upstream (SFTP/CIFS/NFS): mount the share in the pod first,
-#     then `versitygw posix /mnt/upstream`
-# Kernel mounts require CAP_SYS_ADMIN on the container — the shim
-# DaemonSet runs with `privileged: true` ONLY for POSIX mode (the
-# launcher refuses to mount in non-privileged mode and falls back to
-# sleeping). The S3-only mode does NOT need privileged.
+# Install runtime essentials. R-X19 dropped kernel-mount helpers
+# (sshfs, cifs-utils, nfs-utils, fuse3) and versitygw — all backend
+# protocols now go through rclone's native userspace clients.
 #
 #   - tini: PID-1 signal handling
 #   - ca-certificates: TLS to S3/HTTPS endpoints
 #   - zstd: compression for etcd snapshots + tenant-bundle artefacts
-#   - openssh-client: rclone's sftp backend uses ssh + known_hosts
-#   - sshfs + fuse3: SFTP upstream via FUSE mount (POSIX-style backend)
-#   - cifs-utils: mount.cifs for SMB/CIFS upstream
-#   - nfs-utils: mount.nfs for NFSv3/v4 upstream
+#   - openssh-client: rclone's sftp backend uses ssh known_hosts /
+#                     ssh-agent integration for some setups
 #   - tzdata: log timestamps in local time when configured
 #   - procps: pgrep for liveness probe in the shim role
-#   - util-linux: umount / findmnt for graceful unmount on shutdown
 RUN apk add --no-cache \
         tini \
         ca-certificates \
         zstd \
         openssh-client \
-        sshfs \
-        fuse3 \
-        cifs-utils \
-        nfs-utils \
         tzdata \
         procps \
-        util-linux \
     && update-ca-certificates
 
-# Bring the verified rclone binary across from the fetch stage. The
-# image keeps BOTH rclone (used by CronJob clients + age-encrypted
-# bundle uploaders + the benchmark harness) AND versitygw (used by
-# the shim DaemonSet as the S3 server).
+# Bring the verified rclone binary across from the fetch stage.
 COPY --from=rclone-fetch /usr/local/bin/rclone /usr/local/bin/rclone
 
-# versitygw — the S3 gateway used by the shim DaemonSet (~50 MiB
-# binary; statically linked Go).
-COPY --from=versitygw-fetch /usr/local/bin/versitygw /usr/local/bin/versitygw
+# Runtime directory layout (R-X19):
+#   /etc/rclone-credentials/upstream.env  — operator-configured params
+#                                            (Secret, mounted by DS)
+#   /etc/rclone/ssh-keys/upstream.pem     — SFTP key (Secret, when used)
+#   /var/cache/rclone-shim/                — rclone --vfs-cache-mode cache
+#                                            (emptyDir, 1.5 GiB cap)
+#   /var/run/backup-rclone/                — tmpfs scratch (rclone
+#                                            --temp-dir for CronJob role)
+RUN mkdir -p /etc/rclone/ssh-keys /var/cache/rclone-shim /var/run/backup-rclone \
+    && chown -R 65534:65534 /etc/rclone /var/cache/rclone-shim /var/run/backup-rclone
 
-# Runtime directory layout (versitygw shim mode):
-#   /etc/shim/upstream.env      — operator-configured upstream params
-#                                  (Secret, root-readable)
-#   /etc/shim/ssh-keys/*.pem    — SFTP key auth material (Secret)
-#   /mnt/upstream/              — kernel-mount target for SFTP/CIFS/NFS
-#                                  (shim launcher mkdir + mount + bind)
-#   /var/lib/versitygw/         — versitygw internal state (IAM, etc.)
-#   /var/run/backup-rclone/     — tmpfs scratch (rclone --temp-dir for
-#                                  CronJob client role)
-RUN mkdir -p /etc/shim/ssh-keys /mnt/upstream /var/lib/versitygw /var/run/backup-rclone \
-    && chown -R 65534:65534 /etc/shim /var/lib/versitygw /var/run/backup-rclone
-
-# Default USER is non-root. The shim DaemonSet OVERRIDES to root +
-# privileged ONLY when the operator binds a POSIX upstream (SFTP /
-# CIFS / NFS) — those require CAP_SYS_ADMIN for kernel mount. The S3
-# upstream path stays unprivileged (no mount, just `versitygw s3`).
-# Per-mode security context is set in the shim's reconciler-rendered
-# DaemonSet PodSpec.
+# Default USER is non-root. The shim DaemonSet runs fully unprivileged
+# in R-X19: runAsUser=65534, drop ALL caps, readOnlyRootFilesystem=true.
 USER 65534:65534
 
 # tini handles SIGTERM → SIGTERM-to-children, no zombie reaping issues.
@@ -158,16 +129,15 @@ USER 65534:65534
 # `rclone …` invocations.
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Default to printing versitygw help. The shim DaemonSet overrides with:
-#   command: ["/bin/sh", "/etc/shim/launcher.sh"]
+# Default to printing rclone version. The shim DaemonSet overrides with:
+#   command: ["/bin/sh", "/etc/rclone-static/launcher.sh"]
 # CronJob clients (etcd-snap, age-bundle uploader, etc.) override with:
-#   command: ["rclone", "copy", ...] — the rclone binary is retained
-#   for these non-server uses.
-CMD ["/usr/local/bin/versitygw", "--help"]
+#   command: ["rclone", "copy", ...]
+CMD ["/usr/local/bin/rclone", "version"]
 
 # Image metadata for runtime inspection + Flux reconciliation.
 LABEL org.opencontainers.image.title="backup-rclone"
-LABEL org.opencontainers.image.description="Universal backup mediator (versitygw S3 server + rclone client + POSIX mount helpers)"
+LABEL org.opencontainers.image.description="R-X19 backup mediator (rclone serve s3 + rclone client; no kernel mounts)"
 LABEL org.opencontainers.image.source="https://github.com/insulahq/k8s-hosting-platform"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="Insula"
