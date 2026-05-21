@@ -35,6 +35,7 @@ import DrDrillTab from '@/components/system-backup/DrDrillTab';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import ScheduleCard from '@/components/backups/ScheduleCard';
 import MailObjectBackupCard from '@/components/backups/MailObjectBackupCard';
+import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
 
 type Tab = 'filesystem' | 'object' | 'restore' | 'dr-drill' | 'activity';
 
@@ -187,6 +188,12 @@ export default function SystemBackups() {
               title="Postgres PITR base backups"
               description="Daily base backup of the platform postgres. WAL archiving runs continuously when enabled."
             />
+            {/* R-X19 follow-up: surface CNPG ScheduledBackup health. The
+                component was already built (cnpg-backup-health module)
+                but never wired into any page — failed backups went
+                silently un-notified in the UI. Polls /api/v1/admin/
+                cnpg-backup-health every 5 min. */}
+            <CnpgBackupHealthCard />
             <SecretsBundleTab />
             <SystemDatabasesTab />
             <WalArchiveTab />

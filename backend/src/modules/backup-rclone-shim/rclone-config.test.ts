@@ -168,12 +168,45 @@ describe('renderShimConfig — single S3 class', () => {
     );
   });
 
+  it('rejects S3 target missing bucket (R-X19 — bucket is now required)', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3Bucket: null };
+    expect(() => renderShimConfig(FIXED_KEY, [assign('system', t)])).toThrow(
+      /missing required/,
+    );
+  });
+
   it('rejects S3 target missing credentials', () => {
     expect(() =>
       renderShimConfig(FIXED_KEY, [
         assign('system', { ...s3Target, s3SecretKey: null }),
       ]),
     ).toThrow(/missing required/);
+  });
+
+  it('emits UPSTREAM_S3_BUCKET (R-X19 — operator bucket becomes the served root)', () => {
+    expect(out.upstreamEnv).toContain("UPSTREAM_S3_BUCKET='k8s-staging'");
+  });
+
+  it('does NOT emit UPSTREAM_S3_PREFIX when s3Prefix is null', () => {
+    expect(out.upstreamEnv).not.toContain("UPSTREAM_S3_PREFIX");
+  });
+
+  it('emits UPSTREAM_S3_PREFIX when s3Prefix is set', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3Prefix: 'staging' };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.upstreamEnv).toContain("UPSTREAM_S3_PREFIX='staging'");
+  });
+
+  it('strips leading/trailing slashes from s3Prefix (avoid double slashes in path)', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3Prefix: '/staging/' };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.upstreamEnv).toContain("UPSTREAM_S3_PREFIX='staging'");
+  });
+
+  it('preserves middle slashes in s3Prefix (multi-segment prefix)', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3Prefix: 'backups/2026/staging' };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.upstreamEnv).toContain("UPSTREAM_S3_PREFIX='backups/2026/staging'");
   });
 });
 

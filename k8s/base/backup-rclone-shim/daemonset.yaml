@@ -276,12 +276,19 @@ spec:
 
         # R-X19: writable VFS cache for rclone serve s3 with
         # --vfs-cache-mode writes (SFTP/CIFS/Local backends). Disk-
-        # backed emptyDir — multipart parts in flight can total GiBs
-        # before flush. 4Gi cap matches realistic largest-single-
-        # object workload (postgres base-backup of a multi-GB cluster).
-        # Lost on pod restart — in-flight multiparts abort, clients
-        # retry. Same lifecycle as the R-X17 versitygw sidecar this
-        # replaces.
+        # backed emptyDir.
+        #
+        # 1.5Gi sizeLimit is 3× the rclone --vfs-cache-max-size 512M
+        # ceiling — handles the rare degraded-drain scenario where two
+        # concurrent callers (postgres + restic) both buffer ~512 MiB
+        # mid-multipart, plus rclone internal overhead for metadata
+        # and partial flush staging. With --vfs-write-back 0s the
+        # cache normally empties as soon as upstream confirms; the
+        # extra headroom is for atypical concurrency windows where
+        # the drain orchestrator's serialization briefly breaks.
+        #
+        # In-flight multiparts on pod restart are aborted; clients
+        # retry. Same lifecycle as the R-X17 versitygw sidecar.
         - name: rclone-cache
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: 1536Mi
