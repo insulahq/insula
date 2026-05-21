@@ -51,6 +51,8 @@ export default function Dashboard() {
   const { data: lifecycleResp } = useLifecycleTransitions({ limit: 50, refetchInterval: 15_000 });
   // Pull a bigger window than the 24h slice so the count is accurate
   // when there are many recent audits (100 should comfortably cover).
+  // useAuditLogs already polls every 30s internally — acceptable on
+  // an operator-stare-during-incidents page.
   const { data: auditResp } = useAuditLogs({ limit: 100 });
 
   const tenants = tenantsResp?.data ?? [];
@@ -64,9 +66,11 @@ export default function Dashboard() {
   const recent5xx = auditEntries.filter(
     (e) => e.httpStatus !== null && e.httpStatus >= 500 && new Date(e.createdAt).getTime() >= cutoff,
   );
-  const failedPods = pods.filter(
-    (p) => p.classification === 'failed' || p.classification === 'orphaned',
-  );
+  // Distinct categories — both worth surfacing but mean different
+  // operator actions ("investigate crash" vs "clean up dangling pod").
+  const failedPods = pods.filter((p) => p.classification === 'failed');
+  const orphanedPods = pods.filter((p) => p.classification === 'orphaned');
+  const podsNeedingAttention = failedPods.length + orphanedPods.length;
   const failingBackups = (backupHealth ?? []).filter((b) => b.state === 'failing');
   const neverRunBackups = (backupHealth ?? []).filter((b) => b.state === 'never_run');
   const inflightTransitions = transitions.filter((t) => t.state === 'running');
@@ -119,11 +123,15 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div data-testid="stat-failed-pods">
           <StatCard
-            title="Failed Pods"
-            value={failedPods.length}
-            subtitle={failedPods.length > 0 ? 'click to investigate' : 'all clear'}
+            title="Failed / Orphaned Pods"
+            value={podsNeedingAttention}
+            subtitle={
+              podsNeedingAttention === 0
+                ? 'all clear'
+                : `${failedPods.length} failed · ${orphanedPods.length} orphaned`
+            }
             icon={ServerCrash}
-            accent={failedPods.length > 0 ? 'red' : 'green'}
+            accent={failedPods.length > 0 ? 'red' : orphanedPods.length > 0 ? 'amber' : 'green'}
           />
         </div>
         <div data-testid="stat-5xx-alerts">
