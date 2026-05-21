@@ -56,6 +56,7 @@ import * as tasks from '../tasks/service.js';
 import {
   formatDrainProgressText,
   formatDrainTimeoutNotification,
+  snapshotInflightShimConsumers,
   waitForBackupDrain,
   type DrainResult,
 } from './drain.js';
@@ -118,6 +119,9 @@ export async function waitForShimReady(
     timeoutMs?: number;
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
+    /** Per-poll observer — invoked after each successful DaemonSet read.
+     *  Same best-effort contract as drain.ts:DrainOpts.onTick. */
+    onTick?: (tick: VerifyReadyResult) => void | Promise<void>;
   } = {},
 ): Promise<VerifyReadyResult> {
   const poll = opts.pollIntervalMs ?? DEFAULT_VERIFY_READY_POLL_MS;
@@ -137,6 +141,13 @@ export async function waitForShimReady(
       const updated = live.status?.updatedNumberScheduled ?? 0;
       const available = live.status?.numberAvailable ?? live.status?.numberReady ?? 0;
       last = { ready: false, desired, updated, available, elapsedMs: now() - start };
+      if (opts.onTick) {
+        try {
+          await opts.onTick(last);
+        } catch (e) {
+          log.warn({ err: e }, 'backup-rclone-shim verify-ready: onTick threw — ignoring');
+        }
+      }
       // Edge case: desired=0 means no eligible nodes. Treat as ready —
       // the rollout has nothing to do. UI surface should warn separately.
       if (desired === 0) {
@@ -191,14 +202,6 @@ export interface ApplyShimAssignmentArgs {
   readonly userId: string;
 }
 
-export interface ApplyShimAssignmentResult {
-  readonly assignment: ShimAssignmentRow;
-  readonly taskId: string;
-  readonly drain: DrainStatus;
-  readonly reconcile: ShimReconcileResult;
-  readonly verify: VerifyReadyResult;
-}
-
 export interface ApplyShimAssignmentDeps {
   readonly db: Database;
   readonly k8s: ShimReconcileClients;
@@ -219,17 +222,31 @@ export interface ApplyShimAssignmentDeps {
 // ---------------------------------------------------------------------------
 
 /**
- * The orchestrator. Throws ApiError on input validation failures
- * (caller surfaces these as 4xx); throws on infrastructure failures
- * (caller surfaces as 5xx); never throws inside the task lifecycle —
- * a thrown error inside `tracked()` marks the task as `failed` and
- * rethrows.
+ * Fire-and-forget orchestrator. The full pipeline (drain → DB write →
+ * reconcile → verify-ready) can run up to ~7 minutes on a busy cluster
+ * — far too long to block an HTTP request. We instead:
+ *
+ *   1. Validate inputs synchronously (throw ApiError on bad target).
+ *   2. Start the task-center row + return its id immediately, along
+ *      with an OPTIMISTIC assignment row computed from the target the
+ *      operator picked. The frontend can close the modal and surface
+ *      progress via the task chip.
+ *   3. Run drain → write → reconcile → verify in the background. The
+ *      pipeline writes incremental progress + a sample of currently
+ *      in-flight backups into `tasks.progress_text` / `details` on
+ *      every poll tick so the chip stays live. On completion or
+ *      failure, the task is `finished` with the appropriate status.
+ *
+ * Reads/writes that MUST happen before the response is sent — input
+ * validation — throw and the route surfaces them as 4xx. Errors during
+ * the background pipeline are written to the task row only; the HTTP
+ * call has already returned by then.
  */
 export async function applyShimAssignmentChange(
   deps: ApplyShimAssignmentDeps,
   args: ApplyShimAssignmentArgs,
-): Promise<ApplyShimAssignmentResult> {
-  const { db, k8s: k8sClients, encryptionKey, log } = deps;
+): Promise<{ readonly taskId: string; readonly assignment: ShimAssignmentRow }> {
+  const { db, log } = deps;
 
   // ─── 1. Validate target ─────────────────────────────────────────
   let targetRow: typeof backupConfigurations.$inferSelect | null = null;
@@ -261,9 +278,30 @@ export async function applyShimAssignmentChange(
     args.drainTimeoutSecondsOverride,
     targetRow?.drainTimeoutSeconds ?? null,
   );
-  const effectiveMs = args.force ? 0 : effectiveSeconds * 1000;
 
-  // ─── 3. Start tracked task ──────────────────────────────────────
+  // ─── 3. Compose the optimistic assignment row ───────────────────
+  // Returned to the HTTP caller so React Query can swap its cached
+  // assignment immediately. The background pipeline writes the row
+  // for real a few seconds later; if the pipeline fails the
+  // assignments query refetches via task-center completion event and
+  // self-corrects.
+  const optimisticAssignment: ShimAssignmentRow = args.targetId === null
+    ? {
+        className: args.className,
+        targetId: null,
+        targetName: null,
+        targetStorageType: null,
+        drainTimeoutSeconds: effectiveSeconds,
+      }
+    : {
+        className: args.className,
+        targetId: args.targetId,
+        targetName: targetRow?.name ?? args.targetId,
+        targetStorageType: (targetRow?.storageType ?? null) as ShimAssignmentRow['targetStorageType'],
+        drainTimeoutSeconds: effectiveSeconds,
+      };
+
+  // ─── 4. Start tracked task ──────────────────────────────────────
   const label = toSafeText(
     args.targetId === null
       ? `Unassign ${args.className.toUpperCase()} backup target`
@@ -291,8 +329,52 @@ export async function applyShimAssignmentChange(
     },
   });
 
+  // ─── 5. Fork the heavy pipeline ─────────────────────────────────
+  // Using `void` + .catch keeps the promise unhandled-rejection-safe
+  // and signals to the linter that the caller deliberately does not
+  // await. `setImmediate` yields back to the event loop so the HTTP
+  // response flushes before the background work starts churning.
+  setImmediate(() => {
+    void runShimAssignmentPipeline(deps, args, {
+      taskId,
+      effectiveSeconds,
+      targetRow,
+    }).catch((err) => {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), taskId, className: args.className },
+        'backup-rclone-shim apply: background pipeline raised unexpectedly',
+      );
+    });
+  });
+
+  return { taskId, assignment: optimisticAssignment };
+}
+
+/**
+ * Background portion of the apply pipeline — invoked from
+ * `applyShimAssignmentChange` via `setImmediate`. Streams progress
+ * into the task row on every poll tick and finishes the task on
+ * completion or failure. Never throws to the caller (any errors are
+ * captured into `tasks.finish` with status='failed').
+ */
+async function runShimAssignmentPipeline(
+  deps: ApplyShimAssignmentDeps,
+  args: ApplyShimAssignmentArgs,
+  ctx: {
+    readonly taskId: string;
+    readonly effectiveSeconds: number;
+    readonly targetRow: typeof backupConfigurations.$inferSelect | null;
+  },
+): Promise<void> {
+  const { db, k8s: k8sClients, encryptionKey, log } = deps;
+  const { taskId, effectiveSeconds } = ctx;
+  const effectiveMs = args.force ? 0 : effectiveSeconds * 1000;
+
   try {
-    // ─── 4. Drain ────────────────────────────────────────────────
+    // ─── Drain ───────────────────────────────────────────────────
+    // Best-effort: per-tick progress updates also catch their own
+    // errors (e.g. transient DB blip) so a momentary tasks-table
+    // write failure can't fail the whole apply.
     await tasks.progress(db, taskId, {
       pct: 5,
       text: toSafeText('Waiting for in-flight backups to drain'),
@@ -303,6 +385,20 @@ export async function applyShimAssignmentChange(
       pollIntervalMs: deps.drainPollIntervalMs,
       sleep: deps.drainSleep,
       now: deps.drainNow,
+      onTick: async (tick) => {
+        // Interpolate drain progress across the 5..30 range so the
+        // chip moves smoothly even if drain completes in one tick.
+        const span = Math.min(1, effectiveMs === 0 ? 1 : tick.elapsedMs / effectiveMs);
+        const pct = Math.min(30, Math.max(5, Math.round(5 + span * 25)));
+        const text = tick.total === 0
+          ? 'Drain complete — preparing to write assignment'
+          : formatDrainProgressText(tick.inflight);
+        try {
+          await tasks.progress(db, taskId, { pct, text: toSafeText(text) });
+        } catch {
+          /* swallow — see method doc */
+        }
+      },
     });
     await tasks.progress(db, taskId, {
       pct: 30,
@@ -323,14 +419,14 @@ export async function applyShimAssignmentChange(
       });
     }
 
-    // ─── 5. DB write (replace-set) ───────────────────────────────
+    // ─── DB write (replace-set) ──────────────────────────────────
     await tasks.progress(db, taskId, {
       pct: 40,
       text: toSafeText('Writing assignment'),
     });
-    const assignment = await writeAssignment(db, args.className, args.targetId);
+    await writeAssignment(db, args.className, args.targetId);
 
-    // ─── 6. Reconcile (immediate, not waiting for 5-min tick) ────
+    // ─── Reconcile (immediate, not waiting for 5-min tick) ───────
     await tasks.progress(db, taskId, {
       pct: 60,
       text: toSafeText('Rendering shim config'),
@@ -342,15 +438,6 @@ export async function applyShimAssignmentChange(
       log,
     );
     if (reconcile.state === 'STATE_ERROR') {
-      // Surface the error to the task but don't roll back the DB —
-      // the reconciler will self-heal on next tick. Bell-notify the
-      // operator so the "succeeded but degraded" outcome isn't lost
-      // when the modal closes.
-      //
-      // The reconciler's `errorMessage` is built from caught errors
-      // including decryption failures; raw error strings may leak
-      // ciphertext fragments or other secret-shaped material. Run
-      // through `sanitiseReconcileError` before persisting + notifying.
       const safeMessage = sanitiseReconcileError(reconcile.errorMessage);
       await tasks.progress(db, taskId, {
         pct: 70,
@@ -371,8 +458,7 @@ export async function applyShimAssignmentChange(
           resourceId: args.className,
         });
       } catch {
-        // Notification creation is best-effort; the task detail is the
-        // authoritative record.
+        /* Notification creation is best-effort. */
       }
     } else if (reconcile.state === 'STATE_MISSING_KEY') {
       throw new ApiError(
@@ -382,7 +468,7 @@ export async function applyShimAssignmentChange(
       );
     }
 
-    // ─── 7. Verify shim ready ────────────────────────────────────
+    // ─── Verify shim ready ──────────────────────────────────────
     await tasks.progress(db, taskId, {
       pct: 80,
       text: toSafeText('Waiting for shim DaemonSet to roll'),
@@ -392,6 +478,23 @@ export async function applyShimAssignmentChange(
       timeoutMs: deps.verifyTimeoutMs,
       sleep: deps.verifySleep,
       now: deps.verifyNow,
+      onTick: async (tick) => {
+        // Map rollout progress to 80..99% so verify-ready visibly
+        // moves as pods come ready, without ever reaching 100 until
+        // the rollout actually settles.
+        const ratio = tick.desired === 0 ? 1 : tick.available / tick.desired;
+        const pct = Math.min(99, Math.max(80, 80 + Math.round(ratio * 19)));
+        try {
+          await tasks.progress(db, taskId, {
+            pct,
+            text: toSafeText(
+              `Rolling DaemonSet pods: ${tick.available}/${tick.desired} ready (${tick.updated} updated)`,
+            ),
+          });
+        } catch {
+          /* swallow */
+        }
+      },
     });
     if (!verify.ready) {
       log.warn(
@@ -420,21 +523,32 @@ export async function applyShimAssignmentChange(
           : 'Target switch complete (verify-ready timed out)',
       ),
     });
-
-    return {
-      assignment,
-      taskId,
-      drain: drainResultToStatus(drainResult),
-      reconcile,
-      verify,
-    };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await tasks.finish(db, taskId, {
-      status: 'failed',
-      error: message.slice(0, 4096),
-    });
-    throw err;
+    log.error(
+      { err: message, taskId, className: args.className },
+      'backup-rclone-shim apply: pipeline failed',
+    );
+    try {
+      await tasks.finish(db, taskId, {
+        status: 'failed',
+        error: message.slice(0, 4096),
+      });
+    } catch {
+      /* tasks.finish itself failed — already logged; nothing more we can do. */
+    }
+    try {
+      await createNotification(db, {
+        userId: args.userId,
+        type: 'error',
+        title: `Shim ${args.className.toUpperCase()} apply failed`,
+        message: `Target switch for the ${args.className} backup class failed: ${message.slice(0, 300)}`,
+        resourceType: 'backup-rclone-shim',
+        resourceId: args.className,
+      });
+    } catch {
+      /* swallow */
+    }
   }
 }
 
@@ -530,10 +644,10 @@ async function writeAssignment(
   await db.transaction(async (tx) => {
     await tx
       .delete(backupTargetAssignments)
-      .where(eq(backupTargetAssignments.snapshotClass, className));
+      .where(eq(backupTargetAssignments.backupClass, className));
     if (targetId !== null) {
       await tx.insert(backupTargetAssignments).values({
-        snapshotClass: className,
+        backupClass: className,
         targetId,
         priority: 0,
       });
@@ -561,7 +675,7 @@ async function writeAssignment(
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
     .where(
       and(
-        eq(backupTargetAssignments.snapshotClass, className),
+        eq(backupTargetAssignments.backupClass, className),
         eq(backupTargetAssignments.targetId, targetId),
       ),
     )
@@ -594,10 +708,19 @@ export interface DrainNowArgs {
 }
 
 export interface DrainNowResult {
+  /** Initial drain snapshot (drained=false unless zero in-flight at start).
+   *  The full result lives on the task row after completion. */
   readonly drain: DrainStatus;
   readonly taskId: string;
 }
 
+/**
+ * Fire-and-forget drain. Returns immediately with the task id + an
+ * initial snapshot so the operator UI can show how many in-flight
+ * backups are queued before the wait loop even starts. The actual
+ * wait happens in the background, writing per-tick progress + the
+ * final result into the task row.
+ */
 export async function runDrainNow(
   deps: Pick<ApplyShimAssignmentDeps, 'db' | 'log' | 'drainSleep' | 'drainNow' | 'drainPollIntervalMs'>,
   args: DrainNowArgs,
@@ -606,6 +729,20 @@ export async function runDrainNow(
   const seconds = resolveDrainTimeoutSeconds(args.drainTimeoutSecondsOverride, null);
   const scope = args.classes.length === 0 ? 'all' : args.classes.join('+');
   const label = toSafeText(`Drain in-flight backups (${scope})`);
+
+  // Take an initial sample so the response carries an honest
+  // inflight-at-start figure (the modal renders it).
+  const initialSnap = await snapshotInflightShimConsumers(db, args.classes);
+  const initialDrain: DrainStatus = {
+    phase: 'drain_waiting',
+    inFlightAtStart: initialSnap.total,
+    inFlightAtEnd: initialSnap.total,
+    drained: false,
+    elapsedMs: 0,
+    timeoutMs: seconds * 1000,
+    inflightSampleKinds: initialSnap.samples.map((s) => s.kind).slice(0, 20),
+  };
+
   const { id: taskId } = await tasks.start(db, {
     kind: 'backup.shim.drain',
     refId: `drain:${scope}:${Date.now()}`,
@@ -618,10 +755,37 @@ export async function runDrainNow(
       modalProps: { classes: args.classes },
     },
     progressPct: 0,
-    progressText: toSafeText('Polling task center'),
-    details: { classes: args.classes, drainTimeoutSeconds: seconds },
+    progressText: toSafeText(
+      initialSnap.total === 0
+        ? 'No in-flight backups — drain will complete immediately'
+        : formatDrainProgressText(initialSnap.samples),
+    ),
+    details: {
+      classes: args.classes,
+      drainTimeoutSeconds: seconds,
+      drain: initialDrain,
+    },
   });
 
+  setImmediate(() => {
+    void runDrainNowPipeline(deps, args, { taskId, seconds, scope }).catch((err) => {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), taskId, scope },
+        'backup-rclone-shim drain-now: background pipeline raised unexpectedly',
+      );
+    });
+  });
+
+  return { drain: initialDrain, taskId };
+}
+
+async function runDrainNowPipeline(
+  deps: Pick<ApplyShimAssignmentDeps, 'db' | 'log' | 'drainSleep' | 'drainNow' | 'drainPollIntervalMs'>,
+  args: DrainNowArgs,
+  ctx: { readonly taskId: string; readonly seconds: number; readonly scope: string },
+): Promise<void> {
+  const { db, log } = deps;
+  const { taskId, seconds, scope } = ctx;
   try {
     const drainResult = await waitForBackupDrain(db, log, {
       timeoutMs: seconds * 1000,
@@ -629,6 +793,18 @@ export async function runDrainNow(
       pollIntervalMs: deps.drainPollIntervalMs,
       sleep: deps.drainSleep,
       now: deps.drainNow,
+      onTick: async (tick) => {
+        const span = Math.min(1, tick.elapsedMs / Math.max(1, tick.timeoutMs));
+        const pct = Math.min(99, Math.max(0, Math.round(span * 100)));
+        const text = tick.total === 0
+          ? 'Drain complete'
+          : formatDrainProgressText(tick.inflight);
+        try {
+          await tasks.progress(db, taskId, { pct, text: toSafeText(text) });
+        } catch {
+          /* swallow */
+        }
+      },
     });
     if (drainResult.phase === 'drain_timeout_forced') {
       const note = formatDrainTimeoutNotification(
@@ -649,13 +825,19 @@ export async function runDrainNow(
       text: toSafeText(formatDrainProgressText(drainResult.inflightSamples)),
       detailsPatch: { drain: drainResultToStatus(drainResult) },
     });
-    return { drain: drainResultToStatus(drainResult), taskId };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await tasks.finish(db, taskId, {
-      status: 'failed',
-      error: message.slice(0, 4096),
-    });
-    throw err;
+    log.error(
+      { err: message, taskId, scope },
+      'backup-rclone-shim drain-now: pipeline failed',
+    );
+    try {
+      await tasks.finish(db, taskId, {
+        status: 'failed',
+        error: message.slice(0, 4096),
+      });
+    } catch {
+      /* swallow */
+    }
   }
 }

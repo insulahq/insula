@@ -1083,7 +1083,7 @@ export async function updateTenant(
             store: bundle.store,
             platformNamespace,
             targetId: bundle.targetId,
-            snapshotClass: 'tenant_snapshot',
+            backupClass: 'tenant_snapshot',
           },
           id,
           { retentionDays, triggeredByUserId: opts.triggeredByUserId ?? null },

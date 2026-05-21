@@ -45,7 +45,7 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
       COALESCE(SUM(size_bytes), 0)::bigint AS total_bytes,
       MAX(created_at) AS newest_at
     FROM storage_snapshots
-    WHERE snapshot_class IN ('system_backup', 'system_mail')
+    WHERE backup_class IN ('system_backup', 'system_mail')
       AND status = 'ready'
   `)) as unknown as Array<{ subsystems: number; snapshot_count: number; total_bytes: string | number; newest_at: Date | string | null }>;
 
@@ -102,10 +102,10 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
   const gateSat = new Set<string>();
   if (gatedClasses.length > 0) {
     const a = await db
-      .select({ snapshotClass: backupTargetAssignments.snapshotClass })
+      .select({ backupClass: backupTargetAssignments.backupClass })
       .from(backupTargetAssignments)
-      .where(inArray(backupTargetAssignments.snapshotClass, gatedClasses));
-    for (const r of a) gateSat.add(r.snapshotClass);
+      .where(inArray(backupTargetAssignments.backupClass, gatedClasses));
+    for (const r of a) gateSat.add(r.backupClass);
   }
 
   return {
@@ -190,7 +190,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
         MAX(created_at) AS newest
       FROM storage_snapshots
       WHERE tenant_id = t.id
-        AND snapshot_class = 'tenant_snapshot'
+        AND backup_class = 'tenant_snapshot'
         AND status = 'ready'
     ) snap ON TRUE
     LEFT JOIN LATERAL (
@@ -313,7 +313,7 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
     }).from(storageSnapshots)
       .where(and(
         eq(storageSnapshots.tenantId, tenantId),
-        eq(storageSnapshots.snapshotClass, 'tenant_snapshot'),
+        eq(storageSnapshots.backupClass, 'tenant_snapshot'),
       ))
       .orderBy(desc(storageSnapshots.createdAt))
       .limit(50),
@@ -338,7 +338,7 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
         COALESCE(SUM(CASE WHEN status = 'ready' THEN size_bytes ELSE 0 END), 0)::bigint AS bytes,
         COUNT(*) FILTER (WHERE status IN ('ready','creating'))::int AS cnt
       FROM storage_snapshots
-      WHERE tenant_id = ${tenantId} AND snapshot_class = 'tenant_snapshot'
+      WHERE tenant_id = ${tenantId} AND backup_class = 'tenant_snapshot'
     `) as unknown as Promise<Array<{ bytes: string | number; cnt: number }>>,
   ]);
 

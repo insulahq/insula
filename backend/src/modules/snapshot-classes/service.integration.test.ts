@@ -40,7 +40,7 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
   it('listClasses returns all 4 classes with empty assignments by default', async () => {
     const result = await listClasses(db);
     expect(result.classes).toHaveLength(4);
-    const names = result.classes.map((c) => c.snapshotClass).sort();
+    const names = result.classes.map((c) => c.backupClass).sort();
     expect(names).toEqual([
       'system_backup',
       'system_mail',
@@ -62,7 +62,7 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
         { targetId: t2, priority: 200 },
       ],
     });
-    expect(r1.snapshotClass).toBe('tenant_snapshot');
+    expect(r1.backupClass).toBe('tenant_snapshot');
     expect(r1.assignments).toHaveLength(2);
     expect(r1.assignments[0].priority).toBe(100);
     expect(r1.assignments[0].targetName).toBe('test-s3-a');
@@ -154,7 +154,7 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
     const summary = await getTargetAssignmentsSummary(db, t1);
     expect(summary.targetId).toBe(t1);
     expect(summary.classes).toHaveLength(2);
-    const classes = summary.classes.map((c) => c.snapshotClass).sort();
+    const classes = summary.classes.map((c) => c.backupClass).sort();
     expect(classes).toEqual(['system_backup', 'tenant_snapshot']);
   });
 
@@ -167,8 +167,8 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
     const summaries = await getAllTargetAssignmentsSummaries(db);
     expect(summaries.length).toBeGreaterThanOrEqual(2);
     const byId = new Map(summaries.map((s) => [s.targetId, s]));
-    expect(byId.get(t1)!.classes).toEqual([{ snapshotClass: 'tenant_snapshot', priority: 100 }]);
-    expect(byId.get(t2)!.classes).toEqual([{ snapshotClass: 'tenant_bundle', priority: 100 }]);
+    expect(byId.get(t1)!.classes).toEqual([{ backupClass: 'tenant_snapshot', priority: 100 }]);
+    expect(byId.get(t2)!.classes).toEqual([{ backupClass: 'tenant_bundle', priority: 100 }]);
   });
 
   it('ON DELETE RESTRICT prevents deleting a target that is still assigned', async () => {

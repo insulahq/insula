@@ -2337,12 +2337,15 @@ export const storageSnapshots = pgTable('storage_snapshots', {
   //  - subsystem  : which producer wrote this row. 'tenant-pvc' today;
   //                 'mail-rocksdb', 'longhorn-volume', 'system-etcd'
   //                 etc. will land as the other subsystems get unified.
-  //  - snapshotClass : logical class for target routing. CHECK
+  //  - backupClass : logical class for target routing. CHECK
   //                 constraint added in migration 0004 locks the value
   //                 set; kept varchar to avoid coupling to a Postgres
-  //                 enum that's harder to extend.
+  //                 enum that's harder to extend. Migration 0022
+  //                 renamed the SQL column from `backup_class` to
+  //                 `backup_class` to match the domain language used in
+  //                 RFCs / operator UI.
   subsystem: varchar('subsystem', { length: 64 }).notNull().default('tenant-pvc'),
-  snapshotClass: varchar('snapshot_class', { length: 32 }).notNull().default('tenant_snapshot'),
+  backupClass: varchar('backup_class', { length: 32 }).notNull().default('tenant_snapshot'),
   // Migration 0004: which backup target this snapshot lives on. NULL
   // for hostpath snapshots predating the migration; gets filled in by
   // the snapshot orchestrator (Phase 3 onwards) at row-create time
@@ -2355,7 +2358,7 @@ export const storageSnapshots = pgTable('storage_snapshots', {
   index('storage_snapshots_tenant_idx').on(table.tenantId),
   index('storage_snapshots_status_idx').on(table.status),
   index('storage_snapshots_expires_idx').on(table.expiresAt),
-  index('storage_snapshots_class_idx').on(table.snapshotClass),
+  index('storage_snapshots_class_idx').on(table.backupClass),
   index('storage_snapshots_subsystem_idx').on(table.subsystem),
   index('storage_snapshots_target_idx').on(table.targetId),
 ]);
@@ -2398,10 +2401,10 @@ export const storageOperations = pgTable('storage_operations', {
   index('storage_operations_created_idx').on(table.createdAt),
 ]);
 
-// ─── Snapshot per-class target routing (migration 0004) ────────────────
+// ─── Backup per-class target routing (migration 0004 → 0022 rename) ───
 //
 // Replaces the single-active-backup-target model. One row per
-// (snapshot_class, target_id) lets the operator route each class to a
+// (backup_class, target_id) lets the operator route each class to a
 // different target. Strict-primary resolver picks
 // ORDER BY priority ASC LIMIT 1.
 //
@@ -2410,13 +2413,13 @@ export const storageOperations = pgTable('storage_operations', {
 // against accidentally orphaning a class.
 
 export const backupTargetAssignments = pgTable('backup_target_assignments', {
-  snapshotClass: varchar('snapshot_class', { length: 32 }).notNull(),
+  backupClass: varchar('backup_class', { length: 32 }).notNull(),
   targetId: varchar('target_id', { length: 36 }).notNull().references(() => backupConfigurations.id, { onDelete: 'restrict' }),
   priority: integer('priority').notNull().default(100),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  primaryKey({ columns: [table.snapshotClass, table.targetId] }),
-  index('backup_target_assignments_class_priority_idx').on(table.snapshotClass, table.priority),
+  primaryKey({ columns: [table.backupClass, table.targetId] }),
+  index('backup_target_assignments_class_priority_idx').on(table.backupClass, table.priority),
   index('backup_target_assignments_target_idx').on(table.targetId),
 ]);
 
@@ -2428,7 +2431,7 @@ export type NewBackupTargetAssignment = typeof backupTargetAssignments.$inferIns
 // One row per subsystem. Tracks {enabled, cron, retention} so every
 // backup schedule has the same shape. The /admin/backups/schedules
 // CRUD enforces strict-gate: `enabled=true` is refused until the
-// relevant snapshot_class has at least one target assignment.
+// relevant backup_class has at least one target assignment.
 //
 // Subsystems seeded by 0011: mail, tenant_bundle, system_pitr,
 // longhorn_recurring. New subsystems can be added without schema
