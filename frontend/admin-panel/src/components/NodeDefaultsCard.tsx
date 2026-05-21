@@ -3,8 +3,9 @@ import { Server } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
 
 /**
- * Cluster-level node defaults card. Sits at the top of the
- * "Cluster Settings" tab on the Nodes & Storage admin page.
+ * Cluster-level node defaults card. Renders at the bottom of the
+ * /settings/system page (moved 2026-05-21 Wave 2 from the retired
+ * "Cluster Settings" tab on Nodes & Storage).
  *
  * Exposes:
  *   1. Toggle: "New SERVER nodes host tenant workloads by default"
