@@ -25,7 +25,6 @@ import PlanManagement from '@/pages/PlanManagement';
 import BackupInfrastructure from '@/pages/BackupInfrastructure';
 import RestoreCartPage from '@/pages/RestoreCart';
 import AdminUsers from '@/pages/AdminUsers';
-import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
 import EmailManagement from '@/pages/EmailManagement';
 import TlsSettings from '@/pages/TlsSettings';
@@ -112,8 +111,15 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backup-infrastructure" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupInfrastructure /></ProtectedRoute>} />
-            {/* Restore Cart kept as drill-in flow off /backups/tenants/:id. */}
-            <Route path="restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
+            {/* 2026-05-21 Wave 1: Restore Cart moved under /backups/*
+                for sidebar-path consistency (everything restore-y now
+                lives under the Backups group). Bookmark-compat: old
+                /restore?cartId=... + ?bundleId=... continue to work
+                via RedirectWithQuery so deep-links from
+                TenantBackupDetail / BackupBundlesSection don't break
+                until those links are updated below. */}
+            <Route path="backups/restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
+            <Route path="restore" element={<RedirectWithQuery to="/backups/restore" />} />
             <Route path="nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
             {/* Legacy direct-link compatibility: redirect to the new top-level page with the matching tab pre-selected. */}
             <Route path="settings/nodes-and-storage" element={<Navigate to="/nodes-and-storage" replace />} />
@@ -124,12 +130,20 @@ export default function App() {
             <Route path="settings/users" element={<Navigate to="/security/identity" replace />} />
             <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
             <Route path="settings/load-balancer" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LoadBalancerSettings /></ProtectedRoute>} />
-            <Route path="monitoring/health" element={<HealthDashboard />} />
+            {/* 2026-05-21 Wave 2: HealthDashboard merged into the
+                Monitoring page as a "Health" tab — real metrics
+                replace the placeholder CPU/Mem/Disk tiles. */}
+            <Route path="monitoring/health" element={<Navigate to="/monitoring?tab=health" replace />} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
             <Route path="settings/email" element={<EmailManagement />} />
             <Route path="settings/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiSettings /></ProtectedRoute>} />
             <Route path="settings/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksSettings /></ProtectedRoute>} />
-            <Route path="system/private-worker-tunnels" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PrivateWorkerTunnelSettings /></ProtectedRoute>} />
+            {/* 2026-05-21 Wave 1: route renamed for path-prefix
+                consistency — everything settings-y now lives under
+                /settings/*. Old /system/private-worker-tunnels
+                redirects below. */}
+            <Route path="settings/private-worker-tunnels" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PrivateWorkerTunnelSettings /></ProtectedRoute>} />
+            <Route path="system/private-worker-tunnels" element={<Navigate to="/settings/private-worker-tunnels" replace />} />
             {/* Security Hub redirects (2026-05-21): the legacy
                 /settings/{cluster-network,security-hardening} URLs
                 forward to the new canonical Hub paths, preserving

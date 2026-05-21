@@ -1,73 +1,76 @@
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Dashboard from '../pages/Dashboard';
 
-vi.mock('@/hooks/use-tenants', () => ({
-  useTenants: () => ({
-    data: { data: [], pagination: { total_count: 0 } },
-    isLoading: false,
-    error: null,
-  }),
-}));
+// 2026-05-21 Wave 3 — Dashboard rebuilt as incident-first. Old tests
+// asserted "Total Clients / Domains / Backups" StatCards which no
+// longer exist. New tests assert the contract: heading + 4 incident
+// stat cards by testid + the Health banner.
 
-vi.mock('@/hooks/use-dashboard', () => ({
-  usePlatformStatus: () => ({
-    data: { data: { status: 'healthy', timestamp: '2026-03-25T00:00:00Z', version: '1.0.0' } },
-  }),
-  useDashboardMetrics: () => ({
+vi.mock('@/hooks/use-tenants', () => ({
+  useTenants: () => ({ data: { data: [] }, isLoading: false }),
+}));
+vi.mock('@/hooks/use-audit-logs', () => ({
+  useAuditLogs: () => ({ data: { data: [] } }),
+}));
+vi.mock('@/hooks/use-backup-health', () => ({
+  useBackupHealth: () => ({ data: [] }),
+}));
+vi.mock('@/hooks/use-health', () => ({
+  useHealth: () => ({
     data: {
       data: {
-        total_clients: 12,
-        active_clients: 10,
-        total_domains: 25,
-        total_backups: 3,
-        platform_version: '1.0.0',
+        overall: 'healthy',
+        checkedAt: new Date().toISOString(),
+        services: [
+          { name: 'database', status: 'ok', latencyMs: 5, message: null },
+          { name: 'dns', status: 'ok', latencyMs: 10, message: null },
+        ],
       },
     },
-    isLoading: false,
   }),
 }));
+vi.mock('@/hooks/use-lifecycle', () => ({
+  useLifecycleTransitions: () => ({ data: { data: { transitions: [], hookRuns: {} } } }),
+}));
+vi.mock('@/hooks/use-pods', () => ({
+  usePods: () => ({ data: { data: { pods: [], capacity: null } } }),
+}));
 
-function createTestQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
-      mutations: { retry: false },
-    },
-  });
-}
-
-function renderWithProviders(ui: React.ReactElement) {
-  const queryClient = createTestQueryClient();
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/']}>{ui}</MemoryRouter>
-    </QueryClientProvider>,
+function createWrapper() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
   );
 }
 
-describe('Dashboard', () => {
-  it('renders the Dashboard heading', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
+describe('Dashboard — incident-first surface', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('renders metric stat cards with values from the API', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByText('Total Clients')).toBeInTheDocument();
-    expect(screen.getByText('12')).toBeInTheDocument();
-    expect(screen.getByText('10 active')).toBeInTheDocument();
-    expect(screen.getByText('Domains')).toBeInTheDocument();
-    expect(screen.getByText('25')).toBeInTheDocument();
-    expect(screen.getByText('Backups')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+  it('renders the Dashboard heading + the 4 incident stat cards', () => {
+    render(<Dashboard />, { wrapper: createWrapper() });
+    expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByTestId('stat-failed-pods')).toBeInTheDocument();
+    expect(screen.getByTestId('stat-5xx-alerts')).toBeInTheDocument();
+    expect(screen.getByTestId('stat-failing-backups')).toBeInTheDocument();
+    expect(screen.getByTestId('stat-transitions')).toBeInTheDocument();
   });
 
-  it('renders the platform status card', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByText('Platform')).toBeInTheDocument();
-    expect(screen.getByText('healthy')).toBeInTheDocument();
+  it('renders the Health banner with overall status', () => {
+    render(<Dashboard />, { wrapper: createWrapper() });
+    const banner = screen.getByTestId('health-banner');
+    expect(banner).toBeInTheDocument();
+    expect(banner.textContent).toMatch(/healthy/i);
+  });
+
+  it('renders the Recent Tenants section even when empty', () => {
+    render(<Dashboard />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('recent-tenants')).toBeInTheDocument();
   });
 });
