@@ -34,6 +34,7 @@ import {
   Trash2,
   Plus,
   ShieldAlert,
+  ShieldCheck,
   ShieldOff,
 } from 'lucide-react';
 import { SkeletonLoader } from '@/components/ui/SkeletonLoader';
@@ -629,11 +630,16 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
           <button
             type="button"
             onClick={onWhitelist}
-            className="mt-1 inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+            className="mt-1 inline-flex items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 p-1 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
             data-testid={`waf-whitelist-${ev.id}`}
-            title={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
+            // Native tooltip — accessible AND adds zero JS weight. The
+            // sr-only label below gives screen readers an action name
+            // since the icon alone is not announceable.
+            title={`Whitelist rule ${ev.ruleId} for ${ev.hostname} (add CRS exclusion)`}
+            aria-label={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
           >
-            <ShieldOff size={10} /> Whitelist
+            <ShieldOff size={12} />
+            <span className="sr-only">Whitelist rule</span>
           </button>
         )}
       </td>
@@ -655,21 +661,28 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
             <button
               type="button"
               onClick={() => onBan(ev.sourceIp as string)}
-              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
+              className="inline-flex items-center justify-center rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-1 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
               data-testid={`waf-ban-${ev.id}`}
-              title={`Ban ${ev.sourceIp} via CrowdSec`}
+              title={`Ban ${ev.sourceIp} via CrowdSec (kill all sessions from this IP)`}
+              aria-label={`Ban ${ev.sourceIp}`}
             >
-              <Ban size={10} /> Ban IP
+              <Ban size={12} />
+              <span className="sr-only">Ban IP</span>
             </button>
             <button
               type="button"
               onClick={() => onAllowlist(ev.sourceIp as string)}
               disabled={isAllowlistPending}
-              className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50"
+              className="inline-flex items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 p-1 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50"
               data-testid={`waf-allowlist-${ev.id}`}
-              title={`Add ${ev.sourceIp} to CrowdSec allowlist (will never be banned)`}
+              // Distinct icon (ShieldCheck = protect-this-IP) from the
+              // Whitelist Rule button above (ShieldOff = disable-this-rule).
+              // Same emerald colour because both are "trust this".
+              title={`Add ${ev.sourceIp} to CrowdSec allowlist (will never be banned, including by L4 enforcement)`}
+              aria-label={`Allowlist ${ev.sourceIp}`}
             >
-              <ShieldOff size={10} /> Allowlist IP
+              <ShieldCheck size={12} />
+              <span className="sr-only">Allowlist IP</span>
             </button>
           </div>
         )}
