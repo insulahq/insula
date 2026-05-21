@@ -417,36 +417,45 @@ if ! grep -q "GOMEMLIMIT" "$CONFIGMAP"; then
 fi
 pass "Invariant 20: launcher uses rclone serve s3 with v3-tuned flags"
 
-# ─── 21. R-X19 — S3 bucket+prefix in REMOTE_PATH (no bucket passthrough) ──
-# The launcher MUST scope rclone serve s3 to the operator-configured
-# bucket+prefix, so client bucket names become path prefixes WITHIN
-# that bucket. Otherwise the previous bucket-passthrough behavior
-# returns (which caused 2026-05-21 postgres backup failures because
-# "system" was not a real bucket on Hetzner OS).
-if ! grep -q "UPSTREAM_S3_BUCKET" "$CONFIGMAP"; then
-  fail "Invariant 21: launcher.sh missing UPSTREAM_S3_BUCKET usage — would regress to bucket-passthrough"
-fi
-if ! grep -q "REMOTE_PATH=\"upstream:\$\${UPSTREAM_S3_BUCKET}" "$CONFIGMAP"; then
-  fail "Invariant 21: launcher.sh REMOTE_PATH for S3 must embed UPSTREAM_S3_BUCKET"
-fi
-# Renderer must emit the env vars
+# ─── 21. R-X20 — always-combined renderer + launcher ────────────
+# The renderer writes a full rclone.conf with N per-target sections
+# plus a [combined] section that maps each class to its target's
+# scoped path. The launcher execs `rclone serve s3 combined:`
+# directly — no per-protocol dispatch. This replaces the R-X19
+# UPSTREAM_S3_BUCKET env-driven launcher.
 RENDERER="$ROOT/backend/src/modules/backup-rclone-shim/rclone-config.ts"
-if ! grep -q "UPSTREAM_S3_BUCKET" "$RENDERER"; then
-  fail "Invariant 21: renderer (rclone-config.ts) must emit UPSTREAM_S3_BUCKET"
+if ! grep -q "renderRcloneConfHeader\|type = combine" "$RENDERER"; then
+  fail "Invariant 21: renderer must emit [combined] rclone.conf section"
 fi
-pass "Invariant 21: S3 bucket+prefix scoping wired (no passthrough)"
+if ! grep -q "v4-combine" "$RENDERER"; then
+  fail "Invariant 21: renderer hash sentinel must be v4-combine (R-X20)"
+fi
+if ! grep -q "rcloneObscure" "$RENDERER"; then
+  fail "Invariant 21: renderer must use rcloneObscure for SFTP/SMB passwords"
+fi
+if ! grep -q "combined:" "$CONFIGMAP"; then
+  fail "Invariant 21: launcher must exec rclone serve s3 against 'combined:' remote"
+fi
+if grep -q "UPSTREAM_S3_BUCKET\|UPSTREAM_S3_PREFIX\|UPSTREAM_SFTP_HOST" "$CONFIGMAP"; then
+  fail "Invariant 21: launcher must not reference UPSTREAM_S3_* / UPSTREAM_SFTP_* env vars (R-X20 moved them to rclone.conf)"
+fi
+if grep -qE 'case\s+"\$\$\{UPSTREAM_TYPE' "$CONFIGMAP"; then
+  fail "Invariant 21: launcher must not branch on UPSTREAM_TYPE (R-X20 uses single combined: exec path)"
+fi
+pass "Invariant 21: R-X20 always-combined renderer + launcher wired"
 
-# ─── 22. R-X19 — virtual-hosted vs path-style S3 both supported ──
-# Operators with AWS S3 (newer regions, virtual-hosted-style) AND
-# operators with Hetzner/MinIO/B2/R2/Wasabi (path-style) must both
-# work. The s3_use_path_style column (migration 0021) drives the
-# launcher's force_path_style flag in the rclone.conf.
-if ! grep -q "force_path_style" "$CONFIGMAP"; then
-  fail "Invariant 22: launcher.sh missing force_path_style — virtual-hosted vs path-style toggle broken"
+# ─── 22. R-X20 — multi-target binding allowed ────────────────────
+# The R-X19-era "All shim classes must share one upstream target"
+# invariant is REMOVED in R-X20. Renderer must accept distinct
+# target_ids across class assignments.
+if grep -q "must share one upstream target" "$RENDERER"; then
+  fail "Invariant 22: renderer still enforces R-X19 same-target invariant — should be lifted in R-X20"
 fi
-if ! grep -qE 'case\s+"\$\$\{UPSTREAM_USE_PATH_STYLE' "$CONFIGMAP"; then
-  fail "Invariant 22: launcher.sh missing strict allowlist on UPSTREAM_USE_PATH_STYLE values"
+# Renderer hashes the rclone.conf into configHash so a renderer-format
+# change propagates through to a DS roll without needing input changes.
+if ! grep -qE 'createHash.*update.*rcloneConf' "$RENDERER"; then
+  fail "Invariant 22: renderer's configHash must include rcloneConf content"
 fi
-pass "Invariant 22: virtual-hosted + path-style S3 both supported via s3UsePathStyle"
+pass "Invariant 22: R-X20 multi-target binding supported; rcloneConf in configHash"
 
 echo "[ci-backup-rclone-shim] All 22 invariants pass."

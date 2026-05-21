@@ -67,6 +67,7 @@ import {
   loadShimAssignments,
   logAssignmentDiagnostics,
   UPSTREAM_ENV_KEY,
+  RCLONE_CONF_KEY,
   SHIM_CONFIG_CM_NAME,
   SHIM_CREDENTIALS_SECRET_NAME,
   SHIM_DAEMONSET_NAME,
@@ -190,6 +191,7 @@ export async function reconcileBackupRcloneShim(
     // Emit empty upstream.env + empty classes.txt → shim sleeps.
     const emptyRendered: RenderedShimConfig = {
       upstreamEnv: emptyUpstreamEnvHeader(keyInput.fingerprint),
+      rcloneConf: '# rclone.conf — backup-rclone-shim (no assignments)\n',
       classesTxt: '',
       configHash: hashForEmpty(keyInput.fingerprint),
       shimAccessKey: '',
@@ -307,6 +309,7 @@ async function materializeAndWriteStatus(
       clients.core,
       log,
       rendered.upstreamEnv,
+      rendered.rcloneConf,
     );
 
     // 6c. SSH-keys Secret. If empty → ensure Secret has no data.
@@ -314,6 +317,7 @@ async function materializeAndWriteStatus(
       clients.core,
       log,
       rendered.sshKeyMaterializations.map((s) => ({
+        fileName: s.fileName,
         pemContent: s.pemContent,
       })),
     );
@@ -543,9 +547,11 @@ async function materializeCredentialsSecret(
   core: k8s.CoreV1Api,
   log: Pick<Logger, 'info' | 'warn'>,
   upstreamEnv: string,
+  rcloneConf: string,
 ): Promise<void> {
   const dataB64 = {
     [UPSTREAM_ENV_KEY]: Buffer.from(upstreamEnv, 'utf8').toString('base64'),
+    [RCLONE_CONF_KEY]: Buffer.from(rcloneConf, 'utf8').toString('base64'),
   };
 
   let exists = false;
@@ -586,13 +592,23 @@ async function materializeCredentialsSecret(
     return;
   }
 
+  // R-X20: use JSON-Patch `replace /data` instead of MERGE_PATCH so
+  // stale keys from previous renderer versions (e.g. a future
+  // architecture change that adds then removes a key) auto-clean
+  // alongside the materialise. Mirrors materializeSshKeysSecret.
+  const replaceDataOp = [{
+    op: 'replace' as const,
+    path: '/data',
+    value: dataB64,
+  }];
+  const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
   await core.patchNamespacedSecret(
     {
       name: SHIM_CREDENTIALS_SECRET_NAME,
       namespace: SHIM_NAMESPACE,
-      body: { data: dataB64 },
+      body: replaceDataOp as unknown as object,
     } as unknown as Parameters<typeof core.patchNamespacedSecret>[0],
-    MERGE_PATCH,
+    JSON_PATCH,
   );
 }
 
@@ -601,24 +617,26 @@ async function materializeCredentialsSecret(
 // ---------------------------------------------------------------------------
 
 interface SshKeyEntry {
+  readonly fileName: string;
   readonly pemContent: string;
 }
 
 /**
- * Materialise the upstream SSH PEM key into the Secret. The renderer's
- * `rclone.conf` references `/etc/rclone/ssh-keys/upstream.pem`, so the
- * Secret data-key MUST be `upstream.pem` for the projected mount to
- * land at the expected path.
+ * Materialise upstream SSH PEM key(s) into the Secret.
  *
- * R-X16 (unified architecture) means at most ONE key — there's a
- * single upstream target, not one per class. The array shape is
- * retained so future multi-key configs can extend without an API
- * break.
+ * R-X20 (always-combined): each unique SFTP target gets its own
+ * filename (e.g. `upstream_a1b2c3d4.pem`) matching the rclone.conf
+ * section name. Multi-target operators with multiple SFTP backends
+ * can land them on different Secret data keys without collision.
+ *
+ * The renderer's `rclone.conf` declares `key_file =
+ * /etc/rclone/ssh-keys/<fileName>` per target; the Secret's data
+ * keys must match those fileName values for the projected mount to
+ * land at the expected paths.
  *
  * When `entries` is empty we still ensure the Secret exists with
  * `data: {}` (rather than deleting it) so the DaemonSet's volume
- * source stays valid. The launcher.sh tolerates an empty key
- * directory.
+ * source stays valid.
  */
 async function materializeSshKeysSecret(
   core: k8s.CoreV1Api,
@@ -628,9 +646,7 @@ async function materializeSshKeysSecret(
   const dataB64: Record<string, string> = {};
   for (const e of entries) {
     if (!e.pemContent.trim()) continue;
-    dataB64['upstream.pem'] = Buffer.from(e.pemContent, 'utf8').toString(
-      'base64',
-    );
+    dataB64[e.fileName] = Buffer.from(e.pemContent, 'utf8').toString('base64');
   }
 
   let exists = false;

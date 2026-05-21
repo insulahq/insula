@@ -1,16 +1,22 @@
 # Initial ConfigMap with launcher.sh.
 #
-# R-X19 — rclone-serve-s3 unified architecture (2026-05-21):
-#   - One `rclone serve s3` per pod
-#   - Native rclone backends for all upstream types:
-#       S3      → rclone s3 backend (passthrough proxy)
-#       SFTP    → rclone sftp backend (native userspace SSH client)
-#       CIFS    → rclone smb backend (native userspace SMB client)
-#       Local   → rclone local backend (against PVC-mounted dir)
-#   - NO kernel mounts. NO FUSE. NO CAP_SYS_ADMIN. NO /dev/fuse.
-#   - Pod runs fully unprivileged: runAsUser:65534, drop ALL caps.
+# R-X20 — always-combined rclone-serve-s3 architecture (2026-05-21):
+#   - One `rclone serve s3` per pod, ALWAYS in `combined:` mode
+#   - The full rclone.conf is rendered by platform-api in TypeScript
+#     (rclone-config.ts) with passwords obscured via the canonical
+#     rclone AES-CTR — stored in the credentials Secret at
+#     /etc/rclone-credentials/rclone.conf
+#   - The launcher just sources shim creds from upstream.env, then
+#     execs rclone serve s3 against `combined:`. No per-protocol
+#     dispatch logic — the [combined] section in rclone.conf encodes
+#     all routing.
+#   - All upstream protocols (S3 / SFTP / SMB) supported uniformly.
+#     Each class can target a different backup_configurations row;
+#     the renderer emits N per-target sections + N class aliases.
+#   - Pod runs fully unprivileged: runAsUser:65534, drop:[ALL] caps.
+#     No FUSE, no kernel mounts, no CAP_SYS_ADMIN, no /dev/fuse.
 #
-# Memory tuning (v3-tuned per 2026-05-21 bench):
+# Memory tuning (v3-tuned per 2026-05-21 bench, holds for R-X20):
 #   - GOGC=20 + GOMEMLIMIT=200MiB (aggressive Go GC + soft cap)
 #   - --s3-disable-http2 (HTTP/1.1 = parallel TCP, no HoL blocking)
 #   - --s3-upload-concurrency 3 (upstream is the bottleneck; ~15 MiB
@@ -20,8 +26,9 @@
 #
 # Owned at runtime by platform-api's backup-rclone-shim/reconciler.ts:
 # operator assigns a target to a class → reconciler MERGE-patches
-# `data.classes.txt` here + writes `data.upstream.env` into the Secret +
-# bumps DaemonSet annotation hash → rolling restart.
+# `data.classes.txt` here + writes `data.upstream.env` and
+# `data.rclone.conf` into the Secret + bumps DaemonSet annotation
+# hash → rolling restart.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -43,29 +50,40 @@ data:
   # ownership of the field. The reconciler creates + maintains it
   # with one line per bound class (system, tenant, mail).
 
-  # The shim's entrypoint. Reads classes.txt + upstream.env; if either
-  # is missing / empty, sleeps so the pod stays Ready=false (Service
-  # routes nothing to it; clients get connection-refused).
+  # The shim's entrypoint. Reads classes.txt + upstream.env + the
+  # rendered rclone.conf; if any is missing / empty, sleeps so the pod
+  # stays Ready=false (Service routes nothing to it; clients get
+  # connection-refused).
   launcher.sh: |
     #!/bin/sh
     set -eu
 
     UPSTREAM_ENV=/etc/rclone-credentials/upstream.env
+    RCLONE_CONF=/etc/rclone-credentials/rclone.conf
     CLASSES_FILE=/etc/rclone-static/classes.txt
-    RCLONE_CONF=/tmp/rclone.conf
     ADDR=":9000"
 
     log() { printf '[backup-rclone-shim] %s\n' "$*" >&2; }
 
-    # ─── Pre-flight: upstream.env + classes.txt must exist ────────────
+    # ─── Pre-flight: env file + rclone.conf + classes.txt must exist ─
     if [ ! -f "$UPSTREAM_ENV" ]; then
       log "$UPSTREAM_ENV missing — reconciler has not rendered yet."
-      log "Sleeping until platform-api renders config."
+      while :; do sleep 30; done
+    fi
+    if [ ! -f "$RCLONE_CONF" ]; then
+      log "$RCLONE_CONF missing — reconciler has not rendered yet."
+      while :; do sleep 30; done
+    fi
+    # Validate that the conf has actual content (a [combined] section).
+    # A comment-only placeholder would let the launcher proceed to
+    # `rclone serve s3 combined:` which would fail-fast (remote not
+    # found), crashlooping the pod. Sleep on partial-materialise.
+    if ! grep -q '^\[combined\]' "$RCLONE_CONF"; then
+      log "$RCLONE_CONF has no [combined] section — partial materialise. Sleeping."
       while :; do sleep 30; done
     fi
     if [ ! -s "$CLASSES_FILE" ]; then
       log "$CLASSES_FILE empty — no class-target assignments."
-      log "Sleeping until platform-api renders config."
       while :; do sleep 30; done
     fi
 
@@ -85,7 +103,7 @@ data:
         *) log "FATAL: classes.txt contains invalid class: '$LINE'"; exit 2 ;;
       esac
       # Flux postBuild substituteFrom escape: `$$` keeps literal `$`
-      # past envsubst. Without this the variables get blanked.
+      # past envsubst.
       CLASSES_OK="$${CLASSES_OK}$${LINE} "
     done < "$CLASSES_FILE"
     if [ -z "$CLASSES_OK" ]; then
@@ -93,184 +111,54 @@ data:
       while :; do sleep 30; done
     fi
 
-    # ─── Load upstream params from env file ───────────────────────────
-    # The env file contains:
-    #   UPSTREAM_TYPE=s3|sftp|cifs|local
-    #   UPSTREAM_<TYPE>_<FIELD>=...  (type-specific)
-    #   ROOT_ACCESS_KEY (shim's HKDF-derived creds for clients)
-    #   ROOT_SECRET_KEY
-    # All values are written by the reconciler with strict allowlist
-    # validation (rclone-config.ts shellQuote — no NUL, no newline).
+    # ─── Load shim creds from env file (HKDF-derived ROOT_*) ──────────
+    # upstream.env carries only ROOT_ACCESS_KEY + ROOT_SECRET_KEY now —
+    # all upstream credentials live in rclone.conf, rendered by the
+    # platform-api with passwords obscured at render time.
     set -a
     . "$UPSTREAM_ENV"
     set +a
 
-    case "$${UPSTREAM_TYPE:-}" in
-      s3|sftp|cifs|local) ;;
-      *) log "FATAL: UPSTREAM_TYPE='$${UPSTREAM_TYPE:-}' not recognised"; exit 2 ;;
-    esac
+    if [ -z "$${ROOT_ACCESS_KEY:-}" ] || [ -z "$${ROOT_SECRET_KEY:-}" ]; then
+      log "FATAL: ROOT_ACCESS_KEY / ROOT_SECRET_KEY missing from upstream.env"
+      while :; do sleep 30; done
+    fi
 
-    log "shim launcher: upstream type='$${UPSTREAM_TYPE}' classes='$${CLASSES_OK}'"
+    log "shim launcher: classes='$${CLASSES_OK}' rendering rclone.conf-driven combined: remote"
 
     # ─── Go runtime memory tuning ─────────────────────────────────────
-    # Per 2026-05-21 bench: aggressive GC + soft memory cap keeps RSS
-    # bounded under multipart workloads without sacrificing throughput.
     # GOMEMLIMIT is a SOFT cap — Go will exceed it but trigger more
-    # frequent GC, so we tolerate peaks above the limit during heavy
-    # bursts. The pod's memory limit is the hard ceiling.
+    # frequent GC. The pod's memory limit is the hard ceiling. The
+    # combined remote with N upstreams adds ~50 MiB per additional
+    # upstream type to RSS; the soft cap accommodates 2-3 upstreams
+    # before the pod limit becomes the constraint.
     export GOGC="$${GOGC:-20}"
     export GOMEMLIMIT="$${GOMEMLIMIT:-200MiB}"
     export HOME=/tmp
 
-    # ─── Render rclone.conf per upstream type ─────────────────────────
-    # Each backend produces an [upstream] section in rclone.conf with
-    # the operator-supplied credentials. Passwords are obscured at
-    # render time (rclone refuses plaintext passwords in config).
-    : > "$RCLONE_CONF"
-    chmod 0600 "$RCLONE_CONF"
-
-    case "$${UPSTREAM_TYPE}" in
-      s3)
-        # R-X19 (2026-05-21): the shim serves the operator-configured
-        # upstream bucket + optional prefix as the ROOT. The client's
-        # bucket name (system/tenant/mail) becomes the first path
-        # segment under that root. So:
-        #   target row { s3_bucket=k8s-staging, s3_prefix=staging }
-        #   client PUT s3://system/postgres/x.tar
-        #   → upstream://k8s-staging/staging/system/postgres/x.tar
-        # rclone auto-creates the intermediate directories.
-        #
-        # force_path_style is operator-configurable:
-        #   true (default)  → legacy path-style URLs `endpoint/bucket/key`
-        #                     (Hetzner, MinIO, Backblaze, R2, Wasabi)
-        #   false           → virtual-hosted DNS-style `bucket.endpoint/key`
-        #                     (AWS S3 with modern regions, Cloudflare R2
-        #                     with DNS configured, etc.)
-        if [ -z "$${UPSTREAM_S3_BUCKET:-}" ]; then
-          # Sleep (not crash) — most likely the reconciler has the old
-          # renderer that didn't emit UPSTREAM_S3_BUCKET yet. Sleeping
-          # keeps the pod NotReady (Service drops it; clients get
-          # connection refused, retry later) until the new env is
-          # materialised. CrashLoopBackOff would mask the cause.
-          log "UPSTREAM_S3_BUCKET missing — likely stale upstream.env. Sleeping until reconciler renders new content."
-          while :; do sleep 30; done
-        fi
-        # Validate force_path_style flag — strict allowlist.
-        case "$${UPSTREAM_USE_PATH_STYLE:-true}" in
-          true|false) ;;
-          *) log "FATAL: UPSTREAM_USE_PATH_STYLE='$${UPSTREAM_USE_PATH_STYLE}' must be 'true' or 'false'"; exit 2 ;;
-        esac
-        cat >> "$RCLONE_CONF" <<EOF
-    [upstream]
-    type = s3
-    provider = Other
-    endpoint = $${UPSTREAM_ENDPOINT}
-    region = $${UPSTREAM_REGION:-us-east-1}
-    access_key_id = $${UPSTREAM_ACCESS_KEY}
-    secret_access_key = $${UPSTREAM_SECRET_KEY}
-    force_path_style = $${UPSTREAM_USE_PATH_STYLE:-true}
-    EOF
-        # Compose REMOTE_PATH = upstream:bucket[/prefix]/  (trailing slash
-        # is important — rclone serve s3 needs to know this is a
-        # "directory" root so the first client path segment becomes the
-        # served bucket name).
-        REMOTE_PATH="upstream:$${UPSTREAM_S3_BUCKET}$${UPSTREAM_S3_PREFIX:+/$${UPSTREAM_S3_PREFIX}}/"
-        VFS_CACHE_MODE="off"
-        ;;
-      sftp)
-        # SFTP backend = rclone's native pkg/sftp client. No FUSE.
-        # No kernel mount. No SYS_ADMIN. Pure userspace.
-        if [ -z "$${UPSTREAM_SFTP_HOST:-}" ] || [ -z "$${UPSTREAM_SFTP_USER:-}" ]; then
-          log "FATAL: SFTP requires UPSTREAM_SFTP_HOST + UPSTREAM_SFTP_USER"
-          exit 2
-        fi
-        cat >> "$RCLONE_CONF" <<EOF
-    [upstream]
-    type = sftp
-    host = $${UPSTREAM_SFTP_HOST}
-    user = $${UPSTREAM_SFTP_USER}
-    port = $${UPSTREAM_SFTP_PORT:-22}
-    shell_type = unix
-    EOF
-        if [ -n "$${UPSTREAM_SFTP_KEYFILE:-}" ]; then
-          echo "key_file = $${UPSTREAM_SFTP_KEYFILE}" >> "$RCLONE_CONF"
-        elif [ -n "$${UPSTREAM_SFTP_PASSWORD:-}" ]; then
-          # rclone refuses plaintext passwords in config — obscure now.
-          OBS=$(printf '%s' "$${UPSTREAM_SFTP_PASSWORD}" | rclone obscure -)
-          echo "pass = $OBS" >> "$RCLONE_CONF"
-        else
-          log "FATAL: SFTP requires UPSTREAM_SFTP_KEYFILE or UPSTREAM_SFTP_PASSWORD"
-          exit 2
-        fi
-        # PATH from the target → served as the root. Top-level dirs
-        # under it become buckets in the served S3 view.
-        REMOTE_PATH="upstream:$${UPSTREAM_SFTP_PATH:-}"
-        VFS_CACHE_MODE="writes"
-        ;;
-      cifs)
-        # SMB/CIFS backend = rclone's native pkg/smb2 client. No FUSE.
-        # No mount.cifs. No SYS_ADMIN.
-        if [ -z "$${UPSTREAM_CIFS_HOST:-}" ] || [ -z "$${UPSTREAM_CIFS_USER:-}" ] || [ -z "$${UPSTREAM_CIFS_PASSWORD:-}" ]; then
-          log "FATAL: CIFS requires UPSTREAM_CIFS_HOST + UPSTREAM_CIFS_USER + UPSTREAM_CIFS_PASSWORD"
-          exit 2
-        fi
-        OBS=$(printf '%s' "$${UPSTREAM_CIFS_PASSWORD}" | rclone obscure -)
-        cat >> "$RCLONE_CONF" <<EOF
-    [upstream]
-    type = smb
-    host = $${UPSTREAM_CIFS_HOST}
-    user = $${UPSTREAM_CIFS_USER}
-    pass = $OBS
-    EOF
-        [ -n "$${UPSTREAM_CIFS_DOMAIN:-}" ] && echo "domain = $${UPSTREAM_CIFS_DOMAIN}" >> "$RCLONE_CONF"
-        [ -n "$${UPSTREAM_CIFS_PORT:-}" ] && echo "port = $${UPSTREAM_CIFS_PORT}" >> "$RCLONE_CONF"
-        # SMB share goes in the path: upstream:<share>/[path]
-        if [ -z "$${UPSTREAM_CIFS_SHARE:-}" ]; then
-          log "FATAL: CIFS requires UPSTREAM_CIFS_SHARE"
-          exit 2
-        fi
-        REMOTE_PATH="upstream:$${UPSTREAM_CIFS_SHARE}$${UPSTREAM_CIFS_PATH:+/$${UPSTREAM_CIFS_PATH}}"
-        VFS_CACHE_MODE="writes"
-        ;;
-      local)
-        # Local backend = filesystem at /mnt/upstream, which the
-        # reconciler bind-mounts from the operator-specified PVC.
-        # No kernel mount inside the pod (Kubernetes mounted it at
-        # pod startup, before the launcher runs).
-        cat >> "$RCLONE_CONF" <<EOF
-    [upstream]
-    type = local
-    EOF
-        if [ ! -d /mnt/upstream ]; then
-          log "FATAL: /mnt/upstream not mounted (Local target requires PVC)"
-          exit 2
-        fi
-        REMOTE_PATH="upstream:/mnt/upstream"
-        VFS_CACHE_MODE="writes"
-        ;;
-    esac
-
-    # Strip the awkward heredoc indentation
-    sed -i 's/^    //' "$RCLONE_CONF"
-    log "rclone.conf rendered (creds redacted):"
-    grep -vE '^(secret_access_key|pass|password)' "$RCLONE_CONF" >&2 || true
-
     # ─── VFS cache dir (only used when --vfs-cache-mode != off) ───────
     # Mounted at /var/cache/rclone-shim from the daemonset's
-    # rclone-cache emptyDir volume. Disk-backed (not tmpfs) because
-    # multipart parts can total GiBs in flight.
+    # rclone-cache emptyDir volume. SFTP/SMB upstreams need writes
+    # cached locally; S3 upstreams pass through directly.
     CACHE_DIR=/var/cache/rclone-shim
     mkdir -p "$CACHE_DIR"
 
-    # ─── Common rclone serve s3 flags ─────────────────────────────────
-    # ROOT_ACCESS_KEY + ROOT_SECRET_KEY are the shim's own creds —
-    # clients use these to authenticate TO the shim, NOT to upstream.
-    log "launching rclone serve s3 ($${UPSTREAM_TYPE} backend)"
+    # ─── exec rclone serve s3 against combined: ──────────────────────
+    # rclone serves the `combined:` remote — clients see N buckets
+    # (one per bound class) and writes route to the per-class upstream
+    # backend (S3/SFTP/SMB) via the [combined] section's `upstreams =`
+    # mapping.
+    #
+    # --vfs-cache-mode writes is needed because the combined: root may
+    # include POSIX-backed (SFTP/SMB) upstreams. For S3-only operators,
+    # the cache is effectively unused (vfs-write-back 0s flushes
+    # immediately; cache files are evicted within seconds).
+    log "launching rclone serve s3 combined:"
     exec rclone serve s3 \
       --config "$RCLONE_CONF" \
       --addr "$ADDR" \
       --auth-key "$${ROOT_ACCESS_KEY},$${ROOT_SECRET_KEY}" \
-      --vfs-cache-mode "$VFS_CACHE_MODE" \
+      --vfs-cache-mode writes \
       --vfs-cache-max-size 512M \
       --vfs-cache-max-age 24h \
       --vfs-cache-poll-interval 1m \
@@ -285,4 +173,4 @@ data:
       --s3-disable-http2 \
       --cache-dir "$CACHE_DIR" \
       --log-level NOTICE \
-      "$REMOTE_PATH"
+      combined:
