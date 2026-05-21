@@ -35,6 +35,42 @@ spec:
           labelSelector:
             matchLabels:
               app: dex
+      # Wait for postgres before starting the main container. Without
+      # this, on a cold first-bootstrap dex hits "dial tcp ...:5432:
+      # connect: connection refused" → exits 1 → CrashLoopBackOff
+      # with exponential backoff. The pod eventually self-recovers
+      # (~7 restarts on testing.phoenix-host.net 2026-05-21) once
+      # system-db comes up, but the backoff wastes minutes and clutters
+      # bootstrap logs with crashloop noise. Same pattern + 32Mi floor
+      # as oauth2-proxy's wait-for-dex-discovery initContainer.
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              host="postgres.platform.svc.cluster.local"
+              port="5432"
+              echo "polling: ${host}:${port}"
+              for i in $(seq 1 60); do
+                if nc -z -w 2 "${host}" "${port}"; then
+                  echo "postgres reachable (attempt ${i})"
+                  exit 0
+                fi
+                echo "waiting for postgres... (${i}/60)"
+                sleep 5
+              done
+              echo "postgres never became reachable after 5 min — main dex would crashloop too" >&2
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       containers:
         - name: dex
           image: ghcr.io/dexidp/dex:v2.45.1
