@@ -80,7 +80,13 @@ spec:
             - containerPort: 80
               name: http
           resources:
-            requests: { cpu: "10m", memory: "16Mi" }
+            # Match the platform-limit-range minimum (memory: 32Mi).
+            # An nginx:alpine static-content pod barely touches RAM,
+            # but the LimitRange's floor is 32Mi — anything lower is
+            # rejected with "minimum memory usage per Container is 32Mi"
+            # and the Deployment never produces a pod. Caught on
+            # testing.example.test fresh-bootstrap 2026-05-21.
+            requests: { cpu: "10m", memory: "32Mi" }
             limits:   { cpu: "100m", memory: "64Mi" }
           volumeMounts:
             - name: content
