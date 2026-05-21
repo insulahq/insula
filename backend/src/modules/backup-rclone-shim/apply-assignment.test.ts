@@ -314,4 +314,52 @@ describe('waitForShimReady', () => {
     expect(r.ready).toBe(true);
     expect(r.available).toBe(1);
   });
+
+  it('onTick fires on every poll with current rollout state', async () => {
+    let call = 0;
+    const apps = {
+      readNamespacedDaemonSet: vi.fn().mockImplementation(async () => {
+        call += 1;
+        if (call === 1) {
+          return { status: { desiredNumberScheduled: 4, updatedNumberScheduled: 1, numberAvailable: 0 } };
+        }
+        if (call === 2) {
+          return { status: { desiredNumberScheduled: 4, updatedNumberScheduled: 3, numberAvailable: 2 } };
+        }
+        return { status: { desiredNumberScheduled: 4, updatedNumberScheduled: 4, numberAvailable: 4 } };
+      }),
+    };
+    const clock = makeClock();
+    const ticks: Array<{ available: number; desired: number }> = [];
+    const r = await waitForShimReady(apps as never, { info: vi.fn(), warn: vi.fn() }, {
+      now: clock.now,
+      sleep: clock.sleep,
+      pollIntervalMs: 100,
+      timeoutMs: 10_000,
+      onTick: (t) => { ticks.push({ available: t.available, desired: t.desired }); },
+    });
+    expect(r.ready).toBe(true);
+    // Three reads → three ticks streamed mid-poll.
+    expect(ticks.length).toBe(3);
+    expect(ticks[0].available).toBe(0);
+    expect(ticks[1].available).toBe(2);
+    expect(ticks[2].available).toBe(4);
+  });
+
+  it('onTick errors are swallowed and do not abort the wait', async () => {
+    const apps = {
+      readNamespacedDaemonSet: vi.fn().mockResolvedValue({
+        status: { desiredNumberScheduled: 2, updatedNumberScheduled: 2, numberAvailable: 2 },
+      }),
+    };
+    const clock = makeClock();
+    const r = await waitForShimReady(apps as never, { info: vi.fn(), warn: vi.fn() }, {
+      now: clock.now,
+      sleep: clock.sleep,
+      pollIntervalMs: 100,
+      timeoutMs: 10_000,
+      onTick: () => { throw new Error('observer kaboom'); },
+    });
+    expect(r.ready).toBe(true);
+  });
 });

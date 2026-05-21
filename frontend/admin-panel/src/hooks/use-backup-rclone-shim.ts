@@ -45,8 +45,24 @@ export function usePutShimAssignment() {
         method: 'PUT',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ASSIGN_KEY });
+    onSuccess: (response, vars) => {
+      // The PUT now returns the OPTIMISTIC assignment row + a taskId;
+      // the real DB write happens in the background. Splice the
+      // optimistic row into the cached list so the class cards show
+      // the new target name immediately. The 30s staleTime refetch
+      // (or task-center completion) will replace it with the real
+      // row a few seconds later. If the background pipeline fails,
+      // the assignments refetch will revert the change.
+      const optimistic = response.data;
+      qc.setQueryData<ListShimAssignmentsResponse>(ASSIGN_KEY, (prev) => {
+        if (!prev) return prev;
+        const rows = prev.data.assignments ?? [];
+        const idx = rows.findIndex((r) => r.className === vars.className);
+        const next = idx >= 0
+          ? [...rows.slice(0, idx), optimistic, ...rows.slice(idx + 1)]
+          : [...rows, optimistic];
+        return { ...prev, data: { ...prev.data, assignments: next } };
+      });
       qc.invalidateQueries({ queryKey: STATUS_KEY });
     },
   });
