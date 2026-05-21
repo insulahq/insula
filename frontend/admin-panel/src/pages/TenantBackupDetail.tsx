@@ -292,7 +292,7 @@ function ObjectBundlesPane({ detail }: { detail: TenantBackupDetail }) {
           Create bundle now
         </button>
         {detail.openCartId && (
-          <Link to={`/restore?cartId=${detail.openCartId}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline">
+          <Link to={`/backups/restore?cartId=${detail.openCartId}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline">
             <RotateCw size={11} /> Open restore cart
           </Link>
         )}
@@ -319,7 +319,7 @@ function ObjectBundlesPane({ detail }: { detail: TenantBackupDetail }) {
                 <td className="px-4 py-2 text-right font-mono text-xs">{formatBytes(b.sizeBytes)}</td>
                 <td className="px-4 py-2"><StatusPill status={b.status} /></td>
                 <td className="px-4 py-2 text-right">
-                  <Link to={`/restore?bundleId=${b.id}&tenantId=${detail.tenantId}`} className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline">Restore →</Link>
+                  <Link to={`/backups/restore?bundleId=${b.id}&tenantId=${detail.tenantId}`} className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline">Restore →</Link>
                 </td>
               </tr>
             ))}

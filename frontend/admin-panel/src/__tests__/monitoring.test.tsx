@@ -82,6 +82,30 @@ vi.mock('@/hooks/use-audit-logs', () => ({
   }),
 }));
 
+vi.mock('@/hooks/use-health', () => ({
+  useHealth: () => ({
+    data: {
+      data: {
+        overall: 'healthy',
+        checkedAt: new Date().toISOString(),
+        services: [
+          { name: 'database', status: 'ok', latencyMs: 5, message: null },
+        ],
+      },
+    },
+    isLoading: false,
+    isFetching: false,
+  }),
+}));
+
+vi.mock('@/hooks/use-pods', () => ({
+  usePods: () => ({
+    data: { data: { pods: [], capacity: { used: 5, allocatable: 110 } } },
+    isLoading: false,
+    isError: false,
+  }),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -101,18 +125,17 @@ describe('Monitoring page', () => {
     expect(screen.getByRole('heading', { name: 'Monitoring' })).toBeInTheDocument();
   });
 
-  it('shows all four stat cards', () => {
+  it('shows the 3 real stat cards (placeholder cards removed Wave 2)', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
     expect(screen.getByText('Platform Status')).toBeInTheDocument();
-    expect(screen.getAllByText('Active Alerts').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Avg Response Time')).toBeInTheDocument();
-    expect(screen.getByText('Error Rate')).toBeInTheDocument();
-  });
-
-  it('displays stat card values', () => {
-    render(<Monitoring />, { wrapper: createWrapper() });
-    expect(screen.getByText('45ms')).toBeInTheDocument();
-    expect(screen.getByText('0.2%')).toBeInTheDocument();
+    // "Active Alerts (24h)" appears both as the stat-card title and
+    // inside the alert-history tab heading — at least one match is enough.
+    expect(screen.getAllByText(/Active Alerts/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Pod Usage')).toBeInTheDocument();
+    // Avg Response Time + Error Rate cards intentionally removed —
+    // they were hardcoded placeholders.
+    expect(screen.queryByText('Avg Response Time')).not.toBeInTheDocument();
+    expect(screen.queryByText('Error Rate')).not.toBeInTheDocument();
   });
 
   it('shows Active Alerts count from audit log data', () => {
@@ -128,11 +151,13 @@ describe('Monitoring page', () => {
     expect(screen.getByText('update domain')).toBeInTheDocument();
   });
 
-  it('renders all three tab buttons', () => {
+  it('renders the expected tab buttons (system-metrics replaced by health)', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tab-active-alerts')).toBeInTheDocument();
     expect(screen.getByTestId('tab-alert-history')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-system-metrics')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-health')).toBeInTheDocument();
+    // system-metrics tab removed Wave 2 — placeholder gauges retired.
+    expect(screen.queryByTestId('tab-system-metrics')).not.toBeInTheDocument();
   });
 
   it('switches to Alert History tab on click', async () => {
@@ -155,17 +180,13 @@ describe('Monitoring page', () => {
     expect(resolvedBadges.length).toBeGreaterThan(0);
   });
 
-  it('switches to System Metrics tab and shows resource bars', async () => {
+  it('switches to Health tab and renders the health panel', async () => {
     const user = userEvent.setup();
     render(<Monitoring />, { wrapper: createWrapper() });
 
-    await user.click(screen.getByTestId('tab-system-metrics'));
+    await user.click(screen.getByTestId('tab-health'));
 
-    expect(screen.getByTestId('system-metrics')).toBeInTheDocument();
-    expect(screen.getByText('CPU Usage')).toBeInTheDocument();
-    expect(screen.getByText('Memory Usage')).toBeInTheDocument();
-    expect(screen.getByText('Disk Usage')).toBeInTheDocument();
-    expect(screen.getByText('Network I/O')).toBeInTheDocument();
+    expect(screen.getByTestId('health-tab')).toBeInTheDocument();
   });
 
   it('displays alert severity badges derived from httpStatus', () => {
