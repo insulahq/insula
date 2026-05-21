@@ -158,10 +158,13 @@ function parseModSecurityLine(line: string): ParsedWafEvent | null {
   const sevNum = sevMatch ? parseInt(sevMatch[1], 10) : 5;
   const severity = sevNum <= 2 ? 'critical' : sevNum <= 4 ? 'warning' : 'info';
 
-  let message = msgMatch ? msgMatch[1] : 'WAF event';
-  // Shorten anomaly score messages
-  const scoreMatch = message.match(/Total Score: (\d+)/);
-  if (scoreMatch) message = `Score: ${scoreMatch[1]}`;
+  // 2026-05-21: dropped the previous `Total Score: N → Score: N`
+  // truncation. The full CRS message (e.g. "Inbound Anomaly Score
+  // Exceeded (Total Score: 5)") is what operators actually need —
+  // bare "Score: 5" loses the rule's descriptive prefix and forces
+  // a manual CRS-rule lookup for every event. MAX_MESSAGE_LEN at
+  // insert time (line 362) still caps the column at a safe length.
+  const message = msgMatch ? msgMatch[1] : 'WAF event';
 
   return {
     uniqueId: uidMatch ? `${uidMatch[1]}:${ruleId}` : `${Date.now()}:${ruleId}`,
