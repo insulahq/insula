@@ -147,8 +147,13 @@ data:
         #                     (AWS S3 with modern regions, Cloudflare R2
         #                     with DNS configured, etc.)
         if [ -z "$${UPSTREAM_S3_BUCKET:-}" ]; then
-          log "FATAL: S3 requires UPSTREAM_S3_BUCKET"
-          exit 2
+          # Sleep (not crash) — most likely the reconciler has the old
+          # renderer that didn't emit UPSTREAM_S3_BUCKET yet. Sleeping
+          # keeps the pod NotReady (Service drops it; clients get
+          # connection refused, retry later) until the new env is
+          # materialised. CrashLoopBackOff would mask the cause.
+          log "UPSTREAM_S3_BUCKET missing — likely stale upstream.env. Sleeping until reconciler renders new content."
+          while :; do sleep 30; done
         fi
         # Validate force_path_style flag — strict allowlist.
         case "$${UPSTREAM_USE_PATH_STYLE:-true}" in
