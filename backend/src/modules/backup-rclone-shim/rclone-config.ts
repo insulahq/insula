@@ -480,7 +480,13 @@ export function computeInputHash(
   assignments: ReadonlyArray<ClassAssignment>,
 ): string {
   const h = createHash('sha256');
-  h.update('v2-versitygw\n');
+  // Renderer-version sentinel. Bump when the OUTPUT format changes
+  // (e.g. new emitted env vars, new launcher contract). This forces
+  // the reconciler to re-materialise the Secret + ConfigMap even when
+  // the operator INPUTS are unchanged.
+  // - v2-versitygw  : R-X17 versitygw launcher
+  // - v3-rclone-bp  : R-X19 rclone-serve-s3 + bucket+prefix scoping
+  h.update('v3-rclone-bp\n');
   h.update(`fp=${fingerprintRawKey(rawKey)}\n`);
   const sorted = [...assignments].sort((a, b) =>
     a.className.localeCompare(b.className),
