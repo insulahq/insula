@@ -458,4 +458,31 @@ if ! grep -qE 'createHash.*update.*rcloneConf' "$RENDERER"; then
 fi
 pass "Invariant 22: R-X20 multi-target binding supported; rcloneConf in configHash"
 
-echo "[ci-backup-rclone-shim] All 22 invariants pass."
+# ─── 23. Bootstrap unblocker — static ObjectStore + creds Secret ──
+# The CNPG plugin-barman-cloud pre-reconcile hook STOPS the system-db
+# Cluster reconciliation loop until `system-postgres-objectstore`
+# ObjectStore exists. On a fresh bootstrap the platform-api reconciler
+# that would create it can't run, because platform-api blocks on the
+# postgres TCP gate (docker-entrypoint.sh waits 120s for the DB).
+# k8s/base/database.yaml MUST ship a static stub ObjectStore + empty
+# `backup-rclone-shim-creds` Secret so the plugin unblocks and the
+# Cluster comes up. The reconciler later merge-patches both with real
+# HKDF-derived values. Without this guard, a future refactor could
+# strip the stub and re-introduce the chicken-and-egg.
+# Caught on testing.example.test fresh-bootstrap 2026-05-21.
+DB_YAML="$ROOT/k8s/base/database.yaml"
+if [[ ! -f "$DB_YAML" ]]; then
+  fail "Invariant 23: $DB_YAML missing"
+fi
+if ! grep -q "^kind: ObjectStore" "$DB_YAML"; then
+  fail "Invariant 23: k8s/base/database.yaml must contain a static ObjectStore CR (bootstrap chicken-and-egg unblocker)"
+fi
+if ! grep -q "name: system-postgres-objectstore" "$DB_YAML"; then
+  fail "Invariant 23: static ObjectStore in database.yaml must be named 'system-postgres-objectstore'"
+fi
+if ! grep -q "name: backup-rclone-shim-creds" "$DB_YAML"; then
+  fail "Invariant 23: k8s/base/database.yaml must contain a stub 'backup-rclone-shim-creds' Secret"
+fi
+pass "Invariant 23: bootstrap chicken-and-egg unblocker (static ObjectStore + creds Secret) present"
+
+echo "[ci-backup-rclone-shim] All 23 invariants pass."

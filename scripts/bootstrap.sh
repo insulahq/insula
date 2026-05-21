@@ -49,6 +49,20 @@ if [[ -n "$REMOTE_HOST" ]]; then
   echo "Copying bootstrap script to $REMOTE_HOST..."
   scp "${SSH_OPTS[@]}" "$0" "${SSH_USER}@${REMOTE_HOST}:/tmp/bootstrap.sh"
 
+  # Also copy the lib/ sibling dir so resources the script reads at
+  # runtime (e.g. lib/secrets-denylist.jq used by the Tier-1 bundle
+  # generator) resolve as `${dirname $0}/lib/...` on the remote. Without
+  # this, fresh-bootstrap on a re-imaged box logs:
+  #   "WARN: secrets-denylist.jq not found at /tmp/lib/secrets-denylist.jq"
+  # and silently skips bundle creation — meaning the operator has no
+  # rescue artifact if the cluster gets bricked before they enable
+  # backups. Caught on testing.example.test 2026-05-21.
+  local_script_dir="$(cd "$(dirname "$0")" && pwd)"
+  if [[ -d "${local_script_dir}/lib" ]]; then
+    echo "Copying scripts/lib/ to $REMOTE_HOST..."
+    scp -r "${SSH_OPTS[@]}" "${local_script_dir}/lib" "${SSH_USER}@${REMOTE_HOST}:/tmp/lib"
+  fi
+
   # Pass the original args via a base64-encoded blob so spaces, quotes,
   # and shell metacharacters survive the SSH round-trip intact without
   # any quoting boundary games. The remote decoder re-tokenises via

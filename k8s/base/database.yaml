@@ -205,6 +205,92 @@ spec:
       parameters:
         barmanObjectName: system-postgres-objectstore
 ---
+# Stub ObjectStore CR + creds Secret — bootstrap unblocker.
+#
+# Problem (caught on testing.example.test fresh-bootstrap 2026-05-21):
+# the CNPG Cluster above references the `barman-cloud` plugin, whose
+# pre-reconcile hook stops the Cluster's reconcile loop until the
+# referenced ObjectStore CR exists. Without it the Cluster never
+# creates pods → `system-db-rw` Service has no endpoints → platform-api's
+# docker-entrypoint blocks 120s on the postgres TCP gate then crashloops
+# → the reconciler that would normally materialise the ObjectStore CR
+# never gets a chance to run. Classic chicken-and-egg.
+#
+# Fix: ship a static stub ObjectStore + creds Secret in this manifest.
+# The stub spec is byte-identical to what
+# `backend/src/modules/backup-rclone-shim/postgres-objectstore.ts`
+# (`buildObjectStoreSpec()` + `SHIM_S3_CREDS_SECRET_NAME`) produces, so
+# the reconciler's merge-patch is a no-op once it eventually runs.
+# Field-ownership note: the Secret intentionally has NO `data` block —
+# the reconciler ADDS `access_key` + `secret_key` fields once
+# BACKUP_TARGET_KEY is loaded. Because Flux's SSA manifest doesn't
+# include `data`, Flux doesn't claim ownership of those fields; the
+# reconciler-applied values stick across subsequent Flux reconciles.
+#
+# Lifecycle:
+#   1. Flux applies this stub → ObjectStore CR exists, Secret exists
+#      (empty data) → plugin pre-reconcile unblocks the Cluster.
+#   2. Cluster pods start → barman-cloud sidecar reads Secret keys →
+#      first scheduled backup logs "credentials missing" (recoverable).
+#   3. platform-api boots, postgres-objectstore reconciler runs on
+#      first tick → merge-patches Secret `data` with HKDF-derived
+#      `access_key`/`secret_key` → next scheduled backup succeeds.
+#
+# Why not have the reconciler also create the Cluster's plugin entry:
+# the plugin entry MUST be on the Cluster CR before the operator
+# considers backups for this Cluster at all (the operator reads
+# `spec.plugins` at Cluster reconciliation). The ObjectStore can be
+# stub-then-update; the plugin reference cannot.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: system-postgres-objectstore
+  namespace: platform
+  labels:
+    app: backup-rclone-shim
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: platform-api-postgres-objectstore
+spec:
+  configuration:
+    destinationPath: 's3://system/postgres'
+    endpointURL: 'http://backup-rclone-shim.platform.svc.cluster.local:9000'
+    s3Credentials:
+      accessKeyId:
+        name: backup-rclone-shim-creds
+        key: access_key
+      secretAccessKey:
+        name: backup-rclone-shim-creds
+        key: secret_key
+    wal:
+      compression: gzip
+      maxParallel: 2
+    data:
+      compression: gzip
+  instanceSidecarConfiguration:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: '1'
+        memory: 1Gi
+  retentionPolicy: 30d
+---
+# Stub creds Secret. `data` intentionally absent — see comment above.
+# backup-coverage: excluded:cluster-infrastructure
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-rclone-shim-creds
+  namespace: platform
+  labels:
+    app: backup-rclone-shim
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: platform-api-postgres-objectstore
+type: Opaque
+---
 # Stable Service alias. Keeps app connection strings unchanged
 # (postgres.platform.svc:5432) across CNPG instance scaling +
 # failover AND across PG-major bumps + cluster renames (the
