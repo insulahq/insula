@@ -107,10 +107,10 @@ function ClassGroupedList({
 }) {
   // Stable group order: tenant first, then system. Within each group,
   // preserve the API response order (which the resolver returns
-  // alphabetically by snapshot_class).
-  const tenant = classes.filter((c) => CLASS_META[c.snapshotClass]?.group === 'tenant');
-  const system = classes.filter((c) => CLASS_META[c.snapshotClass]?.group === 'system');
-  const ungrouped = classes.filter((c) => !CLASS_META[c.snapshotClass]);
+  // alphabetically by backup_class).
+  const tenant = classes.filter((c) => CLASS_META[c.backupClass]?.group === 'tenant');
+  const system = classes.filter((c) => CLASS_META[c.backupClass]?.group === 'system');
+  const ungrouped = classes.filter((c) => !CLASS_META[c.backupClass]);
 
   return (
     <div className="space-y-8">
@@ -121,7 +121,7 @@ function ClassGroupedList({
           </h2>
           <div className="space-y-4">
             {tenant.map((cls) => (
-              <ClassRow key={cls.snapshotClass} view={cls} availableTargets={availableTargets} />
+              <ClassRow key={cls.backupClass} view={cls} availableTargets={availableTargets} />
             ))}
           </div>
         </section>
@@ -133,7 +133,7 @@ function ClassGroupedList({
           </h2>
           <div className="space-y-4">
             {system.map((cls) => (
-              <ClassRow key={cls.snapshotClass} view={cls} availableTargets={availableTargets} />
+              <ClassRow key={cls.backupClass} view={cls} availableTargets={availableTargets} />
             ))}
           </div>
         </section>
@@ -141,7 +141,7 @@ function ClassGroupedList({
       {ungrouped.length > 0 && (
         <div className="space-y-4">
           {ungrouped.map((cls) => (
-            <ClassRow key={cls.snapshotClass} view={cls} availableTargets={availableTargets} />
+            <ClassRow key={cls.backupClass} view={cls} availableTargets={availableTargets} />
           ))}
         </div>
       )}
@@ -180,9 +180,9 @@ function ClassRow({
   // Fall back gracefully if a class is added on the backend before
   // the frontend ships the matching CLASS_META entry — render the raw
   // class id so the operator can still see + edit assignments.
-  const meta = CLASS_META[view.snapshotClass] ?? {
-    label: view.snapshotClass,
-    description: `Snapshot class ${view.snapshotClass}. Update the admin panel to add a description.`,
+  const meta = CLASS_META[view.backupClass] ?? {
+    label: view.backupClass,
+    description: `Snapshot class ${view.backupClass}. Update the admin panel to add a description.`,
     group: 'system' as const,
   };
   // INTENTIONAL: draft is seeded once at mount and NOT synced from `view`
@@ -236,7 +236,7 @@ function ClassRow({
       assignments: draft.map((a) => ({ targetId: a.targetId, priority: a.priority })),
     };
     try {
-      await setAssignments.mutateAsync({ snapshotClass: view.snapshotClass, input });
+      await setAssignments.mutateAsync({ backupClass: view.backupClass, input });
       setDirty(false);
       setTestResult(null);
     } catch (err) {
@@ -252,7 +252,7 @@ function ClassRow({
 
   const handleTest = async () => {
     try {
-      const res = await testClass.mutateAsync(view.snapshotClass);
+      const res = await testClass.mutateAsync(view.backupClass);
       const r = res.data;
       setTestResult({
         ok: r.ok,
@@ -281,7 +281,7 @@ function ClassRow({
           ? 'border-gray-200 dark:border-gray-700'
           : 'border-rose-200 dark:border-rose-800',
       )}
-      data-testid={`snapshot-class-row-${view.snapshotClass}`}
+      data-testid={`snapshot-class-row-${view.backupClass}`}
     >
       <div className="border-b border-gray-100 dark:border-gray-700 p-4">
         <div className="flex items-start justify-between gap-4">
@@ -289,7 +289,7 @@ function ClassRow({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{meta.label}</h2>
               <code className="rounded bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 text-[11px] text-gray-600 dark:text-gray-400">
-                {view.snapshotClass}
+                {view.backupClass}
               </code>
               {!persistedHasAssignments && (
                 <span className="rounded bg-rose-100 dark:bg-rose-900/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-300">
@@ -304,7 +304,7 @@ function ClassRow({
             onClick={handleTest}
             disabled={testClass.isPending || !persistedHasAssignments}
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid={`test-class-${view.snapshotClass}`}
+            data-testid={`test-class-${view.backupClass}`}
           >
             {testClass.isPending ? <Loader2 size={12} className="animate-spin" /> : <TestTube size={12} />}
             Test Primary
@@ -338,7 +338,7 @@ function ClassRow({
                 <div
                   key={draftRow.targetId}
                   className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 px-3 py-2"
-                  data-testid={`assignment-row-${view.snapshotClass}-${draftRow.targetId}`}
+                  data-testid={`assignment-row-${view.backupClass}-${draftRow.targetId}`}
                 >
                   {isPrimary && (
                     <span className="rounded bg-brand-100 dark:bg-brand-900/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand-700 dark:text-brand-300">
@@ -355,27 +355,27 @@ function ClassRow({
                   </div>
                   <div className="flex items-center gap-1.5">
                     <label
-                      htmlFor={`priority-${view.snapshotClass}-${draftRow.targetId}`}
+                      htmlFor={`priority-${view.backupClass}-${draftRow.targetId}`}
                       className="text-[11px] text-gray-500 dark:text-gray-400"
                     >
                       Priority
                     </label>
                     <input
-                      id={`priority-${view.snapshotClass}-${draftRow.targetId}`}
+                      id={`priority-${view.backupClass}-${draftRow.targetId}`}
                       type="number"
                       min={0}
                       max={10000}
                       value={draftRow.priority}
                       onChange={(e) => handlePriorityChange(draftRow.targetId, e.target.value)}
                       className="w-20 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
-                      data-testid={`priority-input-${view.snapshotClass}-${draftRow.targetId}`}
+                      data-testid={`priority-input-${view.backupClass}-${draftRow.targetId}`}
                     />
                   </div>
                   <button
                     type="button"
                     onClick={() => handleRemove(draftRow.targetId)}
                     className="rounded-md p-1 text-gray-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 hover:text-rose-600 dark:hover:text-rose-400"
-                    data-testid={`remove-assignment-${view.snapshotClass}-${draftRow.targetId}`}
+                    data-testid={`remove-assignment-${view.backupClass}-${draftRow.targetId}`}
                     aria-label="Remove target"
                   >
                     <X size={14} />
@@ -392,7 +392,7 @@ function ClassRow({
               defaultValue=""
               onChange={(e) => { handleAdd(e.target.value); e.target.value = ''; }}
               className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100"
-              data-testid={`add-target-select-${view.snapshotClass}`}
+              data-testid={`add-target-select-${view.backupClass}`}
             >
               <option value="" disabled>Add a target…</option>
               {availableForAdd.map((t) => (
@@ -408,7 +408,7 @@ function ClassRow({
           <div
             className="mt-3 flex items-start gap-2 rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-xs text-rose-700 dark:text-rose-300"
             role="alert"
-            data-testid={`save-error-${view.snapshotClass}`}
+            data-testid={`save-error-${view.backupClass}`}
           >
             <AlertCircle size={14} className="mt-0.5 flex-none" />
             <span>{saveError}</span>
@@ -432,7 +432,7 @@ function ClassRow({
               onClick={handleSave}
               disabled={setAssignments.isPending}
               className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
-              data-testid={`save-class-${view.snapshotClass}`}
+              data-testid={`save-class-${view.backupClass}`}
             >
               {setAssignments.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
               Save assignments

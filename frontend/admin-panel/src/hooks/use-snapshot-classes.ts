@@ -37,10 +37,10 @@ export function useSetAssignments() {
   return useMutation<
     ApiEnvelope<SetAssignmentsResponse>,
     Error,
-    { snapshotClass: SnapshotClass; input: SetAssignmentsInput }
+    { backupClass: SnapshotClass; input: SetAssignmentsInput }
   >({
-    mutationFn: ({ snapshotClass, input }) =>
-      apiFetch(`/api/v1/admin/snapshots/classes/${snapshotClass}/assignments`, {
+    mutationFn: ({ backupClass, input }) =>
+      apiFetch(`/api/v1/admin/snapshots/classes/${backupClass}/assignments`, {
         method: 'PUT',
         body: JSON.stringify(input),
       }),
@@ -53,8 +53,8 @@ export function useSetAssignments() {
 
 export function useTestSnapshotClass() {
   return useMutation<ApiEnvelope<TestClassResponse>, Error, SnapshotClass>({
-    mutationFn: (snapshotClass) =>
-      apiFetch(`/api/v1/admin/snapshots/classes/${snapshotClass}/test`, {
+    mutationFn: (backupClass) =>
+      apiFetch(`/api/v1/admin/snapshots/classes/${backupClass}/test`, {
         method: 'POST',
       }),
   });

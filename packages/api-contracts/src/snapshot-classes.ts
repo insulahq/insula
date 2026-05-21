@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { snapshotClassEnum, type SnapshotClass } from './snapshot-accounting.js';
+import { backupClassEnum, type SnapshotClass } from './snapshot-accounting.js';
 
 // ─── Snapshot Class Assignments (Phase 2 of snapshot-storage overhaul) ──
 //
@@ -11,13 +11,13 @@ import { snapshotClassEnum, type SnapshotClass } from './snapshot-accounting.js'
 // Mail and Longhorn snapshots are NOT assigned here — they keep their
 // own native target configuration (per the mail-arch lock).
 
-export { snapshotClassEnum };
+export { backupClassEnum };
 export type { SnapshotClass };
 
 // ─── Single assignment row ──────────────────────────────────────────────
 
 export const assignmentRowSchema = z.object({
-  snapshotClass: snapshotClassEnum,
+  backupClass: backupClassEnum,
   targetId: z.string().uuid(),
   targetName: z.string().min(1),
   // Pull-through fields from the joined target for the admin UI
@@ -31,7 +31,7 @@ export type AssignmentRow = z.infer<typeof assignmentRowSchema>;
 // ─── Per-class view (list endpoint response) ────────────────────────────
 
 export const classViewSchema = z.object({
-  snapshotClass: snapshotClassEnum,
+  backupClass: backupClassEnum,
   // Sorted by priority ASC. Empty array means "no target assigned —
   // snapshots of this class are disabled and the resolver fails loud."
   assignments: z.array(assignmentRowSchema),
@@ -60,7 +60,7 @@ export const setAssignmentsInputSchema = z.object({
 export type SetAssignmentsInput = z.infer<typeof setAssignmentsInputSchema>;
 
 export const setAssignmentsResponseSchema = z.object({
-  snapshotClass: snapshotClassEnum,
+  backupClass: backupClassEnum,
   assignments: z.array(assignmentRowSchema),
 });
 export type SetAssignmentsResponse = z.infer<typeof setAssignmentsResponseSchema>;
@@ -73,7 +73,7 @@ export type SetAssignmentsResponse = z.infer<typeof setAssignmentsResponseSchema
 // click.
 
 export const testClassResponseSchema = z.object({
-  snapshotClass: snapshotClassEnum,
+  backupClass: backupClassEnum,
   targetId: z.string().uuid().nullable(),
   targetName: z.string().nullable(),
   ok: z.boolean(),
@@ -95,7 +95,7 @@ export type TestClassResponse = z.infer<typeof testClassResponseSchema>;
 export const targetAssignmentsSummarySchema = z.object({
   targetId: z.string().uuid(),
   classes: z.array(z.object({
-    snapshotClass: snapshotClassEnum,
+    backupClass: backupClassEnum,
     priority: z.number().int().min(0).max(10000),
   })),
 });

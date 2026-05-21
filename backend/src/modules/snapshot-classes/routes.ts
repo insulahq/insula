@@ -17,24 +17,24 @@ import { success } from '../../shared/response.js';
 import * as service from './service.js';
 import {
   setAssignmentsInputSchema,
-  snapshotClassEnum,
+  backupClassEnum,
   type SnapshotClass,
   type TestClassResponse,
 } from '@k8s-hosting/api-contracts';
 
 function parseSnapshotClass(raw: string): SnapshotClass {
-  const parsed = snapshotClassEnum.safeParse(raw);
+  const parsed = backupClassEnum.safeParse(raw);
   if (!parsed.success) {
     throw new ApiError(
       'INVALID_SNAPSHOT_CLASS',
-      `Unknown snapshot_class '${raw}' — valid values: ${snapshotClassEnum.options.join(', ')}`,
+      `Unknown backup_class '${raw}' — valid values: ${backupClassEnum.options.join(', ')}`,
       400,
     );
   }
   return parsed.data;
 }
 
-export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void> {
+export async function backupClassesRoutes(app: FastifyInstance): Promise<void> {
   const adminGate = [authenticate, requireRole('super_admin', 'admin')];
 
   // ─── List ───────────────────────────────────────────────────────────
@@ -77,12 +77,12 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
     },
   }, async (request) => {
     const { class: rawClass } = request.params as { class: string };
-    const snapshotClass = parseSnapshotClass(rawClass);
+    const backupClass = parseSnapshotClass(rawClass);
     const parsed = setAssignmentsInputSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
-    const result = await service.setAssignments(app.db, snapshotClass, parsed.data);
+    const result = await service.setAssignments(app.db, backupClass, parsed.data);
 
     // system_mail assignments drive the stalwart-snapshot-restic-repo
     // Secret in the mail namespace. Sync best-effort after the
@@ -91,7 +91,7 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
     // call here. We MUST NOT throw on sync failure: that would make
     // the PUT response 500 while the DB write succeeded, leaving the
     // operator unsure whether to retry.
-    if (snapshotClass === 'system_mail') {
+    if (backupClass === 'system_mail') {
       const cfg = app.config as Record<string, unknown>;
       const encryptionKey =
         (cfg.PLATFORM_ENCRYPTION_KEY as string | undefined)
@@ -125,20 +125,20 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
     },
   }, async (request) => {
     const { class: rawClass } = request.params as { class: string };
-    const snapshotClass = parseSnapshotClass(rawClass);
+    const backupClass = parseSnapshotClass(rawClass);
     const t0 = Date.now();
-    const primary = await service.resolvePrimaryTarget(app.db, snapshotClass);
+    const primary = await service.resolvePrimaryTarget(app.db, backupClass);
 
     if (!primary) {
       const resp: TestClassResponse = {
-        snapshotClass,
+        backupClass,
         targetId: null,
         targetName: null,
         ok: false,
         latencyMs: Date.now() - t0,
         error: {
           code: 'NO_SNAPSHOT_TARGET',
-          message: `No target assigned to ${snapshotClass} — configure one at /settings/backup-classes`,
+          message: `No target assigned to ${backupClass} — configure one at /settings/backup-classes`,
         },
       };
       return success(resp);
@@ -164,7 +164,7 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
     try {
       const result = await testConnection(app.db, primary.targetId, encryptionKey);
       const resp: TestClassResponse = {
-        snapshotClass,
+        backupClass,
         targetId: primary.targetId,
         targetName: primary.targetName,
         ok: result.ok,
@@ -177,7 +177,7 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
       return success(resp);
     } catch (err) {
       const resp: TestClassResponse = {
-        snapshotClass,
+        backupClass,
         targetId: primary.targetId,
         targetName: primary.targetName,
         ok: false,

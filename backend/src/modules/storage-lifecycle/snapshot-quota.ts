@@ -71,7 +71,7 @@ export async function getSnapshotQuotaUsage(
       // Only tenant_snapshot class counts against the tenant's quota.
       // tenant_bundle has its own backup-bundle quota; system_backup
       // counts against the platform quota (Phase 6.5).
-      eq(storageSnapshots.snapshotClass, 'tenant_snapshot'),
+      eq(storageSnapshots.backupClass, 'tenant_snapshot'),
     ))) as Array<{ currentBytes: string; currentCount: number }>;
 
   const usage = usageRows[0] ?? { currentBytes: '0', currentCount: 0 };
@@ -142,7 +142,7 @@ export async function getSystemSnapshotUsage(db: Database): Promise<{
       currentCount: sql<number>`COUNT(*) FILTER (WHERE ${storageSnapshots.status} IN ('ready', 'creating'))::int`,
     })
     .from(storageSnapshots)
-    .where(eq(storageSnapshots.snapshotClass, 'system_backup'))) as Array<{ currentBytes: string; currentCount: number }>;
+    .where(eq(storageSnapshots.backupClass, 'system_backup'))) as Array<{ currentBytes: string; currentCount: number }>;
   const row = rows[0] ?? { currentBytes: '0', currentCount: 0 };
   return {
     currentBytes: Number(row.currentBytes),

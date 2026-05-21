@@ -191,7 +191,7 @@ async function isSystemTargetBound(db: Database): Promise<boolean> {
       eq(backupConfigurations.id, backupTargetAssignments.targetId),
     )
     .where(
-      inArray(backupTargetAssignments.snapshotClass, ['system']),
+      inArray(backupTargetAssignments.backupClass, ['system']),
     )
     .orderBy(backupTargetAssignments.priority)
     .limit(1);

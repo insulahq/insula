@@ -37,7 +37,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
     expect(resolved.targetId).toBe(t1);
     expect(resolved.targetName).toBe('tr-test-a');
     expect(resolved.targetStorageType).toBe('s3');
-    expect(resolved.snapshotClass).toBe('tenant_snapshot');
+    expect(resolved.backupClass).toBe('tenant_snapshot');
   });
 
   it('resolveTargetFor throws NO_SNAPSHOT_TARGET when unassigned', async () => {

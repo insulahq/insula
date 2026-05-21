@@ -3,7 +3,7 @@
  *
  * Owns the lifecycle of the `stalwart-snapshot-restic-repo` Secret in
  * the `mail` namespace, deriving its contents from the lowest-priority
- * assignment in `backup_target_assignments[snapshot_class='system_mail']`.
+ * assignment in `backup_target_assignments[backup_class='system_mail']`.
  *
  * Single source of truth flow:
  *   1. operator → /settings/backup-classes → setAssignments('system_mail', ...)

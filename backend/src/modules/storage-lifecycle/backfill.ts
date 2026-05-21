@@ -104,7 +104,7 @@ export async function checkBackfillPreconditions(db: Database): Promise<{ ok: bo
     .from(backupTargetAssignments)
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
     .where(and(
-      eq(backupTargetAssignments.snapshotClass, 'tenant_snapshot'),
+      eq(backupTargetAssignments.backupClass, 'tenant_snapshot'),
       eq(backupConfigurations.enabled, 1),
     ))
     .limit(1);

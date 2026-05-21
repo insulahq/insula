@@ -7,12 +7,12 @@ import { z } from 'zod';
 // to surface accountability: which tenant has how many snapshots, how
 // much disk they consume, when the most recent one landed.
 //
-// `snapshotClass` and `subsystem` mirror the columns added in migration
+// `backupClass` and `subsystem` mirror the columns added in migration
 // 0003. Future phases (per-class target routing, quota enforcement) read
 // the same shape — keeping a single contract avoids drift between the
 // observability and policy paths.
 
-export const snapshotClassEnum = z.enum([
+export const backupClassEnum = z.enum([
   'tenant_snapshot',
   'tenant_bundle',
   // System group — each class routes independently. `subsystem` (free-
@@ -21,7 +21,7 @@ export const snapshotClassEnum = z.enum([
   'system_backup', // etcd, secrets, longhorn, hostpath, postgres, …
   'system_mail',   // Stalwart restic snapshots only — own target slot
 ]);
-export type SnapshotClass = z.infer<typeof snapshotClassEnum>;
+export type SnapshotClass = z.infer<typeof backupClassEnum>;
 
 // Free-form string in the DB (varchar 64) so new subsystems can land
 // without a schema change, but we declare the known producers here so
@@ -38,8 +38,8 @@ export type KnownSubsystem = (typeof knownSubsystems)[number];
 
 // ─── Per-class aggregate ────────────────────────────────────────────────
 
-export const snapshotClassAggregateSchema = z.object({
-  snapshotClass: z.string().min(1).max(32),
+export const backupClassAggregateSchema = z.object({
+  backupClass: z.string().min(1).max(32),
   subsystem: z.string().min(1).max(64),
   totalCount: z.number().int().nonnegative(),
   totalBytes: z.number().nonnegative(),
@@ -50,7 +50,7 @@ export const snapshotClassAggregateSchema = z.object({
   // lastSnapshotAt when the only recent snapshots failed mid-stream.
   lastReadyAt: z.string().datetime().nullable(),
 });
-export type SnapshotClassAggregate = z.infer<typeof snapshotClassAggregateSchema>;
+export type SnapshotClassAggregate = z.infer<typeof backupClassAggregateSchema>;
 
 // ─── Per-tenant aggregate ───────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ export const tenantSnapshotAggregateSchema = z.object({
   // Per-class breakdown for this tenant. Empty array if the tenant has
   // no snapshots yet.
   byClass: z.array(z.object({
-    snapshotClass: z.string().min(1).max(32),
+    backupClass: z.string().min(1).max(32),
     count: z.number().int().nonnegative(),
     bytes: z.number().nonnegative(),
   })),
@@ -78,8 +78,8 @@ export const snapshotAccountingResponseSchema = z.object({
     count: z.number().int().nonnegative(),
     bytes: z.number().nonnegative(),
   }),
-  // One row per (snapshot_class, subsystem) pair.
-  byClass: z.array(snapshotClassAggregateSchema),
+  // One row per (backup_class, subsystem) pair.
+  byClass: z.array(backupClassAggregateSchema),
   // One row per tenant that has at least one snapshot, sorted by
   // totalBytes DESC. Capped at 100 — the UI will paginate if needed.
   topTenants: z.array(tenantSnapshotAggregateSchema),

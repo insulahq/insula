@@ -82,7 +82,7 @@ export const SHIM_CONSUMER_TASK_KINDS = [
  * SYSTEM target switch should not wait for TENANT backups).
  *
  * Tasks whose class can't be determined statically (e.g. `storage.*`
- * which depends on the snapshot's `snapshot_class`) are mapped to
+ * which depends on the snapshot's `backup_class`) are mapped to
  * `null` so they ALWAYS drain — defensive against a SYSTEM-class
  * snapshot blocking a SYSTEM-class target switch.
  */
