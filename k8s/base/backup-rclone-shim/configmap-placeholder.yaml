@@ -165,21 +165,23 @@ data:
           # received the bytes — the readback then sees short/missing
           # data → ETag mismatch → `InvalidPart` on Complete.
           #
-          #   sshfs_sync       — synchronous writes: close() blocks until
-          #                      the SFTP server acks. Eliminates the
-          #                      write-then-read-back race.
-          #   sync_read        — synchronous reads (no readahead reorder).
-          #   direct_io        — bypass FUSE page cache; every read goes
-          #                      to the SFTP server.
-          #   cache=no         — disable sshfs's stat/dir cache so the
-          #                      Complete-side stat() sees the final size.
-          #   no_readahead     — disable client-side readahead.
+          #   sshfs_sync     — synchronous writes: close() blocks until
+          #                    the SFTP server acks. Eliminates the
+          #                    write-then-read-back race.
+          #   direct_io      — bypass FUSE page cache; every read goes
+          #                    to the SFTP server.
+          #   cache=no       — disable sshfs's stat/dir cache so the
+          #                    Complete-side stat() sees the final size.
+          #   no_readahead   — disable client-side readahead.
           #
-          # Trade-off: throughput drops vs the default async mode. The
-          # bench confirms ~5-15 MiB/s for 1 GiB multipart on Hetzner
-          # Storage Box (vs ~40 MiB/s on CIFS), which is fine for
-          # cold-backup workloads where correctness > throughput.
-          SSHFS_OPTS="allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=4,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/var/lib/versitygw/.ssh/known_hosts,sshfs_sync,sync_read,direct_io,cache=no,no_readahead"
+          # NB: `sync_read` is a FUSE-2-only option; sshfs builds linked
+          # against libfuse3 reject it as unknown. Same for fuse-version-
+          # specific options — keep this list to the four above, which
+          # work on both libfuse2 and libfuse3.
+          #
+          # Trade-off: throughput drops vs the default async mode —
+          # fine for cold-backup workloads where correctness > throughput.
+          SSHFS_OPTS="allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=4,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/var/lib/versitygw/.ssh/known_hosts,sshfs_sync,direct_io,cache=no,no_readahead"
           [ -n "$${UPSTREAM_SFTP_KEYFILE:-}" ] && SSHFS_OPTS="$${SSHFS_OPTS},IdentityFile=$${UPSTREAM_SFTP_KEYFILE}"
           mkdir -p /var/lib/versitygw/.ssh && touch /var/lib/versitygw/.ssh/known_hosts
           log "  sshfs $${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:$${UPSTREAM_SFTP_PORT:+(port $${UPSTREAM_SFTP_PORT})}"
