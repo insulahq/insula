@@ -86,7 +86,7 @@ import { buildSecurityHardeningRoutes } from './modules/security-hardening/route
 import { buildClusterTrustedProxiesRoutes } from './modules/cluster-trusted-proxies/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
-import { snapshotClassesRoutes } from './modules/snapshot-classes/routes.js';
+import { backupClassesRoutes } from './modules/snapshot-classes/routes.js';
 import { backupRcloneShimRoutes } from './modules/backup-rclone-shim/routes.js';
 import { backupSchedulesRoutes } from './modules/backup-schedules/routes.js';
 import { backupsOverviewRoutes } from './modules/backups-overview/routes.js';
@@ -433,7 +433,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(privateWorkerAdminRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
   await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
-  await app.register(snapshotClassesRoutes, { prefix: '/api/v1' });
+  await app.register(backupClassesRoutes, { prefix: '/api/v1' });
   // R-X5: backup-rclone-shim admin surface (super_admin gate).
   // Lazy k8s client build so unit tests / CI without a kubeconfig
   // don't crash at route registration; production loads from the

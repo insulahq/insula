@@ -530,10 +530,10 @@ async function writeAssignment(
   await db.transaction(async (tx) => {
     await tx
       .delete(backupTargetAssignments)
-      .where(eq(backupTargetAssignments.snapshotClass, className));
+      .where(eq(backupTargetAssignments.backupClass, className));
     if (targetId !== null) {
       await tx.insert(backupTargetAssignments).values({
-        snapshotClass: className,
+        backupClass: className,
         targetId,
         priority: 0,
       });
@@ -561,7 +561,7 @@ async function writeAssignment(
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
     .where(
       and(
-        eq(backupTargetAssignments.snapshotClass, className),
+        eq(backupTargetAssignments.backupClass, className),
         eq(backupTargetAssignments.targetId, targetId),
       ),
     )

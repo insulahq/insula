@@ -62,8 +62,8 @@ export const SHIM_REGION = 'auto';
  * (e.g. `system_mail` — handled by the R-X8 mail-restic reconciler
  * directly on the CronJob's Pod spec, not via streaming-store).
  */
-export function shimClassFor(snapshotClass: SnapshotClass): BackupShimClass | null {
-  switch (snapshotClass) {
+export function shimClassFor(backupClass: SnapshotClass): BackupShimClass | null {
+  switch (backupClass) {
     case 'tenant_snapshot':
     case 'tenant_bundle':
       return 'tenant';
@@ -94,7 +94,7 @@ export interface ShimStreamingStoreConfig {
 
 /**
  * Build the S3StreamingStore constructor args for the shim. Pure
- * over (rawKey, snapshotClass).
+ * over (rawKey, backupClass).
  *
  * `pathPrefix` mirrors the legacy storage-lifecycle convention:
  * `snapshots/<legacy-class>` so existing readers see the same path
@@ -102,9 +102,9 @@ export interface ShimStreamingStoreConfig {
  */
 export function buildShimStreamingStoreConfig(
   rawKey: Buffer,
-  snapshotClass: SnapshotClass,
+  backupClass: SnapshotClass,
 ): ShimStreamingStoreConfig | null {
-  const shimClass = shimClassFor(snapshotClass);
+  const shimClass = shimClassFor(backupClass);
   if (shimClass === null) return null;
   return {
     bucket: shimClass, // 's3://tenant' or 's3://system' (rclone-crypt-wrapped)
@@ -112,7 +112,7 @@ export function buildShimStreamingStoreConfig(
     endpoint: SHIM_S3_ENDPOINT_URL,
     accessKeyId: deriveShimAccessKey(rawKey),
     secretAccessKey: deriveShimSecretKey(rawKey),
-    pathPrefix: `snapshots/${snapshotClass}`,
+    pathPrefix: `snapshots/${backupClass}`,
   };
 }
 
@@ -132,9 +132,9 @@ export function buildShimStreamingStoreConfig(
  */
 export async function isShimModeActive(
   db: Database,
-  snapshotClass: SnapshotClass,
+  backupClass: SnapshotClass,
 ): Promise<boolean> {
-  const shimClass = shimClassFor(snapshotClass);
+  const shimClass = shimClassFor(backupClass);
   if (shimClass === null) return false;
   const rows = await db
     .select({ enabled: backupConfigurations.enabled })
@@ -143,7 +143,7 @@ export async function isShimModeActive(
       backupConfigurations,
       eq(backupConfigurations.id, backupTargetAssignments.targetId),
     )
-    .where(inArray(backupTargetAssignments.snapshotClass, [shimClass]))
+    .where(inArray(backupTargetAssignments.backupClass, [shimClass]))
     .orderBy(backupTargetAssignments.priority)
     .limit(1);
   return rows.length > 0 && rows[0].enabled === 1;

@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  *   1. Read the platform-wide BACKUP_TARGET_KEY Secret from k8s.
- *   2. Read `backup_target_assignments` rows whose `snapshot_class`
+ *   2. Read `backup_target_assignments` rows whose `backup_class`
  *      matches one of the three shim classes ('system' | 'tenant' | 'mail').
  *   3. Read the joined `backup_configurations` row for each assignment
  *      and decrypt the upstream credentials via PLATFORM_ENCRYPTION_KEY.
@@ -278,7 +278,7 @@ export async function loadShimAssignments(
 ): Promise<LoadedAssignments> {
   const rows = await db
     .select({
-      className: backupTargetAssignments.snapshotClass,
+      className: backupTargetAssignments.backupClass,
       targetId: backupTargetAssignments.targetId,
       priority: backupTargetAssignments.priority,
       target: backupConfigurations,
@@ -290,12 +290,12 @@ export async function loadShimAssignments(
     )
     .where(
       inArray(
-        backupTargetAssignments.snapshotClass,
+        backupTargetAssignments.backupClass,
         SHIM_CLASSES as unknown as string[],
       ),
     )
     .orderBy(
-      asc(backupTargetAssignments.snapshotClass),
+      asc(backupTargetAssignments.backupClass),
       asc(backupTargetAssignments.priority),
     );
 

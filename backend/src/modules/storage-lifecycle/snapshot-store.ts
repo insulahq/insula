@@ -367,14 +367,14 @@ export function getSnapshotStore(config: {
  * Missing DB config falls back to env-var defaults — so freshly bootstrapped
  * deploys still get a working hostpath store without any admin UI action.
  *
- * Phase 3 of the snapshot-storage overhaul: when `opts.snapshotClass` is
+ * Phase 3 of the snapshot-storage overhaul: when `opts.backupClass` is
  * passed, the factory consults `backup_target_assignments` to pick the
  * per-class primary target instead of the legacy "single active config"
  * fallback. The per-class path also returns the resolved `targetId` so
  * the snapshot row can record it for forensics.
  *
  * Backwards compatibility: existing callers that don't pass
- * `snapshotClass` continue to use the legacy fallback chain (settings →
+ * `backupClass` continue to use the legacy fallback chain (settings →
  * active backup config → hostpath default). This lets us migrate
  * subsystems one at a time without breaking anything mid-flight.
  */
@@ -384,7 +384,7 @@ export interface ResolveSnapshotStoreOptions {
    * throws ApiError('NO_SNAPSHOT_TARGET') if the class is unassigned.
    * When omitted, the legacy single-active-target fallback applies.
    */
-  readonly snapshotClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
+  readonly backupClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
 }
 
 export interface ResolvedSnapshotStoreBundle {
@@ -404,8 +404,8 @@ export async function resolveSnapshotStore(
   opts: ResolveSnapshotStoreOptions = {},
 ): Promise<SnapshotStore> {
   // Phase 3: per-class path takes precedence when class is provided.
-  if (opts.snapshotClass) {
-    const bundle = await resolveSnapshotStoreForClass(db, envConfig, opts.snapshotClass);
+  if (opts.backupClass) {
+    const bundle = await resolveSnapshotStoreForClass(db, envConfig, opts.backupClass);
     return bundle.store;
   }
 
@@ -479,7 +479,7 @@ export async function resolveSnapshotStoreForClass(
     readonly STORAGE_SNAPSHOT_HOST_ROOT?: string;
     readonly STORAGE_SNAPSHOT_LOCAL_ROOT?: string;
   },
-  snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  backupClass: import('@k8s-hosting/api-contracts').SnapshotClass,
   /**
    * Phase 11: optional k8s context for stores that need to spawn
    * one-shot Jobs (CIFS stat/delete/readSidecar). Callers in the
@@ -503,7 +503,7 @@ export async function resolveSnapshotStoreForClass(
     const { isShimModeActive, buildShimStreamingStoreConfig } = await import(
       '../backup-rclone-shim/rclone-push.js'
     );
-    if (await isShimModeActive(db, snapshotClass)) {
+    if (await isShimModeActive(db, backupClass)) {
       const { loadBackupTargetKey, SHIM_NAMESPACE } = await import(
         '../backup-rclone-shim/service.js'
       );
@@ -515,7 +515,7 @@ export async function resolveSnapshotStoreForClass(
           k8sCtx.k8s.core,
           SHIM_NAMESPACE,
         );
-        const cfgShim = buildShimStreamingStoreConfig(keyInput.rawKey, snapshotClass);
+        const cfgShim = buildShimStreamingStoreConfig(keyInput.rawKey, backupClass);
         if (cfgShim) {
           const { S3Store } = await import('./snapshot-store.js');
           const { S3StreamingStore } = await import('./streaming-store.js');
@@ -542,7 +542,7 @@ export async function resolveSnapshotStoreForClass(
           // resolver". R-X10 UI surfaces this via a "via shim" pill.
           return {
             store: composeStreamingStore(sdkStore, streamStore),
-            targetId: `shim:${snapshotClass}`,
+            targetId: `shim:${backupClass}`,
           };
         }
       }
@@ -552,7 +552,7 @@ export async function resolveSnapshotStoreForClass(
     }
   }
 
-  const resolved = await resolveTargetFor(db, snapshotClass);
+  const resolved = await resolveTargetFor(db, backupClass);
   const key = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!key) {
     throw new ApiError(
@@ -593,8 +593,8 @@ export async function resolveSnapshotStoreForClass(
       );
     }
     const pathPrefix = cfg.s3Prefix
-      ? `${cfg.s3Prefix.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
-      : `snapshots/${snapshotClass}`;
+      ? `${cfg.s3Prefix.replace(/\/+$/, '')}/snapshots/${backupClass}`
+      : `snapshots/${backupClass}`;
     // The S3StreamingStore drives the upload Job; the legacy S3Store
     // drives stat/delete/sidecar reads. Both point at the same bucket
     // + prefix, so a snapshot uploaded via the streaming Job is
@@ -652,8 +652,8 @@ export async function resolveSnapshotStoreForClass(
     // and CIFS (`cifs_path/snapshots/<class>`). Without this every
     // snapshot class would land in the same dir → silent collisions.
     const basePath = cfg.sshPath
-      ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
-      : `snapshots/${snapshotClass}`;
+      ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${backupClass}`
+      : `snapshots/${backupClass}`;
     const sshStream = new SshStreamingStore({
       host: cfg.sshHost,
       port: cfg.sshPort ?? 22,
@@ -698,8 +698,8 @@ export async function resolveSnapshotStoreForClass(
     const { rcloneObscure } = await import('./rclone-obscure.js');
     const obscuredPassword = rcloneObscure(plainPassword);
     const basePath = cfg.cifsPath
-      ? `${cfg.cifsPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
-      : `snapshots/${snapshotClass}`;
+      ? `${cfg.cifsPath.replace(/\/+$/, '')}/snapshots/${backupClass}`
+      : `snapshots/${backupClass}`;
     const cifsStream = new CifsStreamingStore({
       host: cfg.cifsHost,
       port: cfg.cifsPort ?? 445,
@@ -749,15 +749,15 @@ export async function resolveSnapshotStoreForClass(
  * target_id ON DELETE SET NULL); the caller should fall back to the
  * legacy resolveSnapshotStore for pre-Phase-3 rows.
  *
- * snapshotClass is needed to reconstruct the path prefix
- * (`snapshots/{snapshotClass}/`) since the row's archive_path is just
+ * backupClass is needed to reconstruct the path prefix
+ * (`snapshots/{backupClass}/`) since the row's archive_path is just
  * `<tenantId>/<snapshotId>.tar.gz` — the prefix lives in the store
  * configuration, not the path itself.
  */
 export async function resolveSnapshotStoreByTargetId(
   db: import('../../db/index.js').Database,
   targetId: string,
-  snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  backupClass: import('@k8s-hosting/api-contracts').SnapshotClass,
   /**
    * Phase 11: optional k8s context for CIFS read paths during restore.
    * Restore service plumbs this through from its ServiceCtx.
@@ -804,8 +804,8 @@ export async function resolveSnapshotStoreByTargetId(
     const accessKey = decrypt(cfg.s3AccessKeyEncrypted, key);
     const secretKey = decrypt(cfg.s3SecretKeyEncrypted, key);
     const pathPrefix = cfg.s3Prefix
-      ? `${cfg.s3Prefix.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
-      : `snapshots/${snapshotClass}`;
+      ? `${cfg.s3Prefix.replace(/\/+$/, '')}/snapshots/${backupClass}`
+      : `snapshots/${backupClass}`;
     const sdkStore = new S3Store({
       bucket: cfg.s3Bucket,
       region: cfg.s3Region,
@@ -836,8 +836,8 @@ export async function resolveSnapshotStoreByTargetId(
     const plainPassword = decrypt(cfg.cifsPasswordEncrypted, key);
     const obscuredPassword = rcloneObscure(plainPassword);
     const basePath = cfg.cifsPath
-      ? `${cfg.cifsPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
-      : `snapshots/${snapshotClass}`;
+      ? `${cfg.cifsPath.replace(/\/+$/, '')}/snapshots/${backupClass}`
+      : `snapshots/${backupClass}`;
     const cifsStream = new CifsStreamingStore({
       host: cfg.cifsHost,
       port: cfg.cifsPort ?? 445,
@@ -871,8 +871,8 @@ export async function resolveSnapshotStoreByTargetId(
       obscuredPassword = rcloneObscure(plainPw);
     }
     const basePath = cfg.sshPath
-      ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
-      : `snapshots/${snapshotClass}`;
+      ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${backupClass}`
+      : `snapshots/${backupClass}`;
     const sshStream = new SshStreamingStore({
       host: cfg.sshHost,
       port: cfg.sshPort ?? 22,

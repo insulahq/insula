@@ -55,7 +55,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
    * Non-snapshot ops (suspend, resume, fsck) keep the legacy ctx() since
    * they don't write to a backup target.
    */
-  async function snapshotCtx(snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass) {
+  async function snapshotCtx(backupClass: import('@k8s-hosting/api-contracts').SnapshotClass) {
     const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kcfg);
     const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
@@ -63,7 +63,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const bundle = await resolveSnapshotStoreForClass(
       app.db,
       app.config as Record<string, unknown>,
-      snapshotClass,
+      backupClass,
       // Phase 11: pass k8s ctx so CIFS stores can spawn one-shot Jobs
       // for stat/delete/readSidecar during housekeeping + restore.
       { k8sCtx: { k8s, namespace: platformNamespace } },
@@ -74,7 +74,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
       store: bundle.store,
       platformNamespace,
       targetId: bundle.targetId,
-      snapshotClass,
+      backupClass,
     };
   }
 

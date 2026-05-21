@@ -3,7 +3,7 @@
  *
  * Each subsystem (mail, tenant_bundle, system_pitr, longhorn_recurring)
  * gates `enabled=true` on having at least one target assigned to the
- * subsystem's snapshot_class. The mapping is:
+ * subsystem's backup_class. The mapping is:
  *
  *   mail               → system_mail
  *   tenant_bundle      → tenant_bundle
@@ -30,7 +30,7 @@ import type {
 // ─── Gate map ─────────────────────────────────────────────────────────
 
 /**
- * Maps each subsystem to the snapshot_class that must have at least
+ * Maps each subsystem to the backup_class that must have at least
  * one target assigned before the schedule can be enabled. Null means
  * the subsystem is ungated (e.g. Longhorn RecurringJob writes to
  * local node disk; no external target).
@@ -54,7 +54,7 @@ async function isGateSatisfied(db: Database, subsystem: string): Promise<boolean
   const rows = await db
     .select({ targetId: backupTargetAssignments.targetId })
     .from(backupTargetAssignments)
-    .where(eq(backupTargetAssignments.snapshotClass, cls))
+    .where(eq(backupTargetAssignments.backupClass, cls))
     .limit(1);
   return rows.length > 0;
 }
@@ -89,10 +89,10 @@ export async function listSchedules(db: Database): Promise<BackupScheduleRow[]> 
   const satisfied = new Set<string>();
   if (gatedClasses.length > 0) {
     const assignments = await db
-      .select({ snapshotClass: backupTargetAssignments.snapshotClass })
+      .select({ backupClass: backupTargetAssignments.backupClass })
       .from(backupTargetAssignments)
-      .where(sql`${backupTargetAssignments.snapshotClass} IN ${gatedClasses}`);
-    for (const a of assignments) satisfied.add(a.snapshotClass);
+      .where(sql`${backupTargetAssignments.backupClass} IN ${gatedClasses}`);
+    for (const a of assignments) satisfied.add(a.backupClass);
   }
 
   return rows.map((r) => {

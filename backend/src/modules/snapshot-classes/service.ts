@@ -20,13 +20,13 @@ import {
   type SetAssignmentsInput,
   type AssignmentRow,
   type TargetAssignmentsSummary,
-  snapshotClassEnum,
+  backupClassEnum,
 } from '@k8s-hosting/api-contracts';
 
-const ALL_CLASSES: readonly SnapshotClass[] = snapshotClassEnum.options;
+const ALL_CLASSES: readonly SnapshotClass[] = backupClassEnum.options;
 
 interface JoinedRow {
-  snapshotClass: string;
+  backupClass: string;
   targetId: string;
   targetName: string;
   targetStorageType: string;
@@ -46,7 +46,7 @@ function toIso(value: Date | string | null | undefined): string {
 
 function rowToAssignment(r: JoinedRow): AssignmentRow {
   return {
-    snapshotClass: r.snapshotClass as SnapshotClass,
+    backupClass: r.backupClass as SnapshotClass,
     targetId: r.targetId,
     targetName: r.targetName,
     targetStorageType: r.targetStorageType,
@@ -63,7 +63,7 @@ function rowToAssignment(r: JoinedRow): AssignmentRow {
 export async function listClasses(db: Database): Promise<ListClassesResponse> {
   const rows = (await db
     .select({
-      snapshotClass: backupTargetAssignments.snapshotClass,
+      backupClass: backupTargetAssignments.backupClass,
       targetId: backupTargetAssignments.targetId,
       targetName: backupConfigurations.name,
       targetStorageType: backupConfigurations.storageType,
@@ -72,19 +72,19 @@ export async function listClasses(db: Database): Promise<ListClassesResponse> {
     })
     .from(backupTargetAssignments)
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
-    .orderBy(backupTargetAssignments.snapshotClass, backupTargetAssignments.priority)) as JoinedRow[];
+    .orderBy(backupTargetAssignments.backupClass, backupTargetAssignments.priority)) as JoinedRow[];
 
   const byClass = new Map<SnapshotClass, AssignmentRow[]>();
   for (const cls of ALL_CLASSES) byClass.set(cls, []);
   for (const row of rows) {
-    const cls = row.snapshotClass as SnapshotClass;
+    const cls = row.backupClass as SnapshotClass;
     const list = byClass.get(cls);
     if (!list) continue; // ignore rows for classes not in the locked enum
     list.push(rowToAssignment(row));
   }
 
   const classes: ClassView[] = ALL_CLASSES.map((cls) => ({
-    snapshotClass: cls,
+    backupClass: cls,
     assignments: byClass.get(cls) ?? [],
   }));
 
@@ -103,9 +103,9 @@ export async function listClasses(db: Database): Promise<ListClassesResponse> {
  */
 export async function setAssignments(
   db: Database,
-  snapshotClass: SnapshotClass,
+  backupClass: SnapshotClass,
   input: SetAssignmentsInput,
-): Promise<{ snapshotClass: SnapshotClass; assignments: AssignmentRow[] }> {
+): Promise<{ backupClass: SnapshotClass; assignments: AssignmentRow[] }> {
   // Reject duplicate target_ids in one PUT — the user picked the same
   // target twice, which is meaningless and would break the PK.
   const seenTargets = new Set<string>();
@@ -168,12 +168,12 @@ export async function setAssignments(
 
     await tx
       .delete(backupTargetAssignments)
-      .where(eq(backupTargetAssignments.snapshotClass, snapshotClass));
+      .where(eq(backupTargetAssignments.backupClass, backupClass));
 
     if (input.assignments.length > 0) {
       await tx.insert(backupTargetAssignments).values(
         input.assignments.map((a) => ({
-          snapshotClass,
+          backupClass,
           targetId: a.targetId,
           priority: a.priority,
         })),
@@ -184,7 +184,7 @@ export async function setAssignments(
   // Read back the refreshed set (one query, joined for the response).
   const rows = (await db
     .select({
-      snapshotClass: backupTargetAssignments.snapshotClass,
+      backupClass: backupTargetAssignments.backupClass,
       targetId: backupTargetAssignments.targetId,
       targetName: backupConfigurations.name,
       targetStorageType: backupConfigurations.storageType,
@@ -193,11 +193,11 @@ export async function setAssignments(
     })
     .from(backupTargetAssignments)
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
-    .where(eq(backupTargetAssignments.snapshotClass, snapshotClass))
+    .where(eq(backupTargetAssignments.backupClass, backupClass))
     .orderBy(backupTargetAssignments.priority)) as JoinedRow[];
 
   return {
-    snapshotClass,
+    backupClass,
     assignments: rows.map(rowToAssignment),
   };
 }
@@ -213,7 +213,7 @@ export async function setAssignments(
  */
 export async function resolvePrimaryTarget(
   db: Database,
-  snapshotClass: SnapshotClass,
+  backupClass: SnapshotClass,
 ): Promise<{ targetId: string; targetName: string; targetStorageType: string; targetEnabled: number } | null> {
   // We include `enabled` in the projection so the caller (target-resolver)
   // can refuse to use a disabled target with a TARGET_DISABLED error —
@@ -228,7 +228,7 @@ export async function resolvePrimaryTarget(
     })
     .from(backupTargetAssignments)
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
-    .where(eq(backupTargetAssignments.snapshotClass, snapshotClass))
+    .where(eq(backupTargetAssignments.backupClass, backupClass))
     .orderBy(backupTargetAssignments.priority)
     .limit(1);
 
@@ -246,20 +246,20 @@ export async function getTargetAssignmentsSummary(
 ): Promise<TargetAssignmentsSummary> {
   const rows = await db
     .select({
-      snapshotClass: backupTargetAssignments.snapshotClass,
+      backupClass: backupTargetAssignments.backupClass,
       priority: backupTargetAssignments.priority,
     })
     .from(backupTargetAssignments)
     .where(eq(backupTargetAssignments.targetId, targetId))
-    .orderBy(backupTargetAssignments.snapshotClass);
+    .orderBy(backupTargetAssignments.backupClass);
 
   return {
     targetId,
     classes: rows
-      .filter((r): r is { snapshotClass: SnapshotClass; priority: number } =>
-        ALL_CLASSES.includes(r.snapshotClass as SnapshotClass))
+      .filter((r): r is { backupClass: SnapshotClass; priority: number } =>
+        ALL_CLASSES.includes(r.backupClass as SnapshotClass))
       .map((r) => ({
-        snapshotClass: r.snapshotClass as SnapshotClass,
+        backupClass: r.backupClass as SnapshotClass,
         priority: r.priority,
       })),
   };
@@ -277,7 +277,7 @@ export async function getAllTargetAssignmentsSummaries(
   const rows = await db
     .select({
       targetId: backupTargetAssignments.targetId,
-      snapshotClass: backupTargetAssignments.snapshotClass,
+      backupClass: backupTargetAssignments.backupClass,
       priority: backupTargetAssignments.priority,
     })
     .from(backupTargetAssignments)
@@ -285,10 +285,10 @@ export async function getAllTargetAssignmentsSummaries(
 
   const byTarget = new Map<string, TargetAssignmentsSummary>();
   for (const row of rows) {
-    if (!ALL_CLASSES.includes(row.snapshotClass as SnapshotClass)) continue;
+    if (!ALL_CLASSES.includes(row.backupClass as SnapshotClass)) continue;
     const summary = byTarget.get(row.targetId) ?? { targetId: row.targetId, classes: [] };
     summary.classes.push({
-      snapshotClass: row.snapshotClass as SnapshotClass,
+      backupClass: row.backupClass as SnapshotClass,
       priority: row.priority,
     });
     byTarget.set(row.targetId, summary);

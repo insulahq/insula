@@ -224,7 +224,7 @@ async function isClassBound(
       backupConfigurations,
       eq(backupConfigurations.id, backupTargetAssignments.targetId),
     )
-    .where(inArray(backupTargetAssignments.snapshotClass, [className]))
+    .where(inArray(backupTargetAssignments.backupClass, [className]))
     .orderBy(backupTargetAssignments.priority)
     .limit(1);
   return rows.length > 0 && rows[0].enabled === 1;

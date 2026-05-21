@@ -22,7 +22,7 @@ import { resolvePrimaryTarget } from '../snapshot-classes/service.js';
 import type { SnapshotClass } from '@k8s-hosting/api-contracts';
 
 export interface ResolvedSnapshotTarget {
-  readonly snapshotClass: SnapshotClass;
+  readonly backupClass: SnapshotClass;
   readonly targetId: string;
   readonly targetName: string;
   readonly targetStorageType: string;
@@ -40,13 +40,13 @@ export interface ResolvedSnapshotTarget {
  */
 export async function resolveTargetFor(
   db: Database,
-  snapshotClass: SnapshotClass,
+  backupClass: SnapshotClass,
 ): Promise<ResolvedSnapshotTarget> {
-  const primary = await resolvePrimaryTarget(db, snapshotClass);
+  const primary = await resolvePrimaryTarget(db, backupClass);
   if (!primary) {
     throw new ApiError(
       'NO_SNAPSHOT_TARGET',
-      `No backup target assigned to snapshot class '${snapshotClass}'. ` +
+      `No backup target assigned to snapshot class '${backupClass}'. ` +
       `Configure one at /settings/snapshot-classes.`,
       409,
     );
@@ -60,14 +60,14 @@ export async function resolveTargetFor(
     throw new ApiError(
       'TARGET_DISABLED',
       `Primary backup target '${primary.targetName}' for snapshot class ` +
-      `'${snapshotClass}' is disabled. Either re-enable the target at ` +
+      `'${backupClass}' is disabled. Either re-enable the target at ` +
       `/settings/backups or reassign the class to a different target ` +
       `at /settings/snapshot-classes.`,
       503,
     );
   }
   return {
-    snapshotClass,
+    backupClass,
     targetId: primary.targetId,
     targetName: primary.targetName,
     targetStorageType: primary.targetStorageType,
@@ -81,15 +81,15 @@ export async function resolveTargetFor(
  */
 export async function maybeResolveTargetFor(
   db: Database,
-  snapshotClass: SnapshotClass,
+  backupClass: SnapshotClass,
 ): Promise<ResolvedSnapshotTarget | null> {
-  const primary = await resolvePrimaryTarget(db, snapshotClass);
+  const primary = await resolvePrimaryTarget(db, backupClass);
   // Soft variant also treats a disabled primary as "no usable target"
   // — the UI indicator that uses this should NOT show the disabled
   // target as the active backup destination.
   if (!primary || primary.targetEnabled !== 1) return null;
   return {
-    snapshotClass,
+    backupClass,
     targetId: primary.targetId,
     targetName: primary.targetName,
     targetStorageType: primary.targetStorageType,

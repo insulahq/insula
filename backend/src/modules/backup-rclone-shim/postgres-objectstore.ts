@@ -298,7 +298,7 @@ async function loadSystemTarget(db: Database): Promise<SystemTargetView | null> 
       eq(backupConfigurations.id, backupTargetAssignments.targetId),
     )
     .where(
-      inArray(backupTargetAssignments.snapshotClass, ['system']),
+      inArray(backupTargetAssignments.backupClass, ['system']),
     )
     .orderBy(backupTargetAssignments.priority)
     .limit(1);
