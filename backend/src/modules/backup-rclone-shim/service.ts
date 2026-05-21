@@ -72,6 +72,11 @@ export const CLASSES_TXT_KEY = 'classes.txt';
  *  the old `rclone.conf` key). Sourced by the shim launcher.sh as
  *  `set -a; . upstream.env; set +a`. */
 export const UPSTREAM_ENV_KEY = 'upstream.env';
+// R-X20: rclone.conf rendered by TS contains ALL upstream credentials
+// (combined section + per-target sections). Launcher reads this file
+// directly via the Secret-mounted /etc/rclone-credentials/rclone.conf
+// path and execs `rclone serve s3 --config <path> combined:`.
+export const RCLONE_CONF_KEY = 'rclone.conf';
 
 /** Annotation on the DaemonSet `spec.template.metadata.annotations` —
  *  changing it triggers a rolling pod restart. Value is the renderer's
