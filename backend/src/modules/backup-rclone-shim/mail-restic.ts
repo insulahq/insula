@@ -116,11 +116,13 @@ export interface MailResticShimClients {
 }
 
 export interface MailResticShimResult {
+  // STATE_LEGACY_TAKING_OVER removed in Phase 2 legacy purge
+  // (2026-05-22); the deferral branch no longer exists because the
+  // legacy `system_mail` row can no longer exist (CHECK constraint).
   readonly state:
     | 'STATE_OK'
     | 'STATE_MISSING_KEY'
     | 'STATE_NO_MAIL_TARGET'
-    | 'STATE_LEGACY_TAKING_OVER'
     | 'STATE_ERROR';
   readonly errorMessage: string;
   readonly secretApplied: boolean;
@@ -135,23 +137,17 @@ export async function reconcileMailResticShim(
   clients: MailResticShimClients,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<MailResticShimResult> {
-  // 1. Determine class bindings.
+  // 1. Determine class binding. Phase 2 legacy purge (2026-05-22)
+  // narrowed `backup_target_assignments.backup_class` to the three
+  // shim classes (CHECK constraint enforces it), so the legacy
+  // `system_mail` row can no longer exist. The conditional fork
+  // for legacy-deference has been removed.
   const newMail = await isClassBound(db, 'mail');
-  const legacy = await isClassBound(db, 'system_mail');
 
-  if (!newMail && legacy) {
-    // Legacy reconciler (mail-target-sync.ts) owns the Secret.
-    return {
-      state: 'STATE_LEGACY_TAKING_OVER',
-      errorMessage: '',
-      secretApplied: false,
-    };
-  }
-
-  if (!newMail && !legacy) {
-    // Neither class is bound. Don't touch the Secret — operator may
-    // have configured it manually for a transition window. The
-    // sidecar already handles RESTIC_REPOSITORY="" gracefully.
+  if (!newMail) {
+    // No `mail` binding — leave the Secret alone. Operator may have
+    // a transition window where they're hand-configuring it; the
+    // sidecar handles RESTIC_REPOSITORY="" gracefully.
     return {
       state: 'STATE_NO_MAIL_TARGET',
       errorMessage: '',
@@ -159,22 +155,7 @@ export async function reconcileMailResticShim(
     };
   }
 
-  if (newMail && legacy) {
-    // Conflict: both classes bound. Defer to the legacy reconciler
-    // until the operator cleans up. Log loud once per tick.
-    log.warn(
-      {},
-      'mail-restic-shim: both `mail` and `system_mail` classes are bound — deferring to legacy mail-target-sync (delete the `system_mail` row to switch to shim mode)',
-    );
-    return {
-      state: 'STATE_LEGACY_TAKING_OVER',
-      errorMessage: '',
-      secretApplied: false,
-    };
-  }
-
-  // 2. New `mail` class is bound (and only this one). Load the
-  // BACKUP_TARGET_KEY + emit shim env.
+  // 2. `mail` class is bound. Load the BACKUP_TARGET_KEY + emit shim env.
   let rawKey: Buffer;
   try {
     const ki = await loadBackupTargetKey(clients.core, SHIM_NAMESPACE, { log });
@@ -215,7 +196,7 @@ export async function reconcileMailResticShim(
 
 async function isClassBound(
   db: Database,
-  className: 'mail' | 'system_mail',
+  className: 'mail',
 ): Promise<boolean> {
   const rows = await db
     .select({ enabled: backupConfigurations.enabled })

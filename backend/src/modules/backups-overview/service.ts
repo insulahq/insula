@@ -89,11 +89,13 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
 
   // Schedule states for the page's schedule strip.
   const schedRows = await db.select().from(backupSchedules);
-  // Quick gate-sat lookup per subsystem.
+  // Quick gate-sat lookup per subsystem. Mirrors backup-schedules
+  // service.ts GATE_MAP — re-mapped Phase 2 legacy purge (2026-05-22)
+  // from the legacy 4-class names to the 3 R-X shim classes.
   const gatedClassFor: Record<string, string | null> = {
-    mail: 'system_mail',
-    tenant_bundle: 'tenant_bundle',
-    system_pitr: 'system_backup',
+    mail: 'mail',
+    tenant_bundle: 'tenant',
+    system_pitr: 'system',
     longhorn_recurring: null,
   };
   const gatedClasses = Array.from(

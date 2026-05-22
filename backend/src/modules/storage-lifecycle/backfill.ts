@@ -94,9 +94,13 @@ export async function buildBackfillInventory(db: Database): Promise<BackfillInve
 }
 
 /**
- * Sanity-check: does a valid tenant_snapshot assignment exist? If not,
- * backfill cannot proceed — operator must configure /settings/snapshot-classes
- * first.
+ * Sanity-check: does a valid `tenant` (shim class) assignment exist?
+ * Phase 2 legacy purge: this used to read the `tenant_snapshot` legacy
+ * class, but tenant PVC snapshots now route through the shim's
+ * `tenant` class (same target the shim picks for tenant bundles).
+ * If unbound, backfill cannot proceed — operator must bind the
+ * `tenant` shim class at /backups/tenants → "Targets, Schedules &
+ * Retention" first.
  */
 export async function checkBackfillPreconditions(db: Database): Promise<{ ok: boolean; reason?: string }> {
   const assigned = await db
@@ -104,15 +108,15 @@ export async function checkBackfillPreconditions(db: Database): Promise<{ ok: bo
     .from(backupTargetAssignments)
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))
     .where(and(
-      eq(backupTargetAssignments.backupClass, 'tenant_snapshot'),
+      eq(backupTargetAssignments.backupClass, 'tenant'),
       eq(backupConfigurations.enabled, 1),
     ))
     .limit(1);
   if (assigned.length === 0) {
     return {
       ok: false,
-      reason: 'tenant_snapshot has no enabled target assignment. ' +
-              'Configure one at /settings/snapshot-classes before backfilling.',
+      reason: 'tenant backup class has no enabled target assignment. ' +
+              'Bind a target at /backups/tenants → Targets, Schedules & Retention before backfilling.',
     };
   }
   return { ok: true };

@@ -67,6 +67,15 @@ interface GroupNavItem {
 }
 type NavItem = SimpleNavItem | GroupNavItem;
 
+/** A child is "active" for the purpose of group expansion when either
+ *  the pathname matches exactly (for entries marked `exact`) or is a
+ *  prefix-match (default React Router behaviour). Mirrors the rule
+ *  used by NavLink's `end` prop so the active CSS state and the group
+ *  expansion stay in lockstep. */
+function isChildMatch(child: SimpleNavItem, pathname: string): boolean {
+  return child.exact === true ? pathname === child.to : pathname.startsWith(child.to);
+}
+
 const navItems: ReadonlyArray<NavItem> = [
   { kind: 'item',  to: '/',                       icon: LayoutDashboard, label: 'Dashboard' },
   { kind: 'item',  to: '/tenants',                icon: Users,           label: 'Tenants' },
@@ -114,14 +123,18 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   const location = useLocation();
 
   // Auto-expand any group whose child route is currently active so
-  // the user lands on a visible nav item after a deep-link.
-  const initialExpanded = new Set<string>();
-  for (const item of navItems) {
-    if (item.kind === 'group' && item.children.some((c) => location.pathname.startsWith(c.to))) {
-      initialExpanded.add(item.id);
+  // the user lands on a visible nav item after a deep-link. Using a
+  // function initializer so the Set is built once on mount, not on
+  // every re-render.
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const init = new Set<string>();
+    for (const item of navItems) {
+      if (item.kind === 'group' && item.children.some((c) => isChildMatch(c, location.pathname))) {
+        init.add(item.id);
+      }
     }
-  }
-  const [expanded, setExpanded] = useState<Set<string>>(initialExpanded);
+    return init;
+  });
 
   // Auto-expand on client-side navigation (NavLink keeps Sidebar
   // mounted, so initialExpanded only fires once on first render).
@@ -133,7 +146,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
       const next = new Set(prev);
       for (const item of navItems) {
         if (item.kind !== 'group') continue;
-        if (item.children.some((c) => location.pathname.startsWith(c.to)) && !next.has(item.id)) {
+        if (item.children.some((c) => isChildMatch(c, location.pathname)) && !next.has(item.id)) {
           next.add(item.id);
           changed = true;
         }
@@ -207,7 +220,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             // Group
             const GroupIcon = item.icon;
             const isExpanded = expanded.has(item.id);
-            const childActive = item.children.some((c) => location.pathname.startsWith(c.to));
+            const childActive = item.children.some((c) => isChildMatch(c, location.pathname));
             return (
               <div key={item.id} data-testid={`sidebar-group-${item.id}`}>
                 <button
