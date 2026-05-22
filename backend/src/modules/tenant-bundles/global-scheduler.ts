@@ -82,17 +82,27 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
   const [schedule] = await app.db.select().from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'tenant_bundle'));
   if (!schedule || !schedule.enabled || !schedule.cronExpression) {
+    app.log.debug(
+      { subsystem: 'tenant_bundle', enabled: schedule?.enabled, cron: schedule?.cronExpression },
+      'tenant-bundle global scheduler: tick — no schedule or disabled',
+    );
     return { fired: false, tenantsConsidered: 0, tenantsRan: 0, errors: 0 };
   }
-  // updated_at on backup_schedules tracks the last operator edit; we
-  // need a separate "last fired" track. Stash it in the same row via
-  // a dedicated retention_days=null-marker approach? Cleaner: read
-  // the most-recent successful scheduled bundle from tenant_backups.
-  // For now, derive from schedule.updatedAt by treating ANY explicit
-  // PATCH as a reset of the fire-window. Acceptable for Phase 1; a
-  // proper `last_fired_at` column lands with the real cron-parser.
-  const lastRun = schedule.updatedAt;
-  if (!shouldFireNow(schedule.cronExpression, lastRun ?? null, now)) {
+  // Migration 0024: dedicated last_fired_at column. Previously this
+  // used updated_at, which double-duty'd as "operator edit timestamp"
+  // and produced both false-positive fires (after an operator PATCH)
+  // and false-negative skips (when the pod restart shifted ticks
+  // outside the ±5min window with updated_at never bumped).
+  const lastRun: Date | null = schedule.lastFiredAt ?? null;
+  if (!shouldFireNow(schedule.cronExpression, lastRun, now)) {
+    app.log.debug(
+      {
+        cron: schedule.cronExpression,
+        nowUtc: now.toISOString(),
+        lastFiredAtUtc: lastRun?.toISOString() ?? null,
+      },
+      'tenant-bundle global scheduler: tick — outside fire window',
+    );
     return { fired: false, tenantsConsidered: 0, tenantsRan: 0, errors: 0 };
   }
 
@@ -133,24 +143,35 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     }
   }
 
-  // Mark this fire window done: bump updatedAt to now so the next
-  // shouldFireNow call inside the window returns false.
+  // Mark this fire window done. Migration 0024 added last_fired_at,
+  // a dedicated marker we set independent of operator edits.
   await app.db.update(backupSchedules)
-    .set({ updatedAt: now })
+    .set({ lastFiredAt: now })
     .where(eq(backupSchedules.subsystem, 'tenant_bundle'));
 
   return { fired: true, tenantsConsidered: eligible.length, tenantsRan: ran, errors };
 }
 
 export function startGlobalBundleScheduler(app: FastifyInstance): NodeJS.Timeout {
+  app.log.info(
+    { intervalMs: TICK_INTERVAL_MS, fireWindowMin: FIRE_WINDOW_MIN },
+    'tenant-bundle global scheduler: started',
+  );
   const tick = async () => {
     try {
       const r = await runGlobalBundleTick(app);
-      if (r.fired) app.log.info({ ...r }, 'tenant-bundle global scheduler: tick complete');
+      if (r.fired) {
+        app.log.info({ ...r }, 'tenant-bundle global scheduler: tick complete');
+      }
     } catch (err) {
       app.log.error({ err }, 'tenant-bundle global scheduler: tick failed');
     }
   };
+  // Fire one tick immediately on boot so a freshly-rolled pod can
+  // recover a missed window if it lands within the cron window. The
+  // bookkeeping in last_fired_at prevents duplicate fires on a busy
+  // cluster where multiple pods boot during the same window.
+  void tick();
   const handle = setInterval(tick, TICK_INTERVAL_MS);
   // Don't keep the process alive on shutdown.
   if (typeof handle.unref === 'function') handle.unref();

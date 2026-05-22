@@ -2445,6 +2445,10 @@ export const backupSchedules = pgTable('backup_schedules', {
   retentionCount: integer('retention_count'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: varchar('updated_by', { length: 36 }),
+  // Migration 0024 (B5): real "last fired" marker for the global
+  // scheduler, separate from updated_at (which tracks operator edits).
+  // NULL until the first scheduler-driven fire.
+  lastFiredAt: timestamp('last_fired_at', { withTimezone: true }),
 });
 
 export type BackupSchedule = typeof backupSchedules.$inferSelect;

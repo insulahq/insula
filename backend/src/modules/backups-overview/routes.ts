@@ -34,6 +34,25 @@ export async function backupsOverviewRoutes(app: FastifyInstance): Promise<void>
     }));
   });
 
+  // B2 (2026-05-22): cross-tenant flat-aggregate list of tenant
+  // snapshots, one row per `storage_snapshots` entry joined to its
+  // tenant. Drives the `/backups/tenants` Snapshots tab.
+  app.get('/admin/backups/tenants/snapshots', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Backups Overview'],
+      summary: 'Flat snapshot list across all tenants (with tenant name + plan)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const q = request.query as { tenantId?: string; limit?: string };
+    const limit = q.limit ? Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 500) : 200;
+    return success(await service.listTenantSnapshots(app.db, {
+      tenantId: q.tenantId,
+      limit,
+    }));
+  });
+
   app.get('/admin/backups/tenants/:tenantId/overview', {
     onRequest: adminGate,
     schema: {
