@@ -59,3 +59,32 @@ export const pitrRequestSchema = z.object({
   recoveryTargetTime: z.string().datetime().optional(),
 });
 export type PitrRequest = z.infer<typeof pitrRequestSchema>;
+
+// ─── PITR prechecks (read-only) ──────────────────────────────────────────────
+//
+// Wizard Step 3 calls this BEFORE commit so static warnings give way to live
+// state. `blockingError` is the gate: null = may POST; string = surface as
+// the reason the Confirm button is disabled.
+
+// Intentionally a direct reference to pitrRequestSchema — the prechecks
+// endpoint accepts the same field set as the POST. If divergence is ever
+// needed (e.g. prechecks-only flags), structurally clone with
+// `pitrRequestSchema.extend({...})` rather than `.refine()` on this alias
+// (refinements on the alias would silently also apply to POST validation).
+export const pitrPrechecksRequestSchema = pitrRequestSchema;
+export type PitrPrechecksRequest = z.infer<typeof pitrPrechecksRequestSchema>;
+
+export const pitrPrechecksResponseSchema = z.object({
+  snapshotUsable: z.boolean(),
+  snapshotAgeSec: z.number().int().nonnegative().nullable(),
+  snapshotCreatedAt: z.string().nullable(),
+  walCoverageOk: z.boolean().nullable(),
+  walOldestAt: z.string().nullable(),
+  walCount: z.number().int().nonnegative().nullable(),
+  lockState: z.enum(['free', 'in-memory', 'db']),
+  lockSnapshot: z.string().nullable(),
+  sourceInstances: z.number().int().nonnegative().nullable(),
+  clusterPrimaryPvc: z.string().nullable(),
+  blockingError: z.string().nullable(),
+});
+export type PitrPrechecksResponse = z.infer<typeof pitrPrechecksResponseSchema>;

@@ -9,6 +9,7 @@ import {
   releasePitrLock,
   createPitrJob,
   getPlatformApiImage,
+  runPitrPrechecks,
 } from './service.js';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
@@ -29,6 +30,57 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
   // routes during restore.
   app.get('/admin/postgres-restore/status', async () => {
     return success(await isPostgresRestoreInProgressClusterWide(app.db));
+  });
+
+  // GET /api/v1/admin/postgres-restore/prechecks
+  // Query: clusterNamespace, clusterName, snapshotName, recoveryTargetTime?
+  //
+  // Read-only mirror of the early portion of preflight() that surfaces
+  // live cluster + snapshot context to the wizard's Step 3 ("ready to
+  // commit?"). Does NOT acquire the PITR lock — the actual POST handler
+  // is what acquires it. Returns 200 with `blockingError: string|null`;
+  // callers use the gate to enable/disable the Confirm button.
+  //
+  // Never throws on missing resources — instead populates `blockingError`
+  // with the reason so the wizard renders the same operator-facing
+  // message format for every failure mode.
+  app.get('/admin/postgres-restore/prechecks', {
+    schema: {
+      tags: ['PostgresRestore'],
+      summary: 'Read-only prechecks: snapshot age, WAL coverage, lock state. Surface in the wizard Step 3 before committing the destructive POST.',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        required: ['clusterNamespace', 'clusterName', 'snapshotName'],
+        properties: {
+          clusterNamespace: { type: 'string', minLength: 1, maxLength: 253 },
+          clusterName: { type: 'string', minLength: 1, maxLength: 253 },
+          snapshotName: { type: 'string', minLength: 1, maxLength: 253 },
+          recoveryTargetTime: { type: 'string', format: 'date-time' },
+        },
+        additionalProperties: false,
+      },
+    },
+  }, async (request) => {
+    const q = request.query as {
+      clusterNamespace: string;
+      clusterName: string;
+      snapshotName: string;
+      recoveryTargetTime?: string;
+    };
+    validateName(q.clusterNamespace, 'clusterNamespace');
+    validateName(q.clusterName, 'clusterName');
+    validateName(q.snapshotName, 'snapshotName');
+
+    const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kc);
+    const result = await runPitrPrechecks(k8s, kc, app.db, {
+      clusterNamespace: q.clusterNamespace,
+      clusterName: q.clusterName,
+      snapshotName: q.snapshotName,
+      recoveryTargetTime: q.recoveryTargetTime ?? null,
+    });
+    return success(result);
   });
 
   // POST /api/v1/admin/postgres-restore

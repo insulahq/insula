@@ -225,6 +225,90 @@ except Exception as e:
   fi
 fi
 
+# ─── Phase 1 — CNPG snapshot Restore button wires through real PITR ─────────
+echo '═══ Phase 1 — CNPG PITR endpoints reachable (status + prechecks) ═══'
+
+# Status endpoint must be reachable + return the canonical shape regardless
+# of whether a restore is in flight.
+api GET '/api/v1/admin/postgres-restore/status' '' PITR_STATUS PITR_STATUS_CODE
+if [[ "$PITR_STATUS_CODE" != "200" ]]; then
+  fail "postgres-restore status returned HTTP $PITR_STATUS_CODE"
+else
+  if printf '%s' "$PITR_STATUS" | grep -q '"inProgress"'; then
+    pass "postgres-restore status returns canonical envelope: $(printf '%s' "$PITR_STATUS" | head -c 200)"
+  else
+    fail "postgres-restore status response missing inProgress: $(printf '%s' "$PITR_STATUS" | head -c 200)"
+  fi
+fi
+
+# Prechecks — discover a real CNPG snapshot name from the system-snapshots
+# inventory; if there is no CNPG snapshot, skip (a brand-new cluster has none).
+api GET '/api/v1/admin/system-snapshots' '' SYS_SNAP_RESP SYS_SNAP_CODE
+SNAP_DETAILS=""
+if [[ "$SYS_SNAP_CODE" == "200" ]]; then
+  SNAP_DETAILS=$(printf '%s' "$SYS_SNAP_RESP" | python3 -c "
+import json, sys
+try:
+  d = json.load(sys.stdin)
+  for vol in d.get('data', {}).get('volumes', []):
+    c = vol.get('cnpgCluster')
+    if not c: continue
+    print(f\"{c.get('namespace')} {c.get('name')} {vol.get('longhornVolumeName')}\"); break
+except Exception as e:
+  print(f'parse_error={e}', file=sys.stderr)
+")
+fi
+
+if [[ -z "$SNAP_DETAILS" ]]; then
+  info "Skipping Phase 1 prechecks — no CNPG volumes in system-snapshots inventory"
+else
+  read -r CLU_NS CLU_NAME LH_VOL <<<"$SNAP_DETAILS"
+  api GET "/api/v1/admin/system-snapshots/$LH_VOL/snapshots" '' VOL_SNAP_RESP VOL_SNAP_CODE
+  SNAP_NAME=""
+  if [[ "$VOL_SNAP_CODE" == "200" ]]; then
+    SNAP_NAME=$(printf '%s' "$VOL_SNAP_RESP" | python3 -c "
+import json, sys
+try:
+  d = json.load(sys.stdin)
+  for s in d.get('data', {}).get('snapshots', []):
+    if s.get('usable'):
+      print(s['snapshotName']); break
+except Exception as e:
+  print(f'parse_error={e}', file=sys.stderr)
+")
+  fi
+
+  if [[ -z "$SNAP_NAME" ]]; then
+    info "Skipping Phase 1 prechecks — no usable snapshots on $LH_VOL yet"
+  else
+    QS="clusterNamespace=$CLU_NS&clusterName=$CLU_NAME&snapshotName=$SNAP_NAME"
+    api GET "/api/v1/admin/postgres-restore/prechecks?$QS" '' PRECHECKS_RESP PRECHECKS_CODE
+    if [[ "$PRECHECKS_CODE" != "200" ]]; then
+      fail "postgres-restore prechecks returned $PRECHECKS_CODE for $CLU_NS/$CLU_NAME snap=$SNAP_NAME: $(printf '%s' "$PRECHECKS_RESP" | head -c 200)"
+    else
+      ASSERT=$(printf '%s' "$PRECHECKS_RESP" | python3 -c "
+import json, sys
+try:
+  d = json.load(sys.stdin).get('data', {})
+  ok = True
+  if d.get('snapshotUsable') is not True: ok = False; print('snapshotUsable!=true', file=sys.stderr)
+  if d.get('lockState') not in ('free','in-memory','db'): ok = False; print(f'bad lockState={d.get(\"lockState\")}', file=sys.stderr)
+  be = d.get('blockingError')
+  if be is not None and not isinstance(be, str): ok = False; print(f'bad blockingError type', file=sys.stderr)
+  print('PASS' if ok else 'FAIL')
+  print(f\"  snapshotUsable={d.get('snapshotUsable')} ageSec={d.get('snapshotAgeSec')} lockState={d.get('lockState')} blockingError={be}\")
+except Exception as e:
+  print(f'FAIL parse_error={e}')
+")
+      if printf '%s' "$ASSERT" | head -1 | grep -q PASS; then
+        pass "postgres-restore prechecks ($CLU_NS/$CLU_NAME) — $(printf '%s' "$ASSERT" | sed -n '2p')"
+      else
+        fail "postgres-restore prechecks ($CLU_NS/$CLU_NAME) failed assertions: $ASSERT"
+      fi
+    fi
+  fi
+fi
+
 echo
 if (( FAILED > 0 )); then
   printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"
