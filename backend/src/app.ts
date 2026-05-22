@@ -102,6 +102,7 @@ import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { cnpgBackupCatalogueRoutes } from './modules/cnpg-backup-catalogue/routes.js';
+import { postgresBarmanRestoreRoutes } from './modules/postgres-barman-restore/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
@@ -492,6 +493,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupCatalogueRoutes, { prefix: '/api/v1' });
+  await app.register(postgresBarmanRestoreRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP

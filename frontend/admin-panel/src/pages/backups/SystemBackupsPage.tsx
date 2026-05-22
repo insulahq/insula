@@ -24,40 +24,17 @@
  */
 
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { KeyRound, RotateCw } from 'lucide-react';
 import BackupClassPage from './BackupClassPage';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
 import SystemDatabasesTab from '@/components/system-backup/SystemDatabasesTab';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
-import RestorationWizard, {
-  type RestoreArtifact,
-  type RestorationWizardPrecheck,
-} from '@/components/backups/RestorationWizard';
+import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
 
 export default function SystemBackupsPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
-  const navigate = useNavigate();
-
-  const pgArtifact: RestoreArtifact = {
-    kind: 'backup',
-    id: 'postgres-pitr',
-    displayName: 'Postgres PITR (base + WAL)',
-  };
-
-  const pgPrechecks: ReadonlyArray<RestorationWizardPrecheck> = [
-    {
-      severity: 'warn',
-      message:
-        'Postgres PITR runs out-of-band from the recovery host (CNPG operator promotes a new cluster from the backup). The platform-api cannot perform this restore — on submit you will be navigated to the Restore Instructions section of the Disaster Recovery page where the command is pre-filled.',
-    },
-    {
-      severity: 'info',
-      message:
-        'Manage the base backup schedule + retention at /backups/system → Targets, Schedules & Retention (subsystem: system_pitr).',
-    },
-  ];
 
   return (
     <>
@@ -105,15 +82,7 @@ export default function SystemBackupsPage() {
       />
 
       {wizardOpen && (
-        <RestorationWizard
-          artifact={pgArtifact}
-          prechecks={pgPrechecks}
-          onClose={() => setWizardOpen(false)}
-          onSubmit={async () => {
-            navigate('/backups/disaster-recovery?section=instructions');
-            return { taskId: 'postgres-restore-instructions' };
-          }}
-        />
+        <BarmanRestoreWizard onClose={() => setWizardOpen(false)} />
       )}
     </>
   );
