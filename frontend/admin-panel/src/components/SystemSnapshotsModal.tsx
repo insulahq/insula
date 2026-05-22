@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   X, Loader2, Camera, Trash2, RotateCcw, AlertTriangle, AlertCircle, RefreshCw, CheckCircle, Save,
 } from 'lucide-react';
@@ -48,6 +49,7 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
   const prune = usePruneSystemSnapshots();
   const restore = useRestoreSystemSnapshot();
   const updateJob = useUpdateRecurringJob();
+  const navigate = useNavigate();
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
@@ -291,15 +293,37 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                       </td>
                       <td className="py-1.5 pr-2 max-w-[160px] truncate text-gray-600 dark:text-gray-300">{s.userLabel ?? <span className="text-gray-400 italic">none</span>}</td>
                       <td className="py-1.5 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => setConfirmRestore(s.snapshotName)}
-                          disabled={!s.usable}
-                          className="mr-1 inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700/50"
-                          data-testid={`snapshot-restore-${s.snapshotName}`}
-                        >
-                          <RotateCcw size={10} /> Restore
-                        </button>
+                        {volume.cnpgCluster ? (
+                          // B6 (2026-05-22): in-place revert on a CNPG
+                          // PVC scales the Cluster CR to 0 then mutates
+                          // the volume — destructive while postgres is
+                          // serving traffic, and the wrong tool for the
+                          // job. Proper postgres recovery uses CNPG
+                          // bootstrap.recovery to spawn a new cluster
+                          // from the off-cluster Backup CR. Route to
+                          // the DR Instructions page instead of letting
+                          // the operator click a destructive button.
+                          <button
+                            type="button"
+                            onClick={() => navigate('/backups/disaster-recovery?section=instructions')}
+                            disabled={!s.usable}
+                            className="mr-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                            data-testid={`snapshot-restore-${s.snapshotName}`}
+                            title="Postgres restore runs out-of-band via CNPG bootstrap.recovery — opens the Disaster Recovery instructions"
+                          >
+                            <RotateCcw size={10} /> Restore via DR
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRestore(s.snapshotName)}
+                            disabled={!s.usable}
+                            className="mr-1 inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700/50"
+                            data-testid={`snapshot-restore-${s.snapshotName}`}
+                          >
+                            <RotateCcw size={10} /> Restore
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => setConfirmDelete(s.snapshotName)}
