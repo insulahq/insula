@@ -55,8 +55,9 @@ fail() { FAIL_COUNT=$((FAIL_COUNT+1)); FAILURES+=("$*"); log "  FAIL: $*"; }
 # ── Populate edge-case corpus via JMAP Email/import ─────────────────────────
 populate_corpus() {
   local user="$1"
-  log "populate: corpus into ${user}@${DOMAIN}"
-  kubectl -n "$NS_PERF" exec "$HELPER" -- env MPW="$MPW" python3 -c "
+  local corpus_size="${CORPUS_SIZE:-100}"
+  log "populate: corpus (size=$corpus_size) into ${user}@${DOMAIN}"
+  kubectl -n "$NS_PERF" exec "$HELPER" -- env MPW="$MPW" CORPUS_SIZE="$corpus_size" python3 -c "
 import os, sys, json, base64, time, random
 import requests
 HOST='stalwart-mail.mail.svc.cluster.local'
@@ -163,9 +164,10 @@ def upload_and_import(raw, mbx_id, keywords=None):
 count = 0
 oversize_attempted = 0
 
-# E1: mixed-size corpus into Inbox (60 small, 30 medium, 10 large)
-print('seeding 100 mixed msgs into Inbox...', flush=True)
-for i in range(100):
+# E1: mixed-size corpus into Inbox (60% small, 30% medium, 10% large)
+n_mixed = int(os.environ.get('CORPUS_SIZE', '100'))
+print(f'seeding {n_mixed} mixed msgs into Inbox...', flush=True)
+for i in range(n_mixed):
     r = random.random()
     if r < 0.6: sz = 5000
     elif r < 0.9: sz = 80000
@@ -303,7 +305,7 @@ run_engine_cycle() {
       --account-address "${src_user}@${DOMAIN}" \
       --master-user "$MFQDN" \
       --auth-pass-env STALWART_MASTER_PASSWORD \
-      --output-dir "$maildir_root" 2>&1 | tee -a "$LOG" | grep -E '^\{.*"engine":"imap".*\}' | head -1)
+      --output-dir "$maildir_root" 2>&1 | tee -a "$LOG" | grep -E '^\{.*"engine":\s*"imap".*\}' | head -1 || true)
   else
     cap_summary=$(kubectl -n "$NS_PERF" exec "$HELPER" -- env STALWART_MASTER_PASSWORD="$MPW" \
       python3 /tmp/perf/jmap-sync-stock.py \
@@ -311,7 +313,7 @@ run_engine_cycle() {
       --account-address "${src_user}@${DOMAIN}" \
       --master-user "$MFQDN" \
       --auth-pass-env STALWART_MASTER_PASSWORD \
-      --output-dir "$maildir_root" 2>&1 | tee -a "$LOG" | grep -E '^\{' | tail -1)
+      --output-dir "$maildir_root" 2>&1 | tee -a "$LOG" | grep -E '^\{' | tail -1 || true)
   fi
   [[ -n "$cap_summary" ]] && pass "$engine A1: capture returned summary" || fail "$engine A1: no capture summary"
 
@@ -328,7 +330,7 @@ run_engine_cycle() {
       --master-user "$MFQDN" \
       --auth-pass-env STALWART_MASTER_PASSWORD \
       --maildir-root "$maildir_root" \
-      --mode merge-overwrite 2>&1 | tee -a "$LOG" | grep -E '^\{.*"engine":"imap".*\}' | head -1)
+      --mode merge-overwrite 2>&1 | tee -a "$LOG" | grep -E '^\{.*"engine":\s*"imap".*\}' | head -1 || true)
   else
     rst_summary=$(kubectl -n "$NS_PERF" exec "$HELPER" -- env STALWART_MASTER_PASSWORD="$MPW" \
       python3 /tmp/perf/jmap-restore-stock.py \
@@ -339,7 +341,7 @@ run_engine_cycle() {
       --auth-pass-env STALWART_MASTER_PASSWORD \
       --maildir-root "$maildir_root" \
       --mode merge-overwrite \
-      --workers 8 2>&1 | tee -a "$LOG" | grep -E '^\{' | tail -1)
+      --workers 8 2>&1 | tee -a "$LOG" | grep -E '^\{' | tail -1 || true)
   fi
   [[ -n "$rst_summary" ]] && pass "$engine A2: restore returned summary" || fail "$engine A2: no restore summary"
 
