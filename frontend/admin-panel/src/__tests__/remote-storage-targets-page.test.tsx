@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import BackupSettings from '../pages/BackupSettings';
+import RemoteStorageTargetsPage from '../pages/backups/RemoteStorageTargetsPage';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
@@ -39,19 +39,19 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('BackupSettings page', () => {
+describe("RemoteStorageTargetsPage", () => {
   it('renders page heading', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     await waitFor(() => {
-      expect(screen.getByTestId('backup-settings-heading')).toBeInTheDocument();
+      expect(screen.getByTestId('remote-storage-targets-heading')).toBeInTheDocument();
     });
-    expect(screen.getByText('Backup Configuration')).toBeInTheDocument();
+    expect(screen.getByText('Remote Storage Targets')).toBeInTheDocument();
   });
 
   it('shows loading state while fetching', () => {
     mockApiFetch.mockReturnValue(new Promise(() => {}));
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     // The Loader2 spinner is rendered — check for the animate-spin class
     const spinner = document.querySelector('.animate-spin');
     expect(spinner).toBeInTheDocument();
@@ -59,7 +59,7 @@ describe('BackupSettings page', () => {
 
   it('shows empty state when no configs exist', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByText('No backup targets configured. Add one to get started.')).toBeInTheDocument();
     });
@@ -67,7 +67,7 @@ describe('BackupSettings page', () => {
 
   it('shows add backup target button', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-backup-config-button')).toBeInTheDocument();
     });
@@ -76,7 +76,7 @@ describe('BackupSettings page', () => {
 
   it('shows form when add button is clicked', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-backup-config-button')).toBeInTheDocument();
     });
@@ -112,7 +112,7 @@ describe('BackupSettings page', () => {
         },
       ],
     });
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('backup-config-bc-1')).toBeInTheDocument();
     });
@@ -122,7 +122,7 @@ describe('BackupSettings page', () => {
 
   it('shows SSH fields by default in form', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<BackupSettings />, { wrapper: createWrapper() });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-backup-config-button')).toBeInTheDocument();
     });
