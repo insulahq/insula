@@ -1131,6 +1131,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => proxyNetworksStop());
 
+        // IMAP-concurrency reverter: tenant-bundles capture + backup-restore
+        // executors transiently elevate Stalwart's x:Imap.maxConcurrent from
+        // 16 → 64 around mailbox Jobs to let imap-restore.py --workers 4
+        // open four concurrent connections per user. This scheduler reverts
+        // back to 16 when no mailbox Jobs are in-flight, so Stalwart sits at
+        // its memory-conservative default during idle periods. Safe to run
+        // on every replica — the reverter checks a DB-backed gauge before
+        // writing. See backend/src/modules/mail-admin/imap-concurrency.ts.
+        const { startImapConcurrencyReverter } = await import(
+          './modules/mail-admin/imap-concurrency.js'
+        );
+        const imapConcurrencyStop = startImapConcurrencyReverter(app.db);
+        app.addHook('onClose', () => imapConcurrencyStop());
+
         // Phase 2 streamline (2026-05-15): on first install the DB default is
         // mailPortExposureMode='allServerNodes' but nothing has applied the
         // haproxy DaemonSet yet. Drive cluster state to match the DB value

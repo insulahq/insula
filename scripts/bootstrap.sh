@@ -5569,22 +5569,23 @@ spec:
           # maxRequestSize is read at Stalwart startup — the pod recycle
           # at the end of bootstrap_stalwart_v016 is what applies it.
           #
-          # maxConcurrent raised 16→64 to enable PARALLEL IMAP restore
-          # (imap-restore.py --workers 4). The setting's effective
-          # per-user cap is ~maxConcurrent/16 — at the default of 16
-          # only 1 concurrent connection per user is allowed, blocking
-          # the 4-worker restore. 64 yields ~4 concurrent per user.
-          # Confirmed live on testing.example.test 2026-05-22:
-          # at 16 a 2nd LOGIN as same user fails with
-          # `NO [LIMIT] Too many concurrent requests`; at 64 a 4-worker
-          # restore completes in 28s vs JMAP's 43s on the same 3011-msg
-          # corpus.
+          # maxConcurrent stays at the Stalwart DEFAULT 16. Tenant-bundles
+          # capture + backup-restore executors transiently elevate it to 64
+          # around active mailbox Jobs (so imap-restore.py --workers 4 can
+          # open four concurrent connections per user — the effective
+          # per-user cap is ~maxConcurrent/16). The 5-min
+          # `startImapConcurrencyReverter` scheduler in platform-api
+          # returns the setting to 16 when no jobs are in-flight, so
+          # Stalwart sits at the memory-conservative default during idle
+          # periods (per-user buffered-APPEND worst case is
+          # maxConcurrent × maxRequestSize). See
+          # backend/src/modules/mail-admin/imap-concurrency.ts.
           jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:Imap/set",
                 {accountId:\$a,update:{singleton:{
                   maxRequestSize:104857600,
-                  maxConcurrent:64
+                  maxConcurrent:16
                 }}},
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "Imap limits OK"

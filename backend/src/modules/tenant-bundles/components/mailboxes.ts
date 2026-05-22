@@ -75,6 +75,13 @@ import {
   type MailboxBackupEngine,
 } from '../mailbox-backup-engine.js';
 import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from '../cluster-concurrency.js';
+import {
+  ensureImapMaxConcurrentAtLeast,
+  IMAP_MAX_CONCURRENT_MIGRATION,
+} from '../../mail-admin/imap-concurrency.js';
+import { mailLogger } from '../../../shared/mail-logger.js';
+
+const mlog = mailLogger().child({ module: 'tenant-bundles-mailboxes' });
 
 export interface MailboxesComponentResult {
   readonly mailboxCount: number;
@@ -551,6 +558,23 @@ export async function captureMailboxesComponent(
         );
       }
       throw err;
+    }
+
+    // Elevate Stalwart's x:Imap.maxConcurrent before the Job starts so
+    // imap-sync.py's K=4 worker pool isn't throttled to a single
+    // effective connection per user. Idempotent — no-op if already
+    // elevated by another in-flight Job. Best-effort: a Stalwart blip
+    // here logs a warning and continues; the worst case is degraded
+    // throughput, not a failed capture. The mail-admin reverter
+    // scheduler will return Stalwart to the default once no mailbox
+    // jobs remain in-flight. See backend/src/modules/mail-admin/imap-concurrency.ts.
+    try {
+      await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
+    } catch (err) {
+      mlog.warn(
+        { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
+        'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+      );
     }
 
     await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);
