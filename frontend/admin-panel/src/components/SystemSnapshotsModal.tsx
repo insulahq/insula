@@ -21,6 +21,7 @@ import type { SystemPvcSnapshotSummary } from '@k8s-hosting/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import RestorationWizard, { type RestoreArtifact, type RestorationWizardPrecheck } from '@/components/backups/RestorationWizard';
+import PitrProgressModal from '@/components/backups/PitrProgressModal';
 
 interface SystemSnapshotsModalProps {
   readonly volume: SystemPvcSnapshotSummary;
@@ -72,6 +73,9 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
   // Phase 1 (2026-05-22): CNPG snapshot → real PITR via wizard.
   // Holds the snapshot row the operator picked; null = wizard closed.
   const [pitrSnap, setPitrSnap] = useState<{ snapshotName: string; createdAt: string | null; sizeBytes: number } | null>(null);
+  // P4b (2026-05-22): jobName of the in-flight PITR for the live progress modal.
+  // Set after a successful POST; the modal replaces the wizard.
+  const [pitrProgressJob, setPitrProgressJob] = useState<string | null>(null);
 
   // Read live prechecks whenever the wizard is open against a CNPG snap.
   const prechecksQ = usePitrPrechecks({
@@ -502,11 +506,24 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                 // Refresh the cluster-wide status so the chip + future
                 // restore buttons see the lock immediately.
                 qc.invalidateQueries({ queryKey: ['postgres-restore', 'status'] });
+                // P4b: hand off to the live progress modal. Close the
+                // wizard (handled by RestorationWizard's onSubmit-then-
+                // onClose flow) and open the progress timeline.
+                setPitrSnap(null);
+                setPitrProgressJob(resp.data.jobName);
                 return { taskId: resp.data.jobName };
               }}
             />
           );
         })()}
+
+        {/* P4b — live progress timeline (replaces the wizard post-submit). */}
+        {pitrProgressJob && (
+          <PitrProgressModal
+            jobName={pitrProgressJob}
+            onClose={() => setPitrProgressJob(null)}
+          />
+        )}
       </div>
     </div>
   );

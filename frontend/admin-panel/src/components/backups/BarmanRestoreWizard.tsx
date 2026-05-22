@@ -464,6 +464,24 @@ function InFlight({
 }) {
   const statusQ = useBarmanRestoreStatus({ namespace, newClusterName });
   const s = statusQ.data?.data;
+  // P4b: derive a timeline from CNPG conditions sorted by lastTransitionTime.
+  // Conditions repeat across reconciles; dedupe by type, keeping the latest
+  // transition so the timeline shows one row per logical milestone.
+  const timeline = useMemo(() => {
+    if (!s) return [] as ReadonlyArray<{ type: string; status: string; message: string | null; lastTransitionTime: string | null }>;
+    const latest = new Map<string, { type: string; status: string; message: string | null; lastTransitionTime: string | null }>();
+    for (const c of s.conditions) {
+      const prev = latest.get(c.type);
+      if (!prev || (c.lastTransitionTime && (!prev.lastTransitionTime || c.lastTransitionTime >= prev.lastTransitionTime))) {
+        latest.set(c.type, c);
+      }
+    }
+    return Array.from(latest.values()).sort((a, b) => {
+      const at = a.lastTransitionTime ?? '';
+      const bt = b.lastTransitionTime ?? '';
+      return at.localeCompare(bt);
+    });
+  }, [s]);
   return (
     <div className="space-y-3">
       <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-900">
@@ -483,19 +501,31 @@ function InFlight({
             )}
           </ul>
         )}
-        {s && s.conditions.length > 0 && (
-          <details className="mt-2">
-            <summary className="cursor-pointer text-xs text-gray-500 dark:text-gray-400">CNPG conditions ({s.conditions.length})</summary>
-            <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto text-[11px]">
-              {s.conditions.map((c, i) => (
-                <li key={`${c.type}-${i}`} className="flex gap-2">
-                  <span className="font-mono">{c.type}</span>
-                  <span className="text-gray-500">{c.status}</span>
-                  {c.message && <span className="truncate text-gray-500" title={c.message}>{c.message}</span>}
-                </li>
-              ))}
-            </ul>
-          </details>
+        {timeline.length > 0 && (
+          <div className="mt-2">
+            <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Timeline</div>
+            <ol className="mt-1 max-h-40 space-y-0.5 overflow-y-auto text-[11px]" data-testid="barman-restore-timeline">
+              {timeline.map((c) => {
+                const ok = c.status === 'True';
+                const failed = c.status === 'False' && c.type.toLowerCase().includes('fail');
+                const when = c.lastTransitionTime ? new Date(c.lastTransitionTime).toLocaleTimeString() : '—';
+                return (
+                  <li key={c.type} className="flex items-start gap-2">
+                    <span className="mt-0.5 flex-shrink-0">
+                      {ok && <Check size={10} className="text-emerald-600 dark:text-emerald-400" />}
+                      {failed && <Check size={10} className="text-rose-600 dark:text-rose-400 rotate-45" />}
+                      {!ok && !failed && <Loader2 size={10} className="animate-spin text-brand-600 dark:text-brand-400" />}
+                    </span>
+                    <span className="flex-1">
+                      <span className={ok ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-300'}>{c.type}</span>
+                      {c.message && <span className="ml-2 text-gray-500 dark:text-gray-400">{c.message}</span>}
+                    </span>
+                    <span className="flex-shrink-0 font-mono text-[10px] text-gray-500 dark:text-gray-400">{when}</span>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
         )}
       </div>
       <div className="flex items-center justify-between gap-2">
