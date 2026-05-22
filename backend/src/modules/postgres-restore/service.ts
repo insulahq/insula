@@ -551,7 +551,13 @@ interface CnpgCluster {
     readonly enableSuperuserAccess?: boolean;
     readonly monitoring?: unknown;
   };
-  readonly status?: { readonly currentPrimary?: string; readonly phase?: string };
+  readonly status?: {
+    readonly currentPrimary?: string;
+    readonly phase?: string;
+    /** P4 (2026-05-22): structurally healthy check uses this instead of
+     *  string-matching `phase === 'Cluster in healthy state'`. */
+    readonly readyInstances?: number;
+  };
 }
 
 interface RawSnap {
@@ -873,7 +879,15 @@ async function waitClusterHealthy(
         group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'clusters', name: clusterName,
       });
       lastPhase = c.status?.phase; lastPrimary = c.status?.currentPrimary;
-      if (lastPhase === 'Cluster in healthy state' && lastPrimary) {
+      // Structural healthy check: at least one ready instance + a
+      // currentPrimary. We deliberately do NOT string-match on
+      // `phase === 'Cluster in healthy state'` — CNPG's phase wording
+      // has changed across versions (and may change again) which
+      // would silently break this loop. Instance count + primary set
+      // is the durable truth that aligns with what
+      // `getBarmanRestoreStatus` computes for the side-by-side flow.
+      const ready = c.status?.readyInstances ?? 0;
+      if (ready >= 1 && lastPrimary) {
         return { ok: true, phase: lastPhase, primary: lastPrimary };
       }
     } catch { /* keep polling */ }
@@ -1195,6 +1209,16 @@ export async function promotePostgresFromSnapshot(
   // and see the timeline as it builds. Fire-and-forget DB write to avoid
   // adding await everywhere; the orchestrator is single-threaded, so
   // any later write contains the full prior history.
+  //
+  // PHANTOM-LOCK BARRIER: the `if (cur)` guard is load-bearing. The
+  // finally block calls `clearPersistedLock` AFTER the last recordStep
+  // (resume-flux). The async closure scheduled by that recordStep can
+  // resolve AFTER clearPersistedLock — at which point `readPersistedLock`
+  // returns null and we MUST skip the write. Without the guard, the
+  // closure would resurrect a stale lock row that no live Job is
+  // managing, and `recoverInterruptedRestore` at next platform-api
+  // startup would treat it as a crashed restore and emit a spurious
+  // admin notification. Do NOT remove the guard.
   const recordStep = (s: PitrStep): void => {
     steps.push(s);
     void (async () => {

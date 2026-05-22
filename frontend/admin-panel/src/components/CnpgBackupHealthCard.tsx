@@ -1,7 +1,15 @@
-import { ShieldCheck, AlertTriangle, ShieldAlert, Loader2, Radio } from 'lucide-react';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { ShieldCheck, AlertTriangle, ShieldAlert, Loader2, Radio, RotateCw } from 'lucide-react';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
 import { useWalArchiveClusters } from '@/hooks/use-system-wal-archive';
-import type { CnpgClusterBackupHealth, WalArchiveCluster } from '@k8s-hosting/api-contracts';
+import { apiFetch } from '@/lib/api-client';
+import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
+import type {
+  CnpgBackupCatalogueResponse,
+  CnpgClusterBackupHealth,
+  WalArchiveCluster,
+} from '@k8s-hosting/api-contracts';
 
 interface Props {
   /**
@@ -31,6 +39,14 @@ export function CnpgBackupHealthCard({ clusterFilter }: Props) {
   // P4c: WAL streaming health — surfaced as a per-cluster line below the
   // base backup info so the operator sees both signals together.
   const walQ = useWalArchiveClusters();
+  // P4d (2026-05-22): when an operator clicks "Restore from this" on a
+  // backup row, open BarmanRestoreWizard with the source + target time
+  // pre-seeded. Local state lives in the card so the modal is portaled
+  // outside the row's z-index.
+  const [restoreFrom, setRestoreFrom] = useState<{
+    sourceName: string;
+    targetTime: string;
+  } | null>(null);
 
   if (isLoading) {
     return (
@@ -89,14 +105,31 @@ export function CnpgBackupHealthCard({ clusterFilter }: Props) {
             key={`${c.namespace}/${c.clusterName}`}
             c={c}
             wal={walQ.data?.find((w) => w.clusterNamespace === c.namespace && w.clusterName === c.clusterName) ?? null}
+            onRestoreFromBackup={(t: string) => setRestoreFrom({ sourceName: c.clusterName, targetTime: t })}
           />
         ))}
       </div>
+
+      {restoreFrom && (
+        <BarmanRestoreWizard
+          onClose={() => setRestoreFrom(null)}
+          initialSourceName={restoreFrom.sourceName}
+          initialTargetTime={restoreFrom.targetTime}
+        />
+      )}
     </div>
   );
 }
 
-function ClusterRow({ c, wal }: { c: CnpgClusterBackupHealth; wal: WalArchiveCluster | null }) {
+function ClusterRow({
+  c,
+  wal,
+  onRestoreFromBackup,
+}: {
+  c: CnpgClusterBackupHealth;
+  wal: WalArchiveCluster | null;
+  onRestoreFromBackup: (targetTimeIso: string) => void;
+}) {
   const palette = paletteForState(c.state);
 
   return (
@@ -203,8 +236,121 @@ function ClusterRow({ c, wal }: { c: CnpgClusterBackupHealth; wal: WalArchiveClu
           </div>
         )}
       </div>
+
+      {/* P4d (2026-05-22): inline catalogue backup list with per-row
+          Restore buttons. Only renders when the cluster has an
+          ObjectStore (plugin-mode); legacy spec.backup-only clusters
+          are out of scope for now. */}
+      {c.objectStoreName && (
+        <BackupListPanel
+          namespace={c.namespace}
+          objectStoreName={c.objectStoreName}
+          onRestoreFromBackup={onRestoreFromBackup}
+        />
+      )}
     </div>
   );
+}
+
+function BackupListPanel({
+  namespace,
+  objectStoreName,
+  onRestoreFromBackup,
+}: {
+  namespace: string;
+  objectStoreName: string;
+  onRestoreFromBackup: (targetTimeIso: string) => void;
+}) {
+  // P4d: lazy-disclosure pattern. The catalogue fetch is an S3 LIST +
+  // per-backup GET so we only fire when the operator actually opens the
+  // panel — otherwise N clusters × N visits to /backups/system would
+  // produce N pointless requests per page-mount.
+  const [expanded, setExpanded] = useState(false);
+  const q = useQuery({
+    queryKey: ['cnpg-backup-catalogue', namespace, objectStoreName],
+    queryFn: () =>
+      apiFetch<{ data: CnpgBackupCatalogueResponse }>(
+        `/api/v1/admin/cnpg-backup-catalogue/${encodeURIComponent(namespace)}/${encodeURIComponent(objectStoreName)}`,
+      ),
+    staleTime: 60_000,
+    retry: false,
+    enabled: expanded,
+  });
+  const cat = q.data?.data;
+  return (
+    <details
+      className="mt-2 rounded border border-gray-200 bg-white px-2 py-1 dark:border-gray-700 dark:bg-gray-900"
+      onToggle={(e) => setExpanded((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer text-xs font-medium text-gray-700 dark:text-gray-300">
+        Available backups in the object store{cat ? ` (${cat.backups.length})` : ''}
+      </summary>
+      <div className="mt-1.5">
+        {q.isLoading && <div className="text-xs text-gray-500">Loading…</div>}
+        {q.error && (
+          <div className="text-xs text-rose-700">
+            Catalogue fetch failed: {q.error instanceof Error ? q.error.message : String(q.error)}
+          </div>
+        )}
+        {cat?.source === 'unavailable' && (
+          <div className="text-xs text-amber-800 dark:text-amber-300">
+            Catalogue unavailable: {cat.unavailableReason}
+          </div>
+        )}
+        {cat?.source === 'object-store' && cat.backups.length === 0 && (
+          <div className="text-xs text-gray-500 dark:text-gray-400">No backups in archive yet.</div>
+        )}
+        {cat?.source === 'object-store' && cat.backups.length > 0 && (
+          <ul className="space-y-0.5 text-xs">
+            {cat.backups.slice(0, 10).map((b) => {
+              const targetTime = b.endedAt ?? b.uploadedAt ?? null;
+              return (
+                <li
+                  key={b.backupId}
+                  className="flex items-center gap-2 rounded px-1.5 py-0.5 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  data-testid={`backup-row-${b.backupId}`}
+                >
+                  <span className="flex-shrink-0 font-mono text-[10px] text-gray-700 dark:text-gray-300">
+                    {b.backupId}
+                  </span>
+                  <span className="flex-1 text-[10px] text-gray-500 dark:text-gray-400">
+                    {targetTime ? new Date(targetTime).toLocaleString() : 'in-flight'}
+                    {b.dataSizeBytes != null && (
+                      <span className="ml-1">· {formatBytes(b.dataSizeBytes)}</span>
+                    )}
+                    {b.status && b.status !== 'DONE' && (
+                      <span className="ml-1 text-amber-700 dark:text-amber-400">[{b.status}]</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => targetTime && onRestoreFromBackup(targetTime)}
+                    disabled={!targetTime}
+                    title={targetTime ? `Open the restore wizard with target time pre-set to ${new Date(targetTime).toISOString()}` : 'Backup is in-flight — wait until it completes'}
+                    className="inline-flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                    data-testid={`backup-restore-${b.backupId}`}
+                  >
+                    <RotateCw size={9} /> Restore from this
+                  </button>
+                </li>
+              );
+            })}
+            {cat.backups.length > 10 && (
+              <li className="px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+                + {cat.backups.length - 10} older backups (truncated)
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function formatBytes(b: number): string {
+  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GiB`;
+  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MiB`;
+  return `${(b / 1024).toFixed(0)} KiB`;
 }
 
 function paletteForState(state: CnpgClusterBackupHealth['state']) {
