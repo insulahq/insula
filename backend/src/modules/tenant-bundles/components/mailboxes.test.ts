@@ -17,7 +17,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
     jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
     stalwartMasterUser: 'master@master.local',
-    masterSecretName: 'roundcube-secrets',
+    masterSecretName: 'mail-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
     uploadUrlNoToken: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-test/components/mailboxes/restic-stream?filename=maildir.tar',
     uploadTokenSecretName: 'bk-mbox-token-bkp-test',
@@ -67,13 +67,13 @@ describe('buildMailboxesComponentJobSpec', () => {
     expect(tokenVol?.secret?.defaultMode).toBe(0o400);
   });
 
-  it('mounts the master password env from the roundcube-secrets Secret', () => {
+  it('mounts the master password env from the mail-secrets Secret', () => {
     const spec = buildMailboxesComponentJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } }> }> } } };
     };
     const env = spec.spec.template.spec.containers[0]!.env;
     const pw = env.find((e) => e.name === 'STALWART_MASTER_PASSWORD');
-    expect(pw?.valueFrom?.secretKeyRef?.name).toBe('roundcube-secrets');
+    expect(pw?.valueFrom?.secretKeyRef?.name).toBe('mail-secrets');
     expect(pw?.valueFrom?.secretKeyRef?.key).toBe('STALWART_MASTER_PASSWORD');
   });
 
@@ -207,7 +207,7 @@ describe('buildMailboxesComponentJobSpec — engine=imap', () => {
     imapHost: 'stalwart-mail.mail.svc.cluster.local',
     imapPort: 993,
     stalwartMasterUser: 'master@master.local',
-    masterSecretName: 'roundcube-secrets',
+    masterSecretName: 'mail-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
     uploadUrlNoToken: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-imap/components/mailboxes/restic-stream?filename=maildir.tar',
     uploadTokenSecretName: 'bk-mbox-token-bkp-imap',

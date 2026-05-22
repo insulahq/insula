@@ -379,7 +379,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // Cut 3 (2026-05-05): rotate the Stalwart `master@master.local` Account
   // password (consumed by Roundcube's jwt_auth plugin for IMAP master-
   // user impersonation). Same JMAP+Secret mechanics as the admin route
-  // but targets `roundcube-secrets/STALWART_MASTER_PASSWORD` and rolls
+  // but targets `mail-secrets/STALWART_MASTER_PASSWORD` and rolls
   // the Roundcube Deployment afterwards (Roundcube reads the env var
   // at process start, not via volume-mount refresh).
   const handleRotateWebmailMasterPassword = async (req: { user?: { sub?: string } }) => {

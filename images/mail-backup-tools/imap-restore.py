@@ -203,6 +203,15 @@ def _enumerate_maildir(
 
     out: list[tuple[str, str, frozenset[str], frozenset[str]]] = []
     for path_component in sorted(os.listdir(base)):
+        # Hidden directories (leading dot) are out-of-band metadata
+        # adjacent to the Maildir tree, not real mailboxes. The aux
+        # backup writes Sieve/Contact/Calendar/Vacation/FileNode JSON
+        # sidecars to <addr>/.aux/; without this skip imap-restore.py
+        # creates a literal IMAP folder named '.aux' on the target,
+        # which the user then sees in webmail. The skip is harmless
+        # for snapshots that don't have a .aux/ dir (no-op).
+        if path_component.startswith("."):
+            continue
         if not SAFE_PATH_COMPONENT_RE.match(path_component):
             _log(f"skipping unsafe folder path: {path_component!r}")
             continue
