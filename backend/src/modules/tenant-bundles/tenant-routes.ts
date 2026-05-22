@@ -158,12 +158,12 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
     }
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
     const [plan] = await app.db.select({
       defaultDays: hostingPlans.defaultBackupRetentionDays,
       maxDays: hostingPlans.maxBackupRetentionDays,
     }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
-    if (!plan) throw new ApiError('CONFIG_INVALID', 'Client has no resolvable plan', 400);
+    if (!plan) throw new ApiError('CONFIG_INVALID', 'Tenant has no resolvable plan', 400);
     const requestedRetention = parsed.data.retentionDays ?? plan.defaultDays;
     if (requestedRetention > plan.maxDays) {
       throw new ApiError(

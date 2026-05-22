@@ -46,7 +46,7 @@ set -uo pipefail
 #   3. platform-cluster-config ConfigMap (deployed by bootstrap.sh —
 #      authoritative source of the cluster's PLATFORM_DOMAIN)
 #   4. Hardcoded fallback (staging cluster, used when CM is absent)
-SMOKE_HOSTNAMES_FALLBACK="admin.staging.phoenix-host.net,client.staging.phoenix-host.net,longhorn.staging.phoenix-host.net,dex.staging.phoenix-host.net"
+SMOKE_HOSTNAMES_FALLBACK="admin.staging.phoenix-host.net,tenant.staging.phoenix-host.net,longhorn.staging.phoenix-host.net,dex.staging.phoenix-host.net"
 
 discover_hostnames() {
   # Read the base domain from the live cluster's platform-config
@@ -68,7 +68,7 @@ discover_hostnames() {
       -o jsonpath='{.data.PLATFORM_DOMAIN}' 2>/dev/null || true)
   fi
   if [[ -n "$dom" ]]; then
-    echo "admin.${dom},client.${dom},longhorn.${dom},dex.${dom}"
+    echo "admin.${dom},tenant.${dom},longhorn.${dom},dex.${dom}"
   else
     echo "$SMOKE_HOSTNAMES_FALLBACK"
   fi

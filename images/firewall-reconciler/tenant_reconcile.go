@@ -3,7 +3,7 @@
 // Replaces images/worker-firewall-reconciler/reconcile.sh. Same
 // inputs (Pod hostPort + platform.io/firewall-{tcp,udp}-ports
 // annotation), same tenant-namespace classification (namespace prefix
-// `client-` OR namespace has annotation
+// `tenant-` OR namespace has annotation
 // platform.phoenix-host.net/tenant-namespace=true), same set targets.
 // Different writer: libnftnl netlink (no `nft` binary in container).
 //
@@ -28,7 +28,7 @@ import (
 )
 
 // tenantNamespaceAnnotation flips a namespace into the tenant bucket.
-// Belt + suspenders with the `client-` prefix check: either signal is
+// Belt + suspenders with the `tenant-` prefix check: either signal is
 // sufficient. We'd rather have a false-negative (skip a tenant
 // namespace someone forgot to label) than a false-positive (open
 // infra ports to the public-facing accept set).
@@ -171,14 +171,14 @@ func (t *tenantPortsReconciler) reconcileOnce(ctx context.Context) error {
 }
 
 // isTenantNamespace returns true if the namespace is in the tenant
-// bucket — either the name starts with "client-" or the namespace
+// bucket — either the name starts with "tenant-" or the namespace
 // carries the tenant-marker annotation. Either signal flips it; we
 // prefer false-negative (skip a tenant the operator forgot to label)
 // to false-positive (punching infra ports through the public-accept
 // rule, which is exactly the IngressNightmare exposure the firewall
 // guard exists to prevent).
 func (t *tenantPortsReconciler) isTenantNamespace(name string) (bool, error) {
-	if strings.HasPrefix(name, "client-") {
+	if strings.HasPrefix(name, "tenant-") {
 		return true, nil
 	}
 	ns, err := t.nses.Get(name)

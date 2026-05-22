@@ -125,7 +125,7 @@ export default function BackupBundlesSection({ configs }: Props) {
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
                 <th className="px-3 py-2">Bundle ID</th>
-                <th className="px-3 py-2">Client</th>
+                <th className="px-3 py-2">Tenant</th>
                 <th className="px-3 py-2">Target</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Size</th>
@@ -255,7 +255,7 @@ function CreateBundleModal({
   targets: BackupConfigResponse[];
   onClose: () => void;
 }) {
-  const { data: clientsResp } = useTenants({ limit: 100 });
+  const { data: tenantsResp } = useTenants({ limit: 100 });
   const create = useCreateBundle();
   const [tenantId, setTenantId] = useState('');
   const [targetId, setTargetId] = useState(targets[0]?.id ?? '');
@@ -269,7 +269,7 @@ function CreateBundleModal({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ bundleId: string; status: string } | null>(null);
 
-  const tenants = clientsResp?.data ?? [];
+  const tenants = tenantsResp?.data ?? [];
 
   const onSubmit = async () => {
     setError(null);
@@ -339,7 +339,7 @@ function CreateBundleModal({
         ) : (
           <div className="space-y-3">
             <label className="block text-sm">
-              <span className="text-gray-700 dark:text-gray-300 font-medium">Client</span>
+              <span className="text-gray-700 dark:text-gray-300 font-medium">Tenant</span>
               <select className={`${INPUT_CLASS} mt-1`} value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
                 <option value="">Pick a tenant…</option>
                 {tenants.map((c) => (

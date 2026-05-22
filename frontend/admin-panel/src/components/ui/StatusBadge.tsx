@@ -2,7 +2,7 @@ import clsx from 'clsx';
 
 type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' | 'error' | 'failed' | 'healthy' | 'warning' | 'running' | 'stopped'
   | 'deploying' | 'upgrading' | 'deleting' | 'completed' | 'rolled_back' | 'rolling_back' | 'backing_up' | 'pre_check' | 'health_check'
-  // Client lifecycle (extends tenants.status)
+  // Tenant lifecycle (extends tenants.status)
   | 'archived'
   // Storage lifecycle transient states — rendered as their own pill on the tenants list.
   | 'idle' | 'snapshotting' | 'quiescing' | 'resizing' | 'replacing' | 'restoring' | 'unquiescing' | 'archiving'

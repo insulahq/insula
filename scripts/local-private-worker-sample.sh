@@ -148,7 +148,7 @@ phase1_provision() {
   local stamp; stamp=$(date +%s)
   local company="PW Local Sample $stamp"
   local resp cid
-  resp=$(api POST "/clients" "$(jq -nc \
+  resp=$(api POST "/tenants" "$(jq -nc \
     --arg name "$company" \
     --arg email "pw-local-$stamp@phoenix-host.net" \
     --arg plan "$plan_id" \
@@ -166,10 +166,10 @@ phase1_provision() {
     "ssh_cp 'kubectl get ns -l client=$cid --no-headers 2>/dev/null'" || return 1
 
   wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/clients/$cid'" || return 1
+    "api GET '/tenants/$cid'" || return 1
 
   local slug ns
-  slug=$(api GET "/clients/$cid" | jq -r '.data.slug // empty')
+  slug=$(api GET "/tenants/$cid" | jq -r '.data.slug // empty')
   ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null")
   if [[ -z "$slug" || -z "$ns" ]]; then
     fail "could not resolve slug/ns (slug=$slug ns=$ns)"
@@ -180,7 +180,7 @@ phase1_provision() {
   ok "slug=$slug namespace=$ns"
 
   local pw_resp wid pw_token
-  pw_resp=$(api POST "/clients/$cid/private-workers" "$(jq -nc \
+  pw_resp=$(api POST "/tenants/$cid/private-workers" "$(jq -nc \
     '{name:"local-sample-1", description:"local DinD sample"}')")
   wid=$(echo "$pw_resp" | jq -r '.data.workerId // .data.worker.id // empty')
   pw_token=$(echo "$pw_resp" | jq -r '.data.token // empty')
@@ -260,7 +260,7 @@ phase2_dial_in() {
   ok "tunnel agent $DOCKER_AGENT_NAME started (target=$DOCKER_ECHO_NAME:8080)"
 
   wait_for 60 "private_workers.last_seen_at recorded" "true" \
-    "api GET '/clients/$cid/private-workers/$wid' \
+    "api GET '/tenants/$cid/private-workers/$wid' \
       | jq -r --arg now \"\$(date +%s)\" \
         '(.data.lastSeenAt // empty) as \$ls
          | if \$ls == \"\" then false
@@ -309,11 +309,11 @@ phase3_traffic() {
   ok "test hostname = $host"
 
   local dom_resp did
-  dom_resp=$(api POST "/clients/$cid/domains" "$(jq -nc --arg h "$host" '{name:$h, dns_mode:"external"}')")
+  dom_resp=$(api POST "/tenants/$cid/domains" "$(jq -nc --arg h "$host" '{name:$h, dns_mode:"external"}')")
   did=$(echo "$dom_resp" | jq -r '.data.id // empty')
   if [[ -z "$did" ]]; then
     local apex="${slug}.${TENANT_BASE}"
-    dom_resp=$(api POST "/clients/$cid/domains" "$(jq -nc --arg h "$apex" '{name:$h, dns_mode:"external"}')")
+    dom_resp=$(api POST "/tenants/$cid/domains" "$(jq -nc --arg h "$apex" '{name:$h, dns_mode:"external"}')")
     did=$(echo "$dom_resp" | jq -r '.data.id // empty')
   fi
   if [[ -z "$did" ]]; then
@@ -324,7 +324,7 @@ phase3_traffic() {
   ok "domain registered did=$did"
 
   local route_resp rid
-  route_resp=$(api POST "/clients/$cid/ingress-routes" "$(jq -nc \
+  route_resp=$(api POST "/tenants/$cid/ingress-routes" "$(jq -nc \
     --arg h "$host" \
     --arg pwid "$wid" \
     --arg did "$did" \
@@ -391,7 +391,7 @@ phase4_revoke() {
     return 1
   fi
 
-  api POST "/clients/$cid/private-workers/$wid/revoke" "{}" >/dev/null
+  api POST "/tenants/$cid/private-workers/$wid/revoke" "{}" >/dev/null
 
   local agent_dropped=false
   for _ in $(seq 1 12); do
@@ -442,11 +442,11 @@ phase5_cleanup() {
   did=$(cat "$STATE_DID" 2>/dev/null || true)
 
   if [[ -n "$cid" && -n "$rid" ]]; then
-    api DELETE "/clients/$cid/ingress-routes/$rid" >/dev/null 2>&1 || true
+    api DELETE "/tenants/$cid/ingress-routes/$rid" >/dev/null 2>&1 || true
     ok "deleted ingress-route $rid (best effort)"
   fi
   if [[ -n "$cid" && -n "$did" ]]; then
-    api DELETE "/clients/$cid/domains/$did" >/dev/null 2>&1 || true
+    api DELETE "/tenants/$cid/domains/$did" >/dev/null 2>&1 || true
     ok "deleted domain $did (best effort)"
   fi
 

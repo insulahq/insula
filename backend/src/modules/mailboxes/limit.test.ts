@@ -116,11 +116,11 @@ describe('getTenantMailboxLimit', () => {
     expect(result).toEqual({ limit: 50, source: 'plan' });
   });
 
-  it('throws CLIENT_NOT_FOUND when the tenant does not exist', async () => {
+  it('throws TENANT_NOT_FOUND when the tenant does not exist', async () => {
     selectResults = [[]];
     const db = createMockDb();
     await expect(limit.getTenantMailboxLimit(db as never, 'ghost')).rejects.toMatchObject({
-      code: 'CLIENT_NOT_FOUND',
+      code: 'TENANT_NOT_FOUND',
       status: 404,
     });
   });

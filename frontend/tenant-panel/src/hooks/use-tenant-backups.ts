@@ -1,5 +1,5 @@
 /**
- * Client-panel hooks for self-service Tenant Backup. Reads from
+^ * Tenant-panel hooks for self-service Tenant Backup. Reads from
  * /api/v1/tenant/backups/* — the JWT carries the tenantId so the
  * hooks don't need it as a parameter.
  */

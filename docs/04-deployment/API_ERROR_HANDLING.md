@@ -124,7 +124,7 @@ All error responses must follow this structure:
 
 | Code | HTTP | Message | Remediation |
 | --- | --- | --- | --- |
-| `CLIENT_NOT_FOUND` | 404 | Client '{tenant_id}' not found | Verify tenant_id |
+| `TENANT_NOT_FOUND` | 404 | Client '{tenant_id}' not found | Verify tenant_id |
 | `WORKLOAD_NOT_FOUND` | 404 | Workload '{workload_id}' not found | Verify workload_id exists in your client |
 | `DOMAIN_NOT_FOUND` | 404 | Domain '{domain_name}' not found | Verify domain exists |
 | `DATABASE_NOT_FOUND` | 404 | Database '{database_name}' not found | Verify database exists |

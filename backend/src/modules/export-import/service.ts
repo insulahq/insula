@@ -128,7 +128,7 @@ export async function importData(
   for (const tenant of importTenants) {
     try {
       if (!tenant.id || !tenant.name || !tenant.primaryEmail) {
-        errors.push(`Client missing required fields: ${JSON.stringify(tenant).slice(0, 100)}`);
+        errors.push(`Tenant missing required fields: ${JSON.stringify(tenant).slice(0, 100)}`);
         continue;
       }
 

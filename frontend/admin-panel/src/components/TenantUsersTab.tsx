@@ -121,7 +121,7 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
     <div className="space-y-4" data-testid="tenant-users-tab">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Client Team</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Tenant Team</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Manage this tenant&apos;s team members on their behalf. Actions
             taken here are recorded in the audit log and attributed to your

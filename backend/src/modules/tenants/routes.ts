@@ -398,7 +398,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       .limit(1);
 
     if (!tenantUser) {
-      throw new ApiError('NO_CLIENT_USER', 'No active tenant_admin user found for this tenant', 404);
+      throw new ApiError('NO_TENANT_USER', 'No active tenant_admin user found for this tenant', 404);
     }
 
     // Issue a short-lived impersonation JWT
@@ -473,7 +473,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    // Verify tenant exists (preserves CLIENT_NOT_FOUND behavior)
+    // Verify tenant exists (preserves TENANT_NOT_FOUND behavior)
     await service.getTenantById(app.db, tenantId);
 
     const maxSubUsers = await getEffectiveMaxSubUsers(app.db, tenantId);

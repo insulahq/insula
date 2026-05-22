@@ -33,13 +33,13 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`admin.${DOMAIN}`) && PathRegexp(`^/api/v1/clients/[^/]+/files/upload-raw$`)"
+    - match: "Host(`admin.${DOMAIN}`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)"
       kind: Rule
       priority: 100
       services:
         - name: admin-panel
           port: 80
-    - match: "Host(`client.${DOMAIN}`) && PathRegexp(`^/api/v1/clients/[^/]+/files/upload-raw$`)"
+    - match: "Host(`tenant.${DOMAIN}`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)"
       kind: Rule
       priority: 100
       services:
@@ -57,7 +57,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: file-manager-upload
 spec:
-  # Shared TLS Secret with the main platform-ingress (admin + client
+  # Shared TLS Secret with the main platform-ingress (admin + tenant
   # apex hostnames). cert-manager is fine with two Certificate CRs
   # converging on the same secretName as long as the SAN list matches.
   secretName: platform-dev-tls
@@ -73,7 +73,7 @@ spec:
     - server auth
   dnsNames:
     - admin.${DOMAIN}
-    - client.${DOMAIN}
+    - tenant.${DOMAIN}
   issuerRef:
     name: local-ca-issuer
     kind: ClusterIssuer

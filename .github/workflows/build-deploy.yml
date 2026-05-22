@@ -350,7 +350,7 @@ jobs:
         env:
           BACKEND_TAG: ${{ needs.build-backend.outputs.timestamp_tag }}
           ADMIN_TAG: ${{ needs.build-admin-panel.outputs.timestamp_tag }}
-          CLIENT_TAG: ${{ needs.build-tenant-panel.outputs.timestamp_tag }}
+          TENANT_TAG: ${{ needs.build-tenant-panel.outputs.timestamp_tag }}
         run: |
           # Replaces the work that Flux's image-automation-controller
           # used to do via a long-lived PAT. The IUA approach failed
@@ -372,7 +372,7 @@ jobs:
           }
           pin backend       "$BACKEND_TAG"
           pin admin-panel   "$ADMIN_TAG"
-          pin tenant-panel  "$CLIENT_TAG"
+          pin tenant-panel  "$TENANT_TAG"
           echo "---kustomization newTag lines after pin---"
           grep -B1 newTag "$KUST" | grep -E "name: ghcr|newTag"
 

@@ -68,7 +68,7 @@ interface ServiceCtx {
 
 async function mustGetTenant(db: Database, tenantId: string) {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client ${tenantId} not found`, 404);
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
   return tenant;
 }
 
@@ -77,7 +77,7 @@ async function mustBeIdle(db: Database, tenantId: string) {
     state: tenants.storageLifecycleState,
     opId: tenants.activeStorageOpId,
   }).from(tenants).where(eq(tenants.id, tenantId));
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client ${tenantId} not found`, 404);
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
   if (tenant.state !== 'idle') {
     throw new ApiError(
       'STORAGE_OP_IN_PROGRESS',
@@ -534,7 +534,7 @@ async function resizeGrow(
 ): Promise<{ operationId: string }> {
   const opId = uuid();
   const [tenant] = await ctx.db.select().from(tenants).where(eq(tenants.id, tenantId));
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client ${tenantId} not found`, 404);
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
   const namespace = tenant.kubernetesNamespace;
   const pvcName = `${namespace}-storage`;
 
@@ -997,11 +997,11 @@ export async function clearFailedStorageState(
     .select({ state: tenants.storageLifecycleState })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  if (!c) throw new ApiError('CLIENT_NOT_FOUND', `Client ${tenantId} not found`, 404);
+  if (!c) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
   if (c.state !== 'failed') {
     throw new ApiError(
       'NOT_IN_FAILED_STATE',
-      `Client is in state '${c.state}', not 'failed' — only failed ops can be force-cleared`,
+      `Tenant is in state '${c.state}', not 'failed' — only failed ops can be force-cleared`,
       409,
       { currentState: c.state },
     );
@@ -1031,7 +1031,7 @@ export async function cancelStorageOperation(
     })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  if (!c) throw new ApiError('CLIENT_NOT_FOUND', `Client ${tenantId} not found`, 404);
+  if (!c) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
   if (c.state === 'idle') {
     return { previousState: 'idle', deletedJobs: 0, cancelledOpId: null };
   }
@@ -1090,7 +1090,7 @@ export async function suspendTenant(
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'suspended') {
-    throw new ApiError('ALREADY_SUSPENDED', 'Client is already suspended', 409);
+    throw new ApiError('ALREADY_SUSPENDED', 'Tenant is already suspended', 409);
   }
 
   const opId = uuid();
@@ -1120,7 +1120,7 @@ export async function suspendTenant(
 
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100,
-      progressMessage: 'Client suspended',
+      progressMessage: 'Tenant suspended',
       completedAt: new Date(),
       params: { quiesceSnapshot: snap as unknown as Record<string, unknown> },
     });
@@ -1149,7 +1149,7 @@ export async function resumeTenant(
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status !== 'suspended') {
-    throw new ApiError('NOT_SUSPENDED', 'Client is not suspended', 409);
+    throw new ApiError('NOT_SUSPENDED', 'Tenant is not suspended', 409);
   }
 
   // Look up the last suspend op for the quiesce snapshot it recorded.
@@ -1186,7 +1186,7 @@ export async function resumeTenant(
     );
 
     await updateOp(ctx.db, opId, {
-      state: 'idle', progressPct: 100, progressMessage: 'Client resumed', completedAt: new Date(),
+      state: 'idle', progressPct: 100, progressMessage: 'Tenant resumed', completedAt: new Date(),
     });
     // applyActive dispatched the active-transition hooks
     // (tenants-status-stamp wrote status='active' + cleared
@@ -1215,7 +1215,7 @@ export async function archiveTenant(
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'archived') {
-    throw new ApiError('ALREADY_ARCHIVED', 'Client is already archived', 409);
+    throw new ApiError('ALREADY_ARCHIVED', 'Tenant is already archived', 409);
   }
 
   const opId = uuid();
@@ -1350,7 +1350,7 @@ export async function restoreArchivedTenant(
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status !== 'archived') {
-    throw new ApiError('NOT_ARCHIVED', 'Client is not in archived state', 409);
+    throw new ApiError('NOT_ARCHIVED', 'Tenant is not in archived state', 409);
   }
 
   const [snap] = await ctx.db.select().from(storageSnapshots).where(

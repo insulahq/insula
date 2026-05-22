@@ -71,7 +71,7 @@ function setupMockApi() {
       const tenant = MOCK_CLIENTS.find((c) => c.id === id);
       return Promise.resolve({ data: tenant ?? null });
     }
-    // Client search
+    // Tenant search
     if (typeof url === 'string' && url.includes('/tenants') && !url.includes('/domains')) {
       if (url.includes('search=')) {
         return Promise.resolve({

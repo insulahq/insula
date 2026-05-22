@@ -63,7 +63,7 @@ export async function getTenantMailboxCount(
 
 /**
  * Fetch the plan + override for a tenant and compute the
- * effective limit. Throws CLIENT_NOT_FOUND if the tenant row
+ * effective limit. Throws TENANT_NOT_FOUND if the tenant row
  * doesn't exist.
  */
 export async function getTenantMailboxLimit(
@@ -79,7 +79,7 @@ export async function getTenantMailboxLimit(
     .innerJoin(hostingPlans, eq(tenants.planId, hostingPlans.id))
     .where(eq(tenants.id, tenantId));
   if (!row) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404);
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404);
   }
   return computeTenantMailboxLimit({
     planLimit: row.planLimit,

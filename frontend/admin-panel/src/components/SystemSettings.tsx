@@ -173,7 +173,7 @@ export default function SystemSettingsForm() {
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Client Panel URL
+                  Tenant Panel URL
                 </label>
                 <UrlStatusBadges panel="tenant" health={health?.tenant} />
               </div>
@@ -330,7 +330,7 @@ export default function SystemSettingsForm() {
               System Timezone
             </label>
             <TimezoneSelect value={timezone} onChange={setTimezone} />
-            <p className="text-xs text-gray-400 mt-1">Default timezone for new tenants. Clients can override in their settings.</p>
+            <p className="text-xs text-gray-400 mt-1">Default timezone for new tenants. Tenants can override in their settings.</p>
           </div>
           <div>
             <label

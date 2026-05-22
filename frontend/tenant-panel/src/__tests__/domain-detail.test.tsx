@@ -92,7 +92,7 @@ function setupMocks() {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('Client DomainDetail page', () => {
+describe('Tenant DomainDetail page', () => {
   it('renders domain name and tabs (CNAME mode hides DNS tab)', async () => {
     setupMocks();
     render(<DomainDetail />, { wrapper: createWrapper() });
@@ -217,7 +217,7 @@ function setupMocksPrimary() {
   });
 }
 
-describe('Client DNS tab', () => {
+describe('Tenant DNS tab', () => {
   const switchToDns = async () => {
     await waitFor(() => expect(screen.getByTestId('tab-dns')).toBeInTheDocument());
     await userEvent.setup().click(screen.getByTestId('tab-dns'));

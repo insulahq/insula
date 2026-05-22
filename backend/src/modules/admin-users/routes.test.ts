@@ -9,7 +9,7 @@ const mockAdminUsers = [
   { id: 'u2', email: 'support@test.com', fullName: 'Support User', roleName: 'support', status: 'active', lastLoginAt: null, createdAt: new Date('2026-01-02') },
 ];
 
-const mockTenantUser = { id: 'u3', email: 'tenant@test.com', fullName: 'Client User', roleName: 'tenant_admin', panel: 'tenant', status: 'active' };
+const mockTenantUser = { id: 'u3', email: 'tenant@test.com', fullName: 'Tenant User', roleName: 'tenant_admin', panel: 'tenant', status: 'active' };
 
 // Track inserted/deleted users for test assertions
 let insertedUser: Record<string, unknown> | null = null;

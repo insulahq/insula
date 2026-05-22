@@ -206,7 +206,7 @@ Create API_ERROR_HANDLING.md with:
 │   }
 │
 ├── Error code registry (100+ codes)
-│   ├── CLIENT_NOT_FOUND
+│   ├── TENANT_NOT_FOUND
 │   ├── SUBSCRIPTION_EXPIRED
 │   ├── STORAGE_QUOTA_EXCEEDED
 │   ├── INVALID_PLAN_TRANSITION

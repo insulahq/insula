@@ -53,7 +53,7 @@ function setupMocks() {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('Client CronJobs page', () => {
+describe('Tenant CronJobs page', () => {
   it('renders heading', async () => {
     setupMocks();
     render(<CronJobs />, { wrapper: createWrapper() });

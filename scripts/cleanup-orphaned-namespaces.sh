@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# cleanup-orphaned-namespaces.sh — delete client-* namespaces whose
-# corresponding client row no longer exists in the platform database.
+# cleanup-orphaned-namespaces.sh — delete tenant-* namespaces whose
+# corresponding tenant row no longer exists in the platform database.
 #
 # Use this to reclaim pod capacity after smoke-test runs (or any
 # other churn) that leaks k8s namespaces. Safe to re-run; a dry-run
@@ -58,12 +58,12 @@ if [[ -z "$TOKEN" ]]; then
   exit 3
 fi
 
-# List all known client namespaces from the DB
-# (pagination: use a very large limit; platforms with >1000 clients
+# List all known tenant namespaces from the DB
+# (pagination: use a very large limit; platforms with >1000 tenants
 # should paginate, but for cleanup context this is sufficient)
-clients_json=$(curl -s "$API_URL/api/v1/tenants?limit=100" \
+tenants_json=$(curl -s "$API_URL/api/v1/tenants?limit=100" \
   -H "Authorization: Bearer $TOKEN")
-DB_NAMESPACES=$(echo "$clients_json" | python3 -c '
+DB_NAMESPACES=$(echo "$tenants_json" | python3 -c '
 import sys,json
 try:
   d=json.load(sys.stdin)
@@ -74,13 +74,13 @@ except Exception as e:
   print(f"error: {e}", file=sys.stderr); sys.exit(1)
 ')
 
-# List all client-* namespaces from k3s
+# List all tenant-* namespaces from k3s
 K8S_NAMESPACES=$(docker exec "$K3S_CONTAINER" kubectl get ns -o name 2>/dev/null \
   | sed 's|^namespace/||' \
-  | grep '^client-' || true)
+  | grep '^tenant-' || true)
 
 if [[ -z "$K8S_NAMESPACES" ]]; then
-  echo "No client-* namespaces found in k3s."
+  echo "No tenant-* namespaces found in k3s."
   exit 0
 fi
 

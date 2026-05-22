@@ -43,7 +43,7 @@ const listSubUsersMock = vi.fn().mockResolvedValue([
   },
 ]);
 const createSubUserMock = vi.fn().mockImplementation(
-  (_db: unknown, _clientId: string, input: { email: string; full_name: string; role_name?: string }) => {
+  (_db: unknown, _tenantId: string, input: { email: string; full_name: string; role_name?: string }) => {
     return Promise.resolve({
       id: 'u-new',
       email: input.email,
@@ -59,7 +59,7 @@ const createSubUserMock = vi.fn().mockImplementation(
 const deleteSubUserMock = vi.fn().mockResolvedValue(undefined);
 const resetSubUserPasswordMock = vi.fn().mockResolvedValue(undefined);
 const updateSubUserMock = vi.fn().mockImplementation(
-  (_db: unknown, _clientId: string, userId: string, payload: { fullName?: string; roleName?: string; status?: string }) => {
+  (_db: unknown, _tenantId: string, userId: string, payload: { fullName?: string; roleName?: string; status?: string }) => {
     return Promise.resolve({
       id: userId,
       email: 'alice@c1.com',

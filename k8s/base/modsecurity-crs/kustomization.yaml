@@ -21,8 +21,8 @@ resources:
   # CRS rule exclusions for platform-API JSON-field-name false-
   # positives. Mounted into the modsec-crs container as a *.conf
   # file under /etc/modsecurity.d/owasp-crs/rules/. See file
-  # comments for the rationale + scope (only admin.*/client.*/api.*
-  # hostnames; tenant routes keep full CRS coverage).
+  # comments for the rationale + scope (only admin.*/tenant.*/api.*
+  # hostnames; customer workload routes keep full CRS coverage).
   - exclusion-rules-configmap.yaml
   # F4 — DB-rendered (dynamic) exclusions. Empty seed; backend
   # reconciler at modules/waf-rule-exclusions/reconciler.ts patches

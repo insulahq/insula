@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 
-test.describe('Client Panel Full Workflow — End-to-End', () => {
-  test('complete client workflow: login, navigate all pages, logout', async ({ page }) => {
+test.describe('Tenant Panel Full Workflow — End-to-End', () => {
+  test('complete tenant workflow: login, navigate all pages, logout', async ({ page }) => {
     test.setTimeout(30000);
     // 1. Login
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // 2. Dashboard renders with stat cards
     const statsGrid = page.getByTestId('quick-stats');
@@ -58,12 +58,12 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('dashboard overview description is visible', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
     await expect(page.getByText(/Here is an overview of your hosting account/)).toBeVisible({ timeout: 2000 });
   });
 
   test('sidebar shows all navigation items', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar).toBeVisible();
@@ -74,7 +74,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('can return to Dashboard from any page', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // Navigate away
     await page.getByRole('link', { name: 'Settings' }).click();
@@ -86,7 +86,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('Domains page shows empty state or table', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Domains' }).click();
     await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 2000 });
@@ -99,14 +99,14 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('Applications page loads correctly', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Applications' }).click();
     await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('Backups page loads correctly', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Backups' }).click();
 
@@ -116,21 +116,21 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('Email page shows email management UI', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Email' }).click();
     await expect(page.getByTestId('email-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('Files page shows file manager UI', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'File Manager' }).click();
     await expect(page.getByTestId('files-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('user menu shows profile info and change password option', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // Profile and password are now in the header user menu, not Settings page
     const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
@@ -147,7 +147,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('multiple navigation cycles preserve session', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // Navigate through multiple pages rapidly
     await page.getByRole('link', { name: 'Domains' }).click();
@@ -165,7 +165,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   });
 
   test('logout redirects to login page', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // Open user menu and click Sign Out
     const menuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
@@ -177,6 +177,6 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await signOut.click();
 
     await expect(page.getByTestId('login-button')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Client Portal')).toBeVisible();
+    await expect(page.getByText('Tenant Portal')).toBeVisible();
   });
 });

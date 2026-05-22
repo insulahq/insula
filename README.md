@@ -192,7 +192,7 @@ For code development, unit tests, and quick E2E testing. Runs entirely in Docker
 | Service     | Dev (HTTP)                                    | Dev (HTTPS)                                    | Prod                                |
 |-------------|-----------------------------------------------|------------------------------------------------|-------------------------------------|
 | Admin panel | `http://admin.k8s-platform.test:2010`         | `https://admin.k8s-platform.test:2011`         | `https://admin.<domain>`            |
-| Client panel| `http://client.k8s-platform.test:2010`        | `https://client.k8s-platform.test:2011`        | `https://client.<domain>`           |
+| Tenant panel| `http://tenant.k8s-platform.test:2010`        | `https://tenant.k8s-platform.test:2011`        | `https://tenant.<domain>`           |
 | Dex OIDC    | —                                             | `https://dex.k8s-platform.test:2011/dex`       | `https://dex.<domain>/dex`          |
 | Webmail     | —                                             | `https://webmail.k8s-platform.test:2011`       | `https://webmail.<domain>`          |
 | Mail-admin  | —                                             | `https://stalwart.k8s-platform.test:2011`      | `https://stalwart.<domain>`         |

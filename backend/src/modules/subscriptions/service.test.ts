@@ -30,12 +30,12 @@ function createMockDb(tenantResult: unknown[] = [], planResult: unknown[] = []) 
 }
 
 describe('getSubscription', () => {
-  it('should throw CLIENT_NOT_FOUND when tenant missing', async () => {
+  it('should throw TENANT_NOT_FOUND when tenant missing', async () => {
     const db = createMockDb([], []);
 
     await expect(getSubscription(db, 'missing')).rejects.toThrow(ApiError);
     await expect(getSubscription(db, 'missing')).rejects.toMatchObject({
-      code: 'CLIENT_NOT_FOUND',
+      code: 'TENANT_NOT_FOUND',
       status: 404,
     });
   });
@@ -75,11 +75,11 @@ describe('getSubscription', () => {
 });
 
 describe('updateSubscription', () => {
-  it('should throw CLIENT_NOT_FOUND when tenant missing', async () => {
+  it('should throw TENANT_NOT_FOUND when tenant missing', async () => {
     const db = createMockDb([], []);
 
     await expect(updateSubscription(db, 'missing', { plan_id: 'p2' })).rejects.toMatchObject({
-      code: 'CLIENT_NOT_FOUND',
+      code: 'TENANT_NOT_FOUND',
     });
   });
 

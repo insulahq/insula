@@ -3,15 +3,15 @@ import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Form Interactions', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
-  test.describe('Create Client Modal', () => {
+  test.describe('Create Tenant Modal', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
-    test('fill all fields and submit creates client', async ({ page }) => {
+    test('fill all fields and submit creates tenant', async ({ page }) => {
 
-      await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+      await page.getByRole('link', { name: 'Tenants' }).click();
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
 
-      await page.getByRole('button', { name: 'Add Client' }).click();
-      await expect(page.getByTestId('create-client-modal')).toBeVisible();
+      await page.getByRole('button', { name: 'Add Tenant' }).click();
+      await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
       const ts = Date.now();
       const uniqueName = `Form Test ${ts}`;
@@ -29,30 +29,30 @@ test.describe('Admin Form Interactions', () => {
       await page.getByTestId('submit-button').click();
 
       // Post-submit flow pivots into credentials → provisioning views.
-      const credentials = page.getByTestId('client-credentials');
+      const credentials = page.getByTestId('tenant-credentials');
       if (await credentials.isVisible({ timeout: 3000 }).catch(() => false)) {
         await page.getByTestId('close-credentials').click();
       }
       // Provisioning modal has three terminal states (Minimize/Done/Close)
       // plus an 800ms auto-close-and-navigate on success. Navigate back to
-      // /clients to guarantee no modal is intercepting pointer events.
+      // /tenants to guarantee no modal is intercepting pointer events.
       if (await page.getByTestId('create-error').isVisible().catch(() => false)) {
         await page.getByRole('button', { name: 'Cancel' }).click();
-        await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
       } else {
-        await page.goto('/clients');
-        await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 3000 });
+        await page.goto('/tenants');
+        await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 3000 });
         await expect(page.getByText(uniqueName).first()).toBeVisible({ timeout: 5000 });
       }
     });
 
-    test('cancel button closes modal without creating client', async ({ page }) => {
+    test('cancel button closes modal without creating tenant', async ({ page }) => {
 
-      await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+      await page.getByRole('link', { name: 'Tenants' }).click();
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
 
-      await page.getByRole('button', { name: 'Add Client' }).click();
-      await expect(page.getByTestId('create-client-modal')).toBeVisible();
+      await page.getByRole('button', { name: 'Add Tenant' }).click();
+      await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
       const uniqueName = `Form Cancel ${Date.now()}`;
       await page.getByTestId('company-name-input').fill(uniqueName);
@@ -63,20 +63,20 @@ test.describe('Admin Form Interactions', () => {
       await cancelButton.click();
 
       // Modal should close
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
+      await expect(page.getByTestId('create-tenant-modal')).not.toBeVisible({ timeout: 2000 });
 
-      // Client should NOT be created
+      // Tenant should NOT be created
       await page.waitForTimeout(1000);
       await expect(page.getByText(uniqueName)).not.toBeVisible();
     });
 
     test('modal has all required form fields', async ({ page }) => {
 
-      await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+      await page.getByRole('link', { name: 'Tenants' }).click();
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
 
-      await page.getByRole('button', { name: 'Add Client' }).click();
-      await expect(page.getByTestId('create-client-modal')).toBeVisible();
+      await page.getByRole('button', { name: 'Add Tenant' }).click();
+      await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
       // Verify all form fields exist
       await expect(page.getByTestId('company-name-input')).toBeVisible();
@@ -88,48 +88,48 @@ test.describe('Admin Form Interactions', () => {
 
     test('opening and closing modal preserves page state', async ({ page }) => {
 
-      await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+      await page.getByRole('link', { name: 'Tenants' }).click();
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
 
       // Open modal
-      await page.getByRole('button', { name: 'Add Client' }).click();
-      await expect(page.getByTestId('create-client-modal')).toBeVisible();
+      await page.getByRole('button', { name: 'Add Tenant' }).click();
+      await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
       // Close modal
       const cancelButton = page.getByTestId('cancel-button')
         .or(page.getByRole('button', { name: 'Cancel' }));
       await cancelButton.click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
+      await expect(page.getByTestId('create-tenant-modal')).not.toBeVisible({ timeout: 2000 });
 
       // Page state should be intact
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Add Client' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Add Tenant' })).toBeVisible();
     });
   });
 
   test.describe('Create Domain Modal', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
-    test('domain modal opens with client selector and domain input', async ({ page }) => {
+    test('domain modal opens with tenant selector and domain input', async ({ page }) => {
 
       await page.getByRole('link', { name: 'Domains' }).click();
       await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
 
-      // The domains page uses SearchableClientSelect, verify it's present
-      const clientSelector = page.getByTestId('client-search-select');
-      await expect(clientSelector).toBeVisible();
+      // The domains page uses SearchableTenantSelect, verify it's present
+      const tenantSelector = page.getByTestId('tenant-search-select');
+      await expect(tenantSelector).toBeVisible();
 
       // Verify the add domain button exists
       const addButton = page.getByTestId('add-domain-button');
       await expect(addButton).toBeVisible();
     });
 
-    test('domain page shows domains for selected client', async ({ page }) => {
+    test('domain page shows domains for selected tenant', async ({ page }) => {
 
       await page.getByRole('link', { name: 'Domains' }).click();
       await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
 
-      // Domains page uses SearchableClientSelect
-      await expect(page.getByTestId('client-search-select')).toBeVisible();
+      // Domains page uses SearchableTenantSelect
+      await expect(page.getByTestId('tenant-search-select')).toBeVisible();
 
       // Should show domains table, error, or empty prompt
       const domainsTable = page.getByTestId('domains-table');
@@ -142,17 +142,17 @@ test.describe('Admin Form Interactions', () => {
 
   test.describe('Create Cron Job Modal', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
-    test('cron job page has client selector and add button', async ({ page }) => {
+    test('cron job page has tenant selector and add button', async ({ page }) => {
 
       await page.goto('/cron-jobs');
       await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });
 
-      // CronJobs uses SearchableClientSelect
-      await expect(page.getByTestId('client-search-select')).toBeVisible();
+      // CronJobs uses SearchableTenantSelect
+      await expect(page.getByTestId('tenant-search-select')).toBeVisible();
       await expect(page.getByTestId('add-cron-job-button')).toBeVisible();
     });
 
-    test('cron job add button is disabled without client selection', async ({ page }) => {
+    test('cron job add button is disabled without tenant selection', async ({ page }) => {
 
       await page.goto('/cron-jobs');
       await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });

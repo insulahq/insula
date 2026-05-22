@@ -25,7 +25,7 @@ export async function generateTenantManifests(
   // Fetch tenant
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
 
   const typedTenant = tenant as typeof tenants.$inferSelect;

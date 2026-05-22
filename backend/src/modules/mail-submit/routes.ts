@@ -105,7 +105,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
       .from(tenants)
       .where(eq(tenants.id, tenantId));
     if (!tenant) {
-      throw new ApiError('CLIENT_NOT_FOUND', 'Client not found', 404);
+      throw new ApiError('TENANT_NOT_FOUND', 'Tenant not found', 404);
     }
 
     const result = await service.rotateSubmitCredential(
@@ -166,7 +166,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
       .from(tenants)
       .where(eq(tenants.id, tenantId));
     if (!tenant) {
-      throw new ApiError('CLIENT_NOT_FOUND', 'Client not found', 404);
+      throw new ApiError('TENANT_NOT_FOUND', 'Tenant not found', 404);
     }
     const active = await service.loadActiveCredential(app.db, tenantId);
     if (!active) {
