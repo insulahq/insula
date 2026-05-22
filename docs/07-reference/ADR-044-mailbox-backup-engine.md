@@ -105,11 +105,18 @@ The setting is mutable via JMAP `x:Imap/set` (live, no restart) and persists in 
 
 ## Open follow-ups (not blocking ADR acceptance)
 
-1. **CardDAV (contacts) backup** — not currently in tenant-bundles scope; loss on tenant-restore is real. Tracked as TASK #36.
-2. **CalDAV (calendar) backup** — same gap. TASK #37.
-3. **Sieve script backup** — server-side filters lost on tenant-restore. TASK #35.
-4. **Scale validation beyond 10 k msgs** — IMAP MULTIAPPEND throughput ceiling is currently the per-msg Stalwart processing pipeline (FTS, threading, ACL), ~80 msg/s single-conn or ~250 msg/s at K=4. Whether this curves at 50 k+ messages is untested; the linear extrapolation in §1 may need revision. TASK #34 currently runs 10 k validation on testing.
-5. **Bytes-on-wire metric for IMAP** — `imaplib`'s buffered-read path bypasses the socket-hook in our instrumentation; tarball size is used as a proxy in the bench harness.
+1. **Auxiliary mailbox data (Sieve / Contacts / Calendar / Vacation)** — currently NOT in tenant-bundles scope; loss on tenant-restore is real. 2026-05-22 capability probe confirmed Stalwart 0.16 advertises all four as JMAP capabilities:
+   * `urn:ietf:params:jmap:sieve` (RFC 9404)
+   * `urn:ietf:params:jmap:contacts` + `:contacts:parse` (RFC 9610)
+   * `urn:ietf:params:jmap:calendars` + `:calendars:parse`
+   * `urn:ietf:params:jmap:vacationresponse`
+   * `urn:ietf:params:jmap:filenode` (file storage — out of scope for now)
+
+   DAV endpoints `/dav/cal/`, `/dav/card/`, `/.well-known/{cal,card}dav` all return 401 (auth required) — confirming the surfaces are wired up. Implementation plan: add a `jmap-aux-sync.py` + `jmap-aux-restore.py` pair that runs alongside the existing mail capture, using the same JMAP master-proxy transport. Serialise to JSON sidecars under `<account>/.aux/{sieve,contacts,calendar,vacation}.json` inside the Maildir tarball. Per-account scope mirrors per-account mail backup cleanly; no new auth, no new ports, no DAV plumbing. Tracked as TASK #35 (sieve), #36 (contacts), #37 (calendar) — likely consolidated into one task `mailbox-aux-backup`.
+
+2. **Scale validation beyond 10 k msgs** — IMAP MULTIAPPEND throughput ceiling is currently the per-msg Stalwart processing pipeline (FTS, threading, ACL), ~80 msg/s single-conn or ~250 msg/s at K=4. Whether this curves at 50 k+ messages is untested; the linear extrapolation in §1 may need revision. TASK #34 currently runs 10 k validation on testing.
+
+3. **Bytes-on-wire metric for IMAP** — `imaplib`'s buffered-read path bypasses the socket-hook in our instrumentation; tarball size is used as a proxy in the bench harness.
 
 ---
 
