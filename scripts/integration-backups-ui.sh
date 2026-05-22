@@ -176,6 +176,36 @@ else
   pass "schedules endpoint healthy (migration 0024 applied if bundle-create above succeeded)"
 fi
 
+# ─── B4 — Tenant detail snapshot trigger no longer FK-violates ───────
+echo '═══ B4 — POST /admin/tenants/:id/storage/snapshot succeeds ═══'
+if [[ -n "$TENANT_ID" ]]; then
+  api POST "/api/v1/admin/tenants/$TENANT_ID/storage/snapshot" '{}' SNAP_CREATE_RESP SNAP_CREATE_CODE
+  if [[ "$SNAP_CREATE_CODE" == "200" || "$SNAP_CREATE_CODE" == "201" ]]; then
+    pass "tenant snapshot create: http=$SNAP_CREATE_CODE"
+  elif printf '%s' "$SNAP_CREATE_RESP" | grep -q "FOREIGN_KEY_VIOLATION"; then
+    fail "tenant snapshot create: FK violation regression — migration 0025 not applied?"
+  else
+    fail "tenant snapshot create: http=$SNAP_CREATE_CODE body=$(printf '%s' "$SNAP_CREATE_RESP" | head -c 200)"
+  fi
+else
+  info "Skipping B4 — no tenantId available"
+fi
+
+# ─── B7 — CNPG health card reports healthy not no_backup_config ──────
+echo '═══ B7 — CNPG plugin-model detection (cluster has spec.plugins[barman-cloud]) ═══'
+api GET '/api/v1/admin/cnpg-backup-health' '' CNPG_RESP CNPG_CODE
+if [[ "$CNPG_CODE" != "200" ]]; then
+  fail "cnpg health GET returned $CNPG_CODE"
+else
+  STATE=$(printf '%s' "$CNPG_RESP" | sed -nE 's/.*"clusterName":"system-db"[^}]*"state":"([^"]+)".*/\1/p' | head -1)
+  HAS_SPEC=$(printf '%s' "$CNPG_RESP" | sed -nE 's/.*"clusterName":"system-db"[^}]*"clusterHasBackupSpec":([a-z]+).*/\1/p' | head -1)
+  if [[ "$STATE" == "healthy" && "$HAS_SPEC" == "true" ]]; then
+    pass "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (plugin path detected)"
+  else
+    fail "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (expected healthy/true)"
+  fi
+fi
+
 echo
 if (( FAILED > 0 )); then
   printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"
