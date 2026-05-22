@@ -194,6 +194,18 @@ jobs:
         # blocks reintroduction.
         run: ./scripts/ci-snapshot-restore-not-fake.sh
 
+  cnpg-backup-catalogue-check:
+    name: CNPG backup catalogue invariants (graceful degradation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify catalogue auth gate + S3-direct + unavailable-on-failure
+        # Phase 2 (2026-05-22) — the catalogue exists for graceful
+        # degradation when the CNPG operator is dead. Any regression
+        # that makes it throw on failure paths would defeat the entire
+        # purpose. This guard locks in the invariants.
+        run: ./scripts/ci-cnpg-backup-catalogue-check.sh
+
   flux-envsubst-check:
     name: Flux postBuild envsubst safety
     runs-on: ubuntu-latest

@@ -309,6 +309,52 @@ except Exception as e:
   fi
 fi
 
+# ─── Phase 2 — Shim-side backup catalogue ───────────────────────────────────
+echo '═══ Phase 2 — /admin/cnpg-backup-catalogue reads via shim S3 ═══'
+
+# Discover the ObjectStore by looking at any cnpg-backup-health row that
+# has cnpg_operator_blind OR has a clusterHasBackupSpec=true entry.
+api GET '/api/v1/admin/cnpg-backup-health' '' HEALTH_RESP HEALTH_CODE
+if [[ "$HEALTH_CODE" != "200" ]]; then
+  info "Skipping Phase 2 — health endpoint returned $HEALTH_CODE"
+else
+  # The health endpoint doesn't surface the ObjectStore name; for staging
+  # we know `system-postgres-objectstore`. Use a sensible default and
+  # fall through to skip if not present.
+  OBJSTORE="system-postgres-objectstore"
+  api GET "/api/v1/admin/cnpg-backup-catalogue/platform/$OBJSTORE" '' CAT_RESP CAT_CODE
+  if [[ "$CAT_CODE" != "200" ]]; then
+    fail "catalogue endpoint returned $CAT_CODE for $OBJSTORE: $(printf '%s' "$CAT_RESP" | head -c 200)"
+  else
+    ASSERT=$(printf '%s' "$CAT_RESP" | python3 -c "
+import json, sys
+try:
+  d = json.load(sys.stdin).get('data', {})
+  ok = True
+  src = d.get('source')
+  if src not in ('object-store','unavailable'): ok = False; print(f'bad source={src}', file=sys.stderr)
+  bk = d.get('backups')
+  if not isinstance(bk, list): ok = False; print('backups not list', file=sys.stderr)
+  qd = d.get('queryDurationMs')
+  if not isinstance(qd, int): ok = False; print('queryDurationMs not int', file=sys.stderr)
+  print('PASS' if ok else 'FAIL')
+  print(f\"  source={src} backups={len(bk) if isinstance(bk,list) else '?'} queryDurationMs={qd}\")
+except Exception as e:
+  print(f'FAIL parse_error={e}')
+")
+    if printf '%s' "$ASSERT" | head -1 | grep -q PASS; then
+      pass "catalogue endpoint healthy — $(printf '%s' "$ASSERT" | sed -n '2p')"
+      # Live verify: on a healthy cluster source must be object-store + N>=1
+      if printf '%s' "$CAT_RESP" | grep -q '"source":"object-store"' \
+         && printf '%s' "$CAT_RESP" | grep -qE '"backupId":"[0-9]{8}T[0-9]{6}"'; then
+        pass "catalogue surfaced real barman-cloud backup IDs (YYYYMMDDTHHMMSS shape)"
+      fi
+    else
+      fail "catalogue shape assertion failed: $ASSERT"
+    fi
+  fi
+fi
+
 echo
 if (( FAILED > 0 )); then
   printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"

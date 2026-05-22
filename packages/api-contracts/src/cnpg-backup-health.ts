@@ -43,6 +43,10 @@ export const cnpgClusterHealthStateSchema = z.enum([
   'never_run',
   /** ScheduledBackup CRs exist but cluster.spec.backup is unset. */
   'no_backup_config',
+  /** CNPG returned no Backup CRs but the object store catalogue has
+   *  backups for this cluster — the operator/plugin is broken even
+   *  though the archive itself is fine. Phase 2 (2026-05-22). */
+  'cnpg_operator_blind',
 ]);
 export type CnpgClusterHealthState = z.infer<typeof cnpgClusterHealthStateSchema>;
 
@@ -58,6 +62,11 @@ export const cnpgClusterBackupHealthSchema = z.object({
   scheduledBackups: z.array(z.string()),
   /** True if cluster.spec.backup section is set (barmanObjectStore configured). */
   clusterHasBackupSpec: z.boolean(),
+  /** Phase 2 — when populated, the object-store catalogue saw N backups
+   *  for this cluster's ObjectStore. Surfaces the source-of-truth count
+   *  even when CNPG reports zero. Absent when not probed (legacy field
+   *  for older API clients). */
+  objectStoreBackupCount: z.number().int().nonnegative().nullable().optional(),
 });
 export type CnpgClusterBackupHealth = z.infer<typeof cnpgClusterBackupHealthSchema>;
 
