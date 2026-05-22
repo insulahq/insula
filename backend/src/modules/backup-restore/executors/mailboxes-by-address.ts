@@ -127,6 +127,17 @@ function isSafeMasterUser(user: string): boolean {
   return /^[A-Za-z0-9._\-]+(@[A-Za-z0-9.\-]+)?$/.test(user);
 }
 
+/**
+ * POSIX shell quoting — mirror of the helper in
+ * tenant-bundles/components/mailboxes.ts. Kept inline (rather than
+ * exported from a shared util) to make this file's shell-injection
+ * surface self-contained.
+ */
+function shQuote(s: string): string {
+  if (/^[A-Za-z0-9_./@:-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 export async function execMailboxesByAddressItem(args: {
   app: FastifyInstance;
   item: RestoreItem;
@@ -450,8 +461,13 @@ export function buildMailboxesByAddressJobSpec(input: {
     '  rm -f "/tmp/maildir-tar/$ADDR.tar.gz"',
     `  echo "Restoring $ADDR via ${engine.toUpperCase()} (mode=$MODE workers=$WORKERS)..." >&2`,
     engine === 'imap'
+      // shQuote `imapHost` for parity with the capture-side script
+      // (mailboxes.ts line ~301) — even though the imap-branch validator
+      // restricts imapHost to `/^[A-Za-z0-9.\-]+$/` so the current value
+      // can't carry shell metacharacters, this keeps the two scripts
+      // symmetric in case a future refactor relaxes the validator.
       ? `  python3 /usr/local/bin/imap-restore.py \\
-       --imap-host "${imapHost}" \\
+       --imap-host ${shQuote(imapHost)} \\
        --imap-port ${imapPort} \\
        --target-address "$ADDR" \\
        --source-address "$ADDR" \\

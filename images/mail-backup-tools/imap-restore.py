@@ -234,7 +234,26 @@ def _flush_literal_plus_batch(
     folder: str,
     batch: list[tuple[bytes, frozenset[str], str | None]],
 ) -> tuple[int, int]:
-    """Send a LITERAL+ MULTIAPPEND batch. Returns (imported, failed)."""
+    """
+    Send a LITERAL+ MULTIAPPEND batch. Returns (imported, failed).
+
+    Failure-recovery strategy:
+      1. Try LITERAL+ (fast path).
+      2. If it fails, retry the whole batch with SYNC literals — SYNC
+         eliminates the cumulative-buffer issue that trips Stalwart's
+         maxRequestSize cap when LITERAL+ is used. Most LITERAL+
+         failures recover here.
+      3. If SYNC also fails, BISECT — recursively try each half. Two
+         possible outcomes:
+           - A single bad message in the batch (e.g. malformed RFC822
+             or a size-cap edge case the per-msg pre-check missed) —
+             bisection isolates it to a single-msg batch which fails
+             alone, counted as 1 failure; the other N-1 good messages
+             succeed.
+           - Persistent server / connection error — bisection still
+             terminates because batch size halves each retry; the worst
+             case is O(log N) per-msg single APPENDs.
+    """
     if not batch:
         return 0, 0
     try:
@@ -242,16 +261,22 @@ def _flush_literal_plus_batch(
         return len(batch), 0
     except ImapError as e:
         _log(f"LITERAL+ batch FAILED ({len(batch)} msgs into {folder!r}): {e}")
-        # Best-effort: retry with SYNC literals if the error hints at
-        # request-size or parse trouble. SYNC eliminates the cumulative-
-        # buffer issue at the cost of one round-trip per literal.
         try:
             _log(f"retrying batch SYNC for folder {folder!r}")
             client.multiappend(folder, batch, use_literal_plus=False)
             return len(batch), 0
         except ImapError as e2:
-            _log(f"SYNC fallback also failed for {folder!r}: {e2}")
-            return 0, len(batch)
+            if len(batch) == 1:
+                _log(f"single-msg APPEND failed for {folder!r}, marking failed: {e2}")
+                return 0, 1
+            mid = len(batch) // 2
+            _log(
+                f"SYNC retry also failed for {folder!r}; bisecting "
+                f"({len(batch)} → {mid}+{len(batch) - mid})"
+            )
+            ok1, bad1 = _flush_literal_plus_batch(client, folder, batch[:mid])
+            ok2, bad2 = _flush_literal_plus_batch(client, folder, batch[mid:])
+            return ok1 + ok2, bad1 + bad2
 
 
 def _restore_folder(

@@ -91,6 +91,14 @@ export type MailboxBackupEngineValue = (typeof MAILBOX_BACKUP_ENGINES)[number];
 
 export const mailboxBackupSettingsResponseSchema = z.object({
   engine: z.enum(MAILBOX_BACKUP_ENGINES),
+  /**
+   * Cluster-wide concurrency cap. The PATCH path enforces [1, 64].
+   * The response allows 0 because an operator can write 0 directly
+   * via SQL (`UPDATE platform_settings SET setting_value = '0' ...`)
+   * — documented in mailbox-backup-engine.ts as the "disable the gate"
+   * escape hatch. Treat a response of 0 as "no gate"; the UI hides
+   * the input until the operator picks a positive value.
+   */
   maxConcurrent: z.number().int().min(0).max(64),
   /** True when the active engine is the platform's recommended default. */
   isRecommendedDefault: z.boolean(),

@@ -244,7 +244,19 @@ class ImapClient:
 
     @staticmethod
     def _quote_astring(s: str) -> str:
-        """Quote per IMAP astring rules. Keep it simple — quoted-string form."""
+        """Quote per IMAP astring rules. Keep it simple — quoted-string form.
+
+        Per RFC 9051 §4.3, quoted-string MUST NOT contain CR or LF; those
+        must be sent as a literal instead. We reject rather than smuggle
+        because injected CR/LF in a password would prematurely terminate
+        the command line and allow the remainder to be interpreted as a
+        new IMAP command — a real command-injection vector if the
+        password ever came from operator input.
+        """
+        if "\r" in s or "\n" in s:
+            raise ImapError(
+                "value contains CR/LF — use literal form (rejected for security)"
+            )
         # IMAP spec: backslash + dquote escape only.
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -373,11 +385,26 @@ class ImapClient:
             uid = int(uid_m.group(1)) if uid_m else 0
             flag_list = (flags_m.group(1).split() if flags_m else [])
             body = self._read_exact(body_len)
-            # After the literal Stalwart sends `)\r\n` (possibly with trailing
-            # untagged updates first). Read until we see the close paren line.
-            closer = self._readline_raw()
-            # On Stalwart 0.16 the closer is `)\r\n` — strip+continue.
-            _ = closer  # noqa: silence "unused" — defensive read
+            # After the literal, RFC 9051 allows the server to interleave
+            # untagged responses (e.g. * N EXPUNGE, * N RECENT, * FLAGS)
+            # between the body and the close paren. Drain until we hit a
+            # line that is exactly ")\r\n" — that's the FETCH-attrs
+            # closer. Any line starting with `* ` is an interleaved
+            # untagged update that we discard for this read-only path.
+            while True:
+                closer = self._readline_raw()
+                stripped = closer.rstrip(b"\r\n")
+                if stripped == b")":
+                    break
+                if stripped.startswith(b"* "):
+                    # interleaved untagged — discard and keep draining
+                    continue
+                # Anything else is a protocol surprise; log and break to
+                # avoid hanging.
+                self._log(
+                    f"fetch_all_bodies: unexpected post-literal line: {stripped!r}"
+                )
+                break
             yield uid, frozenset(flag_list), body
 
     def append_single_sync(
@@ -463,6 +490,21 @@ class ImapClient:
             # SYNC literal path — for the rare case where the batch
             # would cumulatively exceed the cap even though each
             # individual literal is under.
+            #
+            # RFC 3502 §3 wire format for MULTIAPPEND with SYNC literals:
+            #   C: <tag> APPEND mailbox (flags1) date1 {N1}
+            #   S: + Ready
+            #   C: <N1 bytes of msg 1> (flags2) date2 {N2}
+            #   S: + Ready
+            #   C: <N2 bytes of msg 2>\r\n
+            #
+            # KEY POINT: NO `\r\n` between a literal body and the next
+            # message's `(flags) date {N}` header — they're concatenated
+            # directly. Only the FINAL message's body is followed by a
+            # single `\r\n` that terminates the whole APPEND command.
+            # This is why append_single_sync writes `body + b"\r\n"`
+            # (single-message case) while multiappend writes the body
+            # alone in the loop and a single `\r\n` after the loop.
             self._send_raw(tag + b" APPEND " + n.encode())
             for body, flags, internal_date in msgs:
                 flag_str = " ".join(sorted(flags))
