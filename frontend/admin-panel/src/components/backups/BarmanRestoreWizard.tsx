@@ -16,7 +16,7 @@
  * is a separate Phase 3.1 work item and explicitly NOT in this modal.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, AlertTriangle, ChevronLeft, ChevronRight, Loader2, Check, Trash2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -73,7 +73,12 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
   const [sourceName, setSourceName] = useState<string>(DEFAULT_SOURCE);
   const [targetTime, setTargetTime] = useState<string>(''); // empty = latest
   const [newName, setNewName] = useState<string>('');
+  // P4a (2026-05-22): default to the source's instances count when known,
+  // so HA-3 source → restore creates 3 replicas matching the operator's
+  // HA state. Falls back to 1 if the health endpoint hasn't loaded yet
+  // or the source cluster's instance count isn't surfaced.
   const [instances, setInstances] = useState<number>(1);
+  const [instancesUserEdited, setInstancesUserEdited] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [activeCluster, setActiveCluster] = useState<{ namespace: string; newClusterName: string } | null>(null);
 
@@ -81,6 +86,18 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
   const deleteMut = useDeleteBarmanRestore();
   const healthQ = useHealth();
   const cnpgList = healthQ.data?.data ?? [];
+  // P4a: derive the source cluster's HA state + auto-default instances.
+  // Re-evaluate whenever the user picks a different source. Skip the
+  // auto-default if the operator has already edited the field manually
+  // (instancesUserEdited stays sticky once true).
+  const sourceCluster = cnpgList.find((c) => c.namespace === NS && c.clusterName === sourceName);
+  const sourceHaCount = sourceCluster?.instances ?? null;
+  useEffect(() => {
+    if (instancesUserEdited) return;
+    if (sourceHaCount && sourceHaCount >= 1 && sourceHaCount <= 5) {
+      setInstances(sourceHaCount);
+    }
+  }, [sourceHaCount, instancesUserEdited]);
   // The source name + ObjectStore pair we look up. For now scoped to the
   // platform namespace (single system-db). Future expansion: pick from
   // every plugin-mode CNPG cluster, look up the ObjectStore from its
@@ -156,7 +173,8 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
               newName={newName}
               setNewName={setNewName}
               instances={instances}
-              setInstances={setInstances}
+              setInstances={(n) => { setInstances(n); setInstancesUserEdited(true); }}
+              sourceHaCount={sourceHaCount}
             />
           )}
           {step === 3 && (
@@ -331,12 +349,14 @@ function Step2Target({
   setNewName,
   instances,
   setInstances,
+  sourceHaCount,
 }: {
   readonly defaultNewName: string;
   readonly newName: string;
   readonly setNewName: (s: string) => void;
   readonly instances: number;
   readonly setInstances: (n: number) => void;
+  readonly sourceHaCount: number | null;
 }) {
   return (
     <div className="space-y-4">
@@ -366,7 +386,9 @@ function Step2Target({
           data-testid="barman-restore-instances"
         />
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Default 1 (cheapest restore). Scale up later via <code>kubectl edit cluster</code> if you intend to promote.
+          {sourceHaCount && sourceHaCount > 1
+            ? <>Defaulted to <strong>{sourceHaCount}</strong> matching the source cluster&apos;s HA state. Lower to 1 to save cost on a verify-only restore — scale up later via <code>kubectl edit cluster</code> if you promote.</>
+            : <>Source is single-instance; default 1 is correct. Increase only if you plan to promote into an HA topology.</>}
         </p>
       </div>
     </div>

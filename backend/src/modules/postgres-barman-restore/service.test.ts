@@ -138,7 +138,10 @@ describe('createBarmanRestore', () => {
       bootstrap: { recovery: { source: string; recoveryTarget?: { targetTime: string } } };
       externalClusters: Array<{ name: string; plugin: { name: string; parameters: Record<string, unknown> } }>;
     };
-    expect(spec.instances).toBe(1); // default
+    // P4a (2026-05-22): default inherits source.spec.instances when caller
+    // doesn't pass explicit instances. Source has instances=3 (HA), so the
+    // restore creates a 3-replica side-by-side cluster matching that.
+    expect(spec.instances).toBe(3);
     expect(spec.bootstrap.recovery.source).toBe('system-postgres-objectstore-recovery-source');
     expect(spec.bootstrap.recovery.recoveryTarget?.targetTime).toBe('2026-05-22T03:00:00Z');
     expect(spec.externalClusters[0].name).toBe('system-postgres-objectstore-recovery-source');
@@ -193,6 +196,25 @@ describe('createBarmanRestore', () => {
     // own WAL into the same ObjectStore as source, confusing operators
     // and wasting bytes on a verify-and-discard cluster.
     expect(spec.plugins).toBeUndefined();
+  });
+
+  it('P4a: explicit instances still overrides source.spec.instances inheritance', async () => {
+    const { api, created } = makeCustom({ source: sourceCluster });
+    await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-override',
+      recoveryTargetTime: null, instances: 1,
+    });
+    expect((created[0] as { spec: { instances: number } }).spec.instances).toBe(1);
+  });
+
+  it('P4a: single-instance source → restore defaults to 1 (no upgrade)', async () => {
+    const singleSource = { ...sourceCluster, spec: { ...sourceCluster.spec, instances: 1 } };
+    const { api, created } = makeCustom({ source: singleSource });
+    await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-single',
+      recoveryTargetTime: null,
+    });
+    expect((created[0] as { spec: { instances: number } }).spec.instances).toBe(1);
   });
 
   it('refuses when newClusterName already exists (returns 409)', async () => {
