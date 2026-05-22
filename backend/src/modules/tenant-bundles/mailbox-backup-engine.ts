@@ -160,9 +160,7 @@ export async function setMailboxBackupSettings(
   isRecommendedDefault: boolean;
   lastUpdatedAt: string | null;
 }> {
-  // platform_settings is a hot key-value table; existing modules use
-  // upsert via two-step (select + update OR insert). Keep that pattern
-  // for consistency.
+  // Validate up-front so we don't write a partial update.
   const writes: Array<{ key: string; value: string }> = [];
   if (patch.engine !== undefined) {
     writes.push({ key: SETTING_ENGINE, value: patch.engine });
@@ -173,19 +171,33 @@ export async function setMailboxBackupSettings(
     }
     writes.push({ key: SETTING_MAX_CONCURRENT, value: String(patch.maxConcurrent) });
   }
-  for (const w of writes) {
-    const [existing] = await db
-      .select({ key: platformSettings.key })
-      .from(platformSettings)
-      .where(eq(platformSettings.key, w.key))
-      .limit(1);
-    if (existing) {
-      await db.update(platformSettings)
-        .set({ value: w.value })
-        .where(eq(platformSettings.key, w.key));
-    } else {
-      await db.insert(platformSettings).values({ key: w.key, value: w.value });
-    }
+  if (writes.length === 0) {
+    return getMailboxBackupSettingsView(db);
   }
+  // Wrap multi-row write in a transaction so a concurrent PATCH or
+  // crash mid-write can't leave the two settings rows mutually
+  // inconsistent. platform_settings is low-traffic so this txn is cheap.
+  // Drizzle's `db.transaction` works against both node-postgres and the
+  // PgliteDatabase used by tests (real DB integration test path).
+  await (db as unknown as {
+    transaction: (
+      fn: (tx: typeof db) => Promise<void>,
+    ) => Promise<void>;
+  }).transaction(async (tx) => {
+    for (const w of writes) {
+      const [existing] = await tx
+        .select({ key: platformSettings.key })
+        .from(platformSettings)
+        .where(eq(platformSettings.key, w.key))
+        .limit(1);
+      if (existing) {
+        await tx.update(platformSettings)
+          .set({ value: w.value })
+          .where(eq(platformSettings.key, w.key));
+      } else {
+        await tx.insert(platformSettings).values({ key: w.key, value: w.value });
+      }
+    }
+  });
   return getMailboxBackupSettingsView(db);
 }

@@ -641,7 +641,12 @@ export function parseMailboxesDone(
     // IMAP summaries never carry `newState`/`fullPull` — we synthesize
     // empty defaults so the orchestrator's downstream code that
     // persists `tenant_jmap_state` skips the row (empty state = no-op).
-    const doneMatch = line.match(/(JMAP|IMAP)_DONE bundleId=(\S+) address=(\S+) summary=(\{.*\})\s*$/);
+    //
+    // Split on `summary=` instead of trying to regex-match the JSON
+    // body — the earlier `\{.*\}` was greedy and would span any second
+    // `{` to the last `}` on the same line. JSON.parse() below catches
+    // any non-JSON tail.
+    const doneMatch = line.match(/(JMAP|IMAP)_DONE bundleId=(\S+) address=(\S+) summary=(.+)$/);
     if (doneMatch && doneMatch[2] === expectedBundleId) {
       try {
         const summary = JSON.parse(doneMatch[4]!) as {
