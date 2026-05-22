@@ -66,11 +66,19 @@ export default function MailboxBackupEngineSection() {
       setError('Max concurrent workers must be an integer between 1 and 64.');
       return;
     }
+    // Send only the fields that actually changed — keeps lastUpdatedAt
+    // honest (advances only on a real change) and matches the PATCH
+    // schema's "at least one of engine|maxConcurrent" refine.
+    const patch: { engine?: typeof engine; maxConcurrent?: number } = {};
+    if (settings && engine !== settings.engine) patch.engine = engine;
+    if (settings && maxConcurrent !== settings.maxConcurrent) patch.maxConcurrent = maxConcurrent;
+    if (Object.keys(patch).length === 0) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 4000);
+      return;
+    }
     try {
-      await mutation.mutateAsync({
-        engine,
-        maxConcurrent,
-      });
+      await mutation.mutateAsync(patch);
       setSaved(true);
       setTimeout(() => setSaved(false), 4000);
     } catch (err) {
@@ -165,7 +173,13 @@ export default function MailboxBackupEngineSection() {
           min={1}
           max={64}
           value={maxConcurrent}
-          onChange={(e) => setMaxConcurrent(Number.parseInt(e.target.value, 10) || 0)}
+          // valueAsNumber returns NaN on empty/non-numeric — fall back
+          // to the current persisted value (or 1) so the input never
+          // silently drops to 0, which previously bypassed dirty-check.
+          onChange={(e) => {
+            const n = e.target.valueAsNumber;
+            setMaxConcurrent(Number.isFinite(n) ? n : settings?.maxConcurrent ?? 1);
+          }}
           className={`${INPUT_CLASS} max-w-[120px]`}
           data-testid="mbx-backup-max-concurrent"
         />

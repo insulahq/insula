@@ -53,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from imap_client import (  # noqa: E402
     ImapClient,
     ImapError,
+    custom_keywords,
     deterministic_unique,
     maildir_flags_suffix,
 )
@@ -78,7 +79,17 @@ def _write_message(
     body: bytes,
     flags: frozenset[str],
 ) -> str:
-    """Write one captured message to the Maildir layout. Returns its path."""
+    """
+    Write one captured message to the Maildir layout. Returns its path.
+
+    Custom IMAP keywords ($Junk, $Forwarded, server-defined flags etc.)
+    don't fit the Maildir 1-char system-flag suffix, so we write them
+    to a `<msg-filename>.keywords` sidecar — one keyword per line.
+    On restore, imap-restore.py reads the sidecar and includes the
+    custom keywords in the MULTIAPPEND/APPEND flag block. Absent
+    sidecar = no custom keywords (backwards compatible with snapshots
+    written before this change).
+    """
     suffix = maildir_flags_suffix(flags)
     unique = deterministic_unique(uid, folder)
     fname = f"{unique}:2,{suffix}"
@@ -92,6 +103,16 @@ def _write_message(
     with open(tmp, "wb") as f:
         f.write(body)
     os.rename(tmp, target_path)
+    # Sidecar with custom keywords if any are set. We skip writing the
+    # file at all when there are none — keeps the maildir tree tidy.
+    extras = custom_keywords(flags)
+    if extras:
+        sidecar = target_path + ".keywords"
+        sidecar_tmp = sidecar + ".part"
+        with open(sidecar_tmp, "w", encoding="utf-8") as f:
+            for kw in sorted(extras):
+                f.write(kw + "\n")
+        os.rename(sidecar_tmp, sidecar)
     return target_path
 
 

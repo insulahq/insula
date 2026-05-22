@@ -125,6 +125,28 @@ def _maildir_flags(filename: str) -> frozenset[str]:
     )
 
 
+def _read_keyword_sidecar(message_path: str) -> frozenset[str]:
+    """
+    Read custom IMAP keywords from `<message-filename>.keywords` sidecar
+    if present. Returns empty frozenset if missing (backwards-compat
+    with maildirs produced before the sidecar was introduced, including
+    the JMAP path's output).
+
+    Sidecar format: one keyword per line, with the leading `\\` or `$`
+    intact (e.g. `$Junk\\n$Forwarded\\n`).
+    """
+    sidecar = message_path + ".keywords"
+    if not os.path.isfile(sidecar):
+        return frozenset()
+    try:
+        with open(sidecar, "r", encoding="utf-8") as f:
+            return frozenset(
+                line.strip() for line in f if line.strip() and not line.startswith("#")
+            )
+    except OSError:
+        return frozenset()
+
+
 def _internal_date(unix_ts: int) -> str:
     """RFC 3501 INTERNALDATE format: `01-Jan-2026 12:00:00 +0000`."""
     return time.strftime("%d-%b-%Y %H:%M:%S +0000", time.gmtime(unix_ts))
@@ -223,9 +245,19 @@ def _enumerate_maildir(
             continue
 
         for fn in files:
+            # Skip `.keywords` sidecar files at the enumeration stage —
+            # they're consumed implicitly by `_read_keyword_sidecar`
+            # alongside the parent .eml. (Sidecars don't have the
+            # `:2,<flags>` Maildir suffix so MAILDIR_FLAG_RE rejects
+            # them anyway, but the explicit skip avoids any future
+            # filename-pattern surprises.)
+            if fn.endswith(".keywords"):
+                continue
             full = os.path.join(cur, fn)
-            flags = _maildir_flags(fn)
-            out.append((imap_name, full, flags, special_use))
+            sys_flags = _maildir_flags(fn)
+            extra = _read_keyword_sidecar(full)
+            combined = sys_flags | extra
+            out.append((imap_name, full, combined, special_use))
     return out
 
 
