@@ -191,6 +191,68 @@ describe('cnpg-backup-health: readBackupHealth', () => {
     expect(mail?.scheduledBackups).toEqual(['mail-pg-daily']);
   });
 
+  // B7 fix (2026-05-22): CNPG 1.21+ moved barman-cloud out of
+  // spec.backup into the plugin model. A cluster running the plugin
+  // path has spec.backup == null but spec.plugins[barman-cloud]
+  // enabled — and DOES back up successfully. The health card was
+  // marking such clusters `no_backup_config` and dragging the
+  // dashboard into the red. The new detection treats either field
+  // shape as "has backup config".
+  it('plugin-model — spec.plugins[barman-cloud] enabled counts as backup configured', async () => {
+    const NOW_MS_LOCAL = Date.UTC(2026, 4, 22, 6, 0, 0);
+    const lastSuccessIso = new Date(NOW_MS_LOCAL - 3 * 3_600_000).toISOString();
+    const tenants = fakeTenant({
+      clusters: [
+        {
+          metadata: { name: 'system-db', namespace: 'platform' },
+          // No legacy spec.backup …
+          spec: {
+            plugins: [
+              {
+                name: 'barman-cloud.cloudnative-pg.io',
+                enabled: true,
+                parameters: { barmanObjectName: 'system-postgres-objectstore' },
+              },
+            ],
+          },
+        },
+      ],
+      backups: [
+        {
+          metadata: { name: 'system-db-daily', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'plugin' },
+          status: { phase: 'completed', startedAt: lastSuccessIso, stoppedAt: lastSuccessIso },
+        },
+      ],
+      scheduledbackups: [
+        { metadata: { name: 'sb', namespace: 'platform' }, spec: { cluster: { name: 'system-db' } } },
+      ],
+    });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS_LOCAL });
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.clusterHasBackupSpec).toBe(true);
+    expect(cluster?.state).toBe('healthy');
+  });
+
+  it('plugin-model — disabled barman-cloud plugin does NOT count as backup configured', async () => {
+    const tenants = fakeTenant({
+      clusters: [
+        {
+          metadata: { name: 'cluster-x', namespace: 'platform' },
+          spec: {
+            plugins: [
+              { name: 'barman-cloud.cloudnative-pg.io', enabled: false, parameters: {} },
+            ],
+          },
+        },
+      ],
+      backups: [],
+      scheduledbackups: [],
+    });
+    const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
+    expect(result.find((r) => r.clusterName === 'cluster-x')?.clusterHasBackupSpec).toBe(false);
+  });
+
   it('aggregates across both watched namespaces', async () => {
     const tenants = fakeTenant({
       clusters: [
