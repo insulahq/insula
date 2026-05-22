@@ -266,12 +266,23 @@ export async function createBarmanRestore(
       // ObjectStore. The plugin name + parameter shape mirrors the
       // pluginConfiguration on the source's Backup CRs (verified live
       // on staging 2026-05-22 — see staging Backup CRs for system-db).
+      //
+      // serverName MUST be set to the SOURCE cluster's name. Barman-
+      // cloud namespaces archives by `<destinationPath>/<serverName>/...`
+      // and the plugin defaults serverName to the NEW cluster's name —
+      // which doesn't have any backups, so the plugin returns "no target
+      // backup found" and the restore fails immediately (caught live on
+      // staging 2026-05-22 with sysdb-restored-e2e attempt #1). Forcing
+      // serverName=source resolves the lookup against the actual archive.
       externalClusters: [
         {
           name: externalName,
           plugin: {
             name: BARMAN_PLUGIN_NAME,
-            parameters: { [PARAM_OBJECT_NAME]: objectStore },
+            parameters: {
+              [PARAM_OBJECT_NAME]: objectStore,
+              serverName: inputs.sourceClusterName,
+            },
           },
         },
       ],
