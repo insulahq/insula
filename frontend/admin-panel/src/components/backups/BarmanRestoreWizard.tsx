@@ -36,6 +36,11 @@ interface Envelope<T> { readonly data: T; }
 
 interface BarmanRestoreWizardProps {
   readonly onClose: () => void;
+  /** P4d (2026-05-22): when the wizard is opened from a backup row
+   *  in the Health Card, pre-seed the source cluster + target time
+   *  so the operator just confirms instead of re-picking. */
+  readonly initialSourceName?: string;
+  readonly initialTargetTime?: string;
 }
 
 type Step = 1 | 2 | 3 | 'in-flight';
@@ -70,10 +75,19 @@ function useHealth() {
 
 // ── Modal ─────────────────────────────────────────────────────────────
 
-export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProps) {
+export default function BarmanRestoreWizard({ onClose, initialSourceName, initialTargetTime }: BarmanRestoreWizardProps) {
   const [step, setStep] = useState<Step>(1);
-  const [sourceName, setSourceName] = useState<string>(DEFAULT_SOURCE);
-  const [targetTime, setTargetTime] = useState<string>(''); // empty = latest
+  const [sourceName, setSourceName] = useState<string>(initialSourceName ?? DEFAULT_SOURCE);
+  // Convert ISO string → datetime-local-compatible "YYYY-MM-DDTHH:mm"
+  // so a pre-seeded value shows in the input.
+  const initialTargetLocal = useMemo(() => {
+    if (!initialTargetTime) return '';
+    const d = new Date(initialTargetTime);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }, [initialTargetTime]);
+  const [targetTime, setTargetTime] = useState<string>(initialTargetLocal); // empty = latest
   const [newName, setNewName] = useState<string>('');
   // P4a (2026-05-22): default to the source's instances count when known,
   // so HA-3 source → restore creates 3 replicas matching the operator's
@@ -88,6 +102,12 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
   const deleteMut = useDeleteBarmanRestore();
   const healthQ = useHealth();
   const cnpgList = healthQ.data?.data ?? [];
+  // Resolve the source cluster's ObjectStore name from the health
+  // endpoint instead of relying on the DEFAULT_OBJSTORE constant.
+  // Future-proofs against multiple plugin-mode clusters with different
+  // ObjectStore bindings (mail-pg, per-tenant, etc.).
+  const sourceClusterRow = cnpgList.find((c) => c.namespace === NS && c.clusterName === sourceName);
+  const objStoreForSource = sourceClusterRow?.objectStoreName ?? DEFAULT_OBJSTORE;
   // P4c: WAL freshness for the source cluster — surfaces in Step 3 so
   // the operator sees the PITR target's max reach.
   const walQ = useWalArchiveClusters();
@@ -108,7 +128,7 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
   // platform namespace (single system-db). Future expansion: pick from
   // every plugin-mode CNPG cluster, look up the ObjectStore from its
   // plugin parameters.
-  const catalogueQ = useCatalogue(NS, DEFAULT_OBJSTORE, step === 1);
+  const catalogueQ = useCatalogue(NS, objStoreForSource, step === 1 && !!objStoreForSource);
   const cat = catalogueQ.data?.data;
 
   // Default the new cluster name to <source>-restored-<YYYYMMDDHHmm>.
