@@ -104,6 +104,24 @@ RUN chmod 755 /usr/local/bin/jmap-sync.py
 COPY legacy/jmap-restore.py /usr/local/bin/jmap-restore.py
 RUN chmod 755 /usr/local/bin/jmap-restore.py
 
+# ─────────────────────────────────────────────────────────────────────────
+# Auxiliary surfaces (2026-05-22) — Sieve scripts, contacts, calendars,
+# vacation responses. These live OUTSIDE the Maildir tree but inside the
+# per-account scope, so the mail Job runs jmap-aux-sync.py per address
+# after the main mail capture, and the restore executor runs
+# jmap-aux-restore.py after the main mail restore. Both use the same
+# master-proxy auth + same JMAP transport as the legacy mail scripts.
+# See ADR-044 for the design rationale.
+# ─────────────────────────────────────────────────────────────────────────
+COPY jmap_aux_client.py /usr/local/bin/jmap_aux_client.py
+RUN chmod 644 /usr/local/bin/jmap_aux_client.py
+
+COPY jmap-aux-sync.py /usr/local/bin/jmap-aux-sync.py
+RUN chmod 755 /usr/local/bin/jmap-aux-sync.py
+
+COPY jmap-aux-restore.py /usr/local/bin/jmap-aux-restore.py
+RUN chmod 755 /usr/local/bin/jmap-aux-restore.py
+
 # E2E test seeder — used by scripts/integration-tenant-bundles-jmap-full-e2e.sh
 # to inject N marked messages via Email/import. Same auth + endpoint-rebase
 # pattern as jmap-sync.py. Pure Python stdlib.
