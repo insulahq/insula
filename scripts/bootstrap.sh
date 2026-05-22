@@ -4501,11 +4501,29 @@ STALWART016_EOF
     log "Stalwart v016 credentials persisted to /etc/platform/stalwart-mail-credentials."
   fi
 
-  # Cut 3 (2026-05-04): Roundcube webmail secrets (roundcube-secrets).
+  # Mail-stack shared secret (mail-secrets).
   # Webmail is always deployed alongside Stalwart on staging+production,
   # so its operator-bootstrap state lives next to Stalwart's.
   #
-  # 8 keys consumed by k8s/base/roundcube/deployment.yaml:
+  # Renamed 2026-05-22 from `roundcube-secrets` → `mail-secrets` because
+  # the Secret is consumed by far more than Roundcube: every component
+  # that does Stalwart master-proxy auth (platform-api, tenant-bundle
+  # mailbox Jobs, mail-imapsync, the migration scripts) reads
+  # STALWART_MASTER_PASSWORD from it. The Roundcube-specific keys
+  # (ROUNDCUBEMAIL_DES_KEY, ROUNDCUBEMAIL_DB_*) coexist for now —
+  # splitting them out would force a Roundcube pod-restart on every
+  # master-password rotation, which is undesirable.
+  #
+  # NOTE: no upgrade migration here. The pre-2026-05-22 servers (testing
+  # + staging) are patched imperatively at rename time:
+  #   kubectl -n mail get secret roundcube-secrets -o json \
+  #     | jq '.metadata = {name:"mail-secrets",namespace:"mail",labels:(.metadata.labels//{})}' \
+  #     | kubectl apply -f -
+  #   kubectl rollout restart -n mail deploy/roundcube deploy/stalwart-mail
+  #   # Then delete the old Secret once new pods are Ready:
+  #   kubectl delete secret -n mail roundcube-secrets
+  #
+  # 8 keys consumed by k8s/base/roundcube/deployment.yaml + platform-api:
   #   JWT_AUTH_SECRET            — must equal platform-api WEBMAIL_JWT_SECRET
   #   STALWART_MASTER_USER       — Stalwart master-auth user (created later
   #                                via JMAP by cutover-stalwart script)
@@ -4516,15 +4534,15 @@ STALWART016_EOF
   # The PG `roundcube` database+role is created in create_roundcube_db()
   # below (separate fn so it can run after CNPG is up but before
   # Roundcube starts).
-  if kctl get secret -n mail roundcube-secrets &>/dev/null 2>&1; then
-    log "roundcube-secrets already exists, skipping."
+  if kctl get secret -n mail mail-secrets &>/dev/null 2>&1; then
+    log "mail-secrets already exists, skipping."
   else
     local rc_jwt rc_des rc_master_pw rc_db_pw
     rc_jwt="$(openssl rand -hex 32)"
     rc_des="$(openssl rand -base64 24)"
     rc_master_pw="$(openssl rand -hex 32)"
     rc_db_pw="$(openssl rand -hex 32)"
-    kctl create secret generic roundcube-secrets \
+    kctl create secret generic mail-secrets \
       --namespace=mail \
       --from-literal=JWT_AUTH_SECRET="$rc_jwt" \
       --from-literal=STALWART_MASTER_USER="master@${PLATFORM_DOMAIN}" \
@@ -4535,7 +4553,7 @@ STALWART016_EOF
       --from-literal=ROUNDCUBEMAIL_DB_NAME="roundcube" \
       --from-literal=ROUNDCUBEMAIL_DB_USER="roundcube" \
       --from-literal=ROUNDCUBEMAIL_DB_PASSWORD="$rc_db_pw"
-    log "roundcube-secrets created."
+    log "mail-secrets created."
 
     # Mirror the JWT secret into platform-api's namespace so the
     # /api/v1/admin/mail/sso?to= flow signs tokens with the same
@@ -4599,11 +4617,11 @@ RCEOF
     # master account can authenticate from both engines; generate a
     # fresh one otherwise. Operator-installed Stalwart later updates
     # the master account's password to match.
-    bw_master_pw="$(kctl get secret -n mail roundcube-secrets \
+    bw_master_pw="$(kctl get secret -n mail mail-secrets \
       -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
     if [[ -z "$bw_master_pw" ]]; then
       bw_master_pw="$(openssl rand -base64 32 | tr -d '\n')"
-      log "roundcube-secrets not found — generated fresh Stalwart master password for Bulwark-only deployment."
+      log "mail-secrets not found — generated fresh Stalwart master password for Bulwark-only deployment."
     fi
     bw_master_user="${BULWARK_MASTER_USER:-master@${PLATFORM_DOMAIN}}"
     # Pipe stringData via stdin to avoid placing the HMAC secret in the
@@ -4643,11 +4661,11 @@ BWEOF
       log "Migrating bulwark-secrets: adding BULWARK_JWT_AUTH_SECRET keys (upstream impersonation route)."
       local mig_jwt mig_master_pw mig_master_user
       mig_jwt="$(openssl rand -hex 32)"
-      mig_master_pw="$(kctl get secret -n mail roundcube-secrets \
+      mig_master_pw="$(kctl get secret -n mail mail-secrets \
         -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
       if [[ -z "$mig_master_pw" ]]; then
-        warn "roundcube-secrets missing STALWART_MASTER_PASSWORD — skipping bulwark-secrets migration."
-        warn "Provision STALWART_MASTER_PASSWORD on roundcube-secrets OR provide BULWARK_STALWART_MASTER_PASSWORD env to bootstrap.sh, then re-run."
+        warn "mail-secrets missing STALWART_MASTER_PASSWORD — skipping bulwark-secrets migration."
+        warn "Provision STALWART_MASTER_PASSWORD on mail-secrets OR provide BULWARK_STALWART_MASTER_PASSWORD env to bootstrap.sh, then re-run."
       else
         mig_master_user="${BULWARK_MASTER_USER:-master@${PLATFORM_DOMAIN}}"
         # Stream the new keys via stdin (avoid leaking the HMAC in `ps`).
@@ -5072,7 +5090,7 @@ wait_for_admission_webhooks() {
 #
 # Cut 3 (2026-05-04): create the `roundcube` database + role on the platform
 # CNPG cluster. Idempotent — uses DO blocks that skip if the role/db exist.
-# Roundcube reads its DB credentials from the `roundcube-secrets` Secret
+# Roundcube reads its DB credentials from the `mail-secrets` Secret
 # (created by generate_platform_secrets). This function reads the same
 # password and runs ALTER ROLE so re-runs converge.
 #
@@ -5083,14 +5101,14 @@ wait_for_admission_webhooks() {
 # fresh install has working webmail before platform-api comes up.
 #
 # Skipped when:
-#   - roundcube-secrets does not exist (mail stack not deployed)
+#   - mail-secrets does not exist (mail stack not deployed)
 #   - platform postgres Cluster is not Ready within 300s
 create_roundcube_db() {
   log ""
   log "── Roundcube DB provisioning ──"
 
-  if ! kctl get secret -n mail roundcube-secrets &>/dev/null 2>&1; then
-    log "  roundcube-secrets not found — skipping (mail stack not deployed)."
+  if ! kctl get secret -n mail mail-secrets &>/dev/null 2>&1; then
+    log "  mail-secrets not found — skipping (mail stack not deployed)."
     return 0
   fi
 
@@ -5104,10 +5122,10 @@ create_roundcube_db() {
   fi
 
   local rc_db_pw
-  rc_db_pw=$(kctl get secret -n mail roundcube-secrets \
+  rc_db_pw=$(kctl get secret -n mail mail-secrets \
     -o jsonpath='{.data.ROUNDCUBEMAIL_DB_PASSWORD}' 2>/dev/null | base64 -d || echo "")
   if [[ -z "$rc_db_pw" ]]; then
-    warn "  ROUNDCUBEMAIL_DB_PASSWORD missing from roundcube-secrets — skipping."
+    warn "  ROUNDCUBEMAIL_DB_PASSWORD missing from mail-secrets — skipping."
     return 0
   fi
 
@@ -5159,21 +5177,21 @@ RCSQL
 #   1. Ensure a `master.local` Domain exists (synthetic, never sends/receives
 #      mail — only hosts the master Account).
 #   2. Ensure an Account `master@master.local` exists.
-#   3. Set credentials = STALWART_MASTER_PASSWORD from roundcube-secrets.
+#   3. Set credentials = STALWART_MASTER_PASSWORD from mail-secrets.
 #   4. Assign roles = {@type: Admin} (built-in role, includes impersonate).
 #
 # Source: Stalwart 0.16 UPGRADING guide + Authorization/Roles docs.
 # https://stalw.art/docs/auth/authorization/administrator/
 #
 # Skipped when:
-#   - roundcube-secrets does not exist (mail stack not deployed)
+#   - mail-secrets does not exist (mail stack not deployed)
 #   - stalwart-mail Deployment is not Ready
 provision_stalwart_master_user() {
   log ""
   log "── Stalwart master user (Roundcube SSO impersonator) ──"
 
-  if ! kctl get secret -n mail roundcube-secrets &>/dev/null 2>&1; then
-    log "  roundcube-secrets not found — skipping (mail/webmail not deployed)."
+  if ! kctl get secret -n mail mail-secrets &>/dev/null 2>&1; then
+    log "  mail-secrets not found — skipping (mail/webmail not deployed)."
     return 0
   fi
   if ! kctl get deployment -n mail stalwart-mail &>/dev/null 2>&1; then
@@ -5184,7 +5202,7 @@ provision_stalwart_master_user() {
   local recovery_pw master_pw
   recovery_pw=$(kctl get secret -n mail stalwart-admin-creds \
     -o jsonpath='{.data.recoveryPassword}' 2>/dev/null | base64 -d || echo "")
-  master_pw=$(kctl get secret -n mail roundcube-secrets \
+  master_pw=$(kctl get secret -n mail mail-secrets \
     -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || echo "")
   if [[ -z "$recovery_pw" || -z "$master_pw" ]]; then
     warn "  recovery or master password missing from Secrets — skipping."
@@ -5569,22 +5587,23 @@ spec:
           # maxRequestSize is read at Stalwart startup — the pod recycle
           # at the end of bootstrap_stalwart_v016 is what applies it.
           #
-          # maxConcurrent raised 16→64 to enable PARALLEL IMAP restore
-          # (imap-restore.py --workers 4). The setting's effective
-          # per-user cap is ~maxConcurrent/16 — at the default of 16
-          # only 1 concurrent connection per user is allowed, blocking
-          # the 4-worker restore. 64 yields ~4 concurrent per user.
-          # Confirmed live on testing.example.test 2026-05-22:
-          # at 16 a 2nd LOGIN as same user fails with
-          # `NO [LIMIT] Too many concurrent requests`; at 64 a 4-worker
-          # restore completes in 28s vs JMAP's 43s on the same 3011-msg
-          # corpus.
+          # maxConcurrent stays at the Stalwart DEFAULT 16. Tenant-bundles
+          # capture + backup-restore executors transiently elevate it to 64
+          # around active mailbox Jobs (so imap-restore.py --workers 4 can
+          # open four concurrent connections per user — the effective
+          # per-user cap is ~maxConcurrent/16). The 5-min
+          # `startImapConcurrencyReverter` scheduler in platform-api
+          # returns the setting to 16 when no jobs are in-flight, so
+          # Stalwart sits at the memory-conservative default during idle
+          # periods (per-user buffered-APPEND worst case is
+          # maxConcurrent × maxRequestSize). See
+          # backend/src/modules/mail-admin/imap-concurrency.ts.
           jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:Imap/set",
                 {accountId:\$a,update:{singleton:{
                   maxRequestSize:104857600,
-                  maxConcurrent:64
+                  maxConcurrent:16
                 }}},
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "Imap limits OK"

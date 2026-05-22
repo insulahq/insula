@@ -41,7 +41,7 @@
  *     a server-side rename primitive.
  *
  * Auth pattern unchanged from the mbsync era — master-user proxy with
- * `<addr>%<master>` username + master password from `roundcube-secrets`.
+ * `<addr>%<master>` username + master password from `mail-secrets`.
  * Same Secret, same rotation flow.
  *
  * Failure modes:
@@ -75,6 +75,13 @@ import {
   type MailboxBackupEngine,
 } from '../mailbox-backup-engine.js';
 import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from '../cluster-concurrency.js';
+import {
+  ensureImapMaxConcurrentAtLeast,
+  IMAP_MAX_CONCURRENT_MIGRATION,
+} from '../../mail-admin/imap-concurrency.js';
+import { mailLogger } from '../../../shared/mail-logger.js';
+
+const mlog = mailLogger().child({ module: 'tenant-bundles-mailboxes' });
 
 export interface MailboxesComponentResult {
   readonly mailboxCount: number;
@@ -105,7 +112,7 @@ export interface CaptureMailboxesComponentOpts {
   readonly imapHost?: string;            // defaults to stalwart-mail.mail.svc.cluster.local
   readonly imapPort?: number;            // defaults to 993
   readonly stalwartMasterUser?: string;  // defaults to 'master@master.local' (FQ)
-  readonly masterSecretName?: string;    // defaults to 'roundcube-secrets'
+  readonly masterSecretName?: string;    // defaults to 'mail-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
   readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
   readonly timeoutMs?: number;
@@ -129,7 +136,7 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
 const MASTER_USER_DEFAULT = 'master@master.local';
-const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
+const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest';
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';
@@ -294,7 +301,7 @@ export function buildMailboxesComponentJobSpec(input: {
   // legacy --state-in/--state-out flags are still understood by
   // jmap-sync.py but ignored; the orchestrator no longer mounts the
   // state Secret.
-  const perAddressLines: string[] =
+  const mailCaptureLines: string[] =
     engine === 'imap'
       ? [
           '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
@@ -306,6 +313,21 @@ export function buildMailboxesComponentJobSpec(input: {
           `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
           `  echo "JMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
         ];
+
+  // Aux capture (Sieve / Contacts / Calendar / Vacation / FileNode)
+  // runs after the mail capture for the same address. ALWAYS via JMAP
+  // regardless of the mail engine — IMAP can't transport these
+  // surfaces. The aux script is best-effort: a non-zero exit (network
+  // blip, missing capability for an unusual account type) logs a WARN
+  // and the per-address loop continues so the mail snapshot still
+  // ships. The JSON summary line is parsed by the orchestrator from
+  // the bounded job-log tail (search prefix "{\"kind\":\"aux\"").
+  const auxCaptureLines: string[] = [
+    `    AUX_SUMMARY=$(/usr/local/bin/jmap-aux-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out) || { echo "AUX_WARN address=$ADDR jmap-aux-sync.py exited non-zero — continuing"; AUX_SUMMARY='{}'; }`,
+    `  echo "AUX_DONE bundleId=${input.backupId} address=$ADDR summary=$AUX_SUMMARY"`,
+  ];
+
+  const perAddressLines: string[] = [...mailCaptureLines, ...auxCaptureLines];
 
   const script = [
     'set -e',
@@ -551,6 +573,29 @@ export async function captureMailboxesComponent(
         );
       }
       throw err;
+    }
+
+    // Elevate Stalwart's x:Imap.maxConcurrent before the Job starts so
+    // imap-sync.py's K=4 worker pool isn't throttled to a single
+    // effective connection per user. Idempotent — no-op if already
+    // elevated by another in-flight Job. Best-effort: a Stalwart blip
+    // here logs a warning and continues; the worst case is degraded
+    // throughput, not a failed capture. The mail-admin reverter
+    // scheduler will return Stalwart to the default once no mailbox
+    // jobs remain in-flight. See backend/src/modules/mail-admin/imap-concurrency.ts.
+    //
+    // Only fires for the IMAP engine — the JMAP engine doesn't open
+    // IMAP connections at all, so the elevation would be a pointless
+    // global mutation that just delays the reverter.
+    if (engine === 'imap') {
+      try {
+        await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
+      } catch (err) {
+        mlog.warn(
+          { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
+          'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+        );
+      }
     }
 
     await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);

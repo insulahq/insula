@@ -72,6 +72,13 @@ import {
 } from '../../tenant-bundles/mailbox-backup-engine.js';
 import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from '../../tenant-bundles/cluster-concurrency.js';
 import {
+  ensureImapMaxConcurrentAtLeast,
+  IMAP_MAX_CONCURRENT_MIGRATION,
+} from '../../mail-admin/imap-concurrency.js';
+import { mailLogger } from '../../../shared/mail-logger.js';
+
+const mlog = mailLogger().child({ module: 'mailboxes-by-address-restore' });
+import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
 } from '@k8s-hosting/api-contracts';
@@ -94,7 +101,7 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 // master@localhost.local which doesn't exist → AUTHENTICATIONFAILED.
 // See tenant-bundles/components/mailboxes.ts for the rationale.
 const MASTER_USER_DEFAULT = 'master@master.local';
-const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
+const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest';
 const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;
@@ -288,6 +295,24 @@ export async function execMailboxesByAddressItem(args: {
       }
       throw err;
     }
+
+    // Elevate Stalwart's x:Imap.maxConcurrent before the restore Job
+    // starts so imap-restore.py --workers 4 isn't throttled. Idempotent;
+    // best-effort. Only fires for the IMAP engine — the JMAP path
+    // doesn't open IMAP connections at all so the global mutation
+    // would just delay the reverter. See backend/src/modules/mail-admin/
+    // imap-concurrency.ts.
+    if (engine === 'imap') {
+      try {
+        await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
+      } catch (err) {
+        mlog.warn(
+          { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
+          'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+        );
+      }
+    }
+
     await (k8s.batch as unknown as {
       createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
     }).createNamespacedJob({ namespace: MAIL_NAMESPACE, body: spec });
@@ -484,6 +509,27 @@ export function buildMailboxesByAddressJobSpec(input: {
        --maildir-root "/tmp/maildir/$ADDR" \\
        --mode "$MODE" \\
        --workers "$WORKERS"`,
+    // Auxiliary surfaces — Sieve scripts, Contacts, Calendars,
+    // Vacation responses, FileNodes. Restore mirrors the capture
+    // wiring (mailboxes.ts) — always JMAP, best-effort. A non-zero
+    // exit logs a WARN and the per-address loop continues so a
+    // partially-failed aux restore doesn't fail the mail restore.
+    // --confirm-destructive is conditionally appended only in replace
+    // mode (jmap-aux-restore.py refuses replace without the flag).
+    '  if [ -d "/tmp/maildir/$ADDR/$ADDR/.aux" ]; then',
+    `    AUX_FLAGS=""; [ "$MODE" = "replace" ] && AUX_FLAGS="--confirm-destructive"`,
+    `    python3 /usr/local/bin/jmap-aux-restore.py \\
+       --endpoint "${input.jmapEndpoint}" \\
+       --target-address "$ADDR" \\
+       --source-address "$ADDR" \\
+       --master-user "${input.stalwartMasterUser}" \\
+       --auth-pass-env STALWART_MASTER_PASSWORD \\
+       --maildir-root "/tmp/maildir/$ADDR" \\
+       --mode "$MODE" $AUX_FLAGS || echo "AUX_WARN address=$ADDR jmap-aux-restore.py exited non-zero — mail restore is unaffected"`,
+    '    echo "AUX_RESTORED addr=$ADDR mode=$MODE"',
+    '  else',
+    '    echo "AUX_SKIP addr=$ADDR no .aux dir in snapshot"',
+    '  fi',
     '  rm -rf "/tmp/maildir/$ADDR"',
     '  echo "MAILBOX_RESTORED addr=$ADDR mode=$MODE"',
     'done',

@@ -25,7 +25,7 @@ resources:
   - stalwart-mail/
   # Roundcube webmail — always deployed alongside Stalwart on
   # staging+production. Operator-bootstrap step creates the
-  # `roundcube-secrets` Secret + the `roundcube` PG database/role on
+  # `mail-secrets` Secret + the `roundcube` PG database/role on
   # the platform CNPG cluster (scripts/bootstrap.sh:create_roundcube_db).
   - roundcube/
   # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by the

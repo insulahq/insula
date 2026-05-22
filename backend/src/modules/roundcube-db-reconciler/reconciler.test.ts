@@ -25,7 +25,7 @@ function makeCore(opts: {
   primaryPodName?: string | null;
 }) {
   const readNamespacedSecret = vi.fn(({ name }: { name: string }) => {
-    if (name !== 'roundcube-secrets') {
+    if (name !== 'mail-secrets') {
       return Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }));
     }
     if (opts.secretMissing) {

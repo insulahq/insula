@@ -134,7 +134,7 @@ spec:
     - name: STALWART_MASTER_PASSWORD
       valueFrom:
         secretKeyRef:
-          name: roundcube-secrets
+          name: mail-secrets
           key: STALWART_MASTER_PASSWORD
     resources:
       requests: {cpu: 100m, memory: 128Mi}

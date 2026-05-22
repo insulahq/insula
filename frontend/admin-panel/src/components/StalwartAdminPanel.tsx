@@ -469,7 +469,7 @@ function RotateWebmailMasterConfirmModal({
                 master Account&apos;s secret in-flight (no Stalwart restart).
               </li>
               <li>
-                <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">roundcube-secrets/STALWART_MASTER_PASSWORD</code>{' '}
+                <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">mail-secrets/STALWART_MASTER_PASSWORD</code>{' '}
                 is patched.
               </li>
               <li>

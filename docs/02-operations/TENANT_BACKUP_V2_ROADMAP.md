@@ -24,7 +24,7 @@ Targeting: ~28× storage reduction at 100 tenants, daily incremental window < 8 
 1. **Retention**: `restic forget --keep-daily N --prune`, single global setting `tenant_backup_retention_days` (default 30). No weekly/monthly layer.
 2. **GDPR export**: on-demand only via existing data-export route. No permanent monthly full-mode schedule.
 3. **`restic check` cadence**: weekly default, configurable globally via `tenant_backup_check_interval_days`.
-4. **JMAP auth**: Stalwart master user (existing `roundcube-secrets` Secret). No per-tenant token issuance.
+4. **JMAP auth**: Stalwart master user (existing `mail-secrets` Secret). No per-tenant token issuance.
 5. **platform-api memory**: stays at 1 GiB limit. Per-pod restic concurrency cap = 4. Cluster-wide cap via pg advisory-lock pool, default 0 (unlimited), recommended 8 for 3-replica HA.
 6. **Backwards compatibility**: NONE. Legacy bundles can be deleted at cutover. No coexistence window. No `legacy_mbsync` kill-switch.
 7. **SSH/SFTP target support**: yes, via restic's native `sftp:` backend. NOT SSHFS (no FUSE). Decrypted private key written to a per-Job tmpfile (`umask 600`, deleted on process exit), restic launched with `RESTIC_SFTP_COMMAND="ssh -i <tmpfile> -o StrictHostKeyChecking=accept-new -o BatchMode=yes ..."`.
