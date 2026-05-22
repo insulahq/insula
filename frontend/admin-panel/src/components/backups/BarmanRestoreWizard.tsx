@@ -25,9 +25,11 @@ import {
   useBarmanRestoreStatus,
   useDeleteBarmanRestore,
 } from '@/hooks/use-postgres-barman-restore';
+import { useWalArchiveClusters } from '@/hooks/use-system-wal-archive';
 import type {
   CnpgBackupCatalogueResponse,
   CnpgClusterBackupHealth,
+  WalArchiveCluster,
 } from '@k8s-hosting/api-contracts';
 
 interface Envelope<T> { readonly data: T; }
@@ -86,6 +88,10 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
   const deleteMut = useDeleteBarmanRestore();
   const healthQ = useHealth();
   const cnpgList = healthQ.data?.data ?? [];
+  // P4c: WAL freshness for the source cluster — surfaces in Step 3 so
+  // the operator sees the PITR target's max reach.
+  const walQ = useWalArchiveClusters();
+  const sourceWal = walQ.data?.find((w) => w.clusterNamespace === NS && w.clusterName === sourceName) ?? null;
   // P4a: derive the source cluster's HA state + auto-default instances.
   // Re-evaluate whenever the user picks a different source. Skip the
   // auto-default if the operator has already edited the field manually
@@ -184,6 +190,7 @@ export default function BarmanRestoreWizard({ onClose }: BarmanRestoreWizardProp
               newName={effectiveNewName}
               instances={instances}
               submitError={submitError}
+              sourceWal={sourceWal}
             />
           )}
           {step === 'in-flight' && activeCluster && (
@@ -403,12 +410,14 @@ function Step3Confirm({
   newName,
   instances,
   submitError,
+  sourceWal,
 }: {
   readonly sourceName: string;
   readonly targetTime: string;
   readonly newName: string;
   readonly instances: number;
   readonly submitError: string | null;
+  readonly sourceWal: WalArchiveCluster | null;
 }) {
   return (
     <div className="space-y-3">
@@ -435,6 +444,39 @@ function Step3Confirm({
         <code className="font-mono">{sourceName}</code>. The source is untouched.
         Verify the restored data (psql, dumps), then either keep both clusters or
         delete the side-by-side one with the Delete button that appears post-restore.
+      </div>
+      {/* P4c — WAL streaming reach indicator. Tells the operator the
+          maximum point-in-time the restore can roll forward to,
+          assuming continuous WAL archive coverage.
+      */}
+      <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+        <div className="font-semibold text-gray-700 dark:text-gray-300">WAL coverage</div>
+        {sourceWal?.enabled && sourceWal.status?.lastArchivedWalTime && !sourceWal.status.lastFailedArchiveTime && (
+          <div>
+            ✓ WAL archived continuously to the object store. Latest archive
+            <span className="ml-1 font-mono">{new Date(sourceWal.status.lastArchivedWalTime).toLocaleString()}</span>.
+            PITR target can roll forward to that point.
+          </div>
+        )}
+        {sourceWal?.enabled && sourceWal.status?.lastFailedArchiveTime && (
+          <div className="text-rose-800 dark:text-rose-300">
+            ⚠ WAL archiver FAILING since
+            <span className="ml-1 font-mono">{new Date(sourceWal.status.lastFailedArchiveTime).toLocaleString()}</span>.
+            Restore can only roll forward to the last successful archive — data written after that is NOT in the archive.
+            {sourceWal.status.lastFailedArchiveError && (
+              <span className="ml-1 text-rose-700 dark:text-rose-400">({sourceWal.status.lastFailedArchiveError})</span>
+            )}
+          </div>
+        )}
+        {sourceWal?.enabled && !sourceWal.status?.lastArchivedWalTime && !sourceWal.status?.lastFailedArchiveTime && (
+          <div>WAL archive enabled but no archive yet. Restore can only roll forward to the base backup's LSN.</div>
+        )}
+        {!sourceWal?.enabled && (
+          <div className="text-amber-800 dark:text-amber-300">
+            ⚠ WAL archive is DISABLED for this cluster. Restore can ONLY use base backups — no point-in-time roll-forward beyond the backup's stop_LSN.
+            {targetTime && <> Your selected target time will snap to the nearest backup boundary.</>}
+          </div>
+        )}
       </div>
       <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
         <AlertTriangle size={12} className="-mt-0.5 mr-1 inline" />
