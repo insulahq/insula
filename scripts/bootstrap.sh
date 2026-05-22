@@ -5561,7 +5561,35 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "Jmap limits OK"
 
-          # 3b. HTTP — enable permissive CORS so cross-origin JMAP
+          # 3a. IMAP limits — always update (idempotent).
+          # maxRequestSize raised 50→100 MiB to accommodate large-attachment
+          # tenant imports via IMAP APPEND/MULTIAPPEND during migration. The
+          # per-literal cap is the constraint clients hit; default 50 MiB
+          # blocked single-message bodies above ~37 MB Base64 attachment.
+          # maxRequestSize is read at Stalwart startup — the pod recycle
+          # at the end of bootstrap_stalwart_v016 is what applies it.
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Imap/set",
+                {accountId:\$a,update:{singleton:{
+                  maxRequestSize:104857600
+                }}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Imap limits OK"
+
+          # 3b. Email limits — cap single attachment at 30 MiB so a
+          # tenant who composes 100 MB of attachments hits a clear
+          # boundary instead of triggering the 100 MiB request cap.
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Email/set",
+                {accountId:\$a,update:{singleton:{
+                  maxAttachmentSize:31457280
+                }}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Email limits OK"
+
+          # 3c. HTTP — enable permissive CORS so cross-origin JMAP
           # clients (Bulwark webmail, third-party JMAP apps) see
           # access-control-allow-* on every response, not just OPTIONS
           # preflights (Stalwart 0.16 default emits CORS only on OPTIONS,
