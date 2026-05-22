@@ -10,9 +10,6 @@ import Tenants from '@/pages/Tenants';
 import TenantDetail from '@/pages/TenantDetail';
 import Domains from '@/pages/Domains';
 import Monitoring from '@/pages/Monitoring';
-import SystemBackups from '@/pages/SystemBackups';
-import TenantBackups from '@/pages/TenantBackups';
-import TenantBackupDetail from '@/pages/TenantBackupDetail';
 import CronJobs from '@/pages/CronJobs';
 import Settings from '@/pages/Settings';
 import Applications from '@/pages/Applications';
@@ -24,6 +21,8 @@ import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
 import RestoreCartPage from '@/pages/RestoreCart';
 import BackupsDashboard from '@/pages/backups/BackupsDashboard';
+import SystemBackupsPage from '@/pages/backups/SystemBackupsPage';
+import TenantsBackupsPage from '@/pages/backups/TenantsBackupsPage';
 import MailBackupsPage from '@/pages/backups/MailBackupsPage';
 import RemoteStorageTargetsPage from '@/pages/backups/RemoteStorageTargetsPage';
 import DisasterRecoveryPage from '@/pages/backups/DisasterRecoveryPage';
@@ -98,9 +97,8 @@ export default function App() {
             <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
             <Route path="backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupsDashboard /></ProtectedRoute>} />
-            <Route path="backups/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemBackups /></ProtectedRoute>} />
-            <Route path="backups/tenants" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackups /></ProtectedRoute>} />
-            <Route path="backups/tenants/:tenantId" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackupDetail /></ProtectedRoute>} />
+            <Route path="backups/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemBackupsPage /></ProtectedRoute>} />
+            <Route path="backups/tenants" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantsBackupsPage /></ProtectedRoute>} />
             <Route path="backups/mail" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><MailBackupsPage /></ProtectedRoute>} />
             <Route path="backups/targets" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RemoteStorageTargetsPage /></ProtectedRoute>} />
             <Route path="backups/disaster-recovery" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DisasterRecoveryPage /></ProtectedRoute>} />
