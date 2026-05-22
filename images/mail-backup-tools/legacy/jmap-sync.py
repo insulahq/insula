@@ -432,8 +432,25 @@ def _write_message(output_dir: str, account_address: str, message: Dict[str, Any
     first_mb = mailbox_names.get(mailbox_ids[0], mailbox_ids[0])
     mb_name = _safe_filename(first_mb)
     addr_dir = _safe_filename(account_address)
-    target_dir = os.path.join(output_dir, addr_dir, mb_name, "cur")
+    folder_root = os.path.join(output_dir, addr_dir, mb_name)
+    target_dir = os.path.join(folder_root, "cur")
     os.makedirs(target_dir, exist_ok=True)
+    # 2026-05-22: write `.imap-name` sidecar with the ORIGINAL JMAP
+    # mailbox name (pre-sanitization) so jmap-restore.py can
+    # round-trip UTF-8 folder names like "Geschäftlich" without
+    # filesystem-path corruption. Same sidecar format as imap-sync.py
+    # — both engines read identical Maildir output trees. Best-effort
+    # write (silently skip on failure — we'd rather lose name
+    # fidelity than crash mid-capture).
+    sidecar = os.path.join(folder_root, ".imap-name")
+    if not os.path.exists(sidecar):
+        try:
+            tmp_sidecar = sidecar + ".part"
+            with open(tmp_sidecar, "w", encoding="utf-8") as f:
+                f.write(first_mb)
+            os.rename(tmp_sidecar, sidecar)
+        except OSError:
+            pass
     path = os.path.join(target_dir, fname)
     # Write atomically: tmp + rename. Maildir spec says new files
     # belong in /tmp first then /cur, but for capture (read-only side)
