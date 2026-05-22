@@ -39,28 +39,23 @@ describe('buildMailboxesComponentJobSpec', () => {
     expect(spec.metadata.labels['platform.io/sub-component']).toBe('backup-mailboxes');
   });
 
-  it('mounts JMAP state map from the stateSecretName Secret (not from env vars)', () => {
+  it('does NOT mount the JMAP state Secret (COMPLETE-only since 2026-05-22)', () => {
     const spec = buildMailboxesComponentJobSpec(baseInput) as {
       spec: {
         template: {
           spec: {
-            containers: Array<{ env: Array<{ name: string; value?: string }>; volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>;
-            volumes: Array<{ name: string; secret?: { secretName: string; defaultMode: number; items: Array<{ key: string; path: string }> } }>;
+            containers: Array<{ env: Array<{ name: string; value?: string }>; volumeMounts: Array<{ name: string }> }>;
+            volumes: Array<{ name: string }>;
           };
         };
       };
     };
     const container = spec.spec.template.spec.containers[0]!;
-    // No MBX_STATE_* env vars — state tokens never go through shell
-    // (reviewer-flagged injection vector).
+    // No MBX_STATE_* env vars — state tokens never went through shell.
     expect(container.env.find((e) => e.name?.startsWith('MBX_STATE_'))).toBeUndefined();
-    const mount = container.volumeMounts.find((m) => m.name === 'jmap-state');
-    expect(mount?.mountPath).toBe('/var/run/jmap-state');
-    expect(mount?.readOnly).toBe(true);
-    const vol = spec.spec.template.spec.volumes.find((v) => v.name === 'jmap-state');
-    expect(vol?.secret?.secretName).toBe('bk-mbox-state-bkp-test');
-    expect(vol?.secret?.defaultMode).toBe(0o400);
-    expect(vol?.secret?.items[0]?.path).toBe('states.json');
+    // jmap-state mount removed: bundles are COMPLETE-only, no state.
+    expect(container.volumeMounts.find((m) => m.name === 'jmap-state')).toBeUndefined();
+    expect(spec.spec.template.spec.volumes.find((v) => v.name === 'jmap-state')).toBeUndefined();
   });
 
   it('mounts the upload token from a Secret (NOT etcd-visible argv)', () => {
@@ -265,13 +260,17 @@ describe('buildMailboxesComponentJobSpec — engine=imap', () => {
       .toThrow(/invalid imapPort/);
   });
 
-  it('engine defaults to jmap (backward compat) and keeps jmap-state mount', () => {
+  it('engine defaults to jmap when not specified — JMAP path still works (legacy compat)', () => {
     const { engine: _engine, ...withoutEngine } = base;
     const spec = buildMailboxesComponentJobSpec(withoutEngine);
     const template = (spec.spec as { template: { spec: { containers: Array<{ command: string[]; volumeMounts: Array<{ name: string }> }> } } }).template.spec;
-    const mountNames = template.containers[0]!.volumeMounts.map((m) => m.name);
-    expect(mountNames).toContain('jmap-state');
     expect(template.containers[0]!.command[2]).toContain('jmap-sync.py');
     expect(template.containers[0]!.command[2]).not.toContain('imap-sync.py');
+    // 2026-05-22: state mount removed from JMAP path too (COMPLETE-only).
+    const mountNames = template.containers[0]!.volumeMounts.map((m) => m.name);
+    expect(mountNames).not.toContain('jmap-state');
+    // --state-in / --state-out args no longer passed.
+    expect(template.containers[0]!.command[2]).not.toContain('--state-in');
+    expect(template.containers[0]!.command[2]).not.toContain('--state-out');
   });
 });

@@ -289,36 +289,21 @@ export function buildMailboxesComponentJobSpec(input: {
   const caseBranches = input.addresses
     .map((a, i) => `  ${i}) ADDR=${shQuote(a.address)} ;;`)
     .join('\n');
-  // Engine-specific per-address script body. JMAP needs state-in/state-out
-  // plumbing; IMAP is COMPLETE-only and skips both. The bulk-script
-  // skeleton (loop + case-dispatch + restic-stream tail) is shared so the
-  // surrounding tar+curl logic stays identical.
+  // Engine-specific per-address script body. Both engines are now
+  // COMPLETE-only — no incremental state plumbing for either. The
+  // legacy --state-in/--state-out flags are still understood by
+  // jmap-sync.py but ignored; the orchestrator no longer mounts the
+  // state Secret.
   const perAddressLines: string[] =
     engine === 'imap'
       ? [
-          // No state plumbing for IMAP — bundles are always COMPLETE.
           '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
           `    SUMMARY=$(/usr/local/bin/imap-sync.py --imap-host ${shQuote(imapHost)} --imap-port ${imapPort} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
           `  echo "IMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
         ]
       : [
-          '  STATE_IN="/tmp/state/${i}.in.json"',
-          '  STATE_OUT="/tmp/state/${i}.out.json"',
-          // python writes the per-mailbox state-in file by looking up the
-          // address in states.json. If the address has no prior state (or
-          // an empty string), it writes nothing and STATE_IN is absent →
-          // jmap-sync.py does a full pull.
-          '  python3 -c "import json,os,sys',
-          'addr=sys.argv[1]; out=sys.argv[2]',
-          'try: s=json.load(open(\\"/var/run/jmap-state/states.json\\")).get(addr,\\"\\")',
-          'except Exception: s=\\"\\"',
-          'if s: open(out,\\"w\\").write(json.dumps({\\"state\\": s}))" "$ADDR" "$STATE_IN"',
           '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
-          '  if [ -e "$STATE_IN" ]; then',
-          `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out --state-in "$STATE_IN" --state-out "$STATE_OUT")`,
-          '  else',
-          `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out --state-out "$STATE_OUT")`,
-          '  fi',
+          `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
           `  echo "JMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
         ];
 
@@ -399,11 +384,10 @@ export function buildMailboxesComponentJobSpec(input: {
             volumeMounts: [
               { name: 'scratch', mountPath: '/tmp' },
               { name: 'upload-token', mountPath: '/var/run/upload-token', readOnly: true },
-              // jmap-state mount only when engine='jmap'. The imap-sync.py
-              // path doesn't read /var/run/jmap-state/ at all.
-              ...(engine === 'jmap'
-                ? [{ name: 'jmap-state', mountPath: '/var/run/jmap-state', readOnly: true }]
-                : []),
+              // jmap-state mount removed 2026-05-22 — both engines are
+              // COMPLETE-only now, no per-mailbox state tokens to read.
+              // stateSecretName param retained for orchestrator-side
+              // backward compat but no longer mounted.
             ],
           }],
           volumes: [
@@ -418,20 +402,6 @@ export function buildMailboxesComponentJobSpec(input: {
                 items: [{ key: 'token', path: 'token' }],
               },
             },
-            // address → JMAP state map (server-issued opaque tokens).
-            // Mounted read-only; the python helper inside the script
-            // reads it without exposing the tokens to the shell.
-            // Only mounted when engine='jmap'; IMAP path is stateless.
-            ...(engine === 'jmap'
-              ? [{
-                  name: 'jmap-state',
-                  secret: {
-                    secretName: input.stateSecretName,
-                    defaultMode: 0o400,
-                    items: [{ key: 'states.json', path: 'states.json' }],
-                  },
-                }]
-              : []),
           ],
         },
       },
@@ -525,17 +495,16 @@ export async function captureMailboxesComponent(
     return { mailboxCount: 0, addresses: [], sizeBytes: 0, newStates: [] };
   }
 
-  // Engine selection: explicit override > platform_settings > 'jmap' default.
+  // Engine selection: explicit override > platform_settings > default ('imap').
   const engine: MailboxBackupEngine =
     opts.engineOverride ?? (await getMailboxBackupEngine(opts.db));
 
-  // For JMAP we read the per-mailbox `Email/changes` state token; for
-  // IMAP we don't — bundles are COMPLETE, no incremental.
-  const priorStates =
-    engine === 'jmap' ? await loadPriorStates(opts.db, opts.tenantId) : new Map();
+  // 2026-05-22: tenant bundles are COMPLETE only — neither engine reads
+  // prior state. loadPriorStates() is dead code kept for one cycle; the
+  // perAddress.stateIn field is always null.
   const perAddress = addresses.map((address) => ({
     address,
-    stateIn: priorStates.get(address)?.state ?? null,
+    stateIn: null as string | null,
   }));
 
   const archiveToken = signUploadToken(
@@ -585,15 +554,10 @@ export async function captureMailboxesComponent(
     }
 
     await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);
-    if (engine === 'jmap') {
-      // Per-mailbox state map — Secret-mounted so opaque JMAP state
-      // tokens never traverse env vars or shell expansion (reviewer-
-      // flagged shell-injection vector). Skipped for IMAP — no state.
-      const statesJson = JSON.stringify(
-        Object.fromEntries(perAddress.map((a) => [a.address, a.stateIn ?? ''])),
-      );
-      await createStateSecret(opts.k8s, mailNamespace, stateSecretName, statesJson);
-    }
+    // 2026-05-22: state Secret no longer created — both engines are
+    // COMPLETE-only. createStateSecret() is dead code kept for one
+    // cycle; the stateSecretName param is retained on the Job spec
+    // builder for backward compat but no longer mounted.
 
     const spec = buildMailboxesComponentJobSpec({
       jobName,
