@@ -2349,9 +2349,13 @@ export const storageSnapshots = pgTable('storage_snapshots', {
   // Migration 0004: which backup target this snapshot lives on. NULL
   // for hostpath snapshots predating the migration; gets filled in by
   // the snapshot orchestrator (Phase 3 onwards) at row-create time
-  // from the per-class resolver. ON DELETE SET NULL preserves
-  // forensic visibility when an operator retires a target.
-  targetId: varchar('target_id', { length: 36 }).references(() => backupConfigurations.id, { onDelete: 'set null' }),
+  // from the per-class resolver. Migration 0025 (B4 fix) dropped the
+  // backup_configurations FK — the shim path stores a synthetic
+  // sentinel `shim:<backup_class>` here for forensics, and that's not
+  // a valid UUID. Drizzle's `.references()` is kept as documentation
+  // intent (most rows ARE valid UUIDs), but the actual DB constraint
+  // is dropped at migration time so synthetic sentinels can land.
+  targetId: varchar('target_id', { length: 36 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
