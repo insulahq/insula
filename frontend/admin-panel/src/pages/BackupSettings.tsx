@@ -20,7 +20,7 @@ import {
 } from '@/hooks/use-backup-config';
 import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import { formatBytes } from '@/hooks/use-platform-storage';
-import { useTargetSummaries } from '@/hooks/use-snapshot-classes';
+import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { Link } from 'react-router-dom';
 
 const INPUT_CLASS =
@@ -31,12 +31,18 @@ type StorageType = 'ssh' | 's3' | 'cifs';
 export default function BackupSettings() {
   const { data: response, isLoading } = useBackupConfigs();
   const { data: healthSummaries, isLoading: healthLoading } = useBackupHealth();
-  const { data: summariesData } = useTargetSummaries();
-  // Build targetId → assigned classes map once per render. Empty
-  // when no classes are routed to a given target — the pill omits.
+  // Phase 2 legacy purge (2026-05-22): the per-target "Used by classes"
+  // pill now reads from the R-X shim assignments (system/tenant/mail)
+  // instead of the legacy snapshot-classes summary endpoint. Phase 4
+  // replaces this BackupSettings monolith with a dedicated Targets
+  // page that owns this lookup itself.
+  const { data: shimAssignmentsResp } = useShimAssignments();
   const targetSummaries = new Map<string, { backupClass: string; priority: number }[]>();
-  for (const s of summariesData?.data?.summaries ?? []) {
-    targetSummaries.set(s.targetId, s.classes);
+  for (const a of shimAssignmentsResp?.data?.assignments ?? []) {
+    if (!a.targetId) continue;
+    const list = targetSummaries.get(a.targetId) ?? [];
+    list.push({ backupClass: a.className, priority: 0 });
+    targetSummaries.set(a.targetId, list);
   }
   const createConfig = useCreateBackupConfig();
   const updateConfig = useUpdateBackupConfig();
@@ -690,12 +696,10 @@ export default function BackupSettings() {
                     {usedBy.map((c) => (
                       <Link
                         key={c.backupClass}
-                        to="/settings/backup-classes"
+                        to={`/backups/${c.backupClass}`}
                         className="rounded bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900/60"
-                        title={`priority ${c.priority}`}
                       >
                         {c.backupClass}
-                        {c.priority !== 100 && <span className="ml-1 text-indigo-500 dark:text-indigo-400">·p{c.priority}</span>}
                       </Link>
                     ))}
                   </div>
