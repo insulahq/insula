@@ -30,6 +30,10 @@ const MailMigrationProgressModal = lazy(() => import('@/components/MailMigration
 // platform-scoped op (NOT tenant-scoped) — modal polls /me/tasks +
 // /admin/backup-configs for the latest result.
 const SpeedtestProgressModal = lazy(() => import('@/components/SpeedtestProgressModal'));
+// 2026-05-22: Phase 4b PITR progress modal — chip click re-opens the
+// step-stream timeline pointed at the in-flight Job. Without this
+// the task's target was `type: 'route'` to the API path which 404'd.
+const PitrProgressModal = lazy(() => import('@/components/backups/PitrProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -73,6 +77,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'backup-speedtest': {
     Component: SpeedtestProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'pitr-progress': {
+    Component: PitrProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 
