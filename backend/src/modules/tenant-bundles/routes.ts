@@ -15,6 +15,7 @@ import {
   type BackupComponentInfo,
 } from '@k8s-hosting/api-contracts';
 import { S3BackupStore } from './s3-backup-store.js';
+import { resolveShimBackupStore } from './shim-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
@@ -269,16 +270,29 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         'targetConfigId is required: bundles must be written to an active off-site backup target (S3 or SSH).',
         400);
     }
-    // B5 fix (2026-05-22): the legacy `backup_configurations.active`
-    // flag predates the universal R-X shim. Post-shim, the source of
-    // truth for "this target is in use" is the shim assignment in
-    // backup_target_assignments, NOT the legacy `active` column. Plus
-    // the legacy /activate route only handles S3+SSH — CIFS and NFS
-    // targets cannot be activated through that path. Every OTHER
-    // resolveStore call already passes requireActive:false; this was
-    // the last hold-out. Bundle create now accepts any enabled target
-    // the operator (or shim binding) explicitly chose.
-    const store = await resolveStore(app, input.targetConfigId, { requireActive: false });
+    // B9 (2026-05-22): bundle writes always go through the R-X20 shim
+    // (live staging bench measured ~35% faster than restic native S3,
+    // PLUS the shim supports CIFS/NFS upstreams natively while
+    // tenant-bundles' direct S3/SSH stores do not). The cfg row is
+    // still recorded as targetConfigId for forensics; transport is
+    // taken from the shim's `tenant` class binding.
+    //
+    // Fall back to the legacy direct resolveStore only when the shim
+    // creds Secret is missing (BACKUP_TARGET_KEY not yet bootstrapped
+    // on a fresh cluster) — that path will go away once every cluster
+    // has the shim running.
+    let store;
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8sClients = createK8sClients(kubeconfigPath);
+      store = await resolveShimBackupStore(k8sClients.core, 'tenant', { log: app.log });
+    } catch (err) {
+      app.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'tenant-bundles: shim store unavailable — falling back to direct resolveStore',
+      );
+      store = await resolveStore(app, input.targetConfigId, { requireActive: false });
+    }
 
     // Resolve tenant + plan retention.
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
