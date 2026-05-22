@@ -82,6 +82,14 @@ export interface ClusterBackupHealth {
    *  surfaces what's actually in the object store. Null when CNPG sees its
    *  own backups (normal happy path). */
   readonly objectStoreBackupCount?: number | null;
+  /** Phase 4 (2026-05-22) — current cluster instance count (HA replica
+   *  count). Lets the barman-restore wizard auto-default a side-by-side
+   *  restore to the source's HA state instead of always 1. */
+  readonly instances?: number | null;
+  /** The barman-cloud ObjectStore the cluster archives to (plugin mode).
+   *  Populated when hasBarmanCloudPlugin(cluster) returns true; null
+   *  otherwise. Used by the Health Card to deep-link into the catalogue. */
+  readonly objectStoreName?: string | null;
 }
 
 /**
@@ -121,6 +129,9 @@ interface CnpgCluster {
     readonly namespace?: string;
   };
   readonly spec?: {
+    /** Current HA replica count. Used to auto-default barman-restore
+     *  side-by-side cluster size to the source's HA state. */
+    readonly instances?: number;
     /** Legacy CNPG 1.x backup field (barmanObjectStore inline). Empty
      *  on clusters that have migrated to the plugin model. */
     readonly backup?: unknown;
@@ -390,6 +401,7 @@ export async function readBackupHealth(
         }
       }
 
+      const objectStoreName = hasBarmanCloudPlugin(cluster) ? getBarmanObjectStoreName(cluster) : null;
       result.push({
         clusterName,
         namespace,
@@ -400,6 +412,8 @@ export async function readBackupHealth(
         scheduledBackups: namespacedSchedules,
         clusterHasBackupSpec,
         ...(objectStoreBackupCount !== undefined ? { objectStoreBackupCount } : {}),
+        instances: cluster.spec?.instances ?? null,
+        objectStoreName,
       });
     }
   }
