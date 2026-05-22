@@ -121,11 +121,11 @@ Pull-based file deployment from any external Git repository. **Per-domain config
 4. Service runs: `git clone --depth 1 --branch {branch} {repo_url}` into temp directory
 5. Service runs: `rsync --archive --delete {temp}/. /storage/customers/{id}/domains/{domain}/public_html/`
 6. Optional post-deploy hooks execute (e.g., `composer install`, `npm install`)
-7. Deployment logged to `deployment_history` table; visible in client panel
+7. Deployment logged to `deployment_history` table; visible in tenant panel
 8. Rollback available: click any previous deployment in history → "Re-deploy this commit"
 
 **Manual trigger (no webhook needed):**
-- Client clicks "Deploy Now" button in client panel
+- Client clicks "Deploy Now" button in tenant panel
 - Or calls API: `POST /api/v1/domains/{domain_id}/deploy`
 
 **Branch-based staging-to-production:**
@@ -250,7 +250,7 @@ The platform deployment process uses **GitOps principles** for all infrastructur
 
 **SFTP / FileBrowser uploads:**
 - Client manually re-uploads previous version of files
-- Or restores from backup (admin panel or client panel restore feature)
+- Or restores from backup (admin panel or tenant panel restore feature)
 
 **Git Pull deployment:**
 - Client clicks "Re-deploy" on a previous deployment in the deployment history
@@ -273,7 +273,7 @@ The platform deployment process uses **GitOps principles** for all infrastructur
 
 - **Platform deployment logs:** `kubectl logs -f deployment/flux-system-controller` (Flux logs)
 - **Image build logs:** Available in CI runner (GitHub Actions/Gitea Actions)
-- **Client deployment logs:** Available via Management API / client panel
+- **Client deployment logs:** Available via Management API / tenant panel
 - **Registry logs:** Available in Harbor UI
 
 ## Related Documentation
@@ -281,4 +281,4 @@ The platform deployment process uses **GitOps principles** for all infrastructur
 - **SECURITY_ARCHITECTURE.md**: Secrets management and image signing in CI/CD
 - **INFRASTRUCTURE_SIZING.md**: Resource requirements for CI/CD runners
 - **MONITORING_OBSERVABILITY.md**: Deployment and image scan monitoring
-- **CLIENT_PANEL_FEATURES.md**: Client deployment UI in management panel
+- **TENANT_PANEL_FEATURES.md**: Client deployment UI in management panel

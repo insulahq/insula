@@ -82,7 +82,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Flux** — GitOps tool for declarative cluster management. Watches Git repository and syncs cluster state.
 
-**Frontend** — Web UI (admin panel, client panel). Built with React, served via NGINX Ingress.
+**Frontend** — Web UI (admin panel, tenant panel). Built with React, served via NGINX Ingress.
 
 ## G
 
@@ -114,7 +114,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 ## J
 
-**Jotai** — Lightweight state management library (alternative to Redux). Used in client panel UI.
+**Jotai** — Lightweight state management library (alternative to Redux). Used in tenant panel UI.
 
 ## K
 
@@ -278,7 +278,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 ## Z
 
-**Zustand** — Lightweight state management library. Used in client panel UI.
+**Zustand** — Lightweight state management library. Used in tenant panel UI.
 
 ---
 

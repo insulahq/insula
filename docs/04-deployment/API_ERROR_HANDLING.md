@@ -227,7 +227,7 @@ All error responses must follow this structure:
 
 **Request:**
 ```bash
-POST /api/clients HTTP/1.1
+POST /api/tenants HTTP/1.1
 Content-Type: application/json
 
 {
@@ -590,7 +590,7 @@ describe('Error Handling', () => {
 
   it('should return 400 for invalid email', async () => {
     const res = await supertest(app)
-      .post('/api/clients')
+      .post('/api/tenants')
       .set('Authorization', `Bearer ${validToken}`)
       .send({
         name: 'Test',

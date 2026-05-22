@@ -124,7 +124,7 @@ not transient external outage.
   the cascade, so every per-tenant transition triggers all hooks.
   Each transition is tagged with `detail.bulkOpId` so the UI can
   fan out queries.
-* **Operator UX.** PATCH /clients/:id/status from the admin panel
+* **Operator UX.** PATCH /tenants/:id/status from the admin panel
   opens a `TransitionProgressModal` that polls per-hook state at
   1.5s intervals and renders failed hook envelopes inline.
   Bulk operations open a `BulkProgressModal` showing N rows with

@@ -33,7 +33,7 @@ All 62 documentation files have been audited and updated to reference **MariaDB 
 | 01-core/BILLING_MODEL.md | ✅ Updated | 2 | Billing database architecture |
 | DATABASE_SCHEMA.md | ✅ Updated | 18+ | Complete schema with MariaDB-specific features |
 | 02-operations/BACKUP_STRATEGY.md | ✅ Updated | 2 | Backup procedures for MariaDB |
-| 02-operations/CLIENT_PANEL_FEATURES.md | ✅ Updated | 1 | Client feature database references |
+| 02-operations/TENANT_PANEL_FEATURES.md | ✅ Updated | 1 | Client feature database references |
 | 04-deployment/PHASE_1_ROADMAP.md | ✅ Updated | 2 | Phase 1 timeline references MariaDB |
 | ARCHITECTURE_DECISION_RECORDS.md | ✅ Updated | 1 | ADR documentation updated |
 | DEPENDENCIES_AND_RISKS.md | ✅ Updated | 2 | Risk assessment includes MariaDB |

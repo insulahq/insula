@@ -29,7 +29,7 @@ The platform currently runs on a single k3s server in a Docker-in-Docker (DinD) 
 | PostgreSQL | Docker Compose container | k3s Deployment + PVC |
 | Redis | Docker Compose container | k3s Deployment |
 | Backend | Docker Compose container | k3s Deployment |
-| Admin/Client panels | Docker Compose containers | k3s Deployments + Ingress |
+| Admin/Tenant panels | Docker Compose containers | k3s Deployments + Ingress |
 | Dex / OAuth2 Proxy | Docker Compose containers | k3s Deployments |
 | TLS | Self-signed (local-ca-issuer) | Let's Encrypt (prod ClusterIssuer) |
 | DNS | `*.<PLATFORM_BASE_DOMAIN>` (internal DNS server, default `k8s-platform.test`) | Real domains via PowerDNS |
@@ -51,7 +51,7 @@ The platform currently runs on a single k3s server in a Docker-in-Docker (DinD) 
    - Redis 7 Deployment + Service
    - Backend Deployment + Service + ConfigMap + Secret
    - Admin panel Deployment + Service + Ingress
-   - Client panel Deployment + Service + Ingress
+   - Tenant panel Deployment + Service + Ingress
    - Dex Deployment + Service + ConfigMap + Ingress
    - OAuth2 Proxy Deployment + Service
    - Let's Encrypt ClusterIssuer

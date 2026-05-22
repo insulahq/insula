@@ -111,7 +111,7 @@ Strategy for mixing multiple cloud providers across regions.
 Comprehensive specification for granular backup restore functionality.
 
 **Contents:**
-- Granular restore design for Admin & Client panels
+- Granular restore design for Admin & Tenant panels
 - Restorable object types (websites, databases, mail accounts, files)
 - Backup version discovery and browsing
 - Website restore workflow and API
@@ -129,7 +129,7 @@ Comprehensive specification for granular backup restore functionality.
 **Key Features:**
 - ✅ All backup versions visible (hourly/daily/weekly snapshots)
 - ✅ Non-destructive by default (rename/alternate locations)
-- ✅ Both Admin and Client can initiate restores
+- ✅ Both Admin and Tenant can initiate restores
 - ✅ Async processing with real-time WebSocket updates
 - ✅ File browser with search and tree navigation
 - ✅ Automatic rollback on failure
@@ -1271,7 +1271,7 @@ Complete CI/CD pipeline specification for development and production deployment.
 
 **When to read:** When implementing domain configuration, redirects, external forwarding, or webroot management
 
-**Filled Critical Gap:** INFRASTRUCTURE_PLAN.md and CLIENT_PANEL_FEATURES.md lacked granular domain configuration options — now fully specified with production-ready NGINX integration, comprehensive validation, and security-first design for redirect rules and webroot management.
+**Filled Critical Gap:** INFRASTRUCTURE_PLAN.md and TENANT_PANEL_FEATURES.md lacked granular domain configuration options — now fully specified with production-ready NGINX integration, comprehensive validation, and security-first design for redirect rules and webroot management.
 
 ---
 
@@ -1899,8 +1899,8 @@ See: `./INFRASTRUCTURE_PLAN.md` Section 14 → "Cost Analysis"
 | `TESTING_STRATEGY.md` | Unit, integration, e2e, load test approach; coverage targets; CI gate rules |
 | `SLI_SLO_DEFINITION.md` | Service Level Indicators and Objectives per service; error budget policy |
 | `DEPENDENCIES_AND_RISKS.md` | External dependency inventory; risk register with mitigations |
-| `FRONTEND_DEPLOYMENT_ARCHITECTURE.md` | Admin and client panel build, CDN, Vite config, static serving |
-| `FRONTEND_INGRESS_CONFIGURATIONS.md` | NGINX Ingress rules for admin panel, client panel, and API |
+| `FRONTEND_DEPLOYMENT_ARCHITECTURE.md` | Admin and tenant panel build, CDN, Vite config, static serving |
+| `FRONTEND_INGRESS_CONFIGURATIONS.md` | NGINX Ingress rules for admin panel, tenant panel, and API |
 | `IMPLEMENTATION_ANALYSIS_AND_RECOMMENDATIONS.md` | Gap analysis and implementation priority recommendations |
 | `MARIADB_MIGRATION_SUMMARY.md` | Summary of the MariaDB vs PostgreSQL split decision and migration steps |
 | `REORGANIZATION_INSTRUCTIONS.md` | Instructions for the documentation reorganization structure |
@@ -1929,7 +1929,7 @@ See: `./INFRASTRUCTURE_PLAN.md` Section 14 → "Cost Analysis"
 | `BACKUP_EXPORT_MIGRATION_GUIDE.md` | Client-facing backup export and self-service data migration guide |
 | `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` | Technical implementation of backup jobs, SSHFS mounts, retention policy |
 | `BACKUP_STRATEGY.md` | Backup scope, frequency, storage topology, restore SLAs |
-| `CLIENT_PANEL_FEATURES.md` | Client self-service panel feature list and UI requirements |
+| `TENANT_PANEL_FEATURES.md` | Client self-service panel feature list and UI requirements |
 | `CLUSTER_MAINTENANCE_AND_UPGRADES.md` | k3s upgrade procedure, node drain/cordon, rolling update strategy |
 | `HA_MIGRATION_RUNBOOK.md` | Step-by-step runbook to upgrade single-instance services to HA |
 | `INFRASTRUCTURE_SIZING.md` | Node sizing recommendations by client count; capacity planning formulas |

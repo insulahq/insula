@@ -6,7 +6,7 @@
 
 ## Overview
 
-This document defines the **granular backup restore** feature for both Admin and Client panels. Operators and customers can restore a whole client, individual files/folders from the files component, or individual mailboxes from the mailboxes component — from any retained backup version.
+This document defines the **granular backup restore** feature for both Admin and Tenant panels. Operators and customers can restore a whole tenant, individual files/folders from the files component, or individual mailboxes from the mailboxes component — from any retained backup version.
 
 ## Design Principles
 
@@ -395,7 +395,7 @@ Every whole-client restore takes a pre-restore snapshot in step 2 (existing-clie
 
 ### 5.2 Mail Account Restore API
 
-**Endpoint:** `POST /api/v1/restores/start` (client panel) or `POST /api/v1/admin/restores/start` (admin panel)
+**Endpoint:** `POST /api/v1/restores/start` (tenant panel) or `POST /api/v1/admin/restores/start` (admin panel)
 
 **Payload:**
 

@@ -232,7 +232,7 @@ BundleComponent or lifecycle hook was required**:
   CI audit (`scripts/ci-tenant-bundles-resource-audit.sh`) was run
   against PR-1 and confirmed no missing coverage.
 - **ADR-033 lifecycle hooks** — `db-deployments` operates on the
-  `deployments` table by `clientId`, so all five transitions
+  `deployments` table by `tenantId`, so all five transitions
   (`active` / `suspended` / `archived` / `restored` / `deleted`)
   transparently cover custom rows. `integration-lifecycle-e2e.sh`
   has a custom-row scenario from PR-5.

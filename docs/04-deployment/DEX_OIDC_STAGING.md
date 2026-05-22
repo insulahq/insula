@@ -2,7 +2,7 @@
 
 Dex is the OIDC issuer used by **dev and staging only** — never production.
 It exists to give the platform a reachable OIDC provider during testing
-of features that depend on OIDC (admin / client panel SSO, oauth2-proxy
+of features that depend on OIDC (admin / tenant panel SSO, oauth2-proxy
 gates for admin-only UIs, per-tenant ingress-route OIDC protection).
 
 The production overlay does not include Dex. CI guard
@@ -33,7 +33,7 @@ integration harness can authenticate without out-of-band setup:
 | tenant_id | client_secret | redirect_uri | Used by |
 |-----------|---------------|--------------|---------|
 | `hosting-platform-admin` | `staging-secret-admin` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Admin panel SSO via platform `/auth/oidc/*` |
-| `hosting-platform-client` | `staging-secret-client` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Client panel SSO via platform `/auth/oidc/*` |
+| `hosting-platform-client` | `staging-secret-client` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Tenant panel SSO via platform `/auth/oidc/*` |
 | `hosting-platform-oauth2-proxy` | `$OAUTH2_PROXY_CLIENT_SECRET` (env-substituted from the `oauth2-proxy-config` Secret created by bootstrap.sh) | `https://admin.<DOMAIN>/oauth2/callback` | Admin-only UIs gated by oauth2-proxy (Longhorn, Stalwart web-admin) |
 
 ## Static password test users

@@ -177,7 +177,7 @@ This document details the layout, components, and interactions for the most crit
 
 ## Client Details Page
 
-**URL:** `/admin/tenants/:clientId`  
+**URL:** `/admin/tenants/:tenantId`  
 **Role:** Admin, Support Admin  
 **Permissions:** View, Edit, Manage Resources
 
@@ -584,7 +584,7 @@ Content includes:
 
 ## Application Instances Page
 
-**URL:** `/admin/tenants/:clientId/applications`  
+**URL:** `/admin/tenants/:tenantId/applications`  
 **Role:** Admin, Support  
 **Permissions:** View, Manage
 
@@ -962,7 +962,7 @@ Content includes:
 - **ADMIN_PANEL_REQUIREMENTS.md** — Complete feature list (100+ features)
 - **MANAGEMENT_API_SPEC.md** — REST API endpoints
 - **TECH_STACK_SUMMARY.md** — Technology stack
-- **CLIENT_PANEL_FEATURES.md** — Customer-facing panel
+- **TENANT_PANEL_FEATURES.md** — Customer-facing panel
 - **MONITORING_OBSERVABILITY.md** — Monitoring setup
 
 ---

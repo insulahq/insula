@@ -9,7 +9,7 @@
 
 ## Overview
 
-Customers can export a client-initiated backup bundle for off-platform migration or GDPR Art. 20 data-portability. Exports are the **same component-oriented bundle** used internally by the platform, downloaded from the client panel.
+Customers can export a client-initiated backup bundle for off-platform migration or GDPR Art. 20 data-portability. Exports are the **same component-oriented bundle** used internally by the platform, downloaded from the tenant panel.
 
 The `secrets` component (encrypted TLS Secrets) is never included in client downloads — operators restoring a bundle on a different cluster should expect cert-manager to re-issue certificates on first request (30–60 s delay).
 
@@ -19,7 +19,7 @@ The `secrets` component (encrypted TLS Secrets) is never included in client down
 
 ### Step 1: Download Backup
 
-1. Log into **client panel**
+1. Log into **tenant panel**
 2. Navigate: **Backups → [select bundle] → Download**
 3. Choose one of:
    - **Raw bundle** — tar.gz of the component directory, no extra encryption

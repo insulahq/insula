@@ -15,7 +15,7 @@ WordPress) and the Workload Catalog (composable runtimes).
 
 ## Where in the panel
 
-Client panel → **Applications** → **Custom Containers** tab.
+Tenant panel → **Applications** → **Custom Containers** tab.
 
 Top-right of the tab gives you two buttons:
 
