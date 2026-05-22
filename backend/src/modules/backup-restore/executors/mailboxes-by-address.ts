@@ -72,6 +72,13 @@ import {
 } from '../../tenant-bundles/mailbox-backup-engine.js';
 import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from '../../tenant-bundles/cluster-concurrency.js';
 import {
+  ensureImapMaxConcurrentAtLeast,
+  IMAP_MAX_CONCURRENT_MIGRATION,
+} from '../../mail-admin/imap-concurrency.js';
+import { mailLogger } from '../../../shared/mail-logger.js';
+
+const mlog = mailLogger().child({ module: 'mailboxes-by-address-restore' });
+import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
 } from '@k8s-hosting/api-contracts';
@@ -288,6 +295,19 @@ export async function execMailboxesByAddressItem(args: {
       }
       throw err;
     }
+
+    // Elevate Stalwart's x:Imap.maxConcurrent before the restore Job
+    // starts so imap-restore.py --workers 4 isn't throttled. Idempotent;
+    // best-effort. See backend/src/modules/mail-admin/imap-concurrency.ts.
+    try {
+      await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
+    } catch (err) {
+      mlog.warn(
+        { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
+        'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+      );
+    }
+
     await (k8s.batch as unknown as {
       createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
     }).createNamespacedJob({ namespace: MAIL_NAMESPACE, body: spec });

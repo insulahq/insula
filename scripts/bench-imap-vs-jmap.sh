@@ -150,8 +150,34 @@ fmt_mb_from_b() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1048576}'; }
 
 # ── setup ───────────────────────────────────────────────────────────────────
 
+# Elevate x:Imap.maxConcurrent via JMAP API (NOT config file).
+# In production this is done transiently by platform-api around each
+# mailbox-worker Job — see backend/src/modules/mail-admin/imap-concurrency.ts.
+# For the bench (standalone harness) we elevate once at start; the test
+# itself never reverts (bench wraps within seconds, so this is fine).
+elevate_imap_concurrency() {
+  local target="${1:-64}"
+  local apw_b64=$(printf 'admin:%s' "$APW" | base64 -w0)
+  local body
+  body=$(jq -nc --argjson v "$target" \
+    '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+      methodCalls:[["x:Imap/set",
+        {accountId:"d333333",update:{singleton:{maxConcurrent:$v}}},
+        "c0"]]}')
+  # Use exec-curl-in-pod (matches the platform-api transport pattern) so
+  # PROXY-v2 sniffing on the mgmt port can't bite us.
+  local pod=$(stalwart_pod)
+  kubectl -n "$STALWART_NS" exec "$pod" -c stalwart -- \
+    curl -sf -X POST -H "Authorization: Basic $apw_b64" \
+      -H 'Content-Type: application/json' \
+      --data-binary "$body" \
+      http://127.0.0.1:8080/jmap/ >/dev/null
+  log "elevated x:Imap.maxConcurrent → $target via JMAP API (admin)"
+}
+
 log "bench start: CORPUS_SIZE=$CORPUS_SIZE WORKERS=$WORKERS"
 log "Stalwart pod: $(stalwart_pod), baseline RSS: $(fmt_mb $(stalwart_rss_kb $(stalwart_pod))) MB"
+elevate_imap_concurrency 64
 
 # Re-populate src to a clean known state (skip if SKIP_POPULATE=1 and src is already at the right size).
 if [ "${SKIP_POPULATE:-0}" = "1" ]; then
