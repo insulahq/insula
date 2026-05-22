@@ -568,13 +568,19 @@ export async function captureMailboxesComponent(
     // throughput, not a failed capture. The mail-admin reverter
     // scheduler will return Stalwart to the default once no mailbox
     // jobs remain in-flight. See backend/src/modules/mail-admin/imap-concurrency.ts.
-    try {
-      await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
-    } catch (err) {
-      mlog.warn(
-        { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
-        'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
-      );
+    //
+    // Only fires for the IMAP engine — the JMAP engine doesn't open
+    // IMAP connections at all, so the elevation would be a pointless
+    // global mutation that just delays the reverter.
+    if (engine === 'imap') {
+      try {
+        await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
+      } catch (err) {
+        mlog.warn(
+          { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
+          'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+        );
+      }
     }
 
     await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);

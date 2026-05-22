@@ -335,4 +335,17 @@ async function writeMaxConcurrent(t: ResolvedTransport, value: number): Promise<
       notUpdated,
     );
   }
+  // Positive confirmation — defends against Stalwart shape drift where
+  // a write silently 200s without `updated`, `notUpdated`, or `error`.
+  // Per the JMAP spec a successful /set MUST echo the updated ids in
+  // the `updated` map; an empty/missing map alongside an empty
+  // notUpdated map means we have no evidence the singleton was written.
+  const updated = (args as { updated?: Record<string, unknown> | null }).updated;
+  if (!updated || !Object.prototype.hasOwnProperty.call(updated, 'singleton')) {
+    throw new JmapError(
+      `x:Imap/set returned neither updated.singleton nor notUpdated — Stalwart shape drift?`,
+      'malformedResponse',
+      args,
+    );
+  }
 }

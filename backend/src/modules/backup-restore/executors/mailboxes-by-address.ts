@@ -298,14 +298,19 @@ export async function execMailboxesByAddressItem(args: {
 
     // Elevate Stalwart's x:Imap.maxConcurrent before the restore Job
     // starts so imap-restore.py --workers 4 isn't throttled. Idempotent;
-    // best-effort. See backend/src/modules/mail-admin/imap-concurrency.ts.
-    try {
-      await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
-    } catch (err) {
-      mlog.warn(
-        { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
-        'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
-      );
+    // best-effort. Only fires for the IMAP engine — the JMAP path
+    // doesn't open IMAP connections at all so the global mutation
+    // would just delay the reverter. See backend/src/modules/mail-admin/
+    // imap-concurrency.ts.
+    if (engine === 'imap') {
+      try {
+        await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
+      } catch (err) {
+        mlog.warn(
+          { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
+          'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+        );
+      }
     }
 
     await (k8s.batch as unknown as {
