@@ -38,8 +38,11 @@ export async function cnpgBackupHealthRoutes(app: FastifyInstance): Promise<void
       if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
       else kc.loadFromCluster();
       const custom = kc.makeApiClient(k8s.CustomObjectsApi);
+      const core = kc.makeApiClient(k8s.CoreV1Api);
 
-      const data = await readBackupHealth({ custom });
+      // Pass core so the catalogue enrichment can probe the object
+      // store for `cnpg_operator_blind` detection.
+      const data = await readBackupHealth({ custom, core });
       return success(data);
     },
   );
