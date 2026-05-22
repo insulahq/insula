@@ -74,9 +74,10 @@ export default function BackupClassPage(props: BackupClassPageProps) {
         </div>
       </header>
 
-      <nav
-        className="border-b border-gray-200 dark:border-gray-700"
+      <div
+        role="tablist"
         aria-label={`${props.title} sub-tabs`}
+        className="border-b border-gray-200 dark:border-gray-700"
       >
         <div className="-mb-px flex flex-wrap gap-x-2">
           {TABS.map((t) => {
@@ -86,9 +87,23 @@ export default function BackupClassPage(props: BackupClassPageProps) {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setParams({ tab: t.id }, { replace: true })}
+                role="tab"
+                aria-selected={active}
+                aria-controls={`${testId}-pane-${t.id}`}
+                id={`${testId}-tab-${t.id}-btn`}
+                onClick={() =>
+                  // Spread-merge: preserve any other query params (a
+                  // future Restoration Wizard row-highlight param,
+                  // for example) when flipping tabs.
+                  setParams(
+                    (prev) => {
+                      prev.set('tab', t.id);
+                      return prev;
+                    },
+                    { replace: true },
+                  )
+                }
                 data-testid={`${testId}-tab-${t.id}`}
-                aria-current={active ? 'page' : undefined}
                 className={clsx(
                   'flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors',
                   active
@@ -102,9 +117,14 @@ export default function BackupClassPage(props: BackupClassPageProps) {
             );
           })}
         </div>
-      </nav>
+      </div>
 
-      <div data-testid={`${testId}-pane-${tab}`}>
+      <div
+        role="tabpanel"
+        id={`${testId}-pane-${tab}`}
+        aria-labelledby={`${testId}-tab-${tab}-btn`}
+        data-testid={`${testId}-pane-${tab}`}
+      >
         {tab === 'snapshots' && props.snapshotsTab}
         {tab === 'backups' && props.backupsTab}
         {tab === 'routing' && (

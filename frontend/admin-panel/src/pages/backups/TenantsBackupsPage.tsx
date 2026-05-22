@@ -16,7 +16,7 @@
  *                   schedule row.
  */
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Package, Search, Loader2, Filter } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -33,7 +33,10 @@ function formatBytes(b: number): string {
 function formatAge(iso: string | null): string {
   if (!iso) return 'never';
   const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 0) return 'just now';
+  // Future timestamps (clock skew, test data) — collapse to "just
+  // now" instead of computing a negative duration that would render
+  // as "-1d ago" further down.
+  if (ms <= 0) return 'just now';
   const min = Math.floor(ms / 60_000);
   if (min < 60) return `${min}m ago`;
   const hr = Math.floor(min / 60);
@@ -134,39 +137,47 @@ function TenantAggregateTable({
   );
 }
 
+interface FilterBarProps {
+  readonly search: string;
+  readonly setSearch: (v: string) => void;
+  readonly rowCount: number;
+}
+
+/**
+ * Lifted out of the parent's tab-content props so the input keeps
+ * its DOM identity across snapshot↔backups tab switches (a shared
+ * JSX node reference would unmount/remount, dropping focus and
+ * cursor position mid-typing).
+ */
+function FilterBar({ search, setSearch, rowCount }: FilterBarProps) {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <div className="relative flex-1 min-w-[200px] max-w-md">
+        <Search
+          size={14}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+        />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Filter by tenant name…"
+          data-testid="tenants-backups-filter"
+          className="w-full rounded-md border border-gray-300 bg-white py-1.5 pl-9 pr-3 text-sm placeholder:text-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+        />
+      </div>
+      <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+        <Filter size={12} />
+        {rowCount} tenant{rowCount === 1 ? '' : 's'}
+      </span>
+    </div>
+  );
+}
+
 export default function TenantsBackupsPage() {
   const [search, setSearch] = useState('');
   const { data, isLoading } = useTenantsOverview(search);
   const rows = data?.data?.rows ?? [];
-
-  // Tenants tab UX: same flat-aggregate, same filter, but the
-  // "snapshots vs backups" choice is the parent shell's tab. Each
-  // shell-tab passes view through to the same table component.
-  const sharedFilter = useMemo(
-    () => (
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[200px] max-w-md">
-          <Search
-            size={14}
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-          />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter by tenant name…"
-            data-testid="tenants-backups-filter"
-            className="w-full rounded-md border border-gray-300 bg-white py-1.5 pl-9 pr-3 text-sm placeholder:text-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-          />
-        </div>
-        <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-          <Filter size={12} />
-          {rows.length} tenant{rows.length === 1 ? '' : 's'}
-        </span>
-      </div>
-    ),
-    [search, rows.length],
-  );
 
   return (
     <BackupClassPage
@@ -177,13 +188,13 @@ export default function TenantsBackupsPage() {
       scheduleSubsystems={['tenant_bundle']}
       snapshotsTab={
         <div className="space-y-4">
-          {sharedFilter}
+          <FilterBar search={search} setSearch={setSearch} rowCount={rows.length} />
           <TenantAggregateTable rows={rows} view="snapshots" isLoading={isLoading} />
         </div>
       }
       backupsTab={
         <div className="space-y-4">
-          {sharedFilter}
+          <FilterBar search={search} setSearch={setSearch} rowCount={rows.length} />
           <TenantAggregateTable rows={rows} view="backups" isLoading={isLoading} />
         </div>
       }
