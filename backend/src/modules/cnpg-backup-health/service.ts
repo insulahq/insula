@@ -48,7 +48,7 @@ export type ClusterHealthState =
   | 'stale'             // last attempt completed but > 24h ago — schedule may be misconfigured
   | 'failing'           // last attempt is failed
   | 'never_run'         // no Backup CRs in the namespace for this cluster
-  | 'no_backup_config'; // ScheduledBackup CRs exist but cluster.spec.backup not set
+  | 'no_backup_config'; // ScheduledBackup CRs exist but cluster has NEITHER spec.backup NOR an enabled barman-cloud plugin
 
 export interface BackupRecord {
   readonly name: string;
@@ -114,8 +114,32 @@ interface CnpgCluster {
     readonly namespace?: string;
   };
   readonly spec?: {
+    /** Legacy CNPG 1.x backup field (barmanObjectStore inline). Empty
+     *  on clusters that have migrated to the plugin model. */
     readonly backup?: unknown;
+    /** CNPG 1.21+ plugin model — barman-cloud is a separate
+     *  controller referenced here. The presence of an enabled
+     *  barman-cloud plugin (any of the canonical plugin names) means
+     *  the cluster has backup configured even when spec.backup is
+     *  null. */
+    readonly plugins?: ReadonlyArray<{
+      readonly name?: string;
+      readonly enabled?: boolean;
+      readonly parameters?: Record<string, unknown>;
+    }>;
   };
+}
+
+/** Match the plugin name we register with CNPG for barman-cloud. The
+ *  canonical name is `barman-cloud.cloudnative-pg.io`; older
+ *  registrations may use just `barman-cloud`. */
+function hasBarmanCloudPlugin(cluster: CnpgCluster): boolean {
+  const plugins = cluster.spec?.plugins ?? [];
+  return plugins.some((p) => {
+    if (p.enabled === false) return false;
+    const n = (p.name ?? '').toLowerCase();
+    return n === 'barman-cloud' || n.endsWith('barman-cloud') || n.startsWith('barman-cloud.');
+  });
 }
 
 interface ListResp<T> {
@@ -270,7 +294,14 @@ export async function readBackupHealth(
         ? Math.floor((nowMs - new Date(lastSuccess.startedAt).getTime()) / 1000)
         : null;
 
-      const clusterHasBackupSpec = cluster.spec?.backup !== undefined && cluster.spec.backup !== null;
+      // CNPG 1.21+ migrated barman-cloud out of `cluster.spec.backup`
+      // into the plugin model (`cluster.spec.plugins[barman-cloud]`).
+      // The platform's `system-db` cluster on staging runs the plugin
+      // path — its spec.backup is null but it backs up successfully
+      // every night. Treat either field shape as "has backup config".
+      const legacyBackupSet =
+        cluster.spec?.backup !== undefined && cluster.spec.backup !== null;
+      const clusterHasBackupSpec = legacyBackupSet || hasBarmanCloudPlugin(cluster);
 
       const namespacedSchedules = scheduledBackups
         .filter((s) => s.spec?.cluster?.name === clusterName)
