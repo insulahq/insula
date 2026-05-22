@@ -269,7 +269,16 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         'targetConfigId is required: bundles must be written to an active off-site backup target (S3 or SSH).',
         400);
     }
-    const store = await resolveStore(app, input.targetConfigId);
+    // B5 fix (2026-05-22): the legacy `backup_configurations.active`
+    // flag predates the universal R-X shim. Post-shim, the source of
+    // truth for "this target is in use" is the shim assignment in
+    // backup_target_assignments, NOT the legacy `active` column. Plus
+    // the legacy /activate route only handles S3+SSH — CIFS and NFS
+    // targets cannot be activated through that path. Every OTHER
+    // resolveStore call already passes requireActive:false; this was
+    // the last hold-out. Bundle create now accepts any enabled target
+    // the operator (or shim binding) explicitly chose.
+    const store = await resolveStore(app, input.targetConfigId, { requireActive: false });
 
     // Resolve tenant + plan retention.
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
