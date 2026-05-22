@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isPostgresRestoreInProgress, promotePostgresFromSnapshot, acquirePitrLockOrThrow, createPitrJob, getPlatformApiImage } from './service.js';
+import { isPostgresRestoreInProgress, promotePostgresFromSnapshot, acquirePitrLockOrThrow, createPitrJob, getPlatformApiImage, releasePitrLock, runPitrPrechecks } from './service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -228,5 +228,109 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     const k8s = makeK8s();
     const image = await getPlatformApiImage(k8s);
     expect(image).toBe('ghcr.io/test/backend:test');
+  });
+});
+
+describe('runPitrPrechecks — read-only mirror of preflight', () => {
+  // The "concurrent acquire" test above leaves the in-memory PITR lock
+  // held; clear it so prechecks see lockState=free in the happy path.
+  beforeEach(async () => {
+    await releasePitrLock(makeDb()).catch(() => undefined);
+  });
+
+  const cluster = {
+    metadata: { name: 'postgres', namespace: 'platform' },
+    spec: { bootstrap: { initdb: { database: 'app', owner: 'app' } }, instances: 3 },
+    status: { currentPrimary: 'postgres-1' },
+  };
+  const goodSnap = {
+    metadata: { creationTimestamp: '2026-05-22T10:00:00Z' },
+    status: { creationTime: '2026-05-22T10:00:00Z', readyToUse: true },
+    spec: { volume: 'pvc-test' },
+  };
+
+  it('returns blockingError when snapshot is not yet ready', async () => {
+    const notReady = { ...goodSnap, status: { ...goodSnap.status, readyToUse: false } };
+    const k8s = makeK8s({ cluster, snapshot: notReady, pvcs: [] });
+    const r = await runPitrPrechecks(k8s, undefined, makeDb(), {
+      clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'snap-1',
+      recoveryTargetTime: null,
+    });
+    expect(r.snapshotUsable).toBe(false);
+    expect(r.blockingError).toMatch(/not yet ready/);
+  });
+
+  it('returns blockingError on snapshot 404 without throwing', async () => {
+    const k8s = makeK8s({ cluster });
+    // Override snapshot getter to throw 404
+    (k8s.custom as unknown as { getNamespacedCustomObject: ReturnType<typeof vi.fn> }).getNamespacedCustomObject = vi.fn().mockImplementation((args: { plural: string }) => {
+      if (args.plural === 'snapshots') {
+        const e = new Error('not found');
+        (e as Error & { code?: number }).code = 404;
+        return Promise.reject(e);
+      }
+      if (args.plural === 'clusters') return Promise.resolve(cluster);
+      return Promise.resolve(null);
+    });
+    const r = await runPitrPrechecks(k8s, undefined, makeDb(), {
+      clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'missing',
+      recoveryTargetTime: null,
+    });
+    expect(r.snapshotUsable).toBe(false);
+    expect(r.blockingError).toMatch(/not found/);
+    expect(r.snapshotCreatedAt).toBeNull();
+  });
+
+  it('returns blockingError on cluster 404 without throwing', async () => {
+    const k8s = makeK8s({ snapshot: goodSnap });
+    (k8s.custom as unknown as { getNamespacedCustomObject: ReturnType<typeof vi.fn> }).getNamespacedCustomObject = vi.fn().mockImplementation((args: { plural: string }) => {
+      if (args.plural === 'clusters') {
+        const e = new Error('not found'); (e as Error & { code?: number }).code = 404;
+        return Promise.reject(e);
+      }
+      if (args.plural === 'snapshots') return Promise.resolve(goodSnap);
+      return Promise.resolve(null);
+    });
+    const r = await runPitrPrechecks(k8s, undefined, makeDb(), {
+      clusterNamespace: 'platform', clusterName: 'missing', snapshotName: 'snap-1',
+      recoveryTargetTime: null,
+    });
+    expect(r.blockingError).toMatch(/Cluster.*not found/);
+    expect(r.clusterPrimaryPvc).toBeNull();
+    expect(r.sourceInstances).toBeNull();
+  });
+
+  it('rejects recoveryTargetTime BEFORE snapshot time', async () => {
+    const k8s = makeK8s({ cluster, snapshot: goodSnap });
+    const r = await runPitrPrechecks(k8s, undefined, makeDb(), {
+      clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'snap-1',
+      recoveryTargetTime: '2026-05-22T09:00:00Z', // 1h before snap
+    });
+    expect(r.walCoverageOk).toBe(false);
+    expect(r.blockingError).toMatch(/before snapshot time/);
+  });
+
+  it('rejects unparseable recoveryTargetTime (guard against missing ajv-formats)', async () => {
+    const k8s = makeK8s({ cluster, snapshot: goodSnap });
+    const r = await runPitrPrechecks(k8s, undefined, makeDb(), {
+      clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'snap-1',
+      recoveryTargetTime: 'this is not an iso timestamp',
+    });
+    expect(r.walCoverageOk).toBe(false);
+    expect(r.blockingError).toMatch(/not a parseable ISO-8601/);
+  });
+
+  it('happy path: returns snapshotUsable + clusterPrimaryPvc + sourceInstances with no blockingError', async () => {
+    const k8s = makeK8s({ cluster, snapshot: goodSnap });
+    const r = await runPitrPrechecks(k8s, undefined, makeDb(), {
+      clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'snap-1',
+      recoveryTargetTime: null,
+    });
+    expect(r.snapshotUsable).toBe(true);
+    expect(r.clusterPrimaryPvc).toBe('postgres-1');
+    expect(r.sourceInstances).toBe(3);
+    expect(r.lockState).toBe('free');
+    expect(r.blockingError).toBeNull();
+    expect(r.snapshotAgeSec).toBeGreaterThanOrEqual(0);
   });
 });

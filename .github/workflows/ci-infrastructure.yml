@@ -182,6 +182,18 @@ jobs:
       - name: Verify long-running surfaces register with the Task Tracker helper
         run: ./scripts/ci-task-helper-coverage.sh
 
+  snapshot-restore-not-fake:
+    name: CNPG snapshot Restore is wired to the real PITR endpoint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify SystemSnapshotsModal posts to /admin/postgres-restore
+        # Phase 1 (2026-05-22) — operator pushback: the CNPG snapshot
+        # Restore button used to navigate to /backups/disaster-recovery
+        # shell instructions instead of actually restoring. This guard
+        # blocks reintroduction.
+        run: ./scripts/ci-snapshot-restore-not-fake.sh
+
   flux-envsubst-check:
     name: Flux postBuild envsubst safety
     runs-on: ubuntu-latest
