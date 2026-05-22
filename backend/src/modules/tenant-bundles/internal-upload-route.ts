@@ -28,6 +28,9 @@ import { backupJobs, backupConfigurations, tenants, tenantBackupV2Settings } fro
 import { ApiError } from '../../shared/errors.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
+import { resolveShimBackupStore } from './shim-backup-store.js';
+import { resolveShimBackupTarget } from './resolve-backup-target.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { BackupStore } from './bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
 import { resolveBaseDomain } from '../../config/domains.js';
@@ -220,16 +223,29 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       .limit(1);
     if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
 
-    const target = resolveBackupTarget(
-      // hostpathPath isn't on the existing backup_configurations row
-      // shape; pass undefined so the resolver throws CONFIG_INVALID
-      // for hostpath until it's added (test backends use S3/SSH).
-      {
-        ...cfg,
-        hostpathPath: (cfg as Record<string, unknown>).hostpathPath as string | null | undefined ?? null,
-      },
-      { secretsKeyHex },
-    );
+    // B9 (2026-05-22): restic backend target also goes through the
+    // shim. The shim's `tenant` bucket route handles cifs/nfs/sftp
+    // upstreams that resolveBackupTarget would otherwise throw 501
+    // on. Legacy direct fallback only fires when the shim Secret
+    // isn't available.
+    let target;
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8sClients = createK8sClients(kubeconfigPath);
+      target = await resolveShimBackupTarget(k8sClients.core, 'tenant', app.log);
+    } catch (err) {
+      app.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'tenant-bundles upload: shim target unavailable — falling back to direct resolveBackupTarget',
+      );
+      target = resolveBackupTarget(
+        {
+          ...cfg,
+          hostpathPath: (cfg as Record<string, unknown>).hostpathPath as string | null | undefined ?? null,
+        },
+        { secretsKeyHex },
+      );
+    }
 
     // Per-tenant HKDF password — pinned by Phase 0 lock vector.
     const password = deriveResticPassword(secretsKeyHex, job.tenantId);
@@ -410,6 +426,27 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
  * in-flight uploads.
  */
 async function resolveStoreForUpload(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+  // B9 (2026-05-22): bundle component uploads from Job pods route
+  // through the shim. Without this, the file/mailboxes Jobs hit a
+  // PUT /internal/bundles/.../restic-stream that, for cifs/nfs cfg
+  // targets, threw 501 NOT_IMPLEMENTED → the Job's
+  // `Streaming tar to platform-api restic-stream... curl: (22)
+  // error: 501` we saw on staging.
+  //
+  // The shim path is the source of truth; the legacy cfg-direct
+  // fallback only kicks in when the BACKUP_TARGET_KEY Secret isn't
+  // bootstrapped (fresh dev clusters).
+  try {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8sClients = createK8sClients(kubeconfigPath);
+    return await resolveShimBackupStore(k8sClients.core, 'tenant', { log: app.log });
+  } catch (err) {
+    app.log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'tenant-bundles upload: shim store unavailable — falling back to direct resolveStore',
+    );
+  }
+
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
 
