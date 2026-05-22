@@ -155,17 +155,30 @@ export default function PitrProgressModal({ jobName, onClose }: Props) {
               </span>
             </div>
           )}
-          {isDone && !failed && (
-            <div role="status" className="mb-3 flex items-start gap-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200">
-              <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0" />
-              <span>
-                <strong>Restore complete.</strong> Primary is up.
-                {progressSteps.find((p) => p.step === 'scale-up-to-source-ha') && (
-                  <> Replicas continue building in the background; the cluster reaches full HA over the next few minutes.</>
-                )}
-              </span>
-            </div>
-          )}
+          {isDone && !failed && (() => {
+            const scaleStep = progressSteps.find((p) => p.step === 'scale-up-to-source-ha');
+            const scaleSucceeded = scaleStep?.ok === true;
+            const scaleFailed = scaleStep?.ok === false;
+            return (
+              <div role="status" className={scaleFailed
+                ? 'mb-3 flex items-start gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200'
+                : 'mb-3 flex items-start gap-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200'}
+              >
+                {scaleFailed
+                  ? <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                  : <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0" />}
+                <span>
+                  <strong>Restore complete.</strong> Primary is up.
+                  {scaleSucceeded && (
+                    <> Replicas continue building in the background; the cluster reaches full HA over the next few minutes.</>
+                  )}
+                  {scaleFailed && (
+                    <> <strong>BUT scale-up to source HA FAILED</strong> — cluster is at instances=1 (NOT HA). Scroll the timeline to see the failure detail and run the manual scale-up kubectl command surfaced there.</>
+                  )}
+                </span>
+              </div>
+            );
+          })()}
 
           <ol className="space-y-1" data-testid="pitr-step-timeline">
             {rows.map(({ name, record }) => {
