@@ -1421,7 +1421,7 @@ for c in (items if isinstance(items, list) else []):
       # default account managed by mail-admin/rotate-webmail-master.
       local imap_user="${mb_addr}%master@master.local"
       local master_pw
-      master_pw=$(ssh_cp "kubectl -n mail get secret roundcube-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
+      master_pw=$(ssh_cp "kubectl -n mail get secret mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
       [[ -n "$master_pw" ]] || { echo "ERROR: master password fetch failed" >&2; return 1; }
 
       local pyblock
@@ -2232,7 +2232,7 @@ PY
   # endpoint at /api/v1/admin/mail/sso?to= depends on. MUST run while
   # the tester pod is still up.
   if [[ "$tester_spawned" == "1" ]]; then
-    local master_user_secret_cmd="kubectl get secret -n mail roundcube-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d"
+    local master_user_secret_cmd="kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d"
     local master_pw
     master_pw=$(ssh_cp "$master_user_secret_cmd" 2>/dev/null || echo "")
     if [[ -n "$master_pw" ]]; then

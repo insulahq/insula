@@ -11,7 +11,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
     jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
     stalwartMasterUser: 'master@master.local',
-    masterSecretName: 'roundcube-secrets',
+    masterSecretName: 'mail-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
     mode: 'merge-skip-duplicates' as const,
     downloadBase: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-1/components/mailboxes',
@@ -77,12 +77,12 @@ describe('buildMailboxesByAddressJobSpec', () => {
     expect(cmd).toContain('1) ADDR="b@example.com"; TOKEN="2.cafebabe"');
   });
 
-  it('mounts STALWART_MASTER_PASSWORD from the roundcube-secrets Secret (master-user proxy auth)', () => {
+  it('mounts STALWART_MASTER_PASSWORD from the mail-secrets Secret (master-user proxy auth)', () => {
     const spec = buildMailboxesByAddressJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } }> }> } } };
     };
     const adminEnv = spec.spec.template.spec.containers[0]!.env.find((e) => e.name === 'STALWART_MASTER_PASSWORD');
-    expect(adminEnv?.valueFrom?.secretKeyRef?.name).toBe('roundcube-secrets');
+    expect(adminEnv?.valueFrom?.secretKeyRef?.name).toBe('mail-secrets');
     expect(adminEnv?.valueFrom?.secretKeyRef?.key).toBe('STALWART_MASTER_PASSWORD');
   });
 
