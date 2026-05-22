@@ -21,10 +21,10 @@
  */
 
 import { KeyRound } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import BackupClassPage from './BackupClassPage';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
-import SecretsBundleTab from '@/components/system-backup/SecretsBundleTab';
 import SystemDatabasesTab from '@/components/system-backup/SystemDatabasesTab';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
 
@@ -50,9 +50,15 @@ export default function SystemBackupsPage() {
         <div className="space-y-6">
           {/* CNPG ScheduledBackup health (rolled-up cluster-side state). */}
           <CnpgBackupHealthCard />
-          <SecretsBundleTab />
           <SystemDatabasesTab />
           <WalArchiveTab />
+          <div className="rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
+            Looking for the cluster-wide Secrets bundle? It moved to{' '}
+            <Link to="/backups/disaster-recovery" className="font-medium underline">
+              Disaster Recovery
+            </Link>{' '}
+            alongside the DR drill and restore instructions.
+          </div>
         </div>
       }
     />
