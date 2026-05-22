@@ -45,7 +45,11 @@ login_token() {
   resp=$(curl "${CURL_OPTS[@]}" -X POST "$ADMIN_HOST/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")
-  echo "$resp" | sed -nE 's/.*"accessToken":"([^"]+)".*/\1/p'
+  # The login response shape is { data: { token, refreshToken, … } }
+  # — the legacy scripts in scripts/integration-*.sh used
+  # "accessToken" which was renamed during the auth refactor. Match
+  # both for resilience.
+  echo "$resp" | sed -nE 's/.*"(token|accessToken)":"([^"]+)".*/\2/p' | head -1
 }
 
 TOKEN=$(cached_or_login_token)
