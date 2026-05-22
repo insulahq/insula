@@ -513,6 +513,10 @@ def _enumerate_messages(maildir_root: str,
     if not os.path.isdir(addr_root):
         return out
     for path_component in sorted(os.listdir(addr_root)):
+        # Hidden directories (leading dot) are aux sidecars, not mailboxes.
+        # See imap-restore.py for the same skip + rationale.
+        if path_component.startswith("."):
+            continue
         mb_dir = os.path.join(addr_root, path_component)
         if not os.path.isdir(mb_dir):
             continue
