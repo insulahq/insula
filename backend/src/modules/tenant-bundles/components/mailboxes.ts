@@ -69,6 +69,12 @@ import type { Database } from '../../../db/index.js';
 import { tailJobLog, readJobLogTail } from '../../storage-lifecycle/job-log-tail.js';
 import { signUploadToken } from '../upload-token.js';
 import { tenantJmapState } from '../../../db/schema.js';
+import {
+  getMailboxBackupEngine,
+  getMailboxBackupMaxConcurrent,
+  type MailboxBackupEngine,
+} from '../mailbox-backup-engine.js';
+import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from '../cluster-concurrency.js';
 
 export interface MailboxesComponentResult {
   readonly mailboxCount: number;
@@ -96,12 +102,20 @@ export interface CaptureMailboxesComponentOpts {
   readonly secretsKeyHex: string;
   readonly mailNamespace?: string;       // defaults to 'mail'
   readonly jmapEndpoint?: string;        // defaults to http://stalwart-mgmt.mail.svc.cluster.local:8080
+  readonly imapHost?: string;            // defaults to stalwart-mail.mail.svc.cluster.local
+  readonly imapPort?: number;            // defaults to 993
   readonly stalwartMasterUser?: string;  // defaults to 'master@master.local' (FQ)
   readonly masterSecretName?: string;    // defaults to 'roundcube-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
   readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
   readonly timeoutMs?: number;
   readonly onProgress?: (msg: string) => Promise<void> | void;
+  /**
+   * Override the active engine from platform_settings. Tests can pin
+   * 'jmap' or 'imap'; production reads platform_settings and only
+   * uses this override when present.
+   */
+  readonly engineOverride?: MailboxBackupEngine;
 }
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
@@ -112,6 +126,8 @@ const UPLOAD_TOKEN_TTL_SEC = 60 * 60;
 const JOB_DEADLINE_BUFFER_SEC = 60;
 const MAIL_NAMESPACE_DEFAULT = 'mail';
 const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
+const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
+const IMAP_PORT_DEFAULT = 993;
 const MASTER_USER_DEFAULT = 'master@master.local';
 const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
@@ -177,7 +193,17 @@ export function buildMailboxesComponentJobSpec(input: {
   tenantId: string;
   backupId: string;
   toolsImage: string;
+  /**
+   * Active engine. `jmap` (default — legacy) runs `jmap-sync.py` with
+   * the JMAP HTTP endpoint + per-mailbox state Secret. `imap` runs the
+   * new `imap-sync.py` with IMAPS connection details and NO state
+   * (COMPLETE bundles only). See platform_settings.mailbox_backup_engine.
+   */
+  engine?: MailboxBackupEngine;
   jmapEndpoint: string;
+  /** IMAPS host (used when engine='imap'). */
+  imapHost?: string;
+  imapPort?: number;
   stalwartMasterUser: string;
   masterSecretName: string;
   masterSecretKey: string;
@@ -187,7 +213,8 @@ export function buildMailboxesComponentJobSpec(input: {
   uploadUrlNoToken: string;
   uploadTokenSecretName: string;
   /** Name of the per-Job Secret holding the address→state map at
-   *  data.states.json. Mounted read-only at /var/run/jmap-state/states.json. */
+   *  data.states.json. Mounted read-only at /var/run/jmap-state/states.json.
+   *  Only used when engine='jmap'; ignored when engine='imap'. */
   stateSecretName: string;
   addresses: ReadonlyArray<{ address: string; stateIn: string | null }>;
   activeDeadlineSeconds?: number;
@@ -202,6 +229,17 @@ export function buildMailboxesComponentJobSpec(input: {
   }
   if (!isSafeMasterUser(input.stalwartMasterUser)) {
     throw new Error(`buildMailboxesComponentJobSpec: invalid stalwartMasterUser '${input.stalwartMasterUser}'`);
+  }
+  const engine: MailboxBackupEngine = input.engine ?? 'jmap';
+  const imapHost = input.imapHost ?? IMAP_HOST_DEFAULT;
+  const imapPort = input.imapPort ?? IMAP_PORT_DEFAULT;
+  if (engine === 'imap') {
+    if (!/^[A-Za-z0-9.\-]+$/.test(imapHost)) {
+      throw new Error(`buildMailboxesComponentJobSpec: invalid imapHost '${imapHost}'`);
+    }
+    if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) {
+      throw new Error(`buildMailboxesComponentJobSpec: invalid imapPort ${imapPort}`);
+    }
   }
 
   // Per-mailbox addresses are whitelisted (`isSafeAddress`) so the
@@ -251,6 +289,24 @@ export function buildMailboxesComponentJobSpec(input: {
   const caseBranches = input.addresses
     .map((a, i) => `  ${i}) ADDR=${shQuote(a.address)} ;;`)
     .join('\n');
+  // Engine-specific per-address script body. Both engines are now
+  // COMPLETE-only — no incremental state plumbing for either. The
+  // legacy --state-in/--state-out flags are still understood by
+  // jmap-sync.py but ignored; the orchestrator no longer mounts the
+  // state Secret.
+  const perAddressLines: string[] =
+    engine === 'imap'
+      ? [
+          '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
+          `    SUMMARY=$(/usr/local/bin/imap-sync.py --imap-host ${shQuote(imapHost)} --imap-port ${imapPort} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
+          `  echo "IMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
+        ]
+      : [
+          '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
+          `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
+          `  echo "JMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
+        ];
+
   const script = [
     'set -e',
     'set -o pipefail',
@@ -263,24 +319,7 @@ export function buildMailboxesComponentJobSpec(input: {
     caseBranches,
     '  *) echo "ERROR: invalid index $i"; exit 1 ;;',
     '  esac',
-    '  STATE_IN="/tmp/state/${i}.in.json"',
-    '  STATE_OUT="/tmp/state/${i}.out.json"',
-    // python writes the per-mailbox state-in file by looking up the
-    // address in states.json. If the address has no prior state (or
-    // an empty string), it writes nothing and STATE_IN is absent →
-    // jmap-sync.py does a full pull.
-    '  python3 -c "import json,os,sys',
-    'addr=sys.argv[1]; out=sys.argv[2]',
-    'try: s=json.load(open(\\"/var/run/jmap-state/states.json\\")).get(addr,\\"\\")',
-    'except Exception: s=\\"\\"',
-    'if s: open(out,\\"w\\").write(json.dumps({\\"state\\": s}))" "$ADDR" "$STATE_IN"',
-    '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
-    '  if [ -e "$STATE_IN" ]; then',
-    `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out --state-in "$STATE_IN" --state-out "$STATE_OUT")`,
-    '  else',
-    `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out --state-out "$STATE_OUT")`,
-    '  fi',
-    `  echo "JMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
+    ...perAddressLines,
     'done',
     'echo "Streaming Maildir tarball to platform-api restic-stream..."',
     `( cd /tmp/maildir-out && tar cf - . 2>/tmp/tar.err; echo $? > /tmp/tar.exit ) | curl --fail-with-body -sS -o /tmp/restic-resp.json -w "%{http_code}" --upload-file - -H "Content-Type: application/x-tar" "${input.uploadUrlNoToken}&token=$TOKEN" > /tmp/http_status`,
@@ -345,7 +384,10 @@ export function buildMailboxesComponentJobSpec(input: {
             volumeMounts: [
               { name: 'scratch', mountPath: '/tmp' },
               { name: 'upload-token', mountPath: '/var/run/upload-token', readOnly: true },
-              { name: 'jmap-state', mountPath: '/var/run/jmap-state', readOnly: true },
+              // jmap-state mount removed 2026-05-22 — both engines are
+              // COMPLETE-only now, no per-mailbox state tokens to read.
+              // stateSecretName param retained for orchestrator-side
+              // backward compat but no longer mounted.
             ],
           }],
           volumes: [
@@ -358,17 +400,6 @@ export function buildMailboxesComponentJobSpec(input: {
                 secretName: input.uploadTokenSecretName,
                 defaultMode: 0o400,
                 items: [{ key: 'token', path: 'token' }],
-              },
-            },
-            {
-              // address → JMAP state map (server-issued opaque tokens).
-              // Mounted read-only; the python helper inside the script
-              // reads it without exposing the tokens to the shell.
-              name: 'jmap-state',
-              secret: {
-                secretName: input.stateSecretName,
-                defaultMode: 0o400,
-                items: [{ key: 'states.json', path: 'states.json' }],
               },
             },
           ],
@@ -464,10 +495,16 @@ export async function captureMailboxesComponent(
     return { mailboxCount: 0, addresses: [], sizeBytes: 0, newStates: [] };
   }
 
-  const priorStates = await loadPriorStates(opts.db, opts.tenantId);
+  // Engine selection: explicit override > platform_settings > default ('imap').
+  const engine: MailboxBackupEngine =
+    opts.engineOverride ?? (await getMailboxBackupEngine(opts.db));
+
+  // 2026-05-22: tenant bundles are COMPLETE only — neither engine reads
+  // prior state. loadPriorStates() is dead code kept for one cycle; the
+  // perAddress.stateIn field is always null.
   const perAddress = addresses.map((address) => ({
     address,
-    stateIn: priorStates.get(address)?.state ?? null,
+    stateIn: null as string | null,
   }));
 
   const archiveToken = signUploadToken(
@@ -492,50 +529,77 @@ export async function captureMailboxesComponent(
   const stateSecretName = `bk-mbox-state-${opts.backupId}`.slice(0, 63);
   const orchestratorTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);
-  // Per-mailbox state map — Secret-mounted so opaque JMAP state
-  // tokens never traverse env vars or shell expansion (reviewer-
-  // flagged shell-injection vector).
-  const statesJson = JSON.stringify(
-    Object.fromEntries(perAddress.map((a) => [a.address, a.stateIn ?? ''])),
-  );
-  await createStateSecret(opts.k8s, mailNamespace, stateSecretName, statesJson);
+  // Cluster-wide cap on concurrent mailbox capture Jobs. Uses the
+  // existing cluster-concurrency gate (DB-mutex) with a distinct
+  // `mailbox-worker` component so it composes with — and does not
+  // deadlock against — the `mailboxes` gate that protects the
+  // restic-stream upload endpoint.
+  const maxConcurrent = await getMailboxBackupMaxConcurrent(opts.db);
+  let slot: SlotHandle | null = null;
+  try {
+    try {
+      slot = await acquireGlobalSlot(opts.db, {
+        bundleId: opts.backupId,
+        component: 'mailbox-worker',
+        podName: process.env.HOSTNAME ?? undefined,
+        globalMaxInFlight: maxConcurrent,
+      });
+    } catch (err) {
+      if (err instanceof ClusterGateError) {
+        throw new Error(
+          `mailbox-worker cluster gate refused (${err.code}): ${err.message}`,
+        );
+      }
+      throw err;
+    }
 
-  const spec = buildMailboxesComponentJobSpec({
-    jobName,
-    mailNamespace,
-    tenantId: opts.tenantId,
-    backupId: opts.backupId,
-    toolsImage: opts.toolsImage ?? TOOLS_IMAGE_DEFAULT,
-    jmapEndpoint: opts.jmapEndpoint ?? JMAP_ENDPOINT_DEFAULT,
-    stalwartMasterUser: opts.stalwartMasterUser ?? MASTER_USER_DEFAULT,
-    masterSecretName: opts.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
-    masterSecretKey: opts.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
-    uploadUrlNoToken,
-    uploadTokenSecretName: tokenSecretName,
-    stateSecretName,
-    addresses: perAddress,
-    activeDeadlineSeconds: Math.max(60, Math.ceil(orchestratorTimeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
-  });
+    await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);
+    // 2026-05-22: state Secret no longer created — both engines are
+    // COMPLETE-only. createStateSecret() is dead code kept for one
+    // cycle; the stateSecretName param is retained on the Job spec
+    // builder for backward compat but no longer mounted.
 
-  await (opts.k8s.batch as unknown as {
-    createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: mailNamespace, body: spec });
+    const spec = buildMailboxesComponentJobSpec({
+      jobName,
+      mailNamespace,
+      tenantId: opts.tenantId,
+      backupId: opts.backupId,
+      toolsImage: opts.toolsImage ?? TOOLS_IMAGE_DEFAULT,
+      engine,
+      jmapEndpoint: opts.jmapEndpoint ?? JMAP_ENDPOINT_DEFAULT,
+      imapHost: opts.imapHost ?? IMAP_HOST_DEFAULT,
+      imapPort: opts.imapPort ?? IMAP_PORT_DEFAULT,
+      stalwartMasterUser: opts.stalwartMasterUser ?? MASTER_USER_DEFAULT,
+      masterSecretName: opts.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
+      masterSecretKey: opts.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
+      uploadUrlNoToken,
+      uploadTokenSecretName: tokenSecretName,
+      stateSecretName,
+      addresses: perAddress,
+      activeDeadlineSeconds: Math.max(60, Math.ceil(orchestratorTimeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
+    });
 
-  await waitForJob(opts.k8s, mailNamespace, jobName, orchestratorTimeoutMs, opts.onProgress);
+    await (opts.k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedJob({ namespace: mailNamespace, body: spec });
 
-  // Parse Job log for JMAP_DONE + MAILBOXES_DONE lines. We need the
-  // FULL multi-line log (one JMAP_DONE per mailbox), not the
-  // single-last-line summary that tailJobLog returns for progress.
-  const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 500 }).catch(() => null);
-  const { newStates, sizeBytes } = parseMailboxesDone(log ?? '', opts.backupId);
+    await waitForJob(opts.k8s, mailNamespace, jobName, orchestratorTimeoutMs, opts.onProgress);
 
-  return {
-    mailboxCount: addresses.length,
-    addresses,
-    sizeBytes,
-    newStates,
-  };
+    // Parse Job log for {JMAP,IMAP}_DONE + MAILBOXES_DONE lines. We need
+    // the FULL multi-line log (one *_DONE per mailbox), not the single-
+    // last-line summary that tailJobLog returns for progress.
+    const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 500 }).catch(() => null);
+    const { newStates, sizeBytes } = parseMailboxesDone(log ?? '', opts.backupId);
+
+    return {
+      mailboxCount: addresses.length,
+      addresses,
+      sizeBytes,
+      newStates,
+    };
+  } finally {
+    if (slot) await slot.release();
+  }
 }
 
 /**
@@ -573,28 +637,36 @@ export function parseMailboxesDone(
   }> = [];
   let sizeBytes = 0;
   for (const line of log.split('\n')) {
-    const jmapMatch = line.match(/JMAP_DONE bundleId=(\S+) address=(\S+) summary=(\{.*\})\s*$/);
-    if (jmapMatch && jmapMatch[1] === expectedBundleId) {
+    // Accept both `JMAP_DONE` (legacy) and `IMAP_DONE` (new engine).
+    // IMAP summaries never carry `newState`/`fullPull` — we synthesize
+    // empty defaults so the orchestrator's downstream code that
+    // persists `tenant_jmap_state` skips the row (empty state = no-op).
+    //
+    // Split on `summary=` instead of trying to regex-match the JSON
+    // body — the earlier `\{.*\}` was greedy and would span any second
+    // `{` to the last `}` on the same line. JSON.parse() below catches
+    // any non-JSON tail.
+    const doneMatch = line.match(/(JMAP|IMAP)_DONE bundleId=(\S+) address=(\S+) summary=(.+)$/);
+    if (doneMatch && doneMatch[2] === expectedBundleId) {
       try {
-        const summary = JSON.parse(jmapMatch[3]!) as {
+        const summary = JSON.parse(doneMatch[4]!) as {
           address: string;
           fetched: number;
           skipped: number;
-          newState: string;
-          fullPull: boolean;
+          newState?: string;
+          fullPull?: boolean;
         };
         newStates.push({
-          address: jmapMatch[2]!,
+          address: doneMatch[3]!,
           // jmap-sync.py doesn't expose accountId in the summary today;
-          // we use the address as a stable proxy. The schema allows
-          // address as a separate column already (`mailbox_address`);
-          // the `mailbox_jmap_id` column gets the same value for now
-          // until jmap-sync emits the JMAP accountId in a future tweak.
-          jmapId: jmapMatch[2]!,
+          // we use the address as a stable proxy. IMAP also uses the
+          // address as the stable identity since IMAP has no equivalent
+          // of JMAP's accountId.
+          jmapId: doneMatch[3]!,
           newState: summary.newState ?? '',
           fetched: summary.fetched ?? 0,
           skipped: summary.skipped ?? 0,
-          fullPull: !!summary.fullPull,
+          fullPull: summary.fullPull ?? true, // IMAP is always full pull
         });
       } catch {
         // Malformed summary — skip; the orchestrator will not persist

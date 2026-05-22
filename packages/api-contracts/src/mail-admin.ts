@@ -79,3 +79,40 @@ export type RotateStalwartPasswordResponse = z.infer<typeof rotateStalwartPasswo
  */
 export const rotateWebmailMasterPasswordResponseSchema = rotateStalwartPasswordResponseSchema;
 export type RotateWebmailMasterPasswordResponse = z.infer<typeof rotateWebmailMasterPasswordResponseSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mailbox backup engine selector (Phase 2 of JMAP→IMAP migration, 2026-05-22)
+// Per platform_settings.mailbox_backup_engine + .mailbox_backup_max_concurrent.
+// See backend/src/modules/tenant-bundles/mailbox-backup-engine.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const MAILBOX_BACKUP_ENGINES = ['jmap', 'imap'] as const;
+export type MailboxBackupEngineValue = (typeof MAILBOX_BACKUP_ENGINES)[number];
+
+export const mailboxBackupSettingsResponseSchema = z.object({
+  engine: z.enum(MAILBOX_BACKUP_ENGINES),
+  /**
+   * Cluster-wide concurrency cap. The PATCH path enforces [1, 64].
+   * The response allows 0 because an operator can write 0 directly
+   * via SQL (`UPDATE platform_settings SET setting_value = '0' ...`)
+   * — documented in mailbox-backup-engine.ts as the "disable the gate"
+   * escape hatch. Treat a response of 0 as "no gate"; the UI hides
+   * the input until the operator picks a positive value.
+   */
+  maxConcurrent: z.number().int().min(0).max(64),
+  /** True when the active engine is the platform's recommended default. */
+  isRecommendedDefault: z.boolean(),
+  /** ISO timestamp of the most recent operator update, or null if never set
+   *  (still on default). */
+  lastUpdatedAt: z.string().datetime().nullable(),
+});
+export type MailboxBackupSettingsResponse = z.infer<typeof mailboxBackupSettingsResponseSchema>;
+
+export const mailboxBackupSettingsUpdateSchema = z.object({
+  engine: z.enum(MAILBOX_BACKUP_ENGINES).optional(),
+  maxConcurrent: z.number().int().min(1).max(64).optional(),
+}).refine(
+  (v) => v.engine !== undefined || v.maxConcurrent !== undefined,
+  { message: 'at least one of engine or maxConcurrent must be provided' },
+);
+export type MailboxBackupSettingsUpdate = z.infer<typeof mailboxBackupSettingsUpdateSchema>;
