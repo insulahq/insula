@@ -1,6 +1,7 @@
-import { ShieldCheck, AlertTriangle, ShieldAlert, Loader2 } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, ShieldAlert, Loader2, Radio } from 'lucide-react';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
-import type { CnpgClusterBackupHealth } from '@k8s-hosting/api-contracts';
+import { useWalArchiveClusters } from '@/hooks/use-system-wal-archive';
+import type { CnpgClusterBackupHealth, WalArchiveCluster } from '@k8s-hosting/api-contracts';
 
 interface Props {
   /**
@@ -27,6 +28,9 @@ interface Props {
  */
 export function CnpgBackupHealthCard({ clusterFilter }: Props) {
   const { data, isLoading, error } = useCnpgBackupHealth();
+  // P4c: WAL streaming health — surfaced as a per-cluster line below the
+  // base backup info so the operator sees both signals together.
+  const walQ = useWalArchiveClusters();
 
   if (isLoading) {
     return (
@@ -81,14 +85,18 @@ export function CnpgBackupHealthCard({ clusterFilter }: Props) {
 
       <div className="space-y-3">
         {clusters.map((c) => (
-          <ClusterRow key={`${c.namespace}/${c.clusterName}`} c={c} />
+          <ClusterRow
+            key={`${c.namespace}/${c.clusterName}`}
+            c={c}
+            wal={walQ.data?.find((w) => w.clusterNamespace === c.namespace && w.clusterName === c.clusterName) ?? null}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function ClusterRow({ c }: { c: CnpgClusterBackupHealth }) {
+function ClusterRow({ c, wal }: { c: CnpgClusterBackupHealth; wal: WalArchiveCluster | null }) {
   const palette = paletteForState(c.state);
 
   return (
@@ -123,6 +131,44 @@ function ClusterRow({ c }: { c: CnpgClusterBackupHealth }) {
           <span className="text-gray-500 dark:text-gray-400">ScheduledBackup CRs:</span>{' '}
           {c.scheduledBackups.length > 0 ? c.scheduledBackups.join(', ') : (
             <span className="italic">none</span>
+          )}
+        </div>
+        {/* P4c — WAL streaming line. Three states:
+            - enabled + lastArchivedWalTime fresh → green Radio + age
+            - enabled + lastFailedArchiveTime → red Radio + error
+            - disabled / unknown → muted */}
+        <div className="sm:col-span-2 flex items-center gap-2">
+          {wal?.enabled && wal.status?.lastArchivedWalTime && !wal.status.lastFailedArchiveTime ? (
+            <>
+              <Radio size={12} className="text-emerald-600 dark:text-emerald-400" />
+              <span className="text-gray-500 dark:text-gray-400">WAL streaming:</span>
+              <span title={wal.status.lastArchivedWalTime} className="text-emerald-700 dark:text-emerald-300">
+                last archived {formatAgoFromIso(wal.status.lastArchivedWalTime)} ago
+              </span>
+              {wal.status.lastArchivedWal && (
+                <span className="font-mono text-[10px] text-gray-500 dark:text-gray-400">
+                  ({wal.status.lastArchivedWal.length > 24 ? wal.status.lastArchivedWal.slice(0, 24) + '…' : wal.status.lastArchivedWal})
+                </span>
+              )}
+            </>
+          ) : wal?.enabled && wal.status?.lastFailedArchiveTime ? (
+            <>
+              <Radio size={12} className="text-rose-600 dark:text-rose-400" />
+              <span className="text-gray-500 dark:text-gray-400">WAL streaming:</span>
+              <span className="text-rose-700 dark:text-rose-300" title={wal.status.lastFailedArchiveError ?? ''}>
+                FAILING — {formatAgoFromIso(wal.status.lastFailedArchiveTime)} ago
+              </span>
+            </>
+          ) : wal?.enabled ? (
+            <>
+              <Radio size={12} className="text-amber-600 dark:text-amber-400" />
+              <span className="text-gray-500 dark:text-gray-400">WAL streaming: enabled but no archive yet</span>
+            </>
+          ) : (
+            <>
+              <Radio size={12} className="text-gray-400 dark:text-gray-600" />
+              <span className="text-gray-400 dark:text-gray-600">WAL streaming: disabled</span>
+            </>
           )}
         </div>
         {c.mostRecentFailure && (
@@ -207,4 +253,10 @@ function formatAge(seconds: number | null): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;
+}
+
+function formatAgoFromIso(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms) || ms < 0) return 'unknown';
+  return formatAge(Math.floor(ms / 1000));
 }
