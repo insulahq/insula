@@ -38,6 +38,8 @@ NS_MAIL="${NS_MAIL:-mail}"
 HELPER="${HELPER:-export-perf-helper}"
 DOMAIN="${DOMAIN:-mailperf-bench.net}"
 DOMAIN_ID="${DOMAIN_ID:-c}"
+IMAP_WORKERS="${IMAP_WORKERS:-4}"
+JMAP_WORKERS="${JMAP_WORKERS:-4}"
 LOG=/tmp/integration-mailbox-engine.log
 
 MFQDN=$(cat /tmp/mfqdn)
@@ -322,6 +324,7 @@ run_engine_cycle() {
   log "$engine: restore $maildir_root → $dst_user"
   local rst_summary
   if [[ "$engine" == "imap" ]]; then
+    log "$engine: restore using $IMAP_WORKERS worker(s)"
     rst_summary=$(kubectl -n "$NS_PERF" exec "$HELPER" -- env STALWART_MASTER_PASSWORD="$MPW" \
       python3 /tmp/perf/imap-restore.py \
       --imap-host stalwart-mail.mail.svc.cluster.local \
@@ -330,8 +333,10 @@ run_engine_cycle() {
       --master-user "$MFQDN" \
       --auth-pass-env STALWART_MASTER_PASSWORD \
       --maildir-root "$maildir_root" \
-      --mode merge-overwrite 2>&1 | tee -a "$LOG" | grep -E '^\{.*"engine":\s*"imap".*\}' | head -1 || true)
+      --mode merge-overwrite \
+      --workers "$IMAP_WORKERS" 2>&1 | tee -a "$LOG" | grep -E '^\{.*"engine":\s*"imap".*\}' | head -1 || true)
   else
+    log "$engine: restore using $JMAP_WORKERS worker(s)"
     rst_summary=$(kubectl -n "$NS_PERF" exec "$HELPER" -- env STALWART_MASTER_PASSWORD="$MPW" \
       python3 /tmp/perf/jmap-restore-stock.py \
       --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 \
@@ -341,7 +346,7 @@ run_engine_cycle() {
       --auth-pass-env STALWART_MASTER_PASSWORD \
       --maildir-root "$maildir_root" \
       --mode merge-overwrite \
-      --workers 8 2>&1 | tee -a "$LOG" | grep -E '^\{' | tail -1 || true)
+      --workers "$JMAP_WORKERS" 2>&1 | tee -a "$LOG" | grep -E '^\{' | tail -1 || true)
   fi
   [[ -n "$rst_summary" ]] && pass "$engine A2: restore returned summary" || fail "$engine A2: no restore summary"
 

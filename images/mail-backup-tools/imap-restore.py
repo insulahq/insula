@@ -73,7 +73,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -311,20 +313,27 @@ def _flush_literal_plus_batch(
             return ok1 + ok2, bad1 + bad2
 
 
-def _restore_folder(
+def _restore_folder_shard(
     client: ImapClient,
     folder: str,
     files: list[tuple[str, frozenset[str]]],
     *,
-    dedup_message_ids: set[str] | None,
+    dedup_message_ids: frozenset[str] | None,
 ) -> tuple[int, int, int, int]:
     """
-    Restore one folder's messages. Returns
-    (imported, skipped_dedup, skipped_oversize, failed).
+    Restore one shard (subset) of a folder's messages on a single
+    ImapClient. Returns (imported, skipped_dedup, skipped_oversize,
+    failed).
 
-    `dedup_message_ids` is a set of message-IDs the caller already
-    confirmed exist on target; we skip those without uploading. None
-    means dedup pass disabled.
+    Each shard runs on its own connection (caller's responsibility);
+    no state is shared with other shards beyond the read-only
+    `dedup_message_ids` frozenset. The byte-budget batcher operates
+    purely on the shard's local message stream.
+
+    `dedup_message_ids` is the SHARED set of Message-IDs the caller
+    confirmed exist on target (computed once on the main thread BEFORE
+    workers spawn, then passed to every shard). None means dedup
+    disabled. Frozenset enforces immutability across workers.
     """
     imported = 0
     skipped_dedup = 0
@@ -404,6 +413,102 @@ def _restore_folder(
 
     flush()
     return imported, skipped_dedup, skipped_oversize, failed
+
+
+def _restore_folder_parallel(
+    *,
+    host: str,
+    port: int,
+    verify_tls: bool,
+    login_user: str,
+    password: str,
+    folder: str,
+    files: list[tuple[str, frozenset[str]]],
+    dedup_message_ids: frozenset[str] | None,
+    workers: int,
+) -> tuple[int, int, int, int]:
+    """
+    Run `_restore_folder_shard` across K worker threads, each with its
+    own `ImapClient`. Returns the aggregated
+    (imported, skipped_dedup, skipped_oversize, failed) tuple.
+
+    Sharding: messages are split modulo K so each worker handles
+    `files[k::K]`. This preserves rough chronological order (files come
+    in already sorted by filename, which embeds the Maildir timestamp
+    prefix) and requires no shared state — each worker manages its
+    own byte-budget batcher independently.
+
+    LOGIN throttling: a process-local `threading.Lock` serializes the
+    LOGIN step across workers. Stalwart's per-user `maxAuthFailures=3`
+    counter is reset on a successful LOGIN, but a burst of concurrent
+    LOGINs against the same user briefly raises the failure-attempt
+    pressure. Serializing keeps the auth path well-behaved.
+
+    Dedup set: caller built the frozenset ONCE on the main thread
+    before this fn was called. Workers read-only consume it; no
+    redundant FETCH 1:* BODY.PEEK[] per worker.
+
+    Errors: each worker's exception is caught and reported as failed
+    count for its shard. A single worker crash does not abort the
+    others.
+    """
+    if workers < 1:
+        workers = 1
+    # Don't spawn more workers than messages — pointless overhead.
+    workers = min(workers, max(1, len(files)))
+
+    login_lock = threading.Lock()
+    totals = {
+        "imported": 0,
+        "skipped_dedup": 0,
+        "skipped_oversize": 0,
+        "failed": 0,
+    }
+    totals_lock = threading.Lock()
+
+    def _worker(shard_idx: int, shard: list[tuple[str, frozenset[str]]]) -> None:
+        if not shard:
+            return
+        try:
+            with ImapClient(host, port, verify_tls=verify_tls, on_log=_log) as client:
+                with login_lock:
+                    # Serialize the LOGIN itself; once authenticated the
+                    # rest is concurrent. ~100-300ms each, negligible
+                    # overhead even at K=16.
+                    client.login(login_user, password)
+                client.enable("UTF8=ACCEPT")
+                client.select(folder, readonly=False)
+                fi, fd, fo, ff = _restore_folder_shard(
+                    client,
+                    folder,
+                    shard,
+                    dedup_message_ids=dedup_message_ids,
+                )
+                with totals_lock:
+                    totals["imported"] += fi
+                    totals["skipped_dedup"] += fd
+                    totals["skipped_oversize"] += fo
+                    totals["failed"] += ff
+        except (ImapError, OSError) as e:
+            _log(
+                f"worker {shard_idx}/{workers} crashed mid-shard "
+                f"({len(shard)} files) on folder {folder!r}: {e}"
+            )
+            with totals_lock:
+                totals["failed"] += len(shard)
+
+    # Modulo-K sharding. Slicing `files[k::workers]` is O(N/K) per
+    # worker and preserves chronological order within a shard.
+    shards = [files[k::workers] for k in range(workers)]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="imap-restore") as pool:
+        list(pool.map(lambda kv: _worker(*kv), enumerate(shards)))
+
+    return (
+        totals["imported"],
+        totals["skipped_dedup"],
+        totals["skipped_oversize"],
+        totals["failed"],
+    )
 
 
 def _collect_existing_message_ids(client: ImapClient, folder: str) -> set[str]:
@@ -560,19 +665,42 @@ def run(args: argparse.Namespace) -> int:
                     failed += len(folder_files)
                     continue
 
-                fi, fd, fo, ff = _restore_folder(
-                    client,
-                    folder_name,
-                    folder_files,
-                    dedup_message_ids=dedup_ids,
+                # Freeze the dedup set for safe sharing across workers.
+                dedup_frozen: frozenset[str] | None = (
+                    frozenset(dedup_ids) if dedup_ids is not None else None
                 )
+
+                if args.workers <= 1:
+                    # Sequential path — re-use the main thread's client.
+                    fi, fd, fo, ff = _restore_folder_shard(
+                        client,
+                        folder_name,
+                        folder_files,
+                        dedup_message_ids=dedup_frozen,
+                    )
+                else:
+                    # Parallel path — K worker threads, each with its own
+                    # ImapClient + LOGIN. Files are sharded modulo K
+                    # (preserves rough order, avoids shared state).
+                    fi, fd, fo, ff = _restore_folder_parallel(
+                        host=args.imap_host,
+                        port=args.imap_port,
+                        verify_tls=args.verify_tls,
+                        login_user=auth_user,
+                        password=pw,
+                        folder=folder_name,
+                        files=folder_files,
+                        dedup_message_ids=dedup_frozen,
+                        workers=args.workers,
+                    )
                 imported += fi
                 skipped_dedup += fd
                 skipped_oversize += fo
                 failed += ff
                 _log(
-                    f"folder={folder_name!r} imported={fi} "
-                    f"skipped_dedup={fd} skipped_oversize={fo} failed={ff}"
+                    f"folder={folder_name!r} workers={args.workers} "
+                    f"imported={fi} skipped_dedup={fd} "
+                    f"skipped_oversize={fo} failed={ff}"
                 )
 
     except ImapError as e:
@@ -637,11 +765,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Restore conflict-resolution policy. Default skips duplicates.",
     )
     p.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help=(
+            "Parallel IMAP connections per restore Job (default 4 — symmetric "
+            "with the JMAP path's worker count). Each worker opens its own "
+            "connection + LOGIN, then operates on a modulo-K shard of the "
+            "message list. Capped server-side by x:Imap.maxConcurrent "
+            "(default 16). Set to 1 to fall back to the original "
+            "single-connection sequential restore."
+        ),
+    )
+    p.add_argument(
         "--verify-tls",
         action="store_true",
         help="Verify Stalwart's TLS certificate (default off for cluster-internal).",
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.workers < 1 or args.workers > 32:
+        p.error(f"--workers must be in [1, 32] (got {args.workers})")
+    return args
 
 
 if __name__ == "__main__":
