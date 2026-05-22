@@ -31,6 +31,15 @@ export const __unused = and;
 export const __unused2 = desc;
 export const __unused3 = inArray;
 
+/** Module-level Date→ISO helper. Some callers (loadTenantsOverview /
+ *  loadTenantDetail) have their own inline-scoped versions; this one
+ *  is intentionally non-null (caller decides null behaviour). */
+function toIsoOrEmpty(v: Date | string | null | undefined): string {
+  if (v == null) return '';
+  if (v instanceof Date) return v.toISOString();
+  return new Date(v).toISOString();
+}
+
 // ─── /admin/backups/system/overview ───────────────────────────────────
 
 export async function loadSystemOverview(db: Database): Promise<SystemBackupsOverview> {
@@ -51,11 +60,11 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
 
   const sysRow = sysAgg[0] ?? { subsystems: 0, snapshot_count: 0, total_bytes: 0, newest_at: null };
 
-  // Mail-restic last-run from system_settings (already maintained by
-  // the sidecar callback wired into /internal/mail/snapshot-last-run).
+  // Mail-restic last-run stats stay sourced from system_settings —
+  // the in-cluster sidecar POSTs to /internal/mail/snapshot-last-run
+  // which writes that column.
   const [settings] = await db.select({
     mailStats: systemSettings.mailSnapshotLastRunStats,
-    mailBackupStoreId: systemSettings.mailSnapshotBackupStoreId,
   }).from(systemSettings).where(eq(systemSettings.id, 'system'));
 
   const mailStats = (settings?.mailStats ?? {}) as {
@@ -64,13 +73,26 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
     runAt?: string;
   };
 
-  // Resolve mail target name for display.
+  // B1 fix (2026-05-22): resolve the mail target NAME from the R-X
+  // shim assignment instead of the legacy
+  // `system_settings.mail_snapshot_backup_store_id` mirror column.
+  // The legacy column hasn't been kept in sync since Phase 2 deleted
+  // mail-target-sync.ts, so it points at the OLD target when an
+  // operator picks a new one through the shim UI. The shim assignment
+  // is the single source of truth.
   let mailTargetName: string | null = null;
-  if (settings?.mailBackupStoreId) {
-    const [cfg] = await db.select({ name: backupConfigurations.name })
-      .from(backupConfigurations)
-      .where(eq(backupConfigurations.id, settings.mailBackupStoreId));
-    mailTargetName = cfg?.name ?? null;
+  const [mailAssignment] = await db
+    .select({ name: backupConfigurations.name })
+    .from(backupTargetAssignments)
+    .innerJoin(
+      backupConfigurations,
+      eq(backupConfigurations.id, backupTargetAssignments.targetId),
+    )
+    .where(eq(backupTargetAssignments.backupClass, 'mail'))
+    .orderBy(backupTargetAssignments.priority)
+    .limit(1);
+  if (mailAssignment) {
+    mailTargetName = mailAssignment.name;
   }
 
   const mailLastRun = mailStats.runAt ? new Date(mailStats.runAt) : null;
@@ -396,5 +418,88 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
     })),
     openCartId: openCart[0]?.id ?? null,
     generatedAt: new Date().toISOString(),
+  };
+}
+
+// ─── /admin/backups/tenants/snapshots — B2 cross-tenant list ──────────
+//
+// Flat list of tenant snapshots (storage_snapshots rows) with the
+// tenant name + plan joined in. One row per snapshot, sorted newest
+// first, capped at `limit`. Optional `tenantId` filter.
+
+export interface TenantSnapshotListRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly tenantName: string | null;
+  readonly backupClass: string;
+  readonly label: string | null;
+  readonly subsystem: string;
+  readonly sizeBytes: number;
+  readonly status: string;
+  readonly targetId: string | null;
+  readonly targetName: string | null;
+  readonly createdAt: string;
+  readonly expiresAt: string | null;
+}
+
+export interface TenantSnapshotListResponse {
+  readonly rows: ReadonlyArray<TenantSnapshotListRow>;
+  readonly hasMore: boolean;
+}
+
+export async function listTenantSnapshots(
+  db: Database,
+  opts: { tenantId?: string; limit?: number },
+): Promise<TenantSnapshotListResponse> {
+  const limit = opts.limit ?? 200;
+  const whereTenant = opts.tenantId ? eq(storageSnapshots.tenantId, opts.tenantId) : undefined;
+  const baseQuery = db
+    .select({
+      id: storageSnapshots.id,
+      tenantId: storageSnapshots.tenantId,
+      tenantName: tenants.name,
+      backupClass: storageSnapshots.backupClass,
+      label: storageSnapshots.label,
+      subsystem: storageSnapshots.subsystem,
+      sizeBytes: storageSnapshots.sizeBytes,
+      status: storageSnapshots.status,
+      targetId: storageSnapshots.targetId,
+      targetName: backupConfigurations.name,
+      createdAt: storageSnapshots.createdAt,
+      expiresAt: storageSnapshots.expiresAt,
+    })
+    .from(storageSnapshots)
+    .leftJoin(tenants, eq(tenants.id, storageSnapshots.tenantId))
+    .leftJoin(
+      backupConfigurations,
+      eq(backupConfigurations.id, storageSnapshots.targetId),
+    );
+
+  // Pull one extra row to know whether there's more.
+  const rows = await (whereTenant
+    ? baseQuery.where(whereTenant)
+    : baseQuery
+  )
+    .orderBy(desc(storageSnapshots.createdAt))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const visible = rows.slice(0, limit);
+  return {
+    rows: visible.map((r) => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      tenantName: r.tenantName,
+      backupClass: r.backupClass,
+      label: r.label,
+      subsystem: r.subsystem,
+      sizeBytes: Number(r.sizeBytes ?? 0),
+      status: r.status,
+      targetId: r.targetId,
+      targetName: r.targetName,
+      createdAt: toIsoOrEmpty(r.createdAt),
+      expiresAt: r.expiresAt ? toIsoOrEmpty(r.expiresAt) : null,
+    })),
+    hasMore,
   };
 }
