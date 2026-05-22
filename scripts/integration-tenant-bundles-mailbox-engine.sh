@@ -54,6 +54,34 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG" >&2; }
 pass() { PASS_COUNT=$((PASS_COUNT+1)); log "  PASS: $*"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT+1)); FAILURES+=("$*"); log "  FAIL: $*"; }
 
+# bootstrap.sh sets x:Imap.maxConcurrent=16 (Stalwart default). Production
+# platform-api transiently elevates it to 64 via JMAP API around mailbox
+# Jobs (see backend/src/modules/mail-admin/imap-concurrency.ts). For this
+# standalone harness — which invokes imap-restore.py directly without
+# going through platform-api — we elevate ourselves so K=$IMAP_WORKERS
+# restore isn't throttled to one effective connection per user.
+elevate_imap_concurrency() {
+  local target="${1:-64}"
+  local apw_b64=$(printf 'admin:%s' "$APW" | base64 -w0)
+  local body
+  body=$(jq -nc --argjson v "$target" \
+    '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+      methodCalls:[["x:Imap/set",
+        {accountId:"d333333",update:{singleton:{maxConcurrent:$v}}},
+        "c0"]]}')
+  local pod=$(kubectl -n "$NS_MAIL" get pods -l app=stalwart-mail \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  [ -z "$pod" ] && { log "elevate_imap_concurrency: no Stalwart pod"; return 1; }
+  kubectl -n "$NS_MAIL" exec "$pod" -c stalwart -- \
+    curl -sf -X POST -H "Authorization: Basic $apw_b64" \
+      -H 'Content-Type: application/json' \
+      --data-binary "$body" \
+      http://127.0.0.1:8080/jmap/ >/dev/null
+  log "elevated x:Imap.maxConcurrent → $target via JMAP API (admin)"
+}
+
+elevate_imap_concurrency 64
+
 # ── Populate edge-case corpus via JMAP Email/import ─────────────────────────
 populate_corpus() {
   local user="$1"
