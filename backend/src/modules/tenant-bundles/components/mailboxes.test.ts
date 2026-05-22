@@ -183,4 +183,95 @@ describe('parseMailboxesDone', () => {
     expect(r.sizeBytes).toBe(0);
     expect(r.newStates).toHaveLength(1);
   });
+
+  it('accepts IMAP_DONE lines with no newState/fullPull (engine=imap, COMPLETE only)', () => {
+    const log = [
+      'IMAP_DONE bundleId=bkp-test address=u@x.com summary={"address":"u@x.com","fetched":42,"skipped":0,"folders":3,"elapsedSeconds":1.2,"engine":"imap"}',
+      'MAILBOXES_DONE bundleId=bkp-test snapshot=' + 'a'.repeat(64) + ' sizeBytes=999',
+    ].join('\n');
+    const r = parseMailboxesDone(log, 'bkp-test');
+    expect(r.newStates).toHaveLength(1);
+    expect(r.newStates[0]?.address).toBe('u@x.com');
+    expect(r.newStates[0]?.fetched).toBe(42);
+    // IMAP path synthesizes empty newState + fullPull=true (no incremental).
+    expect(r.newStates[0]?.newState).toBe('');
+    expect(r.newStates[0]?.fullPull).toBe(true);
+    expect(r.sizeBytes).toBe(999);
+  });
+});
+
+describe('buildMailboxesComponentJobSpec — engine=imap', () => {
+  const base = {
+    jobName: 'bk-mbox-imap',
+    mailNamespace: 'mail',
+    tenantId: 'abc',
+    backupId: 'bkp-imap',
+    toolsImage: 'ghcr.io/x/mail-backup-tools:latest',
+    engine: 'imap' as const,
+    jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
+    imapHost: 'stalwart-mail.mail.svc.cluster.local',
+    imapPort: 993,
+    stalwartMasterUser: 'master@master.local',
+    masterSecretName: 'roundcube-secrets',
+    masterSecretKey: 'STALWART_MASTER_PASSWORD',
+    uploadUrlNoToken: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-imap/components/mailboxes/restic-stream?filename=maildir.tar',
+    uploadTokenSecretName: 'bk-mbox-token-bkp-imap',
+    stateSecretName: 'bk-mbox-state-bkp-imap', // ignored when engine='imap'
+    addresses: [
+      { address: 'user1@example.com', stateIn: null },
+    ],
+  };
+
+  it('script invokes imap-sync.py (not jmap-sync.py)', () => {
+    const spec = buildMailboxesComponentJobSpec(base);
+    const cmd = (spec.spec as { template: { spec: { containers: Array<{ command: string[] }> } } })
+      .template.spec.containers[0]!.command;
+    const script = cmd[2]!;
+    expect(script).toContain('/usr/local/bin/imap-sync.py');
+    expect(script).toContain('--imap-host stalwart-mail.mail.svc.cluster.local');
+    expect(script).toContain('--imap-port 993');
+    expect(script).not.toContain('jmap-sync.py');
+    expect(script).not.toContain('--state-in');
+    expect(script).not.toContain('--state-out');
+  });
+
+  it('emits IMAP_DONE (not JMAP_DONE) per address so parseMailboxesDone picks up IMAP summaries', () => {
+    const spec = buildMailboxesComponentJobSpec(base);
+    const cmd = (spec.spec as { template: { spec: { containers: Array<{ command: string[] }> } } })
+      .template.spec.containers[0]!.command;
+    expect(cmd[2]).toContain('IMAP_DONE bundleId=bkp-imap');
+    expect(cmd[2]).not.toContain('JMAP_DONE');
+  });
+
+  it('omits the jmap-state Secret mount + volume when engine=imap', () => {
+    const spec = buildMailboxesComponentJobSpec(base);
+    const template = (spec.spec as { template: { spec: { containers: Array<{ volumeMounts: Array<{ name: string }> }>; volumes: Array<{ name: string }> } } }).template.spec;
+    const mountNames = template.containers[0]!.volumeMounts.map((m) => m.name);
+    const volumeNames = template.volumes.map((v) => v.name);
+    expect(mountNames).not.toContain('jmap-state');
+    expect(volumeNames).not.toContain('jmap-state');
+    // But upload-token + scratch are still there.
+    expect(mountNames).toContain('upload-token');
+    expect(mountNames).toContain('scratch');
+  });
+
+  it('rejects invalid imapHost', () => {
+    expect(() => buildMailboxesComponentJobSpec({ ...base, imapHost: 'bad host with spaces' }))
+      .toThrow(/invalid imapHost/);
+  });
+
+  it('rejects invalid imapPort', () => {
+    expect(() => buildMailboxesComponentJobSpec({ ...base, imapPort: 99999 }))
+      .toThrow(/invalid imapPort/);
+  });
+
+  it('engine defaults to jmap (backward compat) and keeps jmap-state mount', () => {
+    const { engine: _engine, ...withoutEngine } = base;
+    const spec = buildMailboxesComponentJobSpec(withoutEngine);
+    const template = (spec.spec as { template: { spec: { containers: Array<{ command: string[]; volumeMounts: Array<{ name: string }> }> } } }).template.spec;
+    const mountNames = template.containers[0]!.volumeMounts.map((m) => m.name);
+    expect(mountNames).toContain('jmap-state');
+    expect(template.containers[0]!.command[2]).toContain('jmap-sync.py');
+    expect(template.containers[0]!.command[2]).not.toContain('imap-sync.py');
+  });
 });

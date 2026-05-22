@@ -67,6 +67,11 @@ import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 import {
+  getMailboxBackupEngine,
+  getMailboxBackupMaxConcurrent,
+} from '../../tenant-bundles/mailbox-backup-engine.js';
+import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from '../../tenant-bundles/cluster-concurrency.js';
+import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
 } from '@k8s-hosting/api-contracts';
@@ -225,6 +230,11 @@ export async function execMailboxesByAddressItem(args: {
 
   const downloadBase = `${platformApiUrl.replace(/\/$/, '')}/api/v1/internal/bundles/${item.bundleId}/components/mailboxes`;
   const jobName = `rs-mbox-${item.id.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 50)}`;
+
+  // Engine + concurrency cap from platform_settings.
+  const engine = await getMailboxBackupEngine(app.db);
+  const maxConcurrent = await getMailboxBackupMaxConcurrent(app.db);
+
   const spec = buildMailboxesByAddressJobSpec({
     jobName,
     mailNamespace: MAIL_NAMESPACE,
@@ -232,6 +242,7 @@ export async function execMailboxesByAddressItem(args: {
     cartId: item.restoreJobId,
     itemId: item.id,
     toolsImage: TOOLS_IMAGE_DEFAULT,
+    engine,
     jmapEndpoint: JMAP_ENDPOINT_DEFAULT,
     stalwartMasterUser: MASTER_USER_DEFAULT,
     masterSecretName: MASTER_SECRET_NAME_DEFAULT,
@@ -245,9 +256,30 @@ export async function execMailboxesByAddressItem(args: {
   const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
     ?? process.env.KUBECONFIG;
   const k8s: K8sClients = createK8sClients(kc);
-  await (k8s.batch as unknown as {
-    createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: MAIL_NAMESPACE, body: spec });
+
+  // Cluster-wide cap on concurrent mailbox-worker Jobs. Same gate the
+  // capture side uses; serializes restore Jobs with capture Jobs across
+  // all platform-api replicas.
+  let slot: SlotHandle | null = null;
+  try {
+    try {
+      slot = await acquireGlobalSlot(app.db, {
+        bundleId: item.bundleId,
+        component: 'mailbox-worker',
+        podName: process.env.HOSTNAME ?? undefined,
+        globalMaxInFlight: maxConcurrent,
+      });
+    } catch (err) {
+      if (err instanceof ClusterGateError) {
+        throw new Error(
+          `mailbox-worker cluster gate refused (${err.code}): ${err.message}`,
+        );
+      }
+      throw err;
+    }
+    await (k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedJob({ namespace: MAIL_NAMESPACE, body: spec });
 
   await waitForJob(k8s, MAIL_NAMESPACE, jobName, DEFAULT_TIMEOUT_MS, async (msg) => {
     await app.db.update(restoreItems)
@@ -300,6 +332,9 @@ export async function execMailboxesByAddressItem(args: {
         `prePurged=${prePurged}, elapsedMs=${elapsedMs})`,
     })
     .where(eq(restoreItems.id, item.id));
+  } finally {
+    if (slot) await slot.release();
+  }
 }
 
 export function buildMailboxesByAddressJobSpec(input: {
@@ -309,7 +344,16 @@ export function buildMailboxesByAddressJobSpec(input: {
   cartId: string;
   itemId: string;
   toolsImage: string;
+  /**
+   * Active engine. `jmap` (default — legacy) runs `jmap-restore.py`;
+   * `imap` runs the new `imap-restore.py` with byte-budgeted
+   * MULTIAPPEND batching. See platform_settings.mailbox_backup_engine.
+   */
+  engine?: 'jmap' | 'imap';
   jmapEndpoint: string;
+  /** IMAPS host (used when engine='imap'). */
+  imapHost?: string;
+  imapPort?: number;
   stalwartMasterUser: string;
   masterSecretName: string;
   masterSecretKey: string;
@@ -334,6 +378,17 @@ export function buildMailboxesByAddressJobSpec(input: {
   }
   if (!VALID_MODES.has(input.mode)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid mode '${input.mode}'`);
+  }
+  const engine = input.engine ?? 'jmap';
+  const imapHost = input.imapHost ?? 'stalwart-mail.mail.svc.cluster.local';
+  const imapPort = input.imapPort ?? 993;
+  if (engine === 'imap') {
+    if (!/^[A-Za-z0-9.\-]+$/.test(imapHost)) {
+      throw new Error(`buildMailboxesByAddressJobSpec: invalid imapHost '${imapHost}'`);
+    }
+    if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) {
+      throw new Error(`buildMailboxesByAddressJobSpec: invalid imapPort ${imapPort}`);
+    }
   }
   // Addresses + tokens are embedded directly in the script's `case "$i"`
   // dispatch block (see below) so we no longer need per-address env
@@ -393,8 +448,18 @@ export function buildMailboxesByAddressJobSpec(input: {
     '  mkdir -p "/tmp/maildir/$ADDR"',
     '  tar -xzf "/tmp/maildir-tar/$ADDR.tar.gz" -C "/tmp/maildir/$ADDR"',
     '  rm -f "/tmp/maildir-tar/$ADDR.tar.gz"',
-    '  echo "Restoring $ADDR via JMAP (mode=$MODE workers=$WORKERS)..." >&2',
-    `  python3 /usr/local/bin/jmap-restore.py \\
+    `  echo "Restoring $ADDR via ${engine.toUpperCase()} (mode=$MODE workers=$WORKERS)..." >&2`,
+    engine === 'imap'
+      ? `  python3 /usr/local/bin/imap-restore.py \\
+       --imap-host "${imapHost}" \\
+       --imap-port ${imapPort} \\
+       --target-address "$ADDR" \\
+       --source-address "$ADDR" \\
+       --master-user "${input.stalwartMasterUser}" \\
+       --auth-pass-env STALWART_MASTER_PASSWORD \\
+       --maildir-root "/tmp/maildir/$ADDR" \\
+       --mode "$MODE"`
+      : `  python3 /usr/local/bin/jmap-restore.py \\
        --endpoint "${input.jmapEndpoint}" \\
        --target-address "$ADDR" \\
        --source-address "$ADDR" \\
