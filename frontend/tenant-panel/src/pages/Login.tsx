@@ -138,7 +138,7 @@ export default function Login() {
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-500 text-white"><Globe size={24} /></div>
-          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">Client Portal</h1>
+          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">Tenant Portal</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Sign in to manage your hosting</p>
         </div>
 

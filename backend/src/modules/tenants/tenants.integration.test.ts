@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 
 const dbAvailable = await isDbAvailable();
 
-describe.skipIf(!dbAvailable)('Client CRUD (integration)', () => {
+describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
   let app: FastifyInstance;
   let adminToken: string;
   let supportToken: string;
@@ -107,7 +107,7 @@ describe.skipIf(!dbAvailable)('Client CRUD (integration)', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(404);
-    expect(res.json().error.code).toBe('CLIENT_NOT_FOUND');
+    expect(res.json().error.code).toBe('TENANT_NOT_FOUND');
   });
 
   it('PATCH /api/v1/tenants/:id — updates fields', async () => {

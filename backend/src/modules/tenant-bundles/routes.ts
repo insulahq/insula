@@ -282,7 +282,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
     // Resolve tenant + plan retention.
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
-    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
 
     // Plan-bound retention. hosting_plans.max_backup_retention_days
     // is the upper bound the operator may request for a tenant on
@@ -293,7 +293,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       defaultDays: hostingPlans.defaultBackupRetentionDays,
       maxDays: hostingPlans.maxBackupRetentionDays,
     }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
-    if (!plan) throw new ApiError('CONFIG_INVALID', `Client ${input.tenantId} has no resolvable plan`, 400);
+    if (!plan) throw new ApiError('CONFIG_INVALID', `Tenant ${input.tenantId} has no resolvable plan`, 400);
 
     const requested = input.retentionDays ?? plan.defaultDays;
     if (requested > plan.maxDays) {
@@ -1616,13 +1616,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
     }
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
     // Plan retention cap applies here too (Tier-3 cannot bypass).
     const [plan] = await app.db.select({
       defaultDays: hostingPlans.defaultBackupRetentionDays,
       maxDays: hostingPlans.maxBackupRetentionDays,
     }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
-    if (!plan) throw new ApiError('CONFIG_INVALID', 'Client has no resolvable plan', 400);
+    if (!plan) throw new ApiError('CONFIG_INVALID', 'Tenant has no resolvable plan', 400);
     const requestedRetention = parsed.data.retentionDays ?? plan.defaultDays;
     if (requestedRetention > plan.maxDays) {
       throw new ApiError(

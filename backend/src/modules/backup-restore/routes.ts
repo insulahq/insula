@@ -93,7 +93,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     }
     const input = parsed.data;
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
-    if (!tenant) throw new ApiError('NOT_FOUND', 'Client not found', 404);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
 
     const initiatorUserId = (request as { user?: { sub?: string } }).user?.sub ?? null;
     const id = `rstr-${randomUUID()}`;

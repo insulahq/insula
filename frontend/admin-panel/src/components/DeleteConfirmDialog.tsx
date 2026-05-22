@@ -46,7 +46,7 @@ export default function DeleteConfirmDialog({
             <AlertTriangle size={20} className="text-red-600 dark:text-red-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Client</h2>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Tenant</h2>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400" data-testid="delete-warning-text">
               Are you sure you want to delete <strong>{tenantName}</strong>? This cannot be undone.
             </p>

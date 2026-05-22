@@ -33,7 +33,7 @@ test.describe('Admin Panel — Audit Logs page (Phase 7)', () => {
     await expect(page.getByTestId('filter-search')).toBeVisible();
     await expect(page.getByTestId('filter-from')).toBeVisible();
     await expect(page.getByTestId('filter-to')).toBeVisible();
-    await expect(page.getByTestId('filter-client-id')).toBeVisible();
+    await expect(page.getByTestId('filter-tenant-id')).toBeVisible();
     await expect(page.getByTestId('filter-actor-id')).toBeVisible();
 
     // Table should render (real data is present from prior test phases)

@@ -57,7 +57,7 @@ export async function bulkUpdateTenantStatus(
         .where(eq(tenants.id, id));
 
       if (!tenant) {
-        failed.push({ id, transitionId: null, error: `Client '${id}' not found` });
+        failed.push({ id, transitionId: null, error: `Tenant '${id}' not found` });
         continue;
       }
 
@@ -185,7 +185,7 @@ export async function bulkDeleteTenants(
         .where(eq(tenants.id, id));
 
       if (!tenant) {
-        failed.push({ id, transitionId: null, error: `Client '${id}' not found` });
+        failed.push({ id, transitionId: null, error: `Tenant '${id}' not found` });
         continue;
       }
 

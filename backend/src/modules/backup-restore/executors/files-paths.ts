@@ -78,9 +78,9 @@ export async function execFilesPathsItem(args: {
   const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
   if (!job) throw new ApiError('NOT_FOUND', `Restore job ${item.restoreJobId} not found`, 404);
   const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, job.tenantId)).limit(1);
-  if (!tenant) throw new ApiError('NOT_FOUND', `Client ${job.tenantId} not found`, 404);
+  if (!tenant) throw new ApiError('NOT_FOUND', `Tenant ${job.tenantId} not found`, 404);
   const namespace = tenant.kubernetesNamespace;
-  if (!namespace) throw new ApiError('CONFIG_INVALID', `Client ${job.tenantId} has no kubernetes_namespace`, 400);
+  if (!namespace) throw new ApiError('CONFIG_INVALID', `Tenant ${job.tenantId} has no kubernetes_namespace`, 400);
 
   // The tenant data PVC convention is `${namespace}-storage`,
   // matching tenant-bundles/orchestrator.ts.resolveTenantPvc. We mount

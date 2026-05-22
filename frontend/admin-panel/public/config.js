@@ -3,5 +3,5 @@
 // the app falls back to VITE_* env vars or sensible defaults.
 window.__RUNTIME_CONFIG__ = {
   API_URL: "",
-  CLIENT_PANEL_URL: "",
+  TENANT_PANEL_URL: "",
 };

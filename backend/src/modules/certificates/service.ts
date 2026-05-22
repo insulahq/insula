@@ -290,7 +290,7 @@ export async function ensureDomainCertificate(
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${domain.tenantId}' not found`, 404);
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${domain.tenantId}' not found`, 404);
   }
   const namespace = tenant.kubernetesNamespace;
 
@@ -700,7 +700,7 @@ export async function ensureRouteCertificate(
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${domain.tenantId}' not found`, 404);
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${domain.tenantId}' not found`, 404);
   }
   const namespace = tenant.kubernetesNamespace;
 

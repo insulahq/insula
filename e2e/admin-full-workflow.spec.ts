@@ -3,17 +3,17 @@ import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Full Workflow — End-to-End', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
-  // TODO: Flaky in DinD environment — client detail navigation intermittently fails due to auto-provisioning timing
-  test.skip('complete admin workflow: create client, navigate all pages, logout', async ({ page }) => {
+  // TODO: Flaky in DinD environment — tenant detail navigation intermittently fails due to auto-provisioning timing
+  test.skip('complete admin workflow: create tenant, navigate all pages, logout', async ({ page }) => {
     test.setTimeout(60000);
     // 1. Login
 
-    // 2. Create a client with unique name
+    // 2. Create a tenant with unique name
     await page.getByRole('link', { name: 'Clients' }).click();
     await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     await page.getByRole('button', { name: 'Add Client' }).click();
-    await expect(page.getByTestId('create-client-modal')).toBeVisible();
+    await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
     const ts = Date.now();
     const uniqueName = `Workflow Corp ${ts}`;
@@ -30,25 +30,25 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     await page.getByTestId('submit-button').click();
     await page.waitForTimeout(3000);
 
-    const modalStillOpen = await page.getByTestId('create-client-modal').isVisible().catch(() => false);
+    const modalStillOpen = await page.getByTestId('create-tenant-modal').isVisible().catch(() => false);
     if (modalStillOpen) {
-      // Transient server error — close modal and skip client detail tests
+      // Transient server error — close modal and skip tenant detail tests
       await page.getByRole('button', { name: 'Cancel' }).click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
+      await expect(page.getByTestId('create-tenant-modal')).not.toBeVisible({ timeout: 2000 });
     } else {
       await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 2000 });
     }
 
-    // 3. Navigate to new client's detail page (only if creation succeeded)
-    const clientCreated = !modalStillOpen && await page.getByText(uniqueName).isVisible().catch(() => false);
-    if (clientCreated) {
+    // 3. Navigate to new tenant's detail page (only if creation succeeded)
+    const tenantCreated = !modalStillOpen && await page.getByText(uniqueName).isVisible().catch(() => false);
+    if (tenantCreated) {
       await page.getByText(uniqueName).click();
 
       // Wait for the detail page to render — accept any of several possible states
       const editButton = page.getByTestId('edit-button');
       const accountInfo = page.getByText('Account Information');
-      const errorMessage = page.getByText('Client not found');
-      const backLink = page.getByText('Back to clients');
+      const errorMessage = page.getByText('Tenant not found');
+      const backLink = page.getByText('Back to tenants');
       const provisioningStatus = page.getByText('Provisioning');
       await expect(editButton.or(accountInfo).or(errorMessage).or(backLink).or(provisioningStatus)).toBeVisible({ timeout: 10000 });
 
@@ -72,8 +72,8 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     // 7. Navigate to Domains page
     await page.getByRole('link', { name: 'Domains' }).click();
     await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
-    const clientSelector = page.getByTestId('client-search-select');
-    await expect(clientSelector).toBeVisible();
+    const tenantSelector = page.getByTestId('tenant-search-select');
+    await expect(tenantSelector).toBeVisible();
 
     // 8. Navigate to Storage & Backups page
     await page.getByRole('link', { name: 'Storage & Backups' }).click();
@@ -111,26 +111,26 @@ test.describe('Admin Full Workflow — End-to-End', () => {
   test('navigate dashboard stat cards link to correct pages', async ({ page }) => {
 
     // Verify dashboard stat cards are present
-    await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText('Total Tenants')).toBeVisible({ timeout: 2000 });
     await expect(page.getByText('Backups', { exact: true })).toBeVisible();
   });
 
-  test('breadcrumb navigation from client detail back to clients list', async ({ page }) => {
+  test('breadcrumb navigation from tenant detail back to tenants list', async ({ page }) => {
 
     await page.getByRole('link', { name: 'Clients' }).click();
     await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     await page.waitForTimeout(200);
-    const clientLink = page.locator('table tbody tr a').first();
-    const hasClients = await clientLink.isVisible().catch(() => false);
+    const tenantLink = page.locator('table tbody tr a').first();
+    const hasTenants = await tenantLink.isVisible().catch(() => false);
 
-    if (hasClients) {
-      await clientLink.click();
+    if (hasTenants) {
+      await tenantLink.click();
       const editBtn = page.getByTestId('edit-button');
       const isDetail = await editBtn.isVisible({ timeout: 2000 }).catch(() => false);
 
       if (isDetail) {
-        const backLink = page.getByLabel('Back to clients');
+        const backLink = page.getByLabel('Back to tenants');
         await expect(backLink).toBeVisible();
         await backLink.click();
         await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
@@ -165,12 +165,12 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     // Navigate back to Dashboard
     await page.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 5000 });
-    await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Total Tenants')).toBeVisible({ timeout: 5000 });
   });
 
   test('dashboard shows all expected stat cards', async ({ page }) => {
 
-    await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText('Total Tenants')).toBeVisible({ timeout: 2000 });
     await expect(page.getByText('Backups', { exact: true })).toBeVisible();
   });
 
@@ -194,7 +194,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
   test('Cron Jobs page accessible via direct URL', async ({ page }) => {
     await page.goto('/cron-jobs');
     await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });
-    await expect(page.getByTestId('client-search-select')).toBeVisible();
+    await expect(page.getByTestId('tenant-search-select')).toBeVisible();
   });
 
   test('Security page shows all stat cards and sections', async ({ page }) => {

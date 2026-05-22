@@ -922,7 +922,7 @@ export async function updateTenant(
   // transient hiccup. applyTenantTier still needs to know the OLD tier
   // to skip work on a no-op flip; we capture it BEFORE adding tier to
   // updateValues. A previous version let applyTenantTier own the write,
-  // but its early CLIENT_NOT_PROVISIONED throw on a partial-state row
+  // but its early TENANT_NOT_PROVISIONED throw on a partial-state row
   // got swallowed and the operator's intent was silently lost.
   const tierChange: 'local' | 'ha' | undefined = input.storage_tier as 'local' | 'ha' | undefined;
   let previousTier: 'local' | 'ha' = 'local';
@@ -945,7 +945,7 @@ export async function updateTenant(
   }
 
   // Live cluster sync of the tier flip. If the namespace isn't ready
-  // yet (CLIENT_NOT_PROVISIONED) we still keep the DB write — the
+  // yet (TENANT_NOT_PROVISIONED) we still keep the DB write — the
   // platform-storage-policy reconciler picks up the new tier on the
   // next pass. For other failures (Longhorn API down) we surface the
   // error to the operator instead of swallowing it: the DB now says
@@ -959,7 +959,7 @@ export async function updateTenant(
       await applyTenantTier(db, k8s, id, previousTier, tierChange);
     } catch (err) {
       const code = (err as { code?: string }).code;
-      if (code === 'CLIENT_NOT_PROVISIONED') {
+      if (code === 'TENANT_NOT_PROVISIONED') {
         // Acceptable: namespace not ready yet, reconciler will catch up.
         console.warn(`[tenants.updateTenant] tier flip queued — ${(err as Error).message}`);
       } else {

@@ -98,13 +98,13 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Authentication &amp; Ingress Protection</h2>
       </div>
 
-      {/* ── Client Panel ── */}
+      {/* ── Tenant Panel ── */}
       <label className={clsx('flex items-start gap-3', !canDisableTenant && 'opacity-50')}>
         <input type="checkbox" checked={disableTenant} onChange={(e) => setDisableTenant(e.target.checked)} disabled={!canDisableTenant} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-tenant-toggle" />
         <div>
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Disable Local Auth for Client Panel</span>
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Disable Local Auth for Tenant Panel</span>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {canDisableTenant ? 'Clients must use SSO. Email/password login blocked.' : 'Enable a tenant-scoped OIDC provider first.'}
+            {canDisableTenant ? 'Tenants must use SSO. Email/password login blocked.' : 'Enable a tenant-scoped OIDC provider first.'}
           </p>
         </div>
       </label>
@@ -113,8 +113,8 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
         <label className={clsx('flex items-start gap-3 ml-6', !hasTenantProvider && 'opacity-50')}>
           <input type="checkbox" checked={proxyTenant} onChange={(e) => setProxyTenant(e.target.checked)} disabled={!hasTenantProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-tenant-toggle" />
           <div>
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect client panel via OAuth2 Proxy</span>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the client panel without OIDC authentication.</p>
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect tenant panel via OAuth2 Proxy</span>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the tenant panel without OIDC authentication.</p>
           </div>
         </label>
       )}
@@ -280,7 +280,7 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} value={form.tenant_secret} onChange={(e) => setForm({ ...form, tenant_secret: e.target.value })} required data-testid="provider-secret-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Panel Scope</label>
           <select className={INPUT_CLASS} value={form.panel_scope} onChange={(e) => setForm({ ...form, panel_scope: e.target.value as 'admin' | 'tenant' })} data-testid="provider-scope-select">
-            <option value="admin">Admin Panel</option><option value="tenant">Client Panel</option>
+            <option value="admin">Admin Panel</option><option value="tenant">Tenant Panel</option>
           </select>
         </div>
       </div>
@@ -294,7 +294,7 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {form.panel_scope === 'admin'
                 ? 'Automatically create admin accounts for unrecognized OIDC users'
-                : 'Automatically create client accounts for unrecognized OIDC users'}
+                : 'Automatically create tenant accounts for unrecognized OIDC users'}
             </p>
           </div>
         </label>
@@ -375,7 +375,7 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} placeholder="(unchanged)" value={editForm.tenant_secret} onChange={(e) => setEditForm({ ...editForm, tenant_secret: e.target.value })} /></div>
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Panel Scope</label>
             <select className={INPUT_CLASS} value={editForm.panel_scope} onChange={(e) => setEditForm({ ...editForm, panel_scope: e.target.value as 'admin' | 'tenant' })}>
-              <option value="admin">Admin Panel</option><option value="tenant">Client Panel</option>
+              <option value="admin">Admin Panel</option><option value="tenant">Tenant Panel</option>
             </select>
           </div>
         </div>
@@ -389,7 +389,7 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 {editForm.panel_scope === 'admin'
                   ? 'Automatically create admin accounts for unrecognized OIDC users'
-                  : 'Automatically create client accounts for unrecognized OIDC users'}
+                  : 'Automatically create tenant accounts for unrecognized OIDC users'}
               </p>
             </div>
           </label>

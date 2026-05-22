@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 import path from 'path';
 import fs from 'fs';
 
@@ -9,9 +9,9 @@ function ensureArtifactsDir() {
   fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
 }
 
-test.describe('Client Panel — Notifications Center', () => {
+test.describe('Tenant Panel — Notifications Center', () => {
   test('sidebar shows Notifications nav item', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar).toBeVisible();
@@ -22,7 +22,7 @@ test.describe('Client Panel — Notifications Center', () => {
   });
 
   test('sidebar Notifications link navigates to /notifications', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     const sidebar = page.getByTestId('sidebar');
     await sidebar.getByRole('link', { name: 'Notifications' }).click();
@@ -36,7 +36,7 @@ test.describe('Client Panel — Notifications Center', () => {
 
   test('Notifications page shows heading, filters card, and list or empty state', async ({ page }) => {
     ensureArtifactsDir();
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.goto('/notifications');
 
@@ -64,7 +64,7 @@ test.describe('Client Panel — Notifications Center', () => {
 
   test('type filter dropdown is present and changes notifications-count', async ({ page }) => {
     ensureArtifactsDir();
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.goto('/notifications');
 
@@ -113,7 +113,7 @@ test.describe('Client Panel — Notifications Center', () => {
 
   test('read-state filter dropdown is present and functional', async ({ page }) => {
     ensureArtifactsDir();
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.goto('/notifications');
 
@@ -151,7 +151,7 @@ test.describe('Client Panel — Notifications Center', () => {
 
   test('header bell dropdown shows "View all notifications" link to /notifications', async ({ page }) => {
     ensureArtifactsDir();
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // Start on dashboard
     await expect(page.getByTestId('welcome-heading')).toBeVisible({ timeout: 5000 });
@@ -189,7 +189,7 @@ test.describe('Client Panel — Notifications Center', () => {
   });
 
   test('mark-all-read button appears only when unread notifications exist in view', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.goto('/notifications');
 

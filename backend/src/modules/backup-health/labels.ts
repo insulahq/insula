@@ -17,7 +17,7 @@ export const LABEL_CATEGORY = 'platform.example.test/backup-category';
 export const LABEL_SEVERITY = 'platform.example.test/backup-severity';
 
 /** Optional: route notifications to that tenant's recipients. */
-export const LABEL_CLIENT_ID = 'platform.example.test/tenant-id';
+export const LABEL_TENANT_ID = 'platform.example.test/tenant-id';
 
 /** Optional: human-friendly UI label (annotation, not a label). */
 export const ANNOTATION_DISPLAY_NAME = 'platform.example.test/backup-display-name';

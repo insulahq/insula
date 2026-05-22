@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 
-test.describe('Client Panel — SFTP Access', () => {
+test.describe('Tenant Panel — SFTP Access', () => {
   test.beforeEach(async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
   });
 
   test('can navigate to SFTP Access page', async ({ page }) => {

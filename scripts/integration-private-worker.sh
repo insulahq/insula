@@ -180,7 +180,7 @@ phase1_provision() {
   echo "$cid" > "$STATE_CID"
 
   # Wait for the namespace to exist before polling provisioningStatus —
-  # without this the /clients/:id call may race the orchestrator.
+  # without this the /tenants/:id call may race the orchestrator.
   wait_for 90 "namespace exists for cid=$cid" "Active" \
     "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers 2>/dev/null'" || return 1
 

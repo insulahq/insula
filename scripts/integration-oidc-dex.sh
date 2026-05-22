@@ -8,7 +8,7 @@
 # Scenarios:
 #   1. Dex deployment is reachable (discovery + JWKS).
 #   2. Login as local admin, register Dex as an OIDC provider for both
-#      panels (admin → hosting-platform-admin, client → hosting-platform-client).
+#      panels (admin → hosting-platform-admin, client → hosting-platform-tenant).
 #   3. POST /admin/oidc/providers/:id/test passes for both.
 #   4. GET /auth/oidc/status reports each provider on its correct panel
 #      and NOT on the other panel (cross-panel isolation).
@@ -39,7 +39,7 @@
 # Prereqs:
 #   - Staging admin reachable
 #   - Dex reachable at https://dex.<staging-domain>/dex
-#   - Dex staticClients include hosting-platform-admin + hosting-platform-client
+#   - Dex staticClients include hosting-platform-admin + hosting-platform-tenant
 #     (see k8s/overlays/staging/dex/config.yaml)
 #   - Dex staticPasswords include admin@k8s-platform.test / admin and
 #     user@k8s-platform.test / user
@@ -60,14 +60,14 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 # Dex static-password test users — see k8s/overlays/staging/dex/config.yaml.
 DEX_ADMIN_USER="${DEX_ADMIN_USER:-admin@k8s-platform.test}"
 DEX_ADMIN_PW="${DEX_ADMIN_PW:-admin}"
-DEX_CLIENT_USER="${DEX_CLIENT_USER:-user@k8s-platform.test}"
-DEX_CLIENT_PW="${DEX_CLIENT_PW:-user}"
+DEX_TENANT_USER="${DEX_TENANT_USER:-user@k8s-platform.test}"
+DEX_TENANT_PW="${DEX_TENANT_PW:-user}"
 
 # Static clients pre-registered in Dex.
 ADMIN_CLIENT_ID="${ADMIN_CLIENT_ID:-hosting-platform-admin}"
 ADMIN_CLIENT_SECRET="${ADMIN_CLIENT_SECRET:-staging-secret-admin}"
-CLIENT_CLIENT_ID="${CLIENT_CLIENT_ID:-hosting-platform-client}"
-CLIENT_CLIENT_SECRET="${CLIENT_CLIENT_SECRET:-staging-secret-client}"
+TENANT_CLIENT_ID="${TENANT_CLIENT_ID:-hosting-platform-tenant}"
+TENANT_CLIENT_SECRET="${TENANT_CLIENT_SECRET:-staging-secret-tenant}"
 
 [[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD must be set" >&2; exit 2; }
 
@@ -155,7 +155,7 @@ probe_static_client() {
   esac
 }
 probe_static_client "$ADMIN_CLIENT_ID" "$ADMIN_CLIENT_SECRET" "admin"
-probe_static_client "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "client"
+probe_static_client "$TENANT_CLIENT_ID" "$TENANT_CLIENT_SECRET" "client"
 
 # ─── Scenario 2: register Dex as OIDC provider for both panels ────────────────
 
@@ -195,20 +195,20 @@ else
   ok "admin provider id=$ADMIN_PROVIDER_ID"
 fi
 
-CLIENT_PROVIDER_RES=$(create_provider tenant "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "Dex (integration-test client)")
-CLIENT_PROVIDER_ID=$(echo "$CLIENT_PROVIDER_RES" | jq -r '.data.id // empty')
-if [[ -z "$CLIENT_PROVIDER_ID" || "$CLIENT_PROVIDER_ID" == "null" ]]; then
-  fail "create tenant provider returned no id: $CLIENT_PROVIDER_RES"
+TENANT_PROVIDER_RES=$(create_provider tenant "$TENANT_CLIENT_ID" "$TENANT_CLIENT_SECRET" "Dex (integration-test client)")
+TENANT_PROVIDER_ID=$(echo "$TENANT_PROVIDER_RES" | jq -r '.data.id // empty')
+if [[ -z "$TENANT_PROVIDER_ID" || "$TENANT_PROVIDER_ID" == "null" ]]; then
+  fail "create tenant provider returned no id: $TENANT_PROVIDER_RES"
 else
-  ok "client provider id=$CLIENT_PROVIDER_ID"
+  ok "client provider id=$TENANT_PROVIDER_ID"
 fi
 
 cleanup_providers() {
   if [[ -n "${ADMIN_PROVIDER_ID:-}" && "$ADMIN_PROVIDER_ID" != "null" ]]; then
     curl -sk --max-time 10 -X DELETE "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/providers/$ADMIN_PROVIDER_ID" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${CLIENT_PROVIDER_ID:-}" && "$CLIENT_PROVIDER_ID" != "null" ]]; then
-    curl -sk --max-time 10 -X DELETE "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/providers/$CLIENT_PROVIDER_ID" >/dev/null 2>&1 || true
+  if [[ -n "${TENANT_PROVIDER_ID:-}" && "$TENANT_PROVIDER_ID" != "null" ]]; then
+    curl -sk --max-time 10 -X DELETE "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/providers/$TENANT_PROVIDER_ID" >/dev/null 2>&1 || true
   fi
 }
 # Make sure cleanup runs even on early exit.
@@ -233,7 +233,7 @@ test_provider() {
   fi
 }
 [[ -n "${ADMIN_PROVIDER_ID:-}" ]] && test_provider "$ADMIN_PROVIDER_ID" admin
-[[ -n "${CLIENT_PROVIDER_ID:-}" ]] && test_provider "$CLIENT_PROVIDER_ID" client
+[[ -n "${TENANT_PROVIDER_ID:-}" ]] && test_provider "$TENANT_PROVIDER_ID" client
 
 # ─── Scenario 4: /auth/oidc/status reports correct panel scoping ──────────────
 
@@ -241,8 +241,8 @@ log "Scenario 4: per-panel /auth/oidc/status"
 STATUS_ADMIN=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=admin")
 STATUS_CLIENT=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=tenant")
 ADMIN_HAS_ADMIN_ID=$(echo "$STATUS_ADMIN" | jq -r --arg id "$ADMIN_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
-ADMIN_HAS_CLIENT_ID=$(echo "$STATUS_ADMIN" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
-CLIENT_HAS_CLIENT_ID=$(echo "$STATUS_CLIENT" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
+ADMIN_HAS_CLIENT_ID=$(echo "$STATUS_ADMIN" | jq -r --arg id "$TENANT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
+CLIENT_HAS_CLIENT_ID=$(echo "$STATUS_CLIENT" | jq -r --arg id "$TENANT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 CLIENT_HAS_ADMIN_ID=$(echo "$STATUS_CLIENT" | jq -r --arg id "$ADMIN_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 
 [[ "$ADMIN_HAS_ADMIN_ID" == "1" ]] && ok "admin status lists admin provider" \
@@ -292,7 +292,7 @@ check_authorize_redirect() {
 }
 
 ADMIN_AUTHORIZE_LOC=$(check_authorize_redirect "$ADMIN_PROVIDER_ID" "$ADMIN_CLIENT_ID" admin "$ADMIN_HOST/login" | tail -1)
-CLIENT_AUTHORIZE_LOC=$(check_authorize_redirect "$CLIENT_PROVIDER_ID" "$CLIENT_CLIENT_ID" client "$ADMIN_HOST/tenant-login" | tail -1)
+TENANT_AUTHORIZE_LOC=$(check_authorize_redirect "$TENANT_PROVIDER_ID" "$TENANT_CLIENT_ID" client "$ADMIN_HOST/tenant-login" | tail -1)
 
 # ─── Scenarios 6 & 7: drive Dex login → assert platform JWT ──────────────────
 
@@ -427,7 +427,7 @@ log "Scenario 6: end-to-end Dex login → platform JWT (admin panel)"
 drive_dex_login admin "$ADMIN_PROVIDER_ID" "$DEX_ADMIN_USER" "$DEX_ADMIN_PW" "$ADMIN_HOST/login"
 
 log "Scenario 7: end-to-end Dex login → platform JWT (client panel)"
-drive_dex_login tenant "$CLIENT_PROVIDER_ID" "$DEX_CLIENT_USER" "$DEX_CLIENT_PW" "$ADMIN_HOST/tenant-login"
+drive_dex_login tenant "$TENANT_PROVIDER_ID" "$DEX_TENANT_USER" "$DEX_TENANT_PW" "$ADMIN_HOST/tenant-login"
 
 # ─── Scenario 8: cross-panel token rejection ─────────────────────────────────
 
@@ -487,23 +487,23 @@ fi
 # and the per-client OIDC provider via FK CASCADE.
 
 OIDC_TEST_HOST="${OIDC_TEST_HOST:-oidc-test.staging.example.test}"
-LIFECYCLE_CLIENT_ID=""
+LIFECYCLE_TENANT_ID=""
 LIFECYCLE_DOMAIN_ID=""
 LIFECYCLE_ROUTE_ID=""
 LIFECYCLE_PROVIDER_ID=""
 
 cleanup_lifecycle_client() {
-  if [[ -n "${LIFECYCLE_CLIENT_ID:-}" ]]; then
+  if [[ -n "${LIFECYCLE_TENANT_ID:-}" ]]; then
     # Defensive: delete the ingress-auth row first to side-step the
     # FK RESTRICT bug on older deploys (fixed in migration 0088, but
     # harness has to also work against pre-0088 staging).
     if [[ -n "${LIFECYCLE_ROUTE_ID:-}" ]]; then
       curl -sk --max-time 10 -X DELETE "${AUTH_H[@]}" \
-        "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth" \
+        "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth" \
         >/dev/null 2>&1 || true
     fi
     curl -sk --max-time 30 -X DELETE "${AUTH_H[@]}" \
-      "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID" >/dev/null 2>&1 || true
+      "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID" >/dev/null 2>&1 || true
   fi
 }
 
@@ -562,11 +562,11 @@ else
     '{name:$n, primary_email:$e, plan_id:$p, region_id:$r}')
   CLIENT_RES=$(curl -sk --max-time 30 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
     -d "$CLIENT_BODY" "$ADMIN_HOST/api/v1/tenants")
-  LIFECYCLE_CLIENT_ID=$(echo "$CLIENT_RES" | jq -r '.data.id // empty')
-  if [[ -z "$LIFECYCLE_CLIENT_ID" || "$LIFECYCLE_CLIENT_ID" == "null" ]]; then
+  LIFECYCLE_TENANT_ID=$(echo "$CLIENT_RES" | jq -r '.data.id // empty')
+  if [[ -z "$LIFECYCLE_TENANT_ID" || "$LIFECYCLE_TENANT_ID" == "null" ]]; then
     fail "create tenant failed: $CLIENT_RES"
   else
-    ok "client created id=$LIFECYCLE_CLIENT_ID"
+    ok "client created id=$LIFECYCLE_TENANT_ID"
 
     # Wait for the active lifecycle transition to provision the
     # client's k8s namespace. Without this the next steps race the
@@ -575,7 +575,7 @@ else
     # returns RECONCILE_FAILED. Poll up to 90s.
     PROV_OK=0
     for i in $(seq 1 30); do
-      PROV_STATUS=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID" \
+      PROV_STATUS=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID" \
         | jq -r '.data.provisioningStatus // .data.provisioning_status // empty')
       if [[ "$PROV_STATUS" == "provisioned" || "$PROV_STATUS" == "active" ]]; then
         PROV_OK=1; break
@@ -591,7 +591,7 @@ else
     # Step 2: add the test domain (dns_mode=cname — won't try to migrate DNS)
     DOMAIN_BODY=$(jq -nc --arg d "$OIDC_TEST_HOST" '{domain_name:$d, dns_mode:"cname"}')
     DOMAIN_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-      -d "$DOMAIN_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/domains")
+      -d "$DOMAIN_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID/domains")
     LIFECYCLE_DOMAIN_ID=$(echo "$DOMAIN_RES" | jq -r '.data.id // empty')
     if [[ -z "$LIFECYCLE_DOMAIN_ID" || "$LIFECYCLE_DOMAIN_ID" == "null" ]]; then
       fail "create domain failed: $DOMAIN_RES"
@@ -601,7 +601,7 @@ else
       # Step 3: create an ingress route on that domain at '/'
       ROUTE_BODY=$(jq -nc --arg h "$OIDC_TEST_HOST" '{hostname:$h, path:"/"}')
       ROUTE_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-        -d "$ROUTE_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/domains/$LIFECYCLE_DOMAIN_ID/routes")
+        -d "$ROUTE_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID/domains/$LIFECYCLE_DOMAIN_ID/routes")
       LIFECYCLE_ROUTE_ID=$(echo "$ROUTE_RES" | jq -r '.data.id // empty')
       if [[ -z "$LIFECYCLE_ROUTE_ID" || "$LIFECYCLE_ROUTE_ID" == "null" ]]; then
         fail "create ingress-route failed: $ROUTE_RES"
@@ -609,15 +609,15 @@ else
         ok "ingress-route created id=$LIFECYCLE_ROUTE_ID"
 
         # Step 4: register a per-client OIDC provider pointing at Dex.
-        #         hosting-platform-client is the static Dex client used
+        #         hosting-platform-tenant is the static Dex client used
         #         for tenant-side OIDC tests.
         PROV_BODY=$(jq -nc \
           --arg iu "$DEX_HOST/dex" \
-          --arg ci "$CLIENT_CLIENT_ID" \
-          --arg cs "$CLIENT_CLIENT_SECRET" \
+          --arg ci "$TENANT_CLIENT_ID" \
+          --arg cs "$TENANT_CLIENT_SECRET" \
           '{name:"dex-harness", issuerUrl:$iu, oauthClientId:$ci, oauthClientSecret:$cs}')
         PROV_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
-          -d "$PROV_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/oidc-providers")
+          -d "$PROV_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID/oidc-providers")
         LIFECYCLE_PROVIDER_ID=$(echo "$PROV_RES" | jq -r '.data.id // empty')
         if [[ -z "$LIFECYCLE_PROVIDER_ID" || "$LIFECYCLE_PROVIDER_ID" == "null" ]]; then
           fail "create per-client provider failed: $PROV_RES"
@@ -633,7 +633,7 @@ else
           # annotations actually appear.
           AUTH_BODY=$(jq -nc --arg pid "$LIFECYCLE_PROVIDER_ID" '{enabled:true, providerId:$pid}')
           AUTH_RES=$(curl -sk --max-time 30 -X PATCH "${AUTH_H[@]}" -H "Content-Type: application/json" \
-            -d "$AUTH_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth")
+            -d "$AUTH_BODY" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth")
           AUTH_OK=$(echo "$AUTH_RES" | jq -r '.data.enabled // empty')
           AUTH_ERR_CODE=$(echo "$AUTH_RES" | jq -r '.error.code // empty')
           if [[ "$AUTH_OK" == "true" ]]; then
@@ -708,22 +708,22 @@ else
   # let the active transition settle. Accept 2xx (we deleted it) OR
   # 404 (something else already deleted it — concurrent harness, async
   # FK cascade, orphan reaper, etc.). Trap-cleanup is the safety net.
-  if [[ -n "$LIFECYCLE_CLIENT_ID" ]]; then
+  if [[ -n "$LIFECYCLE_TENANT_ID" ]]; then
     DEL_CODE=000
     for i in 1 2 3 4 5; do
       DEL_CODE=$(curl -sk --max-time 30 -X DELETE -o /dev/null -w '%{http_code}' \
-        "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_CLIENT_ID")
+        "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID")
       [[ "$DEL_CODE" =~ ^(200|202|204|404)$ ]] && break
       sleep 5
     done
     case "$DEL_CODE" in
       200|202|204)
         ok "lifecycle DELETE returned HTTP $DEL_CODE after ${i} attempt(s) — deleted transition fired"
-        LIFECYCLE_CLIENT_ID=""
+        LIFECYCLE_TENANT_ID=""
         ;;
       404)
         ok "lifecycle DELETE returned HTTP 404 — client already gone (idempotent)"
-        LIFECYCLE_CLIENT_ID=""
+        LIFECYCLE_TENANT_ID=""
         ;;
       *)
         fail "lifecycle DELETE returned HTTP $DEL_CODE after ${i} attempts"
@@ -741,7 +741,7 @@ trap 'rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-de
 STATUS_ADMIN=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=admin")
 STATUS_CLIENT=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=tenant")
 ADMIN_REMAINING=$(echo "$STATUS_ADMIN" | jq -r --arg id "$ADMIN_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
-CLIENT_REMAINING=$(echo "$STATUS_CLIENT" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
+CLIENT_REMAINING=$(echo "$STATUS_CLIENT" | jq -r --arg id "$TENANT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 [[ "$ADMIN_REMAINING" == "0" ]] && ok "admin provider deleted" || fail "admin provider still listed"
 [[ "$CLIENT_REMAINING" == "0" ]] && ok "client provider deleted" || fail "client provider still listed"
 

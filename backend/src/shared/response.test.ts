@@ -49,7 +49,7 @@ describe('response helpers', () => {
   describe('errorResponse', () => {
     it('should produce correct error envelope', () => {
       const result = errorResponse(
-        'CLIENT_NOT_FOUND',
+        'TENANT_NOT_FOUND',
         "Client 'abc' not found",
         404,
         'req-123',
@@ -57,7 +57,7 @@ describe('response helpers', () => {
         'Verify tenant_id',
       );
 
-      expect(result.error.code).toBe('CLIENT_NOT_FOUND');
+      expect(result.error.code).toBe('TENANT_NOT_FOUND');
       expect(result.error.message).toBe("Client 'abc' not found");
       expect(result.error.status).toBe(404);
       expect(result.error.request_id).toBe('req-123');

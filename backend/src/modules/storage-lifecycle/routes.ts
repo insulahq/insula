@@ -280,7 +280,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const { tenantId } = request.params as { tenantId: string };
     const { getSnapshotQuotaUsage } = await import('./snapshot-quota.js');
     const usage = await getSnapshotQuotaUsage(app.db, tenantId);
-    if (!usage) throw new ApiError('CLIENT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
+    if (!usage) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
     return success(usage);
   });
 

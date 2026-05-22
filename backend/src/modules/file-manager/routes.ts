@@ -12,9 +12,9 @@ import { recordFileManagerAccess } from './idle-cleanup.js';
 
 async function resolveNamespace(app: FastifyInstance, tenantId: string): Promise<string> {
   const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404);
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404);
   if (tenant.provisioningStatus !== 'provisioned') {
-    throw new ApiError('NOT_PROVISIONED', 'Client must be provisioned before accessing files', 409);
+    throw new ApiError('NOT_PROVISIONED', 'Tenant must be provisioned before accessing files', 409);
   }
   return tenant.kubernetesNamespace;
 }

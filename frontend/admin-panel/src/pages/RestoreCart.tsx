@@ -88,7 +88,7 @@ export default function RestoreCartPage() {
           Browse the bundle and add items to the cart. Items execute sequentially; failures pause the cart so you can retry.
         </p>
         <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          Bundle: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{bundleId}</code> · Client: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{tenantId}</code>
+          Bundle: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{bundleId}</code> · Tenant: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{tenantId}</code>
           {cartId && <> · Cart: <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-gray-800">{cartId}</code></>}
         </div>
       </header>

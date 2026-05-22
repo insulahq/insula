@@ -11,7 +11,7 @@
 
 interface RuntimeConfig {
   API_URL: string;
-  CLIENT_PANEL_URL: string;
+  TENANT_PANEL_URL: string;
   STALWART_ADMIN_URL: string;
   LONGHORN_URL: string;
 }
@@ -29,9 +29,9 @@ function getConfig(): RuntimeConfig {
       runtime.API_URL ??
       import.meta.env.VITE_API_URL ??
       '',
-    CLIENT_PANEL_URL:
-      runtime.CLIENT_PANEL_URL ||
-      import.meta.env.VITE_CLIENT_PANEL_URL ||
+    TENANT_PANEL_URL:
+      runtime.TENANT_PANEL_URL ||
+      import.meta.env.VITE_TENANT_PANEL_URL ||
       '',
     // Separate hostname for the Stalwart web-admin iframe. Gated by
     // ingress auth_request against the platform backend's verify

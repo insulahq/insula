@@ -13,7 +13,7 @@ const INPUT_CLASS =
 
 const ROLES = [
   { value: 'admin', label: 'Admin', desc: 'Full platform management' },
-  { value: 'support', label: 'Support', desc: 'Client support, read + impersonate' },
+  { value: 'support', label: 'Support', desc: 'Tenant support, read + impersonate' },
   { value: 'billing', label: 'Billing', desc: 'Billing and subscription management' },
   { value: 'read_only', label: 'Read Only', desc: 'View-only access' },
 ] as const;

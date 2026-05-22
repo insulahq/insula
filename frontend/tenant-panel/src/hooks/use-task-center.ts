@@ -1,4 +1,4 @@
-// Client-panel mirror of admin-panel/src/hooks/use-task-center.ts.
+// Tenant-panel mirror of admin-panel/src/hooks/use-task-center.ts.
 // The endpoint is the same `/api/v1/me/tasks` — backend filters rows
 // by user_id == jwt.sub, so a tenant_admin user only sees the tasks
 // they themselves initiated (storage ops, restore-cart runs, etc.).

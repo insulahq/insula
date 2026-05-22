@@ -12,7 +12,7 @@ const { applySuspendedSpy, applyActiveSpy, applyDeletedSpy, tagSpy, runTransitio
   applySuspendedSpy: vi.fn(async () => undefined),
   applyActiveSpy: vi.fn(async () => undefined),
   applyDeletedSpy: vi.fn(async () => undefined),
-  tagSpy: vi.fn(async (_db: unknown, _clientId: string, _bulkOpId: string) => 'tx-stub'),
+  tagSpy: vi.fn(async (_db: unknown, _tenantId: string, _bulkOpId: string) => 'tx-stub'),
   runTransitionSpy: vi.fn(async () => ({ transitionId: 'tx-stub', state: 'completed' as const, hooksAttempted: 0, hooksOk: 0, hooksFailed: 0 })),
 }));
 vi.mock('../tenant-lifecycle/cascades.js', () => ({

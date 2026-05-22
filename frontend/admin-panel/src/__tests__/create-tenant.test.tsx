@@ -28,7 +28,7 @@ describe('CreateTenantModal', () => {
   it('renders form when open', () => {
     renderModal(true);
     expect(screen.getByTestId('create-tenant-modal')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Create Client' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Create Tenant' })).toBeInTheDocument();
   });
 
   it('has required form fields', () => {

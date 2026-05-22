@@ -51,9 +51,9 @@ staticClients:
     secret: staging-secret-admin
     redirectURIs:
       - https://admin.${DOMAIN}/api/v1/auth/oidc/callback
-  - id: hosting-platform-client
-    name: Hosting Platform Client
-    secret: staging-secret-client
+  - id: hosting-platform-tenant
+    name: Hosting Platform Tenant
+    secret: staging-secret-tenant
     redirectURIs:
       - https://admin.${DOMAIN}/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy

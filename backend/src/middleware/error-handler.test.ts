@@ -18,13 +18,13 @@ function createMockRequestReply() {
 describe('errorHandler', () => {
   it('should handle ApiError with correct status and envelope', () => {
     const { request, reply, statusFn, sendFn } = createMockRequestReply();
-    const err = new ApiError('CLIENT_NOT_FOUND', 'Not found', 404, { tenant_id: 'x' }, 'Check ID');
+    const err = new ApiError('TENANT_NOT_FOUND', 'Not found', 404, { tenant_id: 'x' }, 'Check ID');
 
     errorHandler(err as unknown as FastifyError, request, reply);
 
     expect(statusFn).toHaveBeenCalledWith(404);
     const body = sendFn.mock.calls[0][0];
-    expect(body.error.code).toBe('CLIENT_NOT_FOUND');
+    expect(body.error.code).toBe('TENANT_NOT_FOUND');
     expect(body.error.message).toBe('Not found');
     expect(body.error.status).toBe(404);
     expect(body.error.request_id).toBe('req-test-123');

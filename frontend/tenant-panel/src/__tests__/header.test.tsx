@@ -44,7 +44,7 @@ function createWrapper() {
   };
 }
 
-describe('Client Header user menu', () => {
+describe('Tenant Header user menu', () => {
   it('renders user menu button', () => {
     render(<Header onMenuClick={vi.fn()} />, { wrapper: createWrapper() });
     expect(screen.getByTestId('user-menu-button')).toBeInTheDocument();

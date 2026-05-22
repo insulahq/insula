@@ -14,7 +14,7 @@
 #   ADMIN_PASSWORD=<...> ./scripts/preflight-custom-deployments.sh
 #
 # Optional env overrides (same as integration-custom-deployments.sh):
-#   ADMIN_HOST, ADMIN_EMAIL, SSH_HOST, SSH_KEY, CUSTOM_DEPLOY_CLIENT_ID
+#   ADMIN_HOST, ADMIN_EMAIL, SSH_HOST, SSH_KEY, CUSTOM_DEPLOY_TENANT_ID
 #
 # Exit codes:
 #   0  all checks pass
@@ -174,9 +174,9 @@ else
   # Soft check: verify the discriminator column exists via the API
   # POST a simple custom deployment — if it returns 201 or 403 (kill-switch)
   # the table columns are present; if it returns 500 it's not migrated.
-  CLIENT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
-  if [[ -z "$CLIENT_ID" ]]; then
-    CLIENT_ID=$(api GET "/clients?limit=20" | python3 -c "
+  TENANT_ID="${CUSTOM_DEPLOY_TENANT_ID:-}"
+  if [[ -z "$TENANT_ID" ]]; then
+    TENANT_ID=$(api GET "/clients?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:
@@ -184,10 +184,10 @@ for c in d:
     print(c['id']); break
 " 2>/dev/null || true)
   fi
-  if [[ -n "$CLIENT_ID" ]]; then
+  if [[ -n "$TENANT_ID" ]]; then
     # Single call: capture both HTTP status and response body to avoid a
     # double-POST that would create two rows with no way to clean the first.
-    PROBE_RESP=$(api POST "/clients/$CLIENT_ID/custom-deployments" \
+    PROBE_RESP=$(api POST "/tenants/$TENANT_ID/custom-deployments" \
       '{"mode":"simple","name":"preflight-probe-delete-me","image":"nginx:1.27-alpine"}')
     PROBE=$(echo "$PROBE_RESP" | python3 -c "
 import json,sys
@@ -208,7 +208,7 @@ except Exception: print('')
 
     if [[ "$PROBE" == "201" || "$PROBE" == "200" || "$PROBE" == "403" || "$PROBE" == "422" ]]; then
       pass "Custom deployments API endpoint reachable (HTTP $PROBE → columns exist)"
-      [[ -n "$PROBE_ID" ]] && api DELETE "/clients/$CLIENT_ID/custom-deployments/$PROBE_ID" >/dev/null 2>&1 || true
+      [[ -n "$PROBE_ID" ]] && api DELETE "/tenants/$TENANT_ID/custom-deployments/$PROBE_ID" >/dev/null 2>&1 || true
     elif [[ "$PROBE" == "500" ]]; then
       fail "POST /custom-deployments → 500 — likely migration not applied"
     else
@@ -255,9 +255,9 @@ check_bool "customDeploymentsWarnUnpinnedTags"      "true"
 
 section "Check 4 — Tenant namespace PSS enforce=baseline"
 
-CLIENT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
-if [[ -z "$CLIENT_ID" ]]; then
-  CLIENT_ID=$(api GET "/admin/tenants?limit=20" | python3 -c "
+TENANT_ID="${CUSTOM_DEPLOY_TENANT_ID:-}"
+if [[ -z "$TENANT_ID" ]]; then
+  TENANT_ID=$(api GET "/admin/tenants?limit=20" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data', [])
 for c in d:
@@ -266,14 +266,14 @@ for c in d:
 " 2>/dev/null || true)
 fi
 
-if [[ -z "$CLIENT_ID" ]]; then
+if [[ -z "$TENANT_ID" ]]; then
   fail "No active client found — cannot verify PSS labels (is there at least one active client?)"
 else
-  TENANT_NS=$(api GET "/clients/$CLIENT_ID" | python3 -c "
+  TENANT_NS=$(api GET "/tenants/$TENANT_ID" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
 " 2>/dev/null || true)
   if [[ -z "$TENANT_NS" ]]; then
-    fail "Client $CLIENT_ID has no kubernetesNamespace — provisioning may not be complete"
+    fail "Client $TENANT_ID has no kubernetesNamespace — provisioning may not be complete"
   else
     ENFORCE=$(remote_kubectl get ns "$TENANT_NS" \
       -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null || true)

@@ -126,7 +126,7 @@ function createMockDb(overrides: {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('generateTenantManifests', () => {
-  it('should throw CLIENT_NOT_FOUND when tenant does not exist', async () => {
+  it('should throw TENANT_NOT_FOUND when tenant does not exist', async () => {
     const db = createMockDb({ tenant: null });
     await expect(generateTenantManifests(db, 'nonexistent')).rejects.toThrow('not found');
   });

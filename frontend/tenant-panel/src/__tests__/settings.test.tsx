@@ -72,7 +72,7 @@ function createWrapper() {
   };
 }
 
-describe('Client Settings page', () => {
+describe('Tenant Settings page', () => {
   it('renders heading "Account Settings"', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('settings-heading')).toBeInTheDocument();

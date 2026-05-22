@@ -32,7 +32,7 @@ export const insufficientPermissions = (required: string) =>
 
 // Resource errors
 export const tenantNotFound = (id: string) =>
-  new ApiError('CLIENT_NOT_FOUND', `Client '${id}' not found`, 404, { tenant_id: id }, 'Verify tenant_id');
+  new ApiError('TENANT_NOT_FOUND', `Tenant '${id}' not found`, 404, { tenant_id: id }, 'Verify tenant_id');
 
 export const domainNotFound = (id: string) =>
   new ApiError('DOMAIN_NOT_FOUND', `Domain '${id}' not found`, 404, { domain_id: id }, 'Verify domain exists');

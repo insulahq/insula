@@ -38,12 +38,12 @@ export async function injectAdminAuth(page: Page) {
 }
 
 /**
- * Get or create a test client and return impersonation credentials.
- * Uses the admin API to create a client, then impersonates it.
- * Caches the result to e2e/.auth/client-auth.json for reuse across tests.
+ * Get or create a test tenant and return impersonation credentials.
+ * Uses the admin API to create a tenant, then impersonates it.
+ * Caches the result to e2e/.auth/tenant-auth.json for reuse across tests.
  */
-async function getClientAuth(): Promise<{ token: string; user: string }> {
-  const cachePath = path.join(__dirname, '.auth/client-auth.json');
+async function getTenantAuth(): Promise<{ token: string; user: string }> {
+  const cachePath = path.join(__dirname, '.auth/tenant-auth.json');
   if (fs.existsSync(cachePath)) {
     const cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
     if (cached.token && cached.user) return cached;
@@ -72,12 +72,12 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
     'Content-Type': 'application/json',
   };
 
-  // Check if test client already exists
-  const clientsRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
-  const clientsData = await clientsRes.json() as { data: { id: string; companyEmail: string }[] };
-  let tenantId = clientsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
+  // Check if test tenant already exists
+  const tenantsRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
+  const tenantsData = await tenantsRes.json() as { data: { id: string; companyEmail: string }[] };
+  let tenantId = tenantsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
 
-  // Create test client if not exists
+  // Create test tenant if not exists
   if (!tenantId) {
     // Get first available plan and region
     const [plansRes, regionsRes] = await Promise.all([
@@ -93,7 +93,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        name: 'E2E Test Client',
+        name: 'E2E Test Tenant',
         primary_email: 'e2e-test@k8s-platform.test',
         plan_id: planId,
         region_id: regionId,
@@ -103,20 +103,20 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
     if (createData.data?.id) {
       tenantId = createData.data.id;
     } else {
-      // Race condition: another worker created the client — retry search
+      // Race condition: another worker created the tenant — retry search
       await new Promise(r => setTimeout(r, 1000));
       const retryRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
       const retryData = await retryRes.json() as { data: { id: string; companyEmail: string }[] };
       tenantId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
       if (!tenantId) {
-        throw new Error(`Failed to create or find test client: ${JSON.stringify(createData)}`);
+        throw new Error(`Failed to create or find test tenant: ${JSON.stringify(createData)}`);
       }
     }
   }
 
-  // Impersonate the client to get a client-panel JWT. Client creation is
-  // async — the client_admin user is provisioned shortly after the client
-  // row, so impersonation can race and return NO_CLIENT_USER. Retry for
+  // Impersonate the tenant to get a tenant-panel JWT. Tenant creation is
+  // async — the tenant_admin user is provisioned shortly after the tenant
+  // row, so impersonation can race and return NO_TENANT_USER. Retry for
   // up to 10s, which comfortably covers the worker's post-create hook.
   let impersonateData: Record<string, unknown> = {};
   for (let i = 0; i < 20; i++) {
@@ -126,14 +126,14 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
     });
     impersonateData = await impersonateRes.json() as Record<string, unknown>;
     if (impersonateData.data && (impersonateData.data as Record<string, unknown>).token) break;
-    // Only retry the specific "no client_admin yet" error — surface others
+    // Only retry the specific "no tenant_admin yet" error — surface others
     const err = impersonateData.error as { code?: string } | undefined;
-    if (err?.code !== 'NO_CLIENT_USER') break;
+    if (err?.code !== 'NO_TENANT_USER') break;
     await new Promise(r => setTimeout(r, 500));
   }
 
   if (!impersonateData.data || !(impersonateData.data as Record<string, unknown>).token) {
-    throw new Error(`Failed to impersonate client ${tenantId}: ${JSON.stringify(impersonateData)}`);
+    throw new Error(`Failed to impersonate tenant ${tenantId}: ${JSON.stringify(impersonateData)}`);
   }
 
   const impData = impersonateData.data as { token: string; user: Record<string, unknown> };
@@ -150,11 +150,11 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
 }
 
 /**
- * Login to the client panel by injecting an impersonation token.
- * Creates a test client on first call and caches credentials.
+ * Login to the tenant panel by injecting an impersonation token.
+ * Creates a test tenant on first call and caches credentials.
  */
-export async function loginAsAdminClient(page: Page) {
-  const auth = await getClientAuth();
+export async function loginAsAdminTenant(page: Page) {
+  const auth = await getTenantAuth();
 
   await page.goto('/login');
   await page.evaluate((data) => {

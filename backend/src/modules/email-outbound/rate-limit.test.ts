@@ -79,11 +79,11 @@ describe('getEffectiveRateLimit', () => {
     expect(result.source).toBe('suspended');
   });
 
-  it('throws CLIENT_NOT_FOUND when the tenant does not exist', async () => {
+  it('throws TENANT_NOT_FOUND when the tenant does not exist', async () => {
     selectResults = [[]];
     const db = createMockDb();
 
     await expect(rl.getEffectiveRateLimit(db as never, 'ghost'))
-      .rejects.toMatchObject({ code: 'CLIENT_NOT_FOUND', status: 404 });
+      .rejects.toMatchObject({ code: 'TENANT_NOT_FOUND', status: 404 });
   });
 });

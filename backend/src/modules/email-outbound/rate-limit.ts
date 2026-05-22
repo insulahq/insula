@@ -44,7 +44,7 @@ export async function getEffectiveRateLimit(
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404);
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404);
   }
 
   if (tenant.status === 'suspended') {

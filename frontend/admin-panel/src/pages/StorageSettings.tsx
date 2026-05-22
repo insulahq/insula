@@ -254,7 +254,7 @@ function LonghornIframeModal({ url, onClose }: { url: string; onClose: () => voi
  * Issue 1 fix: surfaces the namespace-integrity reconciler. Auto-runs every
  * 30 min via the storage-lifecycle scheduler; this card lets an operator
  * trigger a fleet-wide sweep on demand. Per-tenant repair lives on the
- * Client Detail page banner.
+ * Tenant Detail page banner.
  */
 function NamespaceIntegrityCard() {
   const sweep = useSweepNamespaceIntegrity();

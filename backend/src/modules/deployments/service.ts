@@ -946,7 +946,7 @@ export async function getResourceAvailability(
 
   // Get plan limits (with overrides)
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
   const cpuLimit = Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
   const memoryLimitGi = Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
@@ -1001,7 +1001,7 @@ export async function updateDeploymentResources(
 
   // Validate against plan limits
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
   const cpuLimit = Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
   const memoryLimitGi = Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
@@ -1343,7 +1343,7 @@ export async function getTenantNamespace(
   tenantId: string,
 ): Promise<string> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
-  if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   return tenant.kubernetesNamespace;
 }
 
