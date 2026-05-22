@@ -1,20 +1,19 @@
 /**
- * `<BackupClassPage>` — the shared 3-tab shell used by
+ * `<BackupClassPage>` — the shared tab shell used by
  * `/backups/system`, `/backups/tenants`, and `/backups/mail`.
  *
- * Phase 3 (2026-05-22) lands the canonical IA agreed with the
- * operator: every backup class has exactly three tabs:
+ * Honesty/B0 (2026-05-22): not every class has both snapshots AND
+ * backups. Mail has only off-site restic backups — no in-cluster
+ * snapshot — so its Snapshots tab is suppressed. Callers pass
+ * `snapshotsTab={null}` or omit the prop to opt out.
  *
- *   (a) Snapshots — point-in-time, in-cluster block copies
- *   (b) Backups   — uploaded artifacts at the off-cluster
- *                   Remote Storage Target
- *   (c) Targets, Schedules & Retention — binding + cron + retention
- *
- * The class-specific content for (a) and (b) is passed in as
- * `snapshotsTab` / `backupsTab` props. Tab (c) is rendered by the
- * shared `<BackupRoutingTab>` and only needs the shim class name.
- *
- * Tab selection persists in `?tab=…` so deep-links work.
+ * Tabs:
+ *   (a) Snapshots — point-in-time, in-cluster CSI block copies.
+ *       Optional. If `snapshotsTab` is null/absent, the tab + its
+ *       URL state are not rendered at all.
+ *   (b) Backups — uploaded artifacts at the off-cluster target.
+ *       Optional. If `backupsTab` is null/absent, suppressed.
+ *   (c) Targets, Schedules & Retention — always rendered.
  */
 
 import type { ReactNode } from 'react';
@@ -25,44 +24,48 @@ import type { LucideIcon } from 'lucide-react';
 import type { BackupShimClass } from '@k8s-hosting/api-contracts';
 import BackupRoutingTab from './BackupRoutingTab';
 
-type Tab = 'snapshots' | 'backups' | 'routing';
+type TabId = 'snapshots' | 'backups' | 'routing';
 
-const TABS: ReadonlyArray<{ id: Tab; label: string; icon: LucideIcon }> = [
-  { id: 'snapshots', label: 'Snapshots',                         icon: HardDrive },
-  { id: 'backups',   label: 'Backups',                           icon: Archive },
-  { id: 'routing',   label: 'Targets, Schedules & Retention',    icon: Cloud },
-];
-
-function isTab(v: string | null): v is Tab {
-  return TABS.some((t) => t.id === v);
+interface TabSpec {
+  readonly id: TabId;
+  readonly label: string;
+  readonly icon: LucideIcon;
 }
 
+const SNAPSHOTS_TAB: TabSpec = { id: 'snapshots', label: 'Snapshots', icon: HardDrive };
+const BACKUPS_TAB: TabSpec = { id: 'backups',   label: 'Backups',   icon: Archive };
+const ROUTING_TAB: TabSpec = { id: 'routing',   label: 'Targets, Schedules & Retention', icon: Cloud };
+
 export interface BackupClassPageProps {
-  /** Header icon (lifted to caller so each class can pick its own). */
   readonly icon: LucideIcon;
-  /** Display name of the class — "System Backups", "Tenant Backups", etc. */
   readonly title: string;
-  /** One-line subtitle under the header explaining what this class covers. */
   readonly subtitle: string;
-  /** R-X shim class name. Drives tab (c)'s assignments + schedule lookup. */
   readonly shimClass: BackupShimClass;
-  /** `backup_schedules.subsystem` rows to surface on tab (c). Empty array
-   *  hides the Schedules section (e.g. classes with no cron-driven flow). */
   readonly scheduleSubsystems: ReadonlyArray<string>;
-  /** Tab (a) content — class-specific snapshot list. */
-  readonly snapshotsTab: ReactNode;
-  /** Tab (b) content — class-specific backup list. */
-  readonly backupsTab: ReactNode;
-  /** Optional `data-testid` prefix. Default derives from shim class. */
+  /** Tab (a) content. Pass `null` (or omit) to suppress the tab. */
+  readonly snapshotsTab?: ReactNode | null;
+  /** Tab (b) content. Pass `null` (or omit) to suppress the tab. */
+  readonly backupsTab?: ReactNode | null;
   readonly testIdPrefix?: string;
 }
 
 export default function BackupClassPage(props: BackupClassPageProps) {
   const [params, setParams] = useSearchParams();
-  const raw = params.get('tab');
-  const tab: Tab = isTab(raw) ? raw : 'snapshots';
   const testId = props.testIdPrefix ?? `backups-${props.shimClass}`;
   const HeaderIcon = props.icon;
+
+  // Build the active tab list based on which content the caller
+  // provided. Routing is always present; snapshots/backups are only
+  // present when the caller has real content to render.
+  const tabs: ReadonlyArray<TabSpec> = [
+    ...(props.snapshotsTab != null ? [SNAPSHOTS_TAB] : []),
+    ...(props.backupsTab != null ? [BACKUPS_TAB] : []),
+    ROUTING_TAB,
+  ];
+
+  const raw = params.get('tab');
+  const fallback: TabId = tabs[0]?.id ?? 'routing';
+  const tab: TabId = tabs.some((t) => t.id === raw) ? (raw as TabId) : fallback;
 
   return (
     <div className="space-y-6 p-6" data-testid={`${testId}-page`}>
@@ -80,7 +83,7 @@ export default function BackupClassPage(props: BackupClassPageProps) {
         className="border-b border-gray-200 dark:border-gray-700"
       >
         <div className="-mb-px flex flex-wrap gap-x-2">
-          {TABS.map((t) => {
+          {tabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
             return (
@@ -92,9 +95,6 @@ export default function BackupClassPage(props: BackupClassPageProps) {
                 aria-controls={`${testId}-pane-${t.id}`}
                 id={`${testId}-tab-${t.id}-btn`}
                 onClick={() =>
-                  // Spread-merge: preserve any other query params (a
-                  // future Restoration Wizard row-highlight param,
-                  // for example) when flipping tabs.
                   setParams(
                     (prev) => {
                       prev.set('tab', t.id);
