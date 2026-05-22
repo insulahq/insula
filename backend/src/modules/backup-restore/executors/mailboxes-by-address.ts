@@ -509,6 +509,27 @@ export function buildMailboxesByAddressJobSpec(input: {
        --maildir-root "/tmp/maildir/$ADDR" \\
        --mode "$MODE" \\
        --workers "$WORKERS"`,
+    // Auxiliary surfaces — Sieve scripts, Contacts, Calendars,
+    // Vacation responses, FileNodes. Restore mirrors the capture
+    // wiring (mailboxes.ts) — always JMAP, best-effort. A non-zero
+    // exit logs a WARN and the per-address loop continues so a
+    // partially-failed aux restore doesn't fail the mail restore.
+    // --confirm-destructive is conditionally appended only in replace
+    // mode (jmap-aux-restore.py refuses replace without the flag).
+    '  if [ -d "/tmp/maildir/$ADDR/$ADDR/.aux" ]; then',
+    `    AUX_FLAGS=""; [ "$MODE" = "replace" ] && AUX_FLAGS="--confirm-destructive"`,
+    `    python3 /usr/local/bin/jmap-aux-restore.py \\
+       --endpoint "${input.jmapEndpoint}" \\
+       --target-address "$ADDR" \\
+       --source-address "$ADDR" \\
+       --master-user "${input.stalwartMasterUser}" \\
+       --auth-pass-env STALWART_MASTER_PASSWORD \\
+       --maildir-root "/tmp/maildir/$ADDR" \\
+       --mode "$MODE" $AUX_FLAGS || echo "AUX_WARN address=$ADDR jmap-aux-restore.py exited non-zero — mail restore is unaffected"`,
+    '    echo "AUX_RESTORED addr=$ADDR mode=$MODE"',
+    '  else',
+    '    echo "AUX_SKIP addr=$ADDR no .aux dir in snapshot"',
+    '  fi',
     '  rm -rf "/tmp/maildir/$ADDR"',
     '  echo "MAILBOX_RESTORED addr=$ADDR mode=$MODE"',
     'done',

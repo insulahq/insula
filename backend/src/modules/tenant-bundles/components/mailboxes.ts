@@ -301,7 +301,7 @@ export function buildMailboxesComponentJobSpec(input: {
   // legacy --state-in/--state-out flags are still understood by
   // jmap-sync.py but ignored; the orchestrator no longer mounts the
   // state Secret.
-  const perAddressLines: string[] =
+  const mailCaptureLines: string[] =
     engine === 'imap'
       ? [
           '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
@@ -313,6 +313,21 @@ export function buildMailboxesComponentJobSpec(input: {
           `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
           `  echo "JMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
         ];
+
+  // Aux capture (Sieve / Contacts / Calendar / Vacation / FileNode)
+  // runs after the mail capture for the same address. ALWAYS via JMAP
+  // regardless of the mail engine — IMAP can't transport these
+  // surfaces. The aux script is best-effort: a non-zero exit (network
+  // blip, missing capability for an unusual account type) logs a WARN
+  // and the per-address loop continues so the mail snapshot still
+  // ships. The JSON summary line is parsed by the orchestrator from
+  // the bounded job-log tail (search prefix "{\"kind\":\"aux\"").
+  const auxCaptureLines: string[] = [
+    `    AUX_SUMMARY=$(/usr/local/bin/jmap-aux-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out) || { echo "AUX_WARN address=$ADDR jmap-aux-sync.py exited non-zero — continuing"; AUX_SUMMARY='{}'; }`,
+    `  echo "AUX_DONE bundleId=${input.backupId} address=$ADDR summary=$AUX_SUMMARY"`,
+  ];
+
+  const perAddressLines: string[] = [...mailCaptureLines, ...auxCaptureLines];
 
   const script = [
     'set -e',
