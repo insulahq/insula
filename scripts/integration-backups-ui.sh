@@ -147,11 +147,18 @@ else
   info "Creating bundle for tenant=$TENANT_ID target=$TARGET_ID"
   api POST '/api/v1/admin/tenant-bundles' "{\"tenantId\":\"$TENANT_ID\",\"targetConfigId\":\"$TARGET_ID\"}" CREATE_RESP CREATE_CODE
   if [[ "$CREATE_CODE" == "200" || "$CREATE_CODE" == "201" ]]; then
-    BUNDLE_ID=$(printf '%s' "$CREATE_RESP" | sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' | head -1)
+    # The endpoint returns the bundle id as either `id` or `bundleId`
+    # depending on the bundle subsystem version; match both.
+    BUNDLE_ID=$(printf '%s' "$CREATE_RESP" \
+      | sed -nE 's/.*"(bundleId|id)":"(bkp-[0-9a-f-]{36}|[0-9a-f-]{36})".*/\2/p' | head -1)
+    BUNDLE_STATUS=$(printf '%s' "$CREATE_RESP" | sed -nE 's/.*"status":"([^"]+)".*/\1/p' | head -1)
     if [[ -n "$BUNDLE_ID" ]]; then
-      pass "bundle created: id=$BUNDLE_ID (status=$CREATE_CODE)"
+      pass "bundle created: id=$BUNDLE_ID (http=$CREATE_CODE bundle_status=${BUNDLE_STATUS:-unknown})"
+      if [[ "$BUNDLE_STATUS" == "failed" || "$BUNDLE_STATUS" == "errored" ]]; then
+        fail "  …but bundle status='$BUNDLE_STATUS' indicates the orchestrator failed mid-run"
+      fi
     else
-      fail "POST /admin/tenant-bundles returned $CREATE_CODE but no id parsed from body"
+      fail "POST /admin/tenant-bundles returned $CREATE_CODE but no id parsed: $(printf '%s' "$CREATE_RESP" | head -c 300)"
     fi
   else
     fail "POST /admin/tenant-bundles returned $CREATE_CODE: $(printf '%s' "$CREATE_RESP" | head -c 300)"
