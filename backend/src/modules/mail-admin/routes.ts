@@ -74,7 +74,12 @@ import {
   mailMigrationStartRequestSchema,
   mailFailoverRequestSchema,
   mailFailbackRequestSchema,
+  mailboxBackupSettingsUpdateSchema,
 } from '@k8s-hosting/api-contracts';
+import {
+  getMailboxBackupSettingsView,
+  setMailboxBackupSettings,
+} from '../tenant-bundles/mailbox-backup-engine.js';
 
 const NODE_ROLE_LABEL_KEY = 'platform.example.test/node-role';
 
@@ -1572,6 +1577,38 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
 
       // Synchronous response — the work is now running in the background.
       return success({ updated: true, taskId });
+    },
+  );
+
+  // ── Mailbox backup engine selector + worker cap ────────────────────────
+  // Reads/writes platform_settings.mailbox_backup_engine + .mailbox_backup_max_concurrent.
+  // See backend/src/modules/tenant-bundles/mailbox-backup-engine.ts for
+  // the read-side defaults (IMAP recommended).
+  app.get(
+    '/admin/mailbox-backup-settings',
+    { preHandler: requireRole('super_admin', 'admin') },
+    async () => success(await getMailboxBackupSettingsView(app.db)),
+  );
+
+  app.patch(
+    '/admin/mailbox-backup-settings',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const parsed = mailboxBackupSettingsUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues
+            .map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`)
+            .join(', '),
+          400,
+        );
+      }
+      app.log.warn(
+        { userId: req.user?.sub ?? 'unknown', patch: parsed.data },
+        'mail-admin: mailbox-backup-settings updated',
+      );
+      return success(await setMailboxBackupSettings(app.db, parsed.data));
     },
   );
 }
