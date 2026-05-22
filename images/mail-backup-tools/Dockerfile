@@ -64,43 +64,55 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
            /usr/share/doc/* /usr/share/man/*
 
-# Restore script in-image — Python stdlib only, runs under sh -c
-# from the orchestrator's Job spec. Argv:
-#   restore-mailbox.py <imap_host> <imap_port> <username> <password> <mode> <maildir>
-# where mode ∈ {merge-skip, merge-overwrite, replace}.
-COPY restore-mailbox.py /usr/local/bin/restore-mailbox.py
-RUN chmod 755 /usr/local/bin/restore-mailbox.py
-
 # Legacy capture helper — wraps mbsync + Option F streaming upload.
 # Argv: capture-mailbox.sh <addr> <upload_url>
-# Superseded by jmap-sync.py in Phase 2 (ADR-036) but kept in the
-# image while the orchestrator switches over so a rollback to the
-# previous mailboxes.ts code path still works without a fresh image
-# build. Removed in the cleanup PR after Phase 2 lands.
+# Pre-JMAP; pre-IMAP-MULTIAPPEND. Kept in image as a 3rd-tier fallback.
 COPY capture-mailbox.sh /usr/local/bin/capture-mailbox.sh
 RUN chmod 755 /usr/local/bin/capture-mailbox.sh
 
-# Phase 2 (ADR-036): JMAP-driven Maildir capture. Replaces the
-# mbsync flow above. Pure Python stdlib — no extra packages.
-# Argv: jmap-sync.py --endpoint <url> --account-address <addr>
+# ─────────────────────────────────────────────────────────────────────────
+# Active engine (2026-05-22 onward) — IMAP MULTIAPPEND. Default per
+# platform_settings.mailbox_backup_engine. See ../legacy/README.md for
+# why JMAP is no longer default and how to revert if needed.
+# ─────────────────────────────────────────────────────────────────────────
+# imap_client.py — raw-socket IMAP4rev2 helper. Imported by both
+# imap-sync.py and imap-restore.py via sys.path.insert(0, dirname(__file__)).
+COPY imap_client.py /usr/local/bin/imap_client.py
+RUN chmod 644 /usr/local/bin/imap_client.py
+
+# Argv: imap-sync.py --imap-host <h> --imap-port <p> --account-address <a>
 #       --master-user <fq> --auth-pass-env <ENV> --output-dir <dir>
-#       [--state-in <file>] [--state-out <file>]
-COPY jmap-sync.py /usr/local/bin/jmap-sync.py
+COPY imap-sync.py /usr/local/bin/imap-sync.py
+RUN chmod 755 /usr/local/bin/imap-sync.py
+
+# Argv: imap-restore.py --imap-host <h> --imap-port <p>
+#       --target-address <a> --source-address <a> --master-user <fq>
+#       --auth-pass-env <ENV> --maildir-root <dir> --mode <m>
+COPY imap-restore.py /usr/local/bin/imap-restore.py
+RUN chmod 755 /usr/local/bin/imap-restore.py
+
+# ─────────────────────────────────────────────────────────────────────────
+# Legacy engine (kept in image as fallback) — JMAP via jmap-sync.py /
+# jmap-restore.py. Orchestrator picks JMAP when
+# platform_settings.mailbox_backup_engine='jmap'. See legacy/README.md.
+# Files live under legacy/ in the source tree but install at
+# /usr/local/bin/ so orchestrator script paths don't have to know.
+# ─────────────────────────────────────────────────────────────────────────
+COPY legacy/jmap-sync.py /usr/local/bin/jmap-sync.py
 RUN chmod 755 /usr/local/bin/jmap-sync.py
+
+COPY legacy/jmap-restore.py /usr/local/bin/jmap-restore.py
+RUN chmod 755 /usr/local/bin/jmap-restore.py
 
 # E2E test seeder — used by scripts/integration-tenant-bundles-jmap-full-e2e.sh
 # to inject N marked messages via Email/import. Same auth + endpoint-rebase
 # pattern as jmap-sync.py. Pure Python stdlib.
-COPY jmap-seed.py /usr/local/bin/jmap-seed.py
+COPY legacy/jmap-seed.py /usr/local/bin/jmap-seed.py
 RUN chmod 755 /usr/local/bin/jmap-seed.py
 
-# JMAP-based mailbox restore (Phase 2 of ADR-036). Replaces the
-# IMAP-APPEND restore-mailbox.py with a Blob/upload + Email/import
-# pipeline that's 50-100x faster on real mailboxes. The legacy
-# restore-mailbox.py stays in the image for a rollback window;
-# orchestrator selects which path via the IMAP/JMAP restore-method flag.
-COPY jmap-restore.py /usr/local/bin/jmap-restore.py
-RUN chmod 755 /usr/local/bin/jmap-restore.py
+# Pre-JMAP IMAP-APPEND restore. 3rd-tier fallback below JMAP fallback.
+COPY legacy/restore-mailbox.py /usr/local/bin/restore-mailbox.py
+RUN chmod 755 /usr/local/bin/restore-mailbox.py
 
 # Phase 2.5 (ADR-036): restic upload sidecar for stalwart-snapshot CronJob.
 # Waits for /snapshot/done, runs restic backup, reports stats to platform-api.
