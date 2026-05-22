@@ -1,6 +1,6 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
-import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH, JSON_PATCH } from '../../shared/k8s-patch.js';
 import { execInPod, type ExecResult } from '../../shared/k8s-exec.js';
 import { notifications, users, platformSettings } from '../../db/schema.js';
 import { inArray, eq } from 'drizzle-orm';
@@ -497,10 +497,17 @@ export async function recoverInterruptedRestore(
         const srcCluster = await getCustom<CnpgCluster>(k8s, {
           group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters', name: lock.clusterName,
         }).catch(() => null);
-        if (srcCluster && (srcCluster.spec?.bootstrap as { recovery?: unknown } | undefined)?.recovery) {
-          await patchCustomMerge(k8s, {
+        if (srcCluster && srcCluster.spec?.bootstrap?.recovery !== undefined) {
+          // Task #80 (2026-05-22): JSON-patch op:remove + op:add is
+          // more reliable than merge-patch's null-delete for the
+          // bootstrap field. Same shape as the orchestrator's
+          // normalize-bootstrap step at line 1496.
+          await patchCustomJson(k8s, {
             group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters', name: lock.clusterName,
-            body: { spec: { bootstrap: { recovery: null, initdb: lock.originalInitdb } } },
+            body: [
+              { op: 'remove', path: '/spec/bootstrap/recovery' },
+              { op: 'add', path: '/spec/bootstrap/initdb', value: lock.originalInitdb },
+            ],
           });
         }
       } catch { /* best effort — operator may need to patch by hand */ }
@@ -543,6 +550,11 @@ interface CnpgCluster {
         readonly secret?: { readonly name?: string };
         readonly postInitApplicationSQL?: readonly string[];
       };
+      /** Present on a cluster bootstrapped from recovery. The PITR
+       *  orchestrator's normalize-bootstrap step removes this via
+       *  JSON-patch op:remove (task #80 2026-05-22 — merge-patch's
+       *  null-delete was unreliable). */
+      readonly recovery?: unknown;
     };
     readonly affinity?: unknown;
     readonly inheritedMetadata?: unknown;
@@ -795,6 +807,26 @@ async function patchCustomMerge(
       mw: typeof MERGE_PATCH,
     ) => Promise<unknown>;
   }).patchNamespacedCustomObject(args, MERGE_PATCH);
+}
+
+/**
+ * RFC 6902 JSON-patch variant of `patchCustomMerge`. Use this when an
+ * atomic op:remove + op:add is needed in a single PATCH call — merge-
+ * patch can't unambiguously remove a key the same patch then adds, and
+ * for `bootstrap.recovery → bootstrap.initdb` swaps CNPG silently
+ * resurrects `recovery` from the merge-patch's null-deletes some of the
+ * time (task #80 investigation 2026-05-22).
+ */
+async function patchCustomJson(
+  k8s: K8sClients,
+  args: { group: string; version: string; namespace: string; plural: string; name: string; body: ReadonlyArray<{ op: 'add' | 'remove' | 'replace'; path: string; value?: unknown }> },
+): Promise<void> {
+  await (k8s.custom as unknown as {
+    patchNamespacedCustomObject: (
+      a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+      mw: typeof JSON_PATCH,
+    ) => Promise<unknown>;
+  }).patchNamespacedCustomObject(args, JSON_PATCH);
 }
 
 async function inspectWalCoverage(
@@ -1475,29 +1507,81 @@ export async function promotePostgresFromSnapshot(
     // 8b. Normalize spec.bootstrap so Flux's apply of the original git
     // manifest (which has bootstrap.initdb) doesn't conflict with our
     // runtime spec.bootstrap.recovery. CNPG's webhook rejects clusters
-    // proposing both bootstrap types; even though bootstrap is
-    // informational after first init, the strategic-merge from git
+    // proposing both bootstrap types; the strategic-merge from git
     // submits a body that combines initdb (git) + recovery (live)
-    // and the apply fails. Patch spec.bootstrap to drop recovery and
-    // restore the source's original initdb (carried in pre.cluster).
-    // Best-effort — if CNPG rejects, surface as a non-fatal step
-    // (operator can patch by hand; the cluster works either way).
+    // and the apply fails with "Only one bootstrap method".
+    //
+    // Task #80 investigation 2026-05-22: the previous merge-patch shape
+    // `{spec:{bootstrap:{recovery:null,initdb:X}}}` recorded ok=true but
+    // the live spec retained recovery + dropped initdb — CNPG appears
+    // to silently strip the null-delete in merge-patch when the field
+    // is referenced as the recovery source the cluster bootstrapped
+    // from. Switching to JSON-patch op:remove + op:add — atomic, no
+    // null-delete ambiguity — fixes the drift. The post-patch read-back
+    // confirms the spec landed; if not, the step records ok=false +
+    // surfaces the manual kubectl command in the admin notification.
     const t8b = nowMs();
     try {
       const originalInitdb = pre.cluster.spec?.bootstrap?.initdb;
-      if (originalInitdb) {
-        await patchCustomMerge(deps.k8s, {
-          group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
-          body: { spec: { bootstrap: { recovery: null, initdb: originalInitdb } } },
-        });
-        recordStep({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'spec.bootstrap=initdb (recovery cleared)' });
-      } else {
+      if (!originalInitdb) {
         recordStep({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'no original initdb — skipped' });
+      } else {
+        await patchCustomJson(deps.k8s, {
+          group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
+          body: [
+            { op: 'remove', path: '/spec/bootstrap/recovery' },
+            { op: 'add', path: '/spec/bootstrap/initdb', value: originalInitdb },
+          ],
+        });
+        // Post-patch verification — read the live spec back + assert
+        // recovery is gone. CNPG's reconciler can race with our patch
+        // (caught live 2026-05-22 on staging); the read-back catches
+        // that case + surfaces a clear operator-actionable step result.
+        const live = await getCustom<CnpgCluster>(deps.k8s, {
+          group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace,
+          plural: 'clusters', name: inputs.clusterName,
+        });
+        const stillHasRecovery = live.spec?.bootstrap?.recovery !== undefined;
+        const hasInitdb = live.spec?.bootstrap?.initdb?.database !== undefined;
+        if (!stillHasRecovery && hasInitdb) {
+          recordStep({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'spec.bootstrap=initdb (recovery cleared, verified)' });
+        } else {
+          // Drift detected — try one more JSON-patch round, then
+          // surface as ok=false if STILL drifting.
+          try {
+            await patchCustomJson(deps.k8s, {
+              group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
+              body: [
+                { op: 'remove', path: '/spec/bootstrap/recovery' },
+                { op: 'add', path: '/spec/bootstrap/initdb', value: originalInitdb },
+              ],
+            });
+            const retryLive = await getCustom<CnpgCluster>(deps.k8s, {
+              group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace,
+              plural: 'clusters', name: inputs.clusterName,
+            });
+            const retryHasRecovery = retryLive.spec?.bootstrap?.recovery !== undefined;
+            const retryHasInitdb = retryLive.spec?.bootstrap?.initdb?.database !== undefined;
+            if (!retryHasRecovery && retryHasInitdb) {
+              recordStep({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'spec.bootstrap=initdb (cleared after 1 retry)' });
+            } else {
+              recordStep({
+                step: 'normalize-bootstrap', ok: false, elapsedMs: nowMs() - t8b,
+                detail: `patch accepted by API but drifted back (stillHasRecovery=${retryHasRecovery} hasInitdb=${retryHasInitdb}). Manual fix: kubectl -n ${inputs.clusterNamespace} patch cluster ${inputs.clusterName} --type=json -p='[{"op":"remove","path":"/spec/bootstrap/recovery"},{"op":"add","path":"/spec/bootstrap/initdb","value":${JSON.stringify(originalInitdb)}}]'`,
+              });
+            }
+          } catch (retryErr) {
+            recordStep({
+              step: 'normalize-bootstrap', ok: false, elapsedMs: nowMs() - t8b,
+              detail: `retry failed: ${(retryErr as Error).message}. Manual fix: kubectl -n ${inputs.clusterNamespace} patch cluster ${inputs.clusterName} --type=json -p='[{"op":"remove","path":"/spec/bootstrap/recovery"},{"op":"add","path":"/spec/bootstrap/initdb","value":${JSON.stringify(originalInitdb)}}]'`,
+            });
+          }
+        }
       }
     } catch (err) {
       recordStep({
         step: 'normalize-bootstrap', ok: false, elapsedMs: nowMs() - t8b,
-        detail: `failed: ${(err as Error).message}. Flux apply may need manual: kubectl patch cluster -n ${inputs.clusterNamespace} ${inputs.clusterName} --type=json -p='[{"op":"remove","path":"/spec/bootstrap/recovery"},{"op":"add","path":"/spec/bootstrap/initdb","value":<original>}]'`,
+        detail: `failed: ${(err as Error).message}. Manual fix: kubectl patch cluster -n ${inputs.clusterNamespace} ${inputs.clusterName} --type=json -p='[{"op":"remove","path":"/spec/bootstrap/recovery"},{"op":"add","path":"/spec/bootstrap/initdb","value":<original>}]'`,
       });
     }
 
