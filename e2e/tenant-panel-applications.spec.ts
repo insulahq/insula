@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 
-test.describe('Client Panel Applications', () => {
+test.describe('Tenant Panel Applications', () => {
   test.beforeEach(async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
     await page.getByRole('link', { name: 'Applications' }).click();
     await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
   });

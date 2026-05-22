@@ -2,7 +2,7 @@
 
 ## Overview
 
-The platform provides **seamless PHP Composer dependency management** for customer websites. Customers can install and manage Composer dependencies directly from the admin/client panel without needing SSH access. Composer is automatically installed on-demand, version-matched to the customer's PHP version, and integrated with the deployment pipeline.
+The platform provides **seamless PHP Composer dependency management** for customer websites. Customers can install and manage Composer dependencies directly from the admin/tenant panel without needing SSH access. Composer is automatically installed on-demand, version-matched to the customer's PHP version, and integrated with the deployment pipeline.
 
 **Key Features:**
 - ✅ On-demand Composer installation (install button in control panel)

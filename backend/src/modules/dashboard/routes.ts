@@ -12,8 +12,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get('/admin/dashboard', { preHandler: createCacheMiddleware(30_000) }, async () => {
     const [tenantStats] = await app.db
       .select({
-        total_clients: sql<number>`count(*)`,
-        active_clients: sql<number>`sum(case when ${tenants.status} = 'active' then 1 else 0 end)`,
+        total_tenants: sql<number>`count(*)`,
+        active_tenants: sql<number>`sum(case when ${tenants.status} = 'active' then 1 else 0 end)`,
       })
       .from(tenants);
 
@@ -27,8 +27,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
     return {
       data: {
-        total_clients: Number(tenantStats.total_clients),
-        active_clients: Number(tenantStats.active_clients ?? 0),
+        total_tenants: Number(tenantStats.total_tenants),
+        active_tenants: Number(tenantStats.active_tenants ?? 0),
         total_domains: Number(domainStats.total_domains),
         total_backups: Number(backupStats.total_backups),
         platform_version: process.env.PLATFORM_VERSION ?? '0.1.0',

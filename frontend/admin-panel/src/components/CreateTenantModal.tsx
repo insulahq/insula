@@ -202,7 +202,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
       <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Create Client</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Create Tenant</h2>
           <button
             onClick={handleClose}
             className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
@@ -216,12 +216,12 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
           <div className="space-y-4" data-testid="tenant-credentials">
             <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
               <CheckCircle size={20} />
-              <span className="text-sm font-medium">Client created successfully!</span>
+              <span className="text-sm font-medium">Tenant created successfully!</span>
             </div>
             <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-900/20 p-4">
               <div className="flex items-center gap-2 mb-3">
                 <KeyRound size={16} className="text-amber-600 dark:text-amber-400" />
-                <span className="text-sm font-semibold text-amber-800 dark:text-amber-300">Client Portal Credentials</span>
+                <span className="text-sm font-semibold text-amber-800 dark:text-amber-300">Tenant Portal Credentials</span>
               </div>
               <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">Save these credentials now. The password will not be shown again.</p>
               <div className="space-y-2 text-sm">
@@ -496,7 +496,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
               data-testid="submit-button"
             >
               {createTenant.isPending && <Loader2 size={14} className="animate-spin" />}
-              Create Client
+              Create Tenant
             </button>
           </div>
         </form>}

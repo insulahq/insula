@@ -47,10 +47,10 @@ SCENARIO="${1:-all}"
 PASSED=0
 FAILED=0
 FAILURES=()
-PROVISIONED_CID=""
+PROVISIONED_TID=""
 ROUTE_ID="${ROUTE_ID:-}"
 HOSTNAME=""
-CLIENT_ID=""
+TENANT_ID=""
 NAMESPACE=""
 
 # ─── helpers (match scripts/integration-staging.sh shape) ──────────
@@ -113,7 +113,7 @@ prereq_resolve_target() {
     [[ -z "$row" ]] && { fail "ROUTE_ID=$ROUTE_ID not found"; return 1; }
     ROUTE_ID=$(echo "$row" | cut -d'|' -f1)
     HOSTNAME=$(echo "$row" | cut -d'|' -f2)
-    CLIENT_ID=$(echo "$row" | cut -d'|' -f3)
+    TENANT_ID=$(echo "$row" | cut -d'|' -f3)
     NAMESPACE=$(echo "$row" | cut -d'|' -f4)
     ok "using pinned route=$ROUTE_ID host=$HOSTNAME ns=${NAMESPACE}"
     return 0
@@ -130,7 +130,7 @@ prereq_resolve_target() {
   if [[ -n "$row" ]]; then
     ROUTE_ID=$(echo "$row" | cut -d'|' -f1)
     HOSTNAME=$(echo "$row" | cut -d'|' -f2)
-    CLIENT_ID=$(echo "$row" | cut -d'|' -f3)
+    TENANT_ID=$(echo "$row" | cut -d'|' -f3)
     NAMESPACE=$(echo "$row" | cut -d'|' -f4)
     ok "discovered route=$ROUTE_ID host=$HOSTNAME ns=${NAMESPACE}"
     return 0
@@ -148,15 +148,15 @@ prereq_provision_tenant() {
   local stamp; stamp=$(date +%s)
   local company="oauth2-e2e-$stamp"
   local resp
-  resp=$(api POST "/clients" "{\"name\":\"$company\",\"primary_email\":\"oauth2e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
-  CLIENT_ID=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
-  [[ -n "$CLIENT_ID" ]] || { fail "client create failed: $resp"; return 1; }
-  PROVISIONED_CID="$CLIENT_ID"
-  ok "client created cid=${CLIENT_ID:0:8}…"
+  resp=$(api POST "/tenants" "{\"name\":\"$company\",\"primary_email\":\"oauth2e2e-$stamp@example.test\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  TENANT_ID=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$TENANT_ID" ]] || { fail "client create failed: $resp"; return 1; }
+  PROVISIONED_TID="$TENANT_ID"
+  ok "client created cid=${TENANT_ID:0:8}…"
 
   local i=0
   while (( i < 90 )); do
-    NAMESPACE=$(ssh_run "kubectl get ns -l client=$CLIENT_ID -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" 2>/dev/null)
+    NAMESPACE=$(ssh_run "kubectl get ns -l client=$TENANT_ID -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" 2>/dev/null)
     [[ -n "$NAMESPACE" ]] && break
     sleep 4; i=$((i+4))
   done
@@ -165,7 +165,7 @@ prereq_provision_tenant() {
 
   local depl_name="oauth2e2e${stamp}"
   local depl_resp
-  depl_resp=$(api POST "/clients/$CLIENT_ID/deployments" \
+  depl_resp=$(api POST "/tenants/$TENANT_ID/deployments" \
     "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}")
   local depl_id
   depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
@@ -175,7 +175,7 @@ prereq_provision_tenant() {
   i=0
   local st=""
   while (( i < 240 )); do
-    st=$(api GET "/clients/$CLIENT_ID/deployments/$depl_id" \
+    st=$(api GET "/tenants/$TENANT_ID/deployments/$depl_id" \
       | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null)
     [[ "$st" == "running" ]] && break
     sleep 6; i=$((i+6))
@@ -185,7 +185,7 @@ prereq_provision_tenant() {
 
   HOSTNAME="oauth2e2e${stamp}.${HTTPS_TEST_DOMAIN_BASE}"
   local dom_resp
-  dom_resp=$(api POST "/clients/$CLIENT_ID/domains" \
+  dom_resp=$(api POST "/tenants/$TENANT_ID/domains" \
     "{\"domain_name\":\"$HOSTNAME\",\"deployment_id\":\"$depl_id\",\"dns_mode\":\"cname\"}")
   local dom_id
   dom_id=$(echo "$dom_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
@@ -205,17 +205,17 @@ prereq_provision_tenant() {
 
 prereq_clean_state() {
   log "── prereq: clean baseline ──"
-  api DELETE "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth" >/dev/null 2>&1 || true
+  api DELETE "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/auth" >/dev/null 2>&1 || true
   sleep 3
   ok "any prior auth config cleared"
 }
 
 cleanup_provisioned_tenant() {
-  [[ -z "$PROVISIONED_CID" ]] && return 0
+  [[ -z "$PROVISIONED_TID" ]] && return 0
   log "── cleanup: tearing down provisioned tenant ──"
-  api DELETE "/clients/$PROVISIONED_CID/ingress-routes/$ROUTE_ID/auth" >/dev/null 2>&1 || true
-  api DELETE "/clients/$PROVISIONED_CID" >/dev/null 2>&1 || true
-  ok "DELETE /clients/$PROVISIONED_CID issued"
+  api DELETE "/tenants/$PROVISIONED_TID/ingress-routes/$ROUTE_ID/auth" >/dev/null 2>&1 || true
+  api DELETE "/tenants/$PROVISIONED_TID" >/dev/null 2>&1 || true
+  ok "DELETE /tenants/$PROVISIONED_TID issued"
 }
 trap cleanup_provisioned_tenant EXIT
 
@@ -223,7 +223,7 @@ trap cleanup_provisioned_tenant EXIT
 
 scenario_discovery() {
   local resp
-  resp=$(api POST "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth/test" \
+  resp=$(api POST "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/auth/test" \
     "{\"issuerUrl\":\"$OIDC_ISSUER\"}")
   local ok_flag
   ok_flag=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('ok',False))" 2>/dev/null)
@@ -239,7 +239,7 @@ scenario_discovery() {
 
 scenario_discovery_bad_issuer() {
   local resp
-  resp=$(api POST "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth/test" \
+  resp=$(api POST "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/auth/test" \
     "{\"issuerUrl\":\"https://nonexistent-idp-${RANDOM}.invalid/\"}")
   local ok_flag
   ok_flag=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('ok',False))" 2>/dev/null)
@@ -275,7 +275,7 @@ scenario_enable() {
 EOF
 )
   local resp
-  resp=$(api PATCH "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth" "$payload")
+  resp=$(api PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/auth" "$payload")
   if echo "$resp" | grep -q '"enabled":true'; then
     ok "PATCH /auth returned enabled=true"
   else
@@ -371,7 +371,7 @@ scenario_rotate_config() {
     "cookieRefreshSeconds": 3600,
     "cookieExpireSeconds": 86400
   }'
-  api PATCH "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth" "$payload" >/dev/null
+  api PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/auth" "$payload" >/dev/null
   sleep 5
   local cfg_scope
   cfg_scope=$(ssh_run "kubectl -n $NAMESPACE get cm oauth2-proxy-config -o jsonpath='{.data.oauth2_proxy\\.cfg}'" 2>/dev/null | grep '^scope=')
@@ -486,7 +486,7 @@ EOF" 2>&1)
 }
 
 scenario_disable_teardown() {
-  api DELETE "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth" >/dev/null
+  api DELETE "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/auth" >/dev/null
   ok "DELETE /auth returned"
   sleep 5
   local exists

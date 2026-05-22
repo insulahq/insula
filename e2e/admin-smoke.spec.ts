@@ -17,29 +17,29 @@ test.describe('Admin Panel Smoke Test', () => {
     await loginAsAdmin(page);
 
     // Check stat cards
-    await expect(page.getByText('Total Clients')).toBeVisible();
+    await expect(page.getByText('Total Tenants')).toBeVisible();
     await expect(page.getByText('Backups', { exact: true })).toBeVisible();
   });
 
-  test('can navigate to clients page', async ({ page }) => {
+  test('can navigate to tenants page', async ({ page }) => {
     await loginAsAdmin(page);
 
-    // Navigate to clients
-    await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Add Client' })).toBeVisible();
+    // Navigate to tenants
+    await page.getByRole('link', { name: 'Tenants' }).click();
+    await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add Tenant' })).toBeVisible();
   });
 
-  test('can create a client', async ({ page }) => {
+  test('can create a tenant', async ({ page }) => {
     await loginAsAdmin(page);
 
-    // Go to clients
-    await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
+    // Go to tenants
+    await page.getByRole('link', { name: 'Tenants' }).click();
+    await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
 
-    // Click Add Client button
-    await page.getByRole('button', { name: 'Add Client' }).click();
-    await expect(page.getByTestId('create-client-modal')).toBeVisible();
+    // Click Add Tenant button
+    await page.getByRole('button', { name: 'Add Tenant' }).click();
+    await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
     // Fill form with unique name
     const ts = Date.now();
@@ -61,18 +61,18 @@ test.describe('Admin Panel Smoke Test', () => {
     await page.getByTestId('submit-button').click();
 
     // Post-submit flow pivots into credentials → provisioning views.
-    const credentials = page.getByTestId('client-credentials');
+    const credentials = page.getByTestId('tenant-credentials');
     if (await credentials.isVisible({ timeout: 3000 }).catch(() => false)) {
       await page.getByTestId('close-credentials').click();
     }
     if (await page.getByTestId('create-error').isVisible().catch(() => false)) {
       await page.getByRole('button', { name: 'Cancel' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
     } else {
-      // Navigate back to /clients to bypass any provisioning modal state
+      // Navigate back to /tenants to bypass any provisioning modal state
       // (Minimize/Done/Close buttons plus 800ms auto-close-and-navigate).
-      await page.goto('/clients');
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 3000 });
+      await page.goto('/tenants');
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 3000 });
       await expect(page.getByText(uniqueName).first()).toBeVisible({ timeout: 5000 });
     }
   });

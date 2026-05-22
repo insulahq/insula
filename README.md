@@ -9,7 +9,7 @@ Kubernetes-based, expandable web hosting platform. Runs on self-managed k3s clus
                          │               VPS Cluster                   │
                          │                                             │
    Internet ──► 80/443 ──┤  ┌───────────────┐    ┌──────────────────┐  │
-                         │  │ NGINX Ingress │───►│ Client Workloads │  │
+                         │  │ NGINX Ingress │───►│ Tenant Workloads │  │
                          │  │  (DaemonSet)  │    │  (per-namespace) │  │
                          │  └───────────────┘    └──────────────────┘  │
                          │                                             │
@@ -20,7 +20,7 @@ Kubernetes-based, expandable web hosting platform. Runs on self-managed k3s clus
                          │                                             │
                          │  ┌───────────────┐    ┌──────────────────┐  │
                          │  │ Admin Panel   │    │  Monitoring      │  │
-                         │  │ Client Panel  │    │  (Prometheus +   │  │
+                         │  │ Tenant Panel  │    │  (Prometheus +   │  │
                          │  │ (React/Vite)  │    │   Grafana + Loki)│  │
                          │  └───────────────┘    └──────────────────┘  │
                          └─────────────────────────────────────────────┘
@@ -59,7 +59,7 @@ DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex OIDC) are managed by a separate
 backend/                  # Node.js/Fastify management API (port 3000)
 frontend/
   admin-panel/            # React admin UI (port 5173)
-  client-panel/           # React client UI (port 5174)
+  tenant-panel/           # React tenant UI (port 5174)
 k8s/
   base/                   # Kustomize base manifests
   overlays/               # dev, production overlays
@@ -149,7 +149,7 @@ docker compose up -d          # Start MariaDB + Redis
 ```bash
 npm run dev -w backend                    # API on port 3000
 npm run dev -w @k8s-hosting/admin-panel   # Admin UI on port 5173
-npm run dev -w @k8s-hosting/client-panel  # Client UI on port 5174
+npm run dev -w @k8s-hosting/tenant-panel  # Tenant UI on port 5174
 ```
 
 ### Testing
@@ -158,7 +158,7 @@ npm run dev -w @k8s-hosting/client-panel  # Client UI on port 5174
 npm run test -w backend                    # Backend unit tests
 npm run test:integration -w backend        # Integration tests (requires DB)
 npm run test -w @k8s-hosting/admin-panel   # Admin panel tests
-npm run test -w @k8s-hosting/client-panel  # Client panel tests
+npm run test -w @k8s-hosting/tenant-panel  # Tenant panel tests
 ```
 
 ### Linting & Type Checking
@@ -192,7 +192,7 @@ For code development, unit tests, and quick E2E testing. Runs entirely in Docker
 | Service     | Dev (HTTP)                                    | Dev (HTTPS)                                    | Prod                                |
 |-------------|-----------------------------------------------|------------------------------------------------|-------------------------------------|
 | Admin panel | `http://admin.k8s-platform.test:2010`         | `https://admin.k8s-platform.test:2011`         | `https://admin.<domain>`            |
-| Client panel| `http://client.k8s-platform.test:2010`        | `https://client.k8s-platform.test:2011`        | `https://client.<domain>`           |
+| Tenant panel| `http://tenant.k8s-platform.test:2010`        | `https://tenant.k8s-platform.test:2011`        | `https://tenant.<domain>`           |
 | Dex OIDC    | —                                             | `https://dex.k8s-platform.test:2011/dex`       | `https://dex.<domain>/dex`          |
 | Webmail     | —                                             | `https://webmail.k8s-platform.test:2011`       | `https://webmail.<domain>`          |
 | Mail-admin  | —                                             | `https://stalwart.k8s-platform.test:2011`      | `https://stalwart.<domain>`         |
@@ -236,7 +236,7 @@ GitHub Actions run on every push to `main`:
 |----------|--------|
 | Backend CI | Lint, typecheck, unit tests, integration tests (MariaDB + Redis), coverage |
 | Admin Panel CI | Lint, typecheck, tests, build |
-| Client Panel CI | Lint, typecheck, tests, build |
+| Tenant Panel CI | Lint, typecheck, tests, build |
 | Infrastructure CI | Kustomize build, shellcheck, Docker build |
 
 ## Documentation

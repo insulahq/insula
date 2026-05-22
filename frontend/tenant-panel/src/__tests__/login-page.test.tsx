@@ -47,9 +47,9 @@ function renderWithProviders(ui: React.ReactElement) {
 }
 
 describe('Login Page', () => {
-  it('renders the Client Portal heading', () => {
+  it('renders the Tenant Portal heading', () => {
     renderWithProviders(<Login />);
-    expect(screen.getByText('Client Portal')).toBeInTheDocument();
+    expect(screen.getByText('Tenant Portal')).toBeInTheDocument();
   });
 
   it('renders sign-in description', () => {

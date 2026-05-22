@@ -62,7 +62,7 @@ describe('export service', () => {
   }
 
   it('export includes all resource types', async () => {
-    const clientsData = [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com' }];
+    const tenantsData = [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com' }];
     // SYSTEM-tenant-id lookup query — return empty so no domain filtering happens.
     const systemTenantIdsData: unknown[] = [];
     const domainsData = [{ id: 'd1', tenantId: 'c1', domainName: 'acme.com' }];
@@ -70,7 +70,7 @@ describe('export service', () => {
     const dnsData = [{ id: 'dns1', displayName: 'Primary', providerType: 'powerdns', connectionConfigEncrypted: 'SECRET' }];
 
     const db = buildExportMockDb([
-      clientsData, // SELECT tenants WHERE isSystem=false
+      tenantsData, // SELECT tenants WHERE isSystem=false
       domainsData, // SELECT domains
       plansData,   // SELECT hostingPlans
       dnsData,     // SELECT dnsServers

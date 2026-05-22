@@ -329,7 +329,7 @@ async function notifyHookPermanentFailure(
       userId,
       type: 'error',
       title,
-      message: `${detail}\n\nclient_id=${parent.tenantId} transition_id=${parent.id}`,
+      message: `${detail}\n\ntenant_id=${parent.tenantId} transition_id=${parent.id}`,
       resourceType: 'lifecycle_hook_run',
       resourceId: parent.id,
     });

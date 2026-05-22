@@ -17,7 +17,7 @@ vi.mock('@/lib/api-client', () => ({
 
 vi.mock('@/hooks/use-auth', () => ({
   useAuth: vi.fn(() => ({
-    user: { id: 'u1', email: 'tenant@test.com', fullName: 'Client User', role: 'tenant' },
+    user: { id: 'u1', email: 'tenant@test.com', fullName: 'Tenant User', role: 'tenant' },
     token: 'test-token',
     isAuthenticated: true,
     isLoading: false,
@@ -36,7 +36,7 @@ function createWrapper() {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('Client UserSettings page', () => {
+describe('Tenant UserSettings page', () => {
   it('renders heading', () => {
     render(<UserSettings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('user-settings-heading')).toHaveTextContent('User Settings');
@@ -45,7 +45,7 @@ describe('Client UserSettings page', () => {
   it('renders profile section with user data', () => {
     render(<UserSettings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('profile-section')).toBeInTheDocument();
-    expect(screen.getByTestId('profile-full-name')).toHaveValue('Client User');
+    expect(screen.getByTestId('profile-full-name')).toHaveValue('Tenant User');
     expect(screen.getByTestId('profile-email')).toHaveValue('tenant@test.com');
   });
 

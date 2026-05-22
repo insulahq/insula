@@ -3203,7 +3203,7 @@ containers:
 
 - **EMAIL_SERVICES.md**: Email authentication, app passwords, OIDC, account provisioning
 - **EMAIL_SENDING_LIMITS_AND_MONITORING.md**: Email quota enforcement, mailqueue monitoring
-- **CLIENT_PANEL_FEATURES.md**: Email management features from customer perspective
+- **TENANT_PANEL_FEATURES.md**: Email management features from customer perspective
 - **ADMIN_PANEL_REQUIREMENTS.md**: Email & webmail admin controls
 - **SECURITY_ARCHITECTURE.md**: Session security, HTTPS enforcement, CSRF protection
 - **INFRASTRUCTURE_PLAN.md** Section 11: Email & Webmail architecture overview

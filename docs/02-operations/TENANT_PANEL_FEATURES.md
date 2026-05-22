@@ -254,7 +254,7 @@ Multiple ways to deploy code and manage files. All methods access the **same und
 
 | Feature | Description |
 | --- | --- |
-| **Access** | "File Manager" button in client panel; opens FileBrowser in new tab |
+| **Access** | "File Manager" button in tenant panel; opens FileBrowser in new tab |
 | **Root directory** | Customer's full PV — **all domains and subdomains visible** |
 | **Browse** | Navigate all `domains/`, `shared/`, `tmp/`, `backups/` directories |
 | **Upload** | Drag-and-drop or file picker; bulk upload supported |
@@ -264,7 +264,7 @@ Multiple ways to deploy code and manage files. All methods access the **same und
 | **Create** | New file, new folder |
 | **Delete** | Delete files/folders with confirmation |
 | **Zip / Unzip** | Archive operations within the file manager |
-| **Authentication** | Platform OIDC (Dex) — single sign-on from client panel |
+| **Authentication** | Platform OIDC (Dex) — single sign-on from tenant panel |
 | **Lifecycle** | Starts on-demand; auto-terminates after 30 min idle |
 
 **Staging-to-production workflow via FileBrowser:**
@@ -290,7 +290,7 @@ Multiple ways to deploy code and manage files. All methods access the **same und
 | **Setup** | Customer enters: repo URL, branch, authentication method (SSH key or access token) |
 | **Webhook URL** | Auto-generated webhook URL to add to GitHub/GitLab/Gitea/Bitbucket |
 | **Auto-deploy** | When webhook fires (push to configured branch), files are pulled and synced to domain webroot |
-| **Manual deploy** | "Deploy Now" button in client panel triggers immediate pull |
+| **Manual deploy** | "Deploy Now" button in tenant panel triggers immediate pull |
 | **API trigger** | `POST /api/v1/domains/{domain_id}/deploy` — for custom automation |
 | **Post-deploy hooks** | Optional: `composer install`, `npm install` (configurable per domain) |
 | **Deployment history** | Table of all deployments: timestamp, commit SHA, status, duration, files changed |
@@ -770,7 +770,7 @@ Personal account configuration and security settings.
 
 ## API-Driven Architecture
 
-The client panel is driven by a **REST API** (or GraphQL alternative) that serves as the single source of truth.
+The tenant panel is driven by a **REST API** (or GraphQL alternative) that serves as the single source of truth.
 
 ### API Layers
 

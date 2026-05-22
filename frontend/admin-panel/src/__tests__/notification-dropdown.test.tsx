@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import NotificationDropdown from '../components/NotificationDropdown';
 
 const mockNotifications = [
-  { id: '1', userId: 'u1', type: 'info' as const, title: 'Client Created', message: 'New tenant Acme Corp', resourceType: 'tenant', resourceId: 'c1', isRead: 0, readAt: null, createdAt: new Date().toISOString() },
+  { id: '1', userId: 'u1', type: 'info' as const, title: 'Tenant Created', message: 'New tenant Acme Corp', resourceType: 'tenant', resourceId: 'c1', isRead: 0, readAt: null, createdAt: new Date().toISOString() },
   { id: '2', userId: 'u1', type: 'warning' as const, title: 'Domain Update', message: 'Domain example.com updated', resourceType: 'domain', resourceId: 'd1', isRead: 0, readAt: null, createdAt: new Date(Date.now() - 3_600_000).toISOString() },
 ];
 
@@ -76,7 +76,7 @@ describe('Admin NotificationDropdown', () => {
 
     await user.click(screen.getByTestId('notification-bell'));
 
-    expect(screen.getByText('Client Created')).toBeInTheDocument();
+    expect(screen.getByText('Tenant Created')).toBeInTheDocument();
     expect(screen.getByText('Domain Update')).toBeInTheDocument();
   });
 

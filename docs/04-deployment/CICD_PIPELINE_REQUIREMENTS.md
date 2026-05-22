@@ -184,7 +184,7 @@ docker compose down
 - [ ] Run migrations: `docker compose exec backend npm run db:migrate`
 - [ ] Seed dev data: `docker compose exec backend npm run db:seed`
 - [ ] Open admin panel: http://localhost:5173
-- [ ] Open client panel: http://localhost:5174
+- [ ] Open tenant panel: http://localhost:5174
 - [ ] Connect to NetBird mesh (get setup key from team lead)
 - [ ] Verify kubectl access: `kubectl get nodes`
 ```

@@ -35,9 +35,9 @@ export default function Domains() {
     { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor },
   );
 
-  const { data: clientsData } = useTenants({ limit: 100 });
+  const { data: tenantsData } = useTenants({ limit: 100 });
   const tenantMap = new Map(
-    (clientsData?.data ?? []).map((c) => [c.id, c.name]),
+    (tenantsData?.data ?? []).map((c) => [c.id, c.name]),
   );
 
   const domains = domainsData?.data ?? [];
@@ -132,7 +132,7 @@ export default function Domains() {
                       />
                     </th>
                     <SortableHeader label="Domain Name" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <SortableHeader label="Client" sortKey="tenantId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Tenant" sortKey="tenantId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                     <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />

@@ -151,7 +151,7 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   if (wantsTenantProxy) {
     const tenantProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'tenant'), eq(oidcProviders.enabled, 1)));
     if (tenantProviders.length === 0) {
-      throw new ApiError('NO_CLIENT_PROVIDER', 'At least one enabled client OIDC provider is required before enabling proxy protection for client panel', 400);
+      throw new ApiError('NO_TENANT_PROVIDER', 'At least one enabled client OIDC provider is required before enabling proxy protection for client panel', 400);
     }
   }
 
@@ -453,7 +453,7 @@ export async function findOrCreateOidcUser(
       await db.insert(users).values({
         id,
         email,
-        fullName: claims.name ?? claims.preferred_username ?? 'Client User',
+        fullName: claims.name ?? claims.preferred_username ?? 'Tenant User',
         passwordHash: null,
         roleName: 'tenant_admin',
         panel: 'tenant',
@@ -497,7 +497,7 @@ export async function findOrCreateOidcUser(
     await db.insert(users).values({
       id: userId,
       email,
-      fullName: claims.name ?? claims.preferred_username ?? 'Client User',
+      fullName: claims.name ?? claims.preferred_username ?? 'Tenant User',
       passwordHash: null,
       roleName: 'tenant_admin',
       panel: 'tenant',

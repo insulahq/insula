@@ -26,10 +26,10 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 
 ### Primitive 1 — restic per-tenant repository for files
 
-- One repository per `(clientId, component)` at:
-  - `<store>/restic-files/<clientId>/`
-  - `<store>/restic-mail/<clientId>/`
-- Per-tenant password derived deterministically: `password = HKDF-SHA256(PLATFORM_ENCRYPTION_KEY, info="restic-tenant-${clientId}")`. No new key material to manage; rotation policy follows ADR-032 §7's KID scheme.
+- One repository per `(tenantId, component)` at:
+  - `<store>/restic-files/<tenantId>/`
+  - `<store>/restic-mail/<tenantId>/`
+- Per-tenant password derived deterministically: `password = HKDF-SHA256(PLATFORM_ENCRYPTION_KEY, info="restic-tenant-${tenantId}")`. No new key material to manage; rotation policy follows ADR-032 §7's KID scheme.
 - restic process runs on the **platform-api side**. Tenant Job streams the prepared payload (PVC tar, or Maildir tarball) over the existing HMAC-authenticated `internal-upload-route` endpoint; platform-api pipes the request body straight into a `restic backup --stdin` subprocess. **S3 credentials never enter the tenant namespace.**
 - Per-pod concurrency cap `TENANT_BUNDLES_MAX_CONCURRENT_RESTIC` (default 4) enforced by an in-process semaphore in `restic-driver.ts`.
 - Optional cluster-wide cap `tenant_backup_global_max_in_flight` (default 0 = unlimited) implemented via numbered Postgres `pg_try_advisory_lock(N)` slots — pure SQL, no Redis.
@@ -38,7 +38,7 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 
 - For each tenant mailbox, the Job runs `jmap-sync.py` (Python stdlib, ~200 lines, no third-party deps) inside the existing `mail-backup-tools` image (rebased on `debian:trixie-slim`).
 - The script authenticates as the **Stalwart master user** (same credentials webmail/mbsync use today, mounted from `roundcube-secrets` Secret) and uses the master-user proxy login `<addr>%<masterFQ>` to read each tenant mailbox.
-- It reads `lastJmapState` from the `tenant_jmap_state` table per `(clientId, mailboxJmapId)`, calls `Email/changes`, fetches `created`+`updated` bodies via `Blob/get`, writes them into a **Maildir-shaped output tree**:
+- It reads `lastJmapState` from the `tenant_jmap_state` table per `(tenantId, mailboxJmapId)`, calls `Email/changes`, fetches `created`+`updated` bodies via `Blob/get`, writes them into a **Maildir-shaped output tree**:
   ```
   <accountAddress>/<mailboxName>/cur/<unix>.<unique>:2,<flags>
   ```
@@ -91,7 +91,7 @@ The tenant-backup repo is designed so a Region B operator can mount a Region A r
 bundle-version=2          # bumps with breaking restore-side changes
 platform-version=<sha>    # source-region platform-api version
 region=<source-region-id> # derived from PLATFORM_BASE_DOMAIN, slugified
-tenant-id=<clientId>      # source-region clientId
+tenant-id=<tenantId>      # source-region tenantId
 tenant-slug=<slug>        # human-friendly identifier from clients.slug
 bundle-id=<backupId>      # links to source-region backup_jobs row
 component=files|mailboxes
@@ -101,14 +101,14 @@ component=files|mailboxes
 
 **Region id**: derived from `PLATFORM_BASE_DOMAIN` (already in `backend/src/config/domains.ts`). Slugified by replacing dots with dashes so tags stay shell-safe in any context. e.g. `staging.example.test` → `staging-example-test`. Operator-overridable via `tenant_backup_v2_settings.region_id_override` if needed.
 
-**Repo URL portability**: `s3:https://fsn1.your-objectstorage.com/k8s-staging/restic-files/<clientId>` works identically from any cluster that can reach the endpoint. No region-specific transformation. Region B creates a `backup_configurations` row pointing at the same bucket (read-only IAM on its side) and registers it as an `external_backup_repos` row.
+**Repo URL portability**: `s3:https://fsn1.your-objectstorage.com/k8s-staging/restic-files/<tenantId>` works identically from any cluster that can reach the endpoint. No region-specific transformation. Region B creates a `backup_configurations` row pointing at the same bucket (read-only IAM on its side) and registers it as an `external_backup_repos` row.
 
 **DR key derivation (Option A + C — chosen 2026-05-09)**:
 
-Per-tenant restic password used by the source region remains `HKDF(PLATFORM_ENCRYPTION_KEY, "restic-tenant-" + clientId)` — only the source region can derive it. After the first successful backup for a (clientId, component), the orchestrator runs `restic key add` to attach a SECOND password derived from a separate `DR_RECOVERY_KEY` held in `tenant_backup_v2_settings.dr_recovery_key_encrypted`:
+Per-tenant restic password used by the source region remains `HKDF(PLATFORM_ENCRYPTION_KEY, "restic-tenant-" + tenantId)` — only the source region can derive it. After the first successful backup for a (tenantId, component), the orchestrator runs `restic key add` to attach a SECOND password derived from a separate `DR_RECOVERY_KEY` held in `tenant_backup_v2_settings.dr_recovery_key_encrypted`:
 
 ```
-dr_password = HKDF(DR_RECOVERY_KEY, "dr-recovery:" + clientId)
+dr_password = HKDF(DR_RECOVERY_KEY, "dr-recovery:" + tenantId)
 ```
 
 `DR_RECOVERY_KEY` is a 32-byte secret generated once per cluster, stored encrypted at rest under `PLATFORM_ENCRYPTION_KEY`, shared out-of-band with Region B's operator. Region B reproduces `dr_password` deterministically. Rotation = generate new key, run `restic key add new; restic key remove old` cluster-wide via background sweeper.
@@ -130,13 +130,13 @@ Operator may run with **Option A only** (default), **Option B only** (set `dr_re
 restoreFromExternalRepo({
   sourceTarget,            // resolved BackupTarget (read-only)
   sourceSnapshotId,        // restic snapshot id from sourceTarget
-  targetClientId?,         // override: which local clientId receives the data
+  targetClientId?,         // override: which local tenantId receives the data
   targetSlug?,             // override: tenant slug at the destination
   passwordHex,             // either DR password or one-shot key
 })
 ```
 
-If `targetClientId` is omitted, parsed from snapshot tag `tenant-id=…`. If `targetSlug` is omitted, parsed from `tenant-slug=…`. Cross-tenant guard adapted: skips the local `dump.clientId === restoreJob.clientId` invariant (it's intentionally cross-region) but enforces:
+If `targetClientId` is omitted, parsed from snapshot tag `tenant-id=…`. If `targetSlug` is omitted, parsed from `tenant-slug=…`. Cross-tenant guard adapted: skips the local `dump.tenantId === restoreJob.tenantId` invariant (it's intentionally cross-region) but enforces:
 
 1. The source repo URI matches a row in `external_backup_repos` (operator-allowlisted).
 2. Every snapshot's `bundle-version` is ≤ the local `BUNDLE_SCHEMA_VERSION` (forward-compatible only).
@@ -184,8 +184,8 @@ Storage at 100 tenants: ~640 GiB total (vs ~18 TiB legacy). At 500 tenants: ~3.2
 
 Two-layer guard at every restore-executor entry:
 
-1. `dump.clientId === restoreJob.clientId` (ADR-034 invariant, unchanged).
-2. `repoUri.startsWith('${storeBase}/restic-{files|mail}/${clientId}/')` (new). Cryptographically reinforced because the repo password is per-tenant; even on misconfiguration, restic refuses to open with the wrong password.
+1. `dump.tenantId === restoreJob.tenantId` (ADR-034 invariant, unchanged).
+2. `repoUri.startsWith('${storeBase}/restic-{files|mail}/${tenantId}/')` (new). Cryptographically reinforced because the repo password is per-tenant; even on misconfiguration, restic refuses to open with the wrong password.
 
 ## Coverage contract impact (ADR-035)
 

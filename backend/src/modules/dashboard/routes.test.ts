@@ -24,9 +24,9 @@ describe('dashboard routes', () => {
           const keys = Object.keys(fields);
           const result: Record<string, number> = {};
           for (const key of keys) {
-            if (key === 'active_clients') {
+            if (key === 'active_tenants') {
               result[key] = 8;
-            } else if (key === 'total_clients') {
+            } else if (key === 'total_tenants') {
               result[key] = 12;
             } else if (key === 'total_domains') {
               result[key] = 25;
@@ -94,8 +94,8 @@ describe('dashboard routes', () => {
     });
     const body = res.json();
     expect(body.data).toBeDefined();
-    expect(body.data.total_clients).toBe(12);
-    expect(body.data.active_clients).toBe(8);
+    expect(body.data.total_tenants).toBe(12);
+    expect(body.data.active_tenants).toBe(8);
     expect(body.data.total_domains).toBe(25);
     expect(body.data.total_backups).toBe(42);
     expect(body.data.platform_version).toBe('0.1.0');
@@ -108,8 +108,8 @@ describe('dashboard routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     const body = res.json();
-    expect(typeof body.data.total_clients).toBe('number');
-    expect(typeof body.data.active_clients).toBe('number');
+    expect(typeof body.data.total_tenants).toBe('number');
+    expect(typeof body.data.active_tenants).toBe('number');
     expect(typeof body.data.total_domains).toBe('number');
     expect(typeof body.data.total_backups).toBe('number');
   });

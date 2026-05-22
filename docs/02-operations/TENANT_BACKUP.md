@@ -49,7 +49,7 @@ to.
 | Initiator | When | Code path |
 |---|---|---|
 | `admin` | Operator clicks "Create bundle" in Backup Settings | `POST /admin/backups/bundles` |
-| `client` | Tenant requests GDPR data export from client panel | same route, `initiator='client'`, `exportMode='data_export'` |
+| `client` | Tenant requests GDPR data export from tenant panel | same route, `initiator='client'`, `exportMode='data_export'` |
 | `system` | Tier-1 scheduler tick fires per `client_backup_schedules` row | `runScheduleTick()` in `tenant-bundles/schedule.ts` |
 
 The Tier-1 scheduler runs every 5 min on every platform-api replica
@@ -67,7 +67,7 @@ so only one replica runs each due client. Frequencies: `daily`,
   hang forever.
 - Plan-bound retention: `hosting_plans.max_backup_retention_days`
   caps both ad-hoc creates and per-tenant schedule retention. The
-  client panel + admin API both reject `retentionDays > plan_cap`
+  tenant panel + admin API both reject `retentionDays > plan_cap`
   with `VALIDATION_ERROR`.
 
 ## Restore (Plesk-style cart)
@@ -87,7 +87,7 @@ Item types:
 | `files-paths` | `{ kind: 'full' | 'paths', paths }` | Tenant-ns Job: download archive via internal-download endpoint, tar-extract paths into PVC |
 | `mailboxes-by-address` | `{ kind: 'all' | 'addresses', addresses }` | Mail-ns Job: download per-mailbox tarball, run `stalwart-cli account import` per address |
 
-Cross-tenant guard: every executor asserts `dump.clientId === restoreJob.clientId`
+Cross-tenant guard: every executor asserts `dump.tenantId === restoreJob.tenantId`
 before applying anything.
 
 ### Pre-restore snapshot
@@ -104,10 +104,10 @@ restores have no rollback today (no PVC to revert).
 | Surface | Purpose | Route |
 |---|---|---|
 | Settings → Backups | List bundles, create, verify, delete, GDPR export download | `/settings/backups` |
-| Bundle row → Restore | Open restore cart picker for one bundle | `/restore?bundleId=…&clientId=…` |
+| Bundle row → Restore | Open restore cart picker for one bundle | `/restore?bundleId=…&tenantId=…` |
 | `/restores` | Recent-carts list with status filter + Resume button on failed/paused | `/restores` |
-| Client → Backups tab | Per-client schedule editor (daily/weekly/monthly + retention) | `/clients/:id` (Backups tab) |
-| Client panel → Backups | Customer self-service: bundles list, schedule editor, GDPR export download | `/backups` (client panel) |
+| Client → Backups tab | Per-client schedule editor (daily/weekly/monthly + retention) | `/tenants/:id` (Backups tab) |
+| Tenant panel → Backups | Customer self-service: bundles list, schedule editor, GDPR export download | `/backups` (tenant panel) |
 
 ## GDPR data export
 
@@ -128,7 +128,7 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
 ```
 
 Download: GET `/admin/backups/bundles/:id/data-export` (admin) or
-`/client/backups/bundles/:id/data-export` (client panel).
+`/client/backups/bundles/:id/data-export` (tenant panel).
 
 ## Operations
 
@@ -247,7 +247,7 @@ a Stalwart-side config detail, not a fundamental block.
 
 ## Schema reference
 
-- `backup_jobs` — one row per bundle (id, clientId, initiator, status, target, retentionDays, expiresAt, sizeBytes, exportMode, exportArtifact, …)
+- `backup_jobs` — one row per bundle (id, tenantId, initiator, status, target, retentionDays, expiresAt, sizeBytes, exportMode, exportArtifact, …)
 - `backup_components` — one row per component artefact within a bundle
 - `backup_configurations` — backup target rows (S3/SSH credentials, encrypted)
 - `client_backup_schedules` — per-tenant schedule (frequency, hourOfDayUtc, retentionDays, last_run_at, last_run_status)

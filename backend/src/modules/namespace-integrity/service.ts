@@ -99,7 +99,7 @@ export async function checkTenantNamespaceIntegrity(
 ): Promise<NamespaceIntegrityReport> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) {
-    throw new Error(`Client ${tenantId} not found`);
+    throw new Error(`Tenant ${tenantId} not found`);
   }
   if (tenant.provisioningStatus !== 'provisioned') {
     return {

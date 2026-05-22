@@ -231,7 +231,7 @@ If recovery unsuccessful, rollback to [procedure]
 
 ## Verification Checklist
 - [ ] DNS points to new cluster
-- [ ] Client panel accessible
+- [ ] Tenant panel accessible
 - [ ] Backups running
 - ...
 ```

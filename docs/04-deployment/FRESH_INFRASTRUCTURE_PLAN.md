@@ -136,13 +136,13 @@ The following services must be running **before** the k3s platform can be deploy
 - React 18 + Vite + TypeScript + shadcn/ui + Tailwind CSS
 - Deployed as static site (nginx container)
 - Public endpoint: `https://admin.example.test`
-- Features: Client management, DNS management, billing, monitoring (see `docs/02-operations/ADMIN_PANEL_REQUIREMENTS.md`)
+- Features: Tenant management, DNS management, billing, monitoring (see `docs/02-operations/ADMIN_PANEL_REQUIREMENTS.md`)
 
 **Tenant Panel:**
 - React 18 + Vite + TypeScript + shadcn/ui + Tailwind CSS
 - Deployed as static site (nginx container)
-- Public endpoint: `https://client.example.test`
-- Features: File manager, email management, database management (see `docs/02-operations/CLIENT_PANEL_FEATURES.md`)
+- Public endpoint: `https://tenant.example.test`
+- Features: File manager, email management, database management (see `docs/02-operations/TENANT_PANEL_FEATURES.md`)
 
 ### 6. Backup Infrastructure
 
@@ -317,7 +317,7 @@ table inet filter {
 
 14. **Scaffold admin panel** — Vite + React + TypeScript + shadcn/ui
 15. **Deploy admin panel pod** — Static site, nginx container
-16. **Implement client management** — List, create, edit, delete clients
+16. **Implement tenant management** — List, create, edit, delete clients
 17. **Implement domain management** — List, create, delete domains, add DNS records
 
 ---

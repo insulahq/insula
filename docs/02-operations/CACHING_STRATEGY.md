@@ -37,7 +37,7 @@ app.get('/api/regions', setCacheHeaders(3600), (req, res) => {
   res.json(regions);
 });
 
-app.get('/api/clients/:id', setCacheHeaders(300), (req, res) => {
+app.get('/api/tenants/:id', setCacheHeaders(300), (req, res) => {
   // Client details, cache for 5 minutes
   const client = await getClient(req.params.id);
   res.json(client);
@@ -54,7 +54,7 @@ app.get('/api/workloads/:id/logs', setCacheHeaders(60), (req, res) => {
 
 ```typescript
 // On resource update, clear related caches
-app.put('/api/clients/:id', async (req, res) => {
+app.put('/api/tenants/:id', async (req, res) => {
   const client = await updateClient(req.params.id, req.body);
 
   // Invalidate client detail cache
@@ -150,8 +150,8 @@ redis.on('connect', () => {
 
 ```typescript
 // Get client from cache or database
-export const getClient = async (clientId: string) => {
-  const cacheKey = `client:${clientId}`;
+export const getClient = async (tenantId: string) => {
+  const cacheKey = `client:${tenantId}`;
 
   // Try cache first
   const cached = await redis.get(cacheKey);
@@ -160,7 +160,7 @@ export const getClient = async (clientId: string) => {
   }
 
   // Not in cache, fetch from database
-  const client = await db.clients.findById(clientId);
+  const client = await db.clients.findById(tenantId);
   if (client) {
     // Store in cache for 30 minutes
     await redis.setex(cacheKey, 30 * 60, JSON.stringify(client));
@@ -174,11 +174,11 @@ export const getClient = async (clientId: string) => {
 
 ```typescript
 // Update client and cache
-export const updateClient = async (clientId: string, updates: any) => {
-  const client = await db.clients.update(clientId, updates);
+export const updateClient = async (tenantId: string, updates: any) => {
+  const client = await db.clients.update(tenantId, updates);
 
   // Update cache
-  const cacheKey = `client:${clientId}`;
+  const cacheKey = `client:${tenantId}`;
   await redis.setex(cacheKey, 30 * 60, JSON.stringify(client));
 
   // Invalidate list cache
@@ -223,8 +223,8 @@ const key3 = getCacheKey('workloads', 'client-123', 'list'); // workloads:client
 
 ```typescript
 // Pattern-based invalidation
-export const invalidateClientCache = async (clientId: string) => {
-  const pattern = `client:${clientId}*`;
+export const invalidateClientCache = async (tenantId: string) => {
+  const pattern = `client:${tenantId}*`;
   const keys = await redis.keys(pattern);
   
   if (keys.length > 0) {
@@ -294,15 +294,15 @@ export const broadcastCacheInvalidation = async (pattern: string) => {
 
 ```typescript
 // Cache expensive database queries
-const getCachedWorkloads = async (clientId: string, filters: any) => {
-  const cacheKey = `workloads:${clientId}:${JSON.stringify(filters)}`;
+const getCachedWorkloads = async (tenantId: string, filters: any) => {
+  const cacheKey = `workloads:${tenantId}:${JSON.stringify(filters)}`;
 
   // Check cache
   const cached = await redis.get(cacheKey);
   if (cached) return JSON.parse(cached);
 
   // Execute query
-  const query = db.workloads.where({ tenant_id: clientId });
+  const query = db.workloads.where({ tenant_id: tenantId });
   if (filters.status) query = query.where({ status: filters.status });
   
   const workloads = await query.toArray();
@@ -323,13 +323,13 @@ import DataLoader from 'dataloader';
 const workloadLoader = new DataLoader(async (clientIds) => {
   const workloads = await db.workloads.whereIn('tenant_id', clientIds);
   
-  return clientIds.map(clientId =>
-    workloads.filter(w => w.tenant_id === clientId)
+  return clientIds.map(tenantId =>
+    workloads.filter(w => w.tenant_id === tenantId)
   );
 });
 
 // In resolver or route
-app.get('/api/clients/:id/workloads', async (req, res) => {
+app.get('/api/tenants/:id/workloads', async (req, res) => {
   const workloads = await workloadLoader.load(req.params.id);
   res.json(workloads);
 });
@@ -551,34 +551,34 @@ describe('Caching Strategy', () => {
   });
 
   it('should return cached value on second request', async () => {
-    const clientId = 'client-123';
+    const tenantId = 'client-123';
     
     // First request - cache miss
-    const client1 = await getClient(clientId);
-    expect(client1.id).toBe(clientId);
+    const client1 = await getClient(tenantId);
+    expect(client1.id).toBe(tenantId);
 
     // Verify cached
-    const cached = await redis.get(`client:${clientId}`);
+    const cached = await redis.get(`client:${tenantId}`);
     expect(cached).toBeDefined();
 
     // Second request - cache hit (should not query database)
-    const client2 = await getClient(clientId);
+    const client2 = await getClient(tenantId);
     expect(client2).toEqual(client1);
   });
 
   it('should invalidate cache on update', async () => {
-    const clientId = 'client-123';
+    const tenantId = 'client-123';
 
     // Populate cache
-    await getClient(clientId);
-    let cached = await redis.get(`client:${clientId}`);
+    await getClient(tenantId);
+    let cached = await redis.get(`client:${tenantId}`);
     expect(cached).toBeDefined();
 
     // Update client
-    await updateClient(clientId, { companyName: 'New Name' });
+    await updateClient(tenantId, { companyName: 'New Name' });
 
     // Verify cache cleared
-    cached = await redis.get(`client:${clientId}`);
+    cached = await redis.get(`client:${tenantId}`);
     expect(cached).toBeNull();
   });
 

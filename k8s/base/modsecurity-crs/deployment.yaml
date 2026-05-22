@@ -88,10 +88,12 @@ spec:
             - name: ALLOWED_METHODS
               # CRS rule 911100 ("HTTP method is not allowed by policy")
               # defaults to `tx.allowed_methods=GET HEAD POST OPTIONS`.
-              # Our admin / client / tenant API uses PATCH heavily —
+              # Our admin / tenant API uses PATCH heavily —
               # system-settings, auth/passkey-mode, routes/<id> updates,
               # mtls-providers/clients/<cid>/certificates/<certid>
-              # (revoke), etc. — plus PUT + DELETE for resource
+              # (revoke — OAuth "client" here is the mTLS X.509 client
+              # cert holder, not a renamed concept), etc. — plus PUT +
+              # DELETE for resource
               # lifecycle. Without this override, every non-POST mutating
               # request gets a 403 from modsec at the middleware sub-
               # request, the plugin forwards 403 verbatim, and the

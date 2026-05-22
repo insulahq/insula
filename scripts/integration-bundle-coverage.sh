@@ -258,7 +258,7 @@ print(json.dumps(d.get("components", {}).get("config", {}).get("rowCounts", {}))
 captured_tables=$(echo "$rc_json" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin).keys()))' 2>/dev/null | sort -u)
 
 # Tables we deliberately populated above — these MUST be in rowCounts.
-expected_with_rows=("clients" "domains")
+expected_with_rows=("tenants" "domains")
 for t in "${expected_with_rows[@]}"; do
   if echo "$captured_tables" | grep -qx "$t"; then
     ok "rowCounts has $t"

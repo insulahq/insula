@@ -1,4 +1,4 @@
-// Client-panel "Available updates" card for an installed deployment.
+// Tenant-panel "Available updates" card for an installed deployment.
 // Used inside InstalledAppDetailModal. Mirrors the admin-panel surface but
 // from the customer's POV: pick a target version, confirm the upgrade, see
 // the rollback button after a successful upgrade.

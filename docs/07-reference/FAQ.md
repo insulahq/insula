@@ -218,7 +218,7 @@ Alerts go to admin (email + SMS, PagerDuty in Phase 2).
 
 ### Q: Can clients see their metrics?
 
-**A:** Yes. Each client panel shows:
+**A:** Yes. Each tenant panel shows:
 - Storage usage (files + databases)
 - Bandwidth
 - HTTP errors / latency
@@ -336,7 +336,7 @@ Recommend: HA at 100-150 clients (revenue ~$800-1200/mo).
 **A:** See **QUICKSTART.md** for navigation by role:
 - **Architects:** PLATFORM_ARCHITECTURE.md
 - **DevOps/SRE:** INFRASTRUCTURE_SIZING.md, DEPLOYMENT_PROCESS.md, DISASTER_RECOVERY.md
-- **Developers:** TECH_STACK_SUMMARY.md, CLIENT_PANEL_FEATURES.md
+- **Developers:** TECH_STACK_SUMMARY.md, TENANT_PANEL_FEATURES.md
 - **Product Managers:** HOSTING_PLANS.md, APPLICATION_CATALOG.md
 
 ### Q: What's the roadmap?

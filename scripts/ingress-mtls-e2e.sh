@@ -35,7 +35,7 @@ FAILED=0
 FAILURES=()
 ROUTE_ID="${ROUTE_ID:-}"
 HOSTNAME=""
-CLIENT_ID=""
+TENANT_ID=""
 NAMESPACE=""
 TMP_CA_DIR=""
 
@@ -120,14 +120,14 @@ prereq_resolve_target() {
   fi
   ROUTE_ID=$(echo "$row" | cut -d'|' -f1)
   HOSTNAME=$(echo "$row" | cut -d'|' -f2)
-  CLIENT_ID=$(echo "$row" | cut -d'|' -f3)
+  TENANT_ID=$(echo "$row" | cut -d'|' -f3)
   NAMESPACE=$(echo "$row" | cut -d'|' -f4)
   ok "discovered route=$ROUTE_ID host=$HOSTNAME ns=$NAMESPACE"
 }
 
 prereq_clean_state() {
   log "── prereq: clean baseline ──"
-  api DELETE "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/mtls" >/dev/null
+  api DELETE "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" >/dev/null
   ok "any prior mTLS config cleared"
 }
 
@@ -143,7 +143,7 @@ prereq_generate_ca() {
 scenario_invalid_ca_rejected() {
   local payload='{"enabled":false,"caCertPem":"not a valid pem"}'
   local code
-  code=$(api_status PATCH "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/mtls" "$payload")
+  code=$(api_status PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" "$payload")
   [[ "$code" == "422" ]] && ok "invalid CA returns 422" \
     || { fail "invalid CA expected 422, got $code"; return 1; }
   return 0
@@ -151,7 +151,7 @@ scenario_invalid_ca_rejected() {
 
 scenario_enable_without_ca_rejected() {
   local code
-  code=$(api_status PATCH "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/mtls" '{"enabled":true}')
+  code=$(api_status PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" '{"enabled":true}')
   [[ "$code" == "422" ]] && ok "enable-without-CA returns 422" \
     || { fail "enable-without-CA expected 422, got $code"; return 1; }
   return 0
@@ -163,7 +163,7 @@ scenario_upload_valid_ca() {
   pem=$(python3 -c "import json,sys;print(json.dumps(sys.stdin.read()))" < "$TMP_CA_DIR/ca.pem")
   local payload="{\"enabled\":false,\"caCertPem\":${pem}}"
   local resp
-  resp=$(api PATCH "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/mtls" "$payload")
+  resp=$(api PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" "$payload")
   echo "$resp" | grep -q '"caCertSet":true' && ok "CA uploaded, caCertSet=true" \
     || { fail "CA upload didn't flip caCertSet: $resp"; return 1; }
   echo "$resp" | grep -q '"caCertSubject"' && ok "Subject DN extracted" \
@@ -175,7 +175,7 @@ scenario_upload_valid_ca() {
 
 scenario_enable_renders_annotations() {
   local code
-  code=$(api_status PATCH "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/mtls" '{"enabled":true}')
+  code=$(api_status PATCH "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls" '{"enabled":true}')
   [[ "$code" == "200" ]] && ok "enable returned 200" \
     || { fail "enable expected 200, got $code"; return 1; }
   sleep 4
@@ -256,7 +256,7 @@ EOF" >/dev/null 2>&1
 
 scenario_disable_clears_secret() {
   local code
-  code=$(api_status DELETE "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/mtls")
+  code=$(api_status DELETE "/tenants/$TENANT_ID/ingress-routes/$ROUTE_ID/mtls")
   [[ "$code" == "200" ]] && ok "disable returned 200" \
     || { fail "disable expected 200, got $code"; return 1; }
   sleep 4

@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 
-test.describe('Client Panel Backups', () => {
+test.describe('Tenant Panel Backups', () => {
   test.beforeEach(async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
     await page.getByRole('link', { name: 'Backups' }).click();
     await expect(page.getByTestId('backups-heading')).toBeVisible({ timeout: 2000 });
   });

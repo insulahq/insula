@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 
-test.describe('Client Panel Email Page', () => {
+test.describe('Tenant Panel Email Page', () => {
   test.beforeEach(async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
     await page.getByRole('link', { name: 'Email' }).click();
     await expect(page.getByTestId('email-heading')).toBeVisible({ timeout: 2000 });
   });
@@ -15,7 +15,7 @@ test.describe('Client Panel Email Page', () => {
   test('shows enable-email card when no email domains configured', async ({ page }) => {
     // New UX: when no email-enabled domains exist the page shows a self-serve
     // enable-email card (old "Email Not Enabled / contact admin" message
-    // was removed; clients can turn email on themselves).
+    // was removed; tenants can turn email on themselves).
     await expect(page.getByTestId('email-enable-card')).toBeVisible({ timeout: 2000 });
   });
 

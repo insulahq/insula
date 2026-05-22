@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Dashboard from '../pages/Dashboard';
 
 // 2026-05-21 Wave 3 — Dashboard rebuilt as incident-first. Old tests
-// asserted "Total Clients / Domains / Backups" StatCards which no
+// asserted "Total Tenants / Domains / Backups" StatCards which no
 // longer exist. New tests assert the contract: heading + 4 incident
 // stat cards by testid + the Health banner.
 

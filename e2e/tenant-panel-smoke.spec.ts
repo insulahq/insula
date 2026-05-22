@@ -1,21 +1,21 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdminClient } from './helpers';
+import { loginAsAdminTenant } from './helpers';
 
-test.describe('Client Panel Smoke Tests', () => {
+test.describe('Tenant Panel Smoke Tests', () => {
   test('login page loads', async ({ page }) => {
     await page.goto('/login');
-    await expect(page.getByText('Client Portal')).toBeVisible();
+    await expect(page.getByText('Tenant Portal')).toBeVisible();
     await expect(page.getByTestId('email-input')).toBeVisible();
     await expect(page.getByTestId('password-input')).toBeVisible();
     await expect(page.getByTestId('login-button')).toBeVisible();
   });
 
   test('can login with admin credentials', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
   });
 
   test('dashboard shows quick stats after login', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     // The dashboard should show the quick stats grid
     const statsGrid = page.getByTestId('quick-stats');
@@ -28,13 +28,13 @@ test.describe('Client Panel Smoke Tests', () => {
   });
 
   test('dashboard shows overview description', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await expect(page.getByText(/Here is an overview of your hosting account/)).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Domains page', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Domains' }).click();
     await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 2000 });
@@ -48,21 +48,21 @@ test.describe('Client Panel Smoke Tests', () => {
   });
 
   test('can navigate to Applications page', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Applications' }).click();
     await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Settings page', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     await page.getByRole('link', { name: 'Settings' }).click();
     await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });
   });
 
   test('sidebar navigation items are present', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar).toBeVisible();
@@ -74,7 +74,7 @@ test.describe('Client Panel Smoke Tests', () => {
   });
 
   test('user menu is accessible', async ({ page }) => {
-    await loginAsAdminClient(page);
+    await loginAsAdminTenant(page);
 
     const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByLabel('User menu'));
     await expect(userMenuBtn).toBeVisible();

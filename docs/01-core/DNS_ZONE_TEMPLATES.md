@@ -570,7 +570,7 @@ Changes to the template take effect for **new domains** automatically. Admins ca
 
 ### Per-Domain DNS Editing
 
-Once a domain is provisioned, all its DNS records are fully editable — by admins and by the domain owner in the client panel. The template has no ongoing authority over the zone.
+Once a domain is provisioned, all its DNS records are fully editable — by admins and by the domain owner in the tenant panel. The template has no ongoing authority over the zone.
 
 **Admin:** Admin Panel → Client → Domains → [domain] → DNS Records  
 **Customer:** Tenant Panel → Domains → [domain] → DNS Records
@@ -837,7 +837,7 @@ Both endpoints must be served by the Management API or a dedicated autodiscovery
 ### Phase 2 — Per-Domain DNS Editor (Admin + Tenant Panel)
 
 - [ ] Admin panel: per-domain DNS records page (full CRUD — add, edit, delete any record type)
-- [ ] Client panel: per-domain DNS records page (full CRUD — add, edit, delete any record type)
+- [ ] Tenant panel: per-domain DNS records page (full CRUD — add, edit, delete any record type)
 - [ ] Validate record content server-side before writing to external PowerDNS API (type-specific format checks)
 - [ ] Propagation status indicator per record (show when change has reached all external DNS servers)
 

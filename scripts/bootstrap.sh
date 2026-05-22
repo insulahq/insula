@@ -4710,8 +4710,8 @@ create_platform_configmap() {
     --from-literal=ingress-default-ipv4="${PUBLIC_IP:-}" \
     --from-literal=api-url="https://api.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=admin-url="https://admin.${PLATFORM_DOMAIN:-localhost}" \
-    --from-literal=tenant-url="https://client.${PLATFORM_DOMAIN:-localhost}" \
-    --from-literal=cors-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=tenant-url="https://tenant.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=cors-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://tenant.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=support-email="$support_email" \
     --from-literal=support-url="${SUPPORT_URL:-}" \
     --from-literal=platform-name="$platform_name_value" \
@@ -4719,12 +4719,12 @@ create_platform_configmap() {
     `# Passkey/WebAuthn RP config — derived from --domain so a fresh` \
     `# install Just Works without anyone needing to run` \
     `# set-overlay-apex.sh on a separate overlay. RP_ID is the` \
-    `# registrable suffix shared by admin + client panels (the apex);` \
+    `# registrable suffix shared by admin + tenant panels (the apex);` \
     `# ORIGINS is the CSV of fully-qualified panel URLs. Per-overlay` \
     `# overrides remain possible via overlays/<env>/platform-config-patch.yaml.` \
     --from-literal=passkey-rp-id="${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=passkey-rp-name="$platform_name_value" \
-    --from-literal=passkey-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=passkey-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://tenant.${PLATFORM_DOMAIN:-localhost}" \
     `# Admin node-terminal (ADR-041 — privileged root shell on cluster` \
     `# nodes via nsenter into host PID 1). super_admin-only, 30-min` \
     `# step-up freshness, fully audited. Defaults to ON outside of` \
@@ -4735,7 +4735,7 @@ create_platform_configmap() {
     --from-literal=node-terminal-enabled="$([[ "$PLATFORM_ENV" == "production" ]] && echo false || echo true)" \
     `# Allowlist for publicWssOrigin — host portion of cors-origins.` \
     `# Belt-and-braces against X-Forwarded-Host spoofing.` \
-    --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},client.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},tenant.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }
@@ -4916,7 +4916,7 @@ bundle_bootstrap_secrets() {
   local tier_jq='
     def tier_for_namespace($ns):
       if ($ns | IN("platform","platform-system","mail","longhorn-system","cnpg-system","cert-manager","dex","oauth2-proxy","traefik","crowdsec")) then "tier-1-platform"
-      elif ($ns | test("^client-.+")) then "tier-2-tenant"
+      elif ($ns | test("^tenant-.+")) then "tier-2-tenant"
       else "unclassified"
       end ;
     .'
@@ -6053,8 +6053,8 @@ apply_platform_manifests() {
   # example.test) — bootstrap doesn't sub-namespace by env.
   local api_host="api.${PLATFORM_DOMAIN}"
   local admin_host="admin.${PLATFORM_DOMAIN}"
-  local client_host="client.${PLATFORM_DOMAIN}"
-  log "Hostnames: ${api_host}, ${admin_host}, ${client_host}"
+  local tenant_host="tenant.${PLATFORM_DOMAIN}"
+  log "Hostnames: ${api_host}, ${admin_host}, ${tenant_host}"
 
   # Generate the environment overlay with real hostnames.
   # For staging, preserve the checked-in kustomization.yaml (contains
@@ -6081,7 +6081,7 @@ expected k8s/overlays/${PLATFORM_ENV}/ to exist (dev | staging | production)."
   # or ENV unless the operator explicitly passes --force-domain-change.
   # Re-running bootstrap.sh with a typo'd --domain previously clobbered
   # the CM silently, breaking every Ingress that uses ${DOMAIN} envsubst
-  # (admin.${DOMAIN}, client.${DOMAIN}, dex.${DOMAIN}, …) and 502'ing
+  # (admin.${DOMAIN}, tenant.${DOMAIN}, dex.${DOMAIN}, …) and 502'ing
   # the admin panel until the CM was patched back manually. Observed
   # on staging1 2026-05-08.
   local existing_domain="" existing_env=""
@@ -6701,7 +6701,7 @@ print_summary() {
   log ""
   log "  Endpoints:"
   log "    Admin:   https://admin.${PLATFORM_DOMAIN}"
-  log "    Client:  https://client.${PLATFORM_DOMAIN}"
+  log "    Tenant:  https://tenant.${PLATFORM_DOMAIN}"
   log "    API:     https://api.${PLATFORM_DOMAIN}"
   log ""
   log "  Installed:"

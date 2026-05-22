@@ -364,7 +364,7 @@ interface SecretsConfig {
     expiresIn: string;
   };
   oidc: {
-    clientId: string;
+    tenantId: string;
     clientSecret: string;
     discoveryUrl: string;
   };
@@ -388,7 +388,7 @@ export const getSecretsConfig = (): SecretsConfig => {
       expiresIn: process.env.JWT_EXPIRES || '24h'
     },
     oidc: {
-      clientId: process.env.OIDC_CLIENT_ID!,
+      tenantId: process.env.OIDC_CLIENT_ID!,
       clientSecret: process.env.OIDC_CLIENT_SECRET!,  // From Sealed Secret
       discoveryUrl: process.env.OIDC_DISCOVERY_URL!
     },

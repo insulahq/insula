@@ -88,7 +88,7 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
     // Cache miss — collect on-demand (blocking)
     const tenant = await getTenantById(app.db, id);
     if (tenant.provisioningStatus !== 'provisioned') {
-      throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client is not provisioned yet', 409);
+      throw new ApiError('TENANT_NOT_PROVISIONED', 'Tenant is not provisioned yet', 409);
     }
 
     let k8s: ReturnType<typeof createK8sClients>;
@@ -112,7 +112,7 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
     const tenant = await getTenantById(app.db, id);
 
     if (tenant.provisioningStatus !== 'provisioned') {
-      throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client is not provisioned yet', 409);
+      throw new ApiError('TENANT_NOT_PROVISIONED', 'Tenant is not provisioned yet', 409);
     }
 
     let k8s: ReturnType<typeof createK8sClients>;

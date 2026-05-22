@@ -102,7 +102,7 @@
   - OIDC authentication for email
   - App passwords
 
-#### 2.6 Create `02-operations/CLIENT_PANEL_FEATURES.md` (12 KB)
+#### 2.6 Create `02-operations/TENANT_PANEL_FEATURES.md` (12 KB)
 - **Source:** INFRASTRUCTURE_PLAN.md section 9.5
 - **Contents:**
   - Client dashboard

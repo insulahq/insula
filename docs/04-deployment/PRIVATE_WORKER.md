@@ -213,7 +213,7 @@ ALTER TABLE ingress_routes
 | File | Responsibility |
 |---|---|
 | `service.ts` | `createPrivateWorker`, `listPrivateWorkers`, `getPrivateWorker`, `rotatePrivateWorker`, `revokePrivateWorker`, `freezePrivateWorker`. Token mint, hash (SHA-256), audit-log writes. Throws `ApiError` on validation failures. |
-| `routes.ts` | `/api/v1/tenants/:clientId/private-workers` — CRUD + rotate + revoke + freeze. Auth via existing `authenticate + requireClientRoleByMethod + requireClientAccess` chain. |
+| `routes.ts` | `/api/v1/tenants/:tenantId/private-workers` — CRUD + rotate + revoke + freeze. Auth via existing `authenticate + requireClientRoleByMethod + requireClientAccess` chain. |
 | `internal-routes.ts` | `/api/v1/internal/private-workers/connect-event` — frps server posts connect/disconnect events here for telemetry (`last_seen_at`, `last_used_ip`, audit). Internal auth shared-secret. |
 | `reconciler.ts` | Per-client K8s materialisation. Idempotent. Ref-counted on `private_workers` rows for that client. Creates: ConfigMap (frps.toml), Secret (per-worker tokens), ClusterIP Service per worker, Deployment for the frps pod, ExternalName Service in `platform-system`, per-tenant Ingress with path rule. Mirrors `deployment-network-access/reconciler.ts` upsert helpers. |
 
@@ -266,7 +266,7 @@ Image runs as non-root (uid 1000), no persistent volume needed, exposes `:7400` 
 
 ### Frontend
 
-**Client panel** — `frontend/tenant-panel/src/pages/PrivateWorkers.tsx`:
+**Tenant panel** — `frontend/tenant-panel/src/pages/PrivateWorkers.tsx`:
 - Table list (name, slug, status, last seen, exposed port)
 - Create modal (name + exposed port + optional description)
 - One-time token modal (token shown once + "Copy docker-compose snippet" + "Copy `docker run` command")
@@ -287,7 +287,7 @@ Image runs as non-root (uid 1000), no persistent volume needed, exposes `:7400` 
 - Flux ImagePolicy in `clusters/staging/private-worker-agent.yaml` watches `:<sha>` tag pattern; auto-promotes to staging
 - Production tag pattern is `:v*` semver; manual promotion via tag push
 
-The platform-api itself has no new CI flow — backend changes ride the existing `ci-backend.yml`. Same for admin/client panel changes.
+The platform-api itself has no new CI flow — backend changes ride the existing `ci-backend.yml`. Same for admin/tenant panel changes.
 
 ---
 
@@ -398,6 +398,6 @@ Multiple workers per client share the same frps pod via multi-proxy frpc/frps co
 
 - [ADR-022 — DNS, NetBird, IAM are external](../07-reference/ARCHITECTURE_DECISION_RECORDS.md)
 - [ADR-025 / ADR-026 — Catalog scope](../07-reference/ARCHITECTURE_DECISION_RECORDS.md) (private worker is deliberately *not* a catalog entry)
-- [ADR-033 — Client lifecycle hook registry](../07-reference/ADR-033-tenant-lifecycle-hook-registry.md)
+- [ADR-033 — Tenant lifecycle hook registry](../07-reference/ADR-033-tenant-lifecycle-hook-registry.md)
 - [Cluster firewall](./CLUSTER_NETWORK.md) — peer-IP allowlist; tunnel-server pod inherits client-namespace policy
 - [Network access modes](./NETWORK_ACCESS.md) — orthogonal to private worker; composes via `target_type` polymorphism

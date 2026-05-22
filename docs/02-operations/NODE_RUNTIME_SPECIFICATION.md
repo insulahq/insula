@@ -744,6 +744,6 @@ Common issues:
 - **WORKLOAD_DEPLOYMENT.md** — Container catalog overview and shared/dedicated pod architecture
 - **HOSTING_PLANS.md** — Plan definitions and resource limits
 - **DEPLOYMENT_PROCESS.md** — Git Deploy, SFTP, and FileBrowser deployment methods
-- **CLIENT_PANEL_FEATURES.md** — Tenant Panel UI for runtime switching and environment variables
+- **TENANT_PANEL_FEATURES.md** — Tenant Panel UI for runtime switching and environment variables
 - **FRONTEND_DEPLOYMENT_ARCHITECTURE.md** — Platform port/health check conventions (reference)
 - **STORAGE_DATABASES.md** — Database provisioning per plan

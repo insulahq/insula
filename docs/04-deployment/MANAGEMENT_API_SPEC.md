@@ -49,12 +49,12 @@ Authorization: Bearer <JWT_TOKEN>
 | Endpoint | GET | POST | PATCH | DELETE | Roles |
 |----------|-----|------|-------|--------|-------|
 | `/clients` | ✅ | ✅ | ✅ | ✅ | admin |
-| `/clients/{id}/subscription` | ✅ | - | ✅ | - | admin |
-| `/clients/{id}/domains` | ✅ | ✅ | ✅ | ✅ | admin, support |
-| `/clients/{id}/databases` | ✅ | ✅ | ✅ | ✅ | admin, support |
-| `/clients/{id}/cron-jobs` | ✅ | ✅ | ✅ | ✅ | admin, support |
-| `/clients/{id}/backups` | ✅ | ✅ | - | ✅ | admin, support |
-| `/clients/{id}/metrics` | ✅ | - | - | - | admin, read-only |
+| `/tenants/{id}/subscription` | ✅ | - | ✅ | - | admin |
+| `/tenants/{id}/domains` | ✅ | ✅ | ✅ | ✅ | admin, support |
+| `/tenants/{id}/databases` | ✅ | ✅ | ✅ | ✅ | admin, support |
+| `/tenants/{id}/cron-jobs` | ✅ | ✅ | ✅ | ✅ | admin, support |
+| `/tenants/{id}/backups` | ✅ | ✅ | - | ✅ | admin, support |
+| `/tenants/{id}/metrics` | ✅ | - | - | - | admin, read-only |
 | `/admin/cron-jobs` | ✅ | - | - | - | admin |
 | `/admin/status` | ✅ | - | - | - | admin |
 
@@ -2759,7 +2759,7 @@ fastify.register(fastifyCors, {
   origin: [
     'https://panel.platform.com',        // Domain-based
     'https://admin.platform.com',        // Optional: alternate domain
-    'https://client.platform.com',       // Optional: alternate domain
+    'https://tenant.platform.com',       // Optional: alternate domain
     `https://${process.env.CLUSTER_IP}`, // IP-based (restrict to actual cluster IP)
   ],
   credentials: true,
@@ -2907,7 +2907,7 @@ PATCH /api/v1/tenants/client_001/subscription
 - [`FRONTEND_DEPLOYMENT_ARCHITECTURE.md`](./FRONTEND_DEPLOYMENT_ARCHITECTURE.md) — Frontend deployment, path-based routing, IP access, CORS setup
 - [`FRONTEND_INGRESS_CONFIGURATIONS.md`](./FRONTEND_INGRESS_CONFIGURATIONS.md) — Kubernetes Ingress configs for frontend + API integration
 - [`./DEPLOYMENT_PROCESS.md`](./DEPLOYMENT_PROCESS.md) — Client onboarding workflow that uses this API
-- [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md) — Frontend endpoints powered by this API
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Frontend endpoints powered by this API
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin dashboard using this API
 - [`../03-security/SECURITY_ARCHITECTURE.md`](../03-security/SECURITY_ARCHITECTURE.md) — Token validation, OIDC integration
 - [`../02-operations/BACKUP_STRATEGY.md`](../02-operations/BACKUP_STRATEGY.md) — Backup endpoints implementation

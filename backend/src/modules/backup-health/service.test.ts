@@ -5,7 +5,7 @@ import {
   LABEL_HEALTH_WATCH,
   LABEL_CATEGORY,
   LABEL_SEVERITY,
-  LABEL_CLIENT_ID,
+  LABEL_TENANT_ID,
   ANNOTATION_DISPLAY_NAME,
 } from './labels.js';
 
@@ -121,7 +121,7 @@ describe('parseJob', () => {
     const job = makeJob({
       uid: 'u-3',
       name: 'tenant-backup-1',
-      labels: { [LABEL_CLIENT_ID]: 'tenant-abc', [LABEL_CATEGORY]: 'tenant' },
+      labels: { [LABEL_TENANT_ID]: 'tenant-abc', [LABEL_CATEGORY]: 'tenant' },
     });
     const meta = parseJob(job);
     expect(meta?.tenantId).toBe('tenant-abc');

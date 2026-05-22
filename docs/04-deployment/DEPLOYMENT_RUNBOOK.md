@@ -38,7 +38,7 @@ Before proceeding, create these DNS records pointing to your VPS IP:
 ```
 A    api.your-domain.com        -> <VPS_IP>
 A    admin.your-domain.com      -> <VPS_IP>
-A    client.your-domain.com     -> <VPS_IP>
+A    tenant.your-domain.com     -> <VPS_IP>
 A    webmail.your-domain.com    -> <VPS_IP>
 MX   your-domain.com            -> mail.your-domain.com (priority 10)
 A    mail.your-domain.com       -> <VPS_IP>
@@ -197,7 +197,7 @@ kubectl -n platform exec deployment/platform-api -- npm run db:migrate -- --stat
 The smoke test script validates:
 - API health endpoint responds with 200
 - Admin panel is accessible
-- Client panel is accessible
+- Tenant panel is accessible
 - Database connectivity
 - Redis connectivity
 
@@ -219,8 +219,8 @@ curl -s https://api.your-domain.com/api/v1/health | jq .
 # Test admin panel
 curl -s -o /dev/null -w "%{http_code}" https://admin.your-domain.com/
 
-# Test client panel
-curl -s -o /dev/null -w "%{http_code}" https://client.your-domain.com/
+# Test tenant panel
+curl -s -o /dev/null -w "%{http_code}" https://tenant.your-domain.com/
 ```
 
 ---
@@ -266,7 +266,7 @@ If Dex OIDC is running (provided by the infrastructure project), configure it in
    - **Panel Scope:** Admin
 4. Click **Save** and **Test Connection**
 
-Repeat for the client panel if needed with a separate Dex client ID.
+Repeat for the tenant panel if needed with a separate Dex client ID.
 
 ---
 
@@ -408,7 +408,7 @@ kubectl -n platform-system rollout restart statefulset/stalwart-mail
 ### Application
 
 - [ ] Admin panel accessible and functional
-- [ ] Client panel accessible and functional
+- [ ] Tenant panel accessible and functional
 - [ ] API responding to health checks
 - [ ] SFTP gateway accessible on port 2222
 - [ ] Webmail accessible

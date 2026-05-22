@@ -396,7 +396,7 @@ export async function upgradeDeploymentVersion(
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
   const namespace = tenant?.kubernetesNamespace;
   if (!namespace) {
-    throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client namespace is missing', 500);
+    throw new ApiError('TENANT_NOT_PROVISIONED', 'Tenant namespace is missing', 500);
   }
   const resources = parseJsonField<{ recommended?: { storage?: string }; minimum?: { storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
@@ -741,7 +741,7 @@ export async function rollbackDeploymentVersion(
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
   const namespace = tenant?.kubernetesNamespace;
   if (!namespace) {
-    throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client namespace is missing', 500);
+    throw new ApiError('TENANT_NOT_PROVISIONED', 'Tenant namespace is missing', 500);
   }
   const resources = parseJsonField<{ recommended?: { storage?: string }; minimum?: { storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';

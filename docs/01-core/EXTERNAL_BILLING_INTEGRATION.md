@@ -15,7 +15,7 @@ The platform uses a **manual-first, gateway-optional** billing model. Billing in
 - **Manual by default:** Admins can renew any subscription by simply setting a new expiry date — no payment gateway required.
 - **Optional gateways:** One or more payment gateways (Stripe, PayPal, DPO, Chargebee, etc.) can be configured and assigned per customer.
 - **Flexible payment modes:** Both recurring subscription billing and once-off payments are supported.
-- **Admin-managed:** No customer self-service plan upgrades. Customers can pay via a payment link or client panel checkout, but the admin controls what they're paying for.
+- **Admin-managed:** No customer self-service plan upgrades. Customers can pay via a payment link or tenant panel checkout, but the admin controls what they're paying for.
 
 ---
 
@@ -78,7 +78,7 @@ Admin processes payment in the external gateway and records the result in the pl
 Admin clicks **Send Payment Link** in the Admin Panel. The platform generates a once-off payment link via the assigned gateway and sends it to the customer by email. On successful payment, a webhook updates the subscription automatically.
 
 #### 2c. Customer Pays via Tenant Panel
-Customer sees a **Renew Now** button in their client panel when their subscription is expiring (or expired, within the grace period). Customer clicks, is redirected to the gateway checkout, pays the once-off renewal amount, and the subscription is updated via webhook.
+Customer sees a **Renew Now** button in their tenant panel when their subscription is expiring (or expired, within the grace period). Customer clicks, is redirected to the gateway checkout, pays the once-off renewal amount, and the subscription is updated via webhook.
 
 > **Note:** Once-off (single payment) checkout is used for all gateway-based renewals. Recurring/automatic subscription billing via the gateway is also supported where desired, but is not required.
 
@@ -533,7 +533,7 @@ async function createDpoPaymentToken(customer: Customer, months: number): Promis
 Default grace period after expiry: **7 days** (configurable in platform settings). During the grace period:
 - Service continues to run
 - Admin receives escalating alerts
-- Customer sees renewal banner in client panel (if gateway is assigned)
+- Customer sees renewal banner in tenant panel (if gateway is assigned)
 - After grace period expires, admin must manually suspend or the platform auto-suspends (configurable)
 
 ---
@@ -716,7 +716,7 @@ CREATE TABLE gateway_configs (
 - [ ] Implement PayPal webhook handler + signature verification
 - [ ] Implement DPO webhook handler + token verification
 - [ ] Implement "Send Payment Link" API + email delivery
-- [ ] Implement client panel "Renew Now" flow (redirect to gateway checkout)
+- [ ] Implement tenant panel "Renew Now" flow (redirect to gateway checkout)
 - [ ] Test all webhook handlers with sandbox/test mode
 
 ### Phase 2 — Recurring Billing + Reconciliation
@@ -730,7 +730,7 @@ CREATE TABLE gateway_configs (
 
 - [ ] Test manual renewal (no gateway) — admin sets expiry directly
 - [ ] Test payment link flow (all 3 gateways) — end-to-end with sandbox
-- [ ] Test client panel checkout flow
+- [ ] Test tenant panel checkout flow
 - [ ] Test webhook signature verification (valid + invalid)
 - [ ] Test idempotency — same webhook delivered twice does not double-renew
 - [ ] Test grace period — service continues 7 days after expiry
@@ -744,10 +744,10 @@ CREATE TABLE gateway_configs (
 - [`./BILLING_MODEL_CHANGES.md`](./BILLING_MODEL_CHANGES.md) — Summary of billing model changes
 - [`../04-deployment/SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md`](../04-deployment/SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md) — Admin alerts for expiring subscriptions
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel subscription management UI
-- [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md) — Client panel renewal flow
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Tenant panel renewal flow
 
 ---
 
 **Status:** Ready for implementation  
-**Estimated Development Time:** 2–3 weeks (manual + 3 gateways + client panel flow + testing)  
+**Estimated Development Time:** 2–3 weeks (manual + 3 gateways + tenant panel flow + testing)  
 **Next Step:** Implement manual renewal API first, then add gateway support incrementally

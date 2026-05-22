@@ -645,6 +645,6 @@ CREATE TABLE cert_renewal_history (
 - **DNS_MODE_SELECTION.md** — DNS mode per domain and its impact on ACME challenge method
 - **POWERDNS_INTEGRATION.md** — DNS-01 ACME challenge record management via PowerDNS API
 - **ADMIN_PANEL_REQUIREMENTS.md** — Admin Panel SSL certificate management UI (section ND.2)
-- **CLIENT_PANEL_FEATURES.md** — Tenant Panel SSL certificate UI
+- **TENANT_PANEL_FEATURES.md** — Tenant Panel SSL certificate UI
 - **MONITORING_OBSERVABILITY.md** — Certificate expiry alerts
 - **DEPLOYMENT_PROCESS.md** — Certificate provisioning during client onboarding

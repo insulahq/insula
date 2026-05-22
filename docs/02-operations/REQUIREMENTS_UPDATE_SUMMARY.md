@@ -352,7 +352,7 @@ DELETE /user/accounts/oidc/:providerId/unlink # Unlink provider
 - `ADMIN_PANEL_REQUIREMENTS.md` - Now includes all three new sections
 
 **Related Files:**
-- `CLIENT_PANEL_FEATURES.md` - Customer-facing features
+- `TENANT_PANEL_FEATURES.md` - Customer-facing features
 - `../04-deployment/MANAGEMENT_API_SPEC.md` - REST API endpoints
 - `../01-core/PLATFORM_ARCHITECTURE.md` - Security architecture (OIDC integration)
 

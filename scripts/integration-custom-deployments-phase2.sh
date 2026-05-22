@@ -38,7 +38,7 @@
 #
 # PREREQ
 #   - Phase-1 harness must have returned "0 failed".
-#   - At least one active client (CUSTOM_DEPLOY_CLIENT_ID overrides auto-pick).
+#   - At least one active client (CUSTOM_DEPLOY_TENANT_ID overrides auto-pick).
 #   - Platform-api has PLATFORM_ENCRYPTION_KEY (lifecycle + backup scenarios).
 
 set -euo pipefail
@@ -132,7 +132,7 @@ TOKEN=$(login_token)
 [[ -z "$TOKEN" ]] && { echo "FATAL: admin login failed" >&2; exit 2; }
 info "Admin login OK"
 
-TENANT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
+TENANT_ID="${CUSTOM_DEPLOY_TENANT_ID:-}"
 if [[ -z "$TENANT_ID" ]]; then
   TENANT_ID=$(api GET "/tenants?limit=20" | python3 -c "
 import json,sys
@@ -825,7 +825,7 @@ print(json.dumps({
   pass "T13: deployment created with env $marker"
 
   # Trigger a config-only bundle. Route: POST /admin/tenant-bundles
-  # (not /clients/<id>/tenant-bundles — that path does not exist).
+  # (not /tenants/<id>/tenant-bundles — that path does not exist).
   # components is an object with boolean flags, not an array.
   local bundle_resp
   bundle_resp=$(api POST "/admin/tenant-bundles" \

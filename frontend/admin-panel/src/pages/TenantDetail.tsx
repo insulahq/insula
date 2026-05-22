@@ -197,7 +197,7 @@ export default function TenantDetail() {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <p className="text-lg text-gray-500 dark:text-gray-400">
-          {error instanceof Error ? error.message : 'Client not found'}
+          {error instanceof Error ? error.message : 'Tenant not found'}
         </p>
         <Link to="/tenants" className="mt-4 text-sm text-brand-500 hover:text-brand-600">
           Back to tenants
@@ -247,11 +247,11 @@ export default function TenantDetail() {
               if (!id) return;
               // Prefer the admin-configured tenantPanelUrl from System Settings
               // (served via /api/v1/system-info) over the build-time env fallback
-              // (config.CLIENT_PANEL_URL) — the former is what the operator
+              // (config.TENANT_PANEL_URL) — the former is what the operator
               // actually wants customers to see and what the Ingress reconciler
               // points at. Trim trailing slash so we don't build "https://x//login".
               const rawFromDb = systemInfo.data?.tenantPanelUrl ?? '';
-              const tenantPanelUrl = (rawFromDb.trim() || config.CLIENT_PANEL_URL).replace(/\/+$/, '');
+              const tenantPanelUrl = (rawFromDb.trim() || config.TENANT_PANEL_URL).replace(/\/+$/, '');
               if (!tenantPanelUrl) {
                 // Neither source populated — bail before opening a broken tab.
                 alert('Tenant Panel URL is not configured. Set it in System Settings before using "Login as Tenant".');

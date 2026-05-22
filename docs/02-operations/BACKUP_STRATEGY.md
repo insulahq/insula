@@ -27,7 +27,7 @@ Four initiators share that single bundle format:
 
 1. **System (cluster-managed, automated)** — daily + pre-destructive-op captures of active clients, for disaster recovery and rollback
 2. **Admin (operator-initiated)** — ad-hoc captures before planned changes, bulk pre-upgrade runs, migration support
-3. **Client (customer-initiated)** — self-service from the client panel, counts against plan quota, supports GDPR Art. 20 data-portability export
+3. **Client (customer-initiated)** — self-service from the tenant panel, counts against plan quota, supports GDPR Art. 20 data-portability export
 4. **Cluster DR (Velero)** — separate pipeline for the entire platform (platform DB, Stalwart PVC, cert-manager, Flux, Harbor); not discussed in this doc beyond [Tier 4](#tier-4-cluster-disaster-recovery-velero) below
 
 Everything in tiers 1–3 uses the same bundle format, the same restore orchestrator, and the same on-disk layout on whichever storage target is configured. The difference is **access control** (ACL driven by `meta.json.initiator`), **quota** (counts against the plan only for tier 3), and **retention windows**.
@@ -105,7 +105,7 @@ Configurable per plan with per-tenant overrides:
 | Storage | Platform snapshot store (hostpath / S3 / SSH) |
 | Quota | Platform-wide budget — does NOT count against client plan quota |
 | Retention | Platform-global default (90 days) + per-bundle override |
-| Visibility | Admin only — `client` initiator hides this bundle from the client panel |
+| Visibility | Admin only — `client` initiator hides this bundle from the tenant panel |
 | Triggers | Manual from admin panel; automatic pre-archive (`system` sub-type); planned: pre-deployment-upgrade, pre-plan-migration |
 
 ### Bundle composition
@@ -116,7 +116,7 @@ Same four components as Tier 1 (files, mailboxes, config, secrets). Admin can om
 
 ## Tier 3: Client-Initiated Backups
 
-**Self-service captures from the client panel — bound by plan quota, support GDPR Art. 20 data portability.**
+**Self-service captures from the tenant panel — bound by plan quota, support GDPR Art. 20 data portability.**
 
 ### Characteristics
 
@@ -124,11 +124,11 @@ Same four components as Tier 1 (files, mailboxes, config, secrets). Admin can om
 |---|---|
 | Actor | Client user (panel: tenant-panel) |
 | Scope | The client's own data only |
-| Storage | Platform snapshot store, plus optional client-supplied S3 or SSH destination (config in client panel Settings → Backups) |
+| Storage | Platform snapshot store, plus optional client-supplied S3 or SSH destination (config in tenant panel Settings → Backups) |
 | Quota | **Counts against plan** — `max_backups` (number) and `max_backup_size_gb` (bytes) on hosting plan |
 | Retention | Plan-driven default (30 days) + per-bundle override up to the plan's max |
 | Visibility | Client-visible (in their panel); admin also sees the metadata |
-| Triggers | Manual from client panel (immediate) or scheduled (daily/weekly) |
+| Triggers | Manual from tenant panel (immediate) or scheduled (daily/weekly) |
 
 ### Supported backup modes
 
@@ -222,7 +222,7 @@ Each initiator + destination combination is configured separately:
 |---|---|---|
 | System (Tier 1) | Platform-configured S3 or SSH | `storage.backup.system_default_target` |
 | Admin (Tier 2) | Same as system default | Per-run override at API call |
-| Client (Tier 3) | Platform-configured hostpath (with quota) | Client can configure their own S3/SSH in client panel Settings → Backups |
+| Client (Tier 3) | Platform-configured hostpath (with quota) | Client can configure their own S3/SSH in tenant panel Settings → Backups |
 
 ### Encryption
 
@@ -236,7 +236,7 @@ For **customer-downloadable bundles** (GDPR Art. 20 export), the entire bundle i
 
 **Not per-tenant. Operator-facing full-platform DR for rebuilding a cluster from zero.**
 
-Tier 4 runs a fundamentally different pipeline and is **not** accessible through the admin or client panel. It captures:
+Tier 4 runs a fundamentally different pipeline and is **not** accessible through the admin or tenant panel. It captures:
 
 - Platform PostgreSQL via `pg_dump` (Velero pre-backup hook)
 - Stalwart's `data` PVC in the `mail` namespace (Velero restic volume backup)

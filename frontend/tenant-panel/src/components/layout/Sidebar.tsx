@@ -80,7 +80,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         data-testid="sidebar"
       >
         <div className="flex h-16 items-center justify-between px-5">
-          <span className="text-lg font-bold text-white">Client Portal</span>
+          <span className="text-lg font-bold text-white">Tenant Portal</span>
           <button
             onClick={onClose}
             className="rounded-md p-1 text-white/80 hover:text-white lg:hidden"
