@@ -359,7 +359,7 @@ fi
 echo '═══ Phase 3 — /admin/postgres-barman-restore endpoints reachable ═══'
 
 # Status on a known-absent cluster must return 404, not 500.
-api GET '/api/v1/admin/postgres-barman-restore/platform/__definitely_not_a_cluster/status' '' BR_404 BR_404_CODE
+api GET '/api/v1/admin/postgres-barman-restore/platform/never-exists-restored-1/status' '' BR_404 BR_404_CODE
 if [[ "$BR_404_CODE" == "404" ]]; then
   pass "barman-restore status returns 404 for unknown cluster (not 500)"
 else
@@ -367,7 +367,7 @@ else
 fi
 
 # DELETE on unknown cluster is idempotent (deleted=false, http=200).
-api DELETE '/api/v1/admin/postgres-barman-restore/platform/__definitely_not_a_cluster' '' BR_DEL BR_DEL_CODE
+api DELETE '/api/v1/admin/postgres-barman-restore/platform/never-exists-restored-1' '' BR_DEL BR_DEL_CODE
 if [[ "$BR_DEL_CODE" == "200" ]] && printf '%s' "$BR_DEL" | grep -q '"deleted":false'; then
   pass "barman-restore DELETE on unknown cluster is idempotent (deleted=false, http=200)"
 else
