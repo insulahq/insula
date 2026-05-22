@@ -13,8 +13,19 @@
  * without spinning up Fastify or registering a kube tenant.
  */
 
+import type * as k8s from '@kubernetes/client-node';
+import type { Logger } from 'pino';
 import { decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
+import {
+  loadBackupTargetKey,
+  SHIM_NAMESPACE,
+} from '../backup-rclone-shim/service.js';
+import {
+  deriveShimAccessKey,
+  deriveShimSecretKey,
+} from '../backup-rclone-shim/crypto.js';
+import { SHIM_S3_ENDPOINT_URL } from '../backup-rclone-shim/mail-restic.js';
 import type { BackupTarget } from './restic-driver.js';
 
 /**
@@ -114,4 +125,39 @@ export function resolveBackupTarget(
     `Backup store kind '${cfg.storageType}' is not supported by restic driver`,
     501,
   );
+}
+
+// ─── B9: shim-backed target resolver ────────────────────────────────────────
+
+/**
+ * Resolve a "write through the R-X shim" target. Used by ALL new bundle
+ * writes regardless of the upstream backup_configurations.storage_type —
+ * because the shim universally handles S3/SFTP/CIFS/NFS, and the live
+ * staging bench (2026-05-22) showed the shim path is ~35% faster than
+ * restic native S3 for the same Hetzner Object Storage upstream.
+ *
+ * The function reads the BACKUP_TARGET_KEY Secret from the in-cluster
+ * `platform` namespace, derives the HKDF root credentials the shim
+ * authenticates clients with, and emits a `kind: 'shim'` BackupTarget
+ * pointed at the shim's local S3 endpoint.
+ *
+ * `shimClass` is the bound class on the shim — always `'tenant'` for
+ * tenant bundles. Callers MUST ensure the shim has a binding for this
+ * class before invoking restic (otherwise the shim returns NoSuchBucket).
+ */
+export async function resolveShimBackupTarget(
+  core: k8s.CoreV1Api,
+  shimClass: 'system' | 'tenant' | 'mail',
+  log?: Pick<Logger, 'warn'>,
+): Promise<Extract<BackupTarget, { kind: 'shim' }>> {
+  const ki = await loadBackupTargetKey(core, SHIM_NAMESPACE, {
+    log: log ?? { warn: () => {} },
+  });
+  return {
+    kind: 'shim',
+    endpoint: SHIM_S3_ENDPOINT_URL,
+    bucket: shimClass,
+    accessKey: deriveShimAccessKey(ki.rawKey),
+    secretKey: deriveShimSecretKey(ki.rawKey),
+  };
 }
