@@ -20,7 +20,7 @@
 
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { systemSettings, backupConfigurations } from '../../db/schema.js';
+import { systemSettings, backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
@@ -160,95 +160,75 @@ export async function updateMailSnapshotSchedule(
 // ── Backup target ─────────────────────────────────────────────────────────────
 
 /**
- * Read the currently configured backup store for mail snapshots.
+ * Read the currently configured backup target for mail snapshots.
  *
- * Source of truth: `backup_target_assignments[backup_class='system_mail']`
- * (the assignment row resolves via strict-primary). Falls back to the
- * legacy `system_settings.mail_snapshot_backup_store_id` mirror only
- * if no assignment exists yet — that's the transitional path for
- * installs that haven't run migration 0010 (no longer reachable in
- * practice, but kept for safety).
+ * Phase 2 legacy purge (2026-05-22): source of truth moved from
+ * `backup_target_assignments[backup_class='mail']` (the R-X shim's `mail` class) and the
+ * R-X8 shim `mail` class. The mail-restic-shim reconciler owns the
+ * stalwart-snapshot-restic-repo Secret materialisation on every
+ * binding change — no separate sync needed.
  */
 export async function getMailSnapshotBackupTarget(
   db: Database,
 ): Promise<MailSnapshotBackupTargetResponse> {
-  // Authoritative read: snapshot-classes assignment row.
-  const { resolvePrimaryTarget } = await import('../snapshot-classes/service.js');
-  const primary = await resolvePrimaryTarget(db, 'system_mail');
-  if (primary && primary.targetEnabled === 1) {
+  const [row] = await db
+    .select({
+      targetId: backupTargetAssignments.targetId,
+      targetName: backupConfigurations.name,
+      storageType: backupConfigurations.storageType,
+      enabled: backupConfigurations.enabled,
+    })
+    .from(backupTargetAssignments)
+    .innerJoin(
+      backupConfigurations,
+      eq(backupConfigurations.id, backupTargetAssignments.targetId),
+    )
+    .where(eq(backupTargetAssignments.backupClass, 'mail'))
+    .orderBy(backupTargetAssignments.priority)
+    .limit(1);
+
+  if (row && row.enabled === 1) {
     return mailSnapshotBackupTargetResponseSchema.parse({
-      backupStoreId: primary.targetId,
-      backupStoreName: primary.targetName,
-      storageType: primary.targetStorageType,
+      backupStoreId: row.targetId,
+      backupStoreName: row.targetName,
+      storageType: row.storageType,
     });
   }
-
-  // Transitional fallback: read the legacy mirror column. Returns
-  // null shape when no assignment + no mirror is set.
-  const [settings] = await db.select({
-    backupStoreId: systemSettings.mailSnapshotBackupStoreId,
-  }).from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-
-  const storeId = settings?.backupStoreId ?? null;
-  if (!storeId) {
-    return mailSnapshotBackupTargetResponseSchema.parse({
-      backupStoreId: null,
-      backupStoreName: null,
-      storageType: null,
-    });
-  }
-
-  const [config] = await db.select({
-    name: backupConfigurations.name,
-    storageType: backupConfigurations.storageType,
-  }).from(backupConfigurations).where(eq(backupConfigurations.id, storeId));
 
   return mailSnapshotBackupTargetResponseSchema.parse({
-    backupStoreId: storeId,
-    backupStoreName: config?.name ?? null,
-    storageType: config?.storageType ?? null,
+    backupStoreId: null,
+    backupStoreName: null,
+    storageType: null,
   });
 }
 
 /**
- * Update the backup store for mail snapshots — DEPRECATED.
+ * Update the backup target for mail snapshots — passthrough writer.
  *
- * Source of truth moved to `backup_target_assignments[backup_class='system_mail']`
- * in migration 0010. This function survives as a passthrough so the
- * existing Mail Snapshot Settings UI keeps working until the frontend
- * switches to the unified Backup Class Assignments page. Both paths
- * take the same row lock (`setAssignments` transaction), so a
- * concurrent PATCH-via-this-endpoint + PUT-via-snapshot-classes can't
- * race into inconsistent state.
+ * Phase 2 legacy purge (2026-05-22): writes the `mail` shim class
+ * assignment in one transaction. The mail-restic-shim reconciler
+ * picks up the binding change on its 5-minute tick (or inline via
+ * the assignments PUT endpoint when an operator uses the new
+ * /backups/mail UI). This endpoint is left in place for backward-
+ * compatibility of the legacy /admin/mail/snapshot-backup-target
+ * PATCH route until the corresponding UI is replaced.
  *
  * Behaviour:
- *   - update.backupStoreId === null → clears the system_mail
- *     assignment (and as a side-effect, the route's hook deletes the
- *     Secret + mirror via syncMailResticSecretFromAssignment).
- *   - non-null → validates target exists + enabled, then writes a
- *     single assignment at priority 0.
- *
- * Returns the resolved view as before for backward-compat.
+ *   - update.backupStoreId === null → clears the mail assignment.
+ *     Mail-restic-shim notices the empty binding on next tick and
+ *     removes the stalwart-snapshot-restic-repo Secret.
+ *   - non-null → validates target exists + enabled, writes the row.
  */
 export async function updateMailSnapshotBackupTarget(
   update: MailSnapshotBackupTargetUpdate,
   db: Database,
-  opts: SnapshotSettingsOptions,
-  encryptionKey: string,
+  _opts: SnapshotSettingsOptions,
+  _encryptionKey: string,
 ): Promise<MailSnapshotBackupTargetResponse> {
-  const { setAssignments } = await import('../snapshot-classes/service.js');
-  const { syncMailResticSecretFromAssignment } = await import('./mail-target-sync.js');
-
   if (!update.backupStoreId) {
-    // Clear: empty assignment set → reconciler deletes the Secret.
-    await setAssignments(db, 'system_mail', { assignments: [] });
-    try {
-      await syncMailResticSecretFromAssignment(db, encryptionKey, {
-        kubeconfigPath: opts.kubeconfigPath,
-      });
-    } catch {
-      // Best-effort — periodic reconciler heals on next tick.
-    }
+    await db
+      .delete(backupTargetAssignments)
+      .where(eq(backupTargetAssignments.backupClass, 'mail'));
     return mailSnapshotBackupTargetResponseSchema.parse({
       backupStoreId: null,
       backupStoreName: null,
@@ -256,25 +236,50 @@ export async function updateMailSnapshotBackupTarget(
     });
   }
 
-  // setAssignments throws TARGET_NOT_FOUND / TARGET_DISABLED with the
-  // same 400 codes the new endpoint surfaces; the route maps them to
-  // ApiError so the caller sees identical error shapes.
-  const result = await setAssignments(db, 'system_mail', {
-    assignments: [{ targetId: update.backupStoreId, priority: 0 }],
-  });
-  try {
-    await syncMailResticSecretFromAssignment(db, encryptionKey, {
-      kubeconfigPath: opts.kubeconfigPath,
-    });
-  } catch {
-    // Best-effort.
+  // Validate target exists + is enabled BEFORE replacing the
+  // assignment row — operator gets a clean 400 instead of an opaque
+  // FK error if they pick a stale id.
+  const [target] = await db
+    .select({
+      id: backupConfigurations.id,
+      name: backupConfigurations.name,
+      storageType: backupConfigurations.storageType,
+      enabled: backupConfigurations.enabled,
+    })
+    .from(backupConfigurations)
+    .where(eq(backupConfigurations.id, update.backupStoreId))
+    .limit(1);
+
+  if (!target) {
+    throw new ApiError(
+      'TARGET_NOT_FOUND',
+      `backup_configurations row ${update.backupStoreId} not found`,
+      400,
+    );
+  }
+  if (target.enabled !== 1) {
+    throw new ApiError(
+      'TARGET_DISABLED',
+      `backup_configurations row ${update.backupStoreId} is disabled — enable it before binding to the mail class`,
+      400,
+    );
   }
 
-  const assigned = result.assignments[0];
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(backupTargetAssignments)
+      .where(eq(backupTargetAssignments.backupClass, 'mail'));
+    await tx.insert(backupTargetAssignments).values({
+      backupClass: 'mail',
+      targetId: target.id,
+      priority: 0,
+    });
+  });
+
   return mailSnapshotBackupTargetResponseSchema.parse({
-    backupStoreId: assigned.targetId,
-    backupStoreName: assigned.targetName,
-    storageType: assigned.targetStorageType,
+    backupStoreId: target.id,
+    backupStoreName: target.name,
+    storageType: target.storageType,
   });
 }
 
@@ -297,7 +302,10 @@ export async function recordMailSnapshotLastRun(
     .where(eq(systemSettings.id, SETTINGS_ID));
 }
 
-// Helpers `buildResticSecretData`, `applyResticSecret`, `deleteResticSecret`,
-// and `getOrCreateResticPassword` moved to mail-target-sync.ts as part of
-// migration 0010 (mail target binding now lives on snapshot class system_mail).
-// Local references in this file go through syncMailResticSecretFromAssignment.
+// Phase 2 legacy purge (2026-05-22): the stalwart-snapshot-restic-repo
+// Secret is now owned by backup-rclone-shim/mail-restic.ts's reconciler.
+// This file is just the HTTP-facing surface for the legacy
+// /admin/mail/snapshot-target endpoint; it reads/writes the `mail`
+// shim class directly and lets the shim reconciler materialise the
+// Secret on its 5-minute tick (or inline via the apply-assignment
+// pipeline when an operator uses the new /backups/mail UI).

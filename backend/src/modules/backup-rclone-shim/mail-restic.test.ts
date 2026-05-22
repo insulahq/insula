@@ -131,27 +131,11 @@ describe('reconcileMailResticShim', () => {
     expect((body.metadata as Record<string, unknown>).namespace).toBe(MAIL_NAMESPACE);
   });
 
-  it('only legacy bound → STATE_LEGACY_TAKING_OVER (no Secret touch)', async () => {
-    const db = fakeDb({ mail: false, legacy: true });
-    const core = fakeCore();
-    const r = await reconcileMailResticShim(db, { core } as never, silentLog());
-
-    expect(r.state).toBe('STATE_LEGACY_TAKING_OVER');
-    expect(r.secretApplied).toBe(false);
-    expect(core.replaceNamespacedSecret).not.toHaveBeenCalled();
-    expect(core.createNamespacedSecret).not.toHaveBeenCalled();
-  });
-
-  it('both bound → defers to legacy + warns (no Secret touch)', async () => {
-    const db = fakeDb({ mail: true, legacy: true });
-    const core = fakeCore();
-    const log = silentLog();
-    const r = await reconcileMailResticShim(db, { core } as never, log);
-
-    expect(r.state).toBe('STATE_LEGACY_TAKING_OVER');
-    expect(r.secretApplied).toBe(false);
-    expect(log.warn).toHaveBeenCalled();
-  });
+  // Phase 2 legacy purge (2026-05-22): the `system_mail` legacy row
+  // can no longer exist (migration 0023 narrows the CHECK constraint),
+  // so STATE_LEGACY_TAKING_OVER + the both-bound conflict branch are
+  // gone. The remaining state machine is mail-bound → reconcile vs
+  // not-bound → STATE_NO_MAIL_TARGET.
 
   it('neither bound → STATE_NO_MAIL_TARGET (no Secret touch)', async () => {
     const db = fakeDb({ mail: false, legacy: false });

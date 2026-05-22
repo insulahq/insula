@@ -84,7 +84,6 @@ export * from './system-settings.js';
 export * from './orphaned-volumes.js';
 export * from './system-snapshots.js';
 export * from './snapshot-accounting.js';
-export * from './snapshot-classes.js';
 export * from './lifecycle-hooks.js';
 export * from './postgres-restore.js';
 export * from './system-backup.js';

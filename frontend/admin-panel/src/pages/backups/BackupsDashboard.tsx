@@ -141,7 +141,10 @@ export default function BackupsDashboard() {
   const { data: rows } = useBackupHealth();
   const { data: configsResponse } = useBackupConfigs();
   const configs = configsResponse?.data ?? [];
-  const enabledTargets = configs.filter((c) => c.enabled === 1);
+  // `BackupConfig.enabled` is typed as `number` (legacy 0/1 integer
+  // pattern); `!== 0` keeps this resilient if the backend ever returns
+  // a proper boolean or any truthy non-1 integer.
+  const enabledTargets = configs.filter((c) => c.enabled !== 0);
   const totalTargets = configs.length;
 
   const summaries = rows ?? [];
@@ -194,7 +197,11 @@ export default function BackupsDashboard() {
             No backup jobs reporting yet. Bind a backup class to a Remote Storage Target to get started.
           </p>
         ) : (
-          <ul className="divide-y divide-gray-100 dark:divide-gray-700" data-testid="backups-dashboard-recent">
+          <ul
+            className="divide-y divide-gray-100 dark:divide-gray-700"
+            data-testid="backups-dashboard-recent"
+            aria-label="Recent backup activity"
+          >
             {summaries.slice(0, 10).map((s) => {
               const isFail = s.state === 'failing';
               const Icon = isFail ? AlertCircle : CheckCircle;

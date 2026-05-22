@@ -112,7 +112,7 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <div>
               <div>Cannot enable yet: {blockedReason}</div>
-              <Link to="/settings/backup-infrastructure?tab=classes" className="mt-1 inline-block font-medium underline">
+              <Link to="/backups/mail" className="mt-1 inline-block font-medium underline">
                 Configure in Backup Infrastructure → Classes →
               </Link>
             </div>
