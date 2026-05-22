@@ -79,3 +79,32 @@ export type RotateStalwartPasswordResponse = z.infer<typeof rotateStalwartPasswo
  */
 export const rotateWebmailMasterPasswordResponseSchema = rotateStalwartPasswordResponseSchema;
 export type RotateWebmailMasterPasswordResponse = z.infer<typeof rotateWebmailMasterPasswordResponseSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mailbox backup engine selector (Phase 2 of JMAP→IMAP migration, 2026-05-22)
+// Per platform_settings.mailbox_backup_engine + .mailbox_backup_max_concurrent.
+// See backend/src/modules/tenant-bundles/mailbox-backup-engine.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const MAILBOX_BACKUP_ENGINES = ['jmap', 'imap'] as const;
+export type MailboxBackupEngineValue = (typeof MAILBOX_BACKUP_ENGINES)[number];
+
+export const mailboxBackupSettingsResponseSchema = z.object({
+  engine: z.enum(MAILBOX_BACKUP_ENGINES),
+  maxConcurrent: z.number().int().min(0).max(64),
+  /** True when the active engine is the platform's recommended default. */
+  isRecommendedDefault: z.boolean(),
+  /** ISO timestamp of the most recent operator update, or null if never set
+   *  (still on default). */
+  lastUpdatedAt: z.string().datetime().nullable(),
+});
+export type MailboxBackupSettingsResponse = z.infer<typeof mailboxBackupSettingsResponseSchema>;
+
+export const mailboxBackupSettingsUpdateSchema = z.object({
+  engine: z.enum(MAILBOX_BACKUP_ENGINES).optional(),
+  maxConcurrent: z.number().int().min(1).max(64).optional(),
+}).refine(
+  (v) => v.engine !== undefined || v.maxConcurrent !== undefined,
+  { message: 'at least one of engine or maxConcurrent must be provided' },
+);
+export type MailboxBackupSettingsUpdate = z.infer<typeof mailboxBackupSettingsUpdateSchema>;

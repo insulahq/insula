@@ -18,6 +18,7 @@ import {
 } from '@/hooks/use-email';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
 import MailSettingsTab from '@/components/mail-settings/MailSettingsTab';
+import MailboxBackupEngineSection from '@/components/mail-settings/MailboxBackupEngineSection';
 import WebmailSettingsTab from '@/components/mail-settings/WebmailSettingsTab';
 import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
@@ -35,7 +36,7 @@ const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-6
 type DomainsTab = 'domains' | 'relays';
 type OpsTab = 'placement' | 'backups' | 'storage';
 type BackupTab = 'snapshot' | 'archive';
-type SettingsTab = 'mail' | 'webmail';
+type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
 
 /**
  * Email Management page — Phase 3 streamline (2026-05-15).
@@ -132,6 +133,7 @@ export default function EmailManagement() {
           {[
             { key: 'mail' as SettingsTab, label: 'Mail Settings' },
             { key: 'webmail' as SettingsTab, label: 'Webmail' },
+            { key: 'bundle-engine' as SettingsTab, label: 'Backup Engine' },
           ].map((t) => (
             <button
               key={t.key}
@@ -146,6 +148,7 @@ export default function EmailManagement() {
         </div>
         {settingsTab === 'mail' && <MailSettingsTab />}
         {settingsTab === 'webmail' && <WebmailSettingsTab />}
+        {settingsTab === 'bundle-engine' && <MailboxBackupEngineSection />}
       </MailSectionCard>
 
       {/* ─── Section 3: Operations (placement / backups / storage) ─── */}
