@@ -347,7 +347,7 @@ STATUS="$(echo "$RESP" | node -e "console.log(JSON.parse(require('fs').readFileS
 # Roundcube's JWT_AUTH_SECRET must be rejected by Bulwark's
 # /api/auth/impersonate (proves separate HMAC keys are enforced).
 # Only runs if both env values are accessible.
-ROUNDCUBE_KEY="$("${KCTL[@]}" get secret -n mail roundcube-secrets -o jsonpath='{.data.JWT_AUTH_SECRET}' 2>/dev/null | base64 -d || true)"
+ROUNDCUBE_KEY="$("${KCTL[@]}" get secret -n mail mail-secrets -o jsonpath='{.data.JWT_AUTH_SECRET}' 2>/dev/null | base64 -d || true)"
 if [[ -n "$ROUNDCUBE_KEY" && "$ROUNDCUBE_KEY" != "$JWT_SECRET" ]]; then
   NOW=$(date +%s); EXP=$((NOW+60))
   WRONG_KEY_JWT="$(mint_jwt "$ROUNDCUBE_KEY" "$MAILBOX" "rc-key-$(date +%s%N)-$$" "$NOW" "$EXP")"
@@ -357,7 +357,7 @@ if [[ -n "$ROUNDCUBE_KEY" && "$ROUNDCUBE_KEY" != "$JWT_SECRET" ]]; then
     && pass "C14 cross-engine replay (Roundcube key) → 401" \
     || fail "C14 cross-engine replay should be rejected, got $STATUS"
 else
-  warn "C14 skipped (roundcube-secrets not present OR shares Bulwark's key)"
+  warn "C14 skipped (mail-secrets not present OR shares Bulwark's key)"
 fi
 
 # ── Phase D: engine mutex + reconciler side-effects (optional) ───────

@@ -101,7 +101,7 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 // master@localhost.local which doesn't exist → AUTHENTICATIONFAILED.
 // See tenant-bundles/components/mailboxes.ts for the rationale.
 const MASTER_USER_DEFAULT = 'master@master.local';
-const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
+const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
 const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;

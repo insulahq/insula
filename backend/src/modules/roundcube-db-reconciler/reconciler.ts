@@ -2,7 +2,7 @@
  * Roundcube DB password self-healer.
  *
  * Roundcube authenticates to the platform-CNPG `roundcube` Postgres
- * role using the password stored in `mail/roundcube-secrets`
+ * role using the password stored in `mail/mail-secrets`
  * (key `ROUNDCUBEMAIL_DB_PASSWORD`). The same password is also
  * written into Postgres at bootstrap time by `create_roundcube_db()`
  * in `scripts/bootstrap.sh`. If those two values drift — operator
@@ -17,7 +17,7 @@
  * This reconciler closes that drift gap. On platform-api startup AND
  * on a 5-minute timer thereafter:
  *
- *   1. Read `roundcube-secrets.ROUNDCUBEMAIL_DB_PASSWORD`.
+ *   1. Read `mail-secrets.ROUNDCUBEMAIL_DB_PASSWORD`.
  *   2. Find the CNPG primary pod (`cnpg.io/cluster=system-db,
  *      role=primary`).
  *   3. `kubectl exec` psql with idempotent SQL that:
@@ -30,7 +30,7 @@
  * tick. The function returns a result struct callers can inspect.
  *
  * Skipped when:
- *   - `mail/roundcube-secrets` Secret does not exist (mail stack not
+ *   - `mail/mail-secrets` Secret does not exist (mail stack not
  *     deployed yet — fresh install, or operator opted out).
  *   - The CNPG primary pod is not found (system-db not yet Ready).
  *
@@ -44,7 +44,7 @@ import type { Logger } from 'pino';
 import { PassThrough, Writable } from 'node:stream';
 
 export const ROUNDCUBE_SECRET_NAMESPACE = 'mail';
-export const ROUNDCUBE_SECRET_NAME = 'roundcube-secrets';
+export const ROUNDCUBE_SECRET_NAME = 'mail-secrets';
 export const ROUNDCUBE_SECRET_PASSWORD_KEY = 'ROUNDCUBEMAIL_DB_PASSWORD';
 export const CNPG_CLUSTER_NAMESPACE = 'platform';
 export const CNPG_CLUSTER_NAME = 'system-db';
@@ -199,7 +199,7 @@ function buildSql(): string {
 
 /**
  * Sync the `roundcube` Postgres role's password to match what's in
- * `roundcube-secrets`. Idempotent — running on every boot + 5-min
+ * `mail-secrets`. Idempotent — running on every boot + 5-min
  * tick converges the live state to the Secret with no churn when
  * already in sync (psql exits 0; logs the noop).
  */

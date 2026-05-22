@@ -1,7 +1,7 @@
 # Production Roundcube overlay — aligned with staging 2026-05-07.
 #
 # Webmail is always deployed alongside Stalwart on staging and
-# production — operator-bootstrapped Secret `roundcube-secrets` plus a
+# production — operator-bootstrapped Secret `mail-secrets` plus a
 # `roundcube` Postgres database/role on the platform CNPG cluster
 # (`system-db`) are created by `scripts/bootstrap.sh` (see
 # generate_roundcube_secrets + create_roundcube_db).

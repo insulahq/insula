@@ -41,7 +41,7 @@
  *     a server-side rename primitive.
  *
  * Auth pattern unchanged from the mbsync era — master-user proxy with
- * `<addr>%<master>` username + master password from `roundcube-secrets`.
+ * `<addr>%<master>` username + master password from `mail-secrets`.
  * Same Secret, same rotation flow.
  *
  * Failure modes:
@@ -112,7 +112,7 @@ export interface CaptureMailboxesComponentOpts {
   readonly imapHost?: string;            // defaults to stalwart-mail.mail.svc.cluster.local
   readonly imapPort?: number;            // defaults to 993
   readonly stalwartMasterUser?: string;  // defaults to 'master@master.local' (FQ)
-  readonly masterSecretName?: string;    // defaults to 'roundcube-secrets'
+  readonly masterSecretName?: string;    // defaults to 'mail-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
   readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
   readonly timeoutMs?: number;
@@ -136,7 +136,7 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
 const MASTER_USER_DEFAULT = 'master@master.local';
-const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
+const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';

@@ -844,7 +844,7 @@ export async function generateWebmailToken(
   // verification on the OTHER engine.
   //
   // - Roundcube uses `WEBMAIL_JWT_SECRET` (mirror of
-  //   roundcube-secrets/JWT_AUTH_SECRET)
+  //   mail-secrets/JWT_AUTH_SECRET)
   // - Bulwark uses `BULWARK_WEBMAIL_JWT_SECRET` (mirror of
   //   bulwark-secrets/BULWARK_JWT_AUTH_SECRET)
   // - For the legacy single-secret deployment, BULWARK_WEBMAIL_JWT_SECRET

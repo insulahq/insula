@@ -69,7 +69,7 @@ export type RotateStalwartPasswordResponse = z.infer<typeof rotateStalwartPasswo
  * password (consumed by Roundcube's jwt_auth plugin for IMAP master-user
  * impersonation). Three-step:
  *   1. JMAP x:Account/set update credentials/0/secret on the master Account.
- *   2. Patch `roundcube-secrets.STALWART_MASTER_PASSWORD` in the mail ns.
+ *   2. Patch `mail-secrets.STALWART_MASTER_PASSWORD` in the mail ns.
  *   3. Roll the Roundcube Deployment so its env vars pick up the new
  *      password (Roundcube reads STALWART_MASTER_PASSWORD at process
  *      start, NOT via volume-mount refresh).

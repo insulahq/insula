@@ -37,7 +37,7 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 ### Primitive 2 — JMAP-driven mail capture into Maildir-shaped tree
 
 - For each tenant mailbox, the Job runs `jmap-sync.py` (Python stdlib, ~200 lines, no third-party deps) inside the existing `mail-backup-tools` image (rebased on `debian:trixie-slim`).
-- The script authenticates as the **Stalwart master user** (same credentials webmail/mbsync use today, mounted from `roundcube-secrets` Secret) and uses the master-user proxy login `<addr>%<masterFQ>` to read each tenant mailbox.
+- The script authenticates as the **Stalwart master user** (same credentials webmail/mbsync use today, mounted from `mail-secrets` Secret) and uses the master-user proxy login `<addr>%<masterFQ>` to read each tenant mailbox.
 - It reads `lastJmapState` from the `tenant_jmap_state` table per `(tenantId, mailboxJmapId)`, calls `Email/changes`, fetches `created`+`updated` bodies via `Blob/get`, writes them into a **Maildir-shaped output tree**:
   ```
   <accountAddress>/<mailboxName>/cur/<unix>.<unique>:2,<flags>

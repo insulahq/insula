@@ -3071,7 +3071,7 @@ JMAP `x:Account/set` shape and the in-flight Secret-mirror flow.
   `/admin/mail/rotate-stalwart-password`.
 - `POST /api/v1/admin/mail/rotate-webmail-master-password` — rotates
   the Stalwart `master@master.local` Account password (Roundcube SSO
-  impersonation). Patches `roundcube-secrets/STALWART_MASTER_PASSWORD`
+  impersonation). Patches `mail-secrets/STALWART_MASTER_PASSWORD`
   + rolls the Roundcube Deployment so its env-var-loaded value picks
   up the new password.
 

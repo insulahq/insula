@@ -227,7 +227,7 @@ follow-up.
    domain) with allow-list rules we haven't inspected, OR a
    network-policy gate. Worth re-validating with the same exact
    IMAP login string Roundcube uses (`<addr>%<masterUser>`, master
-   password from `roundcube-secrets/STALWART_MASTER_PASSWORD`).
+   password from `mail-secrets/STALWART_MASTER_PASSWORD`).
 
 4. *JMAP per-account export* — `/jmap/session` succeeds for the
    recovery admin (account `d333333`). Standard JMAP requires
