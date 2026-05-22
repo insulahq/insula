@@ -490,11 +490,20 @@ def _flush_import(client: JmapClient,
 def _enumerate_messages(maildir_root: str,
                         source_address: str) -> List[Tuple[str, str]]:
     """Walk <root>/<source>/<mailbox>/{cur,new}/* and return a list of
-    (mailbox_name, file_path) tuples. Maildir spec also has /tmp but
-    those are in-flight writes, not durable messages — skip them.
-    Subfolders separated by '/' in JMAP map to slash-separated names,
-    but Maildir on disk uses dot-separation conventionally. Our
-    jmap-sync.py only writes one level deep so we mirror that here."""
+    (mailbox_name, file_path) tuples.
+
+    `mailbox_name` is the ORIGINAL JMAP folder name (e.g. "Geschäftlich")
+    read from `<mailbox-dir>/.imap-name` when present. Falls back to the
+    filesystem path component (sanitized by jmap-sync.py before 2026-05-22
+    — "Gesch_ftlich") when the sidecar is missing. A warning is logged in
+    the legacy-name + contains-`_` case so the operator knows UTF-8
+    fidelity may have been lost.
+
+    Maildir spec also has /tmp but those are in-flight writes, not
+    durable messages — skip them. Subfolders separated by '/' in JMAP
+    map to slash-separated names, but Maildir on disk uses
+    dot-separation conventionally. Our jmap-sync.py only writes one
+    level deep so we mirror that here."""
     out: List[Tuple[str, str]] = []
     if not SAFE_PATH_COMPONENT_RE.match(source_address.replace("@", "_")):
         # Trust the address; jmap-sync.py wrote it. But sanity-check.
@@ -503,10 +512,37 @@ def _enumerate_messages(maildir_root: str,
     addr_root = os.path.join(maildir_root, source_address)
     if not os.path.isdir(addr_root):
         return out
-    for mailbox_name in sorted(os.listdir(addr_root)):
-        mb_dir = os.path.join(addr_root, mailbox_name)
+    for path_component in sorted(os.listdir(addr_root)):
+        mb_dir = os.path.join(addr_root, path_component)
         if not os.path.isdir(mb_dir):
             continue
+
+        # Resolve the ORIGINAL JMAP folder name. Prefer `.imap-name`
+        # (post-2026-05-22 snapshots — symmetric with imap-sync.py);
+        # fall back to the path component for older snapshots.
+        sidecar = os.path.join(mb_dir, ".imap-name")
+        mailbox_name = path_component
+        if os.path.isfile(sidecar):
+            try:
+                with open(sidecar, encoding="utf-8") as f:
+                    candidate = f.read().strip()
+                if candidate:
+                    mailbox_name = candidate
+            except OSError:
+                pass
+        elif "_" in path_component:
+            # Legacy snapshot, no sidecar, and the path component
+            # contains an underscore — possibly a UTF-8 char that got
+            # sanitized to `_` by jmap-sync.py before 2026-05-22. We
+            # CAN'T recover the original (sanitization is lossy), so
+            # warn and continue with the sanitized name.
+            sys.stderr.write(
+                f"jmap-restore: WARNING folder {path_component!r} has no "
+                ".imap-name sidecar and contains '_'; original UTF-8 "
+                "name (if any) is unrecoverable. Re-snapshot the source "
+                "bundle to fix.\n"
+            )
+
         for sub in ("cur", "new"):
             sub_dir = os.path.join(mb_dir, sub)
             if not os.path.isdir(sub_dir):
