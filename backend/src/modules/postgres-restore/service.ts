@@ -93,6 +93,19 @@ interface PersistedLock {
   // resume — otherwise Flux stays suspended forever and no manifest
   // changes (storage, ingress, scaling) propagate.
   readonly fluxSuspended?: boolean;
+  /** P4b (2026-05-22) — append-only list of completed steps with
+   *  elapsedMs + detail. Persisted after every steps.push() in the
+   *  orchestrator so the wizard's live progress modal can render
+   *  the timeline by polling /admin/postgres-restore/status. On
+   *  orchestrator crash this is the only forensic record of how
+   *  far the restore got. */
+  readonly progressSteps?: ReadonlyArray<PitrStep>;
+  /** P4b — the currently-running step. Set by markInFlight before
+   *  long-running orchestrator phases (temp-healthy, recreate-
+   *  source, etc.); cleared by the next progressSteps push. Lets
+   *  the wizard show a running-clock for in-flight steps that
+   *  don't otherwise emit progress. */
+  readonly progressInFlight?: { readonly step: string; readonly startedAt: string };
 }
 
 // Flux Kustomization that owns the platform manifests. Always patched in
@@ -182,13 +195,40 @@ export function isPostgresRestoreInProgress(): { readonly inProgress: boolean; r
  */
 export async function isPostgresRestoreInProgressClusterWide(
   db: Database,
-): Promise<{ readonly inProgress: boolean; readonly startedAt?: Date; readonly snapshot?: string; readonly source: 'in-memory' | 'db' | 'none' }> {
-  if (activeRestore) {
-    return { inProgress: true, startedAt: activeRestore.startedAt, snapshot: activeRestore.snapshot, source: 'in-memory' };
-  }
+): Promise<{
+  readonly inProgress: boolean;
+  readonly startedAt?: Date;
+  readonly snapshot?: string;
+  readonly source: 'in-memory' | 'db' | 'none';
+  /** P4b: append-only step log persisted by the orchestrator. */
+  readonly progressSteps?: ReadonlyArray<PitrStep>;
+  /** P4b: the currently-running long step (set before, cleared after). */
+  readonly progressInFlight?: { readonly step: string; readonly startedAt: string };
+  /** P4b: derived from the persisted lock phase. Useful banner copy. */
+  readonly phase?: 'preflight' | 'cutover' | 'rebuilding' | 'cleanup';
+}> {
   const persisted = await readPersistedLock(db).catch(() => null);
+  if (activeRestore) {
+    return {
+      inProgress: true,
+      startedAt: activeRestore.startedAt,
+      snapshot: activeRestore.snapshot,
+      source: 'in-memory',
+      ...(persisted?.progressSteps ? { progressSteps: persisted.progressSteps } : {}),
+      ...(persisted?.progressInFlight ? { progressInFlight: persisted.progressInFlight } : {}),
+      ...(persisted?.phase ? { phase: persisted.phase } : {}),
+    };
+  }
   if (persisted) {
-    return { inProgress: true, startedAt: new Date(persisted.startedAt), snapshot: persisted.snapshot, source: 'db' };
+    return {
+      inProgress: true,
+      startedAt: new Date(persisted.startedAt),
+      snapshot: persisted.snapshot,
+      source: 'db',
+      ...(persisted.progressSteps ? { progressSteps: persisted.progressSteps } : {}),
+      ...(persisted.progressInFlight ? { progressInFlight: persisted.progressInFlight } : {}),
+      ...(persisted.phase ? { phase: persisted.phase } : {}),
+    };
   }
   return { inProgress: false, source: 'none' };
 }
@@ -1149,6 +1189,40 @@ export async function promotePostgresFromSnapshot(
   let tempSnapName: string | null = null;
   let sourceDeleted = false;
   let fluxSuspended = false;
+
+  // P4b: append-only step recorder that persists to the DB lock so the
+  // wizard's live progress modal can read /admin/postgres-restore/status
+  // and see the timeline as it builds. Fire-and-forget DB write to avoid
+  // adding await everywhere; the orchestrator is single-threaded, so
+  // any later write contains the full prior history.
+  const recordStep = (s: PitrStep): void => {
+    steps.push(s);
+    void (async () => {
+      try {
+        const cur = await readPersistedLock(deps.db);
+        if (cur) {
+          await writePersistedLock(deps.db, { ...cur, progressSteps: [...steps], progressInFlight: undefined });
+        }
+      } catch { /* best-effort */ }
+    })();
+  };
+
+  // P4b: mark a long-running step as in-flight so the wizard can show
+  // a running clock even when the step has no internal pushes. Cleared
+  // automatically by the next recordStep call.
+  const markInFlight = (stepName: string): void => {
+    void (async () => {
+      try {
+        const cur = await readPersistedLock(deps.db);
+        if (cur) {
+          await writePersistedLock(deps.db, {
+            ...cur,
+            progressInFlight: { step: stepName, startedAt: new Date().toISOString() },
+          });
+        }
+      } catch { /* best-effort */ }
+    })();
+  };
   // Hoisted so the catch block can reference the original cluster spec
   // (database/owner/secret/imageName/storage size) for auto-recovery.
   let pre: { snap: RawSnap; cluster: CnpgCluster; primaryPvc: string } | null = null;
@@ -1157,7 +1231,7 @@ export async function promotePostgresFromSnapshot(
     // 1. Pre-flight
     const t0 = nowMs();
     pre = await preflight(deps.k8s, deps.kubeconfigPath, inputs, steps);
-    steps.push({ step: 'preflight', ok: true, elapsedMs: nowMs() - t0, detail: `primary=${pre.primaryPvc}` });
+    recordStep({ step: 'preflight', ok: true, elapsedMs: nowMs() - t0, detail: `primary=${pre.primaryPvc}` });
 
     // 2. Wrap snapshot. The Longhorn volume name == the PV name backing
     // the source PVC; preflight already resolved this via the snap CR's
@@ -1166,22 +1240,23 @@ export async function promotePostgresFromSnapshot(
     const sourceLonghornVolume = pre.snap.spec?.volume;
     if (!sourceLonghornVolume) throw new Error('snapshot has no spec.volume — cannot wrap');
     wrapped = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, inputs.snapshotName, sourceLonghornVolume);
-    steps.push({ step: 'wrap-volume-snapshot', ok: true, elapsedMs: nowMs() - t1, detail: wrapped.volumeSnapshotName });
+    recordStep({ step: 'wrap-volume-snapshot', ok: true, elapsedMs: nowMs() - t1, detail: wrapped.volumeSnapshotName });
 
     // 3. Bootstrap temp cluster
     const t2 = nowMs();
     const tempBody = buildRecoveryCluster(pre.cluster, tempName, inputs.clusterNamespace, wrapped.volumeSnapshotName, inputs.recoveryTargetTime, 1, true /* isTemp */);
     await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: tempBody });
-    steps.push({ step: 'create-temp-cluster', ok: true, elapsedMs: nowMs() - t2, detail: tempName });
+    recordStep({ step: 'create-temp-cluster', ok: true, elapsedMs: nowMs() - t2, detail: tempName });
 
     // 4. Wait + sanity probe
     const t3 = nowMs();
+    markInFlight('temp-healthy');
     const tempHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, tempName, 8 * 60_000);
-    steps.push({ step: 'temp-healthy', ok: tempHealth.ok, elapsedMs: nowMs() - t3, detail: `phase=${tempHealth.phase ?? '?'} primary=${tempHealth.primary ?? '?'}` });
+    recordStep({ step: 'temp-healthy', ok: tempHealth.ok, elapsedMs: nowMs() - t3, detail: `phase=${tempHealth.phase ?? '?'} primary=${tempHealth.primary ?? '?'}` });
     if (!tempHealth.ok || !tempHealth.primary) throw new Error(`Temp cluster did not become healthy: phase=${tempHealth.phase}`);
     const probeDb = pre.cluster.spec!.bootstrap!.initdb!.database!;
     const probe = await probePsql(deps.kubeconfigPath, inputs.clusterNamespace, tempHealth.primary, probeDb, 'SELECT 1');
-    steps.push({ step: 'temp-probe', ok: probe.ok, detail: probe.stdout || probe.stderr });
+    recordStep({ step: 'temp-probe', ok: probe.ok, detail: probe.stdout || probe.stderr });
     if (!probe.ok) throw new Error(`Temp cluster psql probe failed: ${probe.stderr}`);
 
     // 5. Quiesce consumers (downtime starts here).
@@ -1208,7 +1283,7 @@ export async function promotePostgresFromSnapshot(
       group: 'apps', version: 'v1', namespace: 'mail', plural: 'statefulsets', name: 'stalwart-mail',
       body: { spec: { replicas: 0 } },
     }).catch(() => undefined);
-    steps.push({ step: 'quiesce-consumers', ok: true, elapsedMs: nowMs() - t5, detail: 'stalwart-mail scaled to 0; platform-api left running (self-host)' });
+    recordStep({ step: 'quiesce-consumers', ok: true, elapsedMs: nowMs() - t5, detail: 'stalwart-mail scaled to 0; platform-api left running (self-host)' });
 
     // 5b. Suspend the platform Flux Kustomization so its 5-min reconcile
     //     does not race delete-source + recreate-source. Without this,
@@ -1220,7 +1295,7 @@ export async function promotePostgresFromSnapshot(
     //     resume even if the orchestrator crashes.
     const t5b = nowMs();
     fluxSuspended = await suspendFluxKustomization(deps.k8s);
-    steps.push({
+    recordStep({
       step: 'suspend-flux',
       ok: true,
       elapsedMs: nowMs() - t5b,
@@ -1264,7 +1339,7 @@ export async function promotePostgresFromSnapshot(
     }
     if (!tempSnapReady) throw new Error('Temp cluster handoff snapshot did not become ready');
     tempSnap = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnapName, tempLonghornVolume);
-    steps.push({ step: 'snapshot-temp-primary', ok: true, elapsedMs: nowMs() - t6, detail: tempSnap.volumeSnapshotName });
+    recordStep({ step: 'snapshot-temp-primary', ok: true, elapsedMs: nowMs() - t6, detail: tempSnap.volumeSnapshotName });
 
     // Persist crash-safe marker BEFORE the destructive cutover. If
     // platform-api dies between here and the successful unwind below,
@@ -1290,6 +1365,7 @@ export async function promotePostgresFromSnapshot(
 
     // 7. Delete source (PVCs survive: Retain reclaim)
     const t7 = nowMs();
+    markInFlight('delete-source');
     await deleteCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName });
     sourceDeleted = true;
     // CNPG finalizer cleanup takes 30-60s
@@ -1299,7 +1375,7 @@ export async function promotePostgresFromSnapshot(
         await new Promise((r) => setTimeout(r, 2_000));
       } catch { break; }
     }
-    steps.push({ step: 'delete-source', ok: true, elapsedMs: nowMs() - t7 });
+    recordStep({ step: 'delete-source', ok: true, elapsedMs: nowMs() - t7 });
 
     // 8. Re-create source Cluster from temp's snapshot.
     //
@@ -1331,9 +1407,10 @@ export async function promotePostgresFromSnapshot(
       false /* isTemp: rebuilding the production source */,
     );
     await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: newSrcBody });
+    markInFlight('recreate-source');
     const srcHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, inputs.clusterName, recreateTimeoutMs);
     const pendingReplicas = Math.max(0, targetInstances - 1);
-    steps.push({
+    recordStep({
       step: 'recreate-source',
       ok: srcHealth.ok,
       elapsedMs: nowMs() - t8,
@@ -1353,14 +1430,14 @@ export async function promotePostgresFromSnapshot(
           namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
           body: { spec: { instances: targetInstances } },
         });
-        steps.push({
+        recordStep({
           step: 'scale-up-to-source-ha',
           ok: true,
           elapsedMs: nowMs() - t8a,
           detail: `patched instances=1→${targetInstances}; replicas build async in CNPG`,
         });
       } catch (err) {
-        steps.push({
+        recordStep({
           step: 'scale-up-to-source-ha',
           ok: false,
           elapsedMs: nowMs() - t8a,
@@ -1389,12 +1466,12 @@ export async function promotePostgresFromSnapshot(
           group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
           body: { spec: { bootstrap: { recovery: null, initdb: originalInitdb } } },
         });
-        steps.push({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'spec.bootstrap=initdb (recovery cleared)' });
+        recordStep({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'spec.bootstrap=initdb (recovery cleared)' });
       } else {
-        steps.push({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'no original initdb — skipped' });
+        recordStep({ step: 'normalize-bootstrap', ok: true, elapsedMs: nowMs() - t8b, detail: 'no original initdb — skipped' });
       }
     } catch (err) {
-      steps.push({
+      recordStep({
         step: 'normalize-bootstrap', ok: false, elapsedMs: nowMs() - t8b,
         detail: `failed: ${(err as Error).message}. Flux apply may need manual: kubectl patch cluster -n ${inputs.clusterNamespace} ${inputs.clusterName} --type=json -p='[{"op":"remove","path":"/spec/bootstrap/recovery"},{"op":"add","path":"/spec/bootstrap/initdb","value":<original>}]'`,
       });
@@ -1408,7 +1485,7 @@ export async function promotePostgresFromSnapshot(
       body: { spec: { replicas: 1 } },
     }).catch(() => undefined);
     downtimeEnd = nowMs();
-    steps.push({ step: 'restore-consumers', ok: true, elapsedMs: nowMs() - t9, detail: 'stalwart-mail scaled to 1' });
+    recordStep({ step: 'restore-consumers', ok: true, elapsedMs: nowMs() - t9, detail: 'stalwart-mail scaled to 1' });
 
     // 10. Cleanup
     const t10 = nowMs();
@@ -1418,7 +1495,7 @@ export async function promotePostgresFromSnapshot(
     if (tempSnapName) {
       await deleteCustom(deps.k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: tempSnapName }).catch(() => undefined);
     }
-    steps.push({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10 });
+    recordStep({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10 });
 
     // 11. Notify
     const downtimeMs = (downtimeEnd ?? nowMs()) - (downtimeStart ?? startMs);
@@ -1440,7 +1517,7 @@ export async function promotePostgresFromSnapshot(
     };
   } catch (err) {
     const errMsg = (err as Error).message;
-    steps.push({ step: 'orchestration-failed', ok: false, detail: errMsg });
+    recordStep({ step: 'orchestration-failed', ok: false, detail: errMsg });
 
     // Auto-recovery: if we already deleted the source, try to recreate
     // it from the ORIGINAL snapshot (which still exists). Source PVCs
@@ -1459,12 +1536,12 @@ export async function promotePostgresFromSnapshot(
           false /* isTemp: rebuilding production source */,
         );
         await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: recoveryBody });
-        steps.push({ step: 'auto-recovery', ok: true, detail: 'recreated source cluster from original snapshot' });
+        recordStep({ step: 'auto-recovery', ok: true, detail: 'recreated source cluster from original snapshot' });
       } catch (rerr) {
-        steps.push({ step: 'auto-recovery', ok: false, detail: (rerr as Error).message });
+        recordStep({ step: 'auto-recovery', ok: false, detail: (rerr as Error).message });
       }
     } else if (sourceDeleted) {
-      steps.push({ step: 'auto-recovery', ok: false, detail: 'cannot auto-recover: missing pre-flight cluster ref or wrapped snapshot' });
+      recordStep({ step: 'auto-recovery', ok: false, detail: 'cannot auto-recover: missing pre-flight cluster ref or wrapped snapshot' });
     }
 
     // Cleanup whatever we can — including the temp cluster (otherwise
@@ -1500,9 +1577,9 @@ export async function promotePostgresFromSnapshot(
     if (fluxSuspended) {
       try {
         await resumeFluxKustomization(deps.k8s);
-        steps.push({ step: 'resume-flux', ok: true, detail: `${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} resumed` });
+        recordStep({ step: 'resume-flux', ok: true, detail: `${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} resumed` });
       } catch (rerr) {
-        steps.push({
+        recordStep({
           step: 'resume-flux', ok: false,
           detail: `failed: ${(rerr as Error).message}. Run: flux resume kustomization ${FLUX_KS_NAME} -n ${FLUX_KS_NAMESPACE}`,
         });

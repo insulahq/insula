@@ -33,6 +33,18 @@ export const pitrStatusSchema = z.object({
   startedAt: z.string().optional(),
   snapshot: z.string().optional(),
   source: z.enum(['in-memory', 'db', 'none']).optional(),
+  /** P4b (2026-05-22): append-only completed-step log emitted by the
+   *  orchestrator. Lets the wizard render a live timeline. */
+  progressSteps: z.array(pitrStepSchema).optional(),
+  /** P4b: the currently-running long step. Set before, cleared after. */
+  progressInFlight: z.object({
+    step: z.string(),
+    startedAt: z.string(),
+  }).optional(),
+  /** P4b: orchestrator phase — `preflight` is safe to retry, `cutover`
+   *  means the source has been deleted, `rebuilding` means the new
+   *  cluster is coming up. Surfaced as a banner in the wizard. */
+  phase: z.enum(['preflight', 'cutover', 'rebuilding', 'cleanup']).optional(),
 });
 export type PitrStatus = z.infer<typeof pitrStatusSchema>;
 
