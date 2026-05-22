@@ -26,6 +26,7 @@ import RestorationWizard, {
   type RestoreArtifact,
   type RestoreSelection,
 } from '@/components/backups/RestorationWizard';
+import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 
 function formatBytes(b: number): string {
   if (!b) return '—';
@@ -56,7 +57,7 @@ function useTenantsOverview(search: string) {
   });
 }
 
-function useTenantActions() {
+function useTenantActions(tenantTargetId: string | null) {
   const qc = useQueryClient();
   const invalidate = () =>
     qc.invalidateQueries({ queryKey: ['admin', 'backups', 'tenants', 'overview'] });
@@ -70,12 +71,24 @@ function useTenantActions() {
     onSuccess: invalidate,
   });
 
+  // Bundle creation goes through the admin tenant-bundles endpoint;
+  // the backend requires an explicit targetConfigId (bundles MUST go
+  // off-cluster). We pull it from the bound `tenant` shim assignment
+  // captured at the page level.
   const bundleNow = useMutation({
-    mutationFn: (tenantId: string) =>
-      apiFetch(`/api/v1/admin/tenants/${tenantId}/backups`, {
+    mutationFn: (tenantId: string) => {
+      if (!tenantTargetId) {
+        return Promise.reject(
+          new Error(
+            'No backup target bound to the tenant class. Bind one at /backups/tenants → Targets, Schedules & Retention first.',
+          ),
+        );
+      }
+      return apiFetch('/api/v1/admin/tenant-bundles', {
         method: 'POST',
-        body: JSON.stringify({}),
-      }),
+        body: JSON.stringify({ tenantId, targetConfigId: tenantTargetId }),
+      });
+    },
     onSuccess: invalidate,
   });
 
@@ -262,7 +275,10 @@ export default function TenantsBackupsPage() {
   const { data, isLoading } = useTenantsOverview(search);
   const rows = data?.data?.rows ?? [];
   const navigate = useNavigate();
-  const { snapshotNow, bundleNow, createCart } = useTenantActions();
+  const { data: shimResp } = useShimAssignments();
+  const tenantTargetId =
+    shimResp?.data?.assignments?.find((a) => a.className === 'tenant')?.targetId ?? null;
+  const { snapshotNow, bundleNow, createCart } = useTenantActions(tenantTargetId);
   const [wizardRow, setWizardRow] = useState<TenantBackupOverviewRow | null>(null);
   const [error, setError] = useState<string | null>(null);
 
