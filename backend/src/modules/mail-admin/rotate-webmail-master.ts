@@ -7,7 +7,7 @@
  *
  * Two differences vs the admin rotation:
  *
- *   1. The Secret target is `roundcube-secrets/STALWART_MASTER_PASSWORD`
+ *   1. The Secret target is `mail-secrets/STALWART_MASTER_PASSWORD`
  *      (not `stalwart-admin-creds/{adminPassword,...}`). No cross-NS
  *      mirror needed — Roundcube reads the value directly via env var
  *      injection from the same Secret in its own namespace.
@@ -43,7 +43,7 @@ export interface RotateWebmailMasterOptions {
   readonly kubeconfigPath: string | undefined;
   /** Defaults to `mail`; provided for tests / dev. */
   readonly mailNamespace?: string;
-  /** Defaults to `roundcube-secrets`. */
+  /** Defaults to `mail-secrets`. */
   readonly secretName?: string;
   /** Defaults to `master`. The master Account in `master.local` Domain. */
   readonly masterUsername?: string;
@@ -55,7 +55,7 @@ export async function rotateWebmailMasterPassword(
   opts: RotateWebmailMasterOptions,
 ): Promise<RotateWebmailMasterPasswordResponse> {
   const mailNamespace = opts.mailNamespace ?? 'mail';
-  const secretName = opts.secretName ?? 'roundcube-secrets';
+  const secretName = opts.secretName ?? 'mail-secrets';
   const masterUsername = opts.masterUsername ?? 'master';
   const roundcubeDeployment = opts.roundcubeDeployment ?? 'roundcube';
 

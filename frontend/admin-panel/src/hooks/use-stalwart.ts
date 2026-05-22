@@ -69,7 +69,7 @@ export function useRotateStalwartPassword() {
  *   1. No CREDS_KEY cache update — those creds are the recovery-admin,
  *      not the master user. The new password is shown ONLY in the
  *      rotation response (admin captures it) and lives in the
- *      `roundcube-secrets` Secret thereafter.
+ *      `mail-secrets` Secret thereafter.
  *   2. Roundcube is rolled by the backend (env-var-driven, no volume
  *      refresh). The mutation may take 30-60s because the backend
  *      waits for the Roundcube rollout to begin before returning. The

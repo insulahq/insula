@@ -899,7 +899,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
 
         // 2026-05-16: Roundcube DB password self-healer. If the
-        // password in `mail/roundcube-secrets.ROUNDCUBEMAIL_DB_PASSWORD`
+        // password in `mail/mail-secrets.ROUNDCUBEMAIL_DB_PASSWORD`
         // drifts from what's set on the `roundcube` Postgres role,
         // Roundcube can't authenticate and the webmail page renders
         // a 500. Boot once + every 5 min reconciles by ALTER ROLE

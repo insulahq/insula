@@ -58,7 +58,7 @@ export interface RotateJmapOptions {
    * the rotated password. Default is the admin/recovery shape:
    *   { adminPassword, ADMIN_SECRET_PLAIN, recoveryPassword, recoveryAdmin }
    * Webmail master rotation passes `[ 'STALWART_MASTER_PASSWORD' ]` so
-   * only Roundcube's env var key is touched in `roundcube-secrets`.
+   * only Roundcube's env var key is touched in `mail-secrets`.
    */
   readonly secretKeys?: readonly string[];
   /**
@@ -207,7 +207,7 @@ export async function rotateAdminPasswordViaJmapImpl(
   //    picks up the new password automatically.
   // Cut 3 (2026-05-05): default key set is the admin/recovery shape;
   // overridable via opts.secretKeys for webmail master rotation which
-  // only touches `roundcube-secrets/STALWART_MASTER_PASSWORD`. The
+  // only touches `mail-secrets/STALWART_MASTER_PASSWORD`. The
   // recoveryAdmin format is `<user>:<password>` and only relevant when
   // the secret holds Stalwart's recovery-admin env value.
   const defaultStringData: Record<string, string> = {
