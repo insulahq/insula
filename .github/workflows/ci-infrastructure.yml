@@ -206,6 +206,20 @@ jobs:
         # purpose. This guard locks in the invariants.
         run: ./scripts/ci-cnpg-backup-catalogue-check.sh
 
+  postgres-barman-restore-check:
+    name: Barman-cloud restore invariants (source-safety + plugin-shape)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify barman-restore module gates source mutation + plugin parameter shape
+        # Phase 3 (2026-05-22) — this module spawns Cluster CRs from
+        # off-cluster archives. The two regressions that would matter
+        # most are: (a) source-cluster mutation via mistyped name and
+        # (b) plugin parameter drift (RFC: barmanObjectName, not
+        # objectStoreName — drift caught 2026-05-20). This guard
+        # blocks both.
+        run: ./scripts/ci-postgres-barman-restore-check.sh
+
   flux-envsubst-check:
     name: Flux postBuild envsubst safety
     runs-on: ubuntu-latest
