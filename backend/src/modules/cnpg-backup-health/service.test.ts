@@ -5,7 +5,7 @@
  * + the readBackupHealth aggregator using a fake CustomObjectsApi that
  * returns canned CR lists. No real K8s connection required.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import {
   __test,
@@ -251,6 +251,154 @@ describe('cnpg-backup-health: readBackupHealth', () => {
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     expect(result.find((r) => r.clusterName === 'cluster-x')?.clusterHasBackupSpec).toBe(false);
+  });
+
+  // ─── Phase 2 (2026-05-22): cnpg_operator_blind enrichment ──────────────
+  //
+  // When the cluster is on the plugin model AND the CNPG operator returns
+  // zero Backup CRs BUT the object store catalogue reports N>0 backups,
+  // the state upgrades from `never_run` to `cnpg_operator_blind`. The
+  // catalogue call is mocked here; live behaviour is covered by the
+  // catalogue's own service.test.ts.
+  it('cnpg_operator_blind — never_run upgrades when catalogue sees real backups', async () => {
+    const tenants = fakeTenant({
+      clusters: [
+        {
+          metadata: { name: 'system-db', namespace: 'platform' },
+          spec: {
+            plugins: [
+              {
+                name: 'barman-cloud.cloudnative-pg.io',
+                enabled: true,
+                parameters: { barmanObjectName: 'system-postgres-objectstore' },
+              },
+            ],
+          },
+        },
+      ],
+      backups: [], // CNPG reports nothing
+      scheduledbackups: [],
+    });
+
+    // Spy on the catalogue module and force it to return non-empty backups.
+    const catalogueModule = await import('../cnpg-backup-catalogue/service.js');
+    const { listBackupsFromObjectStore } = catalogueModule;
+    const spy = vi.spyOn(catalogueModule, 'listBackupsFromObjectStore').mockResolvedValue({
+      source: 'object-store',
+      objectStoreName: 'system-postgres-objectstore',
+      namespace: 'platform',
+      backups: [
+        { backupId: '20260522T030001', startedAt: null, endedAt: null, status: 'DONE',
+          beginWal: null, endWal: null, clusterSizeBytes: null, dataSizeBytes: null,
+          uploadedAt: null, parseError: null },
+      ],
+      unavailableReason: null,
+      queryDurationMs: 50,
+    });
+
+    // Supply core so the catalogue branch is reachable.
+    const tenantsWithCore = { ...tenants, core: {} as never };
+    const result = await readBackupHealth(tenantsWithCore, { nowMs: NOW_MS });
+    spy.mockRestore();
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('cnpg_operator_blind');
+    expect(cluster?.objectStoreBackupCount).toBe(1);
+    // The catalogue is also exported by name — ensure we didn't import a stale binding.
+    expect(typeof listBackupsFromObjectStore).toBe('function');
+  });
+
+  it('cnpg_operator_blind — failing state also upgrades when catalogue has real backups', async () => {
+    // CNPG operator producing failed Backup CRs but the archive itself is fine.
+    const failedAt = new Date(NOW_MS - 60_000).toISOString();
+    const tenants = fakeTenant({
+      clusters: [
+        {
+          metadata: { name: 'system-db', namespace: 'platform' },
+          spec: {
+            plugins: [
+              { name: 'barman-cloud.cloudnative-pg.io', enabled: true, parameters: { barmanObjectName: 'os' } },
+            ],
+          },
+        },
+      ],
+      backups: [
+        {
+          metadata: { name: 'rt-bk-failed', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'plugin' },
+          status: { phase: 'failed', startedAt: failedAt, stoppedAt: failedAt, error: 'rpc error: code = Unknown desc = exit status 4' },
+        },
+      ],
+      scheduledbackups: [],
+    });
+    const catalogueModule4 = await import('../cnpg-backup-catalogue/service.js');
+    const spy = vi.spyOn(catalogueModule4, 'listBackupsFromObjectStore').mockResolvedValue({
+      source: 'object-store', objectStoreName: 'os', namespace: 'platform',
+      backups: [
+        { backupId: '20260522T030001', startedAt: null, endedAt: null, status: 'DONE',
+          beginWal: null, endWal: null, clusterSizeBytes: null, dataSizeBytes: null, uploadedAt: null, parseError: null },
+        { backupId: '20260521T030001', startedAt: null, endedAt: null, status: 'DONE',
+          beginWal: null, endWal: null, clusterSizeBytes: null, dataSizeBytes: null, uploadedAt: null, parseError: null },
+      ],
+      unavailableReason: null,
+      queryDurationMs: 75,
+    });
+    const result = await readBackupHealth({ ...tenants, core: {} as never }, { nowMs: NOW_MS });
+    spy.mockRestore();
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('cnpg_operator_blind');
+    expect(cluster?.objectStoreBackupCount).toBe(2);
+    expect(cluster?.mostRecentFailure?.name).toBe('rt-bk-failed'); // failure context still preserved
+  });
+
+  it('cnpg_operator_blind — does NOT trigger when catalogue is empty (stays never_run)', async () => {
+    const tenants = fakeTenant({
+      clusters: [
+        {
+          metadata: { name: 'system-db', namespace: 'platform' },
+          spec: {
+            plugins: [
+              { name: 'barman-cloud.cloudnative-pg.io', enabled: true, parameters: { barmanObjectName: 'os' } },
+            ],
+          },
+        },
+      ],
+      backups: [],
+      scheduledbackups: [],
+    });
+    const catalogueModule2 = await import('../cnpg-backup-catalogue/service.js');
+    const spy = vi.spyOn(catalogueModule2, 'listBackupsFromObjectStore').mockResolvedValue({
+      source: 'object-store', objectStoreName: 'os', namespace: 'platform',
+      backups: [], unavailableReason: null, queryDurationMs: 10,
+    });
+    const result = await readBackupHealth({ ...tenants, core: {} as never }, { nowMs: NOW_MS });
+    spy.mockRestore();
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('never_run');
+    expect(cluster?.objectStoreBackupCount).toBe(0);
+  });
+
+  it('catalogue failures must NOT break the primary health response', async () => {
+    const tenants = fakeTenant({
+      clusters: [
+        {
+          metadata: { name: 'system-db', namespace: 'platform' },
+          spec: {
+            plugins: [
+              { name: 'barman-cloud.cloudnative-pg.io', enabled: true, parameters: { barmanObjectName: 'os' } },
+            ],
+          },
+        },
+      ],
+      backups: [],
+      scheduledbackups: [],
+    });
+    const catalogueModule3 = await import('../cnpg-backup-catalogue/service.js');
+    const spy = vi.spyOn(catalogueModule3, 'listBackupsFromObjectStore').mockRejectedValue(new Error('catalogue exploded'));
+    const result = await readBackupHealth({ ...tenants, core: {} as never }, { nowMs: NOW_MS });
+    spy.mockRestore();
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('never_run'); // fell through to base state, did not crash
+    expect(cluster?.objectStoreBackupCount).toBeUndefined();
   });
 
   it('aggregates across both watched namespaces', async () => {

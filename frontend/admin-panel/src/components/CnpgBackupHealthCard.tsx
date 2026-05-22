@@ -144,6 +144,18 @@ function ClusterRow({ c }: { c: CnpgClusterBackupHealth }) {
             check Flux reconciliation.
           </div>
         )}
+        {c.state === 'cnpg_operator_blind' && (
+          <div className="sm:col-span-2 rounded bg-amber-100 dark:bg-amber-900/30 px-2 py-1.5 text-amber-900 dark:text-amber-200">
+            <div className="font-medium">CNPG operator can&apos;t see this cluster&apos;s backups —
+              but the object store has {c.objectStoreBackupCount ?? '?'} of them.</div>
+            <div className="mt-0.5 text-amber-800 dark:text-amber-300">
+              The shim&apos;s catalogue is reaching the upstream archive successfully.
+              The cluster&apos;s control-plane projection has diverged — restart the
+              CNPG operator pod (<code>kubectl -n cnpg-system rollout restart deploy/cnpg-cloudnative-pg</code>)
+              and / or the postgres primary so it re-registers the plugin.
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -160,6 +172,7 @@ function paletteForState(state: CnpgClusterBackupHealth['state']) {
       };
     case 'stale':
     case 'never_run':
+    case 'cnpg_operator_blind':
       return {
         border: 'border-amber-300 dark:border-amber-700',
         bg: 'bg-amber-50 dark:bg-amber-900/20',
@@ -184,6 +197,7 @@ function labelForState(state: CnpgClusterBackupHealth['state']): string {
     case 'failing': return 'Failing';
     case 'never_run': return 'Never run';
     case 'no_backup_config': return 'No config';
+    case 'cnpg_operator_blind': return 'Operator blind';
   }
 }
 
