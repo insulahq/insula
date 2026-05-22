@@ -241,7 +241,7 @@ app.post('/api/workloads', authorize('workloads:create:own'), async (req, reply)
 ### 4. Data Access
 
 ```typescript
-app.get('/api/clients/:id/export', authorize('clients:export:own'), async (req, reply) => {
+app.get('/api/tenants/:id/export', authorize('clients:export:own'), async (req, reply) => {
   const data = await exportClient(req.params.id, req.query.format);
 
   await logEvent({

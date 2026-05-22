@@ -38,7 +38,7 @@ Two distinct user paths:
 | **Direct mailbox login** | The mailbox owner | Browser → `https://webmail.${DOMAIN}/` → Bulwark login form → email + password → Bulwark `/api/auth/stalwart-context` → Stalwart JMAP basic-auth → session cookie set |
 | **Client-panel impersonation** | `tenant_admin` of the tenant that owns the target mailbox (or `super_admin`) | Client-panel → platform-api `POST /api/v1/webmail/impersonate { mailboxId }` → JWT minted → browser redirect to `https://webmail.${DOMAIN}/_impersonate?token=...` → `bulwark-impersonator` sidecar verifies JWT → injects `target%master:masterpwd` master-auth header → server-side POST to Bulwark's `/api/auth/stalwart-context` → session cookie forwarded to browser → 302 to `/` |
 
-Platform users (admin / client panel auth) and mailbox users (Stalwart accounts) remain **separate identity domains**. The impersonation flow's permission check is `tenant_admin` of the tenant that owns the mailbox; the JWT carries `{ target_mailbox, tenant_id, actor_user_id, exp:+60s, jti:<uuid> }` signed with the platform `JWT_SECRET`. This mirrors the existing Roundcube `jwt_auth.php` model — only the verifying component moves from a PHP plugin to a Node.js sidecar.
+Platform users (admin / tenant panel auth) and mailbox users (Stalwart accounts) remain **separate identity domains**. The impersonation flow's permission check is `tenant_admin` of the tenant that owns the mailbox; the JWT carries `{ target_mailbox, tenant_id, actor_user_id, exp:+60s, jti:<uuid> }` signed with the platform `JWT_SECRET`. This mirrors the existing Roundcube `jwt_auth.php` model — only the verifying component moves from a PHP plugin to a Node.js sidecar.
 
 ### Why Stalwart master-user auth (and not OIDC)
 

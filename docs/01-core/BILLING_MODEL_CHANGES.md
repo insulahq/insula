@@ -33,7 +33,7 @@ Default (no gateway):
 With gateway assigned to customer:
   Option A: Admin records payment + sets expiry manually
   Option B: Admin sends payment link → customer pays online → webhook updates expiry
-  Option C: Customer clicks "Renew Now" in client panel → pays online → webhook updates expiry
+  Option C: Customer clicks "Renew Now" in tenant panel → pays online → webhook updates expiry
 ```
 
 ### Key Facts
@@ -44,7 +44,7 @@ With gateway assigned to customer:
 | **Gateway assignment** | Per-customer; each customer can have a different gateway or none |
 | **Payment types** | Once-off payments (primary) + recurring gateway subscriptions (optional) |
 | **Who manages billing** | Admin only — customers cannot change their plan or initiate billing |
-| **Customer self-service** | Customers can pay renewal via client panel **if** a gateway is assigned |
+| **Customer self-service** | Customers can pay renewal via tenant panel **if** a gateway is assigned |
 | **Supported gateways** | Stripe, PayPal, DPO (Africa), Chargebee, Paddle, 2Checkout, Adyen |
 
 ---
@@ -59,12 +59,12 @@ With gateway assigned to customer:
 | **Per-customer gateway assignment** | Each customer can use a different gateway, or none |
 | **Once-off payment support** | Renewals via single payment — not relying on recurring subscriptions |
 | **"Send Payment Link" flow** | Admin generates a payment link and emails it to the customer |
-| **Client panel "Renew Now" flow** | Customer can pay renewal online when their subscription is expiring |
+| **Tenant panel "Renew Now" flow** | Customer can pay renewal online when their subscription is expiring |
 | **PayPal support** | Added as a supported gateway (global) |
 | **DPO support** | Added as a supported gateway (Africa — ZAR, KES, NGN, and 20+ currencies) |
 | **Payment history log** | All payments (manual and gateway) recorded with reference and method |
 | **`billing_mode` field** | Per-customer: `manual`, `once_off`, or `recurring` |
-| **`renewal_amount` / `renewal_currency`** | Stored per customer for payment link and client panel checkout |
+| **`renewal_amount` / `renewal_currency`** | Stored per customer for payment link and tenant panel checkout |
 
 ### Changed
 
@@ -75,7 +75,7 @@ With gateway assigned to customer:
 | **Payment types** | Recurring subscriptions only | Once-off (primary) + recurring (optional) |
 | **Supported gateways** | Stripe, Chargebee, Paddle | + PayPal, DPO, 2Checkout, Adyen |
 | **Manual renewal** | Admin updates expiry via API only | Admin has dedicated UI in Admin Panel |
-| **Client panel billing** | Not available | "Renew Now" button when gateway assigned |
+| **Tenant panel billing** | Not available | "Renew Now" button when gateway assigned |
 | **Reconciliation** | All customers | Only customers with `recurring` gateway billing |
 
 ### Removed
@@ -93,7 +93,7 @@ With gateway assigned to customer:
 | Mode | Gateway Required? | How Renewal Works |
 |------|-------------------|-------------------|
 | `manual` | No | Admin sets expiry date directly; payment tracked offline |
-| `once_off` | Yes | Each renewal is a separate payment (link or client panel checkout) |
+| `once_off` | Yes | Each renewal is a separate payment (link or tenant panel checkout) |
 | `recurring` | Yes | Gateway subscription renews automatically; webhook updates platform |
 
 All three modes can coexist — each customer has their own `billing_mode`.
@@ -148,7 +148,7 @@ Admin renews — three options:
        ↓ customer pays online
        ↓ gateway webhook updates platform
 
-  C) Customer clicks "Renew Now" in client panel
+  C) Customer clicks "Renew Now" in tenant panel
        ↓ customer pays online
        ↓ gateway webhook updates platform
 ```
@@ -164,7 +164,7 @@ Admin renews — three options:
 | `EXTERNAL_BILLING_INTEGRATION.md` | Full rewrite — manual-first model, PayPal, DPO, once-off payments, all three renewal flows, per-customer gateway assignment |
 | `ADMIN_PANEL_REQUIREMENTS.md` | Added manual renewal UI, "Send Payment Link", "Record Payment", gateway management, per-customer gateway assignment |
 | `SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md` | Removed assumption that external billing platform is always present; notifications work in all modes |
-| `CLIENT_PANEL_FEATURES.md` | Added "Renew Now" button (visible when gateway is assigned and subscription is expiring) |
+| `TENANT_PANEL_FEATURES.md` | Added "Renew Now" button (visible when gateway is assigned and subscription is expiring) |
 
 ### No Longer Applicable
 
@@ -189,7 +189,7 @@ Admin renews — three options:
 - [`./EXTERNAL_BILLING_INTEGRATION.md`](./EXTERNAL_BILLING_INTEGRATION.md) — Full integration guide (gateways, webhooks, payment flows)
 - [`../04-deployment/SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md`](../04-deployment/SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md) — Admin alert system
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel subscription features
-- [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md) — Client panel renewal flow
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Tenant panel renewal flow
 
 ---
 

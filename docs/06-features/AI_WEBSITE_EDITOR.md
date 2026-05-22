@@ -294,6 +294,6 @@ CREATE INDEX IF NOT EXISTS ai_token_usage_client_idx ON ai_token_usage(tenant_id
 
 ## Related Documents
 
-- [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md)
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md)
 - [`../01-core/HOSTING_PLANS.md`](../01-core/HOSTING_PLANS.md)
 - [`../07-reference/COMPETITIVE_ANALYSIS.md`](../07-reference/COMPETITIVE_ANALYSIS.md)

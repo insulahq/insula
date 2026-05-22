@@ -161,7 +161,7 @@ A full platform backup (platform DB via `pg_dump`, Stalwart PVC, Dex,
 Roundcube, Harbor, cert-manager, Flux state) is operator-initiated DR
 and is implemented via **Velero** (or an equivalent k8s-native tool), not
 the per-tenant bundle pipeline. It does not appear in the admin or
-client panel.
+tenant panel.
 
 **Rationale.** Cluster DR is about bootstrapping a fresh cluster from
 zero, not about moving individual clients. Velero is the standard tool
@@ -199,7 +199,7 @@ These were explicitly considered and punted:
 
 - **Docs.** `BACKUP_STRATEGY.md`, `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md`,
   `RESTORE_SPECIFICATION.md`, `BACKUP_EXPORT_MIGRATION_GUIDE.md`,
-  `CLIENT_PANEL_FEATURES.md`, `ADMIN_PANEL_REQUIREMENTS.md` all updated
+  `TENANT_PANEL_FEATURES.md`, `ADMIN_PANEL_REQUIREMENTS.md` all updated
   2026-04-20 to reference `BACKUP_COMPONENT_MODEL.md` as the canonical
   contract.
 - **Code.** `storage_snapshots` stays for in-lifecycle-op artifacts

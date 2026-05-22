@@ -19,7 +19,7 @@
 ### Completed
 
 - **Backend API (Fastify + TypeScript + Drizzle ORM):** Fully implemented with all core CRUD endpoints for clients, domains, databases, workloads, and users. Cursor-based pagination, standard error envelope, and JWT auth middleware all functional.
-- **Admin Panel (React 18 + Vite + shadcn/ui):** Client management, domain management, database management, user/RBAC management, DNS server configuration, hosting settings, protected directories, and workload catalog UI all built.
+- **Admin Panel (React 18 + Vite + shadcn/ui):** Tenant management, domain management, database management, user/RBAC management, DNS server configuration, hosting settings, protected directories, and workload catalog UI all built.
 - **Tenant Panel (React 18 + Vite + shadcn/ui):** Dashboard, domain list, database list, email/mailbox management, file manager integration, and profile settings implemented.
 - **Shared API Contracts (`packages/api-contracts`):** Single source of truth for all Zod schemas and TypeScript types. Backend validates inbound requests; frontend uses inferred types.
 - **Database Schema:** Full MariaDB schema with 30+ tables covering clients, domains, workloads, databases, email (email_domains, mailboxes, mailbox_access, email_aliases), notifications, backup configurations, SMTP relay configs, audit logs, application catalog, SSL certificates, and SFTP users. Drizzle ORM schema in sync.
@@ -29,10 +29,10 @@
 - **Auth & OIDC:** JWT Bearer token auth with RBAC roles (admin, billing, support, read-only). OIDC provider configuration with Dex integration. Break-glass local auth fallback.
 - **Notifications System:** In-app notifications with read/unread tracking, subscription expiry alerts.
 - **Backup Configuration:** SSH and S3 backup target management with test connectivity and scheduling.
-- **K8s Manifests:** Base Kustomize manifests for backend, admin panel, client panel, database, Redis, ingress, RBAC, network policies, resource quotas, namespaces, and Flux GitOps.
+- **K8s Manifests:** Base Kustomize manifests for backend, admin panel, tenant panel, database, Redis, ingress, RBAC, network policies, resource quotas, namespaces, and Flux GitOps.
 - **SFTP Gateway:** K8s manifest for SFTP file access on port 2222.
 - **WAF (ModSecurity):** OWASP CRS configuration with platform-specific exclusions.
-- **E2E Tests (Playwright):** 43 passing tests covering admin and client panel flows.
+- **E2E Tests (Playwright):** 43 passing tests covering admin and tenant panel flows.
 - **CI/CD:** GitHub Actions workflows for backend, frontend-admin, and frontend-client.
 
 ### In Progress
@@ -399,7 +399,7 @@ The canonical schema is documented in `/config/Server Infrastructure/DATABASE_SC
 
 ### Goals
 - Build React/Vite admin panel
-- Implement client management UI
+- Implement tenant management UI
 - Implement domain management UI
 - Integrate with API endpoints
 - Add basic authentication flow
@@ -444,11 +444,11 @@ Full YAML is in `CICD_PIPELINE_REQUIREMENTS.md §P1.2`. Summary:
 
 | # | Title | Label | Owner |
 |---|-------|-------|-------|
-| 37 | Client panel: auth flow + dashboard | `frontend` `phase:1` | Frontend |
-| 38 | Client panel: domain list + DNS record viewer | `frontend` `phase:1` | Frontend |
-| 39 | Client panel: file manager (FileBrowser embed or custom) | `frontend` `phase:1` | Frontend |
-| 40 | Client panel: database list + credentials view | `frontend` `phase:1` | Frontend |
-| 41 | Client panel: email account list + create/delete mailbox | `frontend` `phase:1` | Frontend |
+| 37 | Tenant panel: auth flow + dashboard | `frontend` `phase:1` | Frontend |
+| 38 | Tenant panel: domain list + DNS record viewer | `frontend` `phase:1` | Frontend |
+| 39 | Tenant panel: file manager (FileBrowser embed or custom) | `frontend` `phase:1` | Frontend |
+| 40 | Tenant panel: database list + credentials view | `frontend` `phase:1` | Frontend |
+| 41 | Tenant panel: email account list + create/delete mailbox | `frontend` `phase:1` | Frontend |
 | 42 | API: GET /api/v1/client/domains (client-scoped domain list) | `backend` `phase:1` | Backend |
 | 43 | API: GET /api/v1/client/databases (client-scoped DB list) | `backend` `phase:1` | Backend |
 | 44 | API: GET/POST/DELETE /api/v1/client/email/mailboxes | `backend` `phase:1` | Backend |
@@ -550,7 +550,7 @@ jobs:
 
 | # | Title | Label | Owner |
 |---|-------|-------|-------|
-| 58 | Write end-to-end API tests (full client lifecycle) | `backend` `testing` `phase:1` | Backend |
+| 58 | Write end-to-end API tests (full tenant lifecycle) | `backend` `testing` `phase:1` | Backend |
 | 59 | Load test: 50 concurrent clients, all core endpoints < 200ms p50 | `backend` `testing` `phase:1` | Backend |
 | 60 | End-to-end frontend test: admin panel (Playwright or Cypress) | `frontend` `testing` `phase:1` | Frontend |
 | 61 | Dry-run migration with non-critical Plesk account | `migration` `phase:1` | All |
@@ -578,7 +578,7 @@ git push origin v1.0.0
 
 gh release create v1.0.0 \
   --title "Phase 1 MVP" \
-  --notes "First production deployment. Core features: client management, domain management, file manager, email, databases, Plesk migration."
+  --notes "First production deployment. Core features: tenant management, domain management, file manager, email, databases, Plesk migration."
 ```
 
 ---
@@ -712,7 +712,7 @@ Full secrets table with rotation schedule is in `CICD_PIPELINE_REQUIREMENTS.md �
 3. Team performs manual smoke test:
    - Create a test client via admin panel
    - Add a domain, verify DNS
-   - Upload a test file via client panel
+   - Upload a test file via tenant panel
    - Create a test mailbox
    - Create a test database
 4. Run load test: `gh workflow run load-test.yml -f duration=120 -f vus=10`
@@ -792,7 +792,7 @@ Weeks 11-12:                                                       [Testing + Fi
 - [ ] k3s cluster running with no major issues
 - [ ] All API endpoints tested and documented
 - [ ] Admin panel has full client + domain management
-- [ ] Client panel has file manager, email, databases
+- [ ] Tenant panel has file manager, email, databases
 - [ ] Plesk migration service extracts all data
 - [ ] First Plesk customer successfully migrated with zero data loss
 - [ ] 99%+ uptime observed over 48-hour monitoring period
@@ -867,7 +867,7 @@ By end of Week 12:
 
 ### OpenZiti Zero-Trust Overlay (Dark Services)
 
-**Goal:** Make admin panel, client panel, and opt-in customer apps completely invisible to the public internet using OpenZiti's zero-trust overlay network.
+**Goal:** Make admin panel, tenant panel, and opt-in customer apps completely invisible to the public internet using OpenZiti's zero-trust overlay network.
 
 **Architecture:**
 - Ziti Controller + public Edge Router hosted externally (alongside NetBird, ~$5-10/mo)
@@ -888,7 +888,7 @@ By end of Week 12:
 **Platform changes required:**
 - Backend: `ziti-services` module — CRUD for Ziti service definitions, identity enrollment, policy management via Ziti Controller REST API
 - Admin panel: "Network Access" settings to toggle dark mode for platform panels
-- Client panel: Per-deployment "Dark Mode" toggle + enrollment token download for customer users
+- Tenant panel: Per-deployment "Dark Mode" toggle + enrollment token download for customer users
 - Identity lifecycle: Create/revoke Ziti identities when users are created/deleted
 - NGINX Ingress: Conditional removal of public routes when dark mode enabled
 

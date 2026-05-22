@@ -149,7 +149,7 @@ PVC's gid to `fsGroup` in the pod spec.
 1. Admin enables email for a client (existing UI).
 2. Backend auto-provisions a submit credential on first enable
    (TODO — currently manual via `/mail/submit-credential/rotate`).
-3. Admin calls `POST /clients/:id/mail/submit-credential/rotate`
+3. Admin calls `POST /tenants/:id/mail/submit-credential/rotate`
    to generate credentials. The response includes the plain
    password once (not stored anywhere else in plain form).
 4. The backend writes `.platform/sendmail-auth` to the PVC
@@ -161,7 +161,7 @@ PVC's gid to `fsGroup` in the pod spec.
 
 Operators can rotate at any time via:
 
-    POST /api/v1/tenants/:clientId/mail/submit-credential/rotate
+    POST /api/v1/tenants/:tenantId/mail/submit-credential/rotate
 
 The response includes:
 
@@ -175,7 +175,7 @@ If the PVC write fails (file-manager unreachable, namespace missing),
 the credential is still active in the DB. The admin can retry the
 write via:
 
-    POST /api/v1/tenants/:clientId/mail/submit-credential/push-to-pvc
+    POST /api/v1/tenants/:tenantId/mail/submit-credential/push-to-pvc
 
 This endpoint decrypts the stored password and re-writes the file.
 

@@ -599,7 +599,7 @@ app.use(cors({
   origin: [
     'https://panel.platform.com',
     'https://admin.platform.com',
-    'https://client.platform.com',
+    'https://tenant.platform.com',
     `https://${process.env.CLUSTER_IP}`,  // Restrict to actual cluster IP, never use wildcard regex
   ],
   credentials: true,
@@ -618,7 +618,7 @@ fastify.register(fastifyCors, {
   origin: [
     'https://panel.platform.com',
     'https://admin.platform.com',
-    'https://client.platform.com',
+    'https://tenant.platform.com',
     `https://${process.env.CLUSTER_IP}`,  // Restrict to actual cluster IP
   ],
   credentials: true,
@@ -850,4 +850,4 @@ spec:
 - **SECURITY_ARCHITECTURE.md** - OIDC authentication
 - **PLATFORM_ARCHITECTURE.md** - Overall system architecture
 - **ADMIN_PANEL_REQUIREMENTS.md** - Admin panel features
-- **CLIENT_PANEL_FEATURES.md** - Client panel features
+- **TENANT_PANEL_FEATURES.md** - Tenant panel features

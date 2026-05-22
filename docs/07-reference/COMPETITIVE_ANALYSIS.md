@@ -152,7 +152,7 @@ Dokploy's code (MIT, TypeScript, same stack):
 
 **Implementation approach:**
 - Fastify WebSocket plugin + `kubectl logs --follow` streaming
-- Expose via client panel: per-deployment log viewer
+- Expose via tenant panel: per-deployment log viewer
 - Use K8s `exec` API (already used by SFTP gateway) for container terminal
 - Add to admin panel: cluster-wide log aggregation view
 
@@ -179,7 +179,7 @@ Dokploy's code (MIT, TypeScript, same stack):
 - Use K8s `metrics-server` + Prometheus (already industry standard)
 - Per-namespace ResourceQuotas (scaffold exists at `k8s/overlays/staging/resource-quotas-patch.yaml`)
 - Lightweight API endpoint querying Prometheus for client-facing metrics
-- Client panel dashboard: CPU, RAM, disk (PVC), bandwidth per deployment
+- Tenant panel dashboard: CPU, RAM, disk (PVC), bandwidth per deployment
 - Admin panel: aggregate view across all clients
 
 **Effort:** Medium | **Impact:** High
@@ -226,7 +226,7 @@ Dokploy's code (MIT, TypeScript, same stack):
 **Implementation approach:**
 - Add `postInstallMessage` field to catalog `manifest.json`
 - Backend renders template with actual deployment values after provisioning
-- Client panel displays in a dismissible card on the deployment detail page
+- Tenant panel displays in a dismissible card on the deployment detail page
 - Support markdown formatting
 
 **Effort:** Low | **Impact:** Medium (improves onboarding UX)
@@ -258,7 +258,7 @@ The panel enforces limits; WHMCS tracks usage and bills. Metric billing reads ac
 - Enforce via ResourceQuota per tenant namespace
 - Integrate with Stripe subscriptions + metered billing API directly (skip WHMCS — PHP/legacy)
 - Admin panel: plan management, usage reports
-- Client panel: current usage vs. plan limits, upgrade prompt
+- Tenant panel: current usage vs. plan limits, upgrade prompt
 
 **Effort:** High | **Impact:** Medium (needed before paid clients, not before MVP)
 

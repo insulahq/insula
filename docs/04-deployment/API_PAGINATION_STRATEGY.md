@@ -96,7 +96,7 @@ All list endpoints must return this structure:
 ### Standard Query Parameters
 
 ```
-GET /api/clients?
+GET /api/tenants?
   limit=20
   &cursor=next_cursor_value
   &sort=created_at:desc
@@ -137,7 +137,7 @@ AuditLogs:   timestamp, action_type, resource_type
 ### Basic Filters
 
 ```
-GET /api/clients?filter[status]=active
+GET /api/tenants?filter[status]=active
 GET /api/workloads?filter[status]=running&filter[tenant_id]=client-123
 ```
 
@@ -180,7 +180,7 @@ const fetchClients = async (cursor = null) => {
 
   if (cursor) params.append('cursor', cursor);
 
-  const response = await fetch(`/api/clients?${params}`);
+  const response = await fetch(`/api/tenants?${params}`);
   const { data, pagination } = await response.json();
 
   return { data, pagination };
@@ -233,7 +233,7 @@ const useList = <T,>(endpoint: string, limit = 20) => {
 
 // Usage in component
 function ClientsList() {
-  const { data, fetchMore, hasMore } = useList('/api/clients');
+  const { data, fetchMore, hasMore } = useList('/api/tenants');
 
   return (
     <>
@@ -251,7 +251,7 @@ function ClientsList() {
 ```typescript
 import { decodeCursor, encodeCursor } from '../utils/cursor';
 
-app.get('/api/clients', async (req, reply) => {
+app.get('/api/tenants', async (req, reply) => {
   const tenantId = req.user.tenant_id;
   const limit = Math.min(parseInt(req.query.limit) || 20, 100);
   const cursor = req.query.cursor;
@@ -351,7 +351,7 @@ export const validateCursor = (cursor: string): boolean => {
 Request related data in a single call:
 
 ```
-GET /api/clients?include=workloads,domains,backups
+GET /api/tenants?include=workloads,domains,backups
 
 Response:
 {
@@ -579,16 +579,16 @@ describe('Pagination', () => {
 ```typescript
 describe('List Endpoints', () => {
   it('should return paginated results with cursor', async () => {
-    const res1 = await client.get('/api/clients?limit=5');
+    const res1 = await client.get('/api/tenants?limit=5');
     expect(res1.data.pagination.has_more).toBe(true);
     expect(res1.data.pagination.cursor).toBeDefined();
 
-    const res2 = await client.get(`/api/clients?limit=5&cursor=${res1.data.pagination.cursor}`);
+    const res2 = await client.get(`/api/tenants?limit=5&cursor=${res1.data.pagination.cursor}`);
     expect(res2.data.data[0].id).not.toBe(res1.data.data[0].id);
   });
 
   it('should handle invalid cursor gracefully', async () => {
-    const res = await client.get('/api/clients?cursor=invalid');
+    const res = await client.get('/api/tenants?cursor=invalid');
     expect(res.status).toBe(400);
   });
 });

@@ -52,7 +52,7 @@ A **Kubernetes-based web hosting platform** that replaces Plesk with:
 - [ ] Read: [PHASE_1_ROADMAP.md](04-deployment/PHASE_1_ROADMAP.md) - Implementation timeline
 - [ ] Read: [GITHUB_INTEGRATION_SUMMARY.md](04-deployment/GITHUB_INTEGRATION_SUMMARY.md) - GitHub setup
 - [ ] Read: [CICD_PIPELINE_REQUIREMENTS.md](04-deployment/CICD_PIPELINE_REQUIREMENTS.md) - CI/CD pipeline
-- [ ] Read: [CLIENT_PANEL_FEATURES.md](02-operations/CLIENT_PANEL_FEATURES.md) - UI features
+- [ ] Read: [TENANT_PANEL_FEATURES.md](02-operations/TENANT_PANEL_FEATURES.md) - UI features
 - **Time: 1-1.5 hours**
 
 **📊 I'm a Project Manager**
@@ -117,7 +117,7 @@ A **Kubernetes-based web hosting platform** that replaces Plesk with:
   ├── SLI_SLO_DEFINITION.md       SLI/SLO definitions
   ├── TESTING_STRATEGY.md         Testing approach & coverage
   ├── ADMIN_PANEL_REQUIREMENTS.md Admin panel 100+ features
-  ├── CLIENT_PANEL_FEATURES.md    Client UI & self-service
+  ├── TENANT_PANEL_FEATURES.md    Client UI & self-service
   ├── CLUSTER_MAINTENANCE_AND_UPGRADES.md  Cluster maintenance
   ├── HA_MIGRATION_RUNBOOK.md     HA migration procedures
   ├── NODE_RUNTIME_SPECIFICATION.md  Node.js runtime spec

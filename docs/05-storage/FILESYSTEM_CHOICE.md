@@ -93,7 +93,7 @@ is:
 
 ### Operator runbook: I want to shrink tenant storage
 
-Plain `PATCH /clients/:id` with a smaller `storage_limit_override`
+Plain `PATCH /tenants/:id` with a smaller `storage_limit_override`
 **rejects with `STORAGE_RESIZE_REQUIRED` (409)** — shrink requires
 the destructive flow which loses any data above the new size, and
 that has to be opt-in.

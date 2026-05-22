@@ -10,11 +10,11 @@
 
 All customer and subscription management is **admin-only**. There is **no customer self-service billing or plan upgrades**.
 
-- **Customers:** Can only manage their hosting infrastructure (domains, databases, backups, files, email) via the Tenant Panel. Customers may pay a renewal online (via "Renew Now" in the client panel) **only if** the admin has assigned a payment gateway to their account.
+- **Customers:** Can only manage their hosting infrastructure (domains, databases, backups, files, email) via the Tenant Panel. Customers may pay a renewal online (via "Renew Now" in the tenant panel) **only if** the admin has assigned a payment gateway to their account.
 - **Admins:** Manage customer accounts, subscriptions, and expiry dates via the Admin Panel and Management API.
 - **Billing:** **Optional.** The platform works fully without any payment gateway. Admins can renew subscriptions manually (set expiry date directly). Payment gateways (Stripe, PayPal, DPO, Chargebee, Paddle, etc.) are configured globally and assigned per customer as needed.
 - **Plan Changes:** Require admin action via API (customers cannot self-service).
-- **Payment modes:** Manual (admin sets expiry), once-off payment link (admin sends link or customer pays via client panel), or recurring gateway subscription.
+- **Payment modes:** Manual (admin sets expiry), once-off payment link (admin sends link or customer pays via tenant panel), or recurring gateway subscription.
 
 ---
 
@@ -691,7 +691,7 @@ Available for **Business plan dedicated pods only** (not Starter, not Premium).
 
 A prominent warning is shown before scale-to-zero: `⚠ This will make the client's site unavailable until scaled back up.`
 
-Scale-to-zero is reflected in the workload status as `○ Idle`. The client panel also shows an idle state banner. Admin must provide a reason (audit logged).
+Scale-to-zero is reflected in the workload status as `○ Idle`. The tenant panel also shows an idle state banner. Admin must provide a reason (audit logged).
 
 ---
 
@@ -1710,7 +1710,7 @@ Multi-select client list with current quota and usage shown. Admin enters an add
 |--------|----------|-------------|
 | `GET` | `/api/v1/admin/redis/health` | Redis pod status, memory, eviction rate, hit/miss ratio (Phase 2) |
 | `GET` | `/api/v1/admin/redis/clients` | Per-client key count and estimated memory usage by prefix (Phase 2) |
-| `POST` | `/api/v1/admin/redis/clients/{id}/flush` | Flush all keys for a client's Redis prefix (Phase 2) |
+| `POST` | `/api/v1/admin/redis/tenants/{id}/flush` | Flush all keys for a client's Redis prefix (Phase 2) |
 
 ---
 
@@ -2239,7 +2239,7 @@ Filterable by: client, domain, cert type, status, expiry range, auto-renew.
 | **Preview** | Render template for a test domain — shows exact records that would be created | 1 |
 | **Re-apply to Domains** | Non-destructive re-apply to selected domains — domain list with Select All / None / individual selection | 1 |
 | **Per-Domain DNS Editor (Admin)** | Full CRUD on all DNS records for any customer domain — no template restrictions | 1 |
-| **Per-Domain DNS Editor (Customer)** | Full CRUD on all DNS records for own domains via client panel | 1 |
+| **Per-Domain DNS Editor (Customer)** | Full CRUD on all DNS records for own domains via tenant panel | 1 |
 
 > **Re-apply is non-destructive:** adds missing records and updates changed records from the template. Never deletes existing records on the domain. Customer custom records are always preserved.
 
@@ -2509,7 +2509,7 @@ Clicking an account opens a detail panel showing: full role assignment history, 
 
 **Admin Panel → Security → Admins → {account} → Edit Role**
 
-The six built-in roles from `AUTHORIZATION_MATRIX.md` are selectable from a dropdown. Region Admin and Client Admin require a scope selection (which region or client the role applies to).
+The six built-in roles from `AUTHORIZATION_MATRIX.md` are selectable from a dropdown. Region Admin and Tenant Admin require a scope selection (which region or tenant the role applies to).
 
 | Role | Scope required | Notes |
 |------|---------------|-------|
@@ -3262,7 +3262,7 @@ All metric queries are proxied through the Management API backend — the fronte
 |--------|----------|-------------|
 | `GET` | `/api/v1/admin/metrics/overview` | Home dashboard widget data (cluster health, error rate, latency, alerts, queue) |
 | `GET` | `/api/v1/admin/metrics/slo` | SLO compliance and error budget status for all services |
-| `GET` | `/api/v1/admin/metrics/clients/{id}` | Per-client CPU, memory, storage, HTTP error rate |
+| `GET` | `/api/v1/admin/metrics/tenants/{id}` | Per-client CPU, memory, storage, HTTP error rate |
 | `GET` | `/api/v1/admin/metrics/prometheus/health` | Prometheus pod status, scrape targets, TSDB stats |
 | `POST` | `/api/v1/admin/metrics/query` | Execute ad-hoc PromQL query (`query`, `start`, `end`, `step`) — returns time-series data |
 | `GET` | `/api/v1/admin/metrics/dashboards` | List provisioned Grafana dashboards with URLs |
@@ -3568,7 +3568,7 @@ Anomaly indicators appear as a subtle `↑ Unusual` badge alongside the metric v
 | `GET` | `/api/v1/admin/health/scorecard` | Platform health scorecard — all services with current score and trend |
 | `GET` | `/api/v1/admin/health/scorecard/{service}` | Single service health detail — score breakdown by signal |
 | `GET` | `/api/v1/admin/health/clients` | Per-client health scores — sortable, filterable by score range |
-| `GET` | `/api/v1/admin/health/clients/{id}` | Single client health detail — signal breakdown and 7-day trend |
+| `GET` | `/api/v1/admin/health/tenants/{id}` | Single client health detail — signal breakdown and 7-day trend |
 | `GET` | `/api/v1/admin/health/anomalies` | Current anomaly indicators across all services and clients |
 | `GET` | `/api/v1/admin/health/history` | Historical score snapshots (filter: `service`, `tenant_id`, `from`, `to`) |
 
@@ -4600,7 +4600,7 @@ Quota usage bar: `15 GB used of 50 GB customer backup quota`.
 | **Send Payment Link** | Generate once-off payment link via assigned gateway and email to customer | 1 |
 | **Gateway Assignment** | Assign or change the payment gateway for a specific customer | 1 |
 | **Billing Mode** | Set per-customer: `manual`, `once_off`, or `recurring` | 1 |
-| **Renewal Amount/Currency** | Set the renewal price per customer for payment link and client panel checkout | 1 |
+| **Renewal Amount/Currency** | Set the renewal price per customer for payment link and tenant panel checkout | 1 |
 | **Payment History** | View all past payments (manual records + gateway transactions) per customer | 1 |
 | **Webhook Status** | View webhook delivery status for gateway-connected customers | 1 |
 | **Bulk Renewal** | Update expiry dates for multiple customers at once | 1.5 |
@@ -5103,7 +5103,7 @@ ALTER TABLE clients
 | **Color Customization** | Primary, secondary, accent + semantic colors | 1.5 |
 | **Preview Changes** | Live preview before saving | 1.5 |
 | **Reset to Default** | Reset all branding to platform defaults | 1.5 |
-| **Apply Globally** | Changes apply to admin panel + client panel | 1.5 |
+| **Apply Globally** | Changes apply to admin panel + tenant panel | 1.5 |
 | **Email Templates** | Customize email templates with branding | 2 |
 | **Custom CSS** | Advanced: Allow custom CSS overrides | 3 |
 | **White-Label Mode** | Option to completely remove platform branding | 2 |

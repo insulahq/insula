@@ -1226,4 +1226,4 @@ groups:
 - **MONITORING_OBSERVABILITY.md**: General monitoring setup for all services
 - **SECURITY_ARCHITECTURE.md**: Email authentication and security
 - **ADMIN_PANEL_REQUIREMENTS.md**: Admin panel specification
-- **CLIENT_PANEL_FEATURES.md**: Customer panel features
+- **TENANT_PANEL_FEATURES.md**: Customer panel features

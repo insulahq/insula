@@ -1,6 +1,6 @@
 # Tenant Lifecycle (status-driven)
 
-> Operator runbook. As of 2026-04-28 the client lifecycle is driven
+> Operator runbook. As of 2026-04-28 the tenant lifecycle is driven
 > directly from the client row — status dropdown, resource limits,
 > archive retention. The standalone Suspend / Resume / Archive /
 > Restore / Resize buttons in the Storage Lifecycle card are gone;
@@ -10,15 +10,15 @@
 
 | Operator intent           | UI surface                                                     | Backend dispatch                                            |
 | ------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------- |
-| Bump storage (online)     | ResourceLimits → Storage Limit ↑                               | PATCH /clients/:id { storage_limit_override } → online grow |
+| Bump storage (online)     | ResourceLimits → Storage Limit ↑                               | PATCH /tenants/:id { storage_limit_override } → online grow |
 | Shrink storage            | ResourceLimits → Storage Limit ↓ → confirm destructive dialog | POST /admin/tenants/:id/storage/resize { newGi }            |
-| Suspend                   | Status dropdown → suspended                                    | PATCH /clients/:id { status: 'suspended' }                  |
-| Resume                    | Status dropdown → active                                       | PATCH /clients/:id { status: 'active' }                     |
-| Archive (with retention)  | Status dropdown → archived (+ retention_days input)            | PATCH /clients/:id { status: 'archived', archive_retention_days } |
-| Restore from archive      | Status dropdown → active (with confirm modal)                  | PATCH /clients/:id { status: 'active' }                     |
+| Suspend                   | Status dropdown → suspended                                    | PATCH /tenants/:id { status: 'suspended' }                  |
+| Resume                    | Status dropdown → active                                       | PATCH /tenants/:id { status: 'active' }                     |
+| Archive (with retention)  | Status dropdown → archived (+ retention_days input)            | PATCH /tenants/:id { status: 'archived', archive_retention_days } |
+| Restore from archive      | Status dropdown → active (with confirm modal)                  | PATCH /tenants/:id { status: 'active' }                     |
 | Manual snapshot           | Storage Operations → "Take snapshot"                           | POST /admin/tenants/:id/storage/snapshot                    |
 | Reset stuck failed state  | Storage Operations → "Reset to idle" (visible only on failed)  | POST /admin/tenants/:id/storage/clear-failed                |
-| Hard delete               | Top-bar → Delete                                               | DELETE /clients/:id                                         |
+| Hard delete               | Top-bar → Delete                                               | DELETE /tenants/:id                                         |
 
 The status dropdown is the single switch the operator flips. Anything
 that needs a backing snapshot (archive / restore / destructive shrink)
@@ -55,8 +55,8 @@ are still called by:
 | POST /admin/tenants/:id/storage/snapshot           | Storage Operations card "Take snapshot"          |
 | POST /admin/tenants/:id/storage/suspend            | (script-only; status flip uses cascade path)     |
 | POST /admin/tenants/:id/storage/resume             | (script-only; status flip uses cascade path)     |
-| POST /admin/tenants/:id/storage/archive            | PATCH /clients status:archived                   |
-| POST /admin/tenants/:id/storage/restore            | PATCH /clients status:active (when archived)     |
+| POST /admin/tenants/:id/storage/archive            | PATCH /tenants status:archived                   |
+| POST /admin/tenants/:id/storage/restore            | PATCH /tenants status:active (when archived)     |
 | POST /admin/tenants/:id/storage/clear-failed       | Storage Operations "Reset to idle" (failed only) |
 | GET  /admin/storage/operations/:opId               | OperationProgressModal poll                      |
 
