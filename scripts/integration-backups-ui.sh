@@ -355,6 +355,33 @@ except Exception as e:
   fi
 fi
 
+# ─── Phase 3 — barman-cloud restore endpoint reachability ───────────────────
+echo '═══ Phase 3 — /admin/postgres-barman-restore endpoints reachable ═══'
+
+# Status on a known-absent cluster must return 404, not 500.
+api GET '/api/v1/admin/postgres-barman-restore/platform/__definitely_not_a_cluster/status' '' BR_404 BR_404_CODE
+if [[ "$BR_404_CODE" == "404" ]]; then
+  pass "barman-restore status returns 404 for unknown cluster (not 500)"
+else
+  fail "barman-restore status for unknown cluster: expected 404, got $BR_404_CODE: $(printf '%s' "$BR_404" | head -c 200)"
+fi
+
+# DELETE on unknown cluster is idempotent (deleted=false, http=200).
+api DELETE '/api/v1/admin/postgres-barman-restore/platform/__definitely_not_a_cluster' '' BR_DEL BR_DEL_CODE
+if [[ "$BR_DEL_CODE" == "200" ]] && printf '%s' "$BR_DEL" | grep -q '"deleted":false'; then
+  pass "barman-restore DELETE on unknown cluster is idempotent (deleted=false, http=200)"
+else
+  fail "barman-restore DELETE on unknown cluster: http=$BR_DEL_CODE body=$(printf '%s' "$BR_DEL" | head -c 200)"
+fi
+
+# POST validation: same source + target names → 400.
+api POST '/api/v1/admin/postgres-barman-restore' '{"namespace":"platform","sourceClusterName":"system-db","newClusterName":"system-db"}' BR_BAD BR_BAD_CODE
+if [[ "$BR_BAD_CODE" == "400" || "$BR_BAD_CODE" == "422" ]] && printf '%s' "$BR_BAD" | grep -qi "MUST differ"; then
+  pass "barman-restore POST refuses same-name target ($BR_BAD_CODE)"
+else
+  fail "barman-restore POST same-name validation: http=$BR_BAD_CODE body=$(printf '%s' "$BR_BAD" | head -c 200)"
+fi
+
 echo
 if (( FAILED > 0 )); then
   printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"
