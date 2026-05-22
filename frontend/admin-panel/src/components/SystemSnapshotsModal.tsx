@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   X, Loader2, Camera, Trash2, RotateCcw, AlertTriangle, AlertCircle, RefreshCw, CheckCircle, Save,
 } from 'lucide-react';
@@ -12,9 +12,15 @@ import {
   useRecurringJobs,
   useUpdateRecurringJob,
 } from '@/hooks/use-system-snapshots';
+import {
+  useStartPitr,
+  usePitrPrechecks,
+  useRestoreStatus,
+} from '@/hooks/use-postgres-restore';
 import type { SystemPvcSnapshotSummary } from '@k8s-hosting/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import RestorationWizard, { type RestoreArtifact, type RestorationWizardPrecheck } from '@/components/backups/RestorationWizard';
 
 interface SystemSnapshotsModalProps {
   readonly volume: SystemPvcSnapshotSummary;
@@ -49,13 +55,31 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
   const prune = usePruneSystemSnapshots();
   const restore = useRestoreSystemSnapshot();
   const updateJob = useUpdateRecurringJob();
-  const navigate = useNavigate();
+  const startPitr = useStartPitr();
+  // Poll cluster-wide PITR lock only while the modal is mounted, AND only
+  // when this volume is CNPG-managed (other consumers don't care). Gates
+  // every per-row Restore button on the snapshot table — pre-empts the
+  // 409 PITR_PRECONDITION_FAILED a second operator would otherwise hit.
+  const pitrStatusQ = useRestoreStatus({ enabled: volume.cnpgCluster != null });
+  const anotherPitrInFlight = pitrStatusQ.data?.data?.inProgress === true;
+  const qc = useQueryClient();
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
   const [confirmPrune, setConfirmPrune] = useState(false);
   const [keepNewest, setKeepNewest] = useState(1);
   const [manualLabel, setManualLabel] = useState('');
+  // Phase 1 (2026-05-22): CNPG snapshot → real PITR via wizard.
+  // Holds the snapshot row the operator picked; null = wizard closed.
+  const [pitrSnap, setPitrSnap] = useState<{ snapshotName: string; createdAt: string | null; sizeBytes: number } | null>(null);
+
+  // Read live prechecks whenever the wizard is open against a CNPG snap.
+  const prechecksQ = usePitrPrechecks({
+    clusterNamespace: volume.cnpgCluster?.namespace ?? null,
+    clusterName: volume.cnpgCluster?.name ?? null,
+    snapshotName: pitrSnap?.snapshotName ?? null,
+    enabled: pitrSnap != null && volume.cnpgCluster != null,
+  });
 
   const snapshots = list.data?.data.snapshots ?? [];
   const allJobs = jobs.data?.data.jobs ?? [];
@@ -294,24 +318,26 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                       <td className="py-1.5 pr-2 max-w-[160px] truncate text-gray-600 dark:text-gray-300">{s.userLabel ?? <span className="text-gray-400 italic">none</span>}</td>
                       <td className="py-1.5 text-right whitespace-nowrap">
                         {volume.cnpgCluster ? (
-                          // B6 (2026-05-22): in-place revert on a CNPG
-                          // PVC scales the Cluster CR to 0 then mutates
-                          // the volume — destructive while postgres is
-                          // serving traffic, and the wrong tool for the
-                          // job. Proper postgres recovery uses CNPG
-                          // bootstrap.recovery to spawn a new cluster
-                          // from the off-cluster Backup CR. Route to
-                          // the DR Instructions page instead of letting
-                          // the operator click a destructive button.
+                          // Phase 1 (2026-05-22): CNPG snapshot Restore wires
+                          // into the existing POST /admin/postgres-restore
+                          // endpoint via the RestorationWizard. The backend
+                          // spawns a dedicated k8s Job that promotes from
+                          // the snapshot (with optional WAL replay) and
+                          // replaces the source cluster — exactly the
+                          // operation the DR shell-script wizard previously
+                          // documented, but now visible + tracked through
+                          // the task-center chip.
                           <button
                             type="button"
-                            onClick={() => navigate('/backups/disaster-recovery?section=instructions')}
-                            disabled={!s.usable}
-                            className="mr-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                            onClick={() => setPitrSnap({ snapshotName: s.snapshotName, createdAt: s.createdAt, sizeBytes: s.sizeBytes })}
+                            disabled={!s.usable || anotherPitrInFlight}
+                            className="mr-1 inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700/50"
                             data-testid={`snapshot-restore-${s.snapshotName}`}
-                            title="Postgres restore runs out-of-band via CNPG bootstrap.recovery — opens the Disaster Recovery instructions"
+                            title={anotherPitrInFlight
+                              ? `Another PITR is in flight (snapshot=${pitrStatusQ.data?.data?.snapshot ?? 'unknown'}) — wait until it completes`
+                              : 'Promote from this snapshot — runs in a dedicated k8s Job; track progress via the task-center chip'}
                           >
-                            <RotateCcw size={10} /> Restore via DR
+                            <RotateCcw size={10} /> Restore
                           </button>
                         ) : (
                           <button
@@ -408,6 +434,79 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
             confirmLabel="Yes, prune"
           />
         )}
+
+        {/* Phase 1 — CNPG PITR wizard wired to the real backend endpoint. */}
+        {pitrSnap && volume.cnpgCluster && (() => {
+          const precheck = prechecksQ.data?.data;
+          // Distinguish pending (neutral) from hard-blocking (rose-red).
+          const pendingMessage: string | null = prechecksQ.isLoading
+            ? 'Running prechecks against snapshot + cluster…'
+            : null;
+          const blockingError: string | null = (() => {
+            if (prechecksQ.error) {
+              return `Prechecks failed: ${prechecksQ.error instanceof Error ? prechecksQ.error.message : String(prechecksQ.error)}`;
+            }
+            return precheck?.blockingError ?? null;
+          })();
+          const livePrechecks: ReadonlyArray<RestorationWizardPrecheck> = (() => {
+            if (!precheck) return [];
+            const arr: RestorationWizardPrecheck[] = [];
+            if (precheck.snapshotUsable && precheck.snapshotAgeSec != null) {
+              const ageMin = Math.round(precheck.snapshotAgeSec / 60);
+              arr.push({
+                severity: 'info',
+                message: `Snapshot ready · age ${ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin / 60)}h`} (created ${precheck.snapshotCreatedAt ? new Date(precheck.snapshotCreatedAt).toLocaleString() : '?'})`,
+              });
+            }
+            if (precheck.sourceInstances != null && precheck.clusterPrimaryPvc) {
+              arr.push({
+                severity: 'info',
+                message: `Source cluster: ${precheck.sourceInstances} instance${precheck.sourceInstances === 1 ? '' : 's'} · primary PVC ${precheck.clusterPrimaryPvc}`,
+              });
+            }
+            if (precheck.lockState !== 'free') {
+              arr.push({
+                severity: 'warn',
+                message: `Another PITR is in flight (snapshot=${precheck.lockSnapshot ?? 'unknown'}; lock source: ${precheck.lockState}). Cannot start a new restore until it completes.`,
+              });
+            }
+            arr.push({
+              severity: 'warn',
+              message: 'This will REPLACE the source cluster atomically once the new bootstrap is ready. There is no automatic undo — the source data is deleted at the cutover.',
+            });
+            return arr;
+          })();
+
+          const artifact: RestoreArtifact = {
+            kind: 'snapshot',
+            id: pitrSnap.snapshotName,
+            displayName: `${volume.cnpgCluster.namespace}/${volume.cnpgCluster.name} · ${pitrSnap.snapshotName}`,
+            sizeBytes: pitrSnap.sizeBytes,
+            createdAt: pitrSnap.createdAt,
+          };
+
+          return (
+            <RestorationWizard
+              artifact={artifact}
+              prechecks={livePrechecks}
+              blockSubmit={blockingError}
+              submitPending={pendingMessage}
+              hideWhereStep
+              onClose={() => setPitrSnap(null)}
+              onSubmit={async () => {
+                const resp = await startPitr.mutateAsync({
+                  clusterNamespace: volume.cnpgCluster!.namespace,
+                  clusterName: volume.cnpgCluster!.name,
+                  snapshotName: pitrSnap.snapshotName,
+                });
+                // Refresh the cluster-wide status so the chip + future
+                // restore buttons see the lock immediately.
+                qc.invalidateQueries({ queryKey: ['postgres-restore', 'status'] });
+                return { taskId: resp.data.jobName };
+              }}
+            />
+          );
+        })()}
       </div>
     </div>
   );

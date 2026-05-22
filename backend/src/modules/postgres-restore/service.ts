@@ -552,6 +552,144 @@ interface PitrDeps {
 
 function nowMs(): number { return Date.now(); }
 
+// ─── Prechecks (read-only) ───────────────────────────────────────────────────
+//
+// The wizard's "ready to commit?" step needs live cluster + snapshot context,
+// not just static warnings. `runPitrPrechecks` is a non-mutating variant of
+// `preflight` that returns the same checks as structured fields. It does NOT
+// acquire the lock; the actual POST handler still does that synchronously.
+
+export interface PitrPrechecksResult {
+  readonly snapshotUsable: boolean;
+  readonly snapshotAgeSec: number | null;
+  readonly snapshotCreatedAt: string | null;
+  /** When recoveryTargetTime is supplied: true means WAL covers the target. */
+  readonly walCoverageOk: boolean | null;
+  readonly walOldestAt: string | null;
+  readonly walCount: number | null;
+  readonly lockState: 'free' | 'in-memory' | 'db';
+  readonly lockSnapshot: string | null;
+  readonly sourceInstances: number | null;
+  readonly clusterPrimaryPvc: string | null;
+  /** First failing check; if non-null, do not POST. */
+  readonly blockingError: string | null;
+}
+
+export async function runPitrPrechecks(
+  k8s: K8sClients,
+  kubeconfigPath: string | undefined,
+  db: Database,
+  inputs: {
+    readonly clusterNamespace: string;
+    readonly clusterName: string;
+    readonly snapshotName: string;
+    readonly recoveryTargetTime: string | null;
+  },
+): Promise<PitrPrechecksResult> {
+  // Lock state: read-only — we want to surface "another PITR is running"
+  // before the operator hits POST and gets 409.
+  const lock = await isPostgresRestoreInProgressClusterWide(db);
+  const lockState: PitrPrechecksResult['lockState'] = lock.inProgress
+    ? (lock.source === 'in-memory' ? 'in-memory' : 'db')
+    : 'free';
+
+  let snap: RawSnap | null = null;
+  try {
+    snap = await getCustom<RawSnap>(k8s, {
+      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: inputs.snapshotName,
+    });
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code
+      ?? (err as { statusCode?: number }).statusCode;
+    if (code === 404) {
+      return {
+        snapshotUsable: false, snapshotAgeSec: null, snapshotCreatedAt: null,
+        walCoverageOk: null, walOldestAt: null, walCount: null,
+        lockState, lockSnapshot: lock.snapshot ?? null,
+        sourceInstances: null, clusterPrimaryPvc: null,
+        blockingError: `Snapshot ${inputs.snapshotName} not found in longhorn-system`,
+      };
+    }
+    throw err;
+  }
+
+  const snapTimeIso = snap.status?.creationTime ?? snap.metadata?.creationTimestamp ?? null;
+  const snapTime = snapTimeIso ? new Date(snapTimeIso) : null;
+  const snapshotUsable = snap.status?.readyToUse === true;
+  const snapshotAgeSec = snapTime ? Math.max(0, Math.floor((Date.now() - snapTime.getTime()) / 1000)) : null;
+
+  let cluster: CnpgCluster | null = null;
+  try {
+    cluster = await getCustom<CnpgCluster>(k8s, {
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
+    });
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code
+      ?? (err as { statusCode?: number }).statusCode;
+    if (code === 404) {
+      return {
+        snapshotUsable, snapshotAgeSec, snapshotCreatedAt: snapTimeIso,
+        walCoverageOk: null, walOldestAt: null, walCount: null,
+        lockState, lockSnapshot: lock.snapshot ?? null,
+        sourceInstances: null, clusterPrimaryPvc: null,
+        blockingError: `Cluster ${inputs.clusterNamespace}/${inputs.clusterName} not found`,
+      };
+    }
+    throw err;
+  }
+  const sourceInstances = cluster.spec?.instances ?? null;
+  const clusterPrimaryPvc = cluster.status?.currentPrimary ?? null;
+
+  let blockingError: string | null = null;
+  if (!snapshotUsable) blockingError = `Snapshot ${inputs.snapshotName} is not yet ready (status.readyToUse=false)`;
+  else if (!clusterPrimaryPvc) blockingError = `Cluster ${inputs.clusterNamespace}/${inputs.clusterName} has no currentPrimary`;
+  else if (lock.inProgress) blockingError = `Another PITR is already in flight (snapshot=${lock.snapshot ?? 'unknown'})`;
+
+  // WAL coverage probe — only meaningful when caller supplied a target time
+  // AND when the snapshot + cluster prechecks above pass.
+  let walCoverageOk: boolean | null = null;
+  let walOldestAt: string | null = null;
+  let walCount: number | null = null;
+  if (inputs.recoveryTargetTime && clusterPrimaryPvc && snapshotUsable && snapTime) {
+    const target = new Date(inputs.recoveryTargetTime);
+    // Fastify's AJV does not register ajv-formats by default, so the
+    // `format: 'date-time'` in the route schema does NOT enforce a
+    // parseable timestamp at the JSON-schema layer. Guard here so an
+    // Invalid Date doesn't propagate into inspectWalCoverage (which
+    // would compare NaN < something and silently return ok=true).
+    if (Number.isNaN(target.getTime())) {
+      blockingError ??= `recoveryTargetTime is not a parseable ISO-8601 timestamp: ${inputs.recoveryTargetTime}`;
+      walCoverageOk = false;
+    } else if (target.getTime() < snapTime.getTime()) {
+      blockingError ??= `recoveryTargetTime ${target.toISOString()} is before snapshot time ${snapTime.toISOString()}; PITR can only roll FORWARD`;
+      walCoverageOk = false;
+    } else {
+      try {
+        const wal = await inspectWalCoverage(kubeconfigPath, inputs.clusterNamespace, clusterPrimaryPvc, target);
+        walCoverageOk = wal.ok;
+        walOldestAt = wal.oldestWalAt?.toISOString() ?? null;
+        walCount = wal.walCount;
+        if (!wal.ok) blockingError ??= `PITR target unreachable from snapshot's WAL: ${wal.reason ?? 'unknown'}`;
+      } catch (err) {
+        // WAL probe failure surfaces as a soft warning, not a blocking error —
+        // the actual POST will re-run preflight with the lock held and will
+        // surface a hard error then if needed.
+        walCoverageOk = null;
+        walOldestAt = null;
+        walCount = null;
+      }
+    }
+  }
+
+  return {
+    snapshotUsable, snapshotAgeSec, snapshotCreatedAt: snapTimeIso,
+    walCoverageOk, walOldestAt, walCount,
+    lockState, lockSnapshot: lock.snapshot ?? null,
+    sourceInstances, clusterPrimaryPvc,
+    blockingError,
+  };
+}
+
 async function getCustom<T>(
   k8s: K8sClients,
   args: { group: string; version: string; namespace?: string; plural: string; name: string },
@@ -775,6 +913,14 @@ async function preflight(
 
   if (inputs.recoveryTargetTime) {
     const target = new Date(inputs.recoveryTargetTime);
+    // Guard against an Invalid Date reaching getTime/toISOString — AJV
+    // is not configured with ajv-formats so the route schema does not
+    // enforce parseability. Same guard exists in runPitrPrechecks but
+    // this POST path is the destructive one.
+    if (Number.isNaN(target.getTime())) {
+      const e = new Error(`recoveryTargetTime is not a parseable ISO-8601 timestamp: ${inputs.recoveryTargetTime}`);
+      (e as Error & { code?: number }).code = 422; throw e;
+    }
     const snapTime = new Date(snap.status?.creationTime ?? snap.metadata?.creationTimestamp ?? '');
     if (target.getTime() < snapTime.getTime()) {
       const e = new Error(`recoveryTargetTime ${target.toISOString()} is before snapshot time ${snapTime.toISOString()}; PITR can only roll FORWARD from the snapshot`);

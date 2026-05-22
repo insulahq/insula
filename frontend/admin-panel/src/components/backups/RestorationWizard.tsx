@@ -28,7 +28,7 @@
  *      onSubmit promise resolves with a `taskId` and the modal closes.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   X,
@@ -78,6 +78,19 @@ export interface RestorationWizardProps {
   readonly artifact: RestoreArtifact;
   /** Optional non-blocking warnings to render on step 3. */
   readonly prechecks?: ReadonlyArray<RestorationWizardPrecheck>;
+  /** When non-null, disables the Start button + shows the reason in a
+   *  rose-red error banner. Use for HARD blocking gates (lock held,
+   *  snapshot not ready, etc.). For "still loading" states use
+   *  `submitPending` instead — that one renders a neutral indicator. */
+  readonly blockSubmit?: string | null;
+  /** When non-null, disables the Start button + shows a neutral
+   *  spinner-style label. Use for pending precheck calls so the
+   *  operator doesn't confuse "loading" with "failed". */
+  readonly submitPending?: string | null;
+  /** When true, hides the Step 2 (Where) entirely. Use for restore
+   *  flows where the location is structurally fixed — e.g. CNPG PITR
+   *  always replaces the source cluster. */
+  readonly hideWhereStep?: boolean;
   readonly onClose: () => void;
   /** Caller-provided restore dispatcher. Returns the task id created
    *  by the backend so the wizard can pass it through `onCompleted`. */
@@ -110,6 +123,9 @@ const ARTIFACT_VERB: Record<RestoreKind, string> = {
 export default function RestorationWizard({
   artifact,
   prechecks,
+  blockSubmit,
+  submitPending,
+  hideWhereStep,
   onClose,
   onSubmit,
   onCompleted,
@@ -117,9 +133,20 @@ export default function RestorationWizard({
   const navigate = useNavigate();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [scope, setScope] = useState<RestoreScope>('all');
-  const [location, setLocation] = useState<RestoreLocation>('side-by-side');
+  // When the location step is suppressed (CNPG PITR always replaces
+  // the source cluster), default to 'in-place' so the consumer sees
+  // a sane RestoreSelection.location value.
+  const [location, setLocation] = useState<RestoreLocation>(hideWhereStep ? 'in-place' : 'side-by-side');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Guard against an external `setStep(2)` while `hideWhereStep` is set —
+  // the Step 2 pane is suppressed so step=2 would render a blank panel.
+  // Snap back to 1 if anyone manages to drive us into that state (e.g.
+  // a test or a future caller).
+  useEffect(() => {
+    if (hideWhereStep && step === 2) setStep(1);
+  }, [hideWhereStep, step]);
 
   const Icon = ARTIFACT_ICON[artifact.kind];
   const verb = ARTIFACT_VERB[artifact.kind];
@@ -180,7 +207,7 @@ export default function RestorationWizard({
           className="flex border-b border-gray-200 dark:border-gray-700"
           aria-label="Restore steps"
         >
-          {[1, 2, 3].map((n) => (
+          {(hideWhereStep ? [1, 3] : [1, 2, 3]).map((n) => (
             <li
               key={n}
               className={
@@ -192,7 +219,7 @@ export default function RestorationWizard({
             >
               {n === 1 && '1. What'}
               {n === 2 && '2. Where'}
-              {n === 3 && '3. Confirm'}
+              {n === 3 && (hideWhereStep ? '2. Confirm' : '3. Confirm')}
             </li>
           ))}
         </ol>
@@ -211,7 +238,7 @@ export default function RestorationWizard({
               }}
             />
           )}
-          {step === 2 && <Step2 location={location} setLocation={setLocation} verb={verb} />}
+          {step === 2 && !hideWhereStep && <Step2 location={location} setLocation={setLocation} verb={verb} />}
           {step === 3 && (
             <Step3 artifact={artifact} scope={scope} location={location} prechecks={prechecks} />
           )}
@@ -224,36 +251,70 @@ export default function RestorationWizard({
           </div>
         )}
 
-        <footer className="flex items-center justify-between gap-2 border-t border-gray-200 p-3 dark:border-gray-700">
-          <button
-            type="button"
-            onClick={() => setStep((s) => (s > 1 ? ((s - 1) as 1 | 2) : s))}
-            disabled={step === 1 || submitting}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-          >
-            <ChevronLeft size={12} /> Back
-          </button>
-          {step < 3 ? (
-            <button
-              type="button"
-              onClick={() => setStep((s) => (s < 3 ? ((s + 1) as 2 | 3) : s))}
-              className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600"
-              data-testid="restoration-wizard-next"
+        <footer className="flex flex-col gap-2 border-t border-gray-200 p-3 dark:border-gray-700">
+          {/* Loading state — neutral. Distinguished from blockSubmit
+              so operators don't confuse pending prechecks with failure. */}
+          {submitPending && step === 3 && !blockSubmit && (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+              data-testid="restoration-wizard-submit-pending"
             >
-              Next <ChevronRight size={12} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-              data-testid="restoration-wizard-start"
-            >
-              {submitting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-              {submitting ? 'Starting…' : 'Start restore'}
-            </button>
+              <Loader2 size={14} className="mt-0.5 flex-shrink-0 animate-spin" />
+              <span>{submitPending}</span>
+            </div>
           )}
+          {blockSubmit && step === 3 && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200"
+              data-testid="restoration-wizard-block-reason"
+            >
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{blockSubmit}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setStep((s) => {
+                if (s <= 1) return s;
+                // When Step 2 is hidden, Back from Step 3 jumps to Step 1.
+                if (hideWhereStep && s === 3) return 1;
+                return (s - 1) as 1 | 2;
+              })}
+              disabled={step === 1 || submitting}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+            >
+              <ChevronLeft size={12} /> Back
+            </button>
+            {step < 3 ? (
+              <button
+                type="button"
+                onClick={() => setStep((s) => {
+                  if (s >= 3) return s;
+                  // When Step 2 is hidden, Next from Step 1 jumps to Step 3.
+                  if (hideWhereStep && s === 1) return 3;
+                  return (s + 1) as 2 | 3;
+                })}
+                className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600"
+                data-testid="restoration-wizard-next"
+              >
+                Next <ChevronRight size={12} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={submitting || blockSubmit != null || submitPending != null}
+                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                data-testid="restoration-wizard-start"
+              >
+                {submitting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                {submitting ? 'Starting…' : 'Start restore'}
+              </button>
+            )}
+          </div>
         </footer>
       </div>
     </div>
