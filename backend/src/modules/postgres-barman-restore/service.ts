@@ -175,9 +175,22 @@ export async function createBarmanRestore(
       throw new BarmanRestoreError(`recoveryTargetTime is not a parseable ISO-8601 timestamp: ${inputs.recoveryTargetTime}`, 422);
     }
   }
-  const instances = inputs.instances ?? 1;
-  if (!Number.isInteger(instances) || instances < 1 || instances > 5) {
-    throw new BarmanRestoreError(`instances must be an integer 1..5; got ${instances}`, 422);
+  // Instances default = source's instance count (HA-state-aware).
+  // Operator's request 2026-05-22: auto-default to source's HA state
+  // instead of always 1. Single-instance source → 1 replica restore;
+  // HA-3 source → 3-replica restore so the operator can promote-and-go
+  // without a separate scale-up step. Explicit `instances` in the
+  // request still overrides. We resolve the source count below after
+  // we've read the source CR (default constant 1 used only when source
+  // hasn't declared instances either — vanishingly rare).
+  //
+  // Early-validate the explicit value here so bad input doesn't reach
+  // the source fetch (clearer error surface + matches the prior contract).
+  const explicitInstances = inputs.instances;
+  if (explicitInstances !== undefined) {
+    if (!Number.isInteger(explicitInstances) || explicitInstances < 1 || explicitInstances > 5) {
+      throw new BarmanRestoreError(`instances must be an integer 1..5; got ${explicitInstances}`, 422);
+    }
   }
 
   // Read source for the ObjectStore + initdb settings.
@@ -225,6 +238,11 @@ export async function createBarmanRestore(
   const imageName = source.spec?.imageName;
   const storage = source.spec?.storage ?? {};
   const initdb = source.spec?.bootstrap?.initdb;
+  // Resolve the actual instance count to use.
+  const instances = explicitInstances ?? source.spec?.instances ?? 1;
+  if (!Number.isInteger(instances) || instances < 1 || instances > 5) {
+    throw new BarmanRestoreError(`instances must be an integer 1..5; got ${instances}`, 422);
+  }
 
   const externalName = `${objectStore}-recovery-source`;
   const newCluster = {

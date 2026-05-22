@@ -67,6 +67,13 @@ export const cnpgClusterBackupHealthSchema = z.object({
    *  even when CNPG reports zero. Absent when not probed (legacy field
    *  for older API clients). */
   objectStoreBackupCount: z.number().int().nonnegative().nullable().optional(),
+  /** Phase 4 (2026-05-22) — current cluster instance count. Lets the
+   *  barman-restore wizard auto-default a side-by-side restore to the
+   *  source's HA state instead of always 1. */
+  instances: z.number().int().nonnegative().nullable().optional(),
+  /** Phase 4 — the barman-cloud ObjectStore the cluster archives to.
+   *  Powers the Health Card's per-cluster backup list (Phase 4d). */
+  objectStoreName: z.string().nullable().optional(),
 });
 export type CnpgClusterBackupHealth = z.infer<typeof cnpgClusterBackupHealthSchema>;
 
