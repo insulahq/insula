@@ -106,7 +106,7 @@ export default function ExportImport() {
           <div className="space-y-3">
             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 p-3 text-xs text-gray-600 dark:text-gray-400">
               <p>Version: {(importData as Record<string, unknown>).version as string ?? 'unknown'}</p>
-              <p>Clients: {((importData as Record<string, unknown>).tenants as unknown[])?.length ?? 0}</p>
+              <p>Tenants: {((importData as Record<string, unknown>).tenants as unknown[])?.length ?? 0}</p>
               <p>Domains: {((importData as Record<string, unknown>).domains as unknown[])?.length ?? 0}</p>
               <p>Plans: {((importData as Record<string, unknown>).hostingPlans as unknown[])?.length ?? 0}</p>
             </div>

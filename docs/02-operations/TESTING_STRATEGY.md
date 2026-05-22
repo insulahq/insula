@@ -80,7 +80,7 @@ describe('WorkloadService', () => {
       const input = {
         name: 'my-app',
         containerImageId: 'php-8.1',
-        clientId: 'client-123'
+        tenantId: 'client-123'
       };
 
       const workload = await workloadService.create(input);
@@ -96,14 +96,14 @@ describe('WorkloadService', () => {
       await workloadService.create({
         name: 'my-app',
         containerImageId: 'php-8.1',
-        clientId: 'client-123'
+        tenantId: 'client-123'
       });
 
       await expect(
         workloadService.create({
           name: 'my-app',
           containerImageId: 'nodejs-18',
-          clientId: 'client-123'
+          tenantId: 'client-123'
         })
       ).rejects.toThrow('Workload already exists');
     });
@@ -114,7 +114,7 @@ describe('WorkloadService', () => {
         await workloadService.create({
           name: `app-${i}`,
           containerImageId: 'php-8.1',
-          clientId: 'client-123'
+          tenantId: 'client-123'
         });
       }
 
@@ -123,7 +123,7 @@ describe('WorkloadService', () => {
         workloadService.create({
           name: 'app-11',
           containerImageId: 'php-8.1',
-          clientId: 'client-123'
+          tenantId: 'client-123'
         })
       ).rejects.toThrow('MAX_WORKLOADS_EXCEEDED');
     });
@@ -133,7 +133,7 @@ describe('WorkloadService', () => {
         workloadService.create({
           name: 'my-app',
           containerImageId: 'invalid-image',
-          clientId: 'client-123'
+          tenantId: 'client-123'
         })
       ).rejects.toThrow('Container image not found');
     });
@@ -232,7 +232,7 @@ const request = supertest(app);
 
 describe('Workloads API', () => {
   let validToken: string;
-  let clientId: string;
+  let tenantId: string;
 
   beforeAll(async () => {
     // Setup: Create test client and auth

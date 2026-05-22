@@ -1102,9 +1102,9 @@ The Phase 1.5 dual-stack rollout must pass all of the following tests before pro
 | Pod gets dual-stack IPs | `kubectl get pods -o wide -A` | Each pod has two IPs (one IPv4, one IPv6) |
 | Service has dual-stack ClusterIPs | `kubectl get svc management-api -n platform` | Two ClusterIPs listed |
 | NGINX binds on IPv6 | `kubectl exec -n ingress-nginx ds/ingress-nginx-controller -- ss -tlnp` | Shows `:::80` and `:::443` |
-| DNS returns AAAA | `dig AAAA test-client.platform.example.com @ns1` | One or more AAAA records returned |
-| HTTPS via IPv6 | `curl -6 -I https://test-client.platform.example.com` | `HTTP/2 200` |
-| TLS cert valid over IPv6 | `openssl s_client -connect [2a01:4f8::1]:443 -servername test-client.platform.example.com` | Certificate CN matches, no error |
+| DNS returns AAAA | `dig AAAA test-tenant.platform.example.com @ns1` | One or more AAAA records returned |
+| HTTPS via IPv6 | `curl -6 -I https://test-tenant.platform.example.com` | `HTTP/2 200` |
+| TLS cert valid over IPv6 | `openssl s_client -connect [2a01:4f8::1]:443 -servername test-tenant.platform.example.com` | Certificate CN matches, no error |
 | Management API reachable over IPv6 | `curl -6 https://admin.platform.example.com/api/v1/health` | `{"status":"ok"}` |
 | Calico IPv6 IP pool active | `kubectl get ippool` | Shows IPv6 pool with allocated blocks |
 | No regressions over IPv4 | Full existing test suite | All existing tests pass |
@@ -1128,7 +1128,7 @@ export const options = {
   },
 }
 
-const BASE_URL = 'https://test-client.platform.example.com'
+const BASE_URL = 'https://test-tenant.platform.example.com'
 
 export default function () {
   // Test IPv6 request (k6 will use AAAA record if available and runner has IPv6)

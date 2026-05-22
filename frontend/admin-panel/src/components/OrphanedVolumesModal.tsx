@@ -23,7 +23,7 @@ const REASON_LABELS: Record<OrphanReason, { label: string; explainer: string; to
     tone: 'red',
   },
   tenant_record_deleted: {
-    label: 'Client deleted',
+    label: 'Tenant deleted',
     explainer: 'A tenant-* namespace exists but no matching tenant row in the platform DB.',
     tone: 'red',
   },

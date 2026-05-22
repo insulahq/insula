@@ -27,7 +27,7 @@
 #
 # PREREQ
 #   - integration-staging.sh's preflight (admin login, DNS) must pass.
-#   - At least one tenant client exists (CUSTOM_DEPLOY_CLIENT_ID env,
+#   - At least one tenant client exists (CUSTOM_DEPLOY_TENANT_ID env,
 #     else picked from /clients).
 #   - The platform-api Pod has PLATFORM_ENCRYPTION_KEY set (PAT scenario).
 #
@@ -133,10 +133,10 @@ TOKEN=$(login_token)
 [[ -z "$TOKEN" ]] && { echo "FATAL: admin login failed" >&2; exit 2; }
 info "Admin login OK"
 
-# Pick a tenant client. CUSTOM_DEPLOY_CLIENT_ID overrides; otherwise the
+# Pick a tenant client. CUSTOM_DEPLOY_TENANT_ID overrides; otherwise the
 # first active client is used. The harness creates / cleans-up its own
 # deployments under that client.
-TENANT_ID="${CUSTOM_DEPLOY_CLIENT_ID:-}"
+TENANT_ID="${CUSTOM_DEPLOY_TENANT_ID:-}"
 if [[ -z "$TENANT_ID" ]]; then
   TENANT_ID=$(api GET "/tenants?limit=20" | python3 -c "
 import json,sys

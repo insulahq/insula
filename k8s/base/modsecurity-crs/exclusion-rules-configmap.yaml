@@ -40,10 +40,10 @@ data:
     # ── Platform-API JSON-field-name LFI false-positive exclusion ──
     #
     # Match only requests to the platform-api hosts. The expression
-    # `^(admin|client|api)\.` covers admin.<apex>, client.<apex>, and
-    # api.<apex> across every cluster (staging/prod/dev). Tenant
-    # hosts (tenant.<tenant-domain>) and webmail etc. are NOT
-    # matched and get the full CRS variable scope.
+    # `^(admin|tenant|api)\.` covers admin.<apex>, tenant.<apex>, and
+    # api.<apex> across every cluster (staging/prod/dev). Customer
+    # workload hosts (their own apex domains) and webmail etc. are
+    # NOT matched and get the full CRS variable scope.
     # IMPORTANT: the Traefik modsecurity plugin proxies every
     # forwarded request with `Host: modsec-crs.traefik.svc.cluster.
     # local` (the modsec Service hostname) and puts the ORIGINAL
@@ -52,7 +52,7 @@ data:
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|client|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
         "id:9000100,\
          phase:1,\
          pass,\
@@ -74,7 +74,7 @@ data:
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|client|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
         "id:9000101,\
          phase:1,\
          pass,\

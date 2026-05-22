@@ -80,11 +80,11 @@ func mkNS(name string, annotations map[string]string) *corev1.Namespace {
 
 // ── Namespace classification ──────────────────────────────────────────
 
-func TestIsTenantNamespace_clientPrefix(t *testing.T) {
-	tpr, _ := fakeTenantSetup(t, "n1", nil, []*corev1.Namespace{mkNS("client-acme", nil)})
-	ok, err := tpr.isTenantNamespace("client-acme")
+func TestIsTenantNamespace_tenantPrefix(t *testing.T) {
+	tpr, _ := fakeTenantSetup(t, "n1", nil, []*corev1.Namespace{mkNS("tenant-acme", nil)})
+	ok, err := tpr.isTenantNamespace("tenant-acme")
 	if err != nil || !ok {
-		t.Errorf("client-prefix should be tenant; ok=%v err=%v", ok, err)
+		t.Errorf("tenant-prefix should be tenant; ok=%v err=%v", ok, err)
 	}
 }
 
@@ -113,9 +113,9 @@ func TestIsTenantNamespace_infraNotTenant(t *testing.T) {
 
 func TestReconcileOnce_hostPortIntoTCPSet(t *testing.T) {
 	pods := []*corev1.Pod{
-		mkPod("client-acme", "web", "n1", withHostPort(443, corev1.ProtocolTCP)),
+		mkPod("tenant-acme", "web", "n1", withHostPort(443, corev1.ProtocolTCP)),
 	}
-	nses := []*corev1.Namespace{mkNS("client-acme", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -133,9 +133,9 @@ func TestReconcileOnce_hostPortIntoTCPSet(t *testing.T) {
 
 func TestReconcileOnce_hostPortUDP(t *testing.T) {
 	pods := []*corev1.Pod{
-		mkPod("client-acme", "stun", "n1", withHostPort(3478, corev1.ProtocolUDP)),
+		mkPod("tenant-acme", "stun", "n1", withHostPort(3478, corev1.ProtocolUDP)),
 	}
-	nses := []*corev1.Namespace{mkNS("client-acme", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -148,9 +148,9 @@ func TestReconcileOnce_hostPortUDP(t *testing.T) {
 func TestReconcileOnce_hostPortDefaultsToTCP(t *testing.T) {
 	// Empty Protocol field defaults to TCP per the kubernetes API.
 	pods := []*corev1.Pod{
-		mkPod("client-acme", "web", "n1", withHostPort(8080, "")),
+		mkPod("tenant-acme", "web", "n1", withHostPort(8080, "")),
 	}
-	nses := []*corev1.Namespace{mkNS("client-acme", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -162,11 +162,11 @@ func TestReconcileOnce_hostPortDefaultsToTCP(t *testing.T) {
 
 func TestReconcileOnce_annotationCSV(t *testing.T) {
 	pods := []*corev1.Pod{
-		mkPod("client-acme", "turn", "n1",
+		mkPod("tenant-acme", "turn", "n1",
 			withAnnotation(tenantPortAnnotationTCP, "3478,5349"),
 			withAnnotation(tenantPortAnnotationUDP, "3478, 16384-32768")),
 	}
-	nses := []*corev1.Namespace{mkNS("client-acme", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -182,10 +182,10 @@ func TestReconcileOnce_annotationCSV(t *testing.T) {
 
 func TestReconcileOnce_annotationRejectsMaliciousValue(t *testing.T) {
 	pods := []*corev1.Pod{
-		mkPod("client-acme", "evil", "n1",
+		mkPod("tenant-acme", "evil", "n1",
 			withAnnotation(tenantPortAnnotationTCP, "3478, 1; flush ruleset, 5349")),
 	}
-	nses := []*corev1.Namespace{mkNS("client-acme", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -212,10 +212,10 @@ func TestReconcileOnce_infraNamespaceNotPunched(t *testing.T) {
 
 func TestReconcileOnce_skipsPodsOnOtherNodes(t *testing.T) {
 	pods := []*corev1.Pod{
-		mkPod("client-acme", "local", "n1", withHostPort(80, corev1.ProtocolTCP)),
-		mkPod("client-acme", "remote", "n2", withHostPort(90, corev1.ProtocolTCP)),
+		mkPod("tenant-acme", "local", "n1", withHostPort(80, corev1.ProtocolTCP)),
+		mkPod("tenant-acme", "remote", "n2", withHostPort(90, corev1.ProtocolTCP)),
 	}
-	nses := []*corev1.Namespace{mkNS("client-acme", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -228,10 +228,10 @@ func TestReconcileOnce_skipsPodsOnOtherNodes(t *testing.T) {
 func TestReconcileOnce_dedup(t *testing.T) {
 	// Two tenants on the same node both expose 8080/tcp — appears once.
 	pods := []*corev1.Pod{
-		mkPod("client-a", "x", "n1", withHostPort(8080, corev1.ProtocolTCP)),
-		mkPod("client-b", "x", "n1", withHostPort(8080, corev1.ProtocolTCP)),
+		mkPod("tenant-a", "x", "n1", withHostPort(8080, corev1.ProtocolTCP)),
+		mkPod("tenant-b", "x", "n1", withHostPort(8080, corev1.ProtocolTCP)),
 	}
-	nses := []*corev1.Namespace{mkNS("client-a", nil), mkNS("client-b", nil)}
+	nses := []*corev1.Namespace{mkNS("tenant-a", nil), mkNS("tenant-b", nil)}
 	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)

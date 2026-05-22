@@ -53,7 +53,7 @@ describe('error factory functions', () => {
   it('tenantNotFound returns 404 with tenant_id', () => {
     const err = tenantNotFound('tenant-123');
     expect(err.status).toBe(404);
-    expect(err.code).toBe('CLIENT_NOT_FOUND');
+    expect(err.code).toBe('TENANT_NOT_FOUND');
     expect(err.details?.tenant_id).toBe('tenant-123');
   });
 

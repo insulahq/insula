@@ -131,10 +131,10 @@ export async function applyTenantTier(
   }
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client ${tenantId} not found`, 404);
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
   }
   if (!tenant.kubernetesNamespace) {
-    throw new ApiError('CLIENT_NOT_PROVISIONED', `Client ${tenantId} has no namespace yet`, 409);
+    throw new ApiError('TENANT_NOT_PROVISIONED', `Tenant ${tenantId} has no namespace yet`, 409);
   }
 
   let volumeReplicasPatched = false;

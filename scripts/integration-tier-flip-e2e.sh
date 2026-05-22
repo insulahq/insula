@@ -9,7 +9,7 @@
 #   5. Re-fetch GET /tenants/:id (mirrors UI page reload)
 #   6. Assert the persisted storageTier is STILL "ha"
 #   7. Assert Longhorn Volume.spec.numberOfReplicas == 2
-#   8. Assert /clients/:id/storage-placement returns sizeBytes > 0 AND has usedBytes field
+#   8. Assert /tenants/:id/storage-placement returns sizeBytes > 0 AND has usedBytes field
 #
 # This catches the regression the user found: the PATCH returned 200
 # but the DB write was skipped, so reload showed local again.

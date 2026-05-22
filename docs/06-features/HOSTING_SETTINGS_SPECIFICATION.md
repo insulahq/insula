@@ -183,7 +183,7 @@ CREATE TABLE domain_hosting_config (
   
   -- Domain label (informational only — no behavioral difference)
   config_label ENUM('PRODUCTION', 'STAGING', 'DEVELOPMENT') DEFAULT 'PRODUCTION',
-  -- Informational tag displayed in client panel next to domain name
+  -- Informational tag displayed in tenant panel next to domain name
   -- Does NOT change hosting behavior — all domains are served identically
   -- Customers use this to visually distinguish dev/staging/production domains
   -- See ADR-016: promotion between environments is manual (FileBrowser copy or Git merge)

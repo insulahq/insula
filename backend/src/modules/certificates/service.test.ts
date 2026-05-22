@@ -262,14 +262,14 @@ describe('ensureDomainCertificate', () => {
     ).rejects.toMatchObject({ code: 'DOMAIN_NOT_FOUND', status: 404 });
   });
 
-  it('throws CLIENT_NOT_FOUND when the tenant row is missing', async () => {
+  it('throws TENANT_NOT_FOUND when the tenant row is missing', async () => {
     selectResults = [[domain], []];
     const db = createMockDb();
     const k8s = createMockK8s();
 
     await expect(
       service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger()),
-    ).rejects.toMatchObject({ code: 'CLIENT_NOT_FOUND', status: 404 });
+    ).rejects.toMatchObject({ code: 'TENANT_NOT_FOUND', status: 404 });
   });
 
   it('skips provisioning when k8s tenant is undefined (no-k8s mode)', async () => {

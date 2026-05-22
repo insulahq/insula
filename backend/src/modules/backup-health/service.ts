@@ -11,7 +11,7 @@ import * as k8s from '@kubernetes/client-node';
 import {
   ANNOTATION_DISPLAY_NAME,
   LABEL_CATEGORY,
-  LABEL_CLIENT_ID,
+  LABEL_TENANT_ID,
   LABEL_HEALTH_WATCH,
   LABEL_SEVERITY,
   parseCategory,
@@ -83,7 +83,7 @@ export function parseJob(job: k8s.V1Job): BackupJobMeta | null {
 
   const category = parseCategory(labels[LABEL_CATEGORY]);
   const severity = parseSeverity(labels[LABEL_SEVERITY]);
-  const tenantId = labels[LABEL_CLIENT_ID] ?? null;
+  const tenantId = labels[LABEL_TENANT_ID] ?? null;
 
   const parentRef = (job.metadata?.ownerReferences ?? []).find(
     (ref) => ref.kind === 'CronJob' || ref.kind === 'cronjob',

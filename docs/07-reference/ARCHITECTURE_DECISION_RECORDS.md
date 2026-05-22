@@ -593,7 +593,7 @@ Deploy NGINX Ingress Controller separately via Helm (ingress-nginx chart) into t
 | GitOps (Flux v2) | Standard Ingress resources | IngressRoute CRDs or standard Ingress |
 | Built-in dashboard | None (use Grafana) | Yes |
 
-The deciding factor is **ModSecurity WAF support**. The WAF specification is deeply integrated into the platform — it's tied to hosting plan tiers, the admin panel, the client panel, the Management API, and the security architecture. Traefik has no equivalent capability, and bolting on an external WAF proxy would add complexity, latency, and an additional failure point.
+The deciding factor is **ModSecurity WAF support**. The WAF specification is deeply integrated into the platform — it's tied to hosting plan tiers, the admin panel, the tenant panel, the Management API, and the security architecture. Traefik has no equivalent capability, and bolting on an external WAF proxy would add complexity, latency, and an additional failure point.
 
 ### Consequences
 
@@ -1304,7 +1304,7 @@ A secondary issue existed: customer file paths were inconsistent across 6+ docum
 Customers deploy code using **three methods**, all writing to the same underlying PersistentVolume:
 
 1. **SFTP** — Traditional file upload (FileZilla, WinSCP, terminal)
-2. **FileBrowser** — Web-based file manager accessible from the client panel
+2. **FileBrowser** — Web-based file manager accessible from the tenant panel
 3. **Git Pull** — Pull files from a Git repository into a specific webroot (triggered by webhook or API call)
 
 **Promotion from dev to production is manual** — the customer copies files within FileBrowser (or SFTP) from one directory to another. This is the same model as cPanel/Plesk.
@@ -1346,7 +1346,7 @@ All customer files live on a single PersistentVolume per customer. Every access 
 |-----------|------------|--------------|
 | **SFTP gateway** | Chroot to `/storage/customers/{id}/` | Full customer directory (all domains) |
 | **FileBrowser** | Root at `/storage/customers/{id}/` | Full customer directory (all domains) |
-| **Shared pod (Starter)** | `/mnt/clients/{id}/` → PV | Full customer directory |
+| **Shared pod (Starter)** | `/mnt/tenants/{id}/` → PV | Full customer directory |
 | **Dedicated pod (Biz/Prem)** | `/var/www/` → PV | Full customer directory |
 | **NGINX/Apache** | Document root: `/storage/customers/{id}/domains/{domain}/public_html/` | Single domain's public files |
 | **PHP-FPM** | `open_basedir`: `/storage/customers/{id}/` | Full customer directory (PHP can access all domains) |
@@ -1358,9 +1358,9 @@ All customer files live on a single PersistentVolume per customer. Every access 
 
 | Decision | Value |
 |----------|-------|
-| Deployment | **One FileBrowser instance per customer** (launched on-demand from client panel) |
+| Deployment | **One FileBrowser instance per customer** (launched on-demand from tenant panel) |
 | Root directory | `/storage/customers/{customer_id}/` (customer sees all their domains) |
-| Authentication | Platform OIDC (Dex) — single sign-on from client panel |
+| Authentication | Platform OIDC (Dex) — single sign-on from tenant panel |
 | Features | Browse, upload, download, rename, delete, **copy**, **move**, edit (code editor with syntax highlighting), create folder, zip/unzip |
 | Access control | Customer has full read/write to their PV; `.platform/` directory is read-only |
 | Lifecycle | Starts when customer opens file manager; auto-terminates after 30 min idle |
@@ -1369,7 +1369,7 @@ All customer files live on a single PersistentVolume per customer. Every access 
 **The copy/move operations within FileBrowser are how customers "promote" code from dev to production.** This is the primary staging-to-production workflow:
 
 1. Customer develops on `dev.example.com` (files in `domains/dev.example.com/public_html/`)
-2. Customer opens FileBrowser from client panel
+2. Customer opens FileBrowser from tenant panel
 3. Customer selects files in `domains/dev.example.com/public_html/`
 4. Customer copies them to `domains/example.com/public_html/`
 5. Files are immediately live on `www.example.com`
@@ -1380,13 +1380,13 @@ The Git Deploy Service does **not build** anything. It pulls files from a Git re
 
 | Decision | Value |
 |----------|-------|
-| Trigger | **Webhook** (GitHub/GitLab/Gitea/Bitbucket) OR **API call** from client panel |
+| Trigger | **Webhook** (GitHub/GitLab/Gitea/Bitbucket) OR **API call** from tenant panel |
 | Operation | `git clone --depth 1 --branch {branch}` → `rsync --archive --delete` to domain webroot |
 | Scope | **Per-domain** — each domain can have its own Git repo + branch |
 | Branch mapping | Customer configures: repo URL + branch + deploy path per domain |
 | Authentication | Deploy key (SSH) or personal access token (HTTPS) — stored as Sealed Secret |
 | Post-deploy hooks | Optional: `composer install`, `npm install` (configurable per domain) |
-| Deployment log | Stored in `deployment_history` table; visible in client panel |
+| Deployment log | Stored in `deployment_history` table; visible in tenant panel |
 | Rollback | Re-deploy previous commit (stored in history) or manual re-pull |
 | Concurrent deploys | Queued per-domain (only one deploy at a time per domain) |
 
@@ -1519,7 +1519,7 @@ CREATE TABLE deployment_history (
 - `06-features/FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md` — `/home/customer/public_html/` → chroot to `/storage/customers/{id}/`
 - `06-features/HOSTING_SETTINGS_SPECIFICATION.md` — `config_mode` ENUM simplified
 - `04-deployment/DEPLOYMENT_PROCESS.md` — Git Deploy section expanded
-- `02-operations/CLIENT_PANEL_FEATURES.md` — FileBrowser and Git Deploy details added
+- `02-operations/TENANT_PANEL_FEATURES.md` — FileBrowser and Git Deploy details added
 - `01-core/DATABASE_SCHEMA.md` — New tables added
 
 > **Note:** `INFRASTRUCTURE_PLAN.md` (master reference) retains legacy `/mnt/clients/` paths; subdirectory docs are authoritative.
@@ -1971,7 +1971,7 @@ These services are **foundational infrastructure** that the hosting platform dep
    - PowerDNS REST API for zone/record management (endpoint configurable in admin panel)
    - NetBird mesh for admin access (assumes mesh already running)
    - OIDC provider for authentication (issuer URL configurable in admin panel)
-   - Focuses exclusively on K8s hosting, management API, admin panel, and client panel
+   - Focuses exclusively on K8s hosting, management API, admin panel, and tenant panel
 
 **K8s cluster model:**
 - Starts as single-node k3s cluster
@@ -2047,7 +2047,7 @@ Additionally, the platform already documents zero-downtime web server switching 
 
 **Optional (Apache):**
 - Native `.htaccess` support for WordPress and legacy PHP applications
-- Available per domain via admin/client panel toggle
+- Available per domain via admin/tenant panel toggle
 - Zero-downtime switching between NGINX and Apache per WEB_SERVER_PHP_VERSION_SWITCHING.md
 - Apache + PHP-FPM (not mod_php) for consistent isolation model
 
@@ -2311,7 +2311,7 @@ WordPress is a managed application, not a generic runtime. It belongs in the App
 - Platform can manage shared databases, cross-workload bindings, and credential rotation for workloads
 - Helm handles the complexity of multi-container application lifecycle (upgrades, rollbacks, hooks)
 - Each catalog can evolve independently with its own release cycle
-- Client panel can present two distinct UX sections: "My Environment" (workloads) and "My Applications"
+- Tenant panel can present two distinct UX sections: "My Environment" (workloads) and "My Applications"
 
 **Negative:**
 - Two deployment mechanisms to build and maintain (platform manifest generator + Helm integration)
@@ -2407,7 +2407,7 @@ See [ADR-036-tenant-backup-restic-jmap.md](ADR-036-tenant-backup-restic-jmap.md)
 
 Summary (2026-05-09): Replace the Phase-4 daily-bundle path (full tar
 of every PVC + mbsync per mailbox) with two primitives. Files: a
-per-tenant restic repository at `<store>/restic-files/<clientId>/`,
+per-tenant restic repository at `<store>/restic-files/<tenantId>/`,
 streamed in via the existing HMAC upload route, with restic running on
 the platform-api side (S3/SFTP creds never enter the tenant ns).
 Mail: a `jmap-sync.py` (Python stdlib, ~200 lines) that walks

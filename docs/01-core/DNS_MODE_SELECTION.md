@@ -679,7 +679,7 @@ START: Customer needs to host domain on platform
 - [`./DNS_ZONE_TEMPLATES.md`](./DNS_ZONE_TEMPLATES.md) — Global DNS zone template specification (SRV, email autodiscovery, all default records)
 - [`./POWERDNS_INTEGRATION.md`](./POWERDNS_INTEGRATION.md) — PowerDNS architecture and configuration
 - [`../04-deployment/MANAGEMENT_API_SPEC.md`](../04-deployment/MANAGEMENT_API_SPEC.md) — Domain endpoint specs
-- [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md) — Customer-facing DNS setup
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Customer-facing DNS setup
 
 ---
 

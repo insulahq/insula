@@ -221,7 +221,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                     <thead className="text-gray-500 dark:text-gray-400">
                       <tr>
                         <th className="w-6"></th>
-                        <th className="text-left py-1 pr-2">Client</th>
+                        <th className="text-left py-1 pr-2">Tenant</th>
                         <th className="text-left py-1 pr-2">Tier</th>
                         <th className="text-left py-1 pr-2">Current pin</th>
                         <th className="text-right py-1 pr-2">Workloads</th>
@@ -359,7 +359,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   <table className="mt-2 w-full text-xs">
                     <thead className="text-gray-500 dark:text-gray-400">
                       <tr>
-                        <th className="text-left py-1 pr-2">Client</th>
+                        <th className="text-left py-1 pr-2">Tenant</th>
                         <th className="text-left py-1 pr-2">Pod</th>
                         <th className="text-left py-1 pr-2">Owner</th>
                         <th className="text-left py-1">Flags</th>

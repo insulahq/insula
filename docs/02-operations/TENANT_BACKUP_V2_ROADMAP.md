@@ -17,7 +17,7 @@ Targeting: ~28× storage reduction at 100 tenants, daily incremental window < 8 
 | 0 | Spike + budget validation | DONE | feat/tenant-backup-v2-restic-jmap @ eaee5dd8 | `scripts/spike-restic-jmap.sh` green against real S3 + SFTP. Numbers in §"Phase 0a spike — measured numbers". |
 | 1 | files + restic + pre-dump hook | **DONE** | merged to main; pinned to staging at image tag `20260511110850-7fea24d` | All 11 pieces shipped: 7 original + #8 (memory cap), #9 (SFTP target), #10 (perf tuning + re-measurement on 2026-05-11), #11 (abort cleanup + failure UX → bell). End-to-end harness PASSED on staging 2026-05-10; perf re-measurement PASSED 2026-05-11 (see §"Phase 1 piece #10 re-measurement"). |
 | 2 | mail + JMAP + Maildir | blocked on Phase 1 | — | New `jmap-sync.py` (Python stdlib). Replaces mbsync entirely. New `tenant_jmap_state` table. State persistence after restic ack. |
-| 3 | admin + tenant UI | blocked on Phase 2 | — | Snapshot tree browser, single-file/single-message picker, schedule editor, global Settings tab. Both admin panel and client panel. |
+| 3 | admin + tenant UI | blocked on Phase 2 | — | Snapshot tree browser, single-file/single-message picker, schedule editor, global Settings tab. Both admin panel and tenant panel. |
 
 ## Locked decisions (from chat 2026-05-09)
 

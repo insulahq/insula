@@ -43,7 +43,7 @@ const FAILED_TENANT_JOB = {
   name: 'tenant-snap-1',
   namespace: 'tenant-abc',
   groupKey: 'tenant-snap',
-  displayName: 'Client snapshot',
+  displayName: 'Tenant snapshot',
   category: 'tenant' as const,
   severity: 'warning' as const,
   tenantId: 'tenant-abc',

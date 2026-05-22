@@ -164,7 +164,7 @@ All 10 surfaced by the planner. Top 5 implemented in Phase 2.5; remaining 5 docu
 |---|---|---|
 | 1 | **Calico WG (51821) verification** | [CLAUDE.md cluster firewall section]: Calico WG MUST remain on UDP/51821 with public-key auth. Assert: listening on every node, public-key auth confirmed. Important because the page thesis is "lock down SSH" — operators will ask "what about all this other UDP traffic?" |
 | 2 | **Reserved-platform-hostname collision feed** | ADR-040: refuses `RESERVED_PLATFORM_HOSTNAME` 409s at `createDomain` / `createDnsRecord`. Audit-log filter surfaces tenant probing or accidental misconfig. |
-| 3 | **TLS cert expiry < 30d summary** | cert-manager tracked in `cluster-health/service.ts:26-27`. Sources from `certificates.cert-manager.io` — admin-panel / client-panel / longhorn / stalwart / webmail TLS + `AcmeRenewal` (Phase K bug fixes). |
+| 3 | **TLS cert expiry < 30d summary** | cert-manager tracked in `cluster-health/service.ts:26-27`. Sources from `certificates.cert-manager.io` — admin-panel / tenant-panel / longhorn / stalwart / webmail TLS + `AcmeRenewal` (Phase K bug fixes). |
 | 4 | **Backup target encryption + freshness** | Snapshot overhaul Phase 11+12 (commit `8c55e615`): per-target `PLATFORM_ENCRYPTION_KEY`, primary connection-test, last-successful-snapshot age. An unencrypted off-site backup with stale creds IS a security problem. |
 | 5 | **Audit-log gap detector** | Recent-insert timestamp, retention active, no row-deletion since session start. Compromise of audit logging is a precondition for undetected attacks. |
 

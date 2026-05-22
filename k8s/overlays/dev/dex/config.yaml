@@ -8,7 +8,7 @@
 #
 # Static OIDC clients:
 #   - hosting-platform-admin   (admin panel SSO)
-#   - hosting-platform-client  (tenant panel SSO)
+#   - hosting-platform-tenant  (tenant panel SSO)
 #   - hosting-platform-oauth2-proxy (OAuth2 Proxy session)
 #
 # IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
@@ -36,11 +36,11 @@ staticClients:
     secret: local-dev-secret-admin
     redirectURIs:
       - http://admin.${DOMAIN}:2010/api/v1/auth/oidc/callback
-  - id: hosting-platform-client
-    name: Hosting Platform Client
-    secret: local-dev-secret-client
+  - id: hosting-platform-tenant
+    name: Hosting Platform Tenant
+    secret: local-dev-secret-tenant
     redirectURIs:
-      - http://client.${DOMAIN}:2010/api/v1/auth/oidc/callback
+      - http://tenant.${DOMAIN}:2010/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
     secret: local-dev-secret-oauth2-proxy

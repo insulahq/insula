@@ -1725,7 +1725,7 @@ export async function getUserActivityRanking() {
 }
 
 // Query with CTE (new in MariaDB)
-export async function getClientAuditTrail(clientId: string) {
+export async function getClientAuditTrail(tenantId: string) {
   const [rows] = await pool.query(`
     WITH recent_events AS (
       SELECT *
@@ -1737,7 +1737,7 @@ export async function getClientAuditTrail(clientId: string) {
     FROM recent_events re
     LEFT JOIN users u ON re.actor_id = u.id
     ORDER BY re.timestamp DESC
-  `, [clientId]);
+  `, [tenantId]);
   return rows;
 }
 ```

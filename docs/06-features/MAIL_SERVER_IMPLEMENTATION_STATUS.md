@@ -193,7 +193,7 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 - `expand` query has a hardcoded `LIMIT 50` that silently truncates large mailing lists.
 
 ### Phase 2b — Webmail SSO + Custom Webmail Domains ✅ *Complete (2026-04-08)*
-**Goal:** Click "Open webmail" on any mailbox in the client panel → land inside Roundcube authenticated as that mailbox, with no password prompt, using either the shared platform webmail hostname or a per-tenant custom hostname.
+**Goal:** Click "Open webmail" on any mailbox in the tenant panel → land inside Roundcube authenticated as that mailbox, with no password prompt, using either the shared platform webmail hostname or a per-tenant custom hostname.
 
 **Delivered:**
 - `k8s/base/roundcube/` — standalone Roundcube deployment in the `mail` namespace: Deployment, Service, PVC (1Gi RWO for SQLite sessions), ConfigMap for extra config, ConfigMap-from-file for the jwt_auth plugin source, secret.example.yaml template. Uses the official `roundcube/roundcubemail:1.6.10-apache` image; the plugin is copied into the install dir asynchronously by a wrapper script, and the startupProbe blocks Pod Ready until `/var/www/html/plugins/jwt_auth/jwt_auth.php` exists (closes the emptyDir race).
@@ -330,7 +330,7 @@ Phase 2c replaced it with two changes:
 **Verification:**
 - 1026 backend tests pass (110 files)
 - Admin panel typecheck clean, 250 admin tests pass
-- Client panel typecheck clean, 166 client tests pass
+- Tenant panel typecheck clean, 166 client tests pass
 - `MAIL_E2E_SQL=1 WEBMAIL_E2E=1` smoke tests pass (see Phase 2c.7 below)
 
 **Still deferred to Phase 3 (production hardening):**
@@ -437,7 +437,7 @@ Phase 2c replaced it with two changes:
 | Single Stalwart pod = SPOF | Acceptable for ≤100 clients; Stalwart Enterprise + FoundationDB for HA in a later phase |
 | RocksDB PVC is `ReadWriteOnce` — blocks horizontal scaling | Same as above; document the constraint |
 | Spamhaus public DNSBLs return error from Hetzner IP space (since 2025-02-19) | Migrate to Spamhaus DQS or use Stalwart's built-in scoring; tracked in Phase 3 |
-| Multi-tenancy is Enterprise-only | Enforce isolation at the platform layer (clientId scoping in API); document that admin sees all mailboxes |
+| Multi-tenancy is Enterprise-only | Enforce isolation at the platform layer (tenantId scoping in API); document that admin sees all mailboxes |
 | DKIM keys are file-based, not directory-backed | Phase 3 cron writes per-domain key files into a Secret; reload via Stalwart admin API |
 | New IPs commonly listed on PBL/UCEPROTECT | Warm-up plan in Phase 5 ops runbook; relay-by-default avoids the issue at MVP |
 | Frequent abuse complaints can lock the entire Hetzner IP | Per-tenant suspension must complete inside 24h — design hooks in Phase 4 |
@@ -458,7 +458,7 @@ These decisions were made during Phase 1 planning. Future engineers should under
 | D5 | TLS certificate source | **cert-manager + mounted Secret** for production (Phase 2 addition). Phase 1 relies on Stalwart's auto-generated self-signed cert for dev. |
 | D6 | Outbound port 25 strategy | **Direct outbound** (user has requested Hetzner unblock). Commercial relay adapters (Mailgun, Postmark, SES) supported via existing `smtp_relay_configs` module — wired into Stalwart `[queue.outbound]` in Phase 3. |
 | D7 | Master user secret storage | **K8s Secret** in dev (plaintext bcrypt). Sealed-secrets/SOPS in production. Vault later. |
-| D8 | Multi-tenancy approach | **Community Edition + platform-layer isolation** via API `clientId` scoping. Defer Enterprise until isolation gaps cause real problems. |
+| D8 | Multi-tenancy approach | **Community Edition + platform-layer isolation** via API `tenantId` scoping. Defer Enterprise until isolation gaps cause real problems. |
 | D9 | Roundcube SSO mechanism (Phase 2) | **Custom JWT plugin** (~50 LOC PHP). Option of building own webmail later — JWT issuer (`generateWebmailToken`) is reusable regardless of frontend. |
 | D10 | Mail egress IP architecture | **Dedicated Hetzner Floating IP** in production for quarantine-friendliness. Worker-node relay adapter planned for Phase 3 (third relay type: `worker_node`). |
 | D11 | Local dev story | **Full Stalwart on DinD k3s.** Mail ports exposed via docker-compose on `k3s-server` container (host 2025..2995 → NodePort 30025..30995). Smoke test probes in-container by default to be resilient to remote-Docker host networking. |

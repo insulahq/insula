@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Library: tenant teardown helpers.
 
-# tear_down_tenant CLIENT_ID NAMESPACE
-# Best-effort destruction of the test client, all its deployments, and the
+# tear_down_tenant TENANT_ID NAMESPACE
+# Best-effort destruction of the test tenant, all its deployments, and the
 # tenant namespace. Idempotent; suppresses errors so we don't leave a
 # half-cleaned tenant blocking the next run.
 tear_down_tenant() {
@@ -10,8 +10,8 @@ tear_down_tenant() {
   if [[ -n "$tenant_id" ]]; then
     # Soft-delete first so the platform's lifecycle hooks unwind in
     # order; force-delete only if the soft-delete didn't take.
-    api DELETE "/clients/${tenant_id}" >/dev/null 2>&1 || true
-    api DELETE "/clients/${tenant_id}?force=true" >/dev/null 2>&1 || true
+    api DELETE "/tenants/${tenant_id}" >/dev/null 2>&1 || true
+    api DELETE "/tenants/${tenant_id}?force=true" >/dev/null 2>&1 || true
   fi
   if [[ -n "$ns" ]]; then
     # The platform's client lifecycle deletes the namespace via its own

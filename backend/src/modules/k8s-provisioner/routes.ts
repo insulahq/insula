@@ -44,12 +44,12 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
     // Verify tenant exists
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     if (!tenant) {
-      throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+      throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
     }
 
     // Check if already provisioning
     if (tenant.provisioningStatus === 'provisioning') {
-      throw new ApiError('ALREADY_PROVISIONING', 'Client is already being provisioned', 409);
+      throw new ApiError('ALREADY_PROVISIONING', 'Tenant is already being provisioned', 409);
     }
 
     // Create task record
@@ -195,17 +195,17 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
 
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     if (!tenant) {
-      throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+      throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
     }
 
     // Only allow decommission for suspended tenants
     if (tenant.status !== 'suspended') {
-      throw new ApiError('CLIENT_NOT_SUSPENDED', 'Client must be suspended before decommissioning', 409);
+      throw new ApiError('CLIENT_NOT_SUSPENDED', 'Tenant must be suspended before decommissioning', 409);
     }
 
     // Must be provisioned (or failed) to decommission
     if (tenant.provisioningStatus === 'unprovisioned') {
-      throw new ApiError('NOT_PROVISIONED', 'Client is not provisioned — nothing to decommission', 409);
+      throw new ApiError('NOT_PROVISIONED', 'Tenant is not provisioned — nothing to decommission', 409);
     }
 
     if (tenant.provisioningStatus === 'provisioning') {

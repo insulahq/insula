@@ -124,7 +124,7 @@ All error responses must follow this structure:
 
 | Code | HTTP | Message | Remediation |
 | --- | --- | --- | --- |
-| `CLIENT_NOT_FOUND` | 404 | Client '{tenant_id}' not found | Verify tenant_id |
+| `TENANT_NOT_FOUND` | 404 | Client '{tenant_id}' not found | Verify tenant_id |
 | `WORKLOAD_NOT_FOUND` | 404 | Workload '{workload_id}' not found | Verify workload_id exists in your client |
 | `DOMAIN_NOT_FOUND` | 404 | Domain '{domain_name}' not found | Verify domain exists |
 | `DATABASE_NOT_FOUND` | 404 | Database '{database_name}' not found | Verify database exists |
@@ -227,7 +227,7 @@ All error responses must follow this structure:
 
 **Request:**
 ```bash
-POST /api/clients HTTP/1.1
+POST /api/tenants HTTP/1.1
 Content-Type: application/json
 
 {
@@ -590,7 +590,7 @@ describe('Error Handling', () => {
 
   it('should return 400 for invalid email', async () => {
     const res = await supertest(app)
-      .post('/api/clients')
+      .post('/api/tenants')
       .set('Authorization', `Bearer ${validToken}`)
       .send({
         name: 'Test',

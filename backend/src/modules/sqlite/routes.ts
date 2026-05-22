@@ -40,7 +40,7 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
 
   async function resolveNamespace(tenantId: string): Promise<string> {
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    if (!tenant) throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+    if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
     return tenant.kubernetesNamespace;
   }
 

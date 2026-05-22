@@ -64,23 +64,23 @@ export default function StorageUsageTab() {
             value={formatBytes(overview.system.dockerImages.totalBytes)}
             sublabel={`${overview.system.dockerImages.count} images`}
           />
-          <StatTile label="Total Client Data" value={formatBytes(overview.total.tenantBytes)} />
+          <StatTile label="Total Tenant Data" value={formatBytes(overview.total.tenantBytes)} />
         </div>
       )}
 
-      {/* Per-Client Usage Table */}
+      {/* Per-Tenant Usage Table */}
       {overview && overview.tenants.length > 0 && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-700">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
               <HardDrive size={16} className="text-blue-600 dark:text-blue-400" />
-              Per-Client Storage Usage
+              Per-Tenant Storage Usage
             </h3>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-gray-50 dark:bg-gray-700/50">
               <tr className="text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                <th className="px-5 py-2">Client</th>
+                <th className="px-5 py-2">Tenant</th>
                 <th className="px-5 py-2">Namespace</th>
                 <th className="px-5 py-2 text-right">Used</th>
               </tr>

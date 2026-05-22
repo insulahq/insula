@@ -4,7 +4,7 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import {
   upsertNodeFromK8s,
   NODE_ROLE_LABEL,
-  HOST_CLIENT_WORKLOADS_LABEL,
+  HOST_TENANT_WORKLOADS_LABEL,
   INGRESS_MODE_LABEL,
   SERVER_ONLY_TAINT_KEY,
   type ObservedNode,
@@ -60,7 +60,7 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
     // The k8s label is the source of truth — once written, future
     // sync cycles see it and skip this branch.
     const labels = node.metadata?.labels ?? {};
-    const hasExplicitHostLabel = labels[HOST_CLIENT_WORKLOADS_LABEL] !== undefined;
+    const hasExplicitHostLabel = labels[HOST_TENANT_WORKLOADS_LABEL] !== undefined;
     if (observed.role === 'server' && !hasExplicitHostLabel) {
       try {
         await applyNewServerDefault(k8s, observed.name, newServerDefault, observed.taints);
@@ -118,7 +118,7 @@ export async function applyNewServerDefault(
     body: {
       metadata: {
         labels: {
-          [HOST_CLIENT_WORKLOADS_LABEL]: String(hostTenantWorkloads),
+          [HOST_TENANT_WORKLOADS_LABEL]: String(hostTenantWorkloads),
         },
       },
       spec: { taints: nextTaints },
@@ -289,7 +289,7 @@ export function projectNode(node: K8sNode): ObservedNode {
   const role: NodeRole = roleLabel === 'server' ? 'server' : 'worker';
 
   // Absent label → default matches migration: workers true, servers false.
-  const hostLabelRaw = labels[HOST_CLIENT_WORKLOADS_LABEL];
+  const hostLabelRaw = labels[HOST_TENANT_WORKLOADS_LABEL];
   const canHostTenantWorkloads = hostLabelRaw === undefined
     ? (role === 'worker')
     : hostLabelRaw === 'true';

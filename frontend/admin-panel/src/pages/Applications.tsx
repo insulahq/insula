@@ -1214,7 +1214,7 @@ function InstalledTab() {
                       </button>
                     </th>
                     <th className="px-3 py-3">Deployment</th>
-                    <th className="px-3 py-3">Client</th>
+                    <th className="px-3 py-3">Tenant</th>
                     <th className="px-3 py-3">
                       <button type="button" onClick={() => handleSort('status')} className="inline-flex items-center hover:text-gray-700 dark:hover:text-gray-200">
                         Status{sortIndicator('status')}

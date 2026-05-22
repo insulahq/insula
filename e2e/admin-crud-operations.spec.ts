@@ -3,12 +3,12 @@ import { injectAdminAuth } from './helpers';
 
 test.describe('Admin CRUD Operations', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
-  async function createClient(page: import('@playwright/test').Page, name: string) {
-    await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+  async function createTenant(page: import('@playwright/test').Page, name: string) {
+    await page.getByRole('link', { name: 'Tenants' }).click();
+    await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
 
-    await page.getByRole('button', { name: 'Add Client' }).click();
-    await expect(page.getByTestId('create-client-modal')).toBeVisible();
+    await page.getByRole('button', { name: 'Add Tenant' }).click();
+    await expect(page.getByTestId('create-tenant-modal')).toBeVisible();
 
     await page.getByTestId('company-name-input').fill(name);
     await page.getByTestId('company-email-input').fill(`${Date.now()}@e2e.local`);
@@ -22,43 +22,43 @@ test.describe('Admin CRUD Operations', () => {
 
     await page.getByTestId('submit-button').click();
 
-    // Post-submit flow (client-lifecycle-hardening): the modal now pivots
+    // Post-submit flow (tenant-lifecycle-hardening): the modal now pivots
     // into credentials view (shows generated password) → provisioning view
     // (watches async K8s step progress). Walk through both quickly so the
     // test can get back to the list; if the backend returns early with no
     // credentials it goes straight to provisioning.
-    const credentials = page.getByTestId('client-credentials');
+    const credentials = page.getByTestId('tenant-credentials');
     if (await credentials.isVisible({ timeout: 3000 }).catch(() => false)) {
       await page.getByTestId('close-credentials').click();
     }
-    // Dismiss any provisioning UI and return to the Clients list regardless
+    // Dismiss any provisioning UI and return to the Tenants list regardless
     // of whether it was mid-provisioning, complete, or already auto-closed.
     // The provisioning modal has three terminal buttons (Minimize/Done/Close)
     // plus an 800ms auto-close-and-navigate on success. The simplest robust
-    // approach: just navigate back to /clients which unmounts any modal.
-    await page.goto('/clients');
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 3000 });
+    // approach: just navigate back to /tenants which unmounts any modal.
+    await page.goto('/tenants');
+    await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 3000 });
 
-    // Verify client appears in list — use first() to handle partial matches
-    // where the same name prefix may match multiple test clients.
+    // Verify tenant appears in list — use first() to handle partial matches
+    // where the same name prefix may match multiple test tenants.
     await expect(page.getByText(name).first()).toBeVisible({ timeout: 5000 });
   }
 
-  test('create a new client', async ({ page }) => {
+  test('create a new tenant', async ({ page }) => {
 
     const uniqueName = `CRUD Create ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
-    // Verify client appears in list
+    // Verify tenant appears in list
     await expect(page.getByText(uniqueName).first()).toBeVisible();
   });
 
-  test('edit a client via edit modal', async ({ page }) => {
+  test('edit a tenant via edit modal', async ({ page }) => {
 
     const uniqueName = `CRUD Edit ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
-    // Navigate to client detail
+    // Navigate to tenant detail
     await page.getByText(uniqueName).first().click();
     const editButton = page.getByTestId('edit-button');
     const isDetail = await editButton.isVisible({ timeout: 2000 }).catch(() => false);
@@ -67,7 +67,7 @@ test.describe('Admin CRUD Operations', () => {
       await editButton.click();
 
       // Wait for edit modal to appear
-      const editModal = page.getByTestId('edit-client-modal');
+      const editModal = page.getByTestId('edit-tenant-modal');
       await expect(editModal).toBeVisible({ timeout: 2000 });
 
       // Change the company name
@@ -90,12 +90,12 @@ test.describe('Admin CRUD Operations', () => {
     }
   });
 
-  test('suspend a client', async ({ page }) => {
+  test('suspend a tenant', async ({ page }) => {
 
     const uniqueName = `CRUD Suspend ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
-    // Navigate to client detail
+    // Navigate to tenant detail
     await page.getByText(uniqueName).first().click();
     const suspendButton = page.getByTestId('suspend-button');
     const isDetail = await suspendButton.isVisible({ timeout: 2000 }).catch(() => false);
@@ -122,12 +122,12 @@ test.describe('Admin CRUD Operations', () => {
     }
   });
 
-  test('reactivate a suspended client', async ({ page }) => {
+  test('reactivate a suspended tenant', async ({ page }) => {
 
     const uniqueName = `CRUD Reactivate ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
-    // Navigate to client detail and suspend first
+    // Navigate to tenant detail and suspend first
     await page.getByText(uniqueName).first().click();
     const suspendButton = page.getByTestId('suspend-button');
     const isDetail = await suspendButton.isVisible({ timeout: 2000 }).catch(() => false);
@@ -164,12 +164,12 @@ test.describe('Admin CRUD Operations', () => {
     }
   });
 
-  test('delete a client', async ({ page }) => {
+  test('delete a tenant', async ({ page }) => {
 
     const uniqueName = `CRUD Delete ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
-    // Navigate to client detail
+    // Navigate to tenant detail
     await page.getByText(uniqueName).first().click();
     const deleteButton = page.getByTestId('delete-button');
     const isDetail = await deleteButton.isVisible({ timeout: 2000 }).catch(() => false);
@@ -186,19 +186,19 @@ test.describe('Admin CRUD Operations', () => {
         await confirmButton.click();
       }
 
-      // Should redirect back to clients list
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+      // Should redirect back to tenants list
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
 
-      // Verify client is gone from list
+      // Verify tenant is gone from list
       await page.waitForTimeout(200);
       await expect(page.getByText(uniqueName).first()).not.toBeVisible({ timeout: 2000 });
     }
   });
 
-  test('verify deleted client is gone from list', async ({ page }) => {
+  test('verify deleted tenant is gone from list', async ({ page }) => {
 
     const uniqueName = `CRUD Gone ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
     // Verify it exists
     await expect(page.getByText(uniqueName).first()).toBeVisible();
@@ -219,7 +219,7 @@ test.describe('Admin CRUD Operations', () => {
         await confirmButton.click();
       }
 
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
+      await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible({ timeout: 2000 });
       await page.waitForTimeout(200);
 
       // Confirm gone
@@ -227,28 +227,28 @@ test.describe('Admin CRUD Operations', () => {
     }
   });
 
-  test('create multiple clients and verify all appear', async ({ page }) => {
+  test('create multiple tenants and verify all appear', async ({ page }) => {
 
     const name1 = `CRUD Multi A ${Date.now()}`;
     const name2 = `CRUD Multi B ${Date.now()}`;
 
-    await createClient(page, name1);
-    await createClient(page, name2);
+    await createTenant(page, name1);
+    await createTenant(page, name2);
 
     await expect(page.getByText(name1)).toBeVisible({ timeout: 2000 });
     await expect(page.getByText(name2)).toBeVisible({ timeout: 2000 });
   });
 
-  test('client list shows table with headers', async ({ page }) => {
+  test('tenant list shows table with headers', async ({ page }) => {
 
-    // Create a client first to ensure there's data in the table
+    // Create a tenant first to ensure there's data in the table
     const uniqueName = `CRUD Table ${Date.now()}`;
-    await createClient(page, uniqueName);
+    await createTenant(page, uniqueName);
 
-    // The clients page should now have a table with headers
+    // The tenants page should now have a table with headers
     const table = page.locator('table');
     await expect(table).toBeVisible({ timeout: 2000 });
 
-    await expect(page.getByRole('columnheader', { name: /client/i }).first()).toBeVisible({ timeout: 2000 });
+    await expect(page.getByRole('columnheader', { name: /tenant/i }).first()).toBeVisible({ timeout: 2000 });
   });
 });

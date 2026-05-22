@@ -30,8 +30,8 @@ import { execConfigTablesItem } from './config-tables.js';
 import { execDeploymentsByIdItem } from './deployments-by-id.js';
 import { execDomainsByIdItem } from './domains-by-id.js';
 
-const FIXTURE_CLIENT_ID = '4ec7436d-6159-4bf0-9282-d7e4cc19410b';
-const FOREIGN_CLIENT_ID = '00000000-0000-0000-0000-000000000099';
+const FIXTURE_TENANT_ID = '4ec7436d-6159-4bf0-9282-d7e4cc19410b';
+const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-000000000099';
 const RESTORE_JOB_ID = 'rstr-test-1';
 const BUNDLE_ID = 'bkp-test-1';
 
@@ -81,7 +81,7 @@ function pgMemDatabase(mem: IMemoryDb): Database {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: async () => [{ id: RESTORE_JOB_ID, tenantId: FIXTURE_CLIENT_ID }],
+          limit: async () => [{ id: RESTORE_JOB_ID, tenantId: FIXTURE_TENANT_ID }],
         }),
       }),
     }),
@@ -121,7 +121,7 @@ function makeFixtureDb(): Database {
   `);
   mem.public.none(`
     INSERT INTO tenants(id, name) VALUES
-      ('${FIXTURE_CLIENT_ID}', 'Fixture Co');
+      ('${FIXTURE_TENANT_ID}', 'Fixture Co');
     INSERT INTO restore_items(id) VALUES ('item-1');
   `);
   return pgMemDatabase(mem);
@@ -133,7 +133,7 @@ function makeFixtureDb(): Database {
  */
 function makeStoreWithDump(dump: unknown): BackupStore {
   const buf = gzipSync(Buffer.from(JSON.stringify(dump), 'utf8'));
-  const handle: BundleHandle = { backupId: BUNDLE_ID, tenantId: FIXTURE_CLIENT_ID, root: 'mem://' + BUNDLE_ID };
+  const handle: BundleHandle = { backupId: BUNDLE_ID, tenantId: FIXTURE_TENANT_ID, root: 'mem://' + BUNDLE_ID };
   return {
     kind: 's3',
     reserveBundle: async () => handle,
@@ -160,11 +160,11 @@ describe('in-process restore executors', () => {
   it('config-tables: applies whole-table rows from dump', async () => {
     const dump = {
       schemaVersion: 1,
-      tenantId: FIXTURE_CLIENT_ID,
+      tenantId: FIXTURE_TENANT_ID,
       tables: {
         deployments: [
-          { id: 'dep-1', name: 'web', tenant_id: FIXTURE_CLIENT_ID, status: 'active' },
-          { id: 'dep-2', name: 'worker', tenant_id: FIXTURE_CLIENT_ID, status: 'active' },
+          { id: 'dep-1', name: 'web', tenant_id: FIXTURE_TENANT_ID, status: 'active' },
+          { id: 'dep-2', name: 'worker', tenant_id: FIXTURE_TENANT_ID, status: 'active' },
         ],
       },
     };
@@ -183,11 +183,11 @@ describe('in-process restore executors', () => {
   it('deployments-by-id: applies only the requested ids', async () => {
     const dump = {
       schemaVersion: 1,
-      tenantId: FIXTURE_CLIENT_ID,
+      tenantId: FIXTURE_TENANT_ID,
       tables: {
         deployments: [
-          { id: 'dep-1', name: 'web', tenant_id: FIXTURE_CLIENT_ID, status: 'active' },
-          { id: 'dep-2', name: 'worker', tenant_id: FIXTURE_CLIENT_ID, status: 'active' },
+          { id: 'dep-1', name: 'web', tenant_id: FIXTURE_TENANT_ID, status: 'active' },
+          { id: 'dep-2', name: 'worker', tenant_id: FIXTURE_TENANT_ID, status: 'active' },
         ],
       },
     };
@@ -203,8 +203,8 @@ describe('in-process restore executors', () => {
   it('deployments-by-id: refuses cross-tenant bundle', async () => {
     const dump = {
       schemaVersion: 1,
-      tenantId: FOREIGN_CLIENT_ID, // ← different tenant
-      tables: { deployments: [{ id: 'dep-x', name: 'pwned', tenant_id: FOREIGN_CLIENT_ID, status: 'active' }] },
+      tenantId: FOREIGN_TENANT_ID, // ← different tenant
+      tables: { deployments: [{ id: 'dep-x', name: 'pwned', tenant_id: FOREIGN_TENANT_ID, status: 'active' }] },
     };
     await expect(execDeploymentsByIdItem({
       app: fakeApp(db),
@@ -221,11 +221,11 @@ describe('in-process restore executors', () => {
   it('domains-by-id: applies only the requested ids', async () => {
     const dump = {
       schemaVersion: 1,
-      tenantId: FIXTURE_CLIENT_ID,
+      tenantId: FIXTURE_TENANT_ID,
       tables: {
         domains: [
-          { id: 'dom-1', hostname: 'a.test', tenant_id: FIXTURE_CLIENT_ID },
-          { id: 'dom-2', hostname: 'b.test', tenant_id: FIXTURE_CLIENT_ID },
+          { id: 'dom-1', hostname: 'a.test', tenant_id: FIXTURE_TENANT_ID },
+          { id: 'dom-2', hostname: 'b.test', tenant_id: FIXTURE_TENANT_ID },
         ],
       },
     };
@@ -241,8 +241,8 @@ describe('in-process restore executors', () => {
   it('domains-by-id: id-filtered apply with missing id throws NOT_FOUND', async () => {
     const dump = {
       schemaVersion: 1,
-      tenantId: FIXTURE_CLIENT_ID,
-      tables: { domains: [{ id: 'dom-1', hostname: 'a.test', tenant_id: FIXTURE_CLIENT_ID }] },
+      tenantId: FIXTURE_TENANT_ID,
+      tables: { domains: [{ id: 'dom-1', hostname: 'a.test', tenant_id: FIXTURE_TENANT_ID }] },
     };
     await expect(execDomainsByIdItem({
       app: fakeApp(db),
@@ -254,8 +254,8 @@ describe('in-process restore executors', () => {
   it('idempotent: running deployments-by-id twice yields the same final state', async () => {
     const dump = {
       schemaVersion: 1,
-      tenantId: FIXTURE_CLIENT_ID,
-      tables: { deployments: [{ id: 'dep-1', name: 'web', tenant_id: FIXTURE_CLIENT_ID, status: 'active' }] },
+      tenantId: FIXTURE_TENANT_ID,
+      tables: { deployments: [{ id: 'dep-1', name: 'web', tenant_id: FIXTURE_TENANT_ID, status: 'active' }] },
     };
     const args = {
       app: fakeApp(db),

@@ -20,11 +20,11 @@
 set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.phoenix-host.net}"
-# Derive CLIENT_HOST from ADMIN_HOST by swapping the `admin.` prefix
-# for `client.` — these two hostnames are always paired in this
+# Derive TENANT_HOST from ADMIN_HOST by swapping the `admin.` prefix
+# for `tenant.` — these two hostnames are always paired in this
 # platform's ingress (see k8s/base/platform/platform-ingress.yaml).
-# An explicit CLIENT_HOST env var still wins.
-CLIENT_HOST="${CLIENT_HOST:-${ADMIN_HOST/admin./client.}}"
+# An explicit TENANT_HOST env var still wins.
+TENANT_HOST="${TENANT_HOST:-${ADMIN_HOST/admin./tenant.}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@phoenix-host.net}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
@@ -231,10 +231,10 @@ else
   CID=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   # Field was renamed `clientUser` → `tenantUser` in api-contracts; the
   # old name in this script returned empty and tripped the guard at L235.
-  CLIENT_USER_PWD=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['tenantUser']['generatedPassword'])" 2>/dev/null || echo "")
-  CLIENT_USER_EMAIL="passkey-e2e-$STAMP@phoenix-host.net"
+  TENANT_USER_PWD=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['tenantUser']['generatedPassword'])" 2>/dev/null || echo "")
+  TENANT_USER_EMAIL="passkey-e2e-$STAMP@phoenix-host.net"
 
-  if [[ -n "$CID" && -n "$CLIENT_USER_PWD" ]]; then
+  if [[ -n "$CID" && -n "$TENANT_USER_PWD" ]]; then
     ok "created test client + auto-generated tenant_admin (cid=${CID:0:8})"
     cleanup_client() {
       curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" \
@@ -242,7 +242,7 @@ else
     }
     trap cleanup_client EXIT
 
-    run_panel_suite "client" "$CLIENT_HOST" "$CLIENT_USER_EMAIL" "$CLIENT_USER_PWD"
+    run_panel_suite "tenant" "$TENANT_HOST" "$TENANT_USER_EMAIL" "$TENANT_USER_PWD"
   else
     fail "client provisioning failed for passkey suite; skipping tenant-panel checks. body: $(echo "$CREATE_RESP" | head -c 300)"
   fi

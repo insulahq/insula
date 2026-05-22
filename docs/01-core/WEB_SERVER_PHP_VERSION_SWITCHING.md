@@ -1051,7 +1051,7 @@ If Starter client wants NGINX:
 ```
 
 **Implementation:**
-- Block NGINX options in client panel for Starter clients
+- Block NGINX options in tenant panel for Starter clients
 - Show message: "Upgrade to Business plan to use NGINX"
 - Allow one-click upgrade request link
 
@@ -1244,10 +1244,10 @@ Test 4: High error rate post-switch
 
 ### Phase 2: API Endpoints (Week 2)
 
-- [ ] GET /clients/{id}/catalog (available options)
-- [ ] POST /clients/{id}/catalog/{image_id}/compatibility-check
-- [ ] PATCH /clients/{id}/catalog_image (initiate switch)
-- [ ] GET /clients/{id}/catalog_image/{switch_id} (status polling)
+- [ ] GET /tenants/{id}/catalog (available options)
+- [ ] POST /tenants/{id}/catalog/{image_id}/compatibility-check
+- [ ] PATCH /tenants/{id}/catalog_image (initiate switch)
+- [ ] GET /tenants/{id}/catalog_image/{switch_id} (status polling)
 - [ ] POST .../cancel (cancel in-progress switch)
 - [ ] POST .../rollback (rollback to previous)
 - [ ] GET .../history (view switch history)
@@ -1287,7 +1287,7 @@ Test 4: High error rate post-switch
 - [`./WORKLOAD_DEPLOYMENT.md`](./WORKLOAD_DEPLOYMENT.md) — Catalog structure and images
 - [`./HOSTING_PLANS.md`](./HOSTING_PLANS.md) — Plan restrictions and customization
 - [`../04-deployment/MANAGEMENT_API_SPEC.md`](../04-deployment/MANAGEMENT_API_SPEC.md) — API specification
-- [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md) — Client panel
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Tenant panel
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel
 - [`./SHARED_POD_IMPLEMENTATION.md`](./SHARED_POD_IMPLEMENTATION.md) — Superseded by ADR-024 (historical reference only)
 

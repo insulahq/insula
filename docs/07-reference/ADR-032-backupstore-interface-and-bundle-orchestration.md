@@ -46,7 +46,7 @@ export interface BackupStore {
   readonly kind: 'hostpath' | 's3' | 'ssh';
 
   /** Reserve a new bundle directory; returns a handle for component writes. */
-  reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle>;
+  reserveBundle(input: { backupId: string; tenantId: string }): Promise<BundleHandle>;
 
   /** Stream a component artifact into the bundle. Idempotent on (bundleId, name). */
   writeComponent(handle: BundleHandle, component: ComponentName, name: string,
@@ -175,7 +175,7 @@ for this ADR.
 
 ### 8. The `client` initiator can request a `mode=data-export` bundle
 
-For GDPR Art. 20 the client panel can issue a bundle with:
+For GDPR Art. 20 the tenant panel can issue a bundle with:
 - `secrets` component **omitted** entirely (TLS keys never leave the platform)
 - entire bundle wrapped with a client-supplied passphrase using AES-256-CBC
   over a final tarball (envelope, not per-component)
@@ -219,7 +219,7 @@ is composition, not a new component type.
   trust the GC, not poke at the storage target manually.
 - Adding `backup_jobs` + `backup_components` while keeping legacy `backups`
   read-only doubles the schema surface temporarily. A follow-up migration
-  drops `backups` once the client panel has been repointed.
+  drops `backups` once the tenant panel has been repointed.
 
 ---
 

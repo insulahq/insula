@@ -38,7 +38,7 @@ export interface SnapshotQuotaUsage {
 
 /**
  * Compute current usage + caps for a tenant. Returns null if the
- * tenant doesn't exist (caller should surface CLIENT_NOT_FOUND first).
+ * tenant doesn't exist (caller should surface TENANT_NOT_FOUND first).
  */
 export async function getSnapshotQuotaUsage(
   db: Database,

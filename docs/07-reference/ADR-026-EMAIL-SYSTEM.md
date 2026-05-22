@@ -57,7 +57,7 @@ Sub-users get explicitly assigned mailboxes via `mailbox_access`.
 
 1. **Direct password login** — user visits Roundcube, types mailbox + password
 2. **Platform SSO button** — Roundcube redirects to platform, platform authenticates (local or OIDC), picks mailbox, returns JWT
-3. **"Open Webmail" from client panel** — already authenticated, JWT auto-login
+3. **"Open Webmail" from tenant panel** — already authenticated, JWT auto-login
 
 All three use Stalwart master user for Roundcube-to-IMAP connection (SSO paths).
 

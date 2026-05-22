@@ -43,7 +43,7 @@ export const SYSTEM_NAMESPACES = Object.freeze([
 ] as const);
 
 export const NODE_ROLE_LABEL = 'platform.phoenix-host.net/node-role';
-export const HOST_CLIENT_WORKLOADS_LABEL = 'platform.phoenix-host.net/host-tenant-workloads';
+export const HOST_TENANT_WORKLOADS_LABEL = 'platform.phoenix-host.net/host-tenant-workloads';
 export const SERVER_ONLY_TAINT_KEY = 'platform.phoenix-host.net/server-only';
 // M-NS-1: ingress-mode label. The ingress-nginx DaemonSet's
 // nodeSelector excludes nodes carrying `ingress-mode=none`.
@@ -339,7 +339,7 @@ export async function updateNode(
   const nextLabels: Record<string, string | null> = {
     ...observedLabels,
     [NODE_ROLE_LABEL]: targetRole,
-    [HOST_CLIENT_WORKLOADS_LABEL]: String(targetCanHost),
+    [HOST_TENANT_WORKLOADS_LABEL]: String(targetCanHost),
     [INGRESS_MODE_LABEL]: targetIngressMode,
   };
 
@@ -573,14 +573,14 @@ export async function buildDrainImpact(
   //    storageTier and nodeName are needed by the pinnedTenants
   //    aggregation to render the per-tenant expand view + show the
   //    operator the current pin (so they know what they're changing).
-  const { tenants: clientsTbl } = await import('../../db/schema.js');
+  const { tenants: tenantsTbl } = await import('../../db/schema.js');
   const tenantRows = await db.select({
-    id: clientsTbl.id,
-    name: clientsTbl.name,
-    ns: clientsTbl.kubernetesNamespace,
-    tier: clientsTbl.storageTier,
-    pin: clientsTbl.nodeName,
-  }).from(clientsTbl);
+    id: tenantsTbl.id,
+    name: tenantsTbl.name,
+    ns: tenantsTbl.kubernetesNamespace,
+    tier: tenantsTbl.storageTier,
+    pin: tenantsTbl.nodeName,
+  }).from(tenantsTbl);
   type TenantLite = {
     id: string;
     name: string;
@@ -1172,10 +1172,10 @@ export async function drainNode(
     //     or (c) partially failed, the reconciler reads this row on
     //     its next tick and re-applies the patches.
     try {
-      const { tenants: clientsTbl } = await import('../../db/schema.js');
-      await db.update(clientsTbl)
+      const { tenants: tenantsTbl } = await import('../../db/schema.js');
+      await db.update(tenantsTbl)
         .set({ nodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
-        .where(eq(clientsTbl.id, tenantId));
+        .where(eq(tenantsTbl.id, tenantId));
     } catch (err) {
       console.warn(`[nodes] platform pin DB sync failed for tenant=${tenantId}:`, (err as Error).message);
     }

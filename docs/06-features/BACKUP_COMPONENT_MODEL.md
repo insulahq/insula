@@ -57,7 +57,7 @@ structure identically.
 {
   "schemaVersion": 1,
   "backupId": "bkp-8f59ec16-...",
-  "clientId": "4ec7436d-6159-4bf0-9282-d7e4cc19410b",
+  "tenantId": "4ec7436d-6159-4bf0-9282-d7e4cc19410b",
   "capturedAt": "2026-04-20T18:00:00Z",
   "platformVersion": "0.3.1",
 
@@ -223,14 +223,14 @@ platform-held key adds a meaningful defense layer.
 
 | Initiator | Visible to | Creatable by | Deletable by | Counts against |
 |---|---|---|---|---|
-| `client` | Owning client + admin | Client (via client panel) | Owning client + admin | Plan quota on that client |
+| `client` | Owning client + admin | Client (via tenant panel) | Owning client + admin | Plan quota on that client |
 | `admin` | Admin only | Admin (via admin panel) | Admin | Platform-wide storage |
 | `system` | Admin only | Platform (cron, pre-op) | Admin + reaper cron | Platform-wide storage |
 | `cluster` | Operator only | Velero (external) | Velero (external) | Separate DR budget |
 
 Client-initiated backups are the foundation of the GDPR Article 20 "right
 to data portability" export: the client can download the bundle (with
-the `secrets` component omitted) via the client panel.
+the `secrets` component omitted) via the tenant panel.
 
 ---
 
@@ -251,7 +251,7 @@ per component.
 Bundle lives at `s3://<bucket>/<prefix>/<backup-id>/...`. Uses
 server-side encryption (SSE-S3 or SSE-KMS); the `secrets` component
 is *additionally* encrypted with the platform key for defense in depth.
-Presigned GET URLs allow the client panel to offer direct download
+Presigned GET URLs allow the tenant panel to offer direct download
 for customer-initiated backups.
 
 ### 3. `ssh` (remote server / on-premises)
@@ -267,7 +267,7 @@ Each storage backend implements the same `BackupStore` interface:
 
 ```typescript
 interface BackupStore {
-  reserveBundle(clientId: string, backupId: string): string;  // returns backup URI
+  reserveBundle(tenantId: string, backupId: string): string;  // returns backup URI
   writeComponent(uri: string, componentName: string, artifactName: string, data: Readable): Promise<void>;
   readComponent(uri: string, componentName: string, artifactName: string): Promise<Readable>;
   listArtifacts(uri: string, componentName: string): Promise<string[]>;
@@ -366,6 +366,6 @@ for S3 and SSH, and filesystem permissions for hostpath).
 - `docs/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture pipelines
 - `docs/06-features/RESTORE_SPECIFICATION.md` — restore API + UI
 - `docs/02-operations/BACKUP_EXPORT_MIGRATION_GUIDE.md` — off-platform migration
-- `docs/02-operations/CLIENT_PANEL_FEATURES.md` § Backups — customer UI
+- `docs/02-operations/TENANT_PANEL_FEATURES.md` § Backups — customer UI
 - `docs/02-operations/ADMIN_PANEL_REQUIREMENTS.md` § SD.2 — operator UI
 - `docs/07-reference/ADR-028-backup-architecture.md` — decision record

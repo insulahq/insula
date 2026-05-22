@@ -60,9 +60,9 @@ describe('Layout', () => {
     expect(screen.getByText('Settings')).toBeInTheDocument();
   });
 
-  it('shows Client Portal brand name', () => {
+  it('shows Tenant Portal brand name', () => {
     renderWithProviders(<Layout />);
-    expect(screen.getByText('Client Portal')).toBeInTheDocument();
+    expect(screen.getByText('Tenant Portal')).toBeInTheDocument();
   });
 
   it('renders the layout container', () => {
@@ -110,7 +110,7 @@ describe('Dashboard', () => {
 describe('Login', () => {
   it('renders login form', () => {
     renderWithProviders(<Login />);
-    expect(screen.getByText('Client Portal')).toBeInTheDocument();
+    expect(screen.getByText('Tenant Portal')).toBeInTheDocument();
     expect(screen.getByText('Sign in to manage your hosting')).toBeInTheDocument();
     expect(screen.getByTestId('login-form')).toBeInTheDocument();
     expect(screen.getByTestId('email-input')).toBeInTheDocument();

@@ -683,7 +683,7 @@ async function deployToCluster(
 async function loadTenantNamespace(db: Database, tenantId: string): Promise<string> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
   return tenant.kubernetesNamespace;
 }
@@ -704,7 +704,7 @@ async function loadTenantContext(db: Database, tenantId: string): Promise<Tenant
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!tenant) {
-    throw new ApiError('CLIENT_NOT_FOUND', `Client '${tenantId}' not found`, 404, { tenant_id: tenantId });
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
   return {
     namespace: tenant.kubernetesNamespace,

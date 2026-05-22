@@ -1,4 +1,4 @@
-// Client-panel TaskCenterChip — mirror of admin-panel chip with a
+// Tenant-panel TaskCenterChip — mirror of admin-panel chip with a
 // reduced surface: no modal registry (the admin-panel-only progress
 // modals don't exist in tenant-panel), so all task targets that arrive
 // here should be `type: 'route'`. Tasks of `type: 'modal'` ARE possible

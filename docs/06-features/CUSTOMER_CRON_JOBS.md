@@ -1356,7 +1356,7 @@ Admin notified of:
 ## Related Documentation
 
 - **MANAGEMENT_API_SPEC.md**: Complete REST API specification
-- **CLIENT_PANEL_FEATURES.md**: Customer-facing features
+- **TENANT_PANEL_FEATURES.md**: Customer-facing features
 - **ADMIN_PANEL_REQUIREMENTS.md**: Admin-only features
 - **MIGRATION_PLAN.md**: Data migration from legacy panels
 - **DISASTER_RECOVERY.md**: Backup and recovery for cron job configurations

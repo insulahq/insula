@@ -7,13 +7,13 @@ import ResourceBar from '../components/ui/ResourceBar';
 
 describe('StatCard', () => {
   it('renders title and value', () => {
-    render(<StatCard title="Total Clients" value={42} icon={Users} />);
-    expect(screen.getByText('Total Clients')).toBeInTheDocument();
+    render(<StatCard title="Total Tenants" value={42} icon={Users} />);
+    expect(screen.getByText('Total Tenants')).toBeInTheDocument();
     expect(screen.getByText('42')).toBeInTheDocument();
   });
 
   it('renders subtitle when provided', () => {
-    render(<StatCard title="Clients" value={42} subtitle="5 new" icon={Users} />);
+    render(<StatCard title="Tenants" value={42} subtitle="5 new" icon={Users} />);
     expect(screen.getByText('5 new')).toBeInTheDocument();
   });
 

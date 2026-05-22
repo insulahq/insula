@@ -30,16 +30,16 @@ export default defineConfig({
         baseURL: process.env.BASE_URL ?? 'http://admin.k8s-platform.test:2010',
         storageState: 'e2e/.auth/admin.json',
       },
-      testIgnore: ['**/client-panel-*', '**/auth.setup.ts'],
+      testIgnore: ['**/tenant-panel-*', '**/auth.setup.ts'],
     },
     {
-      name: 'client',
+      name: 'tenant',
       dependencies: ['admin-setup'],
       use: {
         browserName: 'chromium',
-        baseURL: process.env.CLIENT_URL ?? 'http://client.k8s-platform.test:2010',
+        baseURL: process.env.TENANT_URL ?? 'http://tenant.k8s-platform.test:2010',
       },
-      testMatch: '**/client-panel-*',
+      testMatch: '**/tenant-panel-*',
     },
   ],
 });

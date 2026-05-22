@@ -67,6 +67,7 @@ ALLOW_LIST=(
   # backup_target_assignments.
   "frontend/admin-panel/src/components/backups/ScheduleCard.tsx"
   "frontend/admin-panel/src/pages/TenantBackups.tsx"
+  "frontend/admin-panel/src/pages/backups/TenantsBackupsPage.tsx"
   "packages/api-contracts/src/snapshot-accounting.ts"
   "packages/api-contracts/dist"
   "backend/src/db/migrations"

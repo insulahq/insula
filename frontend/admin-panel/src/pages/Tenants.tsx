@@ -15,7 +15,7 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useAllTenantMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
 
-export default function Clients() {
+export default function Tenants() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -118,7 +118,7 @@ export default function Clients() {
           className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"
         >
           <Plus size={16} />
-          Add Client
+          Add Tenant
         </button>
       </div>
 
@@ -162,7 +162,7 @@ export default function Clients() {
                         onChange={() => selection.isAllSelected(selectableTenants) ? selection.deselectAll() : selection.selectAll(selectableTenants)}
                       />
                     </th>
-                    <SortableHeader label="Client" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Tenant" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <th className="hidden md:table-cell px-3 py-3 text-xs">CPU</th>
                     <th className="hidden md:table-cell px-3 py-3 text-xs">Memory</th>
@@ -261,7 +261,7 @@ export default function Clients() {
                       <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No tenants found matching your search.'
-                          : 'No tenants yet. Click "Add Client" to create one.'}
+                          : 'No tenants yet. Click "Add Tenant" to create one.'}
                       </td>
                     </tr>
                   )}

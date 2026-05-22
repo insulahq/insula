@@ -314,6 +314,16 @@ export async function applyNamespace(
     tenant: tenantId,
   };
 
+  // Belt + suspenders with the `tenant-` namespace-name prefix that
+  // firewall-reconciler keys off (images/firewall-reconciler/
+  // tenant_reconcile.go:isTenantNamespace). Either signal flips a
+  // namespace into the tenant bucket — set both so the reconciler
+  // still classifies correctly if a future operator renames a tenant
+  // namespace off the conventional prefix.
+  const annotations = {
+    'platform.phoenix-host.net/tenant-namespace': 'true',
+  };
+
   // Check if namespace already exists. Either path (exists or 404)
   // must end with the PSS labels in place — this function is the
   // single source of truth for tenant-namespace labelling, and we
@@ -321,13 +331,14 @@ export async function applyNamespace(
   // on the next provisioning touch.
   try {
     await k8s.core.readNamespace({ name: namespace });
-    // Already exists — patch labels so PSS coverage stays current.
-    // strategic-merge-patch handles label maps by union, so this
-    // never strips operator-set labels.
+    // Already exists — patch labels + annotations so PSS coverage and
+    // firewall-reconciler classification stay current. Strategic-merge-
+    // patch handles label/annotation maps by union, so this never
+    // strips operator-set entries.
     await k8s.core.patchNamespace(
       {
         name: namespace,
-        body: { metadata: { labels } },
+        body: { metadata: { labels, annotations } },
       } as unknown as Parameters<typeof k8s.core.patchNamespace>[0],
       STRATEGIC_MERGE_PATCH,
     );
@@ -343,6 +354,7 @@ export async function applyNamespace(
       metadata: {
         name: namespace,
         labels,
+        annotations,
       },
     },
   });
@@ -854,7 +866,7 @@ export async function runProvisionNamespace(
 ): Promise<void> {
   // Fetch tenant + plan
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  if (!tenant) throw new Error(`Client ${tenantId} not found`);
+  if (!tenant) throw new Error(`Tenant ${tenantId} not found`);
 
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
   if (!plan) throw new Error(`Plan ${tenant.planId} not found`);
@@ -946,7 +958,7 @@ export async function runProvisionNamespace(
     if (await tenantStillExists(db, tenantId)) return true;
     await db.update(provisioningTasks).set({
       status: 'failed',
-      errorMessage: 'Client deleted during provisioning — aborted',
+      errorMessage: 'Tenant deleted during provisioning — aborted',
       completedAt: new Date(),
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
@@ -1077,7 +1089,7 @@ export async function runDeprovision(
   tenantId: string,
 ): Promise<void> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  if (!tenant) throw new Error(`Client ${tenantId} not found`);
+  if (!tenant) throw new Error(`Tenant ${tenantId} not found`);
 
   const namespace = tenant.kubernetesNamespace;
   let stepsLog = buildStepsLog(DEPROVISION_STEPS);

@@ -1160,7 +1160,7 @@ protected_directory_user_expiring_soon              # Users expiring < 7 days
 
 ### Frontend (Week 2-3)
 
-- [ ] Client panel UI (list, create, manage protected dirs)
+- [ ] Tenant panel UI (list, create, manage protected dirs)
 - [ ] User management UI (add, change password, disable, delete)
 - [ ] Password reveal/hide toggle
 - [ ] Generate random password button
@@ -1201,7 +1201,7 @@ protected_directory_user_expiring_soon              # Users expiring < 7 days
 
 - [`../01-core/WORKLOAD_DEPLOYMENT.md`](../01-core/WORKLOAD_DEPLOYMENT.md) — Dedicated pod provisioning and catalog images
 - [`../04-deployment/MANAGEMENT_API_SPEC.md`](../04-deployment/MANAGEMENT_API_SPEC.md) — API endpoint specifications
-- [`./CLIENT_PANEL_FEATURES.md`](./CLIENT_PANEL_FEATURES.md) — Client panel features and UI
+- [`./TENANT_PANEL_FEATURES.md`](./TENANT_PANEL_FEATURES.md) — Tenant panel features and UI
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel features
 
 ---

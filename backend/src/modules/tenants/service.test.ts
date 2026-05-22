@@ -53,12 +53,12 @@ describe('getTenantById', () => {
     expect(result).toEqual({ ...tenant, billingAddress: null });
   });
 
-  it('should throw CLIENT_NOT_FOUND when not found', async () => {
+  it('should throw TENANT_NOT_FOUND when not found', async () => {
     const db = createMockDb({ selectResult: [] });
 
     await expect(getTenantById(db, 'missing')).rejects.toThrow(ApiError);
     await expect(getTenantById(db, 'missing')).rejects.toMatchObject({
-      code: 'CLIENT_NOT_FOUND',
+      code: 'TENANT_NOT_FOUND',
       status: 404,
     });
   });
@@ -506,11 +506,11 @@ describe('deleteTenant', () => {
     expect(deleteFn).toHaveBeenCalled();
   });
 
-  it('should throw CLIENT_NOT_FOUND when tenant does not exist', async () => {
+  it('should throw TENANT_NOT_FOUND when tenant does not exist', async () => {
     const db = createMockDb({ selectResult: [] });
 
     await expect(deleteTenant(db, 'missing')).rejects.toMatchObject({
-      code: 'CLIENT_NOT_FOUND',
+      code: 'TENANT_NOT_FOUND',
     });
   });
 

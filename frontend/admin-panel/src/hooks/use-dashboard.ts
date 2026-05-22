@@ -25,8 +25,8 @@ export function usePlatformStatus() {
 }
 
 interface DashboardMetrics {
-  readonly total_clients: number;
-  readonly active_clients: number;
+  readonly total_tenants: number;
+  readonly active_tenants: number;
   readonly total_domains: number;
   readonly total_backups: number;
   readonly platform_version: string;

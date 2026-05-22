@@ -2,7 +2,7 @@
 # admin-domain-rewrite.sh — rewrite system_settings to a new domain.
 #
 # Use after a DR pg_restore: the source dump carries the SOURCE
-# cluster's `admin_panel_url`/`client_panel_url`/`ingress_base_domain`,
+# cluster's `admin_panel_url`/`tenant_panel_url`/`ingress_base_domain`,
 # but the operator's restored cluster has a DIFFERENT domain. Without
 # this rewrite, platform-api's ingress-reconciler keeps reasserting
 # the source domain on the Ingress (because system_settings is the
@@ -10,7 +10,7 @@
 #
 # Updates:
 #   admin_panel_url       → https://admin.<NEW_DOMAIN>
-#   client_panel_url      → https://client.<NEW_DOMAIN>
+#   tenant_panel_url      → https://tenant.<NEW_DOMAIN>
 #   ingress_base_domain   → <NEW_DOMAIN>
 #   webmail_url           → https://webmail.<NEW_DOMAIN>  (if non-NULL)
 #   mail_hostname         → mail.<NEW_DOMAIN>            (if non-NULL)
@@ -85,7 +85,7 @@ fi
 # don't need the platform user's password — same convention as
 # admin-password-reset.sh.
 ADMIN_URL="https://admin.${DOMAIN}"
-CLIENT_URL="https://client.${DOMAIN}"
+TENANT_URL="https://tenant.${DOMAIN}"
 WEBMAIL_URL="https://webmail.${DOMAIN}"
 MAIL_HOST="mail.${DOMAIN}"
 
@@ -93,7 +93,7 @@ kubectl -n "$NAMESPACE" exec -i "$POD" -c postgres -- psql -v ON_ERROR_STOP=1 ho
 BEGIN;
 UPDATE system_settings
    SET admin_panel_url     = '${ADMIN_URL}',
-       client_panel_url    = '${CLIENT_URL}',
+       tenant_panel_url    = '${TENANT_URL}',
        ingress_base_domain = '${DOMAIN}',
        webmail_url         = COALESCE(NULLIF(webmail_url, ''), '${WEBMAIL_URL}'),
        mail_hostname       = COALESCE(NULLIF(mail_hostname, ''), '${MAIL_HOST}');
@@ -118,7 +118,7 @@ SQL
 echo
 echo "Domain rewritten: ${DOMAIN}"
 echo "  admin_panel_url     = ${ADMIN_URL}"
-echo "  client_panel_url    = ${CLIENT_URL}"
+echo "  tenant_panel_url    = ${TENANT_URL}"
 echo "  ingress_base_domain = ${DOMAIN}"
 echo
 echo "Rolling platform-api so the ingress-reconciler picks up new values..."
