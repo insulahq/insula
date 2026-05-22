@@ -503,3 +503,6 @@ export async function listTenantSnapshots(
     hasMore,
   };
 }
+
+// 2026-05-22: trivial bump to force backend rebuild after the auto-pin
+// race lost the ccd2325a tag. See gh run 26285402671.
