@@ -98,6 +98,88 @@ def _destroy_all(client: JmapAuxClient, using: list[str], set_method: str,
     return destroyed
 
 
+def _destroy_filenodes_topologically(
+    client: JmapAuxClient,
+    using: list[str],
+    account_id: str,
+    log: Any,
+) -> int:
+    """Destroy every FileNode on the account, children before parents.
+
+    Stalwart's FileNode/set/destroy rejects a non-empty folder with
+    `nodeHasChildren: 'Cannot delete non-empty folder.'`. The generic
+    `_destroy_all` issues ids in id-sorted batch order, which the
+    Stalwart id space doesn't correlate with depth — so a parent
+    folder can get attempted before its children, fail, and leave
+    cruft behind. Worse, a partially-deleted `willDestroy` node holds
+    the name slot, so the subsequent create-step collides with
+    `invalidProperties: A node with the same name already exists`.
+
+    Two-step fix:
+
+      1. Fetch id + parentId for every node. Compute each node's
+         depth in the tree (root = 0).
+      2. Destroy in descending depth order (deepest children first).
+         At each depth tier, batch into chunks of 50 to stay well
+         under Stalwart's per-call op cap.
+
+    Any node Stalwart still refuses to delete (concurrent activity,
+    Stalwart-internal state) logs a WARN; the caller is expected to
+    handle the resulting name collision on create (we fall back to
+    `_try_update`).
+    """
+    # 1. Fetch all nodes with their parent linkage.
+    get_res = client.call_one(
+        using, "FileNode/get",
+        {"accountId": account_id, "ids": None,
+         "properties": ["id", "parentId"]},
+    )
+    nodes = get_res.get("list", []) or []
+    if not nodes:
+        return 0
+
+    # 2. Build a depth map. Walk parentId → root for each node and
+    #    count hops (cycles, if Stalwart ever permits them, terminate
+    #    after `len(nodes)` hops to avoid infinite loops).
+    by_id: dict[str, Optional[str]] = {n["id"]: n.get("parentId") for n in nodes}
+    depth: dict[str, int] = {}
+
+    def _depth(node_id: str, _seen: Optional[set[str]] = None) -> int:
+        if node_id in depth:
+            return depth[node_id]
+        if _seen is None:
+            _seen = set()
+        if node_id in _seen:
+            return 0  # cycle defense — treat as root-level
+        _seen.add(node_id)
+        parent = by_id.get(node_id)
+        d = 0 if parent is None or parent not in by_id else _depth(parent, _seen) + 1
+        depth[node_id] = d
+        return d
+
+    for n in nodes:
+        _depth(n["id"])
+
+    # 3. Sort deepest first, then destroy in 50-ops batches per tier.
+    ordered = sorted(by_id.keys(), key=lambda nid: depth.get(nid, 0), reverse=True)
+    destroyed = 0
+    for i in range(0, len(ordered), 50):
+        chunk = ordered[i:i + 50]
+        try:
+            res = client.call_one(using, "FileNode/set",
+                                  {"accountId": account_id, "destroy": chunk})
+        except JmapError as e:
+            log("warn", f"FileNode/set destroy batch failed: {e}")
+            continue
+        not_destroyed = res.get("notDestroyed") or {}
+        destroyed += len(chunk) - len(not_destroyed)
+        if not_destroyed:
+            sample = next(iter(not_destroyed.items()))
+            log("warn", f"FileNode/set: {len(not_destroyed)} not destroyed "
+                        f"(first: {sample})")
+    return destroyed
+
+
 def _drop_server_only_fields(obj: dict[str, Any], drop: set[str]) -> dict[str, Any]:
     """Remove server-managed fields (myRights, blobId, etc.) before /set.
     Stalwart rejects an update that includes them; the server controls
@@ -478,8 +560,9 @@ def restore_filenode(client: JmapAuxClient, payload: dict[str, Any],
         return {"input": 0, "skipped_reason": "target lacks surface"}
 
     if mode == "replace":
-        n = _destroy_all(client, using, "FileNode/set", "FileNode/get", acct, log)
-        log("info", f"filenode: replace mode destroyed {n} pre-existing nodes")
+        n = _destroy_filenodes_topologically(client, using, acct, log)
+        log("info", f"filenode: replace mode destroyed {n} pre-existing nodes "
+                    f"(topological order — children before parents)")
 
     nodes = payload.get("nodes", []) or []
     if not nodes:
