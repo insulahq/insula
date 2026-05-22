@@ -250,7 +250,7 @@ if [[ "$SYS_SNAP_CODE" == "200" ]]; then
 import json, sys
 try:
   d = json.load(sys.stdin)
-  for vol in d.get('data', {}).get('volumes', []):
+  for vol in d.get('data', {}).get('items', []):
     c = vol.get('cnpgCluster')
     if not c: continue
     print(f\"{c.get('namespace')} {c.get('name')} {vol.get('longhornVolumeName')}\"); break
