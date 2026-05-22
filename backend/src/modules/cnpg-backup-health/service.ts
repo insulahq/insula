@@ -21,6 +21,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { listBackupsFromObjectStore } from '../cnpg-backup-catalogue/service.js';
 
 const CNPG_GROUP = 'postgresql.cnpg.io';
 const CNPG_VERSION = 'v1';
@@ -48,7 +49,8 @@ export type ClusterHealthState =
   | 'stale'             // last attempt completed but > 24h ago — schedule may be misconfigured
   | 'failing'           // last attempt is failed
   | 'never_run'         // no Backup CRs in the namespace for this cluster
-  | 'no_backup_config'; // ScheduledBackup CRs exist but cluster has NEITHER spec.backup NOR an enabled barman-cloud plugin
+  | 'no_backup_config'  // ScheduledBackup CRs exist but cluster has NEITHER spec.backup NOR an enabled barman-cloud plugin
+  | 'cnpg_operator_blind'; // CNPG returned no Backup CRs but the object store has backups — operator/plugin is broken
 
 export interface BackupRecord {
   readonly name: string;
@@ -75,6 +77,11 @@ export interface ClusterBackupHealth {
   readonly scheduledBackups: readonly string[];
   /** Whether the cluster's spec.backup section is set (barmanObjectStore configured). */
   readonly clusterHasBackupSpec: boolean;
+  /** Phase 2 — when the cluster references a barman-cloud plugin AND the
+   *  CNPG operator has returned zero Backup CRs, the catalogue enrichment
+   *  surfaces what's actually in the object store. Null when CNPG sees its
+   *  own backups (normal happy path). */
+  readonly objectStoreBackupCount?: number | null;
 }
 
 /**
@@ -142,6 +149,21 @@ function hasBarmanCloudPlugin(cluster: CnpgCluster): boolean {
   });
 }
 
+/** Read the ObjectStore name from the cluster's barman-cloud plugin
+ *  parameters. Returns null when the cluster doesn't use the plugin or
+ *  doesn't carry a barmanObjectName parameter. */
+export function getBarmanObjectStoreName(cluster: CnpgCluster): string | null {
+  const plugins = cluster.spec?.plugins ?? [];
+  for (const p of plugins) {
+    if (p.enabled === false) continue;
+    const n = (p.name ?? '').toLowerCase();
+    if (n !== 'barman-cloud' && !n.endsWith('barman-cloud') && !n.startsWith('barman-cloud.')) continue;
+    const v = p.parameters?.barmanObjectName;
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return null;
+}
+
 interface ListResp<T> {
   items?: T[];
 }
@@ -162,6 +184,11 @@ function parsePhase(raw: string | undefined): BackupPhase {
 
 export interface CnpgBackupHealthTenants {
   readonly custom: k8s.CustomObjectsApi;
+  /** Optional — when supplied, readBackupHealth can ask the catalogue
+   *  (object-store source-of-truth) whether a cluster's barman-cloud
+   *  archive contains backups even though the CNPG operator returned
+   *  none. Used to upgrade `never_run` → `cnpg_operator_blind`. */
+  readonly core?: k8s.CoreV1Api;
 }
 
 async function listBackupsInNamespace(
@@ -250,6 +277,10 @@ export interface SnapshotOptions {
    * gap > threshold suggests the schedule misfired.
    */
   readonly staleAfterMs?: number;
+  /** Optional pino-shaped logger for catalogue-enrichment diagnostics.
+   *  When omitted, catalogue failures stay silent (callers from the
+   *  route handler pass `request.log` for breadcrumbs). */
+  readonly log?: { readonly warn?: (obj: object, msg: string) => void };
 }
 
 const DEFAULT_STALE_MS = 24 * 60 * 60 * 1000;
@@ -326,6 +357,39 @@ export async function readBackupHealth(
         state = 'healthy';
       }
 
+      // Phase 2 — Object-store enrichment. If the cluster says
+      // `never_run` or `failing` but the catalogue can prove the
+      // archive has backups, the CNPG operator's projection has
+      // diverged from reality. Upgrade the state to surface this.
+      // Only ask the catalogue when the cluster is on the plugin
+      // model (cheap precondition: avoid extra k8s API calls for
+      // legacy clusters).
+      let objectStoreBackupCount: number | null | undefined = undefined;
+      if (tenants.core && (state === 'never_run' || state === 'failing') && hasBarmanCloudPlugin(cluster)) {
+        const objStore = getBarmanObjectStoreName(cluster);
+        if (objStore) {
+          try {
+            const cat = await listBackupsFromObjectStore(tenants.core, tenants.custom, namespace, objStore);
+            if (cat.source === 'object-store') {
+              objectStoreBackupCount = cat.backups.length;
+              if (cat.backups.length > 0) {
+                state = 'cnpg_operator_blind';
+              }
+            } else if (opts.log) {
+              opts.log.warn?.({ namespace, clusterName, objStore, reason: cat.unavailableReason }, 'cnpg-backup-health: catalogue unavailable; state stays at base');
+            }
+          } catch (err) {
+            // Best-effort enrichment; failure must not break the
+            // primary health response — but log so an operator
+            // debugging cnpg_operator_blind has a breadcrumb.
+            opts.log?.warn?.(
+              { err: err instanceof Error ? err.message : String(err), namespace, clusterName, objStore },
+              'cnpg-backup-health: catalogue probe threw; using base state',
+            );
+          }
+        }
+      }
+
       result.push({
         clusterName,
         namespace,
@@ -335,6 +399,7 @@ export async function readBackupHealth(
         lastSuccessSecondsAgo,
         scheduledBackups: namespacedSchedules,
         clusterHasBackupSpec,
+        ...(objectStoreBackupCount !== undefined ? { objectStoreBackupCount } : {}),
       });
     }
   }

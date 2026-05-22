@@ -29,6 +29,7 @@ export * from './tenant-bundles.js';
 export * from './restore.js';
 export * from './backup-health.js';
 export * from './cnpg-backup-health.js';
+export * from './cnpg-backup-catalogue.js';
 export * from './node-health.js';
 export * from './cron-jobs.js';
 export * from './metrics.js';
