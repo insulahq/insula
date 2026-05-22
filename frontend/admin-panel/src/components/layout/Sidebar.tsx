@@ -18,7 +18,9 @@ import {
   Settings,
   KeyRound,
   Package,
-  GitBranch,
+  Mail,
+  Cloud,
+  LifeBuoy,
   ChevronDown,
   ChevronRight,
   X,
@@ -50,6 +52,11 @@ interface SimpleNavItem {
   readonly to: string;
   readonly icon: typeof LayoutDashboard;
   readonly label: string;
+  /** When true, the link is "active" only on exact pathname match. Use
+   *  for prefix-of-other-children paths like `/backups` when siblings
+   *  live at `/backups/system`, otherwise NavLink's default prefix
+   *  match lights up both rows simultaneously. */
+  readonly exact?: boolean;
 }
 interface GroupNavItem {
   readonly kind: 'group';
@@ -71,9 +78,12 @@ const navItems: ReadonlyArray<NavItem> = [
     icon: Database,
     label: 'Backups',
     children: [
-      { kind: 'item', to: '/backups/system',                       icon: KeyRound,  label: 'System' },
-      { kind: 'item', to: '/backups/tenants',                      icon: Package,   label: 'Tenant' },
-      { kind: 'item', to: '/settings/backup-infrastructure',       icon: GitBranch, label: 'Infrastructure' },
+      { kind: 'item', to: '/backups',                      icon: LayoutDashboard, label: 'Dashboard', exact: true },
+      { kind: 'item', to: '/backups/system',               icon: KeyRound,        label: 'System' },
+      { kind: 'item', to: '/backups/tenants',              icon: Package,         label: 'Tenants' },
+      { kind: 'item', to: '/backups/mail',                 icon: Mail,            label: 'Mail' },
+      { kind: 'item', to: '/backups/targets',              icon: Cloud,           label: 'Remote Storage Targets' },
+      { kind: 'item', to: '/backups/disaster-recovery',    icon: LifeBuoy,        label: 'Disaster Recovery' },
     ],
   },
   { kind: 'item',  to: '/cron-jobs',              icon: Clock,           label: 'Cron Jobs' },
@@ -178,7 +188,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  end={item.to === '/'}
+                  end={item.to === '/' || item.exact === true}
                   onClick={onClose}
                   className={({ isActive }) =>
                     clsx(
@@ -225,6 +235,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                         <NavLink
                           key={c.to}
                           to={c.to}
+                          end={c.exact === true}
                           onClick={onClose}
                           className={({ isActive }) =>
                             clsx(

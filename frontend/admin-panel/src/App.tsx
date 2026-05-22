@@ -22,8 +22,11 @@ import DomainDetail from '@/pages/DomainDetail';
 import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
-import BackupInfrastructure from '@/pages/BackupInfrastructure';
 import RestoreCartPage from '@/pages/RestoreCart';
+import BackupsDashboard from '@/pages/backups/BackupsDashboard';
+import MailBackupsPage from '@/pages/backups/MailBackupsPage';
+import RemoteStorageTargetsPage from '@/pages/backups/RemoteStorageTargetsPage';
+import DisasterRecoveryPage from '@/pages/backups/DisasterRecoveryPage';
 import AdminUsers from '@/pages/AdminUsers';
 import ExportImport from '@/pages/ExportImport';
 import EmailManagement from '@/pages/EmailManagement';
@@ -94,9 +97,13 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
+            <Route path="backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupsDashboard /></ProtectedRoute>} />
             <Route path="backups/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemBackups /></ProtectedRoute>} />
             <Route path="backups/tenants" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackups /></ProtectedRoute>} />
             <Route path="backups/tenants/:tenantId" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackupDetail /></ProtectedRoute>} />
+            <Route path="backups/mail" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><MailBackupsPage /></ProtectedRoute>} />
+            <Route path="backups/targets" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RemoteStorageTargetsPage /></ProtectedRoute>} />
+            <Route path="backups/disaster-recovery" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DisasterRecoveryPage /></ProtectedRoute>} />
             <Route path="cron-jobs" element={<CronJobs />} />
             {/* Security Hub (2026-05-21): /security top-level retired —
                 the legacy mock page (hardcoded NETWORK_POLICIES array)
@@ -110,16 +117,11 @@ export default function App() {
             <Route path="settings/dns" element={<DnsServers />} />
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
-            <Route path="settings/backup-infrastructure" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupInfrastructure /></ProtectedRoute>} />
-            {/* 2026-05-21 Wave 1: Restore Cart moved under /backups/*
-                for sidebar-path consistency (everything restore-y now
-                lives under the Backups group). Bookmark-compat: old
-                /restore?cartId=... + ?bundleId=... continue to work
-                via RedirectWithQuery so deep-links from
-                TenantBackupDetail / BackupBundlesSection don't break
-                until those links are updated below. */}
+            {/* Tenant-bundle restore cart — reachable from the Restoration
+                Wizard modal when the artifact is a tenant bundle. No
+                sidebar entry (Phase 1 IA removed it); the Wizard supplies
+                the entry point in Phase 6. */}
             <Route path="backups/restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
-            <Route path="restore" element={<RedirectWithQuery to="/backups/restore" />} />
             <Route path="nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
             {/* Legacy direct-link compatibility: redirect to the new top-level page with the matching tab pre-selected. */}
             <Route path="settings/nodes-and-storage" element={<Navigate to="/nodes-and-storage" replace />} />
