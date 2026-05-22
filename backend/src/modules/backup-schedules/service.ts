@@ -3,18 +3,20 @@
  *
  * Each subsystem (mail, tenant_bundle, system_pitr, longhorn_recurring)
  * gates `enabled=true` on having at least one target assigned to the
- * subsystem's backup_class. The mapping is:
+ * subsystem's backup_class. Phase 2 legacy purge (2026-05-22) re-mapped
+ * the gate from the per-subsystem legacy class names to the three
+ * R-X shim classes:
  *
- *   mail               → system_mail
- *   tenant_bundle      → tenant_bundle
- *   system_pitr        → system_backup
+ *   mail               → mail   (was system_mail)
+ *   tenant_bundle      → tenant (was tenant_bundle)
+ *   system_pitr        → system (was system_backup)
  *   longhorn_recurring → (no gate — Longhorn lives on local storage,
  *                        not in backup_target_assignments)
  *
  * "Strict" means the API refuses the PATCH with 409 SCHEDULE_GATE_BLOCKED
  * when an operator tries to enable a subsystem before its target is
- * assigned. The UI surfaces this with a banner pointing to
- * /settings/backup-infrastructure → Classes tab.
+ * bound. The UI surfaces this with a banner pointing to
+ * /backups/<class> → Targets, Schedules & Retention.
  */
 
 import { eq, and, sql } from 'drizzle-orm';
@@ -36,9 +38,9 @@ import type {
  * local node disk; no external target).
  */
 const GATE_MAP: Record<string, string | null> = {
-  mail: 'system_mail',
-  tenant_bundle: 'tenant_bundle',
-  system_pitr: 'system_backup',
+  mail: 'mail',
+  tenant_bundle: 'tenant',
+  system_pitr: 'system',
   longhorn_recurring: null,
 };
 

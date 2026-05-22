@@ -4,7 +4,7 @@
  * Renders the resolved restic target, last-run stats, and a
  * "Trigger snapshot now" button. Schedule lives in the sibling
  * ScheduleCard component. Backup target binding lives in
- * /settings/backup-infrastructure → Classes → system_mail.
+ * /backups/mail → Targets, Schedules & Retention.
  */
 
 import { Link } from 'react-router-dom';
@@ -62,7 +62,7 @@ export default function MailObjectBackupCard({ ov, loading }: { ov: SystemBackup
       <p className="text-sm text-gray-500 dark:text-gray-400">
         File-level restic backup of the mail data directory. Dedup-friendly — incrementals are KB-scale
         even when the database mutates between runs.{' '}
-        <Link to="/settings/backup-infrastructure?tab=classes" className="font-medium text-brand-600 dark:text-brand-400 hover:underline">
+        <Link to="/backups/mail" className="font-medium text-brand-600 dark:text-brand-400 hover:underline">
           Manage in Backup Classes →
         </Link>
       </p>

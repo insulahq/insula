@@ -18,7 +18,9 @@ import {
   Settings,
   KeyRound,
   Package,
-  GitBranch,
+  Mail,
+  Cloud,
+  LifeBuoy,
   ChevronDown,
   ChevronRight,
   X,
@@ -50,6 +52,11 @@ interface SimpleNavItem {
   readonly to: string;
   readonly icon: typeof LayoutDashboard;
   readonly label: string;
+  /** When true, the link is "active" only on exact pathname match. Use
+   *  for prefix-of-other-children paths like `/backups` when siblings
+   *  live at `/backups/system`, otherwise NavLink's default prefix
+   *  match lights up both rows simultaneously. */
+  readonly exact?: boolean;
 }
 interface GroupNavItem {
   readonly kind: 'group';
@@ -59,6 +66,15 @@ interface GroupNavItem {
   readonly children: ReadonlyArray<SimpleNavItem>;
 }
 type NavItem = SimpleNavItem | GroupNavItem;
+
+/** A child is "active" for the purpose of group expansion when either
+ *  the pathname matches exactly (for entries marked `exact`) or is a
+ *  prefix-match (default React Router behaviour). Mirrors the rule
+ *  used by NavLink's `end` prop so the active CSS state and the group
+ *  expansion stay in lockstep. */
+function isChildMatch(child: SimpleNavItem, pathname: string): boolean {
+  return child.exact === true ? pathname === child.to : pathname.startsWith(child.to);
+}
 
 const navItems: ReadonlyArray<NavItem> = [
   { kind: 'item',  to: '/',                       icon: LayoutDashboard, label: 'Dashboard' },
@@ -71,9 +87,12 @@ const navItems: ReadonlyArray<NavItem> = [
     icon: Database,
     label: 'Backups',
     children: [
-      { kind: 'item', to: '/backups/system',                       icon: KeyRound,  label: 'System' },
-      { kind: 'item', to: '/backups/tenants',                      icon: Package,   label: 'Tenant' },
-      { kind: 'item', to: '/settings/backup-infrastructure',       icon: GitBranch, label: 'Infrastructure' },
+      { kind: 'item', to: '/backups',                      icon: LayoutDashboard, label: 'Dashboard', exact: true },
+      { kind: 'item', to: '/backups/system',               icon: KeyRound,        label: 'System' },
+      { kind: 'item', to: '/backups/tenants',              icon: Package,         label: 'Tenants' },
+      { kind: 'item', to: '/backups/mail',                 icon: Mail,            label: 'Mail' },
+      { kind: 'item', to: '/backups/targets',              icon: Cloud,           label: 'Remote Storage Targets' },
+      { kind: 'item', to: '/backups/disaster-recovery',    icon: LifeBuoy,        label: 'Disaster Recovery' },
     ],
   },
   { kind: 'item',  to: '/cron-jobs',              icon: Clock,           label: 'Cron Jobs' },
@@ -104,14 +123,18 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   const location = useLocation();
 
   // Auto-expand any group whose child route is currently active so
-  // the user lands on a visible nav item after a deep-link.
-  const initialExpanded = new Set<string>();
-  for (const item of navItems) {
-    if (item.kind === 'group' && item.children.some((c) => location.pathname.startsWith(c.to))) {
-      initialExpanded.add(item.id);
+  // the user lands on a visible nav item after a deep-link. Using a
+  // function initializer so the Set is built once on mount, not on
+  // every re-render.
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const init = new Set<string>();
+    for (const item of navItems) {
+      if (item.kind === 'group' && item.children.some((c) => isChildMatch(c, location.pathname))) {
+        init.add(item.id);
+      }
     }
-  }
-  const [expanded, setExpanded] = useState<Set<string>>(initialExpanded);
+    return init;
+  });
 
   // Auto-expand on client-side navigation (NavLink keeps Sidebar
   // mounted, so initialExpanded only fires once on first render).
@@ -123,7 +146,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
       const next = new Set(prev);
       for (const item of navItems) {
         if (item.kind !== 'group') continue;
-        if (item.children.some((c) => location.pathname.startsWith(c.to)) && !next.has(item.id)) {
+        if (item.children.some((c) => isChildMatch(c, location.pathname)) && !next.has(item.id)) {
           next.add(item.id);
           changed = true;
         }
@@ -178,7 +201,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  end={item.to === '/'}
+                  end={item.to === '/' || item.exact === true}
                   onClick={onClose}
                   className={({ isActive }) =>
                     clsx(
@@ -197,7 +220,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             // Group
             const GroupIcon = item.icon;
             const isExpanded = expanded.has(item.id);
-            const childActive = item.children.some((c) => location.pathname.startsWith(c.to));
+            const childActive = item.children.some((c) => isChildMatch(c, location.pathname));
             return (
               <div key={item.id} data-testid={`sidebar-group-${item.id}`}>
                 <button
@@ -225,6 +248,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                         <NavLink
                           key={c.to}
                           to={c.to}
+                          end={c.exact === true}
                           onClick={onClose}
                           className={({ isActive }) =>
                             clsx(
