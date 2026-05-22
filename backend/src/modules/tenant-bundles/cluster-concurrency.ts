@@ -91,7 +91,7 @@ const DEFAULT_ACQUIRE_TIMEOUT_MS = 30 * 60 * 1000;
 
 export interface AcquireSlotArgs {
   readonly bundleId: string;
-  readonly component: 'files' | 'mailboxes' | 'config' | 'secrets';
+  readonly component: 'files' | 'mailboxes' | 'config' | 'secrets' | 'mailbox-worker';
   readonly podName?: string;
   /** Cap from settings.globalMaxInFlight. 0 → no-op release fn. */
   readonly globalMaxInFlight: number;

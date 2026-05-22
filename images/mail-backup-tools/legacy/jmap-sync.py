@@ -467,26 +467,20 @@ def run(args: argparse.Namespace) -> int:
         sys.stderr.write(f"jmap-sync: session failed: {e}\n")
         return 3
 
-    # Determine since-state (incremental vs full)
-    since_state = ""
+    # 2026-05-22: tenant bundles are COMPLETE only (no incremental).
+    # The incremental Email/changes path is dead code — we always do a
+    # full pull. The --state-in/--state-out args are kept on the CLI
+    # only for backward compatibility with older orchestrators; the
+    # values are ignored. See project_stalwart_imap_perf_2026_05_22.
     if args.state_in and os.path.exists(args.state_in):
-        try:
-            with open(args.state_in, "r") as f:
-                doc = json.load(f)
-            since_state = (doc or {}).get("state", "") or ""
-        except (json.JSONDecodeError, OSError) as e:
-            sys.stderr.write(f"jmap-sync: state-in unreadable ({e}); falling back to full pull\n")
-            since_state = ""
-
-    full_pull = not since_state
+        sys.stderr.write(
+            "jmap-sync: --state-in ignored — tenant bundles are now COMPLETE-only\n"
+        )
+    since_state = ""
+    full_pull = True
     destroyed: List[str] = []
 
-    if full_pull:
-        ids, new_state = _full_pull_ids(client)
-    else:
-        ids, destroyed, new_state, fallback = _incremental_ids(client, since_state)
-        if fallback:
-            full_pull = True
+    ids, new_state = _full_pull_ids(client)
 
     # Deduplicate (Email/changes can return overlapping created+updated)
     ids = list(dict.fromkeys(ids))
@@ -545,11 +539,16 @@ def run(args: argparse.Namespace) -> int:
                     sys.stderr.write(f"jmap-sync: message {m.get('id')!r} fetch failed: {e}\n")
                     skipped += 1
 
-    # Write new state
+    # state_out intentionally NOT written — tenant bundles are COMPLETE
+    # only as of 2026-05-22. Legacy orchestrators that still mount a
+    # state-out path will see an empty file (or no file) and treat it
+    # as "no prior state" on the next run, which is harmless because
+    # we always full-pull anyway.
+    _ = new_state  # silence unused-warning; kept in summary for legacy parsers
     if args.state_out:
-        os.makedirs(os.path.dirname(args.state_out) or ".", exist_ok=True)
-        with open(args.state_out, "w") as f:
-            json.dump({"state": new_state}, f)
+        sys.stderr.write(
+            "jmap-sync: --state-out ignored — tenant bundles are now COMPLETE-only\n"
+        )
 
     summary = {
         "address": args.account_address,
