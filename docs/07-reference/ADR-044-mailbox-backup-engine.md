@@ -29,11 +29,17 @@ The trade-off — IMAP MULTIAPPEND uses ~5× more helper-pod memory during resto
 
 ### 1. Real-world tenants accumulate enough mail to make the perf gap user-visible
 
-Before the M14 catalog rewrite the median tenant had under 1k messages and the JMAP path's ~40 msg/s restore was invisible. By 2026-Q1 several active tenants had crossed 10 k messages and DR-restore time was becoming an operator complaint:
-- 10 k messages: JMAP ~4 min, IMAP MULTIAPPEND ~2 min
-- 50 k messages: JMAP ~20 min, IMAP MULTIAPPEND ~10 min (extrapolated; see Risks §3 for the scale-curve caveat)
+Before the M14 catalog rewrite the median tenant had under 1 k messages and the JMAP path's ~40 msg/s restore was invisible. By 2026-Q1 several active tenants had crossed 10 k messages and DR-restore time was becoming an operator complaint. Measured on testing.phoenix-host.net (single-node, local-path storage, K=4 workers):
 
-For tenants with active webmail users + IMAP mobile clients the restore window is downtime they can see. IMAP halves it.
+| Corpus | IMAP cap / restore | JMAP cap / restore | IMAP advantage |
+|---|---|---|---|
+| 3 k msgs (225 MB) | 5.5 s / 36 s | 19.0 s / 71 s | cap 3.5× / rest 2.0× |
+| 10 k msgs (731 MB) | 16.6 s / 120 s | 85.2 s / 274 s | cap 5.1× / rest 2.3× |
+| 50 k msgs (extrap) | ~83 s / ~10 min | ~7 min / ~23 min | widens |
+
+**IMAP scales linearly** — restore msg/s is flat at ~83 across 3 k and 10 k (the per-msg Stalwart processing ceiling: FTS + threading + ACL); capture actually slightly *improved* from 548 → 601 msg/s at 10 k. **JMAP degrades** — capture msg/s dropped 158 → 117 (-26%) and restore 42 → 36.5 (-13%) from 3 k → 10 k, because the `Email/get` + `Blob/get` pipeline pays per-folder MailboxQuery overhead that amortises poorly with corpus size.
+
+For tenants with active webmail users + IMAP mobile clients the restore window is downtime they can see. At 10 k messages IMAP cuts it from 4.5 min to 2 min; at 50 k from 23 min to 10 min.
 
 ### 2. JMAP correctness regressions were data-loss-class
 
@@ -114,7 +120,7 @@ The setting is mutable via JMAP `x:Imap/set` (live, no restart) and persists in 
 
    DAV endpoints `/dav/cal/`, `/dav/card/`, `/.well-known/{cal,card}dav` all return 401 (auth required) — confirming the surfaces are wired up. Implementation plan: add a `jmap-aux-sync.py` + `jmap-aux-restore.py` pair that runs alongside the existing mail capture, using the same JMAP master-proxy transport. Serialise to JSON sidecars under `<account>/.aux/{sieve,contacts,calendar,vacation}.json` inside the Maildir tarball. Per-account scope mirrors per-account mail backup cleanly; no new auth, no new ports, no DAV plumbing. Tracked as TASK #35 (sieve), #36 (contacts), #37 (calendar) — likely consolidated into one task `mailbox-aux-backup`.
 
-2. **Scale validation beyond 10 k msgs** — IMAP MULTIAPPEND throughput ceiling is currently the per-msg Stalwart processing pipeline (FTS, threading, ACL), ~80 msg/s single-conn or ~250 msg/s at K=4. Whether this curves at 50 k+ messages is untested; the linear extrapolation in §1 may need revision. TASK #34 currently runs 10 k validation on testing.
+2. **Scale validation beyond 50 k msgs** — 3 k and 10 k validated (TASK #34 complete; IMAP restore msg/s held flat at 83 across both, JMAP degraded modestly). The 50 k extrapolation in §1 is based on the linear curve through these two data points; whether RocksDB compaction or FTS index growth introduces a knee at 50 k+ is untested. Operators handling tenants with >50 k messages should run the bench against a representative corpus.
 
 3. **Bytes-on-wire metric for IMAP** — `imaplib`'s buffered-read path bypasses the socket-hook in our instrumentation; tarball size is used as a proxy in the bench harness.
 
