@@ -1303,25 +1303,73 @@ export async function promotePostgresFromSnapshot(
 
     // 8. Re-create source Cluster from temp's snapshot.
     //
-    // Timeout: 8 min for the primary's snapshot recovery + 4 min per
-    // additional replica (streaming clone + WAL sync). A 3-instance HA
-    // cluster therefore gets 16 min, single-instance keeps the original
-    // 8 min budget. Without this scaling the orchestrator times out
-    // mid-replica-join and reports `recreate-source` failed even though
-    // CNPG is making forward progress.
+    // Phase 4a perf opt (2026-05-22): Recreate with instances=1 first
+    // (primary only) and wait for primary healthy. Then immediately
+    // PATCH the spec.instances back to the source's original HA count
+    // and let the CNPG operator build the replicas in background. This
+    // cuts the orchestrator's wall-clock by ~4min per HA replica vs.
+    // the previous "create with N + wait for N healthy" approach.
+    //
+    // Trade-off: when the Job exits success the new cluster has the
+    // primary up but replicas pending. CNPG handles the replica build
+    // (streaming clone + WAL sync) automatically; the cluster reaches
+    // full HA over the next ~4 min/replica. The `recreate-source` step
+    // detail carries `pendingReplicas=N` so the wizard's progress modal
+    // can surface "primary up + N replicas building" instead of
+    // claiming the restore finished an HA cluster.
+    //
+    // Timeout: 8 min for the primary's snapshot recovery — single
+    // instance, no replica wait. Single-instance clusters retain the
+    // exact same behavior as before (recreate + wait for 1 healthy).
     const t8 = nowMs();
     const targetInstances = pre.cluster.spec?.instances ?? 1;
-    const recreateTimeoutMs = (8 + Math.max(0, targetInstances - 1) * 4) * 60_000;
+    const recreateTimeoutMs = 8 * 60_000;
     const newSrcBody = buildRecoveryCluster(
       pre.cluster, inputs.clusterName, inputs.clusterNamespace,
       tempSnap.volumeSnapshotName, null /* no PITR — temp already replayed */,
-      targetInstances,
+      1, // PHASE 4a: bring primary up first; scale to targetInstances in step 8a
       false /* isTemp: rebuilding the production source */,
     );
     await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: newSrcBody });
     const srcHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, inputs.clusterName, recreateTimeoutMs);
-    steps.push({ step: 'recreate-source', ok: srcHealth.ok, elapsedMs: nowMs() - t8, detail: `phase=${srcHealth.phase ?? '?'} instances=${targetInstances} timeoutMs=${recreateTimeoutMs}` });
+    const pendingReplicas = Math.max(0, targetInstances - 1);
+    steps.push({
+      step: 'recreate-source',
+      ok: srcHealth.ok,
+      elapsedMs: nowMs() - t8,
+      detail: `phase=${srcHealth.phase ?? '?'} primary=up pendingReplicas=${pendingReplicas} (CNPG builds replicas in background)`,
+    });
     if (!srcHealth.ok) throw new Error(`Recreated source cluster did not become healthy: phase=${srcHealth.phase}`);
+
+    // 8a. Scale back to the source's original HA instance count.
+    // PATCH spec.instances; CNPG schedules the replica build async.
+    // We do NOT wait — the Job returns success here and the operator
+    // sees "primary up, N replicas building" in the progress modal.
+    if (targetInstances > 1) {
+      const t8a = nowMs();
+      try {
+        await patchCustomMerge(deps.k8s, {
+          group: CNPG_GROUP, version: CNPG_VERSION,
+          namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
+          body: { spec: { instances: targetInstances } },
+        });
+        steps.push({
+          step: 'scale-up-to-source-ha',
+          ok: true,
+          elapsedMs: nowMs() - t8a,
+          detail: `patched instances=1→${targetInstances}; replicas build async in CNPG`,
+        });
+      } catch (err) {
+        steps.push({
+          step: 'scale-up-to-source-ha',
+          ok: false,
+          elapsedMs: nowMs() - t8a,
+          detail: `patch failed: ${(err as Error).message}; operator must scale manually: kubectl -n ${inputs.clusterNamespace} patch cluster ${inputs.clusterName} --type=merge -p '{"spec":{"instances":${targetInstances}}}'`,
+        });
+        // Don't throw — primary is up + data is restored. Scale-up
+        // failure is non-fatal, surfaced as an operator-actionable step.
+      }
+    }
 
     // 8b. Normalize spec.bootstrap so Flux's apply of the original git
     // manifest (which has bootstrap.initdb) doesn't conflict with our
