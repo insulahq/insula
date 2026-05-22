@@ -524,10 +524,17 @@ def _restore_folder_parallel(
                 totals["skipped_dedup"] += fd
                 totals["skipped_oversize"] += fo
                 totals["failed"] += ff
-        except (ImapError, OSError) as e:
+        except Exception as e:  # noqa: BLE001 — see comment
+            # Widen from (ImapError, OSError) → bare Exception so any
+            # unexpected error (TypeError on a malformed response, etc.)
+            # still gets accounted for in the failed counter instead of
+            # bubbling out of pool.map and silently dropping the shard's
+            # message count. KeyboardInterrupt / SystemExit still
+            # propagate (they're BaseException, not Exception).
             _log(
                 f"worker {shard_idx}/{workers} crashed mid-shard "
-                f"({len(shard)} files) on folder {folder!r}: {e}"
+                f"({len(shard)} files) on folder {folder!r}: "
+                f"{type(e).__name__}: {e}"
             )
             with totals_lock:
                 totals["failed"] += len(shard)
@@ -649,29 +656,35 @@ def run(args: argparse.Namespace) -> int:
         else:
             by_folder.setdefault(folder_name, [])  # ensure CREATE-only entry
 
-    # Build the worker pool up front. K connections, sequentially
-    # LOGIN'd with a small inter-LOGIN delay to bypass Stalwart's
-    # per-source LOGIN rate limit. The connections live for the
-    # entire restore — one LOGIN per Job, not per folder.
-    # K=1 just builds one connection — the sequential path uses it
-    # the same way the parallel path uses K of them.
+    # Initialise `pool` before any try so the finally block always
+    # has a valid iterable to close — even if BaseException
+    # (KeyboardInterrupt/SystemExit) arrives between _build_worker_pool
+    # returning and the main try entering. Without this, SIGTERM
+    # during pool build would leak connections.
+    pool: list[ImapClient] = []
     try:
-        pool = _build_worker_pool(
-            host=args.imap_host,
-            port=args.imap_port,
-            verify_tls=args.verify_tls,
-            login_user=auth_user,
-            password=pw,
-            workers=max(1, args.workers),
-        )
-    except ImapError as e:
-        _log(f"fatal: worker pool LOGIN failed: {e}")
-        return 2
-    except OSError as e:
-        _log(f"fatal: worker pool connect failed: {e}")
-        return 3
+        # Build the worker pool up front. K connections, sequentially
+        # LOGIN'd with a small inter-LOGIN delay to bypass Stalwart's
+        # per-source LOGIN rate limit. The connections live for the
+        # entire restore — one LOGIN per Job, not per folder.
+        # K=1 just builds one connection — the sequential path uses it
+        # the same way the parallel path uses K of them.
+        try:
+            pool = _build_worker_pool(
+                host=args.imap_host,
+                port=args.imap_port,
+                verify_tls=args.verify_tls,
+                login_user=auth_user,
+                password=pw,
+                workers=max(1, args.workers),
+            )
+        except ImapError as e:
+            _log(f"fatal: worker pool LOGIN failed: {e}")
+            return 2
+        except OSError as e:
+            _log(f"fatal: worker pool connect failed: {e}")
+            return 3
 
-    try:
         # The first client in the pool is the "main" for read-only ops
         # like LIST, dedup pass, replace-mode purge. Workers share the
         # full pool for parallel APPENDs.
