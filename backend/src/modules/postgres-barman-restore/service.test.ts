@@ -144,6 +144,11 @@ describe('createBarmanRestore', () => {
     expect(spec.externalClusters[0].name).toBe('system-postgres-objectstore-recovery-source');
     expect(spec.externalClusters[0].plugin.name).toBe('barman-cloud.cloudnative-pg.io');
     expect(spec.externalClusters[0].plugin.parameters.barmanObjectName).toBe('system-postgres-objectstore');
+    // The plugin needs serverName=source so it resolves backups
+    // against the correct path in the archive. Without this the
+    // CNPG plugin defaults serverName to the NEW cluster name and
+    // can't find any backups (verified on staging 2026-05-22).
+    expect((spec.externalClusters[0].plugin.parameters as { serverName?: string }).serverName).toBe('system-db');
   });
 
   it('happy path without recoveryTargetTime omits recoveryTarget (restores to latest)', async () => {
