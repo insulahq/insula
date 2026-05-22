@@ -163,7 +163,15 @@ def capture_filenode(client: JmapAuxClient, log: Any) -> dict[str, Any]:
         log("warn", f"filenode: no account ({e}) — skipping surface")
         return {"available": False, "nodes": []}
 
-    res = client.call_one(using, "FileNode/get", {"accountId": acct, "ids": None})
+    # Default FileNode/get properties on Stalwart 0.16 are
+    # {id, name, parentId, size} — blobId is NOT included unless
+    # asked for explicitly. Without it, the capture sees every node
+    # as a folder and the restore loses every file body. Request
+    # blobId + size + type explicitly.
+    res = client.call_one(using, "FileNode/get",
+                          {"accountId": acct, "ids": None,
+                           "properties": ["id", "parentId", "name",
+                                          "size", "blobId", "type"]})
     nodes = res.get("list", []) or []
     out: list[dict[str, Any]] = []
     for n in nodes:
