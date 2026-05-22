@@ -69,7 +69,10 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
   const bound = !!row?.targetId;
 
   const allConfigs = configsQuery.data?.data ?? [];
-  const enabledConfigs = allConfigs.filter((c) => c.enabled !== 0);
+  // `c.enabled` is typed `number` (legacy 0/1) but a future API
+  // normalisation could flip it to `boolean`; truthy-check works for
+  // both.
+  const enabledConfigs = allConfigs.filter((c) => !!c.enabled);
 
   return (
     <div className="space-y-6">
