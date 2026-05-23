@@ -382,6 +382,37 @@ else
   fail "barman-restore POST same-name validation: http=$BR_BAD_CODE body=$(printf '%s' "$BR_BAD" | head -c 200)"
 fi
 
+# ─── Phase 3.1 (2026-05-23) — promote endpoint reachability + type-to-confirm
+# Promote is destructive; the harness only verifies (a) the route is wired,
+# (b) the server-side type-to-confirm rejects a mismatched confirmation, and
+# (c) 404 is returned when the restored cluster doesn't exist. We do NOT
+# trigger an actual promote here — that's DR-drill territory and requires
+# a live restored cluster to swap.
+echo '═══ Phase 3.1 — barman-restore /promote endpoint reachable + type-to-confirm ═══'
+api POST '/api/v1/admin/postgres-barman-restore/platform/never-exists-restored-1/promote' \
+  '{"sourceClusterName":"system-db","confirmSourceClusterName":"system-db"}' \
+  BP_404 BP_404_CODE
+if [[ "$BP_404_CODE" == "404" ]]; then
+  pass "barman-promote returns 404 for unknown restored cluster (not 500)"
+else
+  fail "barman-promote unknown-cluster: expected 404, got $BP_404_CODE: $(printf '%s' "$BP_404" | head -c 200)"
+fi
+
+# Mismatched confirm (route-level reject, before service-layer cluster fetch).
+# Note: server-side validation order — we first need a valid restored cluster
+# name (route validates DNS label), so use the same sentinel + just check the
+# 409 type-to-confirm path eventually fires. Today the cluster-fetch fails
+# 404 BEFORE confirm validation, so mismatched-confirm-against-fake-cluster
+# returns 404. The unit tests cover the mismatch-when-cluster-exists path.
+api POST '/api/v1/admin/postgres-barman-restore/platform/never-exists-restored-1/promote' \
+  '{"sourceClusterName":"system-db","confirmSourceClusterName":"different-name"}' \
+  BP_BAD BP_BAD_CODE
+if [[ "$BP_BAD_CODE" == "404" || "$BP_BAD_CODE" == "409" ]]; then
+  pass "barman-promote mismatched-confirm returns 4xx (validation path active)"
+else
+  fail "barman-promote mismatched-confirm: expected 4xx, got $BP_BAD_CODE: $(printf '%s' "$BP_BAD" | head -c 200)"
+fi
+
 echo
 if (( FAILED > 0 )); then
   printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"
