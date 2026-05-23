@@ -1357,22 +1357,62 @@ export async function promotePostgresFromSnapshot(
     wrapped = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, inputs.snapshotName, sourceLonghornVolume);
     recordStep({ step: 'wrap-volume-snapshot', ok: true, elapsedMs: nowMs() - t1, detail: wrapped.volumeSnapshotName });
 
-    // 3. Bootstrap temp cluster
-    const t2 = nowMs();
-    const tempBody = buildRecoveryCluster(pre.cluster, tempName, inputs.clusterNamespace, wrapped.volumeSnapshotName, inputs.recoveryTargetTime, 1, true /* isTemp */);
-    await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: tempBody });
-    recordStep({ step: 'create-temp-cluster', ok: true, elapsedMs: nowMs() - t2, detail: tempName });
+    // Phase-3 FAST-PATH (2026-05-23): when no PITR target time is
+    // requested, the temp cluster contributes ZERO value — its only
+    // purpose is to apply WAL replay to a target time and then hand
+    // off a frozen snapshot. For "restore to snapshot LSN" (the
+    // common case for the system snapshot restore wizard), we can
+    // skip steps 3-6 entirely and recreate the source directly from
+    // the ORIGINAL wrapped VolumeSnapshot. Saves ~3-5 min of wall-
+    // clock on small DBs (Longhorn 1-replica + CNPG bootstrap +
+    // psql sanity probe + a second snapshot take). The cross-cluster
+    // barman-promote snapshots (labeled barman-promote=true) ALSO
+    // qualify for fast-path because they're a frozen point already.
+    //
+    // Operators can force the slow-path (always go through temp) by
+    // setting PITR_FORCE_TEMP_CLUSTER=true on the platform-api Deploy
+    // env. Default: skip temp when target time is null. Skipping is
+    // safe because:
+    //   - the original snapshot is already readyToUse (preflight
+    //     guarantees that)
+    //   - no WAL replay = no fault domain that warrants a dry-run
+    //     in a throwaway cluster before touching production
+    //   - the recreate-source step in path-B still validates by
+    //     waitClusterHealthy + the actual psql connectivity check
+    //     happens organically when platform-api reconnects.
+    //
+    // tempSnap == null marks "fast-path was taken"; the subsequent
+    // steps fall through `wrapped` directly into step-8 recreate.
+    const skipTempCluster = inputs.recoveryTargetTime === null
+      && process.env.PITR_FORCE_TEMP_CLUSTER !== 'true';
+    let usedFastPath = false;
+    if (!skipTempCluster) {
+      // SLOW-PATH: temp cluster (steps 3-6) for WAL replay to target.
+      // 3. Bootstrap temp cluster
+      const t2 = nowMs();
+      const tempBody = buildRecoveryCluster(pre.cluster, tempName, inputs.clusterNamespace, wrapped.volumeSnapshotName, inputs.recoveryTargetTime, 1, true /* isTemp */);
+      await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: tempBody });
+      recordStep({ step: 'create-temp-cluster', ok: true, elapsedMs: nowMs() - t2, detail: tempName });
 
-    // 4. Wait + sanity probe
-    const t3 = nowMs();
-    markInFlight('temp-healthy');
-    const tempHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, tempName, 8 * 60_000);
-    recordStep({ step: 'temp-healthy', ok: tempHealth.ok, elapsedMs: nowMs() - t3, detail: `phase=${tempHealth.phase ?? '?'} primary=${tempHealth.primary ?? '?'}` });
-    if (!tempHealth.ok || !tempHealth.primary) throw new Error(`Temp cluster did not become healthy: phase=${tempHealth.phase}`);
-    const probeDb = pre.cluster.spec!.bootstrap!.initdb!.database!;
-    const probe = await probePsql(deps.kubeconfigPath, inputs.clusterNamespace, tempHealth.primary, probeDb, 'SELECT 1');
-    recordStep({ step: 'temp-probe', ok: probe.ok, detail: probe.stdout || probe.stderr });
-    if (!probe.ok) throw new Error(`Temp cluster psql probe failed: ${probe.stderr}`);
+      // 4. Wait + sanity probe
+      const t3 = nowMs();
+      markInFlight('temp-healthy');
+      const tempHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, tempName, 8 * 60_000);
+      recordStep({ step: 'temp-healthy', ok: tempHealth.ok, elapsedMs: nowMs() - t3, detail: `phase=${tempHealth.phase ?? '?'} primary=${tempHealth.primary ?? '?'}` });
+      if (!tempHealth.ok || !tempHealth.primary) throw new Error(`Temp cluster did not become healthy: phase=${tempHealth.phase}`);
+      const probeDb = pre.cluster.spec!.bootstrap!.initdb!.database!;
+      const probe = await probePsql(deps.kubeconfigPath, inputs.clusterNamespace, tempHealth.primary, probeDb, 'SELECT 1');
+      recordStep({ step: 'temp-probe', ok: probe.ok, detail: probe.stdout || probe.stderr });
+      if (!probe.ok) throw new Error(`Temp cluster psql probe failed: ${probe.stderr}`);
+    } else {
+      // FAST-PATH: no temp cluster — record skipped step so the
+      // wizard's timeline stays in order and the operator can see
+      // the optimization was active.
+      usedFastPath = true;
+      recordStep({ step: 'create-temp-cluster', ok: true, elapsedMs: 0, detail: 'SKIPPED (recoveryTargetTime=null — fast-path)' });
+      recordStep({ step: 'temp-healthy', ok: true, elapsedMs: 0, detail: 'SKIPPED (no temp cluster needed)' });
+      recordStep({ step: 'temp-probe', ok: true, elapsedMs: 0, detail: 'SKIPPED (no temp cluster to probe)' });
+    }
 
     // 5. Quiesce consumers (downtime starts here).
     //
@@ -1423,38 +1463,63 @@ export async function promotePostgresFromSnapshot(
     //    the source Cluster name from the same point-in-time data.
     //    Longhorn snapshot CRs reference volumes by their Longhorn name
     //    (== PV name backing the PVC), not the PVC name. Look it up.
-    const t6 = nowMs();
-    const tempPrimaryPvc = tempHealth.primary;
-    const tempPvcObj = await deps.k8s.core.readNamespacedPersistentVolumeClaim({
-      namespace: inputs.clusterNamespace, name: tempPrimaryPvc,
-    } as unknown as Parameters<typeof deps.k8s.core.readNamespacedPersistentVolumeClaim>[0]) as { spec?: { volumeName?: string } };
-    const tempLonghornVolume = tempPvcObj.spec?.volumeName;
-    if (!tempLonghornVolume) throw new Error(`Temp primary PVC ${tempPrimaryPvc} has no .spec.volumeName — cannot snapshot`);
-    tempSnapName = `pitr-handoff-${Date.now()}`;
-    await createCustom(deps.k8s, {
-      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',
-      body: {
-        apiVersion: `${LH_GROUP}/${LH_VERSION}`, kind: 'Snapshot',
-        // Labels: pitr-restore=true + pitr-namespace=<source ns>. The
-        // longhorn-system namespace is shared across PITR runs from
-        // any source cluster — startup cleanup uses the labelSelector
-        // to delete only this orchestration's leftovers.
-        metadata: { name: tempSnapName, namespace: LH_NS, labels: pitrLabels(inputs.clusterNamespace) },
-        spec: { volume: tempLonghornVolume, createSnapshot: true },
-      },
-    });
-    // Wait for ready
-    let tempSnapReady = false;
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 2_000));
-      try {
-        const s = await getCustom<RawSnap>(deps.k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: tempSnapName });
-        if (s.status?.readyToUse === true) { tempSnapReady = true; break; }
-      } catch { /* keep */ }
+    //
+    // FAST-PATH: when the temp cluster was skipped, the source rebuild
+    // re-uses the ORIGINAL `wrapped` VolumeSnapshot — no handoff
+    // snapshot needed. We populate tempSnap with the original wrapped
+    // VolumeSnapshot reference so step 8 can read from a single
+    // variable without branching the recreate logic.
+    if (usedFastPath) {
+      tempSnap = wrapped;
+      recordStep({
+        step: 'snapshot-temp-primary',
+        ok: true,
+        elapsedMs: 0,
+        detail: `SKIPPED (fast-path uses ${wrapped.volumeSnapshotName} directly)`,
+      });
+    } else {
+      const t6 = nowMs();
+      // Slow-path lives here. We know tempHealth was set (slow-path branch).
+      // Re-read it from the SAME local context — the variable is in the
+      // if-block's scope so we re-resolve currentPrimary off the live
+      // tempName instead.
+      const tempCluster = await getCustom<CnpgCluster>(deps.k8s, {
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace,
+        plural: 'clusters', name: tempName,
+      });
+      const tempPrimaryPvc = tempCluster.status?.currentPrimary;
+      if (!tempPrimaryPvc) throw new Error('Temp cluster lost currentPrimary between probe and snapshot');
+      const tempPvcObj = await deps.k8s.core.readNamespacedPersistentVolumeClaim({
+        namespace: inputs.clusterNamespace, name: tempPrimaryPvc,
+      } as unknown as Parameters<typeof deps.k8s.core.readNamespacedPersistentVolumeClaim>[0]) as { spec?: { volumeName?: string } };
+      const tempLonghornVolume = tempPvcObj.spec?.volumeName;
+      if (!tempLonghornVolume) throw new Error(`Temp primary PVC ${tempPrimaryPvc} has no .spec.volumeName — cannot snapshot`);
+      tempSnapName = `pitr-handoff-${Date.now()}`;
+      await createCustom(deps.k8s, {
+        group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',
+        body: {
+          apiVersion: `${LH_GROUP}/${LH_VERSION}`, kind: 'Snapshot',
+          // Labels: pitr-restore=true + pitr-namespace=<source ns>. The
+          // longhorn-system namespace is shared across PITR runs from
+          // any source cluster — startup cleanup uses the labelSelector
+          // to delete only this orchestration's leftovers.
+          metadata: { name: tempSnapName, namespace: LH_NS, labels: pitrLabels(inputs.clusterNamespace) },
+          spec: { volume: tempLonghornVolume, createSnapshot: true },
+        },
+      });
+      // Wait for ready
+      let tempSnapReady = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 2_000));
+        try {
+          const s = await getCustom<RawSnap>(deps.k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: tempSnapName });
+          if (s.status?.readyToUse === true) { tempSnapReady = true; break; }
+        } catch { /* keep */ }
+      }
+      if (!tempSnapReady) throw new Error('Temp cluster handoff snapshot did not become ready');
+      tempSnap = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnapName, tempLonghornVolume);
+      recordStep({ step: 'snapshot-temp-primary', ok: true, elapsedMs: nowMs() - t6, detail: tempSnap.volumeSnapshotName });
     }
-    if (!tempSnapReady) throw new Error('Temp cluster handoff snapshot did not become ready');
-    tempSnap = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnapName, tempLonghornVolume);
-    recordStep({ step: 'snapshot-temp-primary', ok: true, elapsedMs: nowMs() - t6, detail: tempSnap.volumeSnapshotName });
 
     // Persist crash-safe marker BEFORE the destructive cutover. If
     // platform-api dies between here and the successful unwind below,
@@ -1655,14 +1720,26 @@ export async function promotePostgresFromSnapshot(
     recordStep({ step: 'restore-consumers', ok: true, elapsedMs: nowMs() - t9, detail: 'stalwart-mail scaled to 1' });
 
     // 10. Cleanup
+    //
+    // Fast-path (skipTempCluster): no temp Cluster CR + tempSnap ===
+    // wrapped, so we skip the temp-cluster delete entirely + only
+    // delete `wrapped` once. tempSnapName is null too. The slow-path
+    // deletes everything as before.
     const t10 = nowMs();
-    await deleteCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: tempName }).catch(() => undefined);
+    if (!usedFastPath) {
+      await deleteCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: tempName }).catch(() => undefined);
+    }
     await deleteVolumeSnapshot(deps.k8s, inputs.clusterNamespace, wrapped.volumeSnapshotName, wrapped.contentName).catch(() => undefined);
-    await deleteVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnap.volumeSnapshotName, tempSnap.contentName).catch(() => undefined);
+    if (!usedFastPath) {
+      // Slow-path: tempSnap is a SEPARATE handoff VolumeSnapshot from
+      // wrapped, so it needs its own delete. Fast-path: tempSnap is
+      // the SAME reference as wrapped — already deleted above.
+      await deleteVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnap.volumeSnapshotName, tempSnap.contentName).catch(() => undefined);
+    }
     if (tempSnapName) {
       await deleteCustom(deps.k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: tempSnapName }).catch(() => undefined);
     }
-    recordStep({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10 });
+    recordStep({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10, detail: usedFastPath ? 'fast-path: no temp cluster to clean' : 'slow-path: temp cluster + handoff snapshot removed' });
 
     // 11. Notify
     const downtimeMs = (downtimeEnd ?? nowMs()) - (downtimeStart ?? startMs);
@@ -1916,8 +1993,16 @@ export async function createPitrJob(
             command: ['node', 'dist/cli/pitr-job.js'],
             env,
             resources: {
+              // Phase-1 right-size 2026-05-23: 512Mi → 384Mi. The
+              // pitr-job pod is a Node.js orchestrator that issues
+              // kubectl API calls + holds a postgres connection. It
+              // does NOT process data — the snapshot/WAL handling
+              // happens inside the temp + new CNPG clusters. Steady-
+              // state observation: <100 MiB RSS. 384Mi gives ~4×
+              // headroom while reducing namespace-quota pressure
+              // during PITR.
               requests: { cpu: '50m', memory: '128Mi' },
-              limits:   { cpu: '500m', memory: '512Mi' },
+              limits:   { cpu: '500m', memory: '384Mi' },
             },
           }],
         },
