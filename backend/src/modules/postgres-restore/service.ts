@@ -1216,6 +1216,52 @@ export function buildRecoveryCluster(
   // the admission webhook injects the sidecar, instance-manager finds
   // the plugin connection ready immediately.
   const plugins = isTemp ? undefined : src.spec?.plugins;
+
+  // WAL archive source for the temp cluster (2026-05-23 — Task #97):
+  //
+  // Snapshot-based bootstrap.recovery only replays WAL records present
+  // in the snapshot's pg_wal/ directory at snapshot time. For PITR
+  // targets beyond the snapshot LSN, the temp cluster MUST be able to
+  // fetch additional WAL from the source cluster's barman archive.
+  //
+  // CNPG supports this by setting `bootstrap.recovery.source` (referring
+  // to an `externalClusters[]` entry) alongside `volumeSnapshots`:
+  //   - volumeSnapshots: bootstraps the base data
+  //   - source:          provides the WAL archive for replay-to-target
+  //
+  // Only attach when:
+  //   - isTemp=true              (the rebuilt source uses its own snapshot)
+  //   - recoveryTargetTime is set (no target → no WAL fetch needed)
+  //   - source has barman plugin  (else there's no archive to fetch from)
+  //
+  // Without this fix, Phase 1 PITR with recoveryTargetTime silently
+  // bootstraps at snapshot LSN + drops markers between snapshot time
+  // and target time (harness test 2026-05-23 verified this gap).
+  function getBarmanObjectStoreForRecovery(): string | null {
+    const sourcePlugins = (src.spec?.plugins ?? []) as ReadonlyArray<{
+      readonly enabled?: boolean;
+      readonly name?: string;
+      readonly parameters?: Readonly<Record<string, unknown>>;
+    }>;
+    for (const p of sourcePlugins) {
+      if (p.enabled === false) continue;
+      const n = (p.name ?? '').toLowerCase();
+      if (n !== 'barman-cloud.cloudnative-pg.io'
+        && !n.endsWith('barman-cloud')
+        && !n.startsWith('barman-cloud.')) continue;
+      const v = p.parameters?.['barmanObjectName'];
+      if (typeof v === 'string' && v.length > 0) return v;
+    }
+    return null;
+  }
+  const tempBarmanObjectStore = isTemp && recoveryTargetTime
+    ? getBarmanObjectStoreForRecovery()
+    : null;
+  const sourceClusterName = src.metadata?.name ?? '';
+  const externalSourceName = tempBarmanObjectStore
+    ? `${tempBarmanObjectStore}-pitr-wal-source`
+    : null;
+
   return {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
     kind: 'Cluster',
@@ -1248,8 +1294,29 @@ export function buildRecoveryCluster(
             },
           },
           ...(recoveryTarget ? { recoveryTarget } : {}),
+          ...(externalSourceName ? { source: externalSourceName } : {}),
         },
       },
+      ...(externalSourceName && tempBarmanObjectStore ? {
+        externalClusters: [
+          {
+            name: externalSourceName,
+            plugin: {
+              name: 'barman-cloud.cloudnative-pg.io',
+              parameters: {
+                barmanObjectName: tempBarmanObjectStore,
+                // serverName MUST point at the SOURCE cluster — barman
+                // namespaces archives by `<destPath>/<serverName>/...`.
+                // Without this, the plugin would look under the temp
+                // cluster's name + find nothing (verified by Phase 3
+                // staging 2026-05-22, see ci-postgres-barman-restore-check.sh
+                // invariant #2).
+                serverName: sourceClusterName,
+              },
+            },
+          },
+        ],
+      } : {}),
     },
   };
 }
