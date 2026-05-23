@@ -62,6 +62,7 @@ const STEP_LABELS: Record<string, { label: string; estSec?: number }> = {
   'delete-source': { label: 'Delete source cluster CR', estSec: 60 },
   'recreate-source': { label: 'Recreate source (primary only)', estSec: 180 },
   'scale-up-to-source-ha': { label: 'Scale up to source HA', estSec: 1 },
+  'wait-ha-stable': { label: 'Wait for HA cluster fully stable', estSec: 240 },
   'normalize-bootstrap': { label: 'Normalize spec.bootstrap', estSec: 1 },
   'restore-consumers': { label: 'Restore downstream consumers', estSec: 1 },
   cleanup: { label: 'Cleanup temp resources', estSec: 5 },
@@ -74,6 +75,7 @@ const ORDER: ReadonlyArray<string> = [
   'preflight-wal-coverage', 'preflight', 'wrap-volume-snapshot', 'create-temp-cluster',
   'temp-healthy', 'temp-probe', 'quiesce-consumers', 'suspend-flux',
   'snapshot-temp-primary', 'delete-source', 'recreate-source', 'scale-up-to-source-ha',
+  'wait-ha-stable',
   'normalize-bootstrap', 'restore-consumers', 'cleanup', 'resume-flux',
 ];
 
