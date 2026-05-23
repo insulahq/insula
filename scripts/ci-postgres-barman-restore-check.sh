@@ -270,6 +270,34 @@ if [[ -f "$PG_RESTORE_SVC" ]]; then
   fi
 fi
 
+# (21) Task #94: wait-ha-stable step absorbs CNPG's post-scale-up
+# UpgradingInstance cycle into orchestrator wall-clock so the chip-green
+# state represents reality. Required for HA restores; skippable via
+# PITR_SKIP_HA_STABLE_WAIT env for operators who prefer fast-chip-then-
+# oscillate UX.
+if [[ -f "$PG_RESTORE_SVC" ]]; then
+  if ! grep -q "waitClusterFullyStable" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must implement waitClusterFullyStable (Task #94 HA-stable wait)"
+    FAILED=1
+  fi
+  if ! grep -q "PITR_SKIP_HA_STABLE_WAIT" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must honor PITR_SKIP_HA_STABLE_WAIT env override"
+    FAILED=1
+  fi
+  if ! grep -q "wait-ha-stable" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must record the 'wait-ha-stable' step name"
+    FAILED=1
+  fi
+fi
+# Modal must know about the new step name (timeline order + label).
+MODAL_FILE="$REPO_ROOT/frontend/admin-panel/src/components/backups/PitrProgressModal.tsx"
+if [[ -f "$MODAL_FILE" ]]; then
+  if ! grep -q "'wait-ha-stable'" "$MODAL_FILE"; then
+    echo "FAIL: PitrProgressModal.tsx must include 'wait-ha-stable' in STEP_LABELS + ORDER"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
