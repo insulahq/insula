@@ -79,6 +79,25 @@ interface JobEvent {
   readonly involvedObject?: { readonly kind?: string; readonly name?: string };
 }
 
+interface ReleasedPv {
+  readonly metadata?: {
+    readonly name?: string;
+    readonly creationTimestamp?: string;
+  };
+  readonly spec?: {
+    readonly volumeName?: string;
+    readonly storageClassName?: string;
+    readonly claimRef?: {
+      readonly namespace?: string;
+      readonly name?: string;
+    };
+    readonly persistentVolumeReclaimPolicy?: string;
+  };
+  readonly status?: {
+    readonly phase?: string;
+  };
+}
+
 export interface PitrWatchdogDeps {
   readonly db: Database;
   readonly k8s: {
@@ -94,6 +113,20 @@ export interface PitrWatchdogDeps {
       readonly listNamespacedEvent: (
         a: { namespace: string; fieldSelector?: string },
       ) => Promise<{ items?: ReadonlyArray<JobEvent> }>;
+      // Released-PV reaper helpers (Task #103 2026-05-23).
+      readonly listPersistentVolume?: () => Promise<{ items?: ReadonlyArray<ReleasedPv> }>;
+      readonly deletePersistentVolume?: (
+        a: { name: string },
+      ) => Promise<unknown>;
+      readonly readNamespacedPersistentVolumeClaim?: (
+        a: { namespace: string; name: string },
+      ) => Promise<unknown>;
+    };
+    readonly custom?: {
+      // Longhorn volume CR cleanup follows the PV delete.
+      readonly deleteNamespacedCustomObject?: (
+        a: { group: string; version: string; namespace: string; plural: string; name: string },
+      ) => Promise<unknown>;
     };
   };
   readonly log?: Pick<Logger, 'info' | 'warn' | 'error'>;
@@ -102,6 +135,10 @@ export interface PitrWatchdogDeps {
   readonly deleteStuckJobs?: boolean;
   /** Override for tests — default scans `platform` namespace. */
   readonly namespace?: string;
+  /** Released PV must be older than this to be reaped (default 60 min).
+   *  Operator may want a longer/shorter window depending on how much
+   *  manual-recovery latitude they want. */
+  readonly releasedPvAgeMinutes?: number;
 }
 
 interface StuckJobReason {
@@ -244,12 +281,148 @@ export async function reconcilePitrJobsOnce(
   return stuck;
 }
 
+// Default reaper threshold (Task #103 2026-05-23): Released PVs must be
+// at least 60 min old before reaping. CNPG-managed PVCs go through a
+// rapid Released→Deleted cycle when the operator triggers a normal
+// scale-down; the 60min window protects those legitimate transients.
+export const RELEASED_PV_MIN_AGE_MS = 60 * 60_000;
+
+interface ReapedPvReport {
+  readonly name: string;
+  readonly volumeName: string | null;
+  readonly claimRef: string | null;
+  readonly pvDeleteOk: boolean;
+  readonly longhornVolumeDeleteOk: boolean;
+  readonly evidence: string;
+}
+
+/**
+ * Reap orphan Released PVs whose underlying PVC is gone.
+ *
+ * Why this exists (Task #103 2026-05-23): CNPG-managed Cluster PVCs use
+ * `reclaimPolicy: Retain` so that a deleted Cluster CR doesn't wipe
+ * recoverable data. Every PITR cycle deletes the source Cluster (which
+ * deletes its PVCs), leaving the underlying PVs in `Released` state.
+ * Across multiple restore cycles these accumulate forever — Longhorn's
+ * storage scheduler counts every Released PV's allocation toward node
+ * quota, so eventually new PVC requests fail with "insufficient
+ * storage" (live regression caught on staging sc4 first run).
+ *
+ * The reaper:
+ *   1. Lists all PVs (cluster-scoped — same RBAC as the existing PV
+ *      list+delete grants for Longhorn).
+ *   2. Filters to phase=Released AND storageClass starts with `longhorn`
+ *      AND age > releasedPvAgeMinutes.
+ *   3. For each: try reading the claimRef'd PVC — if NotFound (PVC is
+ *      gone), the PV is genuinely orphan. If exists, leave alone (the
+ *      PVC might be Pending re-bind).
+ *   4. Deletes the PV CR + the corresponding Longhorn volume CR.
+ *
+ * Best-effort: never throws. The watchdog's tick loop just calls this
+ * + carries on if any step fails. Operator can also disable via
+ * `PITR_WATCHDOG_RELEASED_PV_REAPER=disabled` env.
+ */
+export async function reapReleasedPvsOnce(
+  deps: PitrWatchdogDeps,
+): Promise<ReadonlyArray<ReapedPvReport>> {
+  const log = deps.log;
+  const minAgeMs = (deps.releasedPvAgeMinutes ?? RELEASED_PV_MIN_AGE_MS / 60_000) * 60_000;
+
+  if (!deps.k8s.core.listPersistentVolume || !deps.k8s.core.deletePersistentVolume) {
+    return [];
+  }
+
+  let pvList: { items?: ReadonlyArray<ReleasedPv> };
+  try {
+    pvList = await deps.k8s.core.listPersistentVolume();
+  } catch (err) {
+    log?.warn?.({ err: (err as Error).message }, 'pv-reaper: list PVs failed');
+    return [];
+  }
+
+  const reaped: ReapedPvReport[] = [];
+  const now = Date.now();
+
+  for (const pv of pvList.items ?? []) {
+    const name = pv.metadata?.name;
+    if (!name) continue;
+    if (pv.status?.phase !== 'Released') continue;
+    const sc = pv.spec?.storageClassName ?? '';
+    if (!sc.startsWith('longhorn')) continue; // scope to Longhorn-backed only
+    const created = pv.metadata?.creationTimestamp;
+    if (!created) continue;
+    const ageMs = now - new Date(created).getTime();
+    if (ageMs < minAgeMs) continue;
+
+    const claimRef = pv.spec?.claimRef;
+    const claimRefStr = claimRef ? `${claimRef.namespace}/${claimRef.name}` : null;
+
+    // PVC-existence check: if the originally-bound PVC is back (rebind
+    // in progress, etc.), leave the PV alone. Only reap when the
+    // claim is genuinely gone.
+    if (claimRef?.namespace && claimRef?.name && deps.k8s.core.readNamespacedPersistentVolumeClaim) {
+      try {
+        await deps.k8s.core.readNamespacedPersistentVolumeClaim({
+          namespace: claimRef.namespace, name: claimRef.name,
+        });
+        // PVC exists — don't reap.
+        continue;
+      } catch (err) {
+        const code = (err as { code?: number; statusCode?: number }).code
+          ?? (err as { statusCode?: number }).statusCode;
+        if (code !== 404) {
+          log?.warn?.({ err: (err as Error).message, name }, 'pv-reaper: PVC existence check errored — skipping reap');
+          continue;
+        }
+      }
+    }
+
+    const evidence = `Released PV age=${Math.round(ageMs / 60_000)}min, claimRef=${claimRefStr ?? '(none)'}, sc=${sc}`;
+    const volumeName = pv.spec?.volumeName ?? null;
+
+    log?.info?.({ name, evidence }, 'pv-reaper: reaping orphan Released PV');
+
+    let pvDeleteOk = false;
+    try {
+      await deps.k8s.core.deletePersistentVolume({ name });
+      pvDeleteOk = true;
+    } catch (err) {
+      log?.warn?.({ err: (err as Error).message, name }, 'pv-reaper: PV delete failed');
+    }
+
+    // Longhorn volume CR cleanup — same name as the PV (CSI mapping).
+    let longhornVolumeDeleteOk = false;
+    if (volumeName && deps.k8s.custom?.deleteNamespacedCustomObject) {
+      try {
+        await deps.k8s.custom.deleteNamespacedCustomObject({
+          group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system',
+          plural: 'volumes', name: volumeName,
+        });
+        longhornVolumeDeleteOk = true;
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (!/not.*found/i.test(msg)) {
+          log?.warn?.({ err: msg, volumeName }, 'pv-reaper: Longhorn volume delete failed');
+        }
+      }
+    }
+
+    reaped.push({ name, volumeName, claimRef: claimRefStr, pvDeleteOk, longhornVolumeDeleteOk, evidence });
+  }
+
+  if (reaped.length > 0) {
+    log?.info?.({ count: reaped.length }, 'pv-reaper: cycle complete');
+  }
+  return reaped;
+}
+
 /**
  * Start the periodic watchdog. Returns a stop() handle the host
  * (typically app.ts onClose) can call for graceful shutdown.
  */
 export function startPitrJobWatchdog(deps: PitrWatchdogDeps): { readonly stop: () => void } {
   let stopped = false;
+  const reaperEnabled = process.env.PITR_WATCHDOG_RELEASED_PV_REAPER !== 'disabled';
 
   const tick = async () => {
     if (stopped) return;
@@ -257,6 +430,13 @@ export function startPitrJobWatchdog(deps: PitrWatchdogDeps): { readonly stop: (
       await reconcilePitrJobsOnce(deps);
     } catch (err) {
       deps.log?.error?.({ err: (err as Error).message }, 'pitr-watchdog: tick failed');
+    }
+    if (reaperEnabled) {
+      try {
+        await reapReleasedPvsOnce(deps);
+      } catch (err) {
+        deps.log?.error?.({ err: (err as Error).message }, 'pv-reaper: tick failed');
+      }
     }
   };
 
