@@ -15,7 +15,7 @@ import {
   type BackupComponentInfo,
 } from '@k8s-hosting/api-contracts';
 import { S3BackupStore } from './s3-backup-store.js';
-import { resolveShimBackupStore } from './shim-backup-store.js';
+import { resolveShimBackupStore, resolveShimFirstBackupStore } from './shim-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
@@ -1725,6 +1725,10 @@ async function resolveStore(
   targetConfigId: string,
   opts: { requireActive: boolean } = { requireActive: true },
 ): Promise<BackupStore> {
+  // Active-gate check runs FIRST (the shim doesn't know which cfg row
+  // it's serving — `tenant` class is one bucket regardless of how many
+  // configurations are bound to it). Without this, a deactivated cfg
+  // could still create bundles by side-channeling through the shim.
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
   // Inactive targets must not accept NEW writes — an operator may have
@@ -1737,6 +1741,20 @@ async function resolveStore(
       400);
   }
 
+  // B9 shim-first: cifs/nfs go through the rclone-shim (the shim
+  // mediates ALL upstream protocols). Falls back to the direct cfg
+  // resolver below when BACKUP_TARGET_KEY isn't bootstrapped.
+  return resolveShimFirstBackupStore(
+    app, 'tenant',
+    () => resolveDirectStore(app, cfg),
+    'tenant-bundles',
+  );
+}
+
+async function resolveDirectStore(
+  app: FastifyInstance,
+  cfg: typeof backupConfigurations.$inferSelect,
+): Promise<BackupStore> {
   const encKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
     ?? process.env.PLATFORM_ENCRYPTION_KEY
     ?? '0'.repeat(64);
