@@ -81,6 +81,33 @@ KEYWORD_TO_FLAG = {
     "$draft": "D",
 }
 
+# Keywords that map to Maildir system flags above — the rest are "custom"
+# keywords ($junk, $forwarded, $important, user-defined etc.) which the
+# Maildir spec can't carry in the 1-char filename suffix. We mirror
+# imap-sync.py's behaviour: serialise them into a `<msg>.keywords`
+# sidecar so jmap-restore.py / imap-restore.py can include them in the
+# restored Email/import / IMAP APPEND keyword map. Absent sidecar =
+# no custom keywords (backwards-compatible with pre-parity snapshots).
+SYSTEM_KEYWORDS = frozenset(KEYWORD_TO_FLAG.keys())
+
+# JMAP `Mailbox.role` (RFC 8621 §2.1.5) → IMAP SPECIAL-USE attribute
+# (RFC 6154). Stalwart's webmail UI surfaces a role per mailbox; the
+# IMAP-side imap-sync.py writes the bare IMAP attribute string into
+# `.special-use`. We map JMAP roles to the SAME string format so
+# imap-restore.py can read either engine's `.special-use` sidecar
+# without an engine-aware switch.
+JMAP_ROLE_TO_SPECIAL_USE = {
+    "sent": "\\Sent",
+    "drafts": "\\Drafts",
+    "trash": "\\Trash",
+    "junk": "\\Junk",
+    "archive": "\\Archive",
+    # JMAP also defines `important`, `flagged`, `subscribed`, `all`,
+    # `inbox` — IMAP has no special-use attribute for any of these
+    # (inbox is named INBOX, not flagged with an attribute), so we
+    # skip the write rather than emit a non-IMAP token.
+}
+
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._@+\-]+")
 
 
@@ -375,14 +402,89 @@ def _incremental_ids(client: JmapClient, since_state: str) -> Tuple[List[str], L
 
 
 def _fetch_mailbox_names(client: JmapClient) -> Dict[str, str]:
-    """Returns {mailboxId: displayName}."""
+    """Returns {mailboxId: displayName}. Kept for the few callers that
+    only need the name lookup; new code should use _fetch_mailboxes."""
+    return {m["id"]: m.get("name", m["id"]) for m in _fetch_mailboxes(client)}
+
+
+def _fetch_mailboxes(client: JmapClient) -> List[Dict[str, Any]]:
+    """Full Mailbox/get list with id + name + role. Used for both name
+    lookup (during message write) and empty-folder materialization +
+    .special-use sidecar emission (during the pre-pass at run-start).
+    Adding `role` here is cheap — Stalwart returns it inline with name.
+    """
     sr = client.call([[
         "Mailbox/get",
-        {"accountId": client.account_id, "ids": None, "properties": ["id", "name"]},
+        {"accountId": client.account_id, "ids": None,
+         "properties": ["id", "name", "role"]},
         "0",
     ]])
-    body = sr[0][1]
-    return {m["id"]: m.get("name", m["id"]) for m in body.get("list", [])}
+    return sr[0][1].get("list", []) or []
+
+
+def _materialize_folder_tree(
+    output_dir: str,
+    account_address: str,
+    mailboxes: List[Dict[str, Any]],
+) -> int:
+    """Create the Maildir folder tree for EVERY mailbox up front — even
+    empty ones — and write the per-folder `.imap-name` + `.special-use`
+    sidecars. Mirrors imap-sync.py's behaviour where empty IMAP folders
+    still produce a directory + name sidecar so restore can re-create
+    them with the right name + special-use role.
+
+    Returns the count of folders materialized (informational; only used
+    for the run-summary log).
+    """
+    addr_dir = _safe_filename(account_address)
+    count = 0
+    for mb in mailboxes:
+        name = mb.get("name") or mb.get("id") or "unknown"
+        mb_name = _safe_filename(name)
+        folder_root = os.path.join(output_dir, addr_dir, mb_name)
+        try:
+            os.makedirs(os.path.join(folder_root, "cur"), exist_ok=True)
+        except OSError as e:
+            sys.stderr.write(
+                f"jmap-sync: materialize mkdir {name!r} failed: {e}\n"
+            )
+            continue
+        # .imap-name — write idempotently (existing message-write path
+        # is lazy; this guarantees the sidecar is present even when the
+        # folder has zero messages).
+        sidecar = os.path.join(folder_root, ".imap-name")
+        if not os.path.exists(sidecar):
+            try:
+                tmp = sidecar + ".part"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(name)
+                os.rename(tmp, sidecar)
+            except OSError as e:
+                sys.stderr.write(
+                    f"jmap-sync: .imap-name write {name!r} failed: {e}\n"
+                )
+        # .special-use — derive from JMAP role when it maps to an IMAP
+        # special-use attribute. Roles without an IMAP equivalent
+        # (inbox, important, flagged, all, subscribed) are intentionally
+        # skipped — imap-restore.py would emit a non-RFC-6154 token
+        # otherwise.
+        role = mb.get("role")
+        if role:
+            special_use = JMAP_ROLE_TO_SPECIAL_USE.get(str(role).lower())
+            if special_use:
+                su_path = os.path.join(folder_root, ".special-use")
+                if not os.path.exists(su_path):
+                    try:
+                        tmp = su_path + ".part"
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            f.write(special_use)
+                        os.rename(tmp, su_path)
+                    except OSError as e:
+                        sys.stderr.write(
+                            f"jmap-sync: .special-use write {name!r} failed: {e}\n"
+                        )
+        count += 1
+    return count
 
 
 def _fetch_messages(client: JmapClient, ids: List[str]) -> List[Dict[str, Any]]:
@@ -459,6 +561,25 @@ def _write_message(output_dir: str, account_address: str, message: Dict[str, Any
     with open(tmp_path, "wb") as f:
         f.write(blob)
     os.rename(tmp_path, path)
+    # Custom-keyword sidecar — same shape as imap-sync.py. Only emitted
+    # when the message has keywords beyond the 5 Maildir system flags;
+    # absent file = no custom keywords (no restorer regression). The
+    # write is best-effort: a sidecar failure does NOT fail the message
+    # write — we'd rather lose the keyword fidelity for one message than
+    # blow up mid-capture and lose the whole bundle.
+    extras = [k for k, on in keywords.items() if on and k not in SYSTEM_KEYWORDS]
+    if extras:
+        sidecar = path + ".keywords"
+        try:
+            tmp_sidecar = sidecar + ".part"
+            with open(tmp_sidecar, "w", encoding="utf-8") as f:
+                for kw in sorted(extras):
+                    f.write(kw + "\n")
+            os.rename(tmp_sidecar, sidecar)
+        except OSError as e:
+            sys.stderr.write(
+                f"jmap-sync: keywords sidecar write {path!r} failed: {e}\n"
+            )
     return path
 
 
@@ -502,7 +623,19 @@ def run(args: argparse.Namespace) -> int:
     # Deduplicate (Email/changes can return overlapping created+updated)
     ids = list(dict.fromkeys(ids))
 
-    mailbox_names = _fetch_mailbox_names(client) if ids else {}
+    # Always fetch the full mailbox list — even if zero messages — so
+    # _materialize_folder_tree can pre-create empty Maildir folders with
+    # their .imap-name / .special-use sidecars. Without this pre-pass,
+    # an empty folder (just-created, fully-archived) silently disappears
+    # from the snapshot.
+    mailboxes_full = _fetch_mailboxes(client)
+    mailbox_names = {m["id"]: m.get("name", m["id"]) for m in mailboxes_full}
+    materialized = _materialize_folder_tree(
+        args.output_dir, args.account_address, mailboxes_full,
+    )
+    sys.stderr.write(
+        f"jmap-sync: materialized {materialized} folder(s) with sidecars\n"
+    )
     messages = _fetch_messages(client, ids) if ids else []
 
     fetched = 0
