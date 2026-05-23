@@ -422,6 +422,13 @@ export async function runBundle(
       }
       try {
         const { captureMailboxesComponent } = await import('./components/mailboxes.js');
+        // Resolve the Stalwart master-user FQDN from mail-secrets.
+        // Bootstrap provisions this as `master@<PLATFORM_DOMAIN>`; the
+        // component's hardcoded fallback (`master@master.local`) only
+        // matches unit-test fixtures and causes AUTHENTICATIONFAILED on
+        // any real cluster. Cached for 5 min — see helper header.
+        const { readStalwartMasterUser } = await import('../mail-admin/stalwart-master-user.js');
+        const stalwartMasterUser = await readStalwartMasterUser(deps.k8s.core);
         mailboxesResult = await captureMailboxesComponent({
           db: deps.db,
           k8s: deps.k8s,
@@ -429,6 +436,7 @@ export async function runBundle(
           backupId: bundleId,
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
+          stalwartMasterUser,
         });
         await markComponentDone(deps.db, componentRowId, { sizeBytes: mailboxesResult.sizeBytes, sha256: null });
         componentInfos.mailboxes = {

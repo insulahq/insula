@@ -100,7 +100,12 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 // (master@master.local). The short-form 'master' resolves to
 // master@localhost.local which doesn't exist → AUTHENTICATIONFAILED.
 // See tenant-bundles/components/mailboxes.ts for the rationale.
-const MASTER_USER_DEFAULT = 'master@master.local';
+// MASTER_USER_DEFAULT intentionally removed 2026-05-23 — the executor
+// now resolves the master FQDN at runtime via readStalwartMasterUser
+// (see ../../mail-admin/stalwart-master-user.ts) so it can never silently
+// fall back to the test-only 'master@master.local' value on a real
+// cluster. Bootstrap.sh provisions the actual FQDN in
+// `mail/mail-secrets.STALWART_MASTER_USER`.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest';
@@ -253,6 +258,17 @@ export async function execMailboxesByAddressItem(args: {
   const engine = await getMailboxBackupEngine(app.db);
   const maxConcurrent = await getMailboxBackupMaxConcurrent(app.db);
 
+  const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+    ?? process.env.KUBECONFIG;
+  const k8s: K8sClients = createK8sClients(kc);
+
+  // Resolve the Stalwart master-user FQDN from mail-secrets — the
+  // compiled-in default (`master@master.local`) only matches unit-
+  // test fixtures; real clusters provision `master@<PLATFORM_DOMAIN>`
+  // and the bundle Job hits AUTHENTICATIONFAILED without this lookup.
+  const { readStalwartMasterUser } = await import('../../mail-admin/stalwart-master-user.js');
+  const stalwartMasterUser = await readStalwartMasterUser(k8s.core);
+
   const spec = buildMailboxesByAddressJobSpec({
     jobName,
     mailNamespace: MAIL_NAMESPACE,
@@ -262,7 +278,7 @@ export async function execMailboxesByAddressItem(args: {
     toolsImage: TOOLS_IMAGE_DEFAULT,
     engine,
     jmapEndpoint: JMAP_ENDPOINT_DEFAULT,
-    stalwartMasterUser: MASTER_USER_DEFAULT,
+    stalwartMasterUser,
     masterSecretName: MASTER_SECRET_NAME_DEFAULT,
     masterSecretKey: MASTER_SECRET_KEY_DEFAULT,
     mode,
@@ -270,10 +286,6 @@ export async function execMailboxesByAddressItem(args: {
     downloads,
     workers: RESTORE_WORKERS_DEFAULT,
   });
-
-  const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
-    ?? process.env.KUBECONFIG;
-  const k8s: K8sClients = createK8sClients(kc);
 
   // Cluster-wide cap on concurrent mailbox-worker Jobs. Same gate the
   // capture side uses; serializes restore Jobs with capture Jobs across
