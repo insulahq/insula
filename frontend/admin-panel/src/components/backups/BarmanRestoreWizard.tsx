@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { X, AlertTriangle, ChevronLeft, ChevronRight, Loader2, Check, Trash2, RotateCw } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Loader2, Check, Trash2, RotateCw } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import {
@@ -141,8 +141,21 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
 
   const effectiveNewName = newName.trim() || defaultNewName;
 
+  // Fresh-backup mitigation warning (2026-05-23): when the operator
+  // requests a PITR-to-target restore, the backend triggers a fresh
+  // CNPG Backup first to close the WAL gap. If that mitigation can't
+  // complete, the restore still proceeds — we surface the warning here
+  // so the operator knows the restore may loop on CNPG's recovery
+  // timeout for large WAL gaps.
+  const [freshBackupNote, setFreshBackupNote] = useState<{
+    triggered: boolean;
+    id: string | null;
+    warning: string | null;
+  } | null>(null);
+
   const submit = async () => {
     setSubmitError(null);
+    setFreshBackupNote(null);
     try {
       const r = await startMut.mutateAsync({
         namespace: NS,
@@ -152,6 +165,11 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
         instances,
       });
       setActiveCluster({ namespace: r.data.namespace, newClusterName: r.data.newClusterName });
+      setFreshBackupNote({
+        triggered: r.data.freshBackupTriggered ?? false,
+        id: r.data.freshBackupId ?? null,
+        warning: r.data.freshBackupWarning ?? null,
+      });
       setStep('in-flight');
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
@@ -215,20 +233,44 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
             />
           )}
           {step === 'in-flight' && activeCluster && (
-            <InFlight
-              namespace={activeCluster.namespace}
-              newClusterName={activeCluster.newClusterName}
-              sourceName={sourceName}
-              onCleanup={async () => {
-                await deleteMut.mutateAsync(activeCluster).catch(() => undefined);
-                onClose();
-              }}
-              cleanupPending={deleteMut.isPending}
-              onPromoted={() => {
-                // Cutover handed off to task-center chip → PitrProgressModal.
-                onClose();
-              }}
-            />
+            <>
+              {freshBackupNote?.triggered && freshBackupNote.warning && (
+                <div role="alert" className="mb-3 flex items-start gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                  <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                  <div>
+                    <strong>Pre-restore backup mitigation didn't complete.</strong>
+                    <p className="mt-1">{freshBackupNote.warning}</p>
+                    <p className="mt-1 text-amber-700 dark:text-amber-300">
+                      The restore is proceeding anyway. If recovery loops, manually trigger a fresh backup (
+                      <code className="font-mono">kubectl -n {activeCluster.namespace} cnpg backup {sourceName}</code>
+                      ) and retry.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {freshBackupNote?.triggered && !freshBackupNote.warning && freshBackupNote.id && (
+                <div role="status" className="mb-3 flex items-start gap-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200">
+                  <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0" />
+                  <span>
+                    Fresh barman backup <code className="font-mono">{freshBackupNote.id}</code> taken to minimize WAL gap. Recovery should complete promptly.
+                  </span>
+                </div>
+              )}
+              <InFlight
+                namespace={activeCluster.namespace}
+                newClusterName={activeCluster.newClusterName}
+                sourceName={sourceName}
+                onCleanup={async () => {
+                  await deleteMut.mutateAsync(activeCluster).catch(() => undefined);
+                  onClose();
+                }}
+                cleanupPending={deleteMut.isPending}
+                onPromoted={() => {
+                  // Cutover handed off to task-center chip → PitrProgressModal.
+                  onClose();
+                }}
+              />
+            </>
           )}
         </div>
 

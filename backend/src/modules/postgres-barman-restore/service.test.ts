@@ -71,6 +71,16 @@ const sourceCluster = {
 };
 
 describe('createBarmanRestore', () => {
+  // Skip the WAL-gap fresh-backup mitigation in tests — those tests
+  // don't mock the Backup CR's status.phase='completed' transition so
+  // the poll would loop until timeout. Explicit BARMAN_RESTORE_SKIP_
+  // FRESH_BACKUP=true keeps the existing happy-path tests fast +
+  // focused on the Cluster CR shape. Dedicated tests for the
+  // mitigation live below in `describe('fresh-backup mitigation')`.
+  beforeEach(() => {
+    process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP = 'true';
+  });
+
   it('validates that newClusterName differs from sourceClusterName', async () => {
     const { api } = makeCustom();
     await expect(createBarmanRestore(api, {
@@ -272,6 +282,147 @@ describe('getBarmanRestoreStatus', () => {
     });
     const r = await getBarmanRestoreStatus(api, 'platform', 'restored-1');
     expect(r.ready).toBe(false);
+  });
+});
+
+describe('createBarmanRestore — fresh-backup mitigation (WAL-gap mitigation 2026-05-23)', () => {
+  // Re-enable the mitigation for these tests; the suite-default beforeEach
+  // above disabled it. Use a TIGHT timeout so the test fails fast if the
+  // wait-loop misbehaves instead of stalling for minutes.
+  beforeEach(() => {
+    delete process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP;
+    process.env.BARMAN_FRESH_BACKUP_TIMEOUT_MS = '2000'; // 2s for tests
+  });
+
+  function makeCustomWithBackup(state: MockState & {
+    backupPhase?: 'pending' | 'running' | 'completed' | 'failed';
+    backupError?: string;
+    backupCreateFails?: boolean;
+  }): {
+    api: k8s.CustomObjectsApi;
+    created: unknown[];
+    backupsCreated: unknown[];
+  } {
+    const created: unknown[] = [];
+    const backupsCreated: unknown[] = [];
+    const api = {
+      getNamespacedCustomObject: vi.fn().mockImplementation(async (args: { name: string; plural: string }) => {
+        if (args.plural === 'clusters') {
+          if (args.name === 'system-db') return state.source ?? null;
+          const e = new Error('not found'); (e as Error & { code?: number }).code = 404; throw e;
+        }
+        if (args.plural === 'backups') {
+          return {
+            metadata: { name: args.name },
+            status: {
+              phase: state.backupPhase ?? 'pending',
+              error: state.backupError,
+            },
+          };
+        }
+        return null;
+      }),
+      createNamespacedCustomObject: vi.fn().mockImplementation(async (args: { plural: string; body: unknown }) => {
+        if (args.plural === 'backups') {
+          if (state.backupCreateFails) {
+            const e = new Error('Backup creation forbidden'); (e as Error & { code?: number }).code = 403; throw e;
+          }
+          backupsCreated.push(args.body);
+          return { metadata: { name: (args.body as { metadata?: { name?: string } }).metadata?.name } };
+        }
+        created.push(args.body);
+        return { metadata: { ...(args.body as { metadata?: Record<string, unknown> }).metadata, uid: 'uid-1' } };
+      }),
+    } as unknown as k8s.CustomObjectsApi;
+    return { api, created, backupsCreated };
+  }
+
+  it('skips fresh-backup when recoveryTargetTime is null (no WAL replay needed)', async () => {
+    const { api, backupsCreated } = makeCustomWithBackup({ source: sourceCluster });
+    const r = await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-no-wal',
+      recoveryTargetTime: null,
+    });
+    expect(r.freshBackupTriggered).toBe(false);
+    expect(r.freshBackupId).toBeNull();
+    expect(r.freshBackupWarning).toBeNull();
+    expect(backupsCreated).toHaveLength(0);
+  });
+
+  it('triggers fresh-backup + reports completion when recoveryTargetTime is set + backup completes', async () => {
+    const { api, backupsCreated } = makeCustomWithBackup({
+      source: sourceCluster,
+      backupPhase: 'completed',
+    });
+    const r = await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-wal-ok',
+      recoveryTargetTime: '2026-05-23T12:00:00Z',
+    });
+    expect(r.freshBackupTriggered).toBe(true);
+    expect(r.freshBackupId).toMatch(/^pre-restore-\d+$/);
+    expect(r.freshBackupWarning).toBeNull();
+    expect(backupsCreated).toHaveLength(1);
+    const bk = backupsCreated[0] as { spec: { cluster: { name: string }; method: string } };
+    expect(bk.spec.cluster.name).toBe('system-db');
+    expect(bk.spec.method).toBe('plugin');
+  });
+
+  it('surfaces warning + continues when fresh-backup CREATE fails', async () => {
+    const { api, created } = makeCustomWithBackup({
+      source: sourceCluster,
+      backupCreateFails: true,
+    });
+    const r = await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-bk-fail',
+      recoveryTargetTime: '2026-05-23T12:00:00Z',
+    });
+    expect(r.freshBackupTriggered).toBe(true);
+    expect(r.freshBackupId).toBeNull();
+    expect(r.freshBackupWarning).toMatch(/Pre-restore backup could not be triggered/);
+    // CRUCIAL: restore proceeded (Cluster CR was still created) — non-fatal warning.
+    expect(created).toHaveLength(1);
+  });
+
+  it('surfaces warning + continues when fresh-backup TIMES OUT', async () => {
+    const { api, created } = makeCustomWithBackup({
+      source: sourceCluster,
+      backupPhase: 'pending', // never transitions to completed within 2s timeout
+    });
+    const r = await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-bk-timeout',
+      recoveryTargetTime: '2026-05-23T12:00:00Z',
+    });
+    expect(r.freshBackupTriggered).toBe(true);
+    expect(r.freshBackupId).toBeNull();
+    expect(r.freshBackupWarning).toMatch(/did not complete within/);
+    expect(created).toHaveLength(1);
+  });
+
+  it('surfaces warning + continues when fresh-backup ENTERS failed phase', async () => {
+    const { api, created } = makeCustomWithBackup({
+      source: sourceCluster,
+      backupPhase: 'failed',
+      backupError: 'mocked: object store unreachable',
+    });
+    const r = await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-bk-failed',
+      recoveryTargetTime: '2026-05-23T12:00:00Z',
+    });
+    expect(r.freshBackupTriggered).toBe(true);
+    expect(r.freshBackupId).toBeNull();
+    expect(r.freshBackupWarning).toMatch(/mocked: object store unreachable/);
+    expect(created).toHaveLength(1);
+  });
+
+  it('honors BARMAN_RESTORE_SKIP_FRESH_BACKUP env override', async () => {
+    process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP = 'true';
+    const { api, backupsCreated } = makeCustomWithBackup({ source: sourceCluster });
+    const r = await createBarmanRestore(api, {
+      namespace: 'platform', sourceClusterName: 'system-db', newClusterName: 'restored-skipped',
+      recoveryTargetTime: '2026-05-23T12:00:00Z',
+    });
+    expect(r.freshBackupTriggered).toBe(false);
+    expect(backupsCreated).toHaveLength(0);
   });
 });
 
