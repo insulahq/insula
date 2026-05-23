@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Loader2, CheckCircle2, AlertTriangle, Activity, X, Trash2, ChevronRight,
+  Loader2, CheckCircle2, AlertTriangle, Activity, X, Trash2, ChevronRight, Clock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { TaskRow } from '@k8s-hosting/api-contracts';
@@ -209,6 +209,41 @@ export default function TaskCenterChip() {
   );
 }
 
+/**
+ * 1Hz clock tick so running-task rows update their elapsed counter
+ * without waiting for the next snapshot poll. Returns a number that
+ * changes every second; components depending on it re-render.
+ */
+function useNowSecond(): number {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+/** Format a duration in seconds → "12s" / "3m 42s" / "1h 5m" / "2d 3h". */
+function formatElapsed(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+}
+
+/** Format an ISO timestamp as "Jan 24, 13:42" — local time, compact. */
+function formatStartedAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function TaskRowItem({ task, onSelect }: { task: TaskRow; onSelect: (t: TaskRow) => void }) {
   const tone =
     task.status === 'failed' ? 'red'
@@ -228,6 +263,33 @@ function TaskRowItem({ task, onSelect }: { task: TaskRow; onSelect: (t: TaskRow)
     : task.progressText
       ? task.progressText
       : task.kind;
+
+  // Time info: running tasks show "started <ts> · running for <elapsed>"
+  // with a 1Hz live counter; terminal tasks show "ran <duration> ·
+  // finished <ts>". Operator requested 2026-05-23.
+  const isRunning = task.status === 'running' || task.status === 'queued';
+  const nowSec = useNowSecond();
+  const timeInfo = useMemo(() => {
+    const startedSec = Math.floor(new Date(task.startedAt).getTime() / 1000);
+    if (!Number.isFinite(startedSec)) return null;
+    if (isRunning) {
+      const elapsed = Math.max(0, nowSec - startedSec);
+      return {
+        icon: <Clock size={10} className="-mt-0.5 mr-1 inline" />,
+        text: <>started {formatStartedAt(task.startedAt)} · running for <span className="font-mono">{formatElapsed(elapsed)}</span></>,
+      };
+    }
+    if (task.finishedAt) {
+      const finishedSec = Math.floor(new Date(task.finishedAt).getTime() / 1000);
+      if (!Number.isFinite(finishedSec)) return null;
+      const total = Math.max(0, finishedSec - startedSec);
+      return {
+        icon: <Clock size={10} className="-mt-0.5 mr-1 inline" />,
+        text: <>ran <span className="font-mono">{formatElapsed(total)}</span> · finished {formatStartedAt(task.finishedAt)}</>,
+      };
+    }
+    return null;
+  }, [task.startedAt, task.finishedAt, isRunning, nowSec]);
 
   return (
     <li>
@@ -254,6 +316,12 @@ function TaskRowItem({ task, onSelect }: { task: TaskRow; onSelect: (t: TaskRow)
           <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
             {subline}
           </div>
+          {timeInfo && (
+            <div className="truncate text-[10px] text-gray-500 dark:text-gray-400" data-testid={`task-row-time-${task.id}`}>
+              {timeInfo.icon}
+              {timeInfo.text}
+            </div>
+          )}
           {task.progressPct != null && (task.status === 'running' || task.status === 'queued') && (
             <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
               <div
