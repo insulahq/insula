@@ -13,6 +13,8 @@ import type {
   BarmanRestoreRequest,
   BarmanRestoreStatus,
   BarmanRestoreDeleteResponse,
+  BarmanPromoteAccepted,
+  BarmanPromoteRequest,
 } from '@k8s-hosting/api-contracts';
 
 interface Envelope<T> { readonly data: T; }
@@ -69,6 +71,33 @@ export function useDeleteBarmanRestore() {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['postgres-barman-restore'] });
+    },
+  });
+}
+
+/**
+ * Phase 3.1 — Promote: cutover the side-by-side restored cluster into
+ * the source cluster's name. Body carries the typed-back confirmation
+ * — server enforces `confirmSourceClusterName === sourceClusterName`.
+ *
+ * Response carries the PITR Job name so the wizard can hand off to
+ * the existing PitrProgressModal via task-center chip.
+ */
+export function usePromoteBarmanRestore() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ namespace, newClusterName, body }: {
+      namespace: string;
+      newClusterName: string;
+      body: BarmanPromoteRequest;
+    }) =>
+      apiFetch<Envelope<BarmanPromoteAccepted>>(
+        `/api/v1/admin/postgres-barman-restore/${encodeURIComponent(namespace)}/${encodeURIComponent(newClusterName)}/promote`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['postgres-barman-restore'] });
+      qc.invalidateQueries({ queryKey: ['postgres-restore', 'status'] });
     },
   });
 }

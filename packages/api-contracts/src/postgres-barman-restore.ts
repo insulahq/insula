@@ -68,3 +68,46 @@ export const barmanRestoreDeleteResponseSchema = z.object({
   newClusterName: z.string(),
 });
 export type BarmanRestoreDeleteResponse = z.infer<typeof barmanRestoreDeleteResponseSchema>;
+
+// ─── Phase 3.1 (2026-05-23) — Barman-restore PROMOTE ────────────────────────
+//
+// Destructive cutover: take a Longhorn snapshot of the restored cluster's
+// primary PVC, then invoke the existing postgres-restore PITR orchestrator
+// against the SOURCE cluster name with that snapshot. The PITR machinery
+// handles quiesce / suspend-Flux / delete-source / recreate-from-snapshot /
+// normalize-bootstrap / resume-Flux. Post-PITR-success the Job pod
+// additionally deletes the side-by-side restored Cluster CR.
+//
+// Type-to-confirm: the operator must POST `confirmSourceClusterName` with
+// EXACTLY the source cluster name. Server-side enforcement so frontend
+// gating is UX-only, not security.
+
+export const barmanPromoteRequestSchema = z.object({
+  /** Source cluster name to cut over INTO. The new (rebuilt) cluster
+   *  will take this name. */
+  sourceClusterName: NAME,
+  /** Type-to-confirm gate: MUST equal `sourceClusterName`. The route
+   *  rejects with 409 if they differ — prevents UI bugs / partial form
+   *  submissions from triggering a destructive cutover. */
+  confirmSourceClusterName: NAME,
+});
+export type BarmanPromoteRequest = z.infer<typeof barmanPromoteRequestSchema>;
+
+export const barmanPromoteAcceptedSchema = z.object({
+  status: z.literal('promoting'),
+  /** Restored Cluster CR being cut over into the source. */
+  restoredClusterName: z.string(),
+  /** Source cluster name (== confirmed name). */
+  sourceClusterName: z.string(),
+  namespace: z.string(),
+  /** Longhorn snapshot we just took of the restored cluster's primary PVC,
+   *  passed to the PITR orchestrator. */
+  snapshotName: z.string(),
+  /** k8s Job name running the orchestration — same shape as the PITR
+   *  endpoint's response. Lets the wizard track via task-center chip. */
+  jobName: z.string(),
+  jobNamespace: z.string(),
+  pollUrl: z.string(),
+  message: z.string(),
+});
+export type BarmanPromoteAccepted = z.infer<typeof barmanPromoteAcceptedSchema>;

@@ -79,12 +79,95 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // The job's own name (set by createPitrJob) IS the task chip's refId.
+  // pitr-job runs as `node dist/cli/pitr-job.js` inside a pod owned by a
+  // Job named `pitr-<cluster>-<ts>`. JOB_NAME comes from the Downward
+  // API or — when absent — we derive the pod name → strip the random
+  // suffix. createPitrJob always sets JOB_NAME via the Job's pod template.
+  const jobNameForChip = process.env.JOB_NAME ?? '';
+  const isPromoteMode = process.env.BARMAN_PROMOTE_MODE === 'true';
+  const chipKind = isPromoteMode ? 'postgres.barman-promote' : 'postgres.pitr';
+
   try {
     const result = await promotePostgresFromSnapshot(
       { k8s, db },
       { clusterNamespace, clusterName, snapshotName, recoveryTargetTime, actorUserId },
     );
     console.log(JSON.stringify({ msg: 'pitr-job complete', result }));
+
+    // Phase 3.1 (2026-05-23): when invoked from barman-restore promote,
+    // delete the side-by-side restored cluster after the PITR completes
+    // successfully. Best-effort — failure here is non-fatal (source is
+    // already swapped); surface as admin notification + exit 0 so the
+    // task-center chip still goes green.
+    if (isPromoteMode) {
+      const restoredClusterName = process.env.BARMAN_PROMOTE_RESTORED_CLUSTER;
+      if (!restoredClusterName) {
+        // Misconfiguration: BARMAN_PROMOTE_MODE=true but the
+        // restored-cluster env var is missing. createPitrJob always
+        // sets both — this branch shouldn't fire — but log loudly
+        // instead of silently skipping (review M-5 2026-05-23).
+        console.warn(JSON.stringify({
+          msg: 'pitr-job: BARMAN_PROMOTE_MODE=true but BARMAN_PROMOTE_RESTORED_CLUSTER env is missing — skipping cleanup',
+        }));
+      } else {
+        try {
+          await k8s.custom.deleteNamespacedCustomObject({
+            group: 'postgresql.cnpg.io', version: 'v1', namespace: clusterNamespace,
+            plural: 'clusters', name: restoredClusterName,
+          } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]);
+          console.log(JSON.stringify({
+            msg: 'pitr-job barman-promote-cleanup ok',
+            restoredClusterName,
+            note: 'side-by-side cluster deleted; PVCs will be GCd by CNPG',
+          }));
+        } catch (cleanupErr) {
+          const cleanupMsg = (cleanupErr as Error).message;
+          console.error(JSON.stringify({
+            msg: 'pitr-job barman-promote-cleanup failed (non-fatal — source already swapped)',
+            restoredClusterName,
+            error: cleanupMsg,
+            manualCmd: `kubectl -n ${clusterNamespace} delete cluster ${restoredClusterName}`,
+          }));
+          // Emit an admin notification with the manual command so the
+          // operator sees this in the UI without trawling Job logs.
+          try {
+            const { notifications, users } = await import('../db/schema.js');
+            const { inArray } = await import('drizzle-orm');
+            const cryptoMod = await import('node:crypto');
+            const admins = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
+            for (const a of admins) {
+              await db.insert(notifications).values({
+                id: cryptoMod.randomUUID(),
+                userId: a.id,
+                type: 'warning',
+                title: 'Barman promote: side-by-side cluster cleanup failed',
+                message: `Source ${clusterNamespace}/${clusterName} was promoted successfully, but the side-by-side cluster ${restoredClusterName} could not be deleted: ${cleanupMsg}. Run manually: kubectl -n ${clusterNamespace} delete cluster ${restoredClusterName}`,
+                resourceType: 'postgres_barman_promote',
+                resourceId: restoredClusterName,
+              }).catch(() => undefined);
+            }
+          } catch { /* best-effort — never block exit 0 */ }
+        }
+      }
+    }
+
+    // Finalize the task-center chip — pre-existing PITR codepath
+    // didn't do this, so chips stayed in `running` forever. Phase 3.1
+    // closes that loop for both PITR and barman-promote.
+    if (jobNameForChip) {
+      try {
+        const tasksMod = await import('../modules/tasks/service.js');
+        await tasksMod.finishByRef(db, chipKind, jobNameForChip, { status: 'succeeded' });
+      } catch (chipErr) {
+        console.warn(JSON.stringify({
+          msg: 'pitr-job: chip finalize failed (non-fatal)',
+          chipKind, refId: jobNameForChip,
+          error: (chipErr as Error).message,
+        }));
+      }
+    }
+
     await closeDb();
     process.exit(0);
   } catch (err) {
@@ -96,6 +179,14 @@ async function main(): Promise<void> {
       code: e.code,
       steps: e.steps,
     }));
+    // Finalize the chip as failed so the operator sees a red badge
+    // instead of a forever-spinning one.
+    if (jobNameForChip) {
+      try {
+        const tasksMod = await import('../modules/tasks/service.js');
+        await tasksMod.finishByRef(db, chipKind, jobNameForChip, { status: 'failed', error: e.message });
+      } catch { /* best-effort */ }
+    }
     await closeDb().catch(() => undefined);
     process.exit(1);
   }
