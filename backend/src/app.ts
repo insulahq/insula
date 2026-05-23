@@ -662,6 +662,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       app.addHook('onClose', () => clearInterval(taskRetentionTimer));
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+
+      // PITR Job watchdog (Phase 4 2026-05-23): catch PITR Jobs whose
+      // pod creation was rejected (ResourceQuota FailedCreate during
+      // rollout transient). Without this, the chip stays in 'running'
+      // forever + the PITR lock blocks subsequent restore attempts.
+      // Read-only by default — only finalizes chip + releases lock,
+      // doesn't delete the stuck Job CR (it eventually TTL-expires).
+      // Flip via PITR_WATCHDOG_DELETE_STUCK_JOBS env to actively GC.
+      try {
+        const { startPitrJobWatchdog } = await import('./modules/postgres-restore/watchdog.js');
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const k8sForWatchdog = createK8sClients(kubeconfigPath);
+        const watchdog = startPitrJobWatchdog({
+          db: app.db,
+          k8s: k8sForWatchdog as unknown as Parameters<typeof startPitrJobWatchdog>[0]['k8s'],
+          log: app.log as unknown as Parameters<typeof startPitrJobWatchdog>[0]['log'],
+          deleteStuckJobs: process.env.PITR_WATCHDOG_DELETE_STUCK_JOBS === 'true',
+        });
+        app.addHook('onClose', () => watchdog.stop());
+      } catch (err) {
+        app.log.warn(`[pitr-watchdog] failed to start: ${(err as Error).message}`);
+      }
+
       const cleanupTimer = startIdleCleanup(kubeconfigPath);
       if (cleanupTimer) {
         app.addHook('onClose', () => clearInterval(cleanupTimer));
