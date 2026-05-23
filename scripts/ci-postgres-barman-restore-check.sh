@@ -253,6 +253,23 @@ if [[ -f "$WIZARD_FILE" ]]; then
   fi
 fi
 
+# (20) Phase 1 PITR WAL-source attachment (Task #97): the temp cluster
+# MUST get `bootstrap.recovery.source` + `externalClusters[0]` pointing
+# at the source's barman archive when recoveryTargetTime is set.
+# Without this, WAL replay beyond snapshot LSN silently fails (the
+# temp cluster can only replay WAL records inside the snapshot's
+# pg_wal/ directory — typically none after pg_switch_wal).
+if [[ -f "$PG_RESTORE_SVC" ]]; then
+  if ! grep -q "tempBarmanObjectStore" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts:buildRecoveryCluster must resolve tempBarmanObjectStore for WAL-fetch-during-PITR"
+    FAILED=1
+  fi
+  if ! grep -q "pitr-wal-source" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts:buildRecoveryCluster must create externalClusters[] entry with -pitr-wal-source suffix for the temp cluster's WAL fetch"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
