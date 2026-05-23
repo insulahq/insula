@@ -156,16 +156,54 @@ if [[ "$READY" != "true" ]]; then
 fi
 pass "snapshot ready after $((i*2))s"
 
-# ─── Insert marker row (POST-snapshot — should be gone after restore) ─
-hdr "Insert post-snapshot marker"
+# ─── Insert marker rows for restore-target verification ─────────────
+#
+# Default mode (WITH_WAL unset): single POST-snapshot marker. Restore
+# rewinds to snapshot LSN → marker must be GONE.
+#
+# WAL mode (WITH_WAL=1): two markers wrapping the recoveryTargetTime.
+#   - marker A: inserted POST-snapshot, BEFORE target time
+#   - target time T: captured after A's WAL is flushed
+#   - marker B: inserted AFTER T
+#   Restore replays WAL up to T. Verification: A present, B absent.
+#   Proves WAL replay applied to the target and stopped exactly there.
+hdr "Insert restore-target markers (WITH_WAL=${WITH_WAL:-0})"
+
+# Helper: force WAL flush so a freshly-inserted row is in archived WAL.
+flush_wal() {
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"SELECT pg_switch_wal();\"" >/dev/null 2>&1 || true
+}
+
 MARKER_VALUE="e2e_pitr_$(date +%s)"
-ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
-VERIFY_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker';\"")
-if [[ "$VERIFY_MARKER" != "$MARKER_VALUE" ]]; then
-  fail "marker insert verification failed (got: $VERIFY_MARKER)"
-  exit 1
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  # Marker A: must be in WAL BEFORE target time.
+  MARKER_A_VALUE="${MARKER_VALUE}_A"
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker_a', '$MARKER_A_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  flush_wal
+  pass "marker A '$MARKER_A_VALUE' inserted + WAL flushed"
+
+  # Capture target time AFTER A's WAL is durable. Use postgres NOW()
+  # to avoid clock-skew between harness host + cluster node.
+  sleep 3
+  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
+  info "recoveryTargetTime captured: $RECOVERY_TARGET_TIME"
+
+  # Marker B: must be in WAL AFTER target time.
+  sleep 3
+  MARKER_B_VALUE="${MARKER_VALUE}_B"
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker_b', '$MARKER_B_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  flush_wal
+  pass "marker B '$MARKER_B_VALUE' inserted POST-target + WAL flushed"
+else
+  # Default mode: single marker, will be GONE after restore-to-snapshot.
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  VERIFY_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker';\"")
+  if [[ "$VERIFY_MARKER" != "$MARKER_VALUE" ]]; then
+    fail "marker insert verification failed (got: $VERIFY_MARKER)"
+    exit 1
+  fi
+  pass "marker '$MARKER_VALUE' inserted (will assert GONE after restore)"
 fi
-pass "marker '$MARKER_VALUE' inserted (will assert GONE after restore)"
 
 # ─── Prechecks (read-only) ───────────────────────────────────────────
 hdr "Prechecks"
@@ -187,8 +225,14 @@ pass "prechecks: snapshotUsable=true lockState=free"
 # ─── Trigger the restore ─────────────────────────────────────────────
 hdr "Trigger POST /admin/postgres-restore"
 START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-TRIGGER_OUT=$(api POST '/api/v1/admin/postgres-restore' \
-  "{\"clusterNamespace\":\"$CLUSTER_NS\",\"clusterName\":\"$CLUSTER_NAME\",\"snapshotName\":\"$SNAP_NAME\"}")
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  BODY="{\"clusterNamespace\":\"$CLUSTER_NS\",\"clusterName\":\"$CLUSTER_NAME\",\"snapshotName\":\"$SNAP_NAME\",\"recoveryTargetTime\":\"$RECOVERY_TARGET_TIME\"}"
+  info "WAL mode: recoveryTargetTime=$RECOVERY_TARGET_TIME (slow-path expected: temp cluster + WAL replay)"
+else
+  BODY="{\"clusterNamespace\":\"$CLUSTER_NS\",\"clusterName\":\"$CLUSTER_NAME\",\"snapshotName\":\"$SNAP_NAME\"}"
+  info "Default mode: no recoveryTargetTime (fast-path expected: skip temp cluster)"
+fi
+TRIGGER_OUT=$(api POST '/api/v1/admin/postgres-restore' "$BODY")
 TRIGGER_CODE=$(printf '%s' "$TRIGGER_OUT" | tail -n1)
 TRIGGER_BODY=$(printf '%s' "$TRIGGER_OUT" | sed '$d')
 JOB_NAME=$(printf '%s' "$TRIGGER_BODY" | sed -nE 's/.*"jobName":"([^"]+)".*/\1/p' | head -1)
@@ -199,10 +243,12 @@ fi
 pass "Job $JOB_NAME accepted at $START_TS"
 
 # ─── Live progress: status endpoint streams steps ────────────────────
-hdr "Live progress (poll /status for up to 13min)"
+# WAL mode runs slow-path (~5 min longer for temp cluster) — allow more polls.
+MAX_POLLS=$([[ "${WITH_WAL:-0}" == "1" ]] && echo 180 || echo 120)
+hdr "Live progress (poll /status, max polls=$MAX_POLLS)"
 SEEN_STEPS=()
 SEEN_PHASES=()
-for i in $(seq 1 120); do
+for i in $(seq 1 $MAX_POLLS); do
   STATUS_OUT=$(api GET '/api/v1/admin/postgres-restore/status' | head -n -1)
   IN_PROGRESS=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"inProgress":(true|false).*/\1/p' | head -1)
   PHASE=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"phase":"([^"]+)".*/\1/p' | head -1)
@@ -220,7 +266,7 @@ for i in $(seq 1 120); do
 done
 
 if [[ "$IN_PROGRESS" != "false" ]]; then
-  fail "PITR did not complete within 16 min"
+  fail "PITR did not complete within $((MAX_POLLS*8/60)) min"
   ssh_cmd "k3s kubectl -n $CLUSTER_NS logs job/$JOB_NAME --tail=20" || true
   exit 1
 fi
@@ -236,6 +282,27 @@ for must_see in preflight wrap-volume-snapshot create-temp-cluster recreate-sour
     fail "step '$must_see' MISSING from live progress stream (was modal blank?)"
   fi
 done
+
+# Path-selection assertion. The harness verifies the fast-path vs
+# slow-path branch ran as expected: when recoveryTargetTime is
+# supplied the orchestrator MUST go through temp-cluster (no SKIPPED).
+# When it's null, the temp-cluster step MUST be SKIPPED. The /status
+# endpoint accumulates steps over time so check the chip's persisted
+# details for the final answer.
+CHIP_STEPS_RAW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT details->'steps' FROM tasks WHERE ref_id='$JOB_NAME';\"" 2>&1 || echo '')
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  if printf '%s' "$CHIP_STEPS_RAW" | grep -q 'SKIPPED'; then
+    fail "WAL mode took the fast-path (SKIPPED) — slow-path required for WAL replay"
+  else
+    pass "WAL mode took the slow-path (temp cluster) — required for WAL replay"
+  fi
+else
+  if printf '%s' "$CHIP_STEPS_RAW" | grep -q 'SKIPPED'; then
+    pass "default mode took the fast-path (temp cluster skipped) — ~3-5 min saved"
+  else
+    info "default mode took the slow-path — fast-path may be disabled via PITR_FORCE_TEMP_CLUSTER"
+  fi
+fi
 
 # ─── Job exit code ───────────────────────────────────────────────────
 hdr "Job final state"
@@ -264,15 +331,34 @@ if [[ "$POST_PHASE" != "Cluster in healthy state" ]]; then
 fi
 pass "Cluster healthy at $POST_READY instance(s)"
 
-# ─── Verify marker is GONE (PITR rewound) ────────────────────────────
-hdr "Marker assertion (must be GONE — proves PITR rewound to snapshot LSN)"
+# ─── Marker assertions ──────────────────────────────────────────────
+# Default mode: single marker MUST be gone (PITR rewound to snapshot LSN).
+# WAL mode: marker A (pre-target) PRESENT, marker B (post-target) GONE.
+hdr "Marker assertions (WITH_WAL=${WITH_WAL:-0})"
 NEW_PRIMARY=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $CLUSTER_NAME -o jsonpath='{.status.currentPrimary}'")
-MARKER_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
-info "marker after restore: '$MARKER_AFTER'"
-if [[ "$MARKER_AFTER" == "GONE" ]] || [[ "$MARKER_AFTER" != "$MARKER_VALUE" ]]; then
-  pass "marker is gone — snapshot LSN restored correctly"
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  MARKER_A_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker_a'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  MARKER_B_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker_b'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  info "marker A (pre-target): $MARKER_A_AFTER"
+  info "marker B (post-target): $MARKER_B_AFTER"
+  if [[ "$MARKER_A_AFTER" == "$MARKER_A_VALUE" ]]; then
+    pass "marker A PRESENT — WAL replay applied up to target time"
+  else
+    fail "marker A MISSING — WAL replay didn't reach target time (recoveryTargetTime too early?)"
+  fi
+  if [[ "$MARKER_B_AFTER" == "GONE" ]] || [[ "$MARKER_B_AFTER" != "$MARKER_B_VALUE" ]]; then
+    pass "marker B GONE — WAL replay stopped at target time"
+  else
+    fail "marker B PRESENT — WAL replayed BEYOND target time"
+  fi
 else
-  fail "marker still present: '$MARKER_AFTER' — PITR did NOT rewind!"
+  MARKER_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  info "marker after restore: '$MARKER_AFTER'"
+  if [[ "$MARKER_AFTER" == "GONE" ]] || [[ "$MARKER_AFTER" != "$MARKER_VALUE" ]]; then
+    pass "marker is gone — snapshot LSN restored correctly"
+  else
+    fail "marker still present: '$MARKER_AFTER' — PITR did NOT rewind!"
+  fi
 fi
 
 # ─── Plugin sidecar must be on the new pod (no manual kubectl delete) ─
