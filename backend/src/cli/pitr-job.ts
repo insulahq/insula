@@ -155,10 +155,26 @@ async function main(): Promise<void> {
     // Finalize the task-center chip — pre-existing PITR codepath
     // didn't do this, so chips stayed in `running` forever. Phase 3.1
     // closes that loop for both PITR and barman-promote.
+    //
+    // 2026-05-23 follow-up: persist the FULL step timeline + final
+    // outcome into tasks.details so the PitrProgressModal can render
+    // the historical timeline when re-opened from the chip AFTER the
+    // PersistedLock has been cleared (which is the moment promote
+    // completes). Without this, clicking the green chip post-success
+    // showed an empty modal — exactly what the operator reported.
     if (jobNameForChip) {
       try {
         const tasksMod = await import('../modules/tasks/service.js');
-        await tasksMod.finishByRef(db, chipKind, jobNameForChip, { status: 'succeeded' });
+        await tasksMod.finishByRef(db, chipKind, jobNameForChip, {
+          status: 'succeeded',
+          detailsPatch: {
+            steps: result.steps,
+            finishedAtIso: new Date().toISOString(),
+            mode: isPromoteMode ? 'barman-promote' : 'pitr',
+            clusterName: result.clusterName,
+            snapshotName: result.snapshotName,
+          },
+        });
       } catch (chipErr) {
         console.warn(JSON.stringify({
           msg: 'pitr-job: chip finalize failed (non-fatal)',
@@ -180,11 +196,22 @@ async function main(): Promise<void> {
       steps: e.steps,
     }));
     // Finalize the chip as failed so the operator sees a red badge
-    // instead of a forever-spinning one.
+    // instead of a forever-spinning one. Also persist whatever
+    // step-timeline the orchestrator emitted before failing — the
+    // modal needs this to show WHICH step failed when re-opened.
     if (jobNameForChip) {
       try {
         const tasksMod = await import('../modules/tasks/service.js');
-        await tasksMod.finishByRef(db, chipKind, jobNameForChip, { status: 'failed', error: e.message });
+        await tasksMod.finishByRef(db, chipKind, jobNameForChip, {
+          status: 'failed',
+          error: e.message,
+          detailsPatch: {
+            steps: e.steps ?? [],
+            finishedAtIso: new Date().toISOString(),
+            mode: isPromoteMode ? 'barman-promote' : 'pitr',
+            failedAtStep: e.steps && e.steps.length > 0 ? e.steps[e.steps.length - 1]?.step : null,
+          },
+        });
       } catch { /* best-effort */ }
     }
     await closeDb().catch(() => undefined);
