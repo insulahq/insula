@@ -126,18 +126,50 @@ if [[ -z "$LATEST_BACKUP" ]]; then
 fi
 pass "catalogue has $(printf '%s' "$CAT_BODY" | grep -o '"backupId"' | wc -l) backups; latest=$LATEST_BACKUP"
 
-# Insert a marker row that POST-DATES the most-recent barman backup.
-# The Phase 3 restored cluster MUST NOT have this row (proves it came
-# from the offsite archive, not the source).
+# Marker setup. Default mode = single POST-barman-backup marker that
+# proves restored cluster came from offsite archive (not source).
+# WAL mode = two markers wrapping recoveryTargetTime; pg_switch_wal
+# forces a fresh WAL segment so the markers reach the offsite archive.
+flush_wal() {
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"SELECT pg_switch_wal();\"" >/dev/null 2>&1 || true
+}
+
 MARKER_VALUE="e2e_barman_$(date +%s)"
-ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
-info "marker '$MARKER_VALUE' inserted in source (POST-barman-backup)"
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  # Marker A: pre-target
+  MARKER_A_VALUE="${MARKER_VALUE}_A"
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker_a', '$MARKER_A_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  flush_wal
+  info "marker A '$MARKER_A_VALUE' inserted + WAL flushed"
+
+  sleep 5
+  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
+  info "recoveryTargetTime captured: $RECOVERY_TARGET_TIME"
+
+  sleep 5
+  MARKER_B_VALUE="${MARKER_VALUE}_B"
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker_b', '$MARKER_B_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  flush_wal
+  info "marker B '$MARKER_B_VALUE' inserted POST-target + WAL flushed"
+
+  # Wait for the archiver to flush the latest WAL segment to barman.
+  # CNPG's barman archiver runs every few seconds; give it time.
+  sleep 10
+else
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  info "marker '$MARKER_VALUE' inserted in source (POST-barman-backup)"
+fi
 
 # ─── Phase 3 — side-by-side restore ──────────────────────────────────
 hdr "Phase 3 — POST /admin/postgres-barman-restore (side-by-side)"
 NEW_NAME="${CLUSTER_NAME}-restored-e2e-$(date +%s | tail -c 6)"
-TRIGGER=$(api POST '/api/v1/admin/postgres-barman-restore' \
-  "{\"namespace\":\"$CLUSTER_NS\",\"sourceClusterName\":\"$CLUSTER_NAME\",\"newClusterName\":\"$NEW_NAME\",\"instances\":1}")
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  RESTORE_BODY="{\"namespace\":\"$CLUSTER_NS\",\"sourceClusterName\":\"$CLUSTER_NAME\",\"newClusterName\":\"$NEW_NAME\",\"instances\":1,\"recoveryTargetTime\":\"$RECOVERY_TARGET_TIME\"}"
+  info "WAL mode: CNPG bootstrap.recovery with recoveryTarget.targetTime=$RECOVERY_TARGET_TIME"
+else
+  RESTORE_BODY="{\"namespace\":\"$CLUSTER_NS\",\"sourceClusterName\":\"$CLUSTER_NAME\",\"newClusterName\":\"$NEW_NAME\",\"instances\":1}"
+fi
+TRIGGER=$(api POST '/api/v1/admin/postgres-barman-restore' "$RESTORE_BODY")
 TRIGGER_CODE=$(printf '%s' "$TRIGGER" | tail -n1)
 TRIGGER_BODY=$(printf '%s' "$TRIGGER" | sed '$d')
 if [[ "$TRIGGER_CODE" != "202" ]]; then
@@ -161,21 +193,46 @@ if ! printf '%s' "$STATE" | grep -qE "ready=[1-9].*phase=Cluster in healthy stat
 fi
 pass "$NEW_NAME healthy after ${i} polls (~$((i*15))s)"
 
-# Verify restored data matches barman archive (NOT the marker row).
-RESTORED_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
-if [[ "$RESTORED_MARKER" == "GONE" ]] || [[ "$RESTORED_MARKER" != "$MARKER_VALUE" ]]; then
-  pass "restored cluster does NOT have post-archive marker — bootstrapped from barman correctly"
+# Verify restored data matches the expected point-in-time.
+if [[ "${WITH_WAL:-0}" == "1" ]]; then
+  RESTORED_A=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker_a'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  RESTORED_B=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker_b'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  info "restored A (pre-target): $RESTORED_A"
+  info "restored B (post-target): $RESTORED_B"
+  if [[ "$RESTORED_A" == "$MARKER_A_VALUE" ]]; then
+    pass "marker A PRESENT in restored cluster — WAL replay reached target"
+  else
+    fail "marker A MISSING — WAL replay didn't reach target (archive may not have caught up before restore?)"
+  fi
+  if [[ "$RESTORED_B" == "GONE" ]] || [[ "$RESTORED_B" != "$MARKER_B_VALUE" ]]; then
+    pass "marker B GONE in restored cluster — WAL replay stopped at target"
+  else
+    fail "marker B PRESENT — WAL replayed BEYOND target time"
+  fi
 else
-  fail "restored cluster has marker '$RESTORED_MARKER' — NOT from barman archive!"
+  RESTORED_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  if [[ "$RESTORED_MARKER" == "GONE" ]] || [[ "$RESTORED_MARKER" != "$MARKER_VALUE" ]]; then
+    pass "restored cluster does NOT have post-archive marker — bootstrapped from barman correctly"
+  else
+    fail "restored cluster has marker '$RESTORED_MARKER' — NOT from barman archive!"
+  fi
+fi
+
+# WAL mode tests the recoveryTargetTime application — promote is
+# independent of recoveryTargetTime (always uses snapshot LSN). Skip
+# promote in WAL mode + clean up the side-by-side.
+if [[ "${WITH_WAL:-0}" == "1" ]] && [[ "$SKIP_PROMOTE" != "1" ]]; then
+  info "WAL mode auto-skips promote (recoveryTargetTime applies to Phase 3 bootstrap, not promote)"
+  SKIP_PROMOTE=1
 fi
 
 if [[ "$SKIP_PROMOTE" == "1" ]]; then
-  hdr "SKIP_PROMOTE=1 — stopping after Phase 3 verify; deleting side-by-side"
+  hdr "SKIP_PROMOTE — stopping after Phase 3 verify; deleting side-by-side"
   api DELETE "/api/v1/admin/postgres-barman-restore/$CLUSTER_NS/$NEW_NAME" >/dev/null || true
   pass "side-by-side delete requested"
   echo
   if [[ $FAILED -eq 0 ]]; then
-    printf '\033[1;32mPHASE 3 VERIFY PASSED\033[0m (SKIP_PROMOTE=1)\n'
+    printf '\033[1;32mPHASE 3 VERIFY PASSED\033[0m (WITH_WAL=${WITH_WAL:-0})\n'
     exit 0
   else
     exit 1
