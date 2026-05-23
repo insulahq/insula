@@ -1807,26 +1807,17 @@ export async function promotePostgresFromSnapshot(
     // platform-api Deploy env restores the original "fast chip-green +
     // oscillate after" behavior for users who'd rather see the chip
     // settle quickly + tolerate the post-orchestration cycle.
-    if (targetInstances > 1 && process.env.PITR_SKIP_HA_STABLE_WAIT !== 'true') {
-      const t8a2 = nowMs();
-      markInFlight('wait-ha-stable');
-      const stableTimeoutMs = 8 * 60_000;
-      const stable = await waitClusterFullyStable(
-        deps.k8s, inputs.clusterNamespace, inputs.clusterName,
-        targetInstances, stableTimeoutMs,
-      );
-      recordStep({
-        step: 'wait-ha-stable',
-        ok: stable.ok,
-        elapsedMs: nowMs() - t8a2,
-        detail: stable.ok
-          ? `cluster fully stable: ready=${stable.ready}/${targetInstances} phase=${stable.phase ?? '?'}`
-          : `cluster did not fully stabilize within ${Math.round(stableTimeoutMs / 1000)}s (ready=${stable.ready}/${targetInstances} phase=${stable.phase ?? '?'}). Primary IS up — operator can monitor convergence via /cluster status.`,
-      });
-      // Non-fatal — primary is up + serving even if CNPG is still
-      // rolling some replicas in background. The detail string tells
-      // the operator the convergence state.
-    }
+    // wait-ha-stable is INTENTIONALLY MOVED below resume-flux (Task #105
+    // 2026-05-23). The original location here only caught the
+    // CNPG-internal post-scale-up rolling restart; it MISSED the
+    // SECOND restart cycle Flux triggers when it re-applies the git
+    // manifest (~30-60s of additional oscillation after the chip
+    // turned green). Moving the wait below the in-main-path resume-flux
+    // (added at end of step 10 cleanup) catches both cycles in a
+    // single wait. See the new step 10b in the order:
+    //   recreate-source → scale-up-to-source-ha → normalize-bootstrap
+    //   → restore-consumers → cleanup → RESUME-FLUX → WAIT-HA-STABLE
+    //   → notify
 
     // 8b. Normalize spec.bootstrap so Flux's apply of the original git
     // manifest (which has bootstrap.initdb) doesn't conflict with our
@@ -1940,6 +1931,64 @@ export async function promotePostgresFromSnapshot(
       await deleteCustom(deps.k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: tempSnapName }).catch(() => undefined);
     }
     recordStep({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10, detail: usedFastPath ? 'fast-path: no temp cluster to clean' : 'slow-path: temp cluster + handoff snapshot removed' });
+
+    // 10b. Resume Flux on the main path (Task #105 2026-05-23).
+    //
+    // Original placement was finally-block only; that meant the chip
+    // could turn green BEFORE Flux re-applied the original git
+    // manifest, and the manifest reapply triggers a SECOND CNPG
+    // rolling-restart cycle (~30-60s) visible to the operator as
+    // "Primary instance is being restarted" oscillation after task
+    // completion. By resuming Flux here + waiting for the resulting
+    // cycle in step 10c below, the chip only goes green once both
+    // the CNPG post-scale-up cycle AND the Flux-triggered cycle have
+    // settled. The finally-block resume below remains as a failsafe
+    // for failure paths (we toggle fluxSuspended=false on success
+    // so the finally branch becomes a no-op).
+    if (fluxSuspended) {
+      const t10b = nowMs();
+      markInFlight('resume-flux');
+      try {
+        await resumeFluxKustomization(deps.k8s);
+        recordStep({ step: 'resume-flux', ok: true, elapsedMs: nowMs() - t10b, detail: `${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} resumed (main path)` });
+        fluxSuspended = false;
+      } catch (rerr) {
+        recordStep({
+          step: 'resume-flux', ok: false, elapsedMs: nowMs() - t10b,
+          detail: `failed: ${(rerr as Error).message}. Finally block will retry; if that also fails, run: flux resume kustomization ${FLUX_KS_NAME} -n ${FLUX_KS_NAMESPACE}`,
+        });
+        // Leave fluxSuspended=true so the finally block retries.
+      }
+    }
+
+    // 10c. Wait-ha-stable — absorbs both rolling-restart cycles
+    // (CNPG-internal post-scale-up + Flux-triggered manifest reapply)
+    // into the orchestrator's wall-clock so chip-green == cluster
+    // actually healthy. Single-instance clusters skip (no replica
+    // scale-up → no rolling cycle to wait for).
+    //
+    // Operator escape hatch: PITR_SKIP_HA_STABLE_WAIT=true on the
+    // platform-api Deploy env restores the original "fast chip-green +
+    // oscillate after" behavior.
+    if (targetInstances > 1 && process.env.PITR_SKIP_HA_STABLE_WAIT !== 'true') {
+      const t10c = nowMs();
+      markInFlight('wait-ha-stable');
+      const stableTimeoutMs = 8 * 60_000;
+      const stable = await waitClusterFullyStable(
+        deps.k8s, inputs.clusterNamespace, inputs.clusterName,
+        targetInstances, stableTimeoutMs,
+      );
+      recordStep({
+        step: 'wait-ha-stable',
+        ok: stable.ok,
+        elapsedMs: nowMs() - t10c,
+        detail: stable.ok
+          ? `cluster fully stable: ready=${stable.ready}/${targetInstances} phase=${stable.phase ?? '?'}`
+          : `cluster did not fully stabilize within ${Math.round(stableTimeoutMs / 1000)}s (ready=${stable.ready}/${targetInstances} phase=${stable.phase ?? '?'}). Primary IS up — operator can monitor convergence via /cluster status.`,
+      });
+      // Non-fatal — primary is up + serving even if CNPG/Flux are
+      // still rolling some replicas in background.
+    }
 
     // 11. Notify — NON-FATAL.
     //

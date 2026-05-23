@@ -75,8 +75,9 @@ const ORDER: ReadonlyArray<string> = [
   'preflight-wal-coverage', 'preflight', 'wrap-volume-snapshot', 'create-temp-cluster',
   'temp-healthy', 'temp-probe', 'quiesce-consumers', 'suspend-flux',
   'snapshot-temp-primary', 'delete-source', 'recreate-source', 'scale-up-to-source-ha',
+  'normalize-bootstrap', 'restore-consumers', 'cleanup',
+  'resume-flux',
   'wait-ha-stable',
-  'normalize-bootstrap', 'restore-consumers', 'cleanup', 'resume-flux',
 ];
 
 function fmtElapsed(ms?: number): string {
