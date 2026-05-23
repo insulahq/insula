@@ -154,6 +154,39 @@ if ! grep -q "'platform.phoenix-host.net/barman-promote': 'true'" "$SERVICE"; th
   FAILED=1
 fi
 
+# (14) buildRecoveryCluster MUST propagate src.spec.plugins onto the
+# rebuilt source cluster (isTemp=false). Otherwise the new pod boots
+# WITHOUT the plugin-barman-cloud sidecar (admission-webhook only fires
+# at pod creation), Flux re-adds plugins to spec on resume, but the pod
+# is stuck without the sidecar → instance-manager spins on "Unknown
+# plugin: barman-cloud.cloudnative-pg.io" and the operator has to
+# manually `kubectl delete pod` to recreate through the webhook.
+# Live regression caught on staging1 Phase 3.1 promote 2026-05-23.
+if [[ -f "$PG_RESTORE_SVC" ]]; then
+  if ! grep -q "const plugins = isTemp ? undefined : src.spec?.plugins" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts:buildRecoveryCluster must propagate spec.plugins on rebuild (isTemp=false) — required for plugin-barman-cloud sidecar admission injection"
+    FAILED=1
+  fi
+fi
+
+# (15) pitr-job.ts MUST persist `details.steps + finishedAtIso + mode`
+# to the task chip on both success + failure. Without this, the
+# PitrProgressModal blanks when re-opened from the task-center chip
+# after the PersistedLock has been cleared (which happens on completion).
+# Live operator complaint 2026-05-23: "live pg-restore progress modal
+# did not show progress or completed items when opened via task-center".
+PITRJOB="$REPO_ROOT/backend/src/cli/pitr-job.ts"
+if [[ -f "$PITRJOB" ]]; then
+  if ! grep -q "detailsPatch:" "$PITRJOB"; then
+    echo "FAIL: pitr-job.ts must pass detailsPatch (steps+finishedAtIso+mode) into finishByRef so PitrProgressModal can render history when re-opened from chip"
+    FAILED=1
+  fi
+  if ! grep -q "finishedAtIso" "$PITRJOB"; then
+    echo "FAIL: pitr-job.ts must persist 'finishedAtIso' into chip details — modal header uses this for the timestamp display"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi

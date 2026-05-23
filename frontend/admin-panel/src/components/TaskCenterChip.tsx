@@ -111,9 +111,21 @@ export default function TaskCenterChip() {
       // task's own id into modalProps. Per-target modalProps still
       // win on key collision — useful for modals that want a
       // different taskId surface name.
+      //
+      // 2026-05-23 follow-up: also pass `taskStatus` + `taskDetails`
+      // so terminal-state modals can render historical data from
+      // `details` (e.g. PitrProgressModal needs the steps[] array
+      // captured at finalize time, since the PersistedLock that drove
+      // the live timeline is gone by then).
       setSelectedModal({
         modal: task.target.modal,
-        props: { taskId: task.id, ...(task.target.modalProps ?? {}) },
+        props: {
+          taskId: task.id,
+          taskStatus: task.status,
+          taskDetails: task.details ?? null,
+          taskFinishedAt: task.finishedAt,
+          ...(task.target.modalProps ?? {}),
+        },
       });
       setOpen(false);
       return;
