@@ -211,11 +211,21 @@ export async function reconcilePitrJobsOnce(
       log?.error?.({ err: (err as Error).message, name }, 'pitr-watchdog: finalizeByRef failed (non-fatal)');
     }
 
+    // CRITICAL: pass `expectedSnapshot` so we don't clobber the active
+    // PITR's lock when finalizing this stale Job. The PITR lock is a
+    // singleton row in platform_settings — without this guard, a fresh
+    // PITR Job's lock can be cleared by the watchdog sweep for an
+    // older Job that happens to fire at the same time, causing the
+    // fresh pitr-job to fail-fast with "PITR_LOCK_HELD=true but no
+    // persisted lock" (live regression caught on staging sc1b 2026-05-23).
+    // releasePitrLock checks persistedLock.snapshot vs expectedSnapshot
+    // and bails the lock-clear if they differ.
     try {
       await releasePitrLock(deps.db, {
         failed: true,
         error: `Watchdog: ${stuckEvidence}`,
         taskKind: chipKind,
+        expectedSnapshot: snapshotName,
       });
     } catch (err) {
       log?.error?.({ err: (err as Error).message, name }, 'pitr-watchdog: releasePitrLock failed (non-fatal)');
