@@ -569,6 +569,10 @@ interface CnpgCluster {
     readonly postgresql?: unknown;
     readonly enableSuperuserAccess?: boolean;
     readonly monitoring?: unknown;
+    /** CNPG plugin sidecar config (e.g. barman-cloud archive plugin).
+     *  Propagated into the rebuilt source so the new pod gets the
+     *  sidecar at admission time — see buildRecoveryCluster. */
+    readonly plugins?: readonly unknown[];
   };
   readonly status?: {
     readonly currentPrimary?: string;
@@ -1161,7 +1165,9 @@ const TEMP_CLUSTER_RESOURCES = {
   limits:   { cpu: '500m', memory: '512Mi' },
 } as const;
 
-function buildRecoveryCluster(
+// Exported for unit testing — see service.test.ts plugin-propagation
+// + isTemp-omits-plugins tests. Not part of the public service API.
+export function buildRecoveryCluster(
   src: CnpgCluster,
   newName: string,
   namespace: string,
@@ -1188,6 +1194,28 @@ function buildRecoveryCluster(
   const labels = isTemp
     ? pitrLabels(namespace)
     : (src.metadata as { labels?: Record<string, string> } | undefined)?.labels;
+  // Plugin propagation (FAST + RELIABLE restore — 2026-05-23):
+  //
+  // The TEMP cluster intentionally OMITS spec.plugins so the snapshot
+  // restore path doesn't try to register barman archive hooks against
+  // a transient cluster that exists only to feed the source rebuild.
+  //
+  // The REBUILT SOURCE cluster MUST inherit spec.plugins from the
+  // source — otherwise the new pod is created WITHOUT the
+  // plugin-barman-cloud sidecar. Then Flux resumes and patches the
+  // live spec to include plugins (from the git manifest), but CNPG's
+  // plugin sidecar is injected by an admission webhook that only fires
+  // at POD CREATION. So the pod keeps running without the sidecar +
+  // the operator instance-manager logs "Unknown plugin:
+  // barman-cloud.cloudnative-pg.io" forever — requiring a manual
+  // `kubectl delete pod` to recreate the pod through the admission
+  // webhook (caught LIVE on staging1 Phase 3.1 promote 2026-05-23).
+  //
+  // Carrying source.spec.plugins INTO the rebuild cluster CR closes
+  // this gap: the first pod is created with the plugin config in spec,
+  // the admission webhook injects the sidecar, instance-manager finds
+  // the plugin connection ready immediately.
+  const plugins = isTemp ? undefined : src.spec?.plugins;
   return {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
     kind: 'Cluster',
@@ -1209,6 +1237,7 @@ function buildRecoveryCluster(
       postgresql: src.spec?.postgresql,
       enableSuperuserAccess: src.spec?.enableSuperuserAccess,
       monitoring: src.spec?.monitoring,
+      ...(plugins !== undefined ? { plugins } : {}),
       bootstrap: {
         recovery: {
           volumeSnapshots: {
