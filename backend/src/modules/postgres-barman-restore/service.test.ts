@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createBarmanRestore,
   getBarmanRestoreStatus,
@@ -298,5 +298,224 @@ describe('deleteBarmanRestore', () => {
     const r = await deleteBarmanRestore(api, 'platform', 'restored-1');
     expect(r.deleted).toBe(true);
     expect(deleted).toEqual([{ namespace: 'platform', name: 'restored-1' }]);
+  });
+});
+
+// ─── Phase 3.1 (2026-05-23) — Promote ──────────────────────────────────────
+
+import { promoteRestoredCluster } from './service.js';
+
+// Mock the postgres-restore primitives used by promoteRestoredCluster.
+// vi.hoisted is required to give the mock factories access to the
+// module-scoped state these tests inspect (lock-acquire calls, etc.).
+const promoteMocks = vi.hoisted(() => ({
+  acquirePitrLockOrThrowSpy: vi.fn(),
+  releasePitrLockSpy: vi.fn(),
+  createPitrJobSpy: vi.fn(),
+  getPlatformApiImageSpy: vi.fn(),
+  isPostgresRestoreInProgressClusterWideSpy: vi.fn(),
+}));
+vi.mock('../postgres-restore/service.js', () => ({
+  acquirePitrLockOrThrow: promoteMocks.acquirePitrLockOrThrowSpy,
+  releasePitrLock: promoteMocks.releasePitrLockSpy,
+  createPitrJob: promoteMocks.createPitrJobSpy,
+  getPlatformApiImage: promoteMocks.getPlatformApiImageSpy,
+  isPostgresRestoreInProgressClusterWide: promoteMocks.isPostgresRestoreInProgressClusterWideSpy,
+}));
+
+function defaultPromoteMocks(): void {
+  promoteMocks.acquirePitrLockOrThrowSpy.mockReset().mockResolvedValue({ startedAt: new Date() });
+  promoteMocks.releasePitrLockSpy.mockReset().mockResolvedValue(undefined);
+  promoteMocks.createPitrJobSpy.mockReset().mockResolvedValue({
+    jobName: 'pitr-system-db-12345', namespace: 'platform',
+  });
+  promoteMocks.getPlatformApiImageSpy.mockReset().mockResolvedValue('ghcr.io/test/backend:abc123');
+  promoteMocks.isPostgresRestoreInProgressClusterWideSpy.mockReset().mockResolvedValue({ inProgress: false, source: 'none' });
+}
+
+interface PromoteMockOpts {
+  readonly restoredManagedBy?: string;
+  readonly restoredReadyInstances?: number;
+  readonly restoredPrimary?: string;
+  readonly restoredNotFound?: boolean;
+  readonly sourceMissing?: boolean;
+  readonly sourceBootstrap?: unknown;
+  readonly pvcVolumeName?: string;
+  readonly snapshotReady?: boolean;
+  readonly snapshotCreateFails?: boolean;
+}
+
+interface PromoteDepsOut {
+  readonly deps: Parameters<typeof promoteRestoredCluster>[0];
+  readonly createdSnapshots: unknown[];
+  readonly deletedSnapshots: string[];
+}
+
+function makePromoteDeps(opts: PromoteMockOpts = {}): PromoteDepsOut {
+  const createdSnapshots: unknown[] = [];
+  const deletedSnapshots: string[] = [];
+  const custom = {
+    getNamespacedCustomObject: vi.fn().mockImplementation(async (args: { name: string; plural: string }) => {
+      if (args.plural === 'clusters') {
+        if (args.name === 'restored-1') {
+          if (opts.restoredNotFound) {
+            const e = new Error('not found'); (e as Error & { code?: number }).code = 404; throw e;
+          }
+          return {
+            metadata: { name: 'restored-1', labels: { 'app.kubernetes.io/managed-by': opts.restoredManagedBy ?? 'platform-api-postgres-barman-restore' } },
+            status: { readyInstances: opts.restoredReadyInstances ?? 1, currentPrimary: opts.restoredPrimary ?? 'restored-1-1' },
+          };
+        }
+        if (args.name === 'system-db') {
+          if (opts.sourceMissing) {
+            const e = new Error('not found'); (e as Error & { code?: number }).code = 404; throw e;
+          }
+          return {
+            spec: { bootstrap: opts.sourceBootstrap ?? { initdb: { database: 'app', owner: 'app' } } },
+          };
+        }
+      }
+      if (args.plural === 'snapshots') {
+        return { status: { readyToUse: opts.snapshotReady ?? true } };
+      }
+      return null;
+    }),
+    createNamespacedCustomObject: vi.fn().mockImplementation(async (args: { body: { metadata?: { name?: string } } }) => {
+      if (opts.snapshotCreateFails) {
+        throw new Error('Longhorn-side allocation failure');
+      }
+      createdSnapshots.push(args.body);
+      return { metadata: { ...(args.body.metadata ?? {}), uid: 'snap-uid' } };
+    }),
+    deleteNamespacedCustomObject: vi.fn().mockImplementation(async (args: { name: string }) => {
+      deletedSnapshots.push(args.name);
+    }),
+  } as unknown as k8s.CustomObjectsApi;
+
+  const core = {
+    readNamespacedPersistentVolumeClaim: vi.fn().mockImplementation(async () => ({
+      spec: { volumeName: opts.pvcVolumeName ?? 'pvc-test-vol' },
+    })),
+  } as unknown as k8s.CoreV1Api;
+
+  const apps = {} as unknown as k8s.AppsV1Api;
+  const batch = {} as unknown as k8s.BatchV1Api;
+  const networking = {} as unknown as k8s.NetworkingV1Api;
+  const rbac = {} as unknown as k8s.RbacAuthorizationV1Api;
+  const storage = {} as unknown as k8s.StorageV1Api;
+  const db = {} as never;
+  return {
+    deps: { k8s: { custom, core, apps, batch, networking, rbac, storage }, db },
+    createdSnapshots,
+    deletedSnapshots,
+  };
+}
+
+describe('promoteRestoredCluster', () => {
+  beforeEach(() => {
+    defaultPromoteMocks();
+  });
+
+  it('rejects when confirmSourceClusterName mismatches sourceClusterName', async () => {
+    const { deps } = makePromoteDeps();
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'wrong', actorUserId: null,
+    })).rejects.toMatchObject({ code: 409, message: expect.stringMatching(/confirmSourceClusterName/) });
+  });
+
+  it('rejects when restored cluster lacks managed-by label', async () => {
+    const { deps } = makePromoteDeps({ restoredManagedBy: 'some-other-controller' });
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 403 });
+  });
+
+  it('rejects when restored cluster is not Ready', async () => {
+    const { deps } = makePromoteDeps({ restoredReadyInstances: 0 });
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 409, message: expect.stringMatching(/not Ready/) });
+  });
+
+  it('rejects when source cluster missing', async () => {
+    const { deps } = makePromoteDeps({ sourceMissing: true });
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 404 });
+  });
+
+  it('rejects when source cluster lacks spec.bootstrap.initdb', async () => {
+    const { deps } = makePromoteDeps({ sourceBootstrap: { recovery: {} } });
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 422, message: expect.stringMatching(/initdb/) });
+  });
+
+  it('rejects when PITR lock already held', async () => {
+    promoteMocks.isPostgresRestoreInProgressClusterWideSpy.mockResolvedValue({
+      inProgress: true, snapshot: 'other-pitr', source: 'db',
+    });
+    const { deps } = makePromoteDeps();
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 409, message: expect.stringMatching(/already in progress/) });
+  });
+
+  it('releases lock when snapshot-take fails', async () => {
+    const { deps } = makePromoteDeps({ snapshotCreateFails: true });
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toThrow();
+    expect(promoteMocks.releasePitrLockSpy).toHaveBeenCalledTimes(1);
+    expect(promoteMocks.createPitrJobSpy).not.toHaveBeenCalled();
+  });
+
+  it('releases lock when createPitrJob fails', async () => {
+    promoteMocks.createPitrJobSpy.mockRejectedValue(new Error('Job-create network failure'));
+    const { deps } = makePromoteDeps();
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 500 });
+    expect(promoteMocks.releasePitrLockSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('happy path: takes snapshot + creates Job with BARMAN_PROMOTE env vars', async () => {
+    const { deps, createdSnapshots } = makePromoteDeps();
+    const r = await promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'restored-1', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: 'op-user-id',
+    });
+    expect(r.snapshotName).toMatch(/^barman-promote-/);
+    expect(r.jobName).toBe('pitr-system-db-12345');
+    expect(r.sourceClusterName).toBe('system-db');
+    expect(r.restoredClusterName).toBe('restored-1');
+    // Longhorn snapshot CR was created with correct labels.
+    expect(createdSnapshots).toHaveLength(1);
+    const snap = createdSnapshots[0] as Record<string, unknown>;
+    const metadata = snap.metadata as { labels?: Record<string, string>; name?: string };
+    expect(metadata.labels?.['platform.phoenix-host.net/pitr-restore']).toBe('true');
+    expect(metadata.labels?.['platform.phoenix-host.net/barman-promote']).toBe('true');
+    // PITR Job was created with the source name + BARMAN_PROMOTE env vars.
+    const createPitrCall = promoteMocks.createPitrJobSpy.mock.calls[0]?.[1] as { extraEnv?: ReadonlyArray<{ name: string; value: string }>; clusterName: string };
+    expect(createPitrCall.clusterName).toBe('system-db');
+    expect(createPitrCall.extraEnv).toContainEqual({ name: 'BARMAN_PROMOTE_MODE', value: 'true' });
+    expect(createPitrCall.extraEnv).toContainEqual({ name: 'BARMAN_PROMOTE_RESTORED_CLUSTER', value: 'restored-1' });
+    expect(promoteMocks.releasePitrLockSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects when restoredClusterName === sourceClusterName (defense-in-depth)', async () => {
+    const { deps } = makePromoteDeps();
+    await expect(promoteRestoredCluster(deps, {
+      namespace: 'platform', restoredClusterName: 'system-db', sourceClusterName: 'system-db',
+      confirmSourceClusterName: 'system-db', actorUserId: null,
+    })).rejects.toMatchObject({ code: 400 });
   });
 });
