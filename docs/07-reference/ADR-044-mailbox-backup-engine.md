@@ -15,7 +15,17 @@ Per-tenant mailbox capture + restore was JMAP-only since the 2026-05-11 ADR-036 
 1. **Faster, both directions.** Same source mailbox (3000 msgs / 225.6 MB / 4 workers, instrumented `bench-imap-vs-jmap.sh`):
    * Capture: **IMAP 5.48 s (548 msg/s)** vs **JMAP 19.00 s (158 msg/s)** — IMAP 3.5× faster.
    * Restore: **IMAP 36.05 s (83 msg/s)** vs **JMAP 71.37 s (42 msg/s)** — IMAP 2.0× faster.
-   * Byte-equal output (tarball gz + STATUS SIZE on dst both 225.6 MB).
+   * Restored mailbox SIZE on the destination is identical (225.6 MB
+     for both engines via IMAP `STATUS folder (SIZE)`). The captured
+     tarballs themselves are NOT byte-identical — Maildir filename
+     schemes differ (IMAP uses `<ts>.<uid>_<safe-mb>:2,…`, JMAP uses
+     `<unix>.<safe-jmap-id>.<host>:2,…`) and pre-2026-05-23 JMAP
+     snapshots also lacked `.special-use` + `.keywords` sidecars. The
+     gzipped tarball SIZES happen to be ~0.6 MB for both because the
+     raw message bodies (the bulk of the bytes) ARE identical and gzip
+     compresses the filename differences down to noise. Restic-level
+     dedup ratios will reflect the body-equality, not the metadata
+     divergence.
 2. **Correctness wins** the JMAP path had silently degraded on:
    * **UTF-8 folder names** — "Geschäftlich" was renamed to "Gesch_ftlich" on JMAP restore until the 2026-05-22 `.imap-name` sidecar fix was mirrored from the IMAP path. IMAP preserves byte-for-byte.
    * **Custom IMAP keywords** (`$Junk`, `$Forwarded`, etc.) — JMAP dropped them; IMAP preserves them via `.keywords` sidecars.
