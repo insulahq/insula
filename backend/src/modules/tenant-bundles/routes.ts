@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { eq, desc, sql, inArray } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
-import { success } from '../../shared/response.js';
+import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans, tenantBackupSchedules } from '../../db/schema.js';
@@ -147,14 +147,16 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       });
     });
     const total = countRows[0]?.n ?? items.length;
-    return success({
-      data: items,
-      pagination: {
-        total_count: total,
-        cursor: hasMore ? items[items.length - 1]?.id ?? null : null,
-        has_more: hasMore,
-        page_size: limit,
-      },
+    // `paginated()` returns the canonical `{data, pagination}` envelope.
+    // The earlier `success({data: items, pagination})` produced a
+    // double-wrap (`{data: {data: items, pagination}}`) that the
+    // admin-panel TenantsBackupsPage decoded as a non-array `rows`
+    // prop, crashing with "e.rows.filter is not a function".
+    return paginated(items, {
+      total_count: total,
+      cursor: hasMore ? items[items.length - 1]?.id ?? null : null,
+      has_more: hasMore,
+      page_size: limit,
     });
   });
 
