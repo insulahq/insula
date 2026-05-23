@@ -47,6 +47,7 @@ import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
+import { resolveShimFirstBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { gunzipSync } from 'node:zlib';
 import { execConfigTablesItem } from './executors/config-tables.js';
 import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
@@ -601,7 +602,23 @@ async function loadBundle(app: FastifyInstance, bundleId: string) {
 
 async function resolveStoreForBundle(app: FastifyInstance, bundleId: string): Promise<BackupStore> {
   const job = await loadBundle(app, bundleId);
-  const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, job.targetConfigId!)).limit(1);
+  // B9 routing parity: tenant bundles are WRITTEN through the
+  // backup-rclone-shim regardless of upstream (S3/SFTP/CIFS/NFS).
+  // The restore READ must therefore also go through the shim,
+  // otherwise CIFS + NFS targets fail with `Store kind 'cifs' not
+  // supported` — the restore cart can only see s3+ssh directly.
+  // resolveShimFirstBackupStore tries the shim, falls back to the
+  // legacy cfg-direct resolver below when the shim isn't bootstrapped
+  // (fresh cluster, dev fixtures).
+  return resolveShimFirstBackupStore(
+    app, 'tenant',
+    () => resolveDirectStoreForBundle(app, job.targetConfigId!),
+    'tenant-backup-restore',
+  );
+}
+
+async function resolveDirectStoreForBundle(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+  const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
   const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
     ?? process.env.PLATFORM_ENCRYPTION_KEY;
