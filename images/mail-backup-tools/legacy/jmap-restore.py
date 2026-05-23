@@ -370,26 +370,91 @@ def list_mailboxes(client: JmapClient) -> Dict[str, Dict[str, Any]]:
     return {m["id"]: m for m in body.get("list", [])}
 
 
+# IMAP SPECIAL-USE attribute → JMAP Mailbox.role. Inverse of
+# jmap-sync.py:JMAP_ROLE_TO_SPECIAL_USE. Lower-case match because the
+# sidecar may contain either `\Sent` or `\sent`.
+IMAP_SPECIAL_USE_TO_ROLE = {
+    "\\sent": "sent",
+    "\\drafts": "drafts",
+    "\\trash": "trash",
+    "\\junk": "junk",
+    "\\archive": "archive",
+}
+
+
+def _parse_special_use_sidecar(folder_dir: str) -> Optional[str]:
+    """Read `<folder_dir>/.special-use` and map the IMAP attribute to a
+    JMAP role. Returns None when the sidecar is missing or unparseable.
+    The sidecar may carry multiple attributes space-separated (rare on
+    Stalwart) — we honour the first mapped one."""
+    sidecar = os.path.join(folder_dir, ".special-use")
+    if not os.path.isfile(sidecar):
+        return None
+    try:
+        with open(sidecar, encoding="utf-8") as f:
+            content = f.read().strip()
+    except OSError:
+        return None
+    for token in content.split():
+        role = IMAP_SPECIAL_USE_TO_ROLE.get(token.lower())
+        if role:
+            return role
+    return None
+
+
 def resolve_or_create_mailbox(client: JmapClient,
                               mailboxes: Dict[str, Dict[str, Any]],
                               name: str,
-                              created_log: List[str]) -> str:
+                              created_log: List[str],
+                              special_use_role: Optional[str] = None) -> str:
     """Find a mailbox by case-insensitive name match. INBOX matches the
-    role='inbox' mailbox regardless of name (i18n). If no match, create
-    a top-level mailbox with the given name and return its id."""
+    role='inbox' mailbox regardless of name (i18n). When the snapshot
+    carries a `.special-use` sidecar (post-2026-05-23 jmap-sync.py or
+    any imap-sync.py snapshot) the resolved role is also matched
+    against — restore prefers role-equality over name-equality so a
+    target named "Trash" still receives a snapshot folder labelled
+    "Deleted Items" if both have role=trash. If no match, create a
+    top-level mailbox with the given name AND the role hint."""
     name_lower = name.lower()
     if name_lower == "inbox":
         for mb in mailboxes.values():
             if mb.get("role") == "inbox":
                 return mb["id"]
+    # Role-first match — preserves user's mailbox layout when the
+    # snapshot was captured from a different localisation (e.g.
+    # source-side "Sent Items" snapshot lands in target-side
+    # "Gesendet" because both carry role=sent). When the snapshot
+    # contains TWO folders with the same role (e.g. an Outlook
+    # migration leaving both "Sent" and "Sent Items" with role=sent)
+    # they'll both resolve to the SAME target mailbox id, silently
+    # coalescing. That's the lesser-evil semantics versus refusing —
+    # the operator gets the data, just merged. Warn so it's not silent.
+    if special_use_role:
+        for mb in mailboxes.values():
+            if mb.get("role") == special_use_role:
+                target_name = mb.get("name") or "?"
+                if target_name.lower() != name_lower:
+                    sys.stderr.write(
+                        f"jmap-restore: WARNING snapshot folder {name!r} "
+                        f"matched target mailbox {target_name!r} by "
+                        f"role={special_use_role!r} (names differ). If "
+                        f"the snapshot contains multiple folders with "
+                        f"this role, their messages will be merged into "
+                        f"this single target mailbox.\n"
+                    )
+                return mb["id"]
     for mb in mailboxes.values():
         if (mb.get("name") or "").lower() == name_lower:
             return mb["id"]
-    # Create
+    # Create — emit role too when known so the new mailbox is restored
+    # with the same special-use semantics it had on the source.
+    create_obj: Dict[str, Any] = {"name": name, "parentId": None}
+    if special_use_role:
+        create_obj["role"] = special_use_role
     sr = client.call([[
         "Mailbox/set",
         {"accountId": client.account_id,
-         "create": {"new": {"name": name, "parentId": None}}},
+         "create": {"new": create_obj}},
         "0",
     ]])
     created = sr[0][1].get("created") or {}
@@ -397,7 +462,8 @@ def resolve_or_create_mailbox(client: JmapClient,
         notCreated = sr[0][1].get("notCreated") or {}
         raise JmapError("MAILBOX_CREATE", f"could not create {name!r}: {notCreated}")
     new_id = created["new"]["id"]
-    mailboxes[new_id] = {"id": new_id, "name": name, "role": None, "parentId": None}
+    mailboxes[new_id] = {"id": new_id, "name": name,
+                          "role": special_use_role, "parentId": None}
     created_log.append(name)
     return new_id
 
@@ -436,11 +502,31 @@ class _PendingImport:
         self.received_at = received_at
 
 
+def _read_keyword_sidecar(path: str) -> List[str]:
+    """Read `<path>.keywords` (one keyword per line). Returns the list
+    of custom keywords; empty list when the sidecar is missing or
+    unreadable. Mirrors imap-restore.py:_read_keyword_sidecar so
+    cross-engine restore preserves custom keywords."""
+    sidecar = path + ".keywords"
+    if not os.path.isfile(sidecar):
+        return []
+    try:
+        with open(sidecar, encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+    except OSError:
+        return []
+
+
 def _read_and_upload(path: str, client: JmapClient,
                      mailbox_id: str) -> Optional[_PendingImport]:
     """One worker iteration: read message file → Blob/upload → return
     a pending Email/import entry. Returns None if the message is empty
-    or the file disappeared (defence-in-depth)."""
+    or the file disappeared (defence-in-depth).
+
+    Augments the Maildir-suffix-derived keywords with any custom
+    keywords read from the `.keywords` sidecar — matches imap-restore.py
+    behaviour, so cross-engine snapshots (IMAP-captured snapshot
+    restored via this path) preserve $junk, $forwarded, etc."""
     try:
         with open(path, "rb") as f:
             raw = f.read()
@@ -449,6 +535,14 @@ def _read_and_upload(path: str, client: JmapClient,
     if not raw:
         return None
     keywords = maildir_flags_to_keywords(os.path.basename(path))
+    # Custom keyword sidecar — merge into the JMAP keywords map. Each
+    # entry becomes `{kw: True}` per the JMAP Email shape.
+    for extra in _read_keyword_sidecar(path):
+        # Normalise to lowercase — JMAP keywords are case-insensitive
+        # per RFC 8621 §4.1.1, but Stalwart stores them as-given;
+        # matching imap-sync.py's lowercase output keeps the round-trip
+        # stable.
+        keywords[extra.lower()] = True
     received_at = maildir_received_at(os.path.basename(path),
                                       os.path.getmtime(path))
     blob_id = client.upload_blob(raw, mime="message/rfc822")
@@ -488,7 +582,9 @@ def _flush_import(client: JmapClient,
 
 
 def _enumerate_messages(maildir_root: str,
-                        source_address: str) -> List[Tuple[str, str]]:
+                        source_address: str,
+                        special_use_by_mailbox: Optional[Dict[str, str]] = None
+                        ) -> List[Tuple[str, str]]:
     """Walk <root>/<source>/<mailbox>/{cur,new}/* and return a list of
     (mailbox_name, file_path) tuples.
 
@@ -498,6 +594,13 @@ def _enumerate_messages(maildir_root: str,
     — "Gesch_ftlich") when the sidecar is missing. A warning is logged in
     the legacy-name + contains-`_` case so the operator knows UTF-8
     fidelity may have been lost.
+
+    When `special_use_by_mailbox` is passed (a mutable dict), the function
+    populates it with `{mailbox_name: jmap_role}` for every folder that
+    has a `.special-use` sidecar. Callers use this to pass a role hint
+    into `resolve_or_create_mailbox` so the snapshot's Sent/Trash/etc
+    are restored as the right role even if the target locale renamed
+    the folder.
 
     Maildir spec also has /tmp but those are in-flight writes, not
     durable messages — skip them. Subfolders separated by '/' in JMAP
@@ -547,11 +650,28 @@ def _enumerate_messages(maildir_root: str,
                 "bundle to fix.\n"
             )
 
+        # Resolve the .special-use sidecar role hint (when caller wants
+        # it). Map IMAP attribute → JMAP role here so the resolver
+        # downstream doesn't need to know about IMAP at all.
+        if special_use_by_mailbox is not None:
+            role = _parse_special_use_sidecar(mb_dir)
+            if role:
+                special_use_by_mailbox[mailbox_name] = role
+
         for sub in ("cur", "new"):
             sub_dir = os.path.join(mb_dir, sub)
             if not os.path.isdir(sub_dir):
                 continue
             for fname in sorted(os.listdir(sub_dir)):
+                # `.keywords` files are per-message sidecars, NOT
+                # messages — without this skip we'd open them, fail to
+                # parse as RFC822, upload them as a blob, and
+                # `Email/import` them as phantom emails. imap-restore.py
+                # has the same guard at the same point. Also skip the
+                # `.part` tempfile produced by atomic writes that
+                # somehow survived a crash mid-rename.
+                if fname.endswith((".keywords", ".part")):
+                    continue
                 fpath = os.path.join(sub_dir, fname)
                 if os.path.isfile(fpath):
                     out.append((mailbox_name, fpath))
@@ -611,10 +731,15 @@ def run(args: argparse.Namespace) -> int:
             sys.stderr.write(f"jmap-restore: replace pre-purge failed: {e}\n")
             return 4
 
-    # 2. Enumerate the snapshot's Maildir files
-    files = _enumerate_messages(args.maildir_root, args.source_address)
+    # 2. Enumerate the snapshot's Maildir files + collect per-folder
+    #    .special-use role hints so resolve_or_create_mailbox can match
+    #    target mailboxes by role even when localised names differ.
+    special_use_by_mailbox: Dict[str, str] = {}
+    files = _enumerate_messages(args.maildir_root, args.source_address,
+                                 special_use_by_mailbox=special_use_by_mailbox)
     sys.stderr.write(f"jmap-restore: source={args.source_address} target={args.target_address} "
-                     f"files={len(files)} workers={args.workers}\n")
+                     f"files={len(files)} workers={args.workers} "
+                     f"special_use_hints={len(special_use_by_mailbox)}\n")
     if not files:
         sys.stdout.write(json.dumps({
             "address": args.target_address, "imported": 0, "skipped": 0,
@@ -628,7 +753,9 @@ def run(args: argparse.Namespace) -> int:
         if snapshot_mb in mb_resolution:
             continue
         mb_resolution[snapshot_mb] = resolve_or_create_mailbox(
-            client, mailboxes, snapshot_mb, created_mailboxes)
+            client, mailboxes, snapshot_mb, created_mailboxes,
+            special_use_role=special_use_by_mailbox.get(snapshot_mb),
+        )
 
     # 4. Optional dedup pass: if --dedup-by-message-id, scan headers and
     #    drop files whose Message-ID is already on the target. This
