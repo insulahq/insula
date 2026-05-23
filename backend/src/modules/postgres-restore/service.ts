@@ -1980,12 +1980,29 @@ export async function promotePostgresFromSnapshot(
       }).catch(() => undefined);
     }
 
-    await emitAdminNotification(
-      deps.db,
-      `PITR restore of ${inputs.clusterNamespace}/${inputs.clusterName} FAILED at step "${steps.at(-1)?.step}": ${errMsg}. ` +
-      `Inspect platform-api logs and the postgres Cluster CR. Source PVCs were Retain-policy so the underlying data still exists.`,
-      'Postgres PITR FAILED',
-    );
+    // Best-effort failure notification — wrapped so a DB connection
+    // error here (postgres briefly unreachable mid-cutover) doesn't
+    // MASK the original cause of failure. Live regression caught
+    // 2026-05-23 in sc2 harness: emitAdminNotification threw
+    // "Failed query: select id from users... ECONNREFUSED" because
+    // the new primary was still booting; that error replaced the
+    // REAL underlying error in the thrown exception, leaving the
+    // operator without diagnostic context AND blanking the chip
+    // (e.steps was never attached because emitAdminNotification
+    // threw before the attach below).
+    try {
+      await emitAdminNotification(
+        deps.db,
+        `PITR restore of ${inputs.clusterNamespace}/${inputs.clusterName} FAILED at step "${steps.at(-1)?.step}": ${errMsg}. ` +
+        `Inspect platform-api logs and the postgres Cluster CR. Source PVCs were Retain-policy so the underlying data still exists.`,
+        'Postgres PITR FAILED',
+      );
+    } catch (notifyErr) {
+      console.warn(JSON.stringify({
+        msg: 'pitr-job: failure-path admin notification ALSO failed (non-fatal — original error preserved)',
+        notifyError: (notifyErr as Error).message,
+      }));
+    }
 
     const e = err instanceof Error ? err : new Error(String(err));
     (e as Error & { steps?: PitrStep[] }).steps = steps;
