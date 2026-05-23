@@ -233,6 +233,99 @@ export async function finishByRef(
     .where(and(eq(tasks.kind, kind), eq(tasks.refId, refId)));
 }
 
+/**
+ * Finalize a task by `refId` with INSERT-or-UPDATE semantics. Use this
+ * when the underlying operation may have rebuilt the database the task
+ * row lived in (e.g. system-db PITR + barman-promote — the chip is
+ * created in system-db, then system-db gets recreated from a snapshot
+ * that pre-dates the chip insert, so a plain `finishByRef` UPDATE
+ * affects 0 rows and the chip is lost forever).
+ *
+ * Caller must supply the `recreate` block — enough metadata to
+ * fabricate the row from scratch when the original is missing. Because
+ * the chip was lost mid-operation, the original userId / scope / label
+ * are unknown to this code path; the caller passes the values it set
+ * when it ORIGINALLY called `start()` (typically held in env vars or
+ * passed into the orchestrator as inputs).
+ *
+ * Behavior:
+ *   - Always attempts INSERT with the terminal state
+ *   - ON CONFLICT (kind, ref_id): updates status / finished_at /
+ *     error_message / details (merges via JSONB ||); keeps the
+ *     ORIGINAL row's id / scope / userId / label / target — those
+ *     belong to the live UI binding.
+ */
+export interface TaskFinalizeByRefArgs extends TaskFinishArgs {
+  readonly recreate: {
+    readonly scope: TaskScope;
+    readonly userId: string | null;
+    readonly tenantId?: string | null;
+    readonly label: SafeText;
+    readonly target: TaskTarget;
+    readonly details?: Record<string, unknown> | null;
+  };
+}
+
+export async function finalizeByRef(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  refId: string,
+  args: TaskFinalizeByRefArgs,
+): Promise<void> {
+  if (args.recreate.scope === 'system' && args.recreate.userId !== null) {
+    throw new Error('tasks.finalizeByRef: scope=system requires user_id=null');
+  }
+  const id = crypto.randomUUID();
+  const finishedDetails = args.detailsPatch ?? null;
+  // Initial details on INSERT path = recreate.details merged with the
+  // terminal patch. On UPDATE path the column update below uses the
+  // same merge via JSONB ||.
+  const insertDetails: Record<string, unknown> | null = (() => {
+    const base = args.recreate.details ?? null;
+    if (!base && !finishedDetails) return null;
+    return { ...(base ?? {}), ...(finishedDetails ?? {}) };
+  })();
+
+  const finalProgressPct = args.status === 'succeeded' ? 100 : null;
+
+  await db
+    .insert(tasks)
+    .values({
+      id,
+      kind,
+      refId,
+      scope: args.recreate.scope,
+      userId: args.recreate.userId,
+      tenantId: args.recreate.tenantId ?? null,
+      label: args.recreate.label,
+      status: args.status,
+      progressPct: finalProgressPct,
+      progressText: args.text ?? null,
+      target: args.recreate.target as Record<string, unknown>,
+      errorMessage: args.error ?? null,
+      details: insertDetails as Record<string, unknown> | null,
+      startedAt: sql`NOW()`,
+      finishedAt: sql`NOW()`,
+      updatedAt: sql`NOW()`,
+      ...(args.clearImmediately ? { clearedAt: sql`NOW()` as never } : {}),
+    } as never)
+    .onConflictDoUpdate({
+      target: [tasks.kind, tasks.refId],
+      set: {
+        status: args.status,
+        finishedAt: sql`NOW()`,
+        updatedAt: sql`NOW()`,
+        errorMessage: args.error ?? null,
+        progressPct: args.status === 'succeeded' ? 100 : sql`progress_pct`,
+        ...(args.text !== undefined ? { progressText: args.text } : {}),
+        ...(finishedDetails !== null
+          ? { details: sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(finishedDetails)}::jsonb` }
+          : {}),
+        ...(args.clearImmediately ? { clearedAt: sql`NOW()` } : {}),
+      },
+    });
+}
+
 export async function finish(db: Database, id: string, args: TaskFinishArgs): Promise<void> {
   await db.update(tasks).set(buildFinishUpdate(args)).where(eq(tasks.id, id));
 }

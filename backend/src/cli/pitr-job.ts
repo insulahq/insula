@@ -156,16 +156,31 @@ async function main(): Promise<void> {
     // didn't do this, so chips stayed in `running` forever. Phase 3.1
     // closes that loop for both PITR and barman-promote.
     //
-    // 2026-05-23 follow-up: persist the FULL step timeline + final
+    // 2026-05-23 follow-up A: persist the FULL step timeline + final
     // outcome into tasks.details so the PitrProgressModal can render
     // the historical timeline when re-opened from the chip AFTER the
     // PersistedLock has been cleared (which is the moment promote
     // completes). Without this, clicking the green chip post-success
     // showed an empty modal — exactly what the operator reported.
-    if (jobNameForChip) {
+    //
+    // 2026-05-23 follow-up B: use finalizeByRef (INSERT-or-UPDATE)
+    // instead of finishByRef (UPDATE-only). When a PITR rebuilds the
+    // SAME cluster that holds the chip table (system-db restoring
+    // system-db), the cutover replaces the live DB with a snapshot
+    // that pre-dates the chip insert — `finishByRef` then updates 0
+    // rows and the chip is LOST forever. finalizeByRef does an upsert
+    // with all the metadata needed to recreate the row, so the chip
+    // survives self-cluster PITR. Live regression caught on staging
+    // 2026-05-23: after a system-db PITR completed, the chip simply
+    // didn't exist in the post-cutover tasks table.
+    if (jobNameForChip && actorUserId) {
       try {
         const tasksMod = await import('../modules/tasks/service.js');
-        await tasksMod.finishByRef(db, chipKind, jobNameForChip, {
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const label = isPromoteMode
+          ? toSafeText(`Postgres barman-promote (${clusterNamespace}/${clusterName})`)
+          : toSafeText(`Postgres PITR (${clusterNamespace}/${clusterName})`);
+        await tasksMod.finalizeByRef(db, chipKind, jobNameForChip, {
           status: 'succeeded',
           detailsPatch: {
             steps: result.steps,
@@ -173,6 +188,25 @@ async function main(): Promise<void> {
             mode: isPromoteMode ? 'barman-promote' : 'pitr',
             clusterName: result.clusterName,
             snapshotName: result.snapshotName,
+          },
+          recreate: {
+            scope: 'admin' as const,
+            userId: actorUserId,
+            label,
+            target: {
+              type: 'modal' as const,
+              modal: 'pitr-progress',
+              modalProps: {
+                jobName: jobNameForChip,
+                clusterNamespace,
+                clusterName,
+              },
+            },
+            details: {
+              clusterNamespace,
+              clusterName,
+              snapshotName,
+            },
           },
         });
       } catch (chipErr) {
@@ -199,10 +233,16 @@ async function main(): Promise<void> {
     // instead of a forever-spinning one. Also persist whatever
     // step-timeline the orchestrator emitted before failing — the
     // modal needs this to show WHICH step failed when re-opened.
-    if (jobNameForChip) {
+    // Same finalizeByRef upsert as the success path: handles the
+    // case where the chip's home DB was rebuilt mid-orchestration.
+    if (jobNameForChip && actorUserId) {
       try {
         const tasksMod = await import('../modules/tasks/service.js');
-        await tasksMod.finishByRef(db, chipKind, jobNameForChip, {
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const label = isPromoteMode
+          ? toSafeText(`Postgres barman-promote (${clusterNamespace}/${clusterName})`)
+          : toSafeText(`Postgres PITR (${clusterNamespace}/${clusterName})`);
+        await tasksMod.finalizeByRef(db, chipKind, jobNameForChip, {
           status: 'failed',
           error: e.message,
           detailsPatch: {
@@ -210,6 +250,21 @@ async function main(): Promise<void> {
             finishedAtIso: new Date().toISOString(),
             mode: isPromoteMode ? 'barman-promote' : 'pitr',
             failedAtStep: e.steps && e.steps.length > 0 ? e.steps[e.steps.length - 1]?.step : null,
+          },
+          recreate: {
+            scope: 'admin' as const,
+            userId: actorUserId,
+            label,
+            target: {
+              type: 'modal' as const,
+              modal: 'pitr-progress',
+              modalProps: {
+                jobName: jobNameForChip,
+                clusterNamespace,
+                clusterName,
+              },
+            },
+            details: { clusterNamespace, clusterName, snapshotName },
           },
         });
       } catch { /* best-effort */ }

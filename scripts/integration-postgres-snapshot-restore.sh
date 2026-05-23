@@ -76,7 +76,7 @@ if [[ -f "$(dirname "$0")/lib/integration-token.sh" ]]; then
   source "$(dirname "$0")/lib/integration-token.sh"
 fi
 
-ssh_cmd() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o LogLevel=ERROR "$STAGING_SSH" "$@"; }
+ssh_cmd() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 "$STAGING_SSH" "$@"; }
 
 pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; FAILED=$((FAILED+1)); }
@@ -278,11 +278,14 @@ fi
 # ─── Plugin sidecar must be on the new pod (no manual kubectl delete) ─
 hdr "Plugin sidecar propagation (FAST recovery — no manual pod-bounce)"
 PLUGINS_IN_SPEC=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $CLUSTER_NAME -o jsonpath='{.spec.plugins}'")
-POD_CONTAINERS=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get pod $NEW_PRIMARY -o jsonpath='{range .spec.containers[*]}{.name}{\" \"}{end}'")
+# CNPG plugins run as `restartPolicy: Always` init-containers (k8s 1.28+
+# native sidecar pattern), NOT as regular containers. Check both fields
+# so the harness is robust to upstream CNPG container-placement changes.
+ALL_CONTAINERS=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get pod $NEW_PRIMARY -o jsonpath='{range .spec.containers[*]}{.name}{\" \"}{end}|{range .spec.initContainers[*]}{.name}{\" \"}{end}'")
 info "spec.plugins: $(echo "$PLUGINS_IN_SPEC" | head -c 120)"
-info "pod containers: $POD_CONTAINERS"
+info "pod containers+init: $ALL_CONTAINERS"
 if [[ -n "$PLUGINS_IN_SPEC" ]] && [[ "$PLUGINS_IN_SPEC" != "null" ]] && [[ "$PLUGINS_IN_SPEC" != "[]" ]]; then
-  if printf '%s' "$POD_CONTAINERS" | grep -q "plugin-barman-cloud"; then
+  if printf '%s' "$ALL_CONTAINERS" | grep -q "plugin-barman-cloud"; then
     pass "plugin-barman-cloud sidecar PRESENT on new pod (no manual bounce needed)"
   else
     fail "plugin-barman-cloud sidecar MISSING — buildRecoveryCluster did not propagate spec.plugins"
