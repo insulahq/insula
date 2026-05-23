@@ -265,7 +265,48 @@ export async function isPostgresRestoreInProgressClusterWide(
  * 'postgres.barman-promote' — releasePitrLock must finalize the right
  * chip when rolling back a promote. Phase 3.1 follow-up (2026-05-23).
  */
-export async function releasePitrLock(db: Database, opts: { failed?: boolean; error?: string | null; taskKind?: 'postgres.pitr' | 'postgres.barman-promote' } = {}): Promise<void> {
+/**
+ * Release the PITR lock.
+ *
+ * 2026-05-23 follow-up (sc1b harness regression): when called with
+ * `expectedSnapshot` (the snapshot name THIS caller acquired the lock
+ * for), the helper FIRST checks the persisted lock's snapshot field
+ * matches before clearing. If a different snapshot is held, the lock
+ * belongs to a NEWER PITR job + this caller (typically the watchdog
+ * cleaning up an OLD stuck Job) must NOT clear it. Without this, the
+ * watchdog stale-Job sweep was wiping the active lock of a fresh PITR
+ * run, causing pitr-job to fail-fast with "PITR_LOCK_HELD=true but no
+ * persisted lock".
+ *
+ * Callers WITHOUT expectedSnapshot (the orchestrator's own finally
+ * block, route-handler error paths) retain the original unconditional
+ * clear behavior — those are guaranteed-correct contexts where the
+ * lock is known to belong to this caller.
+ */
+export async function releasePitrLock(
+  db: Database,
+  opts: {
+    failed?: boolean;
+    error?: string | null;
+    taskKind?: 'postgres.pitr' | 'postgres.barman-promote';
+    /** When set, only release the lock if its snapshot field matches.
+     *  Use this from the watchdog so we don't clobber an active PITR's
+     *  lock when finalizing a stale Job. */
+    expectedSnapshot?: string;
+  } = {},
+): Promise<void> {
+  // Snapshot-targeted release: bail if the live lock belongs to a
+  // different snapshot (a fresh PITR has taken over).
+  if (opts.expectedSnapshot) {
+    const persisted = await readPersistedLock(db).catch(() => null);
+    if (persisted && persisted.snapshot !== opts.expectedSnapshot) {
+      // Active lock belongs to a different (newer) PITR run — leave it.
+      // We can still finalize OUR chip (matched by refId in finalizeByRef
+      // — called separately by the watchdog before this).
+      return;
+    }
+  }
+
   activeRestore = null;
   await clearPersistedLock(db).catch(() => undefined);
 
