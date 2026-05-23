@@ -513,14 +513,32 @@ function Step3Confirm({
         Verify the restored data (psql, dumps), then either keep both clusters or
         delete the side-by-side one with the Delete button that appears post-restore.
       </div>
-      {targetTime && (
+      {targetTime ? (
         <div className="rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200">
-          <strong>WAL-gap mitigation active.</strong> Because you set a recovery target time,
-          the backend will automatically trigger a fresh CNPG backup before restoring — this
-          shrinks the WAL replay gap so recovery completes within CNPG's bootstrap timeout.
-          The fresh backup takes 30-180s for small databases. If it fails (object-store
-          unreachable, etc.) the restore proceeds anyway and you'll see a warning + a
-          manual <code className="font-mono">kubectl cnpg backup</code> command in the next step.
+          <div className="font-semibold">Expected timeline (with WAL replay to target time)</div>
+          <ol className="mt-1.5 ml-4 list-decimal space-y-0.5 text-indigo-700 dark:text-indigo-300">
+            <li><span className="font-mono">~30-180s</span> — auto-fresh-backup mitigation (closes WAL gap so CNPG's ~2-min recovery-pod timeout doesn't fire). Skips automatically if your target time is older than the most recent backup.</li>
+            <li><span className="font-mono">~1-2 min</span> — CNPG downloads base backup from object store</li>
+            <li><span className="font-mono">depends on WAL volume</span> — replay WAL forward to your target. Per-day-of-WAL ≈ ~1-3 min on small clusters.</li>
+            <li><span className="font-mono">~30s</span> — promote primary + ready signal</li>
+          </ol>
+          <div className="mt-1.5">
+            <strong>Total: ~5-10 min</strong> when target is recent (≤1h gap from last backup).
+            Longer for older targets — see the per-WAL-day estimate above.
+          </div>
+          <div className="mt-1.5 text-indigo-600 dark:text-indigo-400">
+            If the fresh-backup mitigation can't run (object-store unreachable, RBAC issue, etc.) the restore proceeds anyway — you'll see an amber warning + the manual <code className="font-mono">kubectl cnpg backup</code> command in the InFlight panel.
+          </div>
+        </div>
+      ) : (
+        <div className="rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200">
+          <div className="font-semibold">Expected timeline (no WAL replay — bootstrap to latest backup LSN)</div>
+          <ol className="mt-1.5 ml-4 list-decimal space-y-0.5 text-indigo-700 dark:text-indigo-300">
+            <li><span className="font-mono">~1-2 min</span> — CNPG downloads base backup from object store</li>
+            <li><span className="font-mono">~0s</span> — no WAL replay (you didn't set a target time)</li>
+            <li><span className="font-mono">~30s</span> — promote primary + ready signal</li>
+          </ol>
+          <div className="mt-1.5"><strong>Total: ~2-3 min</strong> for small clusters. The restored cluster will be at the most recent backup's stop_LSN — any data written AFTER that backup is NOT in the restore.</div>
         </div>
       )}
       {/* P4c — WAL streaming reach indicator. Tells the operator the
