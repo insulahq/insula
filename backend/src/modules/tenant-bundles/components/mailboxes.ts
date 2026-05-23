@@ -111,7 +111,16 @@ export interface CaptureMailboxesComponentOpts {
   readonly jmapEndpoint?: string;        // defaults to http://stalwart-mgmt.mail.svc.cluster.local:8080
   readonly imapHost?: string;            // defaults to stalwart-mail.mail.svc.cluster.local
   readonly imapPort?: number;            // defaults to 993
-  readonly stalwartMasterUser?: string;  // defaults to 'master@master.local' (FQ)
+  /**
+   * Stalwart master-user FQDN. REQUIRED — must be passed by the
+   * caller (resolved from `mail/mail-secrets.STALWART_MASTER_USER` via
+   * `readStalwartMasterUser` in `mail-admin/stalwart-master-user.ts`).
+   * The historical optional + `MASTER_USER_DEFAULT` fallback silently
+   * downgraded to `master@master.local` and broke every non-test
+   * cluster — making this required forces the caller to think about
+   * which value Stalwart actually has provisioned.
+   */
+  readonly stalwartMasterUser: string;
   readonly masterSecretName?: string;    // defaults to 'mail-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
   readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
@@ -135,7 +144,10 @@ const MAIL_NAMESPACE_DEFAULT = 'mail';
 const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
-const MASTER_USER_DEFAULT = 'master@master.local';
+// MASTER_USER_DEFAULT intentionally removed 2026-05-23 — see
+// CaptureMailboxesComponentOpts.stalwartMasterUser doc + the
+// readStalwartMasterUser helper. The orchestrator is now the single
+// source-of-truth for the master FQDN.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
@@ -614,7 +626,7 @@ export async function captureMailboxesComponent(
       jmapEndpoint: opts.jmapEndpoint ?? JMAP_ENDPOINT_DEFAULT,
       imapHost: opts.imapHost ?? IMAP_HOST_DEFAULT,
       imapPort: opts.imapPort ?? IMAP_PORT_DEFAULT,
-      stalwartMasterUser: opts.stalwartMasterUser ?? MASTER_USER_DEFAULT,
+      stalwartMasterUser: opts.stalwartMasterUser,
       masterSecretName: opts.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
       masterSecretKey: opts.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
       uploadUrlNoToken,
