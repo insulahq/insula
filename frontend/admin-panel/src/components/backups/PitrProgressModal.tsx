@@ -28,6 +28,19 @@ import type { PitrStep } from '@k8s-hosting/api-contracts';
 interface Props {
   readonly jobName: string;
   readonly onClose: () => void;
+  /**
+   * When re-opened from the task-center chip AFTER the PITR has
+   * finished, the live `/admin/postgres-restore/status` endpoint
+   * returns `inProgress: false` with no progressSteps — the
+   * PersistedLock was cleared on success. The task-center chip
+   * supplies the historical steps via `taskDetails.steps` (persisted
+   * by pitr-job.ts:finishByRef on terminal exit). These props are
+   * optional because the modal also opens FRESH (mid-run) from the
+   * restore wizards, which haven't created the chip yet.
+   */
+  readonly taskStatus?: 'queued' | 'running' | 'succeeded' | 'failed';
+  readonly taskDetails?: Record<string, unknown> | null;
+  readonly taskFinishedAt?: string | null;
 }
 
 /**
@@ -77,7 +90,7 @@ function fmtElapsedFromIso(iso: string, now: number): string {
   return fmtElapsed(elapsed);
 }
 
-export default function PitrProgressModal({ jobName, onClose }: Props) {
+export default function PitrProgressModal({ jobName, onClose, taskStatus, taskDetails, taskFinishedAt }: Props) {
   // Use a clock tick so the running step's elapsed time updates every second.
   const [now, setNow] = useState<number>(Date.now());
   useEffect(() => {
@@ -85,10 +98,28 @@ export default function PitrProgressModal({ jobName, onClose }: Props) {
     return () => clearInterval(t);
   }, []);
 
-  const statusQ = useRestoreStatus({ enabled: true });
+  // When the chip is in a terminal state, we already know progress
+  // streaming is over. Stop polling /status (which would return
+  // inProgress:false anyway) and rely on `taskDetails.steps` —
+  // captured at finalize time by pitr-job.ts:finishByRef.
+  const isChipTerminal = taskStatus === 'succeeded' || taskStatus === 'failed';
+  const statusQ = useRestoreStatus({ enabled: !isChipTerminal });
   const s = statusQ.data?.data;
-  const progressSteps = (s?.progressSteps ?? []) as ReadonlyArray<PitrStep>;
-  const inFlight = s?.progressInFlight;
+
+  // Fallback chain for the step timeline:
+  //   1. Live status (when inProgress=true) → preferred
+  //   2. Task chip's persisted details.steps (when chip is terminal)
+  //   3. Empty (during a brief gap between status clear + chip update)
+  const liveSteps = (s?.progressSteps ?? []) as ReadonlyArray<PitrStep>;
+  const historicalSteps = (() => {
+    const raw = (taskDetails as { steps?: unknown } | null | undefined)?.steps;
+    if (!Array.isArray(raw)) return [] as ReadonlyArray<PitrStep>;
+    // Trust the shape — backend types via PitrStep already; this is
+    // defensive narrowing for the unknown-typed details record.
+    return raw as ReadonlyArray<PitrStep>;
+  })();
+  const progressSteps: ReadonlyArray<PitrStep> = liveSteps.length > 0 ? liveSteps : historicalSteps;
+  const inFlight = isChipTerminal ? undefined : s?.progressInFlight;
   const phase = s?.phase;
 
   // Render order: union of expected order + any custom-emitted steps,
@@ -111,9 +142,16 @@ export default function PitrProgressModal({ jobName, onClose }: Props) {
     return out;
   }, [progressSteps]);
 
-  const isDone = s !== undefined && s.inProgress === false;
+  // "Done" = either the live status reports inProgress=false, OR the
+  // chip itself is in a terminal state (chip is authoritative when the
+  // modal opens AFTER orchestration finished + the PersistedLock has
+  // been cleared, since /status would just return inProgress:false
+  // without any progressSteps).
+  const isDone = isChipTerminal || (s !== undefined && s.inProgress === false);
   const lastStep = progressSteps[progressSteps.length - 1];
-  const failed = lastStep?.ok === false || progressSteps.some((p) => p.step === 'orchestration-failed');
+  const failed = taskStatus === 'failed'
+    || lastStep?.ok === false
+    || progressSteps.some((p) => p.step === 'orchestration-failed');
 
   return (
     <div
@@ -132,6 +170,11 @@ export default function PitrProgressModal({ jobName, onClose }: Props) {
             <p className="text-xs text-gray-500 dark:text-gray-400">
               <span className="font-mono">{jobName}</span>
               {phase && <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] uppercase dark:bg-gray-700">phase: {phase}</span>}
+              {isChipTerminal && taskFinishedAt && (
+                <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">
+                  finished {new Date(taskFinishedAt).toLocaleString()}
+                </span>
+              )}
             </p>
           </div>
           <button
