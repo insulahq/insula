@@ -43,6 +43,7 @@ import {
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
+import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import { decrypt } from '../oidc/crypto.js';
 
 export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void> {
@@ -262,6 +263,17 @@ function toComponentInfo(c: typeof backupComponents.$inferSelect): BackupCompone
 }
 
 async function resolveStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+  // B9 shim-first: cifs/nfs upstreams are mediated by the rclone-shim.
+  // Falls back to direct cfg-based resolver below for s3/ssh when the
+  // shim isn't bootstrapped on this cluster.
+  return resolveShimFirstBackupStore(
+    app, 'tenant',
+    () => resolveDirectStore(app, targetConfigId),
+    'tenant-bundles tenant',
+  );
+}
+
+async function resolveDirectStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
   const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
