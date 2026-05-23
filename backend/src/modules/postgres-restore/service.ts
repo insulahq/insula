@@ -580,7 +580,10 @@ interface CnpgCluster {
 }
 
 interface RawSnap {
-  readonly metadata?: { readonly creationTimestamp?: string };
+  readonly metadata?: {
+    readonly creationTimestamp?: string;
+    readonly labels?: Readonly<Record<string, string>>;
+  };
   readonly status?: { readonly creationTime?: string; readonly readyToUse?: boolean };
   readonly spec?: { readonly volume?: string };
 }
@@ -993,15 +996,29 @@ async function preflight(
   }
 
   // Membership: snap.spec.volume must equal a PVC in this cluster
-  // (we read CNPG-managed PVCs via the cnpg.io/cluster label)
-  const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
-    namespace: inputs.clusterNamespace,
-    labelSelector: `cnpg.io/cluster=${inputs.clusterName}`,
-  } as unknown as Parameters<typeof k8s.core.listNamespacedPersistentVolumeClaim>[0]) as { items?: ReadonlyArray<{ metadata?: { name?: string }; spec?: { volumeName?: string } }> };
-  const matchingPvcName = pvcs.items?.find((p) => p.spec?.volumeName === snap.spec?.volume)?.metadata?.name;
-  if (!matchingPvcName) {
-    const e = new Error(`Snapshot ${inputs.snapshotName} does not belong to any PVC in cluster ${inputs.clusterNamespace}/${inputs.clusterName}`);
-    (e as Error & { code?: number }).code = 409; throw e;
+  // (we read CNPG-managed PVCs via the cnpg.io/cluster label).
+  //
+  // EXCEPTION: snapshots produced by Phase 3.1 barman-promote (labeled
+  // `platform.example.test/barman-promote=true`) are sourced from
+  // the RESTORED side-by-side cluster's PVC, NOT the source cluster.
+  // That's the whole point of promote — replace source data with the
+  // restored cluster's data. The membership check would always fail
+  // for these snapshots. Operator hint: don't loosen the check further;
+  // the label is server-set on the Longhorn Snapshot CR by
+  // barman-restore service when it takes the snapshot, so it can't be
+  // spoofed by a UI submission.
+  const isBarmanPromoteSnapshot = snap.metadata?.labels?.['platform.example.test/barman-promote'] === 'true';
+  let matchingPvcName: string | undefined;
+  if (!isBarmanPromoteSnapshot) {
+    const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
+      namespace: inputs.clusterNamespace,
+      labelSelector: `cnpg.io/cluster=${inputs.clusterName}`,
+    } as unknown as Parameters<typeof k8s.core.listNamespacedPersistentVolumeClaim>[0]) as { items?: ReadonlyArray<{ metadata?: { name?: string }; spec?: { volumeName?: string } }> };
+    matchingPvcName = pvcs.items?.find((p) => p.spec?.volumeName === snap.spec?.volume)?.metadata?.name;
+    if (!matchingPvcName) {
+      const e = new Error(`Snapshot ${inputs.snapshotName} does not belong to any PVC in cluster ${inputs.clusterNamespace}/${inputs.clusterName}`);
+      (e as Error & { code?: number }).code = 409; throw e;
+    }
   }
 
   if (inputs.recoveryTargetTime) {
@@ -1029,7 +1046,13 @@ async function preflight(
     steps.push({ step: 'preflight-wal-coverage', ok: true, elapsedMs: nowMs() - t0, detail: 'no PITR target — restoring to snapshot LSN' });
   }
 
-  return { snap, cluster, primaryPvc: matchingPvcName };
+  // For barman-promote snapshots, the snapshot is from a DIFFERENT
+  // cluster, so the membership check is skipped + matchingPvcName is
+  // undefined. Fall back to the source cluster's currentPrimary —
+  // primaryPvc is only used for log step detail ("primary=…"), not for
+  // any actual operation downstream. The orchestrator already knows
+  // which cluster to recreate (inputs.clusterName).
+  return { snap, cluster, primaryPvc: matchingPvcName ?? primaryPvc };
 }
 
 /**
