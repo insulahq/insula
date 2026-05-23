@@ -258,6 +258,52 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(createCall[0].body.spec.template.spec.containers[0].image).toBe('ghcr.io/test/backend:abc123');
   });
 
+  it('buildRecoveryCluster propagates spec.plugins on rebuild (FAST recovery — no sidecar miss)', async () => {
+    // The Phase 3.1 promote (and Phase 1 PITR) recreate the source
+    // cluster from a snapshot. If spec.plugins is not carried over, the
+    // first pod is created WITHOUT the plugin-barman-cloud sidecar. Then
+    // Flux resumes + adds plugins to the live spec, but CNPG's plugin
+    // sidecar injection only fires at POD CREATION via an admission
+    // webhook — so the pod runs without the sidecar forever and the
+    // instance-manager logs "Unknown plugin: barman-cloud.cloudnative-pg.io".
+    // Caught LIVE on staging 2026-05-23.
+    //
+    // The fix: buildRecoveryCluster propagates source.spec.plugins
+    // when isTemp=false (rebuilt production cluster). When isTemp=true
+    // (transient WAL-replay scratch cluster) plugins are still omitted —
+    // a temp cluster has no business archiving.
+    const { buildRecoveryCluster } = await import('./service.js');
+    const srcWithPlugins = {
+      metadata: { name: 'postgres', namespace: 'platform' },
+      spec: {
+        instances: 3,
+        storage: { size: '10Gi' },
+        bootstrap: { initdb: { database: 'hp', owner: 'p', secret: { name: 's' } } },
+        plugins: [
+          { enabled: true, isWALArchiver: false, name: 'barman-cloud.cloudnative-pg.io', parameters: { barmanObjectName: 'my-store' } },
+        ],
+      } as never, // narrow type just for the test
+    };
+    const rebuiltBody = buildRecoveryCluster(srcWithPlugins as never, 'postgres', 'platform', 'vs-snap', null, 1, false /* isTemp */) as { spec: { plugins?: unknown[] } };
+    expect(Array.isArray(rebuiltBody.spec.plugins)).toBe(true);
+    expect(rebuiltBody.spec.plugins).toHaveLength(1);
+
+    const tempBody = buildRecoveryCluster(srcWithPlugins as never, 'postgres-pitr-1234', 'platform', 'vs-snap', null, 1, true /* isTemp */) as { spec: { plugins?: unknown[] } };
+    expect(tempBody.spec.plugins).toBeUndefined();
+
+    // Source without plugins must still produce a valid CR (plugins absent in output).
+    const srcNoPlugins = {
+      metadata: { name: 'postgres', namespace: 'platform' },
+      spec: {
+        instances: 3,
+        storage: { size: '10Gi' },
+        bootstrap: { initdb: { database: 'hp', owner: 'p', secret: { name: 's' } } },
+      } as never,
+    };
+    const noPluginRebuild = buildRecoveryCluster(srcNoPlugins as never, 'postgres', 'platform', 'vs-snap', null, 1, false) as { spec: { plugins?: unknown[] } };
+    expect(noPluginRebuild.spec.plugins).toBeUndefined();
+  });
+
   it('getPlatformApiImage reads image from live Deployment', async () => {
     const k8s = makeK8s();
     const image = await getPlatformApiImage(k8s);
