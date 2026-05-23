@@ -942,6 +942,55 @@ async function waitClusterHealthy(
   return { ok: false, phase: lastPhase, primary: lastPrimary };
 }
 
+/**
+ * Wait for the cluster to be FULLY stable — all desired replicas
+ * ready AND no in-flight pod rolling restart. Used at end of HA
+ * orchestration to absorb CNPG's post-scale-up UpgradingInstance
+ * cycle into the orchestrator's wall-clock (2026-05-23 follow-up
+ * to Task #94 — without this, operator sees the chip turn green
+ * + then watches the cluster oscillate for 3-5 minutes as CNPG
+ * rolls the primary one last time post-replica-bootstrap).
+ *
+ * Predicate:
+ *   - readyInstances >= desiredInstances (HA achieved)
+ *   - currentPrimary set (a leader exists)
+ *   - phase string does NOT contain "restarted" / "Upgrading"
+ *
+ * Best-effort: returns ok=false on timeout but does NOT throw.
+ * Caller logs the result as a step and continues — the cluster is
+ * still functionally up (primary serves), just oscillating, and
+ * operator can verify via /cluster status if needed.
+ */
+async function waitClusterFullyStable(
+  k8s: K8sClients,
+  namespace: string,
+  clusterName: string,
+  desiredInstances: number,
+  timeoutMs: number,
+): Promise<{ readonly ok: boolean; readonly phase?: string; readonly ready?: number; readonly primary?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastPhase: string | undefined;
+  let lastPrimary: string | undefined;
+  let lastReady = 0;
+  while (Date.now() < deadline) {
+    try {
+      const c = await getCustom<CnpgCluster>(k8s, {
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'clusters', name: clusterName,
+      });
+      lastPhase = c.status?.phase;
+      lastPrimary = c.status?.currentPrimary;
+      lastReady = c.status?.readyInstances ?? 0;
+      const phaseSettled = !!lastPhase
+        && !/restarted|Upgrading|Creating|Setting up|Waiting for the instances/.test(lastPhase);
+      if (lastReady >= desiredInstances && lastPrimary && phaseSettled) {
+        return { ok: true, phase: lastPhase, ready: lastReady, primary: lastPrimary };
+      }
+    } catch { /* keep polling */ }
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  return { ok: false, phase: lastPhase, ready: lastReady, primary: lastPrimary };
+}
+
 async function emitAdminNotification(
   db: Database,
   message: string,
@@ -1693,6 +1742,49 @@ export async function promotePostgresFromSnapshot(
         // Don't throw — primary is up + data is restored. Scale-up
         // failure is non-fatal, surfaced as an operator-actionable step.
       }
+    }
+
+    // 8a.2 Wait for HA to fully stabilize (Task #94 2026-05-23).
+    //
+    // Without this wait, the orchestrator declares done as soon as the
+    // primary is up, but CNPG fires an UpgradingInstance event ~60s
+    // after the last replica becomes ready (live-captured on staging:
+    // 17:00:40 CreatingInstance system-db-3 → 17:01:38
+    // UpgradingInstance system-db-1). The primary then rolls in-place
+    // for 3-5 min — the operator sees the task-center chip turn green
+    // while the cluster spec.phase oscillates through "Primary instance
+    // is being restarted without a switchover" → "Cluster in healthy
+    // state". Confusing UX: "chip says done but cluster says no".
+    //
+    // This wait ABSORBS that rolling cycle into the orchestrator's
+    // wall-clock so chip-green == cluster-actually-healthy. Trade-off
+    // is +3-5 min on the orchestration timer for HA clusters.
+    // Single-instance clusters (targetInstances == 1) skip — no
+    // replica scale-up, no upgrade cycle.
+    //
+    // Operator escape hatch: PITR_SKIP_HA_STABLE_WAIT=true on the
+    // platform-api Deploy env restores the original "fast chip-green +
+    // oscillate after" behavior for users who'd rather see the chip
+    // settle quickly + tolerate the post-orchestration cycle.
+    if (targetInstances > 1 && process.env.PITR_SKIP_HA_STABLE_WAIT !== 'true') {
+      const t8a2 = nowMs();
+      markInFlight('wait-ha-stable');
+      const stableTimeoutMs = 8 * 60_000;
+      const stable = await waitClusterFullyStable(
+        deps.k8s, inputs.clusterNamespace, inputs.clusterName,
+        targetInstances, stableTimeoutMs,
+      );
+      recordStep({
+        step: 'wait-ha-stable',
+        ok: stable.ok,
+        elapsedMs: nowMs() - t8a2,
+        detail: stable.ok
+          ? `cluster fully stable: ready=${stable.ready}/${targetInstances} phase=${stable.phase ?? '?'}`
+          : `cluster did not fully stabilize within ${Math.round(stableTimeoutMs / 1000)}s (ready=${stable.ready}/${targetInstances} phase=${stable.phase ?? '?'}). Primary IS up — operator can monitor convergence via /cluster status.`,
+      });
+      // Non-fatal — primary is up + serving even if CNPG is still
+      // rolling some replicas in background. The detail string tells
+      // the operator the convergence state.
     }
 
     // 8b. Normalize spec.bootstrap so Flux's apply of the original git
