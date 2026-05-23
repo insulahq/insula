@@ -138,18 +138,20 @@ Every cluster polls for new versions and applies them itself. No CI workflow pus
 
 ---
 
-## 4. Architecture — Operator CLI (`platform-ops` Go binary)
+## 4. Architecture — Operator CLI (`platform-ops` TypeScript binary)
 
-For failure modes (cluster partly/fully down), per-node diagnostics, and operator-initiated operations that don't go through the admin UI. **Not a daemon.** **Not a container.** A statically-linked Go binary that runs on demand.
+For failure modes (cluster partly/fully down), per-node diagnostics, and operator-initiated operations that don't go through the admin UI. **Not a daemon.** **Not a container.** A self-contained TypeScript binary (packaged via `pkg` or `bun build --compile`) that runs on demand. Imports the same backend TS modules the in-cluster controllers use — zero logic duplication.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │   Node (always installed by bootstrap.sh)                │
 │                                                          │
-│   /usr/local/bin/platform-ops    (~30–50 MB static Go    │
-│                                   binary; vendored:      │
-│                                   client-go, rclone,     │
-│                                   age, cosign)           │
+│   /usr/local/bin/platform-ops    (~50–80 MB self-        │
+│                                   contained TS binary    │
+│                                   produced by pkg or     │
+│                                   bun build --compile;   │
+│                                   imports backend TS     │
+│                                   modules directly)      │
 │                                                          │
 │   /etc/platform/cosign.pub        (verification key)     │
 │   /etc/platform/VERSION           (currently installed)  │
@@ -157,14 +159,20 @@ For failure modes (cluster partly/fully down), per-node diagnostics, and operato
 │   /etc/systemd/system/                                   │
 │     platform-ops-update.timer     (fires daily)          │
 │     platform-ops-update.service   (oneshot;              │
-│                                    ~5s; cosign-verifies; │
+│                                    cosign-verifies;      │
 │                                    atomic replace)       │
 │                                                          │
 │   Bootstrap-ensured tools on host:                       │
 │     kubectl (ships with k3s), age, jq, rsync,            │
 │     postgresql-client, openssl, crictl                   │
 │                                                          │
-│   24/7 idle cost: 0 RAM, ~50 MB disk                     │
+│   24/7 idle cost: 0 RAM, ~80 MB disk                     │
+│                                                          │
+│   Optional: ~500-LOC Go wrapper handles ONLY the         │
+│   self-upgrade + cosign-verify loop, for static-binary   │
+│   purity on the security-critical bit. The Go wrapper    │
+│   chains to the TS binary for all subcommands. Adds      │
+│   ~1 week; deferred unless needed.                       │
 │                                                          │
 │   Subcommands (all run as invoking user; sudo for        │
 │   privileged ops):                                       │
@@ -184,7 +192,9 @@ For failure modes (cluster partly/fully down), per-node diagnostics, and operato
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Code-sharing**: the same binary is mounted into in-cluster controller pods. Controllers shell out to `platform-ops <subcommand>` rather than re-implementing operations in TypeScript. One source of truth.
+**Code-sharing**: the CLI entrypoint at `backend/src/cli/platform-ops.ts` directly imports the same TS modules under `backend/src/modules/` that the in-cluster controllers (and existing `backend/src/cli/pitr-job.ts`) use. No shared-library indirection. The modules ARE the source of truth. In-cluster controllers and the CLI are two surfaces over identical code paths.
+
+**Why TypeScript and not Go**: the parallel agent finalising snapshot/backup primitives confirmed that orchestration logic lives canonically in TS modules (heavy work is delegated to spawned Kubernetes Jobs). Porting that surface to Go would mean re-implementing 4,000–8,000 LOC + perpetually maintaining two copies for mostly aesthetic gains. The TS-binary path achieves the same single-static-binary + no-daemon + cosign-verified properties at a fraction of the cost and with zero drift risk.
 
 ---
 
@@ -210,8 +220,8 @@ These are settled. Implementation MUST honour them. Changes require an amendment
 | 14 | OS-level changes strategy | Three complementary mechanisms: (a) **continuous reconciler** for declarative drift (sysctls, modules, ulimits, declared apt packages); (b) **per-release host-migration runner** for one-shot imperative scripts; (c) **operator CLI** for failure-mode and ad-hoc work. Operator NEVER manually re-bootstraps for a non-BREAKING release. |
 | 15 | DR ownership | **No standalone DR script.** DR is absorbed into the `platform-ops` binary as `platform-ops dr restore`. `dr-drill.yml` extended to exercise this path. |
 | 16 | Host-migration safety | Each migration is recorded per-node in a ConfigMap. Halts on first failure. Operator-resumable via UI. Surfaces in pre-flight before any Apply click. Shell migrations linted by shellcheck in CI. |
-| 17 | Operator CLI surface | **Pure Go binary** `/usr/local/bin/platform-ops`, statically linked, ~30–50 MB. **No container, no daemon.** Installed and cosign-verified by bootstrap.sh on first run. |
-| 18 | Code-sharing | Shared Go library `pkg/platformops/`. In-cluster controllers **shell out to the binary** (mounted into controller pod) rather than re-implementing or running a gRPC sidecar. One source of truth. |
+| 17 | Operator CLI surface | **TypeScript binary** packaged via `pkg` (or `bun build --compile`), ~50–80 MB self-contained, at `/usr/local/bin/platform-ops`. **No container, no daemon.** Installed and cosign-verified by bootstrap.sh on first run. Optional ~500-LOC Go wrapper handles ONLY the self-upgrade + cosign-verify loop for static-binary purity on the security-critical bit; deferred unless needed. Revised from "pure Go binary" on 2026-05-23 after the parallel agent confirmed orchestration logic lives canonically in TypeScript modules — Go would mean re-implementing 4,000–8,000 LOC and maintaining two copies forever. |
+| 18 | Code-sharing | CLI entrypoint at `backend/src/cli/platform-ops.ts` **directly imports** the backend TS modules under `backend/src/modules/`. No shared-library indirection; the modules ARE the source of truth. In-cluster controllers and the CLI are two surfaces over identical code paths. Pattern extends the existing `backend/src/cli/pitr-job.ts`. |
 | 19 | Self-upgrade | Daily systemd timer `platform-ops-update.timer` calls `platform-ops self-upgrade --check`. Cosign-verifies before atomic replace. Manual override: `platform-ops self-upgrade --force --version X.Y.Z`. |
 | 20 | Defense posture | No daemon. Binary runs as invoking user (root via sudo for privileged ops). No inbound network port. Cosign signature on binary AND on every container image we pull. |
 
@@ -366,11 +376,11 @@ DR script does not exist as a standalone workstream; `platform-ops dr restore` s
 **Risk**: H.
 
 ### W17 — platform-ops binary (umbrella; spans multiple PRs)
-**Goal**: The operator CLI from §4.
-**Deliverables**: pure Go binary at `cmd/platform-ops/`; shared library `pkg/platformops/`; subcommands shipped in tranches (status/version/shell/diagnostics first, then self-upgrade, then upgrade/drain, then dr/rollback); cosign-signed releases; daily systemd timer; bootstrap.sh installs on first run.
-**Dependencies**: W5, W8.
+**Goal**: The operator CLI from §4. Pulled forward in delivery order — CLI scaffolding (PR 9, previously PR 9.5) becomes critical-path so the operator has failure-mode tooling from day-1 and the parallel agent's snapshot/backup primitives can be wrapped immediately.
+**Deliverables**: TypeScript entrypoint `backend/src/cli/platform-ops.ts` that directly imports `backend/src/modules/`; `scripts/build-platform-ops.sh` produces a self-contained binary via `pkg` (or `bun build --compile`) at `/usr/local/bin/platform-ops`; subcommands shipped in tranches (status/version/shell/diagnostics first, then snapshot/dr wrapping parallel agent's primitives, then self-upgrade, then upgrade/drain, then rollback); cosign-signed release artifacts uploaded by `release.yml` as GitHub Release assets; daily systemd timer; bootstrap.sh installs on first run. Optional follow-up: ~500-LOC Go self-upgrade wrapper for static-binary purity on the security-critical bit.
+**Dependencies**: W5, W8. Most subcommand PRs depend on the corresponding module having landed (snapshot subcommand depends on parallel agent's primitives; upgrade subcommand depends on W13; etc.).
 **Complexity**: H (umbrella).
-**Risk**: M (concentrated privilege but no worse than today's k3s admin kubeconfig + root SSH posture).
+**Risk**: M (concentrated privilege but no worse than today's k3s admin kubeconfig + root SSH posture). TypeScript binary trades minor cold-start latency and binary size for zero code duplication.
 
 ---
 
@@ -391,7 +401,7 @@ DR script does not exist as a standalone workstream; `platform-ops dr restore` s
 
 ## 8. PR Delivery Order
 
-22 PRs. Each self-contained — even if the next slips indefinitely, what landed is useful.
+20 PRs (revised from 22 after 2026-05-23 update — CLI moved to critical path; controller+CLI pairs collapsed into single PRs since both surfaces import the same TS module). Each self-contained — even if the next slips indefinitely, what landed is useful.
 
 | # | PR title | Workstream | Complexity |
 |---|---|---|---|
@@ -403,26 +413,27 @@ DR script does not exist as a standalone workstream; `platform-ops dr restore` s
 | **PR 5** | `feat(platform): version spine — platform/VERSION → ConfigMap → label → DB → API` | W5 | M |
 | **PR 6** | `feat(release): CHANGELOG (CalVer + BREAKING convention) + cut-release.sh + RELEASING.md; drop stable-PR job from release.yml` | W6 | M |
 | **PR 7** | `docs(cicd): rewrite CICD_PIPELINE_REQUIREMENTS.md to match as-built pull-model` | W7 | M |
-| **PR 8** | `refactor(bootstrap): extract scripts/lib/bootstrap-phases.sh + install platform-ops binary on first run` | W8 | M-H |
-| **PR 9** | `feat(upgrade-p2): platform-migration registry + runner + dry-run + advisory lock` | W9 | H |
-| **PR 9.5** | `feat(platform-ops): scaffolding + shared Go library + status/version/shell/diagnostics subcommands` | W17 | M-H |
-| **PR 10** | `feat(upgrade-p3): host-config-reconciler DaemonSet (sysctls/modules/ulimits) — seed migration` | W10 | H |
-| **PR 10b** | `feat(host-config): apt/dnf package convergence via host-packages-desired ConfigMap` | W10b | M |
-| **PR 10c** | `feat(host-config): host-migration runner (per-release one-shot scripts)` | W10c | H |
-| **PR 11** | `feat(version-poller): hourly GitHub Releases fetch + cosign verify + available_version persistence` | W11 | M |
-| **PR 11.5** | `feat(platform-ops): self-upgrade loop + cluster-down fallback + systemd timer` | W17/W11.5 | M |
-| **PR 12** | `feat(upgrade-p4-host): system-upgrade-controller integration (k3s + kernel)` | W12 | H |
-| **PR 13** | `feat(upgrade-p4-flux): in-cluster Flux Kustomization tag re-pinning + auto-update reconciler` | W13 | H |
-| **PR 13.5** | `feat(platform-ops): upgrade + node-drain subcommands` | W17/W13.5 | M |
-| **PR 14** | `feat(upgrade-p5): pre/post-flight gates + /platform/upgrades admin UI + host-migration preview` | W14 | M-H |
-| **PR 15** | `spike(upgrade-p6): validate in-cluster Flux re-pinning + SUC rollback behaviour` | W16 spike | L |
-| **PR 16** | `feat(upgrade-p6): snapshot-restore rollback + rescue-snapshot + UI` | W16 | H |
-| **PR 16.5** | `feat(platform-ops): dr restore + rescue + rollback subcommands` | W17/W16.5 | M |
-| **PR 17** | `feat(ci): scripts/ci-no-cluster-push.sh + scripts/ci-platform-ops-parity.sh guards` | W17 final + W7 | L |
+| **PR 8** | `refactor(bootstrap): extract scripts/lib/bootstrap-phases.sh + install platform-ops TS binary on first run` | W8 | M-H |
+| **PR 9** | `feat(platform-ops): TS-binary scaffolding + status/version/shell/diagnostics/migrations-list subcommands; pkg-compile pipeline; cosign signing in release.yml` | W17 | M-H |
+| **PR 10** | `feat(platform-ops): snapshot capture/list/restore + dr restore/rescue subcommands wrapping parallel agent's primitives` | W17 | M |
+| **PR 11** | `feat(upgrade-p2): platform-migration registry + runner + dry-run + advisory lock; controller invokes platform-ops migrations apply` | W9 | H |
+| **PR 12** | `feat(upgrade-p3): host-config-reconciler DaemonSet (sysctls/modules/ulimits) — seed migration` | W10 | H |
+| **PR 12b** | `feat(host-config): apt/dnf package convergence via host-packages-desired ConfigMap` | W10b | M |
+| **PR 12c** | `feat(host-config): host-migration runner (per-release one-shot scripts)` | W10c | H |
+| **PR 13** | `feat(version-poller): hourly GitHub Releases fetch + cosign verify + available_version persistence` | W11 | M |
+| **PR 14** | `feat(platform-ops): self-upgrade loop + cluster-down fallback + systemd timer (optional Go wrapper deferred)` | W17/W11.5 | M |
+| **PR 15** | `feat(upgrade-p4-host): system-upgrade-controller integration + platform-ops node upgrade subcommand` | W12 | H |
+| **PR 16** | `feat(upgrade-p4-flux): in-cluster Flux Kustomization tag re-pinning + platform-ops upgrade apply subcommand` | W13 | H |
+| **PR 17** | `feat(upgrade-p5): pre/post-flight gates + /platform/upgrades admin UI + host-migration preview` | W14 | M-H |
+| **PR 18** | `spike(upgrade-p6): validate in-cluster Flux re-pinning + SUC rollback behaviour` | W16 spike | L |
+| **PR 19** | `feat(upgrade-p6): snapshot-restore rollback + rescue-snapshot + UI + platform-ops rollback subcommand` | W16 | H |
+| **PR 20** | `feat(ci): scripts/ci-no-cluster-push.sh guard (CLI/UI parity guard no longer needed — single source TS modules)` | W17 final + W7 | L |
 
-**First independently-valuable artefact**: PR 5 (version spine). Closes the "I don't know what's deployed" pain even before any upgrade machinery lands.
+**First independently-valuable artefact**: PR 5 (version spine). Closes the "I don't know what's deployed" pain even before any upgrade machinery lands. **Second**: PR 9 + PR 10 give the operator a working CLI that wraps backup/snapshot primitives — DR drill capability exists before any in-cluster upgrade controller is written.
 
-**Critical-path subset for "ready for first prod cutover"**: PR 1, 5, 6, 7, 8, 9, 9.5, 10, 10b, 10c, 11, 11.5, 12, 13, 13.5, 14, 16, 16.5, 17.
+**Critical-path subset for "ready for first prod cutover"**: PR 1, 5, 6, 7, 8, 9, 10, 11, 12, 12b, 12c, 13, 14, 15, 16, 17, 19, 20.
+
+**Why the renumber**: pulling W17 (CLI) earlier with TS-native shared modules means controller+CLI pairs (W12/W13.5, W13/W11.5, W16/W16.5) collapse into single PRs (each operation is a single TS module imported by both controller and CLI). Saves ~3-4 weeks net and means the failure-mode/DR-recovery surface exists from PR 10 onward, not PR 16.5.
 
 ---
 
@@ -543,3 +554,4 @@ The holistic plan is delivered when:
 ## 14. Change Log
 
 - 2026-05-23 — Initial holistic plan committed after multi-round planning session that folded versioning, release cycle, CI/CD docs, OSS readiness, OS-level convergence, DR, and operator CLI into one umbrella covering and amending `CLUSTER_UPGRADE_ROADMAP.md`.
+- 2026-05-23 (revision) — Revised Decisions 17 + 18 from "Go binary + shared Go library" to "TypeScript binary (pkg/bun-compile) + direct module import". Triggered by parallel agent confirming orchestration logic lives canonically in TS modules (heavy work delegated to spawned Jobs); porting to Go would re-implement 4,000–8,000 LOC with perpetual maintenance overhead for mostly aesthetic gains. CLI moved to critical path (PR 9, was PR 9.5) so failure-mode/DR tooling exists from day-1 and parallel agent's snapshot primitives can be wrapped in PR 10. Controller+CLI pair PRs collapsed (W12/W13.5, W13/W11.5, W16/W16.5 each become single PRs since both surfaces import the same module). PR count: 22 → 20. Estimated calendar saving: ~3–4 weeks. Optional ~500-LOC Go wrapper for the self-upgrade + cosign-verify loop noted as deferred follow-up for static-binary purity on the security-critical bit.
