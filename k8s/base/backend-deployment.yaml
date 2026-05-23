@@ -343,31 +343,30 @@ spec:
               cpu: 100m
               memory: 128Mi
             limits:
-              # 750m CPU / 2Gi memory.
+              # 750m CPU / 1Gi memory (right-sized 2026-05-23).
               #
-              # CPU: dropped 1500m → 750m on 2026-05-20. The 1500m was
-              # an unmeasured safety pad; real steady-state usage stays
-              # well under 300m (Node.js / Fastify is I/O bound), with
-              # observed bursts under 600m during restic capture. 750m
-              # gives ~25% headroom over observed peak. The previous
-              # 1500m × 2 replicas = 3000m permanently reserved against
-              # the platform-quota's 16000m limits.cpu, which made
-              # surge-during-rollout exceed quota and required manual
-              # quota bumps for every deploy.
+              # CPU: 750m (was 1500m before 2026-05-20). Real steady-state
+              # usage stays well under 300m (Node.js / Fastify is I/O
+              # bound), observed bursts under 600m. 750m gives ~25%
+              # headroom over observed peak. The previous 1500m × 2
+              # replicas = 3000m permanently reserved against the
+              # platform-quota's limits.cpu, which made surge-during-
+              # rollout exceed quota and required manual quota bumps.
               #
-              # Memory: 2 GiB stays — sized for the perf-tuned restic
-              # capture pipeline. ADR-036's "1 GiB" decision pre-dated
-              # the f0e73ca5 perf commit that set `s3.connections=10` +
-              # `--pack-size 64`: in that combination restic can hold
-              # up to 10 × 64 MiB = 640 MiB of in-flight S3 packs PLUS
-              # its own working set (~200 MiB) PLUS ambient platform-api
-              # workload (~170 MiB mail-stats / certificate-reconciler /
-              # principals-sync). 1 GiB OOMKilled on staging at
-              # 11:11:19Z (vdn67) under exactly that load profile.
-              # 2 GiB leaves ~1 GiB of headroom while still well under
-              # any Hetzner node's RAM (smallest tier has 8 GiB total).
+              # Memory: 2 GiB → 1 GiB. The 2 GiB sizing dates back to
+              # when restic capture ran IN-PROCESS inside platform-api.
+              # Restic now runs in dedicated CronJob pods (see
+              # backup-rclone-shim mail-restic / tenant-bundles) — the
+              # in-process restic load this limit was sized for no
+              # longer exists. Live observed RSS on staging: 210 MiB
+              # steady. 1 GiB gives ~4.8× headroom over actual usage.
+              # 3 replicas × 1 GiB = 3 GiB committed (was 6 GiB),
+              # freeing 3 GiB of namespace quota for rollout transients.
+              # If a future workload reintroduces in-process restic-
+              # scale memory bursts, bump back to 2 GiB AFTER an OOM,
+              # not preemptively.
               cpu: 750m
-              memory: 2Gi
+              memory: 1Gi
           livenessProbe:
             httpGet:
               path: /api/v1/healthz

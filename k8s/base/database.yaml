@@ -109,14 +109,20 @@ spec:
         - "ALTER USER platform WITH SUPERUSER"
 
   storage:
-    # 5Gi base for fresh installs (Phase-1 efficiency audit: live
-    # observation 16 MB of actual data, ample headroom). Existing
-    # clusters with larger storage MUST be patched per-overlay because
-    # CNPG's webhook rejects any spec.storage decrease — see
+    # 2Gi base for fresh installs (Phase-2 right-size 2026-05-23: live
+    # observation across 3 replicas shows 628 MiB used per PVC on a
+    # 10Gi allocation = 7% utilization. 2Gi gives ~3× headroom for the
+    # working set; CNPG supports ONLINE storage expansion via Cluster
+    # `spec.storage.size` edit + Longhorn handles the underlying
+    # volume resize, so growing past 2Gi when actually needed is
+    # zero-downtime).
+    #
+    # Existing clusters with larger storage MUST be patched per-overlay
+    # because CNPG's webhook rejects any spec.storage decrease — see
     # k8s/overlays/staging/system-db-storage-patch.yaml for the
     # 10Gi staging override. Operators can right-size at any time
     # via Settings → System DB Storage or the SystemPvcResize endpoint.
-    size: 5Gi
+    size: 2Gi
     # System PVCs MUST use longhorn-system-local (or -ha when policy
     # is HA — operator flip via Apply Tier patches both numberOfReplicas
     # and nodeSelector on the live volume). The bare `longhorn` class
@@ -125,16 +131,19 @@ spec:
     storageClass: longhorn-system-local
 
   # Per-instance resources. Sized for low-traffic single-tenant install.
-  # Live observation 2026-05-08: actual usage 108 Mi / 26m. Bump
-  # production-overlay (or via the storage policy advisor) when
-  # workload grows.
+  # Live observation 2026-05-23: actual usage 75-110 Mi / 5-13m on
+  # staging across 3 replicas. Dropping limits.memory 1Gi → 512Mi
+  # gives ~4.5× headroom over peak observed (110 Mi); saves 1.5 GiB
+  # of namespace quota commitment (3 replicas × 512Mi saved).
+  # Production overlays can bump higher when their workload demands;
+  # the storage-policy advisor also surfaces resource recommendations.
   resources:
     requests:
       cpu: 50m
       memory: 128Mi
     limits:
       cpu: "1"
-      memory: 1Gi
+      memory: 512Mi
 
   # Slow the instance-manager probes from CNPG defaults (10s) to 60s.
   # Each probe runs `pg_isready` against the local socket — a free

@@ -187,6 +187,47 @@ if [[ -f "$PITRJOB" ]]; then
   fi
 fi
 
+# (16) finalizeByRef MUST be used by pitr-job.ts so a self-cluster
+# PITR (system-db restoring system-db) re-creates the chip when the
+# post-cutover DB rewound it. Plain finishByRef UPDATE-only would
+# affect 0 rows post-cutover and the chip would be lost forever.
+if [[ -f "$PITRJOB" ]]; then
+  if ! grep -q "finalizeByRef" "$PITRJOB"; then
+    echo "FAIL: pitr-job.ts must call finalizeByRef (INSERT-or-UPDATE) instead of finishByRef — system-db PITR rewinds the chip table; only upsert survives the cutover"
+    FAILED=1
+  fi
+fi
+
+# (17) PITR Job watchdog must exist + be wired into app.ts. Without
+# it, Jobs blocked by ResourceQuota FailedCreate orphan their chips
+# + PITR lock forever.
+WATCHDOG="$REPO_ROOT/backend/src/modules/postgres-restore/watchdog.ts"
+if [[ ! -f "$WATCHDOG" ]]; then
+  echo "FAIL: watchdog.ts missing — PITR Jobs with FailedCreate events orphan chips + locks"
+  FAILED=1
+fi
+APP_TS="$REPO_ROOT/backend/src/app.ts"
+if [[ -f "$APP_TS" ]]; then
+  if ! grep -q "startPitrJobWatchdog" "$APP_TS"; then
+    echo "FAIL: app.ts must start the PITR Job watchdog (startPitrJobWatchdog)"
+    FAILED=1
+  fi
+fi
+
+# (18) Phase 3 fast-path: when recoveryTargetTime is null, the
+# orchestrator must SKIP the temp cluster (saves ~3-5 min). Operator
+# can force the slow-path via PITR_FORCE_TEMP_CLUSTER=true env.
+if [[ -f "$PG_RESTORE_SVC" ]]; then
+  if ! grep -q "skipTempCluster" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must support fast-path (skipTempCluster) for no-PITR-target restores"
+    FAILED=1
+  fi
+  if ! grep -q "PITR_FORCE_TEMP_CLUSTER" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must honor PITR_FORCE_TEMP_CLUSTER env override (operator escape hatch)"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
