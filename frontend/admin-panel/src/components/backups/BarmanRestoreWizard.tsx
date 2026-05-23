@@ -513,6 +513,16 @@ function Step3Confirm({
         Verify the restored data (psql, dumps), then either keep both clusters or
         delete the side-by-side one with the Delete button that appears post-restore.
       </div>
+      {targetTime && (
+        <div className="rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200">
+          <strong>WAL-gap mitigation active.</strong> Because you set a recovery target time,
+          the backend will automatically trigger a fresh CNPG backup before restoring — this
+          shrinks the WAL replay gap so recovery completes within CNPG's bootstrap timeout.
+          The fresh backup takes 30-180s for small databases. If it fails (object-store
+          unreachable, etc.) the restore proceeds anyway and you'll see a warning + a
+          manual <code className="font-mono">kubectl cnpg backup</code> command in the next step.
+        </div>
+      )}
       {/* P4c — WAL streaming reach indicator. Tells the operator the
           maximum point-in-time the restore can roll forward to,
           assuming continuous WAL archive coverage.

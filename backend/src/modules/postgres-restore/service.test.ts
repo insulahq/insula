@@ -304,6 +304,76 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(noPluginRebuild.spec.plugins).toBeUndefined();
   });
 
+  it('buildRecoveryCluster attaches barman archive source to temp cluster when recoveryTargetTime is set (Task #97)', async () => {
+    // Phase 1 PITR with recoveryTargetTime needs WAL replay beyond
+    // snapshot LSN. The temp cluster's bootstrap.recovery.volumeSnapshots
+    // ONLY provides base data from the snapshot — without a recovery.source
+    // pointing at the source's barman archive, CNPG can only replay WAL
+    // records that exist in the snapshot's pg_wal/ directory (typically
+    // none after pg_switch_wal). Result: target time is silently ignored
+    // + restored cluster sits at snapshot LSN. Harness test 2026-05-23
+    // verified the bug; this test guards the fix.
+    const { buildRecoveryCluster } = await import('./service.js');
+    const srcWithBarman = {
+      metadata: { name: 'system-db', namespace: 'platform' },
+      spec: {
+        instances: 3,
+        storage: { size: '10Gi' },
+        bootstrap: { initdb: { database: 'hp', owner: 'p', secret: { name: 's' } } },
+        plugins: [
+          { enabled: true, name: 'barman-cloud.cloudnative-pg.io', parameters: { barmanObjectName: 'system-postgres-objectstore' } },
+        ],
+      } as never,
+    };
+
+    // CASE A: temp cluster WITH recoveryTargetTime → source + externalClusters attached
+    const tempWithTarget = buildRecoveryCluster(
+      srcWithBarman as never, 'system-db-pitr-1234', 'platform',
+      'vs-snap-1', '2026-05-23T12:00:00Z', 1, true,
+    ) as { spec: { bootstrap: { recovery: { source?: string; volumeSnapshots?: unknown; recoveryTarget?: unknown } }; externalClusters?: Array<{ name: string; plugin: { parameters: Record<string, string> } }> } };
+    expect(tempWithTarget.spec.bootstrap.recovery.source).toBe('system-postgres-objectstore-pitr-wal-source');
+    expect(tempWithTarget.spec.bootstrap.recovery.volumeSnapshots).toBeDefined();
+    expect(tempWithTarget.spec.bootstrap.recovery.recoveryTarget).toBeDefined();
+    expect(tempWithTarget.spec.externalClusters).toHaveLength(1);
+    expect(tempWithTarget.spec.externalClusters![0].name).toBe('system-postgres-objectstore-pitr-wal-source');
+    expect(tempWithTarget.spec.externalClusters![0].plugin.parameters.barmanObjectName).toBe('system-postgres-objectstore');
+    expect(tempWithTarget.spec.externalClusters![0].plugin.parameters.serverName).toBe('system-db');
+
+    // CASE B: temp cluster WITHOUT recoveryTargetTime → no source needed
+    const tempNoTarget = buildRecoveryCluster(
+      srcWithBarman as never, 'system-db-pitr-5678', 'platform',
+      'vs-snap-2', null, 1, true,
+    ) as { spec: { bootstrap: { recovery: { source?: string } }; externalClusters?: unknown[] } };
+    expect(tempNoTarget.spec.bootstrap.recovery.source).toBeUndefined();
+    expect(tempNoTarget.spec.externalClusters).toBeUndefined();
+
+    // CASE C: REBUILT SOURCE cluster (isTemp=false) → never attach source
+    // The rebuilt source uses its own snapshot + doesn't need WAL fetch.
+    const sourceRebuild = buildRecoveryCluster(
+      srcWithBarman as never, 'system-db', 'platform',
+      'vs-rebuild', '2026-05-23T12:00:00Z', 1, false,
+    ) as { spec: { bootstrap: { recovery: { source?: string } }; externalClusters?: unknown[] } };
+    expect(sourceRebuild.spec.bootstrap.recovery.source).toBeUndefined();
+    expect(sourceRebuild.spec.externalClusters).toBeUndefined();
+
+    // CASE D: source without barman plugin → can't attach source even if requested
+    const srcNoBarman = {
+      metadata: { name: 'foo-db', namespace: 'platform' },
+      spec: {
+        instances: 1,
+        storage: { size: '10Gi' },
+        bootstrap: { initdb: { database: 'hp', owner: 'p', secret: { name: 's' } } },
+        plugins: [],
+      } as never,
+    };
+    const tempNoBarman = buildRecoveryCluster(
+      srcNoBarman as never, 'foo-db-pitr', 'platform',
+      'vs-snap-3', '2026-05-23T12:00:00Z', 1, true,
+    ) as { spec: { bootstrap: { recovery: { source?: string } }; externalClusters?: unknown[] } };
+    expect(tempNoBarman.spec.bootstrap.recovery.source).toBeUndefined();
+    expect(tempNoBarman.spec.externalClusters).toBeUndefined();
+  });
+
   it('getPlatformApiImage reads image from live Deployment', async () => {
     const k8s = makeK8s();
     const image = await getPlatformApiImage(k8s);
