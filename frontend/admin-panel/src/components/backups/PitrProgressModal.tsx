@@ -155,6 +155,41 @@ export default function PitrProgressModal({ jobName, onClose, taskStatus, taskDe
     || lastStep?.ok === false
     || progressSteps.some((p) => p.step === 'orchestration-failed');
 
+  // Scenario detection — operator wants to know WHICH restore variant
+  // is running + roughly when it'll finish. We infer from the steps the
+  // orchestrator has emitted:
+  //   - tempClusterSkipped: fast-path (no PITR target, no temp cluster)
+  //                         → ~10-12 min total (recreate-source +
+  //                         wait-ha-stable absorb the bulk)
+  //   - tempClusterRan:     slow-path (with PITR target, temp cluster
+  //                         used to replay WAL before cutover)
+  //                         → ~15-18 min total (adds ~3-5 min for temp
+  //                         bootstrap + WAL replay)
+  //   - barmanPromote:      Phase 3.1 cutover (snapshot from a
+  //                         restored side-by-side cluster)
+  //                         → ~10-12 min total (same as fast-path)
+  const tempStep = progressSteps.find((p) => p.step === 'create-temp-cluster');
+  const isFastPath = tempStep?.detail?.startsWith('SKIPPED') ?? false;
+  const isSlowPath = !!tempStep && !isFastPath;
+  // Sum estimated remaining time for steps not yet recorded.
+  const totalEstSec = ORDER.reduce((acc, n) => {
+    const meta = STEP_LABELS[n];
+    const rec = progressSteps.find((p) => p.step === n);
+    if (rec) return acc + (rec.elapsedMs ?? 0) / 1000;
+    // Skip fast-path-only-skipped steps from the remaining estimate
+    if (isFastPath && (n === 'create-temp-cluster' || n === 'temp-healthy'
+      || n === 'temp-probe' || n === 'snapshot-temp-primary')) return acc;
+    return acc + (meta?.estSec ?? 0);
+  }, 0);
+  const scenarioLabel = isFastPath
+    ? 'Snapshot restore (fast-path — no WAL replay)'
+    : isSlowPath
+      ? 'Snapshot restore + WAL replay (slow-path — WAL applied to target time)'
+      : 'Restore in progress…';
+  const elapsedSec = progressSteps.reduce((acc, s) => acc + (s.elapsedMs ?? 0) / 1000, 0)
+    + (inFlight ? (now - new Date(inFlight.startedAt).getTime()) / 1000 : 0);
+  const remainingSec = Math.max(0, totalEstSec - elapsedSec);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
@@ -190,6 +225,26 @@ export default function PitrProgressModal({ jobName, onClose, taskStatus, taskDe
         </header>
 
         <div className="p-4 text-sm">
+          {!isDone && progressSteps.length > 0 && (
+            <div role="status" className="mb-3 flex items-start gap-2 rounded border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-900 dark:border-brand-800 dark:bg-brand-900/30 dark:text-brand-200">
+              <Clock size={14} className="mt-0.5 flex-shrink-0" />
+              <div>
+                <div className="font-semibold">{scenarioLabel}</div>
+                <div className="mt-1 text-brand-700 dark:text-brand-300">
+                  Elapsed: <span className="font-mono">{Math.floor(elapsedSec / 60)}m {Math.round(elapsedSec % 60)}s</span>
+                  {remainingSec > 0 && (
+                    <> · Estimated remaining: <span className="font-mono">~{Math.ceil(remainingSec / 60)}m</span></>
+                  )}
+                  {isSlowPath && (
+                    <span className="ml-2 italic">(temp cluster bootstrapping replays WAL records to the target time before the destructive cutover)</span>
+                  )}
+                  {isFastPath && (
+                    <span className="ml-2 italic">(no PITR target — temp cluster step skipped, restoring directly to snapshot LSN)</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
           {isDone && failed && (
             <div role="alert" className="mb-3 flex items-start gap-2 rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200">
               <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
