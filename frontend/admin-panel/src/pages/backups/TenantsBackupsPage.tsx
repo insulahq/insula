@@ -101,10 +101,24 @@ function useTenantSnapshots(tenantFilter: string | null) {
 function useTenantBundles(tenantFilter: string | null) {
   return useQuery({
     queryKey: ['admin', 'tenant-bundles', tenantFilter],
-    queryFn: () => apiFetch<{ data: ReadonlyArray<BundleSummary>; pagination: unknown }>(
+    queryFn: () => apiFetch<{ data: ReadonlyArray<BundleSummary> | { data?: ReadonlyArray<BundleSummary> }; pagination?: unknown }>(
       `/api/v1/admin/tenant-bundles${tenantFilter ? `?tenantId=${encodeURIComponent(tenantFilter)}` : ''}`,
     ),
     staleTime: 15_000,
+    // Defensive unwrap — accept BOTH the canonical `{data: [...], pagination}`
+    // envelope AND a legacy double-wrap (`{data: {data: [...], pagination}}`)
+    // that was shipped briefly. Without this normaliser an old platform-api
+    // still in the wild blows up the page with "rows.filter is not a
+    // function". Once every cluster runs the paginated() fix the inner
+    // branch is dead code.
+    select: (raw): ReadonlyArray<BundleSummary> => {
+      const top = raw?.data;
+      if (Array.isArray(top)) return top;
+      if (top && typeof top === 'object' && 'data' in top && Array.isArray((top as { data?: unknown }).data)) {
+        return (top as { data: ReadonlyArray<BundleSummary> }).data;
+      }
+      return [];
+    },
   });
 }
 
@@ -659,7 +673,7 @@ export default function TenantsBackupsPage() {
           <div className="space-y-3">
             {errorBanner}
             <BackupsTab
-              rows={bundlesQ.data?.data ?? []}
+              rows={bundlesQ.data ?? []}
               tenantOptions={tenantOptions}
               isLoading={bundlesQ.isLoading}
               search={search}
