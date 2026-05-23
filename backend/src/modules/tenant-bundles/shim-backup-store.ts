@@ -15,6 +15,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import type { FastifyInstance } from 'fastify';
 import type { Logger } from 'pino';
 import {
   loadBackupTargetKey,
@@ -25,7 +26,9 @@ import {
   deriveShimSecretKey,
 } from '../backup-rclone-shim/crypto.js';
 import { SHIM_S3_ENDPOINT_URL } from '../backup-rclone-shim/mail-restic.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { S3BackupStore } from './s3-backup-store.js';
+import type { BackupStore } from './bundle-store.js';
 
 export interface ResolveShimStoreOptions {
   /** Logger for credential-loading diagnostics. Optional. */
@@ -59,4 +62,48 @@ export async function resolveShimBackupStore(
     // The shim is a path-style S3 endpoint (rclone serve s3 default).
     // S3BackupStore forces path-style automatically when endpoint is set.
   });
+}
+
+/**
+ * Shim-first BackupStore resolver — the routing canonical for any
+ * call site that needs a BackupStore for a tenant/system/mail
+ * artefact.
+ *
+ * B9 (2026-05-22) shipped the shim as the universal mediator for
+ * tenant-bundle uploads. The restore side then has to MATCH that
+ * routing: a bundle written through the shim is reachable through
+ * the shim's local S3 endpoint regardless of the upstream protocol
+ * (S3 / SFTP / CIFS / NFS / etc). Without this wrapper, CIFS + NFS
+ * + any other upstream that has no direct BackupStore class blow up
+ * the restore cart with `Store kind '<x>' not supported`.
+ *
+ * Resolution order:
+ *
+ *   1. shim store (handles ALL kinds because the shim handles the
+ *      protocol upstream). Throws cleanly when BACKUP_TARGET_KEY is
+ *      not yet bootstrapped (fresh cluster, dev fixtures, etc).
+ *   2. caller-provided `fallback()` — the legacy cfg-direct s3/ssh
+ *      resolver. Reached when shim is unavailable.
+ *
+ * The fallback signature is intentionally typed to return
+ * `BackupStore`, not the concrete `S3BackupStore` — every caller's
+ * direct resolver may legitimately return SshBackupStore as well.
+ */
+export async function resolveShimFirstBackupStore(
+  app: FastifyInstance,
+  shimClass: 'system' | 'tenant' | 'mail',
+  fallback: () => Promise<BackupStore>,
+  context: string,
+): Promise<BackupStore> {
+  try {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8sClients = createK8sClients(kubeconfigPath);
+    return await resolveShimBackupStore(k8sClients.core, shimClass, { log: app.log });
+  } catch (err) {
+    app.log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      `${context}: shim store unavailable — falling back to direct cfg-based resolver`,
+    );
+  }
+  return fallback();
 }

@@ -30,6 +30,7 @@ import { ApiError } from '../../shared/errors.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
+import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import { decrypt } from '../oidc/crypto.js';
 import { verifyUploadToken } from './upload-token.js';
 
@@ -131,8 +132,21 @@ function guessContentType(name: string): string {
  * flag. A restore from a now-deactivated target must still succeed;
  * the activation gate applies to NEW bundle creates, not reads of
  * existing bundles.
+ *
+ * B9 routing parity (2026-05-23): tenant bundles WRITE through the
+ * backup-rclone-shim regardless of upstream protocol. Restore READS
+ * must therefore also try the shim first — otherwise CIFS + NFS
+ * targets fail with `Backup store kind 'cifs' is not supported`.
  */
 async function resolveStoreForDownload(app: FastifyInstance, targetConfigId: string, encKey: string): Promise<BackupStore> {
+  return resolveShimFirstBackupStore(
+    app, 'tenant',
+    () => resolveDirectStoreForDownload(app, targetConfigId, encKey),
+    'tenant-bundles download',
+  );
+}
+
+async function resolveDirectStoreForDownload(app: FastifyInstance, targetConfigId: string, encKey: string): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
   // encKey is the same hex captured at route registration time —
