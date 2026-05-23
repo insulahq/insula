@@ -259,16 +259,23 @@ export async function isPostgresRestoreInProgressClusterWide(
  *
  * Always succeeds — best-effort; clears both in-memory and DB lock.
  */
-export async function releasePitrLock(db: Database, opts: { failed?: boolean; error?: string | null } = {}): Promise<void> {
+/**
+ * Optional taskKind override. PITR routes use 'postgres.pitr' (default),
+ * but the barman-restore promote flow registers chips with
+ * 'postgres.barman-promote' — releasePitrLock must finalize the right
+ * chip when rolling back a promote. Phase 3.1 follow-up (2026-05-23).
+ */
+export async function releasePitrLock(db: Database, opts: { failed?: boolean; error?: string | null; taskKind?: 'postgres.pitr' | 'postgres.barman-promote' } = {}): Promise<void> {
   activeRestore = null;
   await clearPersistedLock(db).catch(() => undefined);
 
-  // Finalize any running postgres.pitr task in the chip — singleton, so
-  // it's safe to look up by kind alone. Best-effort, never throws.
+  // Finalize the running chip — singleton per kind, so safe to look up
+  // by kind alone. Best-effort, never throws.
   try {
     const { tasks } = await import('../../db/schema.js');
     const { sql, eq, and } = await import('drizzle-orm');
     const taskStatus: 'succeeded' | 'failed' = opts.failed ? 'failed' : 'succeeded';
+    const taskKind = opts.taskKind ?? 'postgres.pitr';
     await db
       .update(tasks)
       .set({
@@ -278,7 +285,7 @@ export async function releasePitrLock(db: Database, opts: { failed?: boolean; er
         progressPct: opts.failed ? null : 100,
         errorMessage: opts.error ?? null,
       })
-      .where(and(eq(tasks.kind, 'postgres.pitr'), eq(tasks.status, 'running')));
+      .where(and(eq(tasks.kind, taskKind), eq(tasks.status, 'running')));
   } catch {
     // Helper is best-effort — never block the lock release.
   }
@@ -1720,6 +1727,12 @@ export interface CreatePitrJobInputs {
    * CLI. Read from the platform-version ConfigMap so the Job uses the
    * same code as the API that triggered it. */
   readonly image: string;
+  /** Phase 3.1 (2026-05-23): additional env vars appended to the Job
+   *  pod's env array. Used by the barman-restore promote flow to pass
+   *  BARMAN_PROMOTE_MODE=true + BARMAN_PROMOTE_RESTORED_CLUSTER=<name>
+   *  so pitr-job.ts can delete the side-by-side cluster after success.
+   *  Additive only — does NOT replace any existing PITR_* env vars. */
+  readonly extraEnv?: ReadonlyArray<{ readonly name: string; readonly value: string }>;
 }
 
 export interface CreatePitrJobResult {
@@ -1801,9 +1814,18 @@ export async function createPitrJob(
     // because it's a fresh process with activeRestore=null and the
     // DB lock is held by the route's call).
     { name: 'PITR_LOCK_HELD', value: 'true' },
+    // Job name = task chip refId; pitr-job.ts uses this to finalize
+    // the chip via finishByRef on success/failure (review HIGH 2026-05-23).
+    { name: 'JOB_NAME', value: jobName },
   ];
   if (inputs.recoveryTargetTime) env.push({ name: 'PITR_RECOVERY_TARGET_TIME', value: inputs.recoveryTargetTime });
   if (inputs.actorUserId) env.push({ name: 'PITR_ACTOR_USER_ID', value: inputs.actorUserId });
+  // Phase 3.1 — barman promote forwards extra env vars (e.g.
+  // BARMAN_PROMOTE_MODE + BARMAN_PROMOTE_RESTORED_CLUSTER) so the Job's
+  // pitr-job CLI can run a post-success side-by-side cluster cleanup.
+  if (inputs.extraEnv) {
+    for (const e of inputs.extraEnv) env.push({ name: e.name, value: e.value });
+  }
 
   const body = {
     apiVersion: 'batch/v1',

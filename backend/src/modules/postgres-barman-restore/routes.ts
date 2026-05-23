@@ -7,6 +7,7 @@ import {
   createBarmanRestore,
   getBarmanRestoreStatus,
   deleteBarmanRestore,
+  promoteRestoredCluster,
   BarmanRestoreError,
 } from './service.js';
 
@@ -133,5 +134,111 @@ export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise
       const r = await deleteBarmanRestore(k8s.custom, p.namespace, p.newClusterName, request.log);
       return success({ ...r, namespace: p.namespace, newClusterName: p.newClusterName });
     } catch (err) { rethrowApi(err); }
+  });
+
+  // POST /api/v1/admin/postgres-barman-restore/:namespace/:newClusterName/promote
+  //
+  // Phase 3.1 (2026-05-23): destructive cutover. Take a Longhorn
+  // snapshot of the restored cluster's primary PVC, then invoke the
+  // existing PITR orchestrator against the SOURCE cluster name with
+  // that snapshot. After PITR success the Job pod additionally deletes
+  // the side-by-side Cluster CR.
+  //
+  // Body MUST carry `confirmSourceClusterName` matching `sourceClusterName`
+  // exactly — server-side type-to-confirm gate (the wizard's input is
+  // UX, this is the security boundary).
+  //
+  // Returns 202 — same shape as POST /admin/postgres-restore so the
+  // wizard can reuse the PitrProgressModal via the task-center chip.
+  app.post('/admin/postgres-barman-restore/:namespace/:newClusterName/promote', {
+    schema: {
+      tags: ['PostgresBarmanRestore'],
+      summary: 'Destructive cutover: swap a side-by-side restored cluster into the source cluster name. Type-to-confirm required in body.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['namespace', 'newClusterName'],
+        properties: {
+          namespace: { type: 'string', minLength: 1, maxLength: 50 },
+          newClusterName: { type: 'string', minLength: 1, maxLength: 50 },
+        },
+      },
+      body: {
+        type: 'object',
+        required: ['sourceClusterName', 'confirmSourceClusterName'],
+        properties: {
+          sourceClusterName: { type: 'string', minLength: 1, maxLength: 50 },
+          confirmSourceClusterName: { type: 'string', minLength: 1, maxLength: 50 },
+        },
+        additionalProperties: false,
+      },
+    },
+  }, async (request, reply) => {
+    const p = request.params as { namespace: string; newClusterName: string };
+    const body = request.body as { sourceClusterName: string; confirmSourceClusterName: string };
+    const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kc);
+    const actor = (request as unknown as { user?: { sub?: string } }).user;
+    let result;
+    try {
+      result = await promoteRestoredCluster(
+        { k8s, db: app.db },
+        {
+          namespace: p.namespace,
+          restoredClusterName: p.newClusterName,
+          sourceClusterName: body.sourceClusterName,
+          confirmSourceClusterName: body.confirmSourceClusterName,
+          actorUserId: actor?.sub ?? null,
+        },
+        request.log,
+      );
+    } catch (err) { rethrowApi(err); }
+
+    // Register task-center chip so the operator can re-open the
+    // PitrProgressModal from the chip after closing the wizard.
+    if (actor?.sub) {
+      try {
+        const { start: startTask } = await import('../tasks/service.js');
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        await startTask(app.db, {
+          kind: 'postgres.barman-promote',
+          refId: result!.jobName,
+          scope: 'admin',
+          userId: actor.sub,
+          label: toSafeText(`Barman promote (${result!.namespace}/${result!.restoredClusterName} → ${result!.sourceClusterName})`),
+          // Reuse the PITR progress modal — same step timeline applies.
+          target: {
+            type: 'modal' as const,
+            modal: 'pitr-progress',
+            modalProps: {
+              jobName: result!.jobName,
+              clusterNamespace: result!.namespace,
+              clusterName: result!.sourceClusterName,
+            },
+          },
+          details: {
+            sourceClusterName: result!.sourceClusterName,
+            restoredClusterName: result!.restoredClusterName,
+            snapshotName: result!.snapshotName,
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        request.log.warn(`[barman-promote] task tracker enroll failed: ${msg}`);
+      }
+    }
+
+    reply.code(202);
+    return success({
+      status: 'promoting',
+      restoredClusterName: result!.restoredClusterName,
+      sourceClusterName: result!.sourceClusterName,
+      namespace: result!.namespace,
+      snapshotName: result!.snapshotName,
+      jobName: result!.jobName,
+      jobNamespace: result!.jobNamespace,
+      pollUrl: '/api/v1/admin/postgres-restore/status',
+      message: `Barman promote: ${result!.namespace}/${result!.restoredClusterName} → ${result!.sourceClusterName}. Job ${result!.jobName} created; orchestration runs ~5-10 min in a dedicated pod. Source data WILL BE REPLACED. Poll /admin/postgres-restore/status for progress.`,
+    });
   });
 }

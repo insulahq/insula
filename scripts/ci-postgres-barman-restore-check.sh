@@ -88,7 +88,46 @@ if ! grep -q "postgresBarmanRestoreRoutes" "$APP"; then
   FAILED=1
 fi
 
+# ─── Phase 3.1 (2026-05-23) — promote invariants ───────────────────────────
+
+# (7) service.ts must export promoteRestoredCluster.
+if ! grep -q "^export async function promoteRestoredCluster" "$SERVICE"; then
+  echo "FAIL: service.ts must export promoteRestoredCluster (Phase 3.1)"
+  FAILED=1
+fi
+
+# (8) Server-side type-to-confirm gate — refuse when
+# confirmSourceClusterName != sourceClusterName.
+if ! grep -q "confirmSourceClusterName !== inputs.sourceClusterName" "$SERVICE"; then
+  echo "FAIL: service.ts must enforce confirmSourceClusterName === sourceClusterName (type-to-confirm)"
+  FAILED=1
+fi
+
+# (9) routes.ts must register the promote endpoint.
+if ! grep -q "/admin/postgres-barman-restore/:namespace/:newClusterName/promote" "$ROUTES"; then
+  echo "FAIL: routes.ts must register POST /admin/postgres-barman-restore/.../promote"
+  FAILED=1
+fi
+
+# (10) Frontend wizard must use confirmName === sourceName type-to-confirm gate.
+WIZARD="$REPO_ROOT/frontend/admin-panel/src/components/backups/BarmanRestoreWizard.tsx"
+if [[ -f "$WIZARD" ]]; then
+  if ! grep -q "confirmName !== sourceName" "$WIZARD"; then
+    echo "FAIL: BarmanRestoreWizard.tsx must gate promote on confirmName === sourceName"
+    FAILED=1
+  fi
+fi
+
+# (11) pitr-job CLI must handle the BARMAN_PROMOTE_MODE post-success cleanup.
+PITRJOB="$REPO_ROOT/backend/src/cli/pitr-job.ts"
+if [[ -f "$PITRJOB" ]]; then
+  if ! grep -q "BARMAN_PROMOTE_MODE" "$PITRJOB"; then
+    echo "FAIL: pitr-job.ts must handle BARMAN_PROMOTE_MODE post-success cleanup"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
-echo "OK: postgres-barman-restore invariants hold (source-safety + plugin-shape + managed-by gate + auth + non-mutating + registered)."
+echo "OK: postgres-barman-restore invariants hold (source-safety + plugin-shape + managed-by gate + auth + non-mutating + registered + promote-type-to-confirm + promote-cleanup-handler)."
