@@ -228,6 +228,31 @@ if [[ -f "$PG_RESTORE_SVC" ]]; then
   fi
 fi
 
+# (19) WAL-gap mitigation: barman-restore service must trigger a fresh
+# CNPG Backup before applying the restored Cluster CR when
+# recoveryTargetTime is set. This closes the WAL gap so CNPG's
+# bootstrap-recovery timeout doesn't fire on large catalogs.
+# Live regression 2026-05-23: a 39h WAL gap caused infinite recovery
+# loops on staging (CNPG operator restarts recovery pods at ~2 min).
+if [[ -f "$SERVICE" ]]; then
+  if ! grep -q "triggerFreshBarmanBackup" "$SERVICE"; then
+    echo "FAIL: barman-restore/service.ts must implement triggerFreshBarmanBackup (WAL-gap mitigation)"
+    FAILED=1
+  fi
+  if ! grep -q "BARMAN_RESTORE_SKIP_FRESH_BACKUP" "$SERVICE"; then
+    echo "FAIL: barman-restore/service.ts must honor BARMAN_RESTORE_SKIP_FRESH_BACKUP env override"
+    FAILED=1
+  fi
+fi
+# Wizard must surface the warning to the operator (warn-and-continue UX).
+WIZARD_FILE="$REPO_ROOT/frontend/admin-panel/src/components/backups/BarmanRestoreWizard.tsx"
+if [[ -f "$WIZARD_FILE" ]]; then
+  if ! grep -q "freshBackupNote\|freshBackupWarning" "$WIZARD_FILE"; then
+    echo "FAIL: BarmanRestoreWizard.tsx must surface freshBackup* fields to the operator"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
