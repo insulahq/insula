@@ -1741,15 +1741,34 @@ export async function promotePostgresFromSnapshot(
     }
     recordStep({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10, detail: usedFastPath ? 'fast-path: no temp cluster to clean' : 'slow-path: temp cluster + handoff snapshot removed' });
 
-    // 11. Notify
+    // 11. Notify — NON-FATAL.
+    //
+    // emitAdminNotification queries `users` to find super_admin/admin
+    // recipients. After a self-cluster restore (system-db PITR or
+    // barman-promote into system-db), the orchestrator's DB connection
+    // may transiently fail auth while CNPG is re-syncing the platform
+    // user's password against the rebuild — the cluster IS up, data IS
+    // correct, but the auth-credential reconciler hasn't caught up yet
+    // (caught live on staging 2026-05-23). The notification is a UX
+    // courtesy, not a correctness requirement; swallow any auth error
+    // here so the orchestration succeeds + downstream pitr-job.ts can
+    // run the barman-promote cleanup (side-by-side cluster delete).
     const downtimeMs = (downtimeEnd ?? nowMs()) - (downtimeStart ?? startMs);
-    await emitAdminNotification(
-      deps.db,
-      `PITR restore of ${inputs.clusterNamespace}/${inputs.clusterName} from snapshot ${inputs.snapshotName} ` +
-      `(target=${inputs.recoveryTargetTime ?? 'snapshot LSN'}) completed in ${Math.round((nowMs() - startMs) / 1000)}s. ` +
-      `Cluster downtime: ${Math.round(downtimeMs / 1000)}s. Initiated by user ${inputs.actorUserId ?? '(unknown)'}.`,
-      'Postgres PITR completed',
-    );
+    try {
+      await emitAdminNotification(
+        deps.db,
+        `PITR restore of ${inputs.clusterNamespace}/${inputs.clusterName} from snapshot ${inputs.snapshotName} ` +
+        `(target=${inputs.recoveryTargetTime ?? 'snapshot LSN'}) completed in ${Math.round((nowMs() - startMs) / 1000)}s. ` +
+        `Cluster downtime: ${Math.round(downtimeMs / 1000)}s. Initiated by user ${inputs.actorUserId ?? '(unknown)'}.`,
+        'Postgres PITR completed',
+      );
+    } catch (err) {
+      // Best-effort — orchestration is functionally complete.
+      console.warn(JSON.stringify({
+        msg: 'pitr-job: post-success admin notification failed (non-fatal)',
+        error: (err as Error).message,
+      }));
+    }
 
     return {
       clusterName: inputs.clusterName,
