@@ -68,7 +68,7 @@ if [[ -z "${ADMIN_PASSWORD:-}" ]]; then
   exit 1
 fi
 
-ssh_cmd() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o LogLevel=ERROR "$STAGING_SSH" "$@"; }
+ssh_cmd() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 "$STAGING_SSH" "$@"; }
 
 pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; FAILED=$((FAILED+1)); }
@@ -273,12 +273,14 @@ fi
 
 # ─── Plugin sidecar on the new primary pod ───────────────────────────
 hdr "Plugin sidecar propagation (post-promote FAST recovery)"
-POD_CONTAINERS=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get pod $POST_PRIMARY -o jsonpath='{range .spec.containers[*]}{.name}{\" \"}{end}'")
+# CNPG plugin sidecars run as restartPolicy:Always init-containers (k8s
+# 1.28+ pattern), not regular containers. Check both.
+ALL_CONTAINERS=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get pod $POST_PRIMARY -o jsonpath='{range .spec.containers[*]}{.name}{\" \"}{end}|{range .spec.initContainers[*]}{.name}{\" \"}{end}'")
 PLUGINS_IN_SPEC=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $CLUSTER_NAME -o jsonpath='{.spec.plugins}'")
 info "spec.plugins: $(echo "$PLUGINS_IN_SPEC" | head -c 120)"
-info "pod containers: $POD_CONTAINERS"
+info "pod containers+init: $ALL_CONTAINERS"
 if [[ -n "$PLUGINS_IN_SPEC" ]] && [[ "$PLUGINS_IN_SPEC" != "null" ]] && [[ "$PLUGINS_IN_SPEC" != "[]" ]]; then
-  if printf '%s' "$POD_CONTAINERS" | grep -q "plugin-barman-cloud"; then
+  if printf '%s' "$ALL_CONTAINERS" | grep -q "plugin-barman-cloud"; then
     pass "plugin-barman-cloud sidecar PRESENT on post-promote pod (no manual bounce)"
   else
     fail "plugin-barman-cloud sidecar MISSING — buildRecoveryCluster did not propagate spec.plugins"
