@@ -73,11 +73,16 @@ export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise
       }, request.log);
     } catch (err) { rethrowApi(err); }
     reply.code(202);
+    const freshNote = result!.freshBackupTriggered
+      ? (result!.freshBackupWarning
+          ? ` WARNING: fresh-backup mitigation did not complete (${result!.freshBackupWarning}). If WAL replay to target time stalls, retrigger with a successful backup first.`
+          : ` Fresh barman backup ${result!.freshBackupId} taken to minimize WAL gap.`)
+      : '';
     return success({
       status: 'side-by-side-restoring',
       ...result!,
       pollUrl: `/api/v1/admin/postgres-barman-restore/${result!.namespace}/${result!.newClusterName}/status`,
-      message: `Side-by-side restore Cluster ${result!.namespace}/${result!.newClusterName} created from ${result!.objectStoreName}. Source cluster is untouched. Poll status for progress; first instance typically reaches Ready in 2-10 minutes depending on archive size + WAL replay.`,
+      message: `Side-by-side restore Cluster ${result!.namespace}/${result!.newClusterName} created from ${result!.objectStoreName}.${freshNote} Source cluster is untouched. Poll status for progress; first instance typically reaches Ready in 2-10 minutes depending on archive size + WAL replay.`,
     });
   });
 

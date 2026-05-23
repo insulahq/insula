@@ -105,6 +105,19 @@ export interface CreateBarmanRestoreResult {
   readonly objectStoreName: string;
   readonly recoveryTargetTime: string | null;
   readonly clusterUid: string;
+  /** True when a fresh CNPG Backup was attempted before the restore CR
+   *  (only when recoveryTargetTime is set + the mitigation isn't
+   *  disabled via BARMAN_RESTORE_SKIP_FRESH_BACKUP=true env). */
+  readonly freshBackupTriggered: boolean;
+  /** Name of the fresh CNPG Backup CR, when it completed successfully.
+   *  null when the backup wasn't triggered, failed, or timed out. */
+  readonly freshBackupId: string | null;
+  /** Operator-actionable warning when the fresh-backup mitigation
+   *  failed. The restore still proceeds — this warning surfaces in
+   *  the wizard so the operator knows what to watch for during
+   *  recovery (large-WAL-gap → CNPG bootstrap timeout loop). null
+   *  when mitigation succeeded or wasn't needed. */
+  readonly freshBackupWarning: string | null;
 }
 
 interface CnpgCluster {
@@ -163,6 +176,91 @@ function getObjectStoreName(cluster: CnpgCluster): string | null {
     if (typeof v === 'string' && v.length > 0) return v;
   }
   return null;
+}
+
+/**
+ * Trigger a fresh CNPG Backup for the source cluster + wait briefly
+ * for it to complete. Used as a PITR-WAL-gap mitigation:
+ *
+ *   Without this, an operator restoring to "now minus a few minutes"
+ *   from a barman archive that hasn't been backed up in days will have
+ *   the recovery pod try to replay days of WAL. CNPG's recovery-pod
+ *   controller polls the postgres Unix socket with a ~2-min internal
+ *   timeout; when WAL replay takes longer than that, the controller
+ *   restarts the recovery pod and replay starts over from base — looping
+ *   indefinitely.
+ *
+ *   Forcing a fresh barman backup right before the restore closes the
+ *   WAL gap to seconds. Recovery completes well within CNPG's timeout.
+ *
+ * Best-effort: when the backup CR can't be created or doesn't complete
+ * within the timeout, returns a non-fatal warning so the orchestration
+ * continues anyway (operator may have ample time, may not care about
+ * the gap, or the CNPG configuration may already tolerate large gaps).
+ *
+ * Returns:
+ *   - `{ ok: true, backupId }` — fresh backup completed
+ *   - `{ ok: false, warning }` — couldn't take fresh backup; operator
+ *     may hit the CNPG bootstrap-recovery timeout if WAL gap is large
+ */
+async function triggerFreshBarmanBackup(
+  custom: k8s.CustomObjectsApi,
+  namespace: string,
+  sourceClusterName: string,
+  log?: Pick<Logger, 'info' | 'warn'>,
+  opts: { readonly timeoutMs?: number; readonly pluginName?: string } = {},
+): Promise<{ readonly ok: boolean; readonly backupId?: string; readonly warning?: string }> {
+  const timeoutMs = opts.timeoutMs ?? Number.parseInt(process.env.BARMAN_FRESH_BACKUP_TIMEOUT_MS ?? '180000', 10);
+  const pluginName = opts.pluginName ?? BARMAN_PLUGIN_NAME;
+  const backupName = `pre-restore-${Date.now()}`;
+  const body = {
+    apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
+    kind: 'Backup',
+    metadata: {
+      name: backupName,
+      namespace,
+      labels: {
+        'platform.phoenix-host.net/barman-pre-restore': 'true',
+      },
+    },
+    spec: {
+      cluster: { name: sourceClusterName },
+      method: 'plugin',
+      pluginConfiguration: { name: pluginName },
+    },
+  };
+  try {
+    await custom.createNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+      plural: 'backups', body,
+    } as unknown as Parameters<typeof custom.createNamespacedCustomObject>[0]);
+  } catch (err) {
+    const msg = (err as Error).message;
+    log?.warn?.({ err: msg }, 'barman-restore: pre-restore Backup CR create failed (non-fatal)');
+    return { ok: false, warning: `Pre-restore backup could not be triggered: ${msg}. If WAL gap to recoveryTargetTime is large (>>1 hour), restore may loop on CNPG bootstrap timeout.` };
+  }
+  log?.info?.({ backupName }, 'barman-restore: pre-restore Backup triggered, polling for completion');
+
+  // Poll for completion. Successful Backup has status.phase='completed'.
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const b = await custom.getNamespacedCustomObject({
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'backups', name: backupName,
+      } as unknown as Parameters<typeof custom.getNamespacedCustomObject>[0]) as { status?: { phase?: string; error?: string } };
+      const phase = b.status?.phase;
+      if (phase === 'completed') {
+        log?.info?.({ backupName }, 'barman-restore: pre-restore Backup completed');
+        return { ok: true, backupId: backupName };
+      }
+      if (phase === 'failed') {
+        const err = b.status?.error ?? 'unknown';
+        return { ok: false, warning: `Pre-restore backup ${backupName} failed: ${err}. Restore will proceed with stale catalogue — if WAL gap is large, may loop on CNPG bootstrap timeout.` };
+      }
+    } catch { /* keep polling */ }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  return { ok: false, warning: `Pre-restore backup ${backupName} did not complete within ${Math.round(timeoutMs / 1000)}s. Restore will proceed with stale catalogue — if WAL gap to recoveryTargetTime is large, recovery may loop on CNPG bootstrap timeout.` };
 }
 
 /**
@@ -339,6 +437,27 @@ export async function createBarmanRestore(
     },
   };
 
+  // PITR WAL-gap mitigation 2026-05-23: trigger a fresh barman backup
+  // BEFORE the restored cluster CR is applied. This closes the WAL gap
+  // to seconds so CNPG's recovery-pod bootstrap timeout (~2 min) doesn't
+  // fire before WAL replay completes. Best-effort — if the backup fails
+  // or times out we surface a warning to the caller + continue. The
+  // operator can still trigger the restore + just risks the CNPG
+  // recovery loop for large WAL gaps; that's better than blocking on
+  // a failed pre-restore backup.
+  //
+  // Disabled when SKIP_FRESH_BACKUP=true (test mode) or when no
+  // recoveryTargetTime is set (no WAL replay needed → no gap to close).
+  let freshBackup: { ok: boolean; backupId?: string; warning?: string } = { ok: true };
+  const skipFresh = process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP === 'true';
+  if (inputs.recoveryTargetTime && !skipFresh) {
+    log?.info?.({ source: inputs.sourceClusterName }, 'barman-restore: triggering fresh backup to close WAL gap before restore');
+    freshBackup = await triggerFreshBarmanBackup(custom, inputs.namespace, inputs.sourceClusterName, log);
+    if (!freshBackup.ok) {
+      log?.warn?.({ warning: freshBackup.warning }, 'barman-restore: fresh-backup mitigation failed — continuing anyway');
+    }
+  }
+
   let created: CnpgCluster;
   try {
     created = await custom.createNamespacedCustomObject({
@@ -360,6 +479,9 @@ export async function createBarmanRestore(
     objectStoreName: objectStore,
     recoveryTargetTime: inputs.recoveryTargetTime,
     clusterUid: created.metadata?.uid ?? '',
+    freshBackupTriggered: !!inputs.recoveryTargetTime && !skipFresh,
+    freshBackupId: freshBackup.backupId ?? null,
+    freshBackupWarning: freshBackup.warning ?? null,
   };
 }
 
