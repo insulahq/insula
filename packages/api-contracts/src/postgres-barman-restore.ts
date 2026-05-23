@@ -38,6 +38,14 @@ export const barmanRestoreAcceptedSchema = z.object({
   pollUrl: z.string(),
   /** Operator-facing summary. */
   message: z.string(),
+  /** Pre-restore WAL-gap mitigation (2026-05-23). When the request
+   *  carries `recoveryTargetTime`, the backend triggers a fresh CNPG
+   *  Backup before applying the restored Cluster CR — closes the WAL
+   *  gap so CNPG's bootstrap-recovery timeout doesn't fire. These
+   *  fields report what happened. */
+  freshBackupTriggered: z.boolean().optional(),
+  freshBackupId: z.string().nullable().optional(),
+  freshBackupWarning: z.string().nullable().optional(),
 });
 export type BarmanRestoreAccepted = z.infer<typeof barmanRestoreAcceptedSchema>;
 
