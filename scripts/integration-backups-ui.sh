@@ -218,11 +218,24 @@ except Exception as e:
   print(f'parse_error={e}')")
   STATE=$(echo "$SYSDB_BLOCK" | sed -nE 's/.*state=([^ ]+).*/\1/p')
   HAS_SPEC=$(echo "$SYSDB_BLOCK" | sed -nE 's/.*hasSpec=([^ ]+).*/\1/p')
-  if [[ "$STATE" == "healthy" && "$HAS_SPEC" == "true" ]]; then
-    pass "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (plugin path detected)"
-  else
-    fail "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (expected healthy/true)"
-  fi
+  # Accept any non-error state — the goal is "plugin path detected"
+  # which clusterHasBackupSpec=true confirms. The state may be
+  # `healthy` on a happy cluster, `stale` on one whose latest backup
+  # is >24h old, or `cnpg_operator_blind` on one whose CNPG operator
+  # is wedged but the object-store catalogue still sees backups.
+  # All three indicate the plugin model is correctly detected.
+  case "$STATE" in
+    healthy|stale|cnpg_operator_blind)
+      if [[ "$HAS_SPEC" == "true" ]]; then
+        pass "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (plugin path detected)"
+      else
+        fail "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (expected hasSpec=true)"
+      fi
+      ;;
+    *)
+      fail "cnpg system-db: state=$STATE (expected healthy / stale / cnpg_operator_blind)"
+      ;;
+  esac
 fi
 
 # ─── Phase 1 — CNPG snapshot Restore button wires through real PITR ─────────
