@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { reconcilePitrJobsOnce, STUCK_THRESHOLD_MS } from './watchdog.js';
+import { reconcilePitrJobsOnce, reapReleasedPvsOnce, STUCK_THRESHOLD_MS } from './watchdog.js';
 
 // Mock tasks/service.finalizeByRef + postgres-restore/service.releasePitrLock
 // so the watchdog's downstream calls are observable + don't try to hit a DB.
@@ -178,5 +178,125 @@ describe('PITR Job watchdog — reconcilePitrJobsOnce', () => {
 
     const restoreMod = await import('./service.js');
     expect(restoreMod.releasePitrLock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  function makePv(opts: {
+    name: string;
+    phase?: 'Bound' | 'Released' | 'Available';
+    ageMin?: number;
+    volumeName?: string;
+    storageClass?: string;
+    claimRef?: { namespace: string; name: string } | null;
+  }) {
+    const created = new Date(Date.now() - (opts.ageMin ?? 120) * 60_000).toISOString();
+    return {
+      metadata: { name: opts.name, creationTimestamp: created },
+      spec: {
+        volumeName: opts.volumeName ?? opts.name,
+        storageClassName: opts.storageClass ?? 'longhorn-system-local',
+        ...(opts.claimRef === null ? {} : { claimRef: opts.claimRef ?? { namespace: 'platform', name: 'gone' } }),
+      },
+      status: { phase: opts.phase ?? 'Released' },
+    };
+  }
+
+  function makeReaperK8s(opts: {
+    pvs?: ReturnType<typeof makePv>[];
+    pvcExists?: boolean;
+    deletePvFails?: boolean;
+    deleteVolFails?: boolean;
+  } = {}) {
+    return {
+      batch: { listNamespacedJob: vi.fn().mockResolvedValue({ items: [] }), deleteNamespacedJob: vi.fn() },
+      core: {
+        listNamespacedEvent: vi.fn().mockResolvedValue({ items: [] }),
+        listPersistentVolume: vi.fn().mockResolvedValue({ items: opts.pvs ?? [] }),
+        deletePersistentVolume: vi.fn().mockImplementation(async () => {
+          if (opts.deletePvFails) throw new Error('pv delete failed');
+          return {};
+        }),
+        readNamespacedPersistentVolumeClaim: vi.fn().mockImplementation(async () => {
+          if (opts.pvcExists) return { metadata: { name: 'present' } };
+          const e = new Error('not found'); (e as Error & { code?: number }).code = 404; throw e;
+        }),
+      },
+      custom: {
+        deleteNamespacedCustomObject: vi.fn().mockImplementation(async () => {
+          if (opts.deleteVolFails) throw new Error('volume delete failed');
+          return {};
+        }),
+      },
+    } as unknown as Parameters<typeof reapReleasedPvsOnce>[0]['k8s'];
+  }
+
+  it('ignores Bound PVs', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-bound', phase: 'Bound' })] });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(0);
+    expect(k8s.core.deletePersistentVolume).not.toHaveBeenCalled();
+  });
+
+  it('ignores Released PVs younger than threshold', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-young', ageMin: 30 })] });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(0);
+  });
+
+  it('ignores Released PVs on non-Longhorn storage classes', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-foreign', storageClass: 'standard' })] });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(0);
+  });
+
+  it('ignores Released PVs whose PVC was re-created (bound back)', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-rebound' })], pvcExists: true });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(0);
+    expect(k8s.core.deletePersistentVolume).not.toHaveBeenCalled();
+  });
+
+  it('reaps orphan Released PVs + their Longhorn volumes', async () => {
+    const k8s = makeReaperK8s({
+      pvs: [
+        makePv({ name: 'pv-orphan-1', ageMin: 120, volumeName: 'pvc-aaa' }),
+        makePv({ name: 'pv-orphan-2', ageMin: 180, volumeName: 'pvc-bbb' }),
+      ],
+    });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(2);
+    expect(r[0].pvDeleteOk).toBe(true);
+    expect(r[0].longhornVolumeDeleteOk).toBe(true);
+    expect(r[0].volumeName).toBe('pvc-aaa');
+    expect(k8s.core.deletePersistentVolume).toHaveBeenCalledTimes(2);
+    expect(k8s.custom!.deleteNamespacedCustomObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues to next PV when delete fails (best-effort)', async () => {
+    const k8s = makeReaperK8s({
+      pvs: [makePv({ name: 'pv-fail-1' }), makePv({ name: 'pv-fail-2' })],
+      deletePvFails: true,
+    });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(2);
+    expect(r[0].pvDeleteOk).toBe(false);
+    expect(r[1].pvDeleteOk).toBe(false);
+  });
+
+  it('skips PVs without volumeName from the Longhorn delete', async () => {
+    const k8s = makeReaperK8s({
+      pvs: [{
+        metadata: { name: 'pv-novol', creationTimestamp: new Date(Date.now() - 7200_000).toISOString() },
+        spec: { storageClassName: 'longhorn-system-local', claimRef: { namespace: 'platform', name: 'gone' } },
+        status: { phase: 'Released' },
+      }],
+    });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(1);
+    expect(r[0].volumeName).toBeNull();
+    expect(k8s.custom!.deleteNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });

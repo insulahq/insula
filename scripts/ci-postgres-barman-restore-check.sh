@@ -298,6 +298,22 @@ if [[ -f "$MODAL_FILE" ]]; then
   fi
 fi
 
+# (22) Task #103: Released-PV reaper in watchdog. Cleans orphan PVs
+# from prior CNPG-managed PVC deletions (reclaimPolicy=Retain leaves
+# them behind, accumulating Longhorn quota until restore fails with
+# "insufficient storage"). Required for repeatable PITR cycles.
+WATCHDOG="$REPO_ROOT/backend/src/modules/postgres-restore/watchdog.ts"
+if [[ -f "$WATCHDOG" ]]; then
+  if ! grep -q "reapReleasedPvsOnce" "$WATCHDOG"; then
+    echo "FAIL: watchdog.ts must implement reapReleasedPvsOnce (Released-PV reaper)"
+    FAILED=1
+  fi
+  if ! grep -q "PITR_WATCHDOG_RELEASED_PV_REAPER" "$WATCHDOG"; then
+    echo "FAIL: watchdog.ts must honor PITR_WATCHDOG_RELEASED_PV_REAPER env opt-out"
+    FAILED=1
+  fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
