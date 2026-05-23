@@ -420,8 +420,28 @@ else
 fi
 
 # ─── Cleanup snapshot CR ─────────────────────────────────────────────
+#
+# Longhorn snapshot deletion sometimes hangs forever on its own finalizer
+# (the `longhorn.io` finalizer waits for the underlying replica to be
+# cleaned up; if the replica's instance-manager pod is busy / restarting,
+# the snapshot CR sits in Terminating indefinitely). Belt-and-braces
+# cleanup: try a normal delete with a 30s timeout; if it doesn't return,
+# force-remove the finalizer + delete again.
 hdr "Cleanup"
-ssh_cmd "k3s kubectl -n longhorn-system delete snapshot $SNAP_NAME --ignore-not-found" >/dev/null
+delete_snapshot_with_fallback() {
+  local snap="$1"
+  # First try: normal delete with timeout. SSH ConnectTimeout from
+  # ssh_cmd kicks in if the apiserver is unreachable.
+  if ssh_cmd "k3s kubectl -n longhorn-system delete snapshot $snap --ignore-not-found --timeout=30s" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Still here = delete timed out. Force-finalize.
+  info "snapshot delete timed out — force-removing finalizer"
+  ssh_cmd "k3s kubectl -n longhorn-system patch snapshot $snap --type=merge -p '{\"metadata\":{\"finalizers\":[]}}'" >/dev/null 2>&1 || true
+  ssh_cmd "k3s kubectl -n longhorn-system delete snapshot $snap --ignore-not-found --timeout=15s" >/dev/null 2>&1 || true
+  return 0
+}
+delete_snapshot_with_fallback "$SNAP_NAME"
 pass "test snapshot deleted"
 
 echo
