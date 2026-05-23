@@ -460,6 +460,18 @@ function Step3({
           : 'Side-by-side restore creates a new resource — your current data is untouched.',
     },
   ];
+  // Operator-facing "what to expect" panel (Task #101 2026-05-23).
+  // Snapshot restores via this wizard ALWAYS use the no-WAL-target
+  // fast-path. The orchestrator skips the temp-cluster steps + boots
+  // the source directly from the snapshot LSN. Real timings captured
+  // on staging:
+  //   - recreate-source (snapshot bootstrap):  ~6 min
+  //   - scale-up-to-source-ha (patch):          ~0.2s
+  //   - wait-ha-stable (CNPG roll absorb):     ~3-4 min for HA, 0 for 1-instance
+  //   - normalize-bootstrap + cleanup:          <1s combined
+  // Total: ~6 min for single-instance, ~10 min for 3-instance HA.
+  // We can't know HA count here without prechecks; show the range.
+  const showScenarioPanel = artifact.kind === 'snapshot';
   return (
     <div className="space-y-3">
       <dl className="grid grid-cols-3 gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-900">
@@ -476,6 +488,20 @@ function Step3({
           <dd className="font-mono text-gray-900 dark:text-gray-100">{location}</dd>
         </div>
       </dl>
+      {showScenarioPanel && (
+        <div className="rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200">
+          <div className="font-semibold">Expected timeline (no WAL replay — fast-path)</div>
+          <ol className="mt-1.5 space-y-0.5 ml-4 list-decimal text-indigo-700 dark:text-indigo-300">
+            <li><span className="font-mono">~6 min</span> — recreate source cluster (CNPG boots primary from snapshot)</li>
+            <li><span className="font-mono">~0s</span> — patch HA scale + clean up</li>
+            <li><span className="font-mono">~3-4 min</span> — wait for HA cluster fully stable (absorbs CNPG's post-scale-up rolling restart so the chip green-state matches reality)</li>
+          </ol>
+          <div className="mt-1.5">
+            <strong>Total: ~10 min</strong> for an HA cluster, ~6 min for a single-instance.
+            Track live progress via the task-center chip once you start the restore.
+          </div>
+        </div>
+      )}
       <ul className="space-y-2" aria-label="Pre-flight checks">
         {items.map((c) => (
           <li
