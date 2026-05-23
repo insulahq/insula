@@ -49,10 +49,25 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
+// Phase 3.1 — promote reuses the postgres-restore PITR primitives. We
+// don't reimplement quiesce/suspend/delete/recreate/normalize — the
+// existing orchestrator handles all of that.
+import {
+  acquirePitrLockOrThrow,
+  releasePitrLock,
+  createPitrJob,
+  getPlatformApiImage,
+  isPostgresRestoreInProgressClusterWide,
+} from '../postgres-restore/service.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import type { Database } from '../../db/index.js';
 
 const CNPG_GROUP = 'postgresql.cnpg.io';
 const CNPG_VERSION = 'v1';
 const CLUSTERS_PLURAL = 'clusters';
+const LONGHORN_GROUP = 'longhorn.io';
+const LONGHORN_VERSION = 'v1beta2';
+const LONGHORN_NS = 'longhorn-system';
 
 const BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
 
@@ -465,4 +480,325 @@ export async function deleteBarmanRestore(
 
   log?.info?.({ ns: namespace, cluster: newClusterName }, 'barman-restore: side-by-side Cluster CR deleted');
   return { deleted: true };
+}
+
+// ─── Phase 3.1 (2026-05-23) — PROMOTE ──────────────────────────────────────
+//
+// Destructive cutover: swap a side-by-side restored cluster's data into
+// the SOURCE cluster's name + role. Key design: reuse the existing
+// postgres-restore PITR machinery. Promote = take a Longhorn snapshot of
+// the restored cluster's primary PVC + invoke promotePostgresFromSnapshot
+// with `clusterName=<source>, snapshotName=<just-taken>`. The PITR
+// orchestrator handles quiesce-consumers / suspend-Flux / delete-source /
+// recreate-source / normalize-bootstrap / restore-consumers / resume-Flux.
+// Post-PITR-success, pitr-job.ts also deletes the side-by-side restored
+// Cluster CR (driven by BARMAN_PROMOTE_MODE env var).
+//
+// Failure modes:
+//   - snapshot-take fails → release PITR lock + throw, source untouched
+//   - Job-create fails → release PITR lock + throw, source untouched,
+//     orphan Longhorn snapshot cleaned up by recoverInterruptedRestore
+//   - PITR fails mid-run → existing auto-recovery returns source to
+//     pre-promote state (recreates from the wrapped Longhorn snapshot)
+//   - PITR succeeds + restored cluster delete fails → admin notification
+//     with manual kubectl command, source already swapped (non-fatal)
+
+export interface PromoteRestoredClusterInputs {
+  readonly namespace: string;
+  readonly restoredClusterName: string;
+  readonly sourceClusterName: string;
+  /** Type-to-confirm: MUST equal sourceClusterName (server-side
+   *  enforcement of the wizard's type-to-confirm input). */
+  readonly confirmSourceClusterName: string;
+  readonly actorUserId: string | null;
+}
+
+export interface PromoteRestoredClusterResult {
+  readonly snapshotName: string;
+  readonly jobName: string;
+  readonly jobNamespace: string;
+  readonly sourceClusterName: string;
+  readonly restoredClusterName: string;
+  readonly namespace: string;
+}
+
+interface PvcMeta {
+  readonly metadata?: { readonly name?: string };
+  readonly spec?: { readonly volumeName?: string };
+}
+
+/**
+ * Take a Longhorn-native snapshot of the restored cluster's CURRENT
+ * primary PVC. Returns the snapshot name once it's `readyToUse=true`.
+ *
+ * Uses the same `pitr-restore` labels the postgres-restore module
+ * uses on its temp resources — so if this orchestration crashes, the
+ * orphan snapshot is cleaned up by `recoverInterruptedRestore` at
+ * next platform-api startup (label selector `pitr-restore=true`).
+ */
+async function takeLonghornSnapshotOfRestoredCluster(
+  custom: k8s.CustomObjectsApi,
+  core: k8s.CoreV1Api,
+  namespace: string,
+  restoredClusterName: string,
+  sourceNamespace: string,
+  log?: Pick<Logger, 'info' | 'warn'>,
+  opts: { readonly timeoutMs?: number } = {},
+): Promise<{ readonly snapshotName: string; readonly longhornVolume: string }> {
+  // 1. Resolve restored cluster's currentPrimary pod → matching PVC
+  let restored: { readonly status?: { readonly currentPrimary?: string } };
+  try {
+    restored = await custom.getNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: CLUSTERS_PLURAL, name: restoredClusterName,
+    } as unknown as Parameters<typeof custom.getNamespacedCustomObject>[0]) as never;
+  } catch (err) {
+    throw new BarmanRestoreError(`Restored cluster ${namespace}/${restoredClusterName} lookup failed: ${err instanceof Error ? err.message : String(err)}`, 500);
+  }
+  const primaryPodName = restored.status?.currentPrimary;
+  if (!primaryPodName) {
+    throw new BarmanRestoreError(`Restored cluster ${namespace}/${restoredClusterName} has no currentPrimary — cannot snapshot`, 409);
+  }
+
+  // The PVC for a CNPG instance has the same name as the pod
+  // (`<cluster>-<n>`). Confirm + read its Longhorn volume name.
+  let pvc: PvcMeta;
+  try {
+    pvc = await core.readNamespacedPersistentVolumeClaim({
+      namespace, name: primaryPodName,
+    } as unknown as Parameters<typeof core.readNamespacedPersistentVolumeClaim>[0]) as unknown as PvcMeta;
+  } catch (err) {
+    throw new BarmanRestoreError(`PVC ${namespace}/${primaryPodName} lookup failed: ${err instanceof Error ? err.message : String(err)}`, 500);
+  }
+  const longhornVolume = pvc.spec?.volumeName;
+  if (!longhornVolume) {
+    throw new BarmanRestoreError(`PVC ${namespace}/${primaryPodName} has no volumeName — Longhorn binding incomplete?`, 409);
+  }
+
+  // 2. Create a Longhorn-native Snapshot CR. Name + labels mirror
+  // postgres-restore's pattern so recoverInterruptedRestore cleans it
+  // up if we crash before consuming it.
+  const ts = Date.now();
+  const snapshotName = `barman-promote-${ts}`;
+  const snapBody = {
+    apiVersion: `${LONGHORN_GROUP}/${LONGHORN_VERSION}`,
+    kind: 'Snapshot',
+    metadata: {
+      name: snapshotName,
+      namespace: LONGHORN_NS,
+      labels: {
+        'platform.example.test/pitr-restore': 'true',
+        'platform.example.test/pitr-namespace': sourceNamespace,
+        'platform.example.test/barman-promote': 'true',
+      },
+    },
+    spec: {
+      createSnapshot: true,
+      volume: longhornVolume,
+      labels: { source: 'barman-promote', restoredCluster: restoredClusterName },
+    },
+  };
+  try {
+    await custom.createNamespacedCustomObject({
+      group: LONGHORN_GROUP, version: LONGHORN_VERSION, namespace: LONGHORN_NS, plural: 'snapshots', body: snapBody,
+    } as unknown as Parameters<typeof custom.createNamespacedCustomObject>[0]);
+  } catch (err) {
+    throw new BarmanRestoreError(`Longhorn snapshot create failed: ${err instanceof Error ? err.message : String(err)}`, 500);
+  }
+  log?.info?.({ snapshotName, longhornVolume, restoredClusterName }, 'barman-promote: Longhorn snapshot created, polling readyToUse');
+
+  // 3. Poll readyToUse=true. Longhorn-native CoW is fast (~seconds)
+  // but on a busy node it can stretch; configurable timeout.
+  // Operator escape hatch: `BARMAN_PROMOTE_SNAPSHOT_TIMEOUT_MS` env on
+  // platform-api overrides the 60s default. Set higher for production
+  // hardware under load; lower for predictable test envs.
+  const envTimeout = Number.parseInt(process.env.BARMAN_PROMOTE_SNAPSHOT_TIMEOUT_MS ?? '', 10);
+  const timeoutMs = opts.timeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 60_000);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let snap: { readonly status?: { readonly readyToUse?: boolean } };
+    try {
+      snap = await custom.getNamespacedCustomObject({
+        group: LONGHORN_GROUP, version: LONGHORN_VERSION, namespace: LONGHORN_NS, plural: 'snapshots', name: snapshotName,
+      } as unknown as Parameters<typeof custom.getNamespacedCustomObject>[0]) as never;
+    } catch (err) {
+      log?.warn?.({ err: err instanceof Error ? err.message : String(err) }, 'barman-promote: snapshot read failed during poll; retrying');
+      await new Promise((r) => setTimeout(r, 2_000));
+      continue;
+    }
+    if (snap.status?.readyToUse === true) {
+      return { snapshotName, longhornVolume };
+    }
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+  throw new BarmanRestoreError(
+    `Longhorn snapshot ${snapshotName} did not reach readyToUse=true within ${timeoutMs}ms. Check Longhorn node health (kubectl -n longhorn-system get volumes.longhorn.io ${longhornVolume}).`,
+    504,
+  );
+}
+
+interface PromoteDeps {
+  /** Full K8sClients — passed verbatim to createPitrJob /
+   *  getPlatformApiImage which require the complete bundle. Using the
+   *  shared type (instead of a structural subset) keeps the promote
+   *  flow compile-time-safe against future K8sClients additions. */
+  readonly k8s: K8sClients;
+  readonly db: Database;
+}
+
+/**
+ * Orchestrate the cutover. Synchronous setup (snapshot + lock + Job
+ * creation); the Job pod runs the existing PITR orchestrator + the
+ * post-success restored-cluster delete. Returns 202-shaped data; caller
+ * polls /admin/postgres-restore/status for live progress (same modal
+ * as a normal PITR).
+ */
+export async function promoteRestoredCluster(
+  deps: PromoteDeps,
+  inputs: PromoteRestoredClusterInputs,
+  log?: Pick<Logger, 'info' | 'warn'>,
+): Promise<PromoteRestoredClusterResult> {
+  // 1. Type-to-confirm gate. Server-side enforcement so a UI bug or
+  // bad cURL can't skip the operator's typed confirmation.
+  if (inputs.confirmSourceClusterName !== inputs.sourceClusterName) {
+    throw new BarmanRestoreError(
+      `confirmSourceClusterName (${inputs.confirmSourceClusterName}) does not match sourceClusterName (${inputs.sourceClusterName}) — refusing destructive cutover`,
+      409,
+    );
+  }
+  // 2. Standard name validation.
+  validateClusterName(inputs.namespace, 'namespace');
+  validateClusterName(inputs.restoredClusterName, 'restoredClusterName');
+  validateClusterName(inputs.sourceClusterName, 'sourceClusterName');
+  if (inputs.restoredClusterName === inputs.sourceClusterName) {
+    throw new BarmanRestoreError('restoredClusterName must differ from sourceClusterName', 400);
+  }
+
+  // 3. Fetch restored cluster, check managed-by label + ready state.
+  let restored: {
+    readonly metadata?: { readonly labels?: Record<string, string> };
+    readonly status?: { readonly readyInstances?: number; readonly currentPrimary?: string };
+  };
+  try {
+    restored = await deps.k8s.custom.getNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.namespace, plural: CLUSTERS_PLURAL, name: inputs.restoredClusterName,
+    } as unknown as Parameters<typeof deps.k8s.custom.getNamespacedCustomObject>[0]) as never;
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (code === 404) {
+      throw new BarmanRestoreError(`Restored cluster ${inputs.namespace}/${inputs.restoredClusterName} not found`, 404);
+    }
+    throw err;
+  }
+  const managedBy = restored.metadata?.labels?.['app.kubernetes.io/managed-by'];
+  if (managedBy !== 'platform-api-postgres-barman-restore') {
+    throw new BarmanRestoreError(`Cluster ${inputs.namespace}/${inputs.restoredClusterName} is not managed by barman-restore`, 403);
+  }
+  if ((restored.status?.readyInstances ?? 0) < 1 || !restored.status?.currentPrimary) {
+    throw new BarmanRestoreError(`Restored cluster ${inputs.namespace}/${inputs.restoredClusterName} is not Ready (readyInstances=${restored.status?.readyInstances ?? 0}) — promote requires the restored cluster's primary up so its data is snapshot-able`, 409);
+  }
+
+  // 4. Fetch source cluster — must exist + have bootstrap.initdb so
+  // the PITR orchestrator's preflight can read it. (The orchestrator
+  // reads live source at preflight; we just check it's present here
+  // so we fail fast before taking a snapshot.)
+  let source: { readonly spec?: { readonly bootstrap?: { readonly initdb?: { readonly database?: string } } } };
+  try {
+    source = await deps.k8s.custom.getNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.namespace, plural: CLUSTERS_PLURAL, name: inputs.sourceClusterName,
+    } as unknown as Parameters<typeof deps.k8s.custom.getNamespacedCustomObject>[0]) as never;
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (code === 404) {
+      throw new BarmanRestoreError(`Source cluster ${inputs.namespace}/${inputs.sourceClusterName} not found — cannot promote into a non-existent source`, 404);
+    }
+    throw err;
+  }
+  if (!source.spec?.bootstrap?.initdb?.database) {
+    throw new BarmanRestoreError(
+      `Source cluster ${inputs.namespace}/${inputs.sourceClusterName} has no spec.bootstrap.initdb.database — PITR orchestrator's preflight would reject. Operator may need to normalize the source's bootstrap manually before promote (see normalize-bootstrap CI guard).`,
+      422,
+    );
+  }
+
+  // 5. Pre-check the PITR cluster-wide lock. Refuse if a PITR (or
+  // a previous promote) is already in flight.
+  const lockState = await isPostgresRestoreInProgressClusterWide(deps.db);
+  if (lockState.inProgress) {
+    throw new BarmanRestoreError(
+      `A postgres restore is already in progress (snapshot=${lockState.snapshot ?? 'unknown'}, source=${lockState.source}). Wait for it to finish.`,
+      409,
+    );
+  }
+
+  // 6. Acquire the lock atomically. Same machinery the PITR route uses.
+  // Lock keyed with a human-readable placeholder snapshot label — gives
+  // operators inspecting the status modal during the snapshot-take
+  // window (~5-60s) a clear "(taking snapshot ...)" message instead of
+  // an opaque pending-<timestamp>. The Job's own writePersistedLock
+  // overwrites this with the real snapshot name once orchestration
+  // begins (review MEDIUM 2026-05-23).
+  try {
+    await acquirePitrLockOrThrow(deps.db, {
+      clusterNamespace: inputs.namespace,
+      clusterName: inputs.sourceClusterName,
+      snapshotName: `(taking snapshot of ${inputs.restoredClusterName})`,
+    });
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    if (code === 409) {
+      throw new BarmanRestoreError((err as Error).message, 409);
+    }
+    throw err;
+  }
+
+  // From here, ALL error paths must release the lock — the Job pod
+  // doesn't exist yet so its finally block can't run.
+  let snapshot: { readonly snapshotName: string; readonly longhornVolume: string };
+  try {
+    snapshot = await takeLonghornSnapshotOfRestoredCluster(
+      deps.k8s.custom, deps.k8s.core, inputs.namespace, inputs.restoredClusterName, inputs.namespace, log,
+    );
+  } catch (err) {
+    await releasePitrLock(deps.db, { failed: true, error: (err as Error).message, taskKind: 'postgres.barman-promote' }).catch(() => undefined);
+    throw err;
+  }
+  log?.info?.({ snapshot: snapshot.snapshotName }, 'barman-promote: snapshot ready, creating PITR Job');
+
+  let image: string;
+  try {
+    image = await getPlatformApiImage(deps.k8s);
+  } catch (err) {
+    await releasePitrLock(deps.db, { failed: true, error: (err as Error).message, taskKind: 'postgres.barman-promote' }).catch(() => undefined);
+    throw new BarmanRestoreError(`Failed to resolve platform-api image: ${(err as Error).message}`, 500);
+  }
+
+  // 7. Create the PITR Job, passing BARMAN_PROMOTE_* env vars so
+  // pitr-job.ts knows to delete the side-by-side cluster on success.
+  let job: { readonly jobName: string; readonly namespace: string };
+  try {
+    job = await createPitrJob(deps.k8s, {
+      clusterNamespace: inputs.namespace,
+      clusterName: inputs.sourceClusterName,
+      snapshotName: snapshot.snapshotName,
+      recoveryTargetTime: null,
+      actorUserId: inputs.actorUserId,
+      image,
+      extraEnv: [
+        { name: 'BARMAN_PROMOTE_MODE', value: 'true' },
+        { name: 'BARMAN_PROMOTE_RESTORED_CLUSTER', value: inputs.restoredClusterName },
+      ],
+    });
+  } catch (err) {
+    await releasePitrLock(deps.db, { failed: true, error: (err as Error).message, taskKind: 'postgres.barman-promote' }).catch(() => undefined);
+    throw new BarmanRestoreError(`Failed to create PITR Job: ${(err as Error).message}`, 500);
+  }
+
+  return {
+    snapshotName: snapshot.snapshotName,
+    jobName: job.jobName,
+    jobNamespace: job.namespace,
+    sourceClusterName: inputs.sourceClusterName,
+    restoredClusterName: inputs.restoredClusterName,
+    namespace: inputs.namespace,
+  };
 }

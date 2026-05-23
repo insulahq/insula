@@ -17,13 +17,14 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { X, AlertTriangle, ChevronLeft, ChevronRight, Loader2, Check, Trash2 } from 'lucide-react';
+import { X, AlertTriangle, ChevronLeft, ChevronRight, Loader2, Check, Trash2, RotateCw } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import {
   useStartBarmanRestore,
   useBarmanRestoreStatus,
   useDeleteBarmanRestore,
+  usePromoteBarmanRestore,
 } from '@/hooks/use-postgres-barman-restore';
 import { useWalArchiveClusters } from '@/hooks/use-system-wal-archive';
 import type {
@@ -217,11 +218,16 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
             <InFlight
               namespace={activeCluster.namespace}
               newClusterName={activeCluster.newClusterName}
+              sourceName={sourceName}
               onCleanup={async () => {
                 await deleteMut.mutateAsync(activeCluster).catch(() => undefined);
                 onClose();
               }}
               cleanupPending={deleteMut.isPending}
+              onPromoted={() => {
+                // Cutover handed off to task-center chip → PitrProgressModal.
+                onClose();
+              }}
             />
           )}
         </div>
@@ -516,14 +522,29 @@ function Step3Confirm({
 function InFlight({
   namespace,
   newClusterName,
+  sourceName,
   onCleanup,
   cleanupPending,
+  onPromoted,
 }: {
   readonly namespace: string;
   readonly newClusterName: string;
+  readonly sourceName: string;
   readonly onCleanup: () => Promise<void>;
   readonly cleanupPending: boolean;
+  readonly onPromoted: () => void;
 }) {
+  // Phase 3.1: type-to-confirm gate + promote mutation. The promote
+  // button only enables when the operator types the source cluster
+  // name back AND the restored cluster is Ready (data must be present
+  // to be snapshot-able). `promotedJob` flips on after successful
+  // POST — the section then surfaces a confirmation + chip-tracking
+  // hint instead of immediately closing the wizard (review MEDIUM
+  // discoverability fix 2026-05-23).
+  const [confirmName, setConfirmName] = useState('');
+  const [promoteError, setPromoteError] = useState<string | null>(null);
+  const [promotedJob, setPromotedJob] = useState<string | null>(null);
+  const promoteMut = usePromoteBarmanRestore();
   const statusQ = useBarmanRestoreStatus({ namespace, newClusterName });
   const s = statusQ.data?.data;
   // P4b: derive a timeline from CNPG conditions sorted by lastTransitionTime.
@@ -612,6 +633,95 @@ function InFlight({
           Delete restored cluster
         </button>
       </div>
+
+      {/* Phase 3.1 — Promote (cutover). Only renders once the restored
+          cluster is Ready (data verifiable + snapshot-able). Type-to-
+          confirm enforced client + server side. */}
+      {s?.ready && (
+        <details
+          className="rounded border border-rose-300 bg-rose-50/30 px-3 py-2 dark:border-rose-700 dark:bg-rose-900/10"
+          data-testid="barman-restore-promote-section"
+        >
+          <summary className="cursor-pointer text-xs font-semibold text-rose-800 dark:text-rose-300">
+            <RotateCw size={11} className="-mt-0.5 mr-1 inline" />
+            Promote → <code className="font-mono">{sourceName}</code> (destructive cutover)
+          </summary>
+          <div className="mt-2 space-y-2 text-xs">
+            <p className="text-rose-900 dark:text-rose-200">
+              <strong>This will REPLACE the source cluster.</strong> Steps:
+              snapshot the restored cluster's primary PVC, delete{' '}
+              <code className="font-mono">{sourceName}</code>, recreate it from the snapshot,
+              normalize bootstrap, restart consumers, delete this side-by-side cluster.
+              ~5-10 min wall-clock + ~6-8 min source write-block during cutover.
+            </p>
+            <p className="text-rose-900 dark:text-rose-200">
+              Verify the restored cluster has the expected data first
+              (<code className="rounded bg-rose-100 px-1 dark:bg-rose-900/40">kubectl -n {namespace} exec {newClusterName}-1 -c postgres -- psql ...</code>).
+            </p>
+            <label className="block">
+              <span className="text-gray-700 dark:text-gray-300">
+                Type <code className="rounded bg-gray-100 px-1 font-mono dark:bg-gray-800">{sourceName}</code> to confirm:
+              </span>
+              <input
+                type="text"
+                value={confirmName}
+                onChange={(e) => setConfirmName(e.target.value)}
+                placeholder={sourceName}
+                className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1 font-mono text-xs dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                data-testid="barman-restore-promote-confirm"
+              />
+            </label>
+            {promoteError && (
+              <div role="alert" className="rounded border border-rose-400 bg-rose-100 px-2 py-1 text-rose-900 dark:bg-rose-900/40 dark:text-rose-200">
+                {promoteError}
+              </div>
+            )}
+            {promotedJob ? (
+              <div role="status" className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200">
+                <div className="font-semibold">
+                  <Check size={12} className="-mt-0.5 mr-1 inline" />
+                  Promote started — Job <code className="font-mono">{promotedJob}</code>
+                </div>
+                <div className="mt-1">
+                  Track live progress in the <strong>task-center chip</strong> (top bar). Clicking the chip opens
+                  the step-by-step timeline modal — same view as a normal PITR. Closing this wizard is now safe.
+                </div>
+                <button
+                  type="button"
+                  onClick={onPromoted}
+                  className="mt-2 inline-flex items-center gap-1 rounded border border-emerald-400 px-2 py-0.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 dark:border-emerald-600 dark:text-emerald-200 dark:hover:bg-emerald-900/50"
+                  data-testid="barman-restore-promote-close"
+                >
+                  Close wizard
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={confirmName !== sourceName || promoteMut.isPending}
+                onClick={async () => {
+                  setPromoteError(null);
+                  try {
+                    const resp = await promoteMut.mutateAsync({
+                      namespace,
+                      newClusterName,
+                      body: { sourceClusterName: sourceName, confirmSourceClusterName: confirmName },
+                    });
+                    setPromotedJob(resp.data.jobName);
+                  } catch (err) {
+                    setPromoteError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded bg-rose-600 px-3 py-1 text-xs font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                data-testid="barman-restore-promote-start"
+              >
+                {promoteMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
+                {promoteMut.isPending ? 'Starting cutover…' : 'Promote → source'}
+              </button>
+            )}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
