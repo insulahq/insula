@@ -244,14 +244,19 @@ rules:
     verbs: ["get", "list", "create", "patch", "delete"]
   # Phase 4b: System Backup WAL archive enable/disable creates/patches/
   # deletes ScheduledBackup CRs alongside the Cluster's spec.backup.
-  # Backup CRs (CNPG's record of completed base backups) are read-only
-  # for surfacing status to operators.
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["scheduledbackups"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  # Backup CRs (CNPG's record of completed base backups). Previously
+  # read-only for status surfacing — extended 2026-05-23 to include
+  # `create` for the barman-restore WAL-gap mitigation: when the
+  # operator triggers a PITR-to-target restore from a stale catalogue,
+  # platform-api auto-triggers a fresh CNPG Backup before applying the
+  # restored Cluster CR. Without `create`, the mitigation fails with
+  # 403 + the operator falls back to manual `kubectl cnpg backup`.
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["backups"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "create"]
   # Barman Cloud Plugin (cnpg-i): WAL archive enable/disable upserts an
   # ObjectStore CR per cluster (`<cluster>-system-store`) alongside the
   # ScheduledBackup. The plugin's own controller reconciles the
