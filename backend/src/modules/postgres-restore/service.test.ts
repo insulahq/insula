@@ -123,6 +123,40 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     )).rejects.toMatchObject({ code: 409 });
   });
 
+  it('allows cross-cluster snapshot when labeled barman-promote=true (Phase 3.1)', async () => {
+    // Phase 3.1 promote takes a Longhorn snapshot of the RESTORED
+    // cluster's PVC + calls promotePostgresFromSnapshot with
+    // clusterName=<source>. The PVC membership check would fail
+    // because snap.spec.volume is from the restored cluster's PVC,
+    // not the source cluster's. The barman-promote=true label is set
+    // by barman-restore/service.ts:takeLonghornSnapshotOfRestoredCluster
+    // — server-set, can't be spoofed via UI submission.
+    //
+    // To confirm membership was bypassed, we make the FOLLOWING step
+    // fail (VolumeSnapshot creation) — that proves preflight finished
+    // without rejecting on membership.
+    const k8s = makeK8s({
+      cluster: {
+        metadata: { name: 'postgres', namespace: 'platform' },
+        spec: { instances: 3, storage: { size: '10Gi' }, bootstrap: { initdb: { database: 'hp', owner: 'p', secret: { name: 's' } } } },
+        status: { currentPrimary: 'postgres-1' },
+      },
+      snapshot: {
+        metadata: { labels: { 'platform.example.test/barman-promote': 'true' } },
+        spec: { volume: 'vol-restored-cluster' },
+        status: { readyToUse: true },
+      },
+      pvcs: [{ metadata: { name: 'postgres-1' }, spec: { volumeName: 'vol-actual-source' } }],
+      failOnCreatePlural: 'volumesnapshots',
+    });
+    await expect(promotePostgresFromSnapshot(
+      { k8s, db: makeDb() },
+      { clusterNamespace: 'platform', clusterName: 'postgres', snapshotName: 'snap-barman-promote', recoveryTargetTime: null, actorUserId: null },
+    )).rejects.toThrow(/mock-fail-volumesnapshots/);
+    // The membership-check error string MUST NOT appear — if it did,
+    // we'd have rejected at preflight (before the failOnCreatePlural).
+  });
+
   it('refuses when recoveryTargetTime is before snapshot creation', async () => {
     const k8s = makeK8s({
       cluster: {

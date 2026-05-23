@@ -127,6 +127,33 @@ if [[ -f "$PITRJOB" ]]; then
   fi
 fi
 
+# (12) postgres-restore/service.ts MUST bypass the PVC-membership check
+# when the snapshot carries the `platform.example.test/barman-promote`
+# label. Without this, Phase 3.1 promote (which feeds a snapshot from a
+# DIFFERENT cluster) hits "Snapshot X does not belong to any PVC in
+# cluster Y" 409. Live-staging regression caught 2026-05-23 against
+# `sysdb-recover-e2e` promote. Guard the bypass + the label spelling +
+# the fallback for primaryPvc (since the membership-check result is also
+# used in the return value).
+PG_RESTORE_SVC="$REPO_ROOT/backend/src/modules/postgres-restore/service.ts"
+if [[ -f "$PG_RESTORE_SVC" ]]; then
+  if ! grep -q "isBarmanPromoteSnapshot" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must bypass membership check for barman-promote snapshots (Phase 3.1)"
+    FAILED=1
+  fi
+  if ! grep -q "platform.example.test/barman-promote" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must reference the 'platform.example.test/barman-promote' label (must match barman-restore/service.ts:takeLonghornSnapshotOfRestoredCluster spelling)"
+    FAILED=1
+  fi
+fi
+
+# Same label name must be set by barman-restore/service.ts when it takes
+# the snapshot (otherwise the bypass above never triggers).
+if ! grep -q "'platform.example.test/barman-promote': 'true'" "$SERVICE"; then
+  echo "FAIL: barman-restore/service.ts must label the Longhorn snapshot with platform.example.test/barman-promote=true (sets the bypass flag postgres-restore/service.ts checks)"
+  FAILED=1
+fi
+
 if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
