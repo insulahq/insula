@@ -34,17 +34,18 @@ import {
   BARMAN_PLUGIN_NAME,
 } from './wal-archive.js';
 
-// Hardcoded list — same as the SystemDatabasesTab. Two known system
-// CNPG clusters. The names are version-agnostic (`system-db`, `mail-db`)
-// so future PG-major bumps don't require code/UI updates — just
-// dump+restore into the same-named cluster (or transient + rename).
+// Hardcoded list of system CNPG clusters with WAL archive surface.
+// Names are version-agnostic so future PG-major bumps don't require
+// code/UI updates — dump+restore into the same-named cluster.
+//
+// 2026-05-24: mail-db removed. Stalwart migrated to RocksDB; the
+// mail-namespace CNPG cluster no longer exists. The previously
+// rendered card was a phantom that always reported "not found".
 //
 // Cluster name history (cleaned up 2026-05-07):
 //   platform: postgres → postgres-18 → system-db
-//   mail:     mail-pg  → mail-pg-17 → mail-pg-18 → mail-db
 const KNOWN_CLUSTERS = [
   { clusterNamespace: 'platform', clusterName: 'system-db' },
-  { clusterNamespace: 'mail',     clusterName: 'mail-db' },
 ] as const;
 
 export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promise<void> {
