@@ -205,6 +205,57 @@ else
   fail "switch-with-pause route returned $SW_CODE on empty body (expected 400)"
 fi
 
+# ─── Phase 6 — WAL Archive consistency fixes ─────────────────────────
+echo '═══ Phase 6 — WAL Archive enable rejects unknown fields + bad cron ═══'
+# Phase 6 schema is .strict() — pre-Phase-6 super_admin scripts that
+# still send `targetConfigId` get a 400 instead of silent strip.
+api POST '/api/v1/system-backup/wal-archive/enable' \
+  '{"clusterNamespace":"platform","clusterName":"system-db","retentionDays":30,"targetConfigId":"00000000-0000-0000-0000-000000000000"}' \
+  P6_STRICT_RESP P6_STRICT_CODE
+if [[ "$P6_STRICT_CODE" == "400" ]]; then
+  pass "wal-archive/enable rejects unknown 'targetConfigId' with 400 (.strict() schema)"
+else
+  fail "wal-archive/enable returned $P6_STRICT_CODE on pre-Phase-6 body (expected 400): $(printf '%s' "$P6_STRICT_RESP" | head -c 200)"
+fi
+# Bad cron → 400.
+api POST '/api/v1/system-backup/wal-archive/enable' \
+  '{"clusterNamespace":"platform","clusterName":"system-db","retentionDays":30,"baseBackupSchedule":"not a cron"}' \
+  P6_CRON_RESP P6_CRON_CODE
+if [[ "$P6_CRON_CODE" == "400" ]]; then
+  pass "wal-archive/enable rejects bad cron (400 from contract regex)"
+else
+  fail "wal-archive/enable returned $P6_CRON_CODE on bad cron (expected 400)"
+fi
+# Phase 6 happy-path: enable WAL streaming WITHOUT a target picker.
+# Only test when a SYSTEM target is bound — otherwise we skip with info.
+api GET '/api/v1/admin/backup-rclone-shim/assignments' '' P6_ASSIGN_RESP _
+SYS_TARGET=$(printf '%s' "$P6_ASSIGN_RESP" | sed -nE 's/.*"className":"system"[^}]*"targetId":"([^"]+)".*/\1/p' | head -1)
+if [[ -z "$SYS_TARGET" ]]; then
+  info "No SYSTEM target bound on staging — skip WAL enable happy-path (no upstream to route to)"
+else
+  info "SYSTEM target bound (id=$SYS_TARGET) — testing WAL enable happy-path"
+  api POST '/api/v1/system-backup/wal-archive/enable' \
+    '{"clusterNamespace":"platform","clusterName":"system-db","retentionDays":7,"archiveTimeout":"5min","baseBackupSchedule":"0 0 3 * * *"}' \
+    P6_ENABLE_RESP P6_ENABLE_CODE
+  if [[ "$P6_ENABLE_CODE" == "200" ]]; then
+    DEST=$(printf '%s' "$P6_ENABLE_RESP" | sed -nE 's/.*"destinationPath":"([^"]+)".*/\1/p' | head -1)
+    if [[ "$DEST" == "s3://system/wal-archive/platform-system-db" ]]; then
+      pass "wal-archive/enable uses shim destinationPath ($DEST)"
+    else
+      fail "wal-archive/enable destinationPath wrong: '$DEST' (expected s3://system/wal-archive/platform-system-db)"
+    fi
+  else
+    fail "wal-archive/enable returned $P6_ENABLE_CODE (no target picker now): $(printf '%s' "$P6_ENABLE_RESP" | head -c 300)"
+  fi
+fi
+# WAL clusters list should still return only platform/system-db.
+api GET '/api/v1/system-backup/wal-archive/clusters' '' P6_LIST_RESP _
+if printf '%s' "$P6_LIST_RESP" | grep -q '"clusterName":"system-db"'; then
+  pass "wal-archive/clusters surfaces platform/system-db"
+else
+  fail "wal-archive/clusters missing system-db"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if [[ "$FAILED" -eq 0 ]]; then
