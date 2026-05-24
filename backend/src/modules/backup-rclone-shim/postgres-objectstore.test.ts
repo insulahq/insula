@@ -96,14 +96,48 @@ interface FakeRow {
   enabled: number;
 }
 
-function fakeDb(rows: FakeRow[]): Database {
-  const chain: Record<string, unknown> = {};
-  for (const m of ['from', 'where', 'innerJoin', 'leftJoin', 'orderBy', 'limit']) {
-    chain[m] = vi.fn(() => chain);
-  }
-  chain.then = (resolve: (rows: FakeRow[]) => unknown) => Promise.resolve(rows).then(resolve);
+// Phase 6 (2026-05-24): the reconciler now also queries
+// systemWalArchiveState (in walArchiveOwnsCluster). The fake DB needs
+// to return DIFFERENT rows for that table than for the loadSystemTarget
+// query — otherwise the existing tests' target-binding row gets
+// interpreted as a wal-archive-state row and trips the dual-reconciler
+// guard. Distinguish via the table identity passed to `.from()`.
+import {
+  backupTargetAssignments,
+  systemWalArchiveState,
+} from '../../db/schema.js';
+
+interface WalArchiveStateRow {
+  ns: string;
+}
+
+function fakeDb(
+  rows: FakeRow[],
+  walArchiveRows: WalArchiveStateRow[] = [],
+): Database {
+  // Each select() call produces its own chain instance so the
+  // .from(table) argument can swap which dataset the chain resolves
+  // to. Without per-call chains, the second select would receive the
+  // same rows as the first.
+  const newChain = (): Record<string, unknown> => {
+    const chain: Record<string, unknown> = {};
+    // The dataset this chain resolves to. Defaults to the legacy
+    // target rows (back-compat with existing tests).
+    let dataset: unknown[] = rows;
+    chain.from = vi.fn((table: unknown) => {
+      if (table === systemWalArchiveState) dataset = walArchiveRows;
+      else if (table === backupTargetAssignments) dataset = rows;
+      return chain;
+    });
+    for (const m of ['where', 'innerJoin', 'leftJoin', 'orderBy', 'limit']) {
+      chain[m] = vi.fn(() => chain);
+    }
+    chain.then = (resolve: (rows: unknown[]) => unknown) =>
+      Promise.resolve(dataset).then(resolve);
+    return chain;
+  };
   return {
-    select: vi.fn(() => chain),
+    select: vi.fn(() => newChain()),
   } as unknown as Database;
 }
 
@@ -185,6 +219,33 @@ describe('reconcilePostgresObjectStore — happy path', () => {
       path: '/spec/plugins/0/isWALArchiver',
       value: true,
     });
+  });
+
+  // Phase 6 (2026-05-24) dual-reconciler ownership guard. When the
+  // operator has enabled WAL streaming via the UI (i.e. a row exists
+  // in systemWalArchiveState), this reconciler must SKIP the
+  // patchClusterWalArchiver call — wal-archive.ts owns the field
+  // exclusively. The shim creds + ObjectStore + ScheduledBackup
+  // continue to be applied (they're harmless additions).
+  it('defers Cluster patch to wal-archive when systemWalArchiveState has a row', async () => {
+    const db = fakeDb(
+      [{ targetId: 't-1', storageType: 's3', enabled: 1 }],
+      [{ ns: 'platform' }], // wal-archive-state row exists → defer
+    );
+    const clients = fakeClients();
+    await reconcilePostgresObjectStore(db, clients as never, silentLog());
+
+    // No cluster patch.
+    const clusterPatchCall = clients.custom.patchNamespacedCustomObject.mock.calls.find(
+      (c) => (c[0] as { plural?: string }).plural === 'clusters',
+    );
+    expect(clusterPatchCall).toBeUndefined();
+
+    // But ObjectStore + ScheduledBackup were still created (harmless).
+    const objectStoreCall = clients.custom.createNamespacedCustomObject.mock.calls.find(
+      (c) => (c[0] as { plural?: string }).plural === 'objectstores',
+    );
+    expect(objectStoreCall).toBeDefined();
   });
 
   it('falls back to `add` op when Cluster patch returns 422 (path missing)', async () => {

@@ -1,20 +1,27 @@
 /**
  * WAL Archive tab — Phase 4 of System Backup.
  *
- * Per-cluster on/off + target picker + retention. Surfaces CNPG's
- * archiver health (last archived WAL, errors) read from the Cluster
- * CR's .status. SFTP/SSH targets are filtered out of the picker — CNPG
- * barman-cloud is S3-only.
+ * Phase 6 (2026-05-24) rewrite:
+ *  - WAL streaming target = SYSTEM shim binding (read-only, picked on
+ *    Routing tab). No per-cluster target picker; the operator picks
+ *    the target ONCE for all SYSTEM backups.
+ *  - All upstream storage types (S3 / CIFS / NFS / SFTP) work — the
+ *    shim handles upstream translation; barman-cloud always writes to
+ *    the shim's local S3 endpoint.
+ *  - Cron validation on the base-backup custom-cron input.
+ *  - Vestigial `baseBackupRetentionDays` field removed (was stored in
+ *    DB but never applied to any CR).
  */
 
 import { useState } from 'react';
-import { ArchiveRestore, Play, RefreshCw, AlertCircle, CheckCircle2, Power, PowerOff, Copy } from 'lucide-react';
+import { ArchiveRestore, RefreshCw, AlertCircle, CheckCircle2, Power, PowerOff, Copy, Cloud, Link as LinkIcon, PauseCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   useWalArchiveClusters,
   useEnableWalArchive,
   useDisableWalArchive,
 } from '@/hooks/use-system-wal-archive';
-import { useBackupConfigs } from '@/hooks/use-backup-config';
+import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import type { WalArchiveCluster } from '@k8s-hosting/api-contracts';
 
 export default function WalArchiveTab() {
@@ -26,10 +33,14 @@ export default function WalArchiveTab() {
           <ArchiveRestore size={20} /> WAL Archive
         </h2>
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          Continuous Postgres WAL streaming to your off-site S3 target. Tighter
-          recovery point than scheduled pg_dump (RPO ≈ 5 min). Toggle per
-          cluster — only S3 targets are usable; SFTP/SSH backup configs are
-          filtered out (CNPG barman-cloud limitation).
+          Continuous Postgres WAL streaming to the SYSTEM backup target
+          configured under{' '}
+          <Link to="/backups/system?tab=routing" className="font-medium text-brand-600 hover:underline dark:text-brand-300">
+            Routing
+          </Link>. RPO ≈ archive_timeout (configurable per cluster). All
+          upstream storage types (S3 / CIFS / NFS / SFTP) are supported —
+          barman-cloud writes go through the internal S3 shim regardless
+          of upstream protocol.
         </p>
       </header>
 
@@ -61,35 +72,45 @@ const ARCHIVE_TIMEOUT_PRESETS: Array<{ value: string; label: string }> = [
   { value: '1h',    label: '1 hour' },
 ];
 
+// 6-field cron validation: matches CNPG's robfig/cron/v3 parser. Each
+// field must be a non-whitespace token; exactly 6 fields separated by
+// runs of whitespace. The backend's baseBackupScheduleSchema applies
+// the SAME regex (packages/api-contracts/src/system-wal-archive.ts).
+const CRON6_RE = /^(\S+\s+){5}\S+$/;
+function isValidCron6(s: string): boolean {
+  return CRON6_RE.test(s.trim());
+}
+
 function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
   const enable = useEnableWalArchive();
   const disable = useDisableWalArchive();
-  const { data: cfgResp } = useBackupConfigs();
-  // `enabled` is the field set when an operator marks a target operational
-  // via the Remote Storage Targets page. `active` is a LEGACY at-most-one
-  // flag used by the old Longhorn reconciler — the new shim-assignment
-  // flow never sets it, so filtering on `active` returned 0 targets on
-  // every cluster that adopted the new UI (bug found 2026-05-24).
-  const allConfigs = (cfgResp as { data?: Array<{ id: string; name: string; enabled: number; storageType: 's3' | 'ssh' }> } | undefined)?.data ?? [];
-  const eligible = allConfigs.filter((c) => !!c.enabled && c.storageType === 's3');
-  const [targetId, setTargetId] = useState<string>(cluster.state?.targetConfigId ?? '');
+  // Phase 6: read SYSTEM shim binding. The WAL streaming target IS
+  // this binding — no separate per-cluster picker.
+  const { data: assignResp } = useShimAssignments();
+  const systemAssignment = assignResp?.data?.assignments?.find((a) => a.className === 'system');
+  const systemTargetBound = !!systemAssignment?.targetId;
+
   const [retention, setRetention] = useState<number>(cluster.state?.retentionDays ?? 30);
   const [archiveTimeout, setArchiveTimeout] = useState<string>(cluster.state?.archiveTimeout ?? '5min');
   const [baseSchedule, setBaseSchedule] = useState<string>(cluster.state?.baseBackupSchedule ?? '0 0 3 * * *');
-  const [baseRetention, setBaseRetention] = useState<number>(cluster.state?.baseBackupRetentionDays ?? 30);
+  const [cronError, setCronError] = useState<string | null>(null);
 
   const onEnable = (): void => {
-    if (!targetId) return;
+    // Frontend validation: 6-field cron OR empty (= no base backup).
+    // Empty stays valid; non-empty must parse.
+    if (baseSchedule && !isValidCron6(baseSchedule)) {
+      setCronError('Must be a 6-field cron (seconds minutes hours dom month dow). Example: 0 0 3 * * *');
+      return;
+    }
+    setCronError(null);
     void (async () => {
       try {
         await enable.mutateAsync({
           clusterNamespace: cluster.clusterNamespace,
           clusterName: cluster.clusterName,
-          targetConfigId: targetId,
           retentionDays: retention,
           archiveTimeout,
           baseBackupSchedule: baseSchedule || null,
-          baseBackupRetentionDays: baseSchedule ? baseRetention : undefined,
         });
       } catch { /* error surfaced via mutation state */ }
     })();
@@ -130,91 +151,122 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
       </div>
 
       {!cluster.enabled && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-          <Setting label="S3 target">
-            <select
-              value={targetId}
-              onChange={(e) => setTargetId(e.target.value)}
-              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-              data-testid={`wal-target-${cluster.clusterName}`}
-            >
-              <option value="">— Pick S3 target —</option>
-              {eligible.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </Setting>
-          <Setting label="archive_timeout (RPO)">
-            <select
-              value={archiveTimeout}
-              onChange={(e) => setArchiveTimeout(e.target.value)}
-              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-              data-testid={`wal-archive-timeout-${cluster.clusterName}`}
-            >
-              {ARCHIVE_TIMEOUT_PRESETS.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </select>
-          </Setting>
-          <Setting label="WAL retention (days)">
-            <input
-              type="number"
-              min={1}
-              max={3650}
-              value={retention}
-              onChange={(e) => setRetention(parseInt(e.target.value, 10) || 30)}
-              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-              data-testid={`wal-retention-${cluster.clusterName}`}
-            />
-          </Setting>
-          <Setting label="Base backup cadence">
-            <select
-              value={SCHEDULE_PRESETS.find((p) => p.value === baseSchedule) ? baseSchedule : 'CUSTOM'}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v !== 'CUSTOM') setBaseSchedule(v);
-              }}
-              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-              data-testid={`wal-base-cadence-${cluster.clusterName}`}
-            >
-              {SCHEDULE_PRESETS.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-              <option value="CUSTOM">Custom 6-field cron…</option>
-            </select>
-            {!SCHEDULE_PRESETS.find((p) => p.value === baseSchedule) && (
-              <input
-                type="text"
-                value={baseSchedule}
-                onChange={(e) => setBaseSchedule(e.target.value)}
-                placeholder="0 0 3 * * *"
-                className="mt-1 w-full font-mono text-xs rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-              />
+        <div className="space-y-3">
+          {/* Phase 6: read-only display of the SYSTEM shim binding.
+              No picker — operator changes the target on Routing tab. */}
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs">
+                <Cloud size={12} className="text-gray-500" />
+                <span className="text-gray-500 dark:text-gray-400">WAL target (from SYSTEM binding):</span>
+                {systemTargetBound ? (
+                  <span className="font-mono font-medium text-gray-900 dark:text-gray-100" data-testid={`wal-target-display-${cluster.clusterName}`}>
+                    {systemAssignment?.targetName ?? systemAssignment?.targetId}{' '}
+                    <span className="rounded bg-gray-200 px-1 py-0.5 text-[10px] font-normal dark:bg-gray-700">
+                      {(systemAssignment?.targetStorageType ?? '?').toString().toUpperCase()}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="italic text-amber-700 dark:text-amber-300">no SYSTEM target bound</span>
+                )}
+              </div>
+              <Link
+                to="/backups/system?tab=routing"
+                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline dark:text-brand-300"
+              >
+                <LinkIcon size={10} /> Change on Routing
+              </Link>
+            </div>
+            {!systemTargetBound && (
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                Bind a target for the SYSTEM class before enabling WAL streaming.
+                The shim accepts any upstream storage type — S3, CIFS, NFS, or SFTP.
+              </p>
             )}
-          </Setting>
-          {baseSchedule && (
-            <Setting label="Base backup retention (days)">
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <Setting label="archive_timeout (RPO)">
+              <select
+                value={archiveTimeout}
+                onChange={(e) => setArchiveTimeout(e.target.value)}
+                className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                data-testid={`wal-archive-timeout-${cluster.clusterName}`}
+              >
+                {ARCHIVE_TIMEOUT_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+            </Setting>
+            <Setting label="Retention (days, applies to both WAL + base backups)">
               <input
                 type="number"
                 min={1}
                 max={3650}
-                value={baseRetention}
-                onChange={(e) => setBaseRetention(parseInt(e.target.value, 10) || 30)}
+                value={retention}
+                onChange={(e) => setRetention(parseInt(e.target.value, 10) || 30)}
                 className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                data-testid={`wal-base-retention-${cluster.clusterName}`}
+                data-testid={`wal-retention-${cluster.clusterName}`}
               />
             </Setting>
-          )}
-          <div className="md:col-span-2 flex justify-end pt-1">
-            <button
-              onClick={onEnable}
-              disabled={enable.isPending || !targetId}
-              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
-              data-testid={`wal-enable-${cluster.clusterName}`}
-            >
-              {enable.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
-              Enable WAL archive
-            </button>
+            <Setting label="Base backup cadence">
+              <select
+                value={SCHEDULE_PRESETS.find((p) => p.value === baseSchedule) ? baseSchedule : 'CUSTOM'}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v !== 'CUSTOM') {
+                    setBaseSchedule(v);
+                    setCronError(null);
+                  }
+                }}
+                className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                data-testid={`wal-base-cadence-${cluster.clusterName}`}
+              >
+                {SCHEDULE_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+                <option value="CUSTOM">Custom 6-field cron…</option>
+              </select>
+              {!SCHEDULE_PRESETS.find((p) => p.value === baseSchedule) && (
+                <>
+                  <input
+                    type="text"
+                    value={baseSchedule}
+                    onChange={(e) => {
+                      setBaseSchedule(e.target.value);
+                      if (cronError) setCronError(null);
+                    }}
+                    placeholder="0 0 3 * * *"
+                    aria-invalid={!!cronError || (!!baseSchedule && !isValidCron6(baseSchedule))}
+                    className={`mt-1 w-full font-mono text-xs rounded-lg border px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 ${
+                      cronError || (baseSchedule && !isValidCron6(baseSchedule))
+                        ? 'border-rose-400 dark:border-rose-600'
+                        : 'border-gray-300 dark:border-gray-600'
+                    }`}
+                    data-testid={`wal-base-cadence-custom-${cluster.clusterName}`}
+                  />
+                  <p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+                    6 fields: seconds minutes hours dom month dow. Example: <code>0 0 3 * * *</code> = daily 03:00:00.
+                  </p>
+                  {cronError && (
+                    <p className="mt-0.5 text-[10px] text-rose-700 dark:text-rose-300" data-testid={`wal-cron-error-${cluster.clusterName}`}>
+                      {cronError}
+                    </p>
+                  )}
+                </>
+              )}
+            </Setting>
+            <div className="md:col-span-2 flex justify-end pt-1">
+              <button
+                onClick={onEnable}
+                disabled={enable.isPending || !systemTargetBound || (!!baseSchedule && !isValidCron6(baseSchedule))}
+                className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+                data-testid={`wal-enable-${cluster.clusterName}`}
+              >
+                {enable.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
+                Enable WAL archive
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -232,7 +284,7 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
           <Field label="archive_timeout">{cluster.state.archiveTimeout ?? 'CNPG default (5min)'}</Field>
           <Field label="Base backups">
             {cluster.state.baseBackupSchedule
-              ? `every ${cluster.state.baseBackupSchedule} (${cluster.state.baseBackupRetentionDays ?? '—'}d retention)`
+              ? `every ${cluster.state.baseBackupSchedule}`
               : 'not scheduled'}
           </Field>
           {cluster.state.baseBackupStatus && (
@@ -264,7 +316,7 @@ function EnabledBadge({ enabled }: { enabled: boolean }) {
     </span>
   ) : (
     <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300">
-      <Play size={12} /> off
+      <PauseCircle size={12} /> off
     </span>
   );
 }
