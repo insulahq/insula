@@ -28,9 +28,9 @@ interface MockOpts {
 
 function makeCustom(opts: MockOpts = {}): {
   readonly api: k8s.CustomObjectsApi;
-  readonly created: Array<{ name?: string; labels?: Record<string, string>; spec?: unknown }>;
+  readonly created: Array<{ name?: string; labels?: Record<string, string>; annotations?: Record<string, string>; spec?: unknown }>;
 } {
-  const created: Array<{ name?: string; labels?: Record<string, string>; spec?: unknown }> = [];
+  const created: Array<{ name?: string; labels?: Record<string, string>; annotations?: Record<string, string>; spec?: unknown }> = [];
   const api = {
     getNamespacedCustomObject: vi.fn().mockImplementation(async () => {
       if (opts.clusterNotFound) {
@@ -39,7 +39,7 @@ function makeCustom(opts: MockOpts = {}): {
       return opts.clusterCR ?? clusterWithBarman;
     }),
     createNamespacedCustomObject: vi.fn().mockImplementation(async (args: {
-      body: { metadata?: { name?: string; labels?: Record<string, string> }; spec?: unknown };
+      body: { metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> }; spec?: unknown };
     }) => {
       if (opts.createFails) {
         const e = new Error(opts.createFails.message);
@@ -49,6 +49,7 @@ function makeCustom(opts: MockOpts = {}): {
       created.push({
         name: args.body.metadata?.name,
         labels: args.body.metadata?.labels,
+        annotations: args.body.metadata?.annotations,
         spec: args.body.spec,
       });
       return {};
@@ -153,6 +154,34 @@ describe('createBackupNow', () => {
     await createBackupNow(api, { namespace: 'mail', clusterName: 'mail-db' });
     const spec = created[0]?.spec as { cluster?: { name?: string } };
     expect(spec.cluster?.name).toBe('mail-db');
+  });
+
+  // Phase 7b/c (2026-05-24): operator description plumbed through as
+  // ANNOTATION (not label — annotations have no charset restrictions
+  // so natural-language descriptions like "pre-upgrade: tenant import"
+  // are accepted).
+  it('attaches the operator description as a Backup CR annotation', async () => {
+    const { api, created } = makeCustom();
+    await createBackupNow(api, {
+      namespace: 'platform', clusterName: 'system-db',
+      description: 'pre-upgrade: tenant import',
+    });
+    expect(created[0]?.annotations?.['platform.example.test/description']).toBe('pre-upgrade: tenant import');
+    // Must NOT also write the label (it would fail k8s label-value
+    // validation for descriptions with spaces or colons).
+    expect(created[0]?.labels).not.toHaveProperty('platform.example.test/description');
+    // The on-demand label still rides along.
+    expect(created[0]?.labels?.['platform.example.test/on-demand']).toBe('true');
+  });
+
+  it('omits the description annotation when no description supplied', async () => {
+    const { api, created } = makeCustom();
+    await createBackupNow(api, {
+      namespace: 'platform', clusterName: 'system-db',
+    });
+    // No annotations block at all when there's nothing to write.
+    expect(created[0]?.annotations).toBeUndefined();
+    expect(created[0]?.labels?.['platform.example.test/on-demand']).toBe('true');
   });
 
   it('accepts a barman plugin whose name does not match the exact constant but is a barman variant', async () => {
