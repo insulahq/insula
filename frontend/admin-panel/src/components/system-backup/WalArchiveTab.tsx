@@ -65,8 +65,13 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
   const enable = useEnableWalArchive();
   const disable = useDisableWalArchive();
   const { data: cfgResp } = useBackupConfigs();
-  const allConfigs = (cfgResp as { data?: Array<{ id: string; name: string; active: boolean; storageType: 's3' | 'ssh' }> } | undefined)?.data ?? [];
-  const eligible = allConfigs.filter((c) => c.active && c.storageType === 's3');
+  // `enabled` is the field set when an operator marks a target operational
+  // via the Remote Storage Targets page. `active` is a LEGACY at-most-one
+  // flag used by the old Longhorn reconciler — the new shim-assignment
+  // flow never sets it, so filtering on `active` returned 0 targets on
+  // every cluster that adopted the new UI (bug found 2026-05-24).
+  const allConfigs = (cfgResp as { data?: Array<{ id: string; name: string; enabled: number; storageType: 's3' | 'ssh' }> } | undefined)?.data ?? [];
+  const eligible = allConfigs.filter((c) => !!c.enabled && c.storageType === 's3');
   const [targetId, setTargetId] = useState<string>(cluster.state?.targetConfigId ?? '');
   const [retention, setRetention] = useState<number>(cluster.state?.retentionDays ?? 30);
   const [archiveTimeout, setArchiveTimeout] = useState<string>(cluster.state?.archiveTimeout ?? '5min');

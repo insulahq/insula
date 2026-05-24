@@ -23,11 +23,14 @@ import {
   putShimAssignmentRequestSchema,
   shimAssignmentRowSchema,
   shimStatusResponseSchema,
+  switchWithPauseRequestSchema,
   type BackupShimClass,
   type DrainNowResponse,
   type ListShimAssignmentsResponse,
   type PutShimAssignmentResponse,
   type ShimStatusResponse,
+  type SwitchPreviewResponse,
+  type SwitchWithPauseResponse,
 } from '@k8s-hosting/api-contracts';
 import * as k8s from '@kubernetes/client-node';
 
@@ -43,6 +46,11 @@ import {
   listCurrentShimAssignments,
   readShimStatus,
 } from './status.js';
+import {
+  previewSwitchEffects,
+  switchTargetWithPause,
+} from './switch-with-pause.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 const classParamSchema = z.object({
   className: backupShimClassEnum,
@@ -55,6 +63,12 @@ interface RoutesDeps {
    *  return is two cheap wrapper objects — no network I/O. Injected so
    *  tests can stub. */
   readonly buildK8sClients: () => { core: k8s.CoreV1Api; apps: k8s.AppsV1Api };
+  /** Phase 5 (2026-05-24): the switch-with-pause route needs `custom`
+   *  too (cascades into disableWalArchive which manipulates CNPG CRs).
+   *  Default factory uses the in-cluster kubeconfig; tests can inject
+   *  a stub. Optional so existing deps construction in app.ts doesn't
+   *  break if the caller doesn't set it. */
+  readonly buildFullK8sClients?: () => import('../k8s-provisioner/k8s-client.js').K8sClients;
   readonly encryptionKey: string;
 }
 
@@ -116,6 +130,92 @@ export async function backupRcloneShimRoutes(
     // belt-and-braces against silent schema drift.
     const validated = shimAssignmentRowSchema.parse(result.assignment);
     return { data: validated, taskId: result.taskId };
+  });
+
+  // ─── Switch preview (Phase 5 — 2026-05-24) ──────────────────────
+  // GET /admin/backup-rclone-shim/switch-preview/:className?targetId=...
+  //
+  // Returns what WOULD happen if the operator switched the target
+  // for `className` to `targetId`. The frontend renders the list of
+  // schedules + WAL state that will be paused as part of the switch,
+  // so the operator can confirm before committing.
+  app.get<{
+    Params: { className: BackupShimClass };
+    Querystring: { targetId?: string };
+  }>('/admin/backup-rclone-shim/switch-preview/:className', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Backup Rclone Shim'],
+      summary: 'Preview what will be paused when switching a class to a new target',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request): Promise<SwitchPreviewResponse> => {
+    const params = classParamSchema.parse(request.params);
+    const targetId = request.query.targetId ?? null;
+    const preview = await previewSwitchEffects(app.db, params.className, targetId);
+    // Spread to discard `readonly` from the service-layer return — the
+    // wire contract uses mutable arrays/objects (Zod inferred).
+    return {
+      data: {
+        schedulesToPause: preview.schedulesToPause.map((s) => ({ ...s })),
+        walToDisable: preview.walToDisable ? { ...preview.walToDisable } : null,
+        newTargetName: preview.newTargetName,
+      },
+    };
+  });
+
+  // ─── Switch with pause (Phase 5 — 2026-05-24) ───────────────────
+  // POST /admin/backup-rclone-shim/switch-with-pause/:className
+  //
+  // Same effect as the PUT assignment endpoint but additionally
+  // pauses schedules + disables WAL streaming for the class BEFORE
+  // applying the assignment change. Use this instead of the PUT when
+  // the operator wants the pre-switch confirm flow (which we surface
+  // in the admin panel modal).
+  app.post<{
+    Params: { className: BackupShimClass };
+    Body: z.infer<typeof switchWithPauseRequestSchema>;
+  }>('/admin/backup-rclone-shim/switch-with-pause/:className', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Backup Rclone Shim'],
+      summary: 'Switch a shim class target with pre-pause of schedules + WAL',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request): Promise<SwitchWithPauseResponse> => {
+    const params = classParamSchema.parse(request.params);
+    const body = switchWithPauseRequestSchema.parse(request.body ?? {});
+    const userId = (request.user as { sub?: string } | undefined)?.sub;
+    if (!userId) {
+      throw new ApiError('UNAUTHORIZED', 'Authenticated user id missing', 401);
+    }
+    const userIp = (request.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim()
+      || request.ip
+      || null;
+
+    // Prefer the injected factory (tests can stub); fall back to the
+    // in-cluster default. Both go through the same K8sClients shape.
+    const fullK8s = deps.buildFullK8sClients ? deps.buildFullK8sClients() : createK8sClients();
+    const result = await switchTargetWithPause(
+      { db: app.db, k8s: fullK8s, encryptionKey: deps.encryptionKey, log: request.log },
+      {
+        className: params.className,
+        newTargetId: body.targetId,
+        userId,
+        userIp,
+      },
+      request.log,
+    );
+
+    const validated = shimAssignmentRowSchema.parse(result.assignment);
+    return {
+      data: validated,
+      taskId: result.taskId,
+      paused: {
+        schedulesPaused: [...result.paused.schedulesPaused],
+        walDisabled: result.paused.walDisabled,
+      },
+    };
   });
 
   // ─── Drain-now ──────────────────────────────────────────────────

@@ -30,6 +30,7 @@ export * from './restore.js';
 export * from './backup-health.js';
 export * from './cnpg-backup-health.js';
 export * from './cnpg-backup-catalogue.js';
+export * from './cnpg-backup-now.js';
 export * from './postgres-barman-restore.js';
 export * from './node-health.js';
 export * from './cron-jobs.js';

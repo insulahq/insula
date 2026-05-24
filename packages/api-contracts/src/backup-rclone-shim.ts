@@ -189,3 +189,43 @@ export const shimStatusResponseSchema = z.object({
   }),
 });
 export type ShimStatusResponse = z.infer<typeof shimStatusResponseSchema>;
+
+// ─── Switch-with-pause (Phase 5 — 2026-05-24) ─────────────────────────
+//
+// Pre-switch confirm flow: when an operator changes the target for a
+// shim class, the schedules bound to that class + (system class only)
+// WAL streaming on platform/system-db are paused as part of the same
+// operation. The UI calls /switch-preview first to render what will
+// be paused, then /switch-with-pause to execute.
+
+export const switchPreviewResponseSchema = z.object({
+  data: z.object({
+    schedulesToPause: z.array(z.object({
+      subsystem: z.string(),
+      enabled: z.boolean(),
+      cronExpression: z.string().nullable(),
+    })),
+    walToDisable: z.object({
+      clusterNamespace: z.string(),
+      clusterName: z.string(),
+      currentTargetName: z.string().nullable(),
+    }).nullable(),
+    newTargetName: z.string().nullable(),
+  }),
+});
+export type SwitchPreviewResponse = z.infer<typeof switchPreviewResponseSchema>;
+
+export const switchWithPauseRequestSchema = z.object({
+  targetId: z.string().uuid().nullable(),
+});
+export type SwitchWithPauseRequest = z.infer<typeof switchWithPauseRequestSchema>;
+
+export const switchWithPauseResponseSchema = z.object({
+  data: shimAssignmentRowSchema,
+  taskId: z.string().uuid(),
+  paused: z.object({
+    schedulesPaused: z.array(z.string()),
+    walDisabled: z.boolean(),
+  }),
+});
+export type SwitchWithPauseResponse = z.infer<typeof switchWithPauseResponseSchema>;
