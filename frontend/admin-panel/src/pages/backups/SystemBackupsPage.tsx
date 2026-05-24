@@ -30,7 +30,6 @@ import BackupClassPage from './BackupClassPage';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
 import SystemBackupListSection from '@/components/system-backup/SystemBackupListSection';
-import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
 import { useCnpgBackupNow } from '@/hooks/use-cnpg-backup-now';
 
@@ -78,7 +77,9 @@ export default function SystemBackupsPage() {
             {/* Phase 3 (2026-05-24): sibling section showing the
                 catalogue list of backups in the current target. */}
             <SystemBackupListSection />
-            <WalArchiveTab />
+            {/* Phase 4 (2026-05-24): WAL Archive configuration moved
+                to the Routing tab — it's a target/schedule decision,
+                not a backup-list view. See BackupRoutingTab.tsx. */}
             <div className="rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
               Looking for the cluster-wide Secrets bundle? It moved to{' '}
               <Link to="/backups/disaster-recovery" className="font-medium underline">
