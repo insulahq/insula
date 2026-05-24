@@ -1,10 +1,12 @@
 import { z } from 'zod';
 
 // System Backup Phase 4 — WAL archive runtime config.
-// Toggle CNPG `spec.backup.barmanObjectStore` per cluster from the
-// admin UI; the operator picks an existing S3 backup_configurations
-// row as the destination. SFTP/SSH targets are not supported by CNPG
-// barman-cloud and are filtered out at the API + UI layer.
+// 2026-05-24 (Phase 6): WAL target = SYSTEM shim binding. The
+// operator picks the target ONCE on /backups/system?tab=routing;
+// this endpoint no longer takes a separate `targetConfigId`. Any
+// upstream storage type (S3 / CIFS / NFS / SFTP) works because
+// barman-cloud writes go through backup-rclone-shim's local S3
+// endpoint regardless of upstream protocol.
 
 // Same DNS-label validator as pg-dump. Postgres database name isn't
 // in scope here (WAL is at cluster level, not per-DB).
@@ -37,15 +39,20 @@ export const baseBackupScheduleSchema = z
 export const walArchiveEnableRequestSchema = z.object({
   clusterNamespace: dnsLabelSchema,
   clusterName: dnsLabelSchema,
-  targetConfigId: z.string().uuid(),
   retentionDays: z.number().int().min(1).max(3650).default(30),
   archiveTimeout: archiveTimeoutSchema.optional(),
   // null OR omitted means "no base backup ScheduledBackup CR" — the
   // operator just gets WAL streaming. Setting it both creates the CR
   // and makes pure-S3 cold restore self-sufficient.
   baseBackupSchedule: baseBackupScheduleSchema.nullable().optional(),
-  baseBackupRetentionDays: z.number().int().min(1).max(3650).optional(),
-});
+  // 2026-05-24 (Phase 6): baseBackupRetentionDays was vestigial — stored
+  // but never applied to any CR. WAL retention (retentionDays above) is
+  // the only retention setting that actually controls the archive.
+  // Removed from the contract; the DB column stays for back-compat with
+  // pre-Phase-6 rows.
+}).strict(); // .strict() rejects unknown fields. Catches pre-Phase-6
+// super_admin scripts still sending targetConfigId or
+// baseBackupRetentionDays — better explicit 400 than silent strip.
 export type WalArchiveEnableRequest = z.infer<typeof walArchiveEnableRequestSchema>;
 
 export const walArchiveDisableRequestSchema = z.object({
@@ -70,6 +77,8 @@ export const walArchiveClusterSchema = z.object({
     enabledAt: z.string().datetime(),
     archiveTimeout: z.string().nullable(),
     baseBackupSchedule: z.string().nullable(),
+    /** @deprecated Phase 6 (2026-05-24) — vestigial; the UI no longer
+     *  surfaces it. Kept for back-compat with rows written pre-Phase-6. */
     baseBackupRetentionDays: z.number().int().nullable(),
     // ScheduledBackup CR live status (null when no SB exists).
     baseBackupStatus: z.object({
