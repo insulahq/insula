@@ -46,6 +46,12 @@ function validateName(s: string, label: string): void {
 export interface CreateBackupNowInput {
   readonly namespace: string;
   readonly clusterName: string;
+  /**
+   * Optional human-readable description, stored as a label so the
+   * catalogue list can render it without a second fetch. Constrained
+   * by k8s label-value rules (max 63 chars; A-Z a-z 0-9 . _ -).
+   */
+  readonly description?: string;
 }
 
 export interface CreateBackupNowResult {
@@ -129,19 +135,29 @@ export async function createBackupNow(
   // signal in `kubectl get backups`. Lower-case only to satisfy the
   // RFC1123 DNS-label suffix on barman-uploaded artifact names.
   const backupName = `on-demand-${Date.now()}`;
+  const labels: Record<string, string> = {
+    // Distinguishes operator-triggered backups from scheduled ones
+    // (which are owned by ScheduledBackup CRs) and from pre-restore
+    // backups (labelled `barman-pre-restore=true` by the restore
+    // orchestrator). Useful for `kubectl get backups -l ...`.
+    'platform.example.test/on-demand': 'true',
+  };
+  // Phase 7c (2026-05-24) — description goes in an ANNOTATION not a
+  // label. Annotations have no charset/length restrictions so operators
+  // can use natural language ("before tenant import: acme"). Labels
+  // would have rejected spaces + colons.
+  const annotations: Record<string, string> = {};
+  if (input.description) {
+    annotations['platform.example.test/description'] = input.description;
+  }
   const body = {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
     kind: 'Backup',
     metadata: {
       name: backupName,
       namespace: input.namespace,
-      labels: {
-        // Distinguishes operator-triggered backups from scheduled ones
-        // (which are owned by ScheduledBackup CRs) and from pre-restore
-        // backups (labelled `barman-pre-restore=true` by the restore
-        // orchestrator). Useful for `kubectl get backups -l ...`.
-        'platform.example.test/on-demand': 'true',
-      },
+      labels,
+      ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
     },
     spec: {
       cluster: { name: input.clusterName },

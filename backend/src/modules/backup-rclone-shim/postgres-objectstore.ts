@@ -181,9 +181,12 @@ export async function reconcilePostgresObjectStore(
     throw err;
   }
 
-  // ─── 2. Load SYSTEM target binding ───────────────────────────────
+  // ─── 2. Load SYSTEM target binding + wal-archive ownership ────────
   const target = await loadSystemTarget(db);
   const suspended = target === null;
+  // One DB query per reconcile pass; result used by both the
+  // ScheduledBackup step (5) and the Cluster.spec.plugins step (6).
+  const walArchiveOwns = await walArchiveOwnsCluster(db);
 
   // ─── 3. Materialise the shim creds Secret in the cluster ns ─────
   let credentialsSecretApplied = false;
@@ -228,22 +231,36 @@ export async function reconcilePostgresObjectStore(
   }
 
   // ─── 5. Materialise ScheduledBackup CR (suspended when no target) ─
+  // Phase 7a (2026-05-24): defer to wal-archive when the operator has
+  // enabled scheduled backups via the UI. The WAL Archive tab now owns
+  // the ScheduledBackup CR (operator-configured cadence). When
+  // wal-archive is NOT active, this reconciler keeps the
+  // hardcoded-default ScheduledBackup as a safety net so a cluster
+  // with a SYSTEM target bound but no operator configuration still
+  // gets daily base backups at 03:00.
   let scheduledBackupApplied = false;
-  try {
-    await materializeScheduledBackup(clients.custom, log, { suspended });
-    scheduledBackupApplied = true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error({ err: msg }, 'postgres-objectstore: ScheduledBackup apply failed');
-    return {
-      state: 'STATE_ERROR',
-      errorMessage: msg,
-      objectStoreApplied,
-      scheduledBackupApplied: false,
-      scheduledBackupSuspended: false,
-      credentialsSecretApplied,
-      walArchiverEnabled: false,
-    };
+  if (walArchiveOwns) {
+    log.info(
+      { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
+      'postgres-objectstore: wal-archive owns ScheduledBackup — skipping reconciliation',
+    );
+  } else {
+    try {
+      await materializeScheduledBackup(clients.custom, log, { suspended });
+      scheduledBackupApplied = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err: msg }, 'postgres-objectstore: ScheduledBackup apply failed');
+      return {
+        state: 'STATE_ERROR',
+        errorMessage: msg,
+        objectStoreApplied,
+        scheduledBackupApplied: false,
+        scheduledBackupSuspended: false,
+        credentialsSecretApplied,
+        walArchiverEnabled: false,
+      };
+    }
   }
 
   // ─── 6. Toggle isWALArchiver on the Cluster CR ──────────────────
@@ -264,8 +281,7 @@ export async function reconcilePostgresObjectStore(
   // above remain reconciled because they're harmless additions; only
   // the Cluster patch was contended.
   let walArchiverEnabled = false;
-  const deferToWalArchive = await walArchiveOwnsCluster(db);
-  if (deferToWalArchive) {
+  if (walArchiveOwns) {
     log.info(
       { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
       'postgres-objectstore: wal-archive owns Cluster plugin entry — skipping isWALArchiver patch',
@@ -307,14 +323,21 @@ export async function reconcilePostgresObjectStore(
 
 /**
  * Phase 6 (2026-05-24) — dual-reconciler ownership guard.
+ * Phase 7c (2026-05-24) — extended to ScheduledBackup CR ownership too.
  *
- * Returns true when system-backup/wal-archive.ts owns the Cluster.spec
- * plugin entry for `platform/system-db` (i.e. an operator has enabled
- * WAL streaming via the UI). When true, this reconciler MUST NOT patch
- * `isWALArchiver` or anything else on Cluster.spec — wal-archive owns
- * it exclusively. The shim creds Secret + ObjectStore CR +
- * ScheduledBackup CR continue to be reconciled because they are
- * harmless additions; only the Cluster patch was a fight.
+ * Returns true when system-backup/wal-archive.ts owns ANY part of the
+ * Cluster.spec / CR set for `platform/system-db` — either WAL streaming
+ * is on, or scheduled backups are on, or both. The presence of a row
+ * in `system_wal_archive_state` is the canonical signal: enableWalStreaming
+ * and enableScheduledBackups both insert/upsert the row;
+ * disableWalStreaming / disableScheduledBackups delete it ONLY when the
+ * OTHER feature is also off.
+ *
+ * Implication: as long as either feature is active, this reconciler
+ * defers BOTH the ScheduledBackup CR and the Cluster.spec.plugins patch
+ * to wal-archive. The shim creds Secret + ObjectStore CR continue to be
+ * reconciled (harmless additions — wal-archive also writes them, last
+ * writer wins on identical content).
  */
 async function walArchiveOwnsCluster(db: Database): Promise<boolean> {
   const rows = await db
