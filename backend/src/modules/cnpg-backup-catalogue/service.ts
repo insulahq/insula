@@ -71,6 +71,17 @@ export interface CatalogueBackup {
   readonly uploadedAt: string | null;
   /** Empty string when backup.info parsed cleanly; otherwise the reason. */
   readonly parseError: string | null;
+  /**
+   * Phase 7b (2026-05-24): operator-supplied description from the
+   * matching Backup CR's `platform.phoenix-host.net/description`
+   * label. Null when label absent.
+   */
+  description?: string | null;
+  /**
+   * Phase 7b (2026-05-24): derived from the matching CR's labels.
+   * Null when the CR was already pruned.
+   */
+  kind?: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' | null;
 }
 
 export interface CatalogueResult {
@@ -371,6 +382,86 @@ export async function listBackupsFromObjectStore(
     // Sort newest first by backupId (lexicographic === chronological for
     // YYYYMMDDTHHMMSS format).
     backups.sort((a, b) => (a.backupId < b.backupId ? 1 : -1));
+
+    // Phase 7b (2026-05-24) — enrich each barman entry with the matching
+    // CNPG Backup CR's labels + annotations. Surfaces operator description
+    // and explicit kind so the frontend doesn't guess from backup ID.
+    //
+    // Two corrections from the typescript-reviewer round (2026-05-24):
+    //
+    //   1. Join key was wrong. CR `metadata.name` (e.g. `on-demand-...`)
+    //      ≠ barman backup ID (e.g. `20260524T111857`). Verified on
+    //      staging: kubectl shows `metadata.name=on-demand-1779621535664`
+    //      but `status.backupId=20260524T111857`. The catalogue iterates
+    //      S3 directories whose names are barman backup IDs, so the
+    //      join MUST use `status.backupId`.
+    //
+    //   2. Unfiltered LIST returned every Backup CR in the namespace
+    //      including ones from sibling clusters. Added the CNPG-emitted
+    //      label `cnpg.io/cluster` as a server-side filter to bound
+    //      the response size.
+    //
+    // Description is now read from an ANNOTATION (no k8s label
+    // charset/length restrictions) — falls back to label for
+    // pre-Phase-7c-fix backups so the catalogue stays consistent.
+    let crByBackupId: Map<string, { kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown'; description: string | null }>
+      = new Map();
+    // Each barman destinationPath maps to ONE cluster (cluster name is
+    // the last path segment). We labelSelector by that to keep the
+    // LIST scoped. When multiple clusters share an ObjectStore (rare),
+    // we still filter client-side by backupId.
+    const clusterLabelSelector = clusterNames.length === 1
+      ? `cnpg.io/cluster=${clusterNames[0]}`
+      : undefined;
+    try {
+      const crResp = await custom.listNamespacedCustomObject({
+        group: 'postgresql.cnpg.io',
+        version: 'v1',
+        namespace,
+        plural: 'backups',
+        ...(clusterLabelSelector ? { labelSelector: clusterLabelSelector } : {}),
+      } as unknown as Parameters<typeof custom.listNamespacedCustomObject>[0]) as unknown as {
+        items?: ReadonlyArray<{
+          metadata?: {
+            name?: string;
+            labels?: Record<string, string>;
+            annotations?: Record<string, string>;
+            ownerReferences?: ReadonlyArray<{ kind?: string }>;
+          };
+          status?: { backupId?: string };
+        }>;
+      };
+      const items = crResp.items ?? [];
+      crByBackupId = new Map(items.flatMap((item) => {
+        const backupId = item.status?.backupId;
+        if (!backupId) return [];
+        const labels = item.metadata?.labels ?? {};
+        const annotations = item.metadata?.annotations ?? {};
+        // Prefer annotation (no charset/length restriction); fall back
+        // to label for back-compat with pre-Phase-7c-fix backups.
+        const description = annotations['platform.phoenix-host.net/description']
+          ?? labels['platform.phoenix-host.net/description']
+          ?? null;
+        let kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' = 'unknown';
+        if (labels['platform.phoenix-host.net/on-demand'] === 'true') kind = 'on-demand';
+        else if (labels['platform.phoenix-host.net/barman-pre-restore'] === 'true') kind = 'pre-restore';
+        else if ((item.metadata?.ownerReferences ?? []).some((o) => o.kind === 'ScheduledBackup')) kind = 'scheduled';
+        return [[backupId, { kind, description }] as const];
+      }));
+    } catch (err) {
+      log.warn?.({ err: err instanceof Error ? err.message : String(err) },
+        'catalogue: CNPG Backup CR list failed; description+kind will be null for all entries');
+    }
+    for (const b of backups) {
+      const meta = crByBackupId.get(b.backupId);
+      if (meta) {
+        (b as { description: string | null }).description = meta.description;
+        (b as { kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' | null }).kind = meta.kind;
+      } else {
+        (b as { description: string | null }).description = null;
+        (b as { kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' | null }).kind = null;
+      }
+    }
 
     return finalize({
       source: 'object-store', objectStoreName, namespace,

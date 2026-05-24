@@ -22,6 +22,23 @@ export const cnpgCatalogueBackupSchema = z.object({
   dataSizeBytes: z.number().int().nonnegative().nullable(),
   uploadedAt: z.string().nullable(),
   parseError: z.string().nullable(),
+  /**
+   * 2026-05-24 (Phase 7b): operator-supplied description, read from
+   * the matching CNPG Backup CR's `platform.phoenix-host.net/description`
+   * label. Null when the label is absent (scheduled backups,
+   * pre-Phase-7b on-demand backups). The frontend renders this verbatim
+   * when present; otherwise it falls back to a name-pattern label
+   * ("Scheduled Backup" / "On-demand" / "Pre-restore").
+   */
+  description: z.string().nullable().optional(),
+  /**
+   * 2026-05-24 (Phase 7b): derived from the CR's labels. Helps the
+   * frontend render the right fallback when `description` is null.
+   * Returned only when the CR was found in the cluster API; null when
+   * the catalogue entry exists in barman but the CR was already
+   * pruned by CNPG's Backup CR TTL.
+   */
+  kind: z.enum(['scheduled', 'on-demand', 'pre-restore', 'unknown']).nullable().optional(),
 });
 export type CnpgCatalogueBackup = z.infer<typeof cnpgCatalogueBackupSchema>;
 

@@ -19,7 +19,7 @@
  * BackupSizeTotal cell so TanStack Query dedups the request.
  */
 
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Database, RotateCw, AlertTriangle } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
@@ -198,8 +198,8 @@ function BackupTable({
                 <td className="px-2 py-2 text-xs text-gray-700 dark:text-gray-300" title={targetTime ?? ''}>
                   {dateStr}
                 </td>
-                <td className="px-2 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
-                  {describeBackup(b.backupId, b.status)}
+                <td className="px-2 py-2 text-xs text-gray-700 dark:text-gray-300">
+                  {describeBackup(b)}
                 </td>
                 <td className="px-2 py-2 text-xs text-gray-700 dark:text-gray-300">
                   {b.dataSizeBytes != null ? formatBytes(b.dataSizeBytes) : '—'}
@@ -234,24 +234,54 @@ function BackupTable({
   );
 }
 
-function describeBackup(backupId: string, status: string | null): string {
-  // CNPG's backup IDs are timestamp-prefixed (e.g.
-  // "20260524T083115" or "system-db-daily-20260524").
-  // Most of the operator's signal is in the prefix; surface the
-  // status when it's anything other than DONE so failures stand out.
-  if (status && status !== 'DONE') {
-    return `${backupId} [${status}]`;
+/**
+ * Phase 7b (2026-05-24) — operator-friendly description rendering.
+ *
+ * Priority order:
+ *   1. Operator-supplied description (CR label) → render as-is.
+ *      Example: "pre-upgrade"
+ *   2. CR kind from labels:
+ *      - 'scheduled'   → "Scheduled Backup"
+ *      - 'on-demand'   → "On-demand backup"  (description was empty)
+ *      - 'pre-restore' → "Pre-restore checkpoint"
+ *   3. Fall back to backupId name-pattern (legacy backups without CRs
+ *      labelled per Phase 7b).
+ *
+ * Failed/in-flight status appended in red.
+ */
+function describeBackup(b: {
+  backupId: string;
+  status: string | null;
+  description?: string | null;
+  kind?: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' | null;
+}): ReactElement {
+  const failed = b.status && b.status !== 'DONE' && b.status !== 'COMPLETED';
+  let label: string;
+  if (b.description) {
+    label = b.description;
+  } else if (b.kind === 'scheduled') {
+    label = 'Scheduled Backup';
+  } else if (b.kind === 'on-demand') {
+    label = 'On-demand backup';
+  } else if (b.kind === 'pre-restore') {
+    label = 'Pre-restore checkpoint';
+  } else if (b.backupId.startsWith('on-demand-')) {
+    label = 'On-demand backup';
+  } else if (b.backupId.startsWith('pre-restore-')) {
+    label = 'Pre-restore checkpoint';
+  } else if (b.backupId.includes('-daily-') || b.backupId.includes('-scheduled-')) {
+    label = 'Scheduled Backup';
+  } else {
+    label = b.backupId;
   }
-  if (backupId.startsWith('on-demand-')) {
-    return `${backupId} (manual)`;
-  }
-  if (backupId.includes('-daily-') || backupId.includes('-scheduled-')) {
-    return `${backupId} (scheduled)`;
-  }
-  if (backupId.startsWith('pre-restore-')) {
-    return `${backupId} (pre-restore)`;
-  }
-  return backupId;
+  return (
+    <span>
+      {label}
+      {failed && (
+        <span className="ml-1 text-rose-700 dark:text-rose-400">[{b.status}]</span>
+      )}
+    </span>
+  );
 }
 
 function formatBytes(b: number): string {

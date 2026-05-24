@@ -26,6 +26,18 @@ const dnsLabel = z
 export const cnpgBackupNowRequestSchema = z.object({
   namespace: dnsLabel,
   clusterName: dnsLabel,
+  /**
+   * Optional operator-supplied description, attached to the Backup CR
+   * as the `platform.phoenix-host.net/description` ANNOTATION (not
+   * label — annotations have no charset/length restrictions, so the
+   * operator can type spaces and natural-language descriptions like
+   * "before tenant import: acme"). Surfaced in the catalogue list.
+   * Capped at 200 chars for sensible UI rendering.
+   */
+  description: z
+    .string()
+    .max(200)
+    .optional(),
 });
 export type CnpgBackupNowRequest = z.infer<typeof cnpgBackupNowRequestSchema>;
 

@@ -43,7 +43,7 @@ export default function SystemBackupsPage() {
         title="System Backups"
         subtitle="Postgres WAL + base backup, etcd snapshots, secrets bundle, monitoring + restic-backed components."
         shimClass="system"
-        scheduleSubsystems={['system_pitr']}
+        scheduleSubsystems={[]}
         snapshotsTab={
           <div className="space-y-3">
             <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -116,21 +116,36 @@ export default function SystemBackupsPage() {
  */
 function BackupNowButton() {
   const mutate = useCnpgBackupNow();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [description, setDescription] = useState('');
   const [resultBanner, setResultBanner] = useState<
     | null
-    | { kind: 'ok'; backupName: string }
+    | { kind: 'ok'; backupName: string; description: string }
     | { kind: 'err'; message: string }
   >(null);
 
-  const trigger = (): void => {
+  // Phase 7c (2026-05-24): description stored as annotation (not label)
+  // so the charset is unrestricted — only the length cap of 200 chars
+  // applies. Empty stays valid (description is optional).
+  const descValid = description.length <= 200;
+
+  const confirmTrigger = (): void => {
+    if (!descValid) return;
     setResultBanner(null);
     void (async () => {
       try {
         const r = await mutate.mutateAsync({
           namespace: 'platform',
           clusterName: 'system-db',
+          ...(description ? { description } : {}),
         });
-        setResultBanner({ kind: 'ok', backupName: r.data.backupName });
+        setResultBanner({
+          kind: 'ok',
+          backupName: r.data.backupName,
+          description,
+        });
+        setModalOpen(false);
+        setDescription('');
         window.setTimeout(() => setResultBanner(null), 6000);
       } catch (err) {
         setResultBanner({
@@ -147,7 +162,7 @@ function BackupNowButton() {
     <div className="flex flex-col items-end gap-1">
       <button
         type="button"
-        onClick={trigger}
+        onClick={() => setModalOpen(true)}
         disabled={mutate.isPending}
         className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
           okFlash
@@ -167,13 +182,95 @@ function BackupNowButton() {
       </button>
       {resultBanner?.kind === 'ok' && (
         <span className="text-xs text-emerald-700 dark:text-emerald-300">
-          {resultBanner.backupName} — appears in the catalogue list once CNPG completes the upload.
+          {resultBanner.backupName}
+          {resultBanner.description && ` "${resultBanner.description}"`}
+          {' '}— appears in the list once CNPG completes the upload.
         </span>
       )}
       {resultBanner?.kind === 'err' && (
         <span className="inline-flex items-center gap-1 text-xs text-rose-700 dark:text-rose-300" data-testid="system-backup-now-error">
           <AlertCircle size={12} /> {resultBanner.message}
         </span>
+      )}
+
+      {modalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="backup-now-modal-title"
+          data-testid="backup-now-modal"
+        >
+          <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800">
+            <header className="border-b border-gray-200 px-5 py-3 dark:border-gray-700">
+              <h3 id="backup-now-modal-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                Trigger on-demand backup
+              </h3>
+            </header>
+            <div className="space-y-3 px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+              <p>
+                Creates a fresh CNPG <code className="rounded bg-gray-100 px-1 dark:bg-gray-900">Backup</code> CR for{' '}
+                <code>platform/system-db</code>. The barman-cloud plugin
+                runs <code>pg_basebackup</code> + uploads to the SYSTEM
+                backup target through the shim.
+              </p>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                  Description (optional)
+                </span>
+                <input
+                  type="text"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="e.g. pre-upgrade: tenant import"
+                  maxLength={200}
+                  autoFocus
+                  aria-invalid={!descValid}
+                  className={`w-full rounded-md border bg-white px-2 py-1.5 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 ${
+                    descValid ? 'border-gray-300 dark:border-gray-600' : 'border-rose-400 dark:border-rose-600'
+                  }`}
+                  data-testid="backup-now-description"
+                />
+                <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+                  Up to 200 chars. Stored as a CR annotation (no charset
+                  restrictions). Surfaced in the backup list so you can
+                  recognise ad-hoc backups later.
+                </p>
+                {!descValid && (
+                  <p className="mt-1 text-[10px] text-rose-700 dark:text-rose-300">
+                    Too long (max 200 chars).
+                  </p>
+                )}
+              </label>
+              {mutate.error && (
+                <div className="rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-800 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200">
+                  {(mutate.error as Error).message}
+                </div>
+              )}
+            </div>
+            <footer className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-5 py-3 dark:border-gray-700 dark:bg-gray-900/50">
+              <button
+                type="button"
+                onClick={() => { setModalOpen(false); setDescription(''); }}
+                disabled={mutate.isPending}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                data-testid="backup-now-cancel"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmTrigger}
+                disabled={!descValid || mutate.isPending}
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                data-testid="backup-now-confirm"
+              >
+                {mutate.isPending ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
+                {mutate.isPending ? 'Triggering…' : 'Trigger backup'}
+              </button>
+            </footer>
+          </div>
+        </div>
       )}
     </div>
   );
