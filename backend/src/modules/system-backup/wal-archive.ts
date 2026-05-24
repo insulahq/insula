@@ -14,35 +14,51 @@
  *   3. ScheduledBackup CR uses `method: plugin` + `pluginConfiguration.name:
  *      barman-cloud.cloudnative-pg.io` for periodic base backups.
  *
+ * 2026-05-24 — Phase 6 refactor: WAL streaming now ALWAYS goes through the
+ * backup-rclone-shim's local S3 endpoint instead of dialling the upstream
+ * S3 target directly. This unlocks CIFS / NFS / SFTP upstreams (the shim
+ * handles the translation) and removes the dual-reconciler race where
+ * this module and backup-rclone-shim/postgres-objectstore.ts were both
+ * patching the same Cluster.spec.plugins entry with conflicting
+ * parameters.barmanObjectName values. The "target" for WAL streaming is
+ * now the SYSTEM shim binding — operators pick the target ONCE on the
+ * Routing tab; WAL Archive + on-demand base backups inherit it.
+ *
  * In-tree `spec.backup.barmanObjectStore` was deprecated in CNPG 1.26 and
  * is scheduled for removal in 1.30. The new path is also the only one that
  * works with the `minimal-trixie` / `standard-trixie` operand images we
  * adopted on 2026-05-07 (those images do NOT bundle barman-cloud binaries —
  * the plugin runs them as a sidecar).
  *
- * Cred mirroring is unchanged from the in-tree era. backup-config/
- * longhorn-reconciler.ts mirrors the active S3 config Secret into the
- * cluster's namespace under name `backup-credentials` with keys
- * AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY. Both the ObjectStore CR
- * (here) and the legacy reconciler reference it by name.
- *
- * SFTP/SSH targets are NOT supported — barman-cloud only speaks S3.
- * We filter at validation time.
+ * Shim creds Secret + endpoint:
+ *   The shim materialises `backup-rclone-shim-creds` in every namespace
+ *   that hosts a CNPG cluster (see backup-rclone-shim/postgres-objectstore.ts).
+ *   We reference that Secret here so the plugin sidecar authenticates to
+ *   `http://backup-rclone-shim.platform.svc:9000` with the per-class
+ *   HKDF-derived shim credentials.
  */
 
 import { eq, and, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { backupConfigurations, systemWalArchiveState, auditLogs } from '../../db/schema.js';
+import {
+  backupConfigurations,
+  backupTargetAssignments,
+  systemWalArchiveState,
+  auditLogs,
+} from '../../db/schema.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { randomUUID } from 'node:crypto';
+import {
+  SHIM_S3_ENDPOINT_URL,
+  SHIM_S3_CREDS_SECRET_NAME,
+} from '../backup-rclone-shim/postgres-objectstore.js';
 
 export const CNPG_GROUP = 'postgresql.cnpg.io';
 export const CNPG_VERSION = 'v1';
 export const BARMAN_GROUP = 'barmancloud.cnpg.io';
 export const BARMAN_VERSION = 'v1';
 export const BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
-const BACKUP_CREDENTIALS_SECRET = 'backup-credentials';
 
 // CR-naming scheme. `<cluster>-system-store` is the ObjectStore that
 // pairs with `<cluster>-system-backup` (the ScheduledBackup CR). Both
@@ -56,12 +72,24 @@ export interface EnableWalArchiveInput {
   readonly k8s: K8sClients;
   readonly clusterNamespace: string;
   readonly clusterName: string;
-  readonly targetConfigId: string;
   readonly retentionDays: number;
   readonly operatorUserId: string;
   readonly operatorIp: string | null;
   readonly archiveTimeout?: string;
   readonly baseBackupSchedule?: string | null;
+  /**
+   * 2026-05-24 (Phase 6): the WAL target is now derived from the SYSTEM
+   * shim binding (see `loadSystemShimBinding`). The optional targetConfigId
+   * passed in by the route handler is recorded for audit only — if it
+   * doesn't match the shim binding, the shim binding wins. A future
+   * cleanup pass can drop the field entirely.
+   */
+  readonly targetConfigId?: string;
+  /**
+   * @deprecated 2026-05-24 (Phase 6): never applied to any CR. Kept for
+   * back-compat with existing rows in systemWalArchiveState; the UI no
+   * longer surfaces it.
+   */
   readonly baseBackupRetentionDays?: number;
 }
 
@@ -85,37 +113,73 @@ interface BackupConfigForWal {
   readonly name: string | null;
 }
 
-async function loadActiveS3Target(
-  db: Database, targetConfigId: string,
-): Promise<BackupConfigForWal> {
+/**
+ * Resolve the WAL streaming target from the SYSTEM shim binding.
+ *
+ * Phase 6 (2026-05-24) — replaces `loadActiveS3Target(targetConfigId)`.
+ * Operators no longer pick a WAL target separately; the target IS the
+ * SYSTEM shim binding chosen on /backups/system?tab=routing. This
+ * unifies the two competing reconcilers (this one + the shim's
+ * postgres-objectstore reconciler) so they no longer fight over
+ * Cluster.spec.plugins[].parameters.barmanObjectName.
+ *
+ * Returns the resolved (id, name, storageType) so the caller can persist
+ * the snapshot for audit + UI display. The destinationPath is computed
+ * from the shim's bucket scheme — NOT from the upstream cfg — because
+ * barman-cloud writes go through the shim regardless of upstream type.
+ */
+async function loadSystemShimBinding(
+  db: Database,
+): Promise<{ id: string; name: string | null; storageType: string }> {
   const rows = await db
     .select({
       id: backupConfigurations.id,
-      storageType: backupConfigurations.storageType,
-      s3Bucket: backupConfigurations.s3Bucket,
-      s3Prefix: backupConfigurations.s3Prefix,
-      s3Endpoint: backupConfigurations.s3Endpoint,
-      s3Region: backupConfigurations.s3Region,
-      active: backupConfigurations.active,
       name: backupConfigurations.name,
+      storageType: backupConfigurations.storageType,
+      enabled: backupConfigurations.enabled,
     })
-    .from(backupConfigurations)
-    .where(eq(backupConfigurations.id, targetConfigId))
+    .from(backupTargetAssignments)
+    .innerJoin(
+      backupConfigurations,
+      eq(backupConfigurations.id, backupTargetAssignments.targetId),
+    )
+    .where(eq(backupTargetAssignments.backupClass, 'system'))
+    .orderBy(backupTargetAssignments.priority)
     .limit(1);
-  const cfg = rows[0];
-  if (!cfg) throw new Error(`backup_configurations row ${targetConfigId} not found`);
-  if (!cfg.active) throw new Error(`backup_configurations row ${targetConfigId} is not active — activate it via /admin/backup-configs/:id/activate first`);
-  if (cfg.storageType !== 's3') {
-    throw new Error(`backup_configurations row ${targetConfigId} is storageType=${cfg.storageType}; barman-cloud plugin only supports s3`);
+  const row = rows[0];
+  if (!row) {
+    throw new Error(
+      'No SYSTEM backup target bound — bind one on /backups/system?tab=routing before enabling WAL streaming',
+    );
   }
-  if (!cfg.s3Bucket) throw new Error(`backup_configurations row ${targetConfigId} has no s3_bucket`);
-  return cfg;
+  if (!row.enabled) {
+    throw new Error(
+      `SYSTEM shim target '${row.name ?? row.id}' is disabled — enable it on /backups/targets before enabling WAL streaming`,
+    );
+  }
+  return { id: row.id, name: row.name, storageType: row.storageType };
 }
 
 /**
- * Path scheme: `<prefix>/wal-archive/<ns>-<cluster>/`. Mirrors what
- * other System Backup features use so multiple clusters share a target
- * bucket without collision.
+ * Path scheme: `s3://system/wal-archive/<ns>-<cluster>`.
+ *
+ * The bucket name `system` matches the shim's class-name-as-bucket
+ * convention (see backup-rclone-shim/rclone-config.ts comments — the
+ * shim serves one bucket per BackupClass). The shim re-uploads to the
+ * actual upstream prefix; we don't need to know or care about the
+ * upstream bucket / prefix here.
+ *
+ * Kept as a top-level function so tests can exercise the scheme without
+ * round-tripping through the shim.
+ */
+export function buildShimDestinationPath(ns: string, cluster: string): string {
+  return `s3://system/wal-archive/${ns}-${cluster}`;
+}
+
+/**
+ * @deprecated Pre-Phase-6 path. Kept exported so existing tests
+ * (wal-archive.test.ts:174-181) keep compiling. Will be removed when
+ * those tests are rewritten to exercise the shim path.
  */
 export function buildDestinationPath(cfg: BackupConfigForWal, ns: string, cluster: string): string {
   const cleanPrefix = (cfg.s3Prefix ?? '').replace(/^\/+|\/+$/g, '');
@@ -213,19 +277,22 @@ interface ObjectStoreBody {
 
 function buildObjectStoreBody(
   namespace: string, cluster: string,
-  destinationPath: string, endpointURL: string | null,
+  destinationPath: string,
   retentionDays: number,
 ): ObjectStoreBody {
+  // Phase 6 (2026-05-24): always route through the shim. Shim S3
+  // endpoint + shim-derived HKDF credentials (Secret materialised in
+  // the cluster ns by backup-rclone-shim/postgres-objectstore.ts).
   const config: ObjectStoreSpecConfig = {
     destinationPath,
+    endpointURL: SHIM_S3_ENDPOINT_URL,
     s3Credentials: {
-      accessKeyId: { name: BACKUP_CREDENTIALS_SECRET, key: 'AWS_ACCESS_KEY_ID' },
-      secretAccessKey: { name: BACKUP_CREDENTIALS_SECRET, key: 'AWS_SECRET_ACCESS_KEY' },
+      accessKeyId: { name: SHIM_S3_CREDS_SECRET_NAME, key: 'access_key' },
+      secretAccessKey: { name: SHIM_S3_CREDS_SECRET_NAME, key: 'secret_key' },
     },
     wal: { compression: 'gzip' },
     data: { compression: 'gzip' },
   };
-  if (endpointURL) config.endpointURL = endpointURL;
   return {
     apiVersion: `${BARMAN_GROUP}/${BARMAN_VERSION}`,
     kind: 'ObjectStore',
@@ -247,8 +314,7 @@ function buildObjectStoreBody(
 
 async function upsertObjectStore(
   k8s: K8sClients, namespace: string, cluster: string,
-  destinationPath: string, endpointURL: string | null,
-  retentionDays: number,
+  destinationPath: string, retentionDays: number,
 ): Promise<void> {
   const custom = k8s.custom as unknown as {
     getNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string }) => Promise<unknown>;
@@ -256,7 +322,7 @@ async function upsertObjectStore(
     patchNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown }, opts?: unknown) => Promise<unknown>;
   };
   const name = OBJECT_STORE_NAME(cluster);
-  const body = buildObjectStoreBody(namespace, cluster, destinationPath, endpointURL, retentionDays);
+  const body = buildObjectStoreBody(namespace, cluster, destinationPath, retentionDays);
 
   let exists = true;
   try {
@@ -511,7 +577,7 @@ async function deleteScheduledBackupIfPresent(
 
 export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ destinationPath: string }> {
   const {
-    db, k8s, clusterNamespace, clusterName, targetConfigId,
+    db, k8s, clusterNamespace, clusterName,
     retentionDays, operatorUserId, operatorIp,
     archiveTimeout, baseBackupSchedule, baseBackupRetentionDays,
   } = input;
@@ -519,8 +585,12 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
   if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
 
-  const cfg = await loadActiveS3Target(db, targetConfigId);
-  const destinationPath = buildDestinationPath(cfg, clusterNamespace, clusterName);
+  // Phase 6 (2026-05-24): target = SYSTEM shim binding. The shim
+  // handles upstream translation (S3 / CIFS / NFS / SFTP), so this
+  // module is now storage-type agnostic.
+  const binding = await loadSystemShimBinding(db);
+  const resolvedTargetConfigId = binding.id;
+  const destinationPath = buildShimDestinationPath(clusterNamespace, clusterName);
 
   // Concurrent-enable serialization: pg_advisory_xact_lock keyed on
   // (cluster_namespace, cluster_name) — keys must be int8 so we hash
@@ -539,7 +609,7 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   // Ordering matters: ObjectStore must exist before the Cluster references
   // it via spec.plugins (otherwise the operator validates and rejects the
   // Cluster patch with a dangling reference).
-  await upsertObjectStore(k8s, clusterNamespace, clusterName, destinationPath, cfg.s3Endpoint ?? null, retentionDays);
+  await upsertObjectStore(k8s, clusterNamespace, clusterName, destinationPath, retentionDays);
   await patchClusterPlugin(k8s, clusterNamespace, clusterName, cr, /* enable */ true, archiveTimeout);
 
   if (baseBackupSchedule) {
@@ -577,7 +647,7 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
       .values({
         clusterNamespace,
         clusterName,
-        targetConfigId,
+        targetConfigId: resolvedTargetConfigId,
         retentionDays,
         destinationPath,
         operatorUserId,
@@ -588,7 +658,7 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
       .onConflictDoUpdate({
         target: [systemWalArchiveState.clusterNamespace, systemWalArchiveState.clusterName],
         set: {
-          targetConfigId,
+          targetConfigId: resolvedTargetConfigId,
           retentionDays,
           destinationPath,
           operatorUserId,
@@ -609,11 +679,16 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
       httpPath: '/api/v1/system-backup/wal-archive/enable',
       httpStatus: 200,
       changes: {
-        targetConfigId, retentionDays, destinationPath,
+        targetConfigId: resolvedTargetConfigId,
+        targetName: binding.name,
+        targetStorageType: binding.storageType,
+        retentionDays,
+        destinationPath,
         archiveTimeout: archiveTimeout ?? null,
         baseBackupSchedule: baseBackupSchedule ?? null,
         baseBackupRetentionDays: baseBackupRetentionDays ?? null,
         plugin: BARMAN_PLUGIN_NAME,
+        routingVia: 'backup-rclone-shim',
         // Delta from prior state (null on first-ever enable).
         previousTargetConfigId: prior?.targetConfigId ?? null,
         previousDestinationPath: prior?.destinationPath ?? null,

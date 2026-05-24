@@ -34,13 +34,14 @@
  *     log warning; the periodic reconciler retries on next tick.
  */
 
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 
 import {
   backupConfigurations,
   backupTargetAssignments,
+  systemWalArchiveState,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -252,22 +253,41 @@ export async function reconcilePostgresObjectStore(
   // database.yaml manifest INTENTIONALLY omits isWALArchiver so the
   // reconciler is the sole owner of the field. Flux ssa: merge
   // preserves fields not in the source manifest.
+  //
+  // Phase 6 (2026-05-24) dual-reconciler guard: when an operator has
+  // enabled WAL streaming via the UI, system-backup/wal-archive.ts
+  // owns the Cluster.spec plugin entry exclusively. Skipping
+  // patchClusterWalArchiver here avoids the race where both
+  // reconcilers fight over `parameters.barmanObjectName` +
+  // `isWALArchiver` (each with different values) on every Flux
+  // reconvergence. The shim creds + ObjectStore + ScheduledBackup
+  // above remain reconciled because they're harmless additions; only
+  // the Cluster patch was contended.
   let walArchiverEnabled = false;
-  try {
+  const deferToWalArchive = await walArchiveOwnsCluster(db);
+  if (deferToWalArchive) {
+    log.info(
+      { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
+      'postgres-objectstore: wal-archive owns Cluster plugin entry — skipping isWALArchiver patch',
+    );
     walArchiverEnabled = !suspended;
-    await patchClusterWalArchiver(clients.custom, log, walArchiverEnabled);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error({ err: msg }, 'postgres-objectstore: Cluster isWALArchiver patch failed');
-    return {
-      state: 'STATE_ERROR',
-      errorMessage: msg,
-      objectStoreApplied,
-      scheduledBackupApplied,
-      scheduledBackupSuspended: suspended,
-      credentialsSecretApplied,
-      walArchiverEnabled: false,
-    };
+  } else {
+    try {
+      walArchiverEnabled = !suspended;
+      await patchClusterWalArchiver(clients.custom, log, walArchiverEnabled);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err: msg }, 'postgres-objectstore: Cluster isWALArchiver patch failed');
+      return {
+        state: 'STATE_ERROR',
+        errorMessage: msg,
+        objectStoreApplied,
+        scheduledBackupApplied,
+        scheduledBackupSuspended: suspended,
+        credentialsSecretApplied,
+        walArchiverEnabled: false,
+      };
+    }
   }
 
   return {
@@ -284,6 +304,29 @@ export async function reconcilePostgresObjectStore(
 // ---------------------------------------------------------------------------
 // DB query — SYSTEM target binding
 // ---------------------------------------------------------------------------
+
+/**
+ * Phase 6 (2026-05-24) — dual-reconciler ownership guard.
+ *
+ * Returns true when system-backup/wal-archive.ts owns the Cluster.spec
+ * plugin entry for `platform/system-db` (i.e. an operator has enabled
+ * WAL streaming via the UI). When true, this reconciler MUST NOT patch
+ * `isWALArchiver` or anything else on Cluster.spec — wal-archive owns
+ * it exclusively. The shim creds Secret + ObjectStore CR +
+ * ScheduledBackup CR continue to be reconciled because they are
+ * harmless additions; only the Cluster patch was a fight.
+ */
+async function walArchiveOwnsCluster(db: Database): Promise<boolean> {
+  const rows = await db
+    .select({ ns: systemWalArchiveState.clusterNamespace })
+    .from(systemWalArchiveState)
+    .where(and(
+      eq(systemWalArchiveState.clusterNamespace, POSTGRES_NAMESPACE),
+      eq(systemWalArchiveState.clusterName, POSTGRES_CLUSTER_NAME),
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
 
 async function loadSystemTarget(db: Database): Promise<SystemTargetView | null> {
   const rows = await db
