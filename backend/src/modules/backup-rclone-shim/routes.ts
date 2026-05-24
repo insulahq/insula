@@ -184,7 +184,15 @@ export async function backupRcloneShimRoutes(
     },
   }, async (request): Promise<SwitchWithPauseResponse> => {
     const params = classParamSchema.parse(request.params);
-    const body = switchWithPauseRequestSchema.parse(request.body ?? {});
+    const parsed = switchWithPauseRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+        400,
+      );
+    }
+    const body = parsed.data;
     const userId = (request.user as { sub?: string } | undefined)?.sub;
     if (!userId) {
       throw new ApiError('UNAUTHORIZED', 'Authenticated user id missing', 401);
