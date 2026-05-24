@@ -411,6 +411,16 @@ async function patchClusterPlugin(
   existingCR: ClusterCRSpec,
   enable: boolean,
   archiveTimeout?: string,
+  /**
+   * Phase 7c (2026-05-24): allow explicit override of isWALArchiver so
+   * the "scheduled-backups-only" enable path can attach the plugin in
+   * ONE patch with isWALArchiver=false — closes the race where
+   * patchClusterPlugin always set it to true, then a follow-up patch
+   * had to flip it back. Between the two patches CNPG saw
+   * isWALArchiver=true and could start archiving against a half-set
+   * plugin. Defaults to `enable` for back-compat.
+   */
+  isWALArchiver: boolean = enable,
 ): Promise<void> {
   // Merge plugins: keep entries with name !== BARMAN_PLUGIN_NAME, then
   // (when enabling) append our entry.
@@ -419,7 +429,7 @@ async function patchClusterPlugin(
   const mergedPlugins: ClusterPluginEntry[] = enable
     ? [...otherPlugins, {
         name: BARMAN_PLUGIN_NAME,
-        isWALArchiver: true,
+        isWALArchiver,
         parameters: { barmanObjectName: OBJECT_STORE_NAME(cluster) },
       }]
     : [...otherPlugins];
@@ -699,6 +709,366 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   });
 
   return { destinationPath };
+}
+
+// ─── Phase 7a (2026-05-24) — split operations ─────────────────────────────
+//
+// The combined `enableWalArchive` / `disableWalArchive` couple WAL
+// streaming and base-backup scheduling. Operators want them
+// independent: they may want WAL streaming without scheduled base
+// backups (e.g. they take base backups via the Backup Now button
+// only), or scheduled backups without WAL streaming (snapshot-only
+// recovery point, no PITR). The four functions below let each be
+// toggled separately. All four are idempotent — calling enable while
+// already enabled UPDATES the settings (so operators can edit
+// archive_timeout / cron without disable+re-enable).
+
+export interface EnableWalStreamingInput {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly clusterNamespace: string;
+  readonly clusterName: string;
+  readonly retentionDays: number;
+  readonly archiveTimeout?: string;
+  readonly operatorUserId: string;
+  readonly operatorIp: string | null;
+}
+
+export async function enableWalStreaming(input: EnableWalStreamingInput): Promise<{ destinationPath: string }> {
+  const {
+    db, k8s, clusterNamespace, clusterName,
+    retentionDays, archiveTimeout, operatorUserId, operatorIp,
+  } = input;
+
+  const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
+  if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
+
+  const binding = await loadSystemShimBinding(db);
+  const destinationPath = buildShimDestinationPath(clusterNamespace, clusterName);
+
+  const lockHashSql = sql`hashtextextended(${`${clusterNamespace}/${clusterName}`}, 0)`;
+  const advisoryLock = sql`SELECT pg_advisory_xact_lock(${lockHashSql})`;
+
+  await upsertObjectStore(k8s, clusterNamespace, clusterName, destinationPath, retentionDays);
+  await patchClusterPlugin(k8s, clusterNamespace, clusterName, cr, /* enable */ true, archiveTimeout);
+
+  await db.transaction(async (tx) => {
+    await tx.execute(advisoryLock);
+
+    const priorRows = await tx
+      .select({
+        baseBackupSchedule: systemWalArchiveState.baseBackupSchedule,
+        baseBackupRetentionDays: systemWalArchiveState.baseBackupRetentionDays,
+      })
+      .from(systemWalArchiveState)
+      .where(and(
+        eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+        eq(systemWalArchiveState.clusterName, clusterName),
+      ))
+      .limit(1);
+    const prior = priorRows[0] ?? null;
+
+    await tx
+      .insert(systemWalArchiveState)
+      .values({
+        clusterNamespace,
+        clusterName,
+        targetConfigId: binding.id,
+        retentionDays,
+        destinationPath,
+        operatorUserId,
+        archiveTimeout: archiveTimeout ?? null,
+        // Preserve any existing schedule settings — these are owned
+        // by enableScheduledBackups, not us.
+        baseBackupSchedule: prior?.baseBackupSchedule ?? null,
+        baseBackupRetentionDays: prior?.baseBackupRetentionDays ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [systemWalArchiveState.clusterNamespace, systemWalArchiveState.clusterName],
+        set: {
+          targetConfigId: binding.id,
+          retentionDays,
+          destinationPath,
+          operatorUserId,
+          archiveTimeout: archiveTimeout ?? null,
+          enabledAt: new Date(),
+        },
+      });
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'system_wal_streaming_enable',
+      resourceType: 'cnpg_cluster',
+      resourceId: `${clusterNamespace}/${clusterName}`,
+      actorId: operatorUserId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/system-backup/wal-archive/streaming/enable',
+      httpStatus: 200,
+      changes: {
+        targetConfigId: binding.id,
+        retentionDays,
+        archiveTimeout: archiveTimeout ?? null,
+        destinationPath,
+        plugin: BARMAN_PLUGIN_NAME,
+        routingVia: 'backup-rclone-shim',
+      },
+      ipAddress: operatorIp ?? null,
+    });
+  });
+
+  return { destinationPath };
+}
+
+export interface DisableWalStreamingInput {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly clusterNamespace: string;
+  readonly clusterName: string;
+  readonly operatorUserId: string;
+  readonly operatorIp: string | null;
+}
+
+export async function disableWalStreaming(input: DisableWalStreamingInput): Promise<void> {
+  const { db, k8s, clusterNamespace, clusterName, operatorUserId, operatorIp } = input;
+  const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
+  if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
+
+  // Detach plugin from Cluster CR. The ScheduledBackup CR (if any) is
+  // owned by enableScheduledBackups — leave it alone. The ObjectStore
+  // CR + state row are removed only if neither operation is active.
+  await patchClusterPlugin(k8s, clusterNamespace, clusterName, cr, /* enable */ false);
+
+  await db.transaction(async (tx) => {
+    const priorRows = await tx
+      .select({
+        baseBackupSchedule: systemWalArchiveState.baseBackupSchedule,
+      })
+      .from(systemWalArchiveState)
+      .where(and(
+        eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+        eq(systemWalArchiveState.clusterName, clusterName),
+      ))
+      .limit(1);
+    const prior = priorRows[0] ?? null;
+    const scheduledBackupsStillActive = !!prior?.baseBackupSchedule;
+
+    if (scheduledBackupsStillActive) {
+      // Keep the row; clear only the streaming fields.
+      await tx
+        .update(systemWalArchiveState)
+        .set({
+          archiveTimeout: null,
+          // Persist a marker so the UI shows "streaming disabled" while
+          // schedule is still on — use destinationPath unchanged so
+          // catalogue lookups still find the bucket.
+        })
+        .where(and(
+          eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+          eq(systemWalArchiveState.clusterName, clusterName),
+        ));
+    } else {
+      // Nothing else active — full cleanup.
+      await deleteScheduledBackupIfPresent(k8s, clusterNamespace, clusterName);
+      await deleteObjectStoreIfPresent(k8s, clusterNamespace, clusterName);
+      await tx
+        .delete(systemWalArchiveState)
+        .where(and(
+          eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+          eq(systemWalArchiveState.clusterName, clusterName),
+        ));
+    }
+
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'system_wal_streaming_disable',
+      resourceType: 'cnpg_cluster',
+      resourceId: `${clusterNamespace}/${clusterName}`,
+      actorId: operatorUserId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/system-backup/wal-archive/streaming/disable',
+      httpStatus: 200,
+      changes: { scheduledBackupsStillActive },
+      ipAddress: operatorIp ?? null,
+    });
+  });
+}
+
+export interface EnableScheduledBackupsInput {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly clusterNamespace: string;
+  readonly clusterName: string;
+  readonly cron: string;
+  readonly operatorUserId: string;
+  readonly operatorIp: string | null;
+}
+
+export async function enableScheduledBackups(input: EnableScheduledBackupsInput): Promise<void> {
+  const {
+    db, k8s, clusterNamespace, clusterName, cron, operatorUserId, operatorIp,
+  } = input;
+
+  const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
+  if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
+
+  // Scheduled backups need the plugin attached (it runs pg_basebackup
+  // via the barman-cloud sidecar). If WAL streaming is NOT yet enabled,
+  // we still need to attach the plugin + create the ObjectStore so the
+  // base backup has somewhere to write. We resolve the shim binding +
+  // create the ObjectStore + attach the plugin (with isWALArchiver
+  // matching the existing state). Idempotent.
+  const binding = await loadSystemShimBinding(db);
+  const destinationPath = buildShimDestinationPath(clusterNamespace, clusterName);
+
+  // Read prior state to know whether to keep isWALArchiver=true.
+  const priorRows = await db
+    .select({
+      retentionDays: systemWalArchiveState.retentionDays,
+      archiveTimeout: systemWalArchiveState.archiveTimeout,
+    })
+    .from(systemWalArchiveState)
+    .where(and(
+      eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+      eq(systemWalArchiveState.clusterName, clusterName),
+    ))
+    .limit(1);
+  const prior = priorRows[0] ?? null;
+  // Sentinel inference: archiveTimeout is set ONLY by enableWalStreaming
+  // and cleared ONLY by disableWalStreaming (see those functions). It's
+  // never set as a side effect of enableScheduledBackups (which preserves
+  // the prior value in the insert/upsert) or by any other code path.
+  // Therefore prior?.archiveTimeout being non-null IS the canonical
+  // "WAL streaming is currently active" signal. If a future caller bypasses
+  // these helpers and writes the column directly, this sentinel breaks —
+  // ci-postgres-barman-restore-check.sh should grow an invariant to catch
+  // any new INSERT/UPDATE on system_wal_archive_state.archiveTimeout
+  // outside this file.
+  const walStreamingActive = prior?.archiveTimeout != null;
+  const effectiveRetention = prior?.retentionDays ?? 30;
+
+  await upsertObjectStore(k8s, clusterNamespace, clusterName, destinationPath, effectiveRetention);
+  // Phase 7c (2026-05-24) — single patch sets the right
+  // isWALArchiver value in one round-trip. Closes the race where
+  // a follow-up flip patch left CNPG seeing isWALArchiver=true
+  // for the milliseconds between the two patches.
+  await patchClusterPlugin(
+    k8s, clusterNamespace, clusterName, cr,
+    /* enable */ true,
+    /* archiveTimeout */ prior?.archiveTimeout ?? undefined,
+    /* isWALArchiver */ walStreamingActive,
+  );
+  await upsertScheduledBackup(k8s, clusterNamespace, clusterName, cron);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(systemWalArchiveState)
+      .values({
+        clusterNamespace,
+        clusterName,
+        targetConfigId: binding.id,
+        retentionDays: effectiveRetention,
+        destinationPath,
+        operatorUserId,
+        archiveTimeout: prior?.archiveTimeout ?? null,
+        baseBackupSchedule: cron,
+        baseBackupRetentionDays: null,
+      })
+      .onConflictDoUpdate({
+        target: [systemWalArchiveState.clusterNamespace, systemWalArchiveState.clusterName],
+        set: {
+          baseBackupSchedule: cron,
+          targetConfigId: binding.id,
+          destinationPath,
+          operatorUserId,
+          enabledAt: new Date(),
+        },
+      });
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'system_scheduled_backups_enable',
+      resourceType: 'cnpg_cluster',
+      resourceId: `${clusterNamespace}/${clusterName}`,
+      actorId: operatorUserId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/system-backup/wal-archive/schedule/enable',
+      httpStatus: 200,
+      changes: { cron, walStreamingActive, plugin: BARMAN_PLUGIN_NAME },
+      ipAddress: operatorIp ?? null,
+    });
+  });
+}
+
+export interface DisableScheduledBackupsInput {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly clusterNamespace: string;
+  readonly clusterName: string;
+  readonly operatorUserId: string;
+  readonly operatorIp: string | null;
+}
+
+export async function disableScheduledBackups(input: DisableScheduledBackupsInput): Promise<void> {
+  const { db, k8s, clusterNamespace, clusterName, operatorUserId, operatorIp } = input;
+  await deleteScheduledBackupIfPresent(k8s, clusterNamespace, clusterName);
+
+  await db.transaction(async (tx) => {
+    const priorRows = await tx
+      .select({
+        archiveTimeout: systemWalArchiveState.archiveTimeout,
+      })
+      .from(systemWalArchiveState)
+      .where(and(
+        eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+        eq(systemWalArchiveState.clusterName, clusterName),
+      ))
+      .limit(1);
+    const prior = priorRows[0] ?? null;
+    // Same sentinel as enableScheduledBackups — see comment there.
+    const walStreamingStillActive = prior?.archiveTimeout != null;
+
+    if (walStreamingStillActive) {
+      // Keep the row; clear only the schedule fields.
+      await tx
+        .update(systemWalArchiveState)
+        .set({
+          baseBackupSchedule: null,
+          baseBackupRetentionDays: null,
+        })
+        .where(and(
+          eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+          eq(systemWalArchiveState.clusterName, clusterName),
+        ));
+    } else {
+      // Nothing else active — full cleanup.
+      const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
+      if (cr) {
+        await patchClusterPlugin(k8s, clusterNamespace, clusterName, cr, /* enable */ false);
+      }
+      await deleteObjectStoreIfPresent(k8s, clusterNamespace, clusterName);
+      await tx
+        .delete(systemWalArchiveState)
+        .where(and(
+          eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+          eq(systemWalArchiveState.clusterName, clusterName),
+        ));
+    }
+
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'system_scheduled_backups_disable',
+      resourceType: 'cnpg_cluster',
+      resourceId: `${clusterNamespace}/${clusterName}`,
+      actorId: operatorUserId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/system-backup/wal-archive/schedule/disable',
+      httpStatus: 200,
+      changes: { walStreamingStillActive },
+      ipAddress: operatorIp ?? null,
+    });
+  });
 }
 
 export async function disableWalArchive(input: DisableWalArchiveInput): Promise<void> {

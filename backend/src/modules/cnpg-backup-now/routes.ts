@@ -42,7 +42,11 @@ export async function cnpgBackupNowRoutes(app: FastifyInstance): Promise<void> {
     try {
       const result = await createBackupNow(
         k8s.custom,
-        { namespace: parsed.data.namespace, clusterName: parsed.data.clusterName },
+        {
+          namespace: parsed.data.namespace,
+          clusterName: parsed.data.clusterName,
+          description: parsed.data.description,
+        },
         request.log,
       );
       return success(result);
