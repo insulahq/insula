@@ -138,7 +138,7 @@ function ClusterRow({
       data-testid={`cnpg-backup-health-cluster-${c.namespace}-${c.clusterName}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {palette.icon}
           <span className="font-mono text-sm font-medium text-gray-900 dark:text-gray-100">
             {c.namespace}/{c.clusterName}
@@ -146,10 +146,14 @@ function ClusterRow({
           <span className={`rounded px-2 py-0.5 text-xs font-medium ${palette.badge}`}>
             {labelForState(c.state)}
           </span>
+          {/* Phase 2 (2026-05-24): WAL streaming badge moved from the
+              inline detail row into the header so operators see the
+              health-card status + WAL status side-by-side. */}
+          <WalStreamingBadge wal={wal} />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-gray-700 dark:text-gray-300">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-gray-700 dark:text-gray-300">
         <div>
           <span className="text-gray-500 dark:text-gray-400">Last successful:</span>{' '}
           {c.lastSuccessfulBackup ? (
@@ -160,52 +164,34 @@ function ClusterRow({
             <span className="italic">never</span>
           )}
         </div>
+        {/* Phase 2 (2026-05-24) metric: last WAL archive datetime.
+            Previously surfaced inline as a "WAL streaming: last
+            archived X ago" sentence; now a compact metric cell. */}
+        <div data-testid={`cnpg-last-wal-${c.namespace}-${c.clusterName}`}>
+          <span className="text-gray-500 dark:text-gray-400">Last WAL write:</span>{' '}
+          {wal?.status?.lastArchivedWalTime ? (
+            <span title={wal.status.lastArchivedWalTime}>
+              {formatAgoFromIso(wal.status.lastArchivedWalTime)} ago
+            </span>
+          ) : (
+            <span className="italic">never</span>
+          )}
+        </div>
+        {/* Phase 2 (2026-05-24) metric: total backup-size disk usage —
+            sum of dataSizeBytes from the catalogue. Lazy-fetched per
+            row so the operator's page-load isn't blocked on an S3 LIST
+            (the catalogue endpoint can be slow on large archives). */}
         <div>
+          <BackupSizeTotal namespace={c.namespace} objectStoreName={c.objectStoreName ?? null} />
+        </div>
+        <div className="sm:col-span-3">
           <span className="text-gray-500 dark:text-gray-400">ScheduledBackup CRs:</span>{' '}
           {c.scheduledBackups.length > 0 ? c.scheduledBackups.join(', ') : (
             <span className="italic">none</span>
           )}
         </div>
-        {/* P4c — WAL streaming line. Three states:
-            - enabled + lastArchivedWalTime fresh → green Radio + age
-            - enabled + lastFailedArchiveTime → red Radio + error
-            - disabled / unknown → muted */}
-        <div className="sm:col-span-2 flex items-center gap-2">
-          {wal?.enabled && wal.status?.lastArchivedWalTime && !wal.status.lastFailedArchiveTime ? (
-            <>
-              <Radio size={12} className="text-emerald-600 dark:text-emerald-400" />
-              <span className="text-gray-500 dark:text-gray-400">WAL streaming:</span>
-              <span title={wal.status.lastArchivedWalTime} className="text-emerald-700 dark:text-emerald-300">
-                last archived {formatAgoFromIso(wal.status.lastArchivedWalTime)} ago
-              </span>
-              {wal.status.lastArchivedWal && (
-                <span className="font-mono text-[10px] text-gray-500 dark:text-gray-400">
-                  ({wal.status.lastArchivedWal.length > 24 ? wal.status.lastArchivedWal.slice(0, 24) + '…' : wal.status.lastArchivedWal})
-                </span>
-              )}
-            </>
-          ) : wal?.enabled && wal.status?.lastFailedArchiveTime ? (
-            <>
-              <Radio size={12} className="text-rose-600 dark:text-rose-400" />
-              <span className="text-gray-500 dark:text-gray-400">WAL streaming:</span>
-              <span className="text-rose-700 dark:text-rose-300" title={wal.status.lastFailedArchiveError ?? ''}>
-                FAILING — {formatAgoFromIso(wal.status.lastFailedArchiveTime)} ago
-              </span>
-            </>
-          ) : wal?.enabled ? (
-            <>
-              <Radio size={12} className="text-amber-600 dark:text-amber-400" />
-              <span className="text-gray-500 dark:text-gray-400">WAL streaming: enabled but no archive yet</span>
-            </>
-          ) : (
-            <>
-              <Radio size={12} className="text-gray-400 dark:text-gray-600" />
-              <span className="text-gray-400 dark:text-gray-600">WAL streaming: disabled</span>
-            </>
-          )}
-        </div>
         {c.mostRecentFailure && (
-          <div className="sm:col-span-2 rounded bg-red-100 dark:bg-red-900/30 px-2 py-1.5 text-red-800 dark:text-red-200">
+          <div className="sm:col-span-3 rounded bg-red-100 dark:bg-red-900/30 px-2 py-1.5 text-red-800 dark:text-red-200">
             <div className="font-medium">Latest backup failed:</div>
             <div className="font-mono">{c.mostRecentFailure.name}</div>
             {c.mostRecentFailure.error && (
@@ -217,14 +203,14 @@ function ClusterRow({
           </div>
         )}
         {!c.clusterHasBackupSpec && (
-          <div className="sm:col-span-2 rounded bg-red-100 dark:bg-red-900/30 px-2 py-1.5 text-red-800 dark:text-red-200">
+          <div className="sm:col-span-3 rounded bg-red-100 dark:bg-red-900/30 px-2 py-1.5 text-red-800 dark:text-red-200">
             Cluster CR has no <code>spec.backup</code> section — backups
             cannot run. Re-apply backup-config from the admin panel or
             check Flux reconciliation.
           </div>
         )}
         {c.state === 'cnpg_operator_blind' && (
-          <div className="sm:col-span-2 rounded bg-amber-100 dark:bg-amber-900/30 px-2 py-1.5 text-amber-900 dark:text-amber-200">
+          <div className="sm:col-span-3 rounded bg-amber-100 dark:bg-amber-900/30 px-2 py-1.5 text-amber-900 dark:text-amber-200">
             <div className="font-medium">CNPG operator can&apos;t see this cluster&apos;s backups —
               but the object store has {c.objectStoreBackupCount ?? '?'} of them.</div>
             <div className="mt-0.5 text-amber-800 dark:text-amber-300">
@@ -405,4 +391,109 @@ function formatAgoFromIso(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   if (Number.isNaN(ms) || ms < 0) return 'unknown';
   return formatAge(Math.floor(ms / 1000));
+}
+
+// Phase 2 (2026-05-24) — WAL streaming as a discrete header chip.
+// Three states match the original inline-row palette so the meaning
+// carries forward: emerald = streaming healthily; rose = failing;
+// amber = enabled but no archive yet OR disabled.
+function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
+  if (wal?.enabled && wal.status?.lastArchivedWalTime && !wal.status.lastFailedArchiveTime) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+        title={`Last WAL archived at ${wal.status.lastArchivedWalTime}`}
+        data-testid="cnpg-wal-badge-streaming"
+      >
+        <Radio size={10} /> WAL streaming
+      </span>
+    );
+  }
+  if (wal?.enabled && wal.status?.lastFailedArchiveTime) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+        title={wal.status.lastFailedArchiveError ?? 'WAL archive failing'}
+        data-testid="cnpg-wal-badge-failing"
+      >
+        <Radio size={10} /> WAL failing
+      </span>
+    );
+  }
+  if (wal?.enabled) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+        data-testid="cnpg-wal-badge-pending"
+      >
+        <Radio size={10} /> WAL pending
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-900/30 dark:text-gray-400"
+      data-testid="cnpg-wal-badge-disabled"
+    >
+      <Radio size={10} /> WAL off
+    </span>
+  );
+}
+
+// Phase 2 (2026-05-24) — total backup disk usage cell.
+// Renders sum(catalogue.backups[].dataSizeBytes). Shares the catalogue
+// queryKey with BackupListPanel below so TanStack Query dedups the
+// underlying S3 LIST — operator pays one network call regardless of
+// whether they expand the disclosure.
+function BackupSizeTotal({
+  namespace,
+  objectStoreName,
+}: {
+  namespace: string;
+  objectStoreName: string | null;
+}) {
+  const q = useQuery({
+    queryKey: ['cnpg-backup-catalogue', namespace, objectStoreName],
+    queryFn: () =>
+      apiFetch<{ data: CnpgBackupCatalogueResponse }>(
+        `/api/v1/admin/cnpg-backup-catalogue/${encodeURIComponent(namespace)}/${encodeURIComponent(objectStoreName ?? '')}`,
+      ),
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!objectStoreName,
+  });
+  if (!objectStoreName) {
+    return (
+      <>
+        <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+        <span className="italic text-gray-400">no object store</span>
+      </>
+    );
+  }
+  if (q.isLoading) {
+    return (
+      <>
+        <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+        <span className="italic text-gray-400">computing…</span>
+      </>
+    );
+  }
+  const cat = q.data?.data;
+  if (!cat || cat.source !== 'object-store') {
+    return (
+      <>
+        <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+        <span className="italic text-gray-400" title={cat?.unavailableReason ?? ''}>unavailable</span>
+      </>
+    );
+  }
+  const total = cat.backups.reduce((acc, b) => acc + (b.dataSizeBytes ?? 0), 0);
+  return (
+    <>
+      <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+      <span title={`${cat.backups.length} backups`} data-testid="cnpg-total-backup-size">
+        {formatBytes(total)} ({cat.backups.length})
+      </span>
+    </>
+  );
 }
