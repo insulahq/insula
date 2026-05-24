@@ -406,20 +406,20 @@ export async function listBackupsFromObjectStore(
     // pre-Phase-7c-fix backups so the catalogue stays consistent.
     let crByBackupId: Map<string, { kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown'; description: string | null }>
       = new Map();
-    // Each barman destinationPath maps to ONE cluster (cluster name is
-    // the last path segment). We labelSelector by that to keep the
-    // LIST scoped. When multiple clusters share an ObjectStore (rare),
-    // we still filter client-side by backupId.
-    const clusterLabelSelector = clusterNames.length === 1
-      ? `cnpg.io/cluster=${clusterNames[0]}`
-      : undefined;
+    // 2026-05-24 verified on staging: CNPG does NOT auto-label Backup
+    // CRs with `cnpg.io/cluster` — the cluster name only appears in
+    // `spec.cluster.name`. So we LIST all Backup CRs in the namespace
+    // (no labelSelector) and filter client-side by spec.cluster.name
+    // matching one of the clusterNames we already discovered from S3.
+    // Modern CNPG versions may grow a labelSelector; if so, switch to
+    // it (cheaper). For now this is the only correct approach.
+    const clusterNameSet = new Set(clusterNames);
     try {
       const crResp = await custom.listNamespacedCustomObject({
         group: 'postgresql.cnpg.io',
         version: 'v1',
         namespace,
         plural: 'backups',
-        ...(clusterLabelSelector ? { labelSelector: clusterLabelSelector } : {}),
       } as unknown as Parameters<typeof custom.listNamespacedCustomObject>[0]) as unknown as {
         items?: ReadonlyArray<{
           metadata?: {
@@ -428,6 +428,7 @@ export async function listBackupsFromObjectStore(
             annotations?: Record<string, string>;
             ownerReferences?: ReadonlyArray<{ kind?: string }>;
           };
+          spec?: { cluster?: { name?: string } };
           status?: { backupId?: string };
         }>;
       };
@@ -435,6 +436,9 @@ export async function listBackupsFromObjectStore(
       crByBackupId = new Map(items.flatMap((item) => {
         const backupId = item.status?.backupId;
         if (!backupId) return [];
+        // Skip CRs for clusters this catalogue isn't covering.
+        const clusterName = item.spec?.cluster?.name;
+        if (clusterName && !clusterNameSet.has(clusterName)) return [];
         const labels = item.metadata?.labels ?? {};
         const annotations = item.metadata?.annotations ?? {};
         // Prefer annotation (no charset/length restriction); fall back
