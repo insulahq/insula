@@ -29,7 +29,6 @@ import { KeyRound, RotateCw } from 'lucide-react';
 import BackupClassPage from './BackupClassPage';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
-import SystemDatabasesTab from '@/components/system-backup/SystemDatabasesTab';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
 
@@ -68,7 +67,6 @@ export default function SystemBackupsPage() {
             </div>
             {/* CNPG ScheduledBackup health (rolled-up cluster-side state). */}
             <CnpgBackupHealthCard />
-            <SystemDatabasesTab />
             <WalArchiveTab />
             <div className="rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
               Looking for the cluster-wide Secrets bundle? It moved to{' '}
