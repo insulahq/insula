@@ -16,19 +16,16 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { systemBackupRuns, auditLogs, backupConfigurations, systemPgDumpSchedules } from '../../db/schema.js';
+import { systemBackupRuns, auditLogs, backupConfigurations } from '../../db/schema.js';
 import { eq, desc, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   pgDumpRequestSchema,
   pgDumpListQuerySchema,
-  pgDumpScheduleUpsertSchema,
   type PgDumpResponse,
   type SystemBackupRun,
-  type PgDumpSchedule,
 } from '@k8s-hosting/api-contracts';
-import { nextFireAt } from './pg-dump-scheduler.js';
 import { createPgDumpJob } from './pg-dump-job-spawner.js';
 import { resolveSystemStore, SYSTEM_BACKUP_CLIENT_ID, resolveCnpgCredentials } from './pg-dump-orchestrator.js';
 import { getPlatformApiImage } from '../postgres-restore/service.js';
@@ -75,9 +72,14 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     if (!target) {
       throw new ApiError('SYSTEM_BACKUP_TARGET_NOT_FOUND', 'backup target not found', 404);
     }
-    if (target.active === false) {
-      throw new ApiError('SYSTEM_BACKUP_TARGET_INACTIVE',
-        'backup target is not active — activate it via /admin/backup-configs/:id/activate before triggering a dump',
+    // 2026-05-24: filter on `enabled` (operational on/off) instead of
+    // `active` (legacy at-most-one-active flag used only by the old
+    // Longhorn reconciler). The new Remote Storage Targets flow never
+    // sets `active`, so the previous check 400'd every super_admin
+    // curl invocation on clusters that adopted the shim model.
+    if (!target.enabled) {
+      throw new ApiError('SYSTEM_BACKUP_TARGET_DISABLED',
+        'backup target is not enabled — enable it on /backups/targets before triggering a dump',
         400);
     }
 
@@ -560,138 +562,11 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     return reply.send(proc.stdout);
   });
 
-  // ─── Phase 4b: pg_dump scheduled exports ───────────────────────
-  // GET — list schedules
-  app.get('/system-backup/pg-dump/schedules', {
-    schema: { tags: ['SystemBackup'], summary: 'List pg_dump schedules', security: [{ bearerAuth: [] }] },
-  }, async () => {
-    const rows = await app.db.select().from(systemPgDumpSchedules)
-      .orderBy(systemPgDumpSchedules.sourceNamespace, systemPgDumpSchedules.sourceCluster);
-    const targetIds = [...new Set(rows.map((r) => r.targetConfigId))];
-    const targets = targetIds.length > 0
-      ? await app.db
-        .select({ id: backupConfigurations.id, name: backupConfigurations.name })
-        .from(backupConfigurations)
-        .where(inArray(backupConfigurations.id, targetIds))
-      : [];
-    const nameById = new Map(targets.map((t) => [t.id, t.name] as const));
-    const out: PgDumpSchedule[] = rows.map((r) => ({
-      id: r.id,
-      sourceNamespace: r.sourceNamespace,
-      sourceCluster: r.sourceCluster,
-      sourceDatabase: r.sourceDatabase,
-      targetConfigId: r.targetConfigId,
-      targetName: nameById.get(r.targetConfigId) ?? null,
-      cronSchedule: r.cronSchedule,
-      retentionDays: r.retentionDays,
-      enabled: r.enabled,
-      lastRunAt: r.lastRunAt?.toISOString() ?? null,
-      lastRunId: r.lastRunId,
-      nextRunAt: r.nextRunAt?.toISOString() ?? null,
-    }));
-    return success(out);
-  });
+  // Schedule routes removed 2026-05-24. Scheduled pg_dump was a duplicate
+  // pathway alongside barman-cloud — barman now owns day-to-day backups
+  // (PITR-capable). pg_dump survives as a super_admin-only on-demand tool
+  // for cross-PG-major-version migrations (POST above).
 
-  // POST — upsert (one schedule per ns/cluster/db tuple)
-  app.post('/system-backup/pg-dump/schedules', {
-    schema: { tags: ['SystemBackup'], summary: 'Create/update pg_dump schedule', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const parsed = pgDumpScheduleUpsertSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      throw new ApiError('SYSTEM_BACKUP_BAD_REQUEST', parsed.error.message, 400);
-    }
-    const userId = (request.user as { sub?: string } | undefined)?.sub;
-    if (typeof userId !== 'string' || userId.length === 0) {
-      throw new ApiError('UNAUTHENTICATED', 'no user id in token', 401);
-    }
-    // Validate target exists + active.
-    const cfgRows = await app.db
-      .select({ id: backupConfigurations.id, active: backupConfigurations.active })
-      .from(backupConfigurations)
-      .where(eq(backupConfigurations.id, parsed.data.targetConfigId))
-      .limit(1);
-    if (!cfgRows[0]) throw new ApiError('SYSTEM_BACKUP_TARGET_NOT_FOUND', 'target not found', 404);
-    if (!cfgRows[0].active) throw new ApiError('SYSTEM_BACKUP_TARGET_INACTIVE', 'target is not active', 400);
-
-    const next = nextFireAt(parsed.data.cronSchedule, new Date());
-    const id = randomUUID();
-    await app.db.transaction(async (tx) => {
-      await tx.insert(systemPgDumpSchedules).values({
-        id,
-        sourceNamespace: parsed.data.sourceNamespace,
-        sourceCluster: parsed.data.sourceCluster,
-        sourceDatabase: parsed.data.sourceDatabase,
-        targetConfigId: parsed.data.targetConfigId,
-        cronSchedule: parsed.data.cronSchedule,
-        retentionDays: parsed.data.retentionDays,
-        enabled: parsed.data.enabled,
-        nextRunAt: next,
-        operatorUserId: userId,
-      }).onConflictDoUpdate({
-        target: [
-          systemPgDumpSchedules.sourceNamespace,
-          systemPgDumpSchedules.sourceCluster,
-          systemPgDumpSchedules.sourceDatabase,
-        ],
-        set: {
-          targetConfigId: parsed.data.targetConfigId,
-          cronSchedule: parsed.data.cronSchedule,
-          retentionDays: parsed.data.retentionDays,
-          enabled: parsed.data.enabled,
-          nextRunAt: next,
-          operatorUserId: userId,
-          updatedAt: new Date(),
-        },
-      });
-      await tx.insert(auditLogs).values({
-        id: randomUUID(),
-        actionType: 'system_backup_pg_dump_schedule_upsert',
-        resourceType: 'pg_dump_schedule',
-        resourceId: `${parsed.data.sourceNamespace}/${parsed.data.sourceCluster}/${parsed.data.sourceDatabase}`,
-        actorId: userId,
-        actorType: 'user',
-        httpMethod: 'POST',
-        httpPath: '/api/v1/system-backup/pg-dump/schedules',
-        httpStatus: 200,
-        changes: parsed.data as unknown as Record<string, unknown>,
-        ipAddress: tenantIp(request) ?? null,
-      });
-    });
-    return success({ ok: true, id, nextRunAt: next.toISOString() });
-  });
-
-  // DELETE — remove schedule
-  app.delete('/system-backup/pg-dump/schedules/:id', {
-    schema: { tags: ['SystemBackup'], summary: 'Delete pg_dump schedule', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const { id } = request.params as { id: string };
-    const userId = (request.user as { sub?: string } | undefined)?.sub;
-    if (typeof userId !== 'string' || userId.length === 0) {
-      throw new ApiError('UNAUTHENTICATED', 'no user id in token', 401);
-    }
-    await app.db.transaction(async (tx) => {
-      const deleted = await tx.delete(systemPgDumpSchedules)
-        .where(eq(systemPgDumpSchedules.id, id))
-        .returning({ id: systemPgDumpSchedules.id });
-      if (deleted.length === 0) {
-        throw new ApiError('SYSTEM_BACKUP_SCHEDULE_NOT_FOUND', 'schedule not found', 404);
-      }
-      await tx.insert(auditLogs).values({
-        id: randomUUID(),
-        actionType: 'system_backup_pg_dump_schedule_delete',
-        resourceType: 'pg_dump_schedule',
-        resourceId: id,
-        actorId: userId,
-        actorType: 'user',
-        httpMethod: 'DELETE',
-        httpPath: `/api/v1/system-backup/pg-dump/schedules/${id}`,
-        httpStatus: 200,
-        changes: null,
-        ipAddress: tenantIp(request) ?? null,
-      });
-    });
-    return success({ ok: true });
-  });
 }
 
 const RUN_COLUMNS = {
