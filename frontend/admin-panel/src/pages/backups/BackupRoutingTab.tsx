@@ -31,6 +31,7 @@ import {
 } from '@/hooks/use-backup-rclone-shim';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import ScheduleCard from '@/components/backups/ScheduleCard';
+import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
 
 interface Props {
   readonly shimClass: BackupShimClass;
@@ -181,6 +182,28 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
               />
             );
           })}
+        </section>
+      )}
+
+      {/* ── WAL Streaming (system class only) ──────────────────────
+          Phase 4 (2026-05-24): WAL Archive configuration moved from
+          the Backups tab. It's a target+cadence decision (which S3
+          gets the WAL stream, how often a base backup runs) so it
+          belongs alongside Targets + Schedules. Only the `system`
+          class hosts a CNPG cluster, so we render it conditionally. */}
+      {shimClass === 'system' && (
+        <section
+          className="space-y-3"
+          data-testid="routing-tab-wal-streaming"
+          aria-label="WAL Streaming"
+          id="wal-streaming"
+        >
+          <header className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              WAL Streaming
+            </h2>
+          </header>
+          <WalArchiveTab />
         </section>
       )}
 
