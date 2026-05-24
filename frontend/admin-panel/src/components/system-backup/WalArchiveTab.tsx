@@ -272,6 +272,13 @@ function ScheduledBackupsSection({
   const [cron, setCron] = useState<string>(
     cluster.state?.baseBackupSchedule ?? '0 0 3 * * *',
   );
+  // Phase 7c v2 (2026-05-24) — explicit "user picked Custom" state so the
+  // text input mounts even when `cron` happens to match a preset value.
+  // Without this, selecting "Custom 6-field cron…" did nothing because
+  // the select would snap back to the preset on the next render.
+  // Browser-walkthrough caught the bug.
+  const initialIsCustom = !CRON_PRESETS.find((p) => p.value === (cluster.state?.baseBackupSchedule ?? '0 0 3 * * *'));
+  const [customMode, setCustomMode] = useState<boolean>(initialIsCustom);
   const [cronError, setCronError] = useState<string | null>(null);
 
   const savedCron = cluster.state?.baseBackupSchedule ?? null;
@@ -313,10 +320,15 @@ function ScheduledBackupsSection({
       <div className="mt-3 grid grid-cols-1 gap-3 text-xs">
         <Setting label="Cadence">
           <select
-            value={CRON_PRESETS.find((p) => p.value === cron) ? cron : 'CUSTOM'}
+            value={customMode ? 'CUSTOM' : (CRON_PRESETS.find((p) => p.value === cron) ? cron : 'CUSTOM')}
             onChange={(e) => {
               const v = e.target.value;
-              if (v !== 'CUSTOM') {
+              if (v === 'CUSTOM') {
+                setCustomMode(true);
+                // Keep current cron value as a starting template; user
+                // edits it in the text input below.
+              } else {
+                setCustomMode(false);
                 setCron(v);
                 setCronError(null);
               }
@@ -330,7 +342,7 @@ function ScheduledBackupsSection({
             ))}
             <option value="CUSTOM">Custom 6-field cron…</option>
           </select>
-          {!CRON_PRESETS.find((p) => p.value === cron) && (
+          {(customMode || !CRON_PRESETS.find((p) => p.value === cron)) && (
             <>
               <input
                 type="text"
