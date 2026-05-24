@@ -143,17 +143,21 @@ function ClusterRow({
             <span className="italic">never</span>
           )}
         </div>
-        {/* Phase 2 (2026-05-24) metric: last WAL archive datetime.
-            Previously surfaced inline as a "WAL streaming: last
-            archived X ago" sentence; now a compact metric cell. */}
-        <div data-testid={`cnpg-last-wal-${c.namespace}-${c.clusterName}`}>
-          <span className="text-gray-500 dark:text-gray-400">Last WAL write:</span>{' '}
+        {/* Phase 7c (2026-05-24): relabeled. The value is
+            `cluster.status.conditions[ContinuousArchiving].lastTransitionTime`
+            — the moment the archiver TRANSITIONED to healthy state,
+            not the wall-clock of the last individual WAL segment write.
+            "Last WAL write" was misleading: an idle-but-healthy archive
+            could show "22h ago" simply because it transitioned then.
+            "Archiving since" is the honest semantic. */}
+        <div data-testid={`cnpg-archiving-since-${c.namespace}-${c.clusterName}`}>
+          <span className="text-gray-500 dark:text-gray-400">Archiving since:</span>{' '}
           {wal?.status?.lastArchivedWalTime ? (
             <span title={wal.status.lastArchivedWalTime}>
               {formatAgoFromIso(wal.status.lastArchivedWalTime)} ago
             </span>
           ) : (
-            <span className="italic">never</span>
+            <span className="italic">not archiving</span>
           )}
         </div>
         {/* Phase 2 (2026-05-24) metric: total backup-size disk usage —

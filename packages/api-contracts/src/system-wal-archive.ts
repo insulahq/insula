@@ -61,6 +61,42 @@ export const walArchiveDisableRequestSchema = z.object({
 });
 export type WalArchiveDisableRequest = z.infer<typeof walArchiveDisableRequestSchema>;
 
+// ── Phase 7a (2026-05-24): split WAL streaming vs Scheduled Backups ─────
+//
+// Operators can now enable/disable each independently. Both routes
+// share the cluster identifier; the per-feature settings differ. Both
+// use .strict() to reject unknown fields and surface the dropped
+// pre-Phase-6 targetConfigId / baseBackupRetentionDays explicitly.
+
+export const walStreamingEnableRequestSchema = z.object({
+  clusterNamespace: dnsLabelSchema,
+  clusterName: dnsLabelSchema,
+  archiveTimeout: archiveTimeoutSchema.optional(),
+  /** Retention days for the ObjectStore (governs WAL + base backups
+   *  together — barman-cloud has a single retentionPolicy). */
+  retentionDays: z.number().int().min(1).max(3650).default(30),
+}).strict();
+export type WalStreamingEnableRequest = z.infer<typeof walStreamingEnableRequestSchema>;
+
+export const walStreamingDisableRequestSchema = z.object({
+  clusterNamespace: dnsLabelSchema,
+  clusterName: dnsLabelSchema,
+}).strict();
+export type WalStreamingDisableRequest = z.infer<typeof walStreamingDisableRequestSchema>;
+
+export const scheduledBackupsEnableRequestSchema = z.object({
+  clusterNamespace: dnsLabelSchema,
+  clusterName: dnsLabelSchema,
+  cron: baseBackupScheduleSchema,
+}).strict();
+export type ScheduledBackupsEnableRequest = z.infer<typeof scheduledBackupsEnableRequestSchema>;
+
+export const scheduledBackupsDisableRequestSchema = z.object({
+  clusterNamespace: dnsLabelSchema,
+  clusterName: dnsLabelSchema,
+}).strict();
+export type ScheduledBackupsDisableRequest = z.infer<typeof scheduledBackupsDisableRequestSchema>;
+
 // One entry per cluster in the GET /clusters list. Combines the DB
 // state row (operator intent) with a snapshot of the CNPG CR's
 // `.status` (cluster-reported truth: last archived WAL, archiver
