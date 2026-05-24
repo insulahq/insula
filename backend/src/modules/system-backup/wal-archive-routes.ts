@@ -150,13 +150,11 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         k8s: createK8sClients(),
         clusterNamespace: parsed.data.clusterNamespace,
         clusterName: parsed.data.clusterName,
-        targetConfigId: parsed.data.targetConfigId,
         retentionDays: parsed.data.retentionDays,
         operatorUserId: userId,
         operatorIp: tenantIp(request),
         archiveTimeout: parsed.data.archiveTimeout,
         baseBackupSchedule: parsed.data.baseBackupSchedule ?? null,
-        baseBackupRetentionDays: parsed.data.baseBackupRetentionDays,
       });
       return success<WalArchiveActionResponse>({
         clusterNamespace: parsed.data.clusterNamespace,

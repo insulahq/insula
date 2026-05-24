@@ -103,6 +103,13 @@ function makeDbStub(opts: {
   };
   // Pre-existing systemWalArchiveState row to simulate a re-enable.
   priorState?: { targetConfigId: string; destinationPath: string; retentionDays: number };
+  /**
+   * Phase 6 (2026-05-24): when true, loadSystemShimBinding returns no
+   * row → enableWalArchive should reject with "No SYSTEM backup target
+   * bound". Tests that don't set this get a default binding derived
+   * from activeS3Target.
+   */
+  noShimBinding?: boolean;
 } = {}): {
   db: Parameters<typeof enableWalArchive>[0]['db'];
   inserts: { values: unknown }[];
@@ -124,11 +131,34 @@ function makeDbStub(opts: {
   // methods at each step. We don't need the table identity here —
   // assertions check that *some* row was inserted/deleted, not which
   // table got it. Keeps the stub simple + decoupled from drizzle internals.
+  //
+  // Phase 6 (2026-05-24): loadSystemShimBinding uses a leftJoin chain
+  // (.from().innerJoin().where().orderBy().limit). We stub both the
+  // direct .from().where().limit() path AND the joined path with the
+  // SAME activeS3Target row so the binding always resolves. The
+  // `enabled` field on the shim binding mirrors `active` from the
+  // legacy row so the "rejects disabled binding" test paths still work.
+  const noShimBinding = opts.noShimBinding === true;
+  const shimBindingRow = noShimBinding
+    ? null
+    : {
+      id: activeS3Target.id,
+      name: activeS3Target.name,
+      storageType: activeS3Target.storageType,
+      enabled: activeS3Target.active ? 1 : 0,
+    };
   const db = {
     select: () => ({
       from: () => ({
         where: () => ({
           limit: async () => [activeS3Target],
+        }),
+        innerJoin: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => shimBindingRow ? [shimBindingRow] : [],
+            }),
+          }),
         }),
       }),
     }),
@@ -230,7 +260,8 @@ describe('enableWalArchive — plugin model', () => {
       baseBackupRetentionDays: 30,
     });
 
-    expect(result.destinationPath).toBe('s3://staging-bucket/platform/wal-archive/platform-system-db');
+    // Phase 6 (2026-05-24): destinationPath uses the shim bucket scheme.
+    expect(result.destinationPath).toBe('s3://system/wal-archive/platform-system-db');
 
     // 1. Cluster READ (readClusterCR)
     const clusterRead = calls.find((c) => c.verb === 'get' && c.plural === 'clusters');
@@ -241,11 +272,16 @@ describe('enableWalArchive — plugin model', () => {
     expect(objectStoreCreate).toBeDefined();
     expect(objectStoreCreate?.group).toBe(BARMAN_GROUP);
     expect(objectStoreCreate?.version).toBe(BARMAN_VERSION);
-    const osBody = objectStoreCreate?.body as { metadata: { name: string; namespace: string }; spec: { configuration: { destinationPath: string; endpointURL?: string; s3Credentials: unknown; wal: unknown; data: unknown }; retentionPolicy: string } };
+    const osBody = objectStoreCreate?.body as { metadata: { name: string; namespace: string }; spec: { configuration: { destinationPath: string; endpointURL?: string; s3Credentials: { accessKeyId: { name: string; key: string }; secretAccessKey: { name: string; key: string } }; wal: unknown; data: unknown }; retentionPolicy: string } };
     expect(osBody.metadata.name).toBe('system-db-system-store');
     expect(osBody.metadata.namespace).toBe('platform');
-    expect(osBody.spec.configuration.destinationPath).toBe('s3://staging-bucket/platform/wal-archive/platform-system-db');
-    expect(osBody.spec.configuration.endpointURL).toBe('https://s3.example.com');
+    expect(osBody.spec.configuration.destinationPath).toBe('s3://system/wal-archive/platform-system-db');
+    // Phase 6: endpoint is ALWAYS the shim (not upstream), and creds are
+    // the shim-derived HKDF keys (not the operator's S3 creds).
+    expect(osBody.spec.configuration.endpointURL).toBe('http://backup-rclone-shim.platform.svc.cluster.local:9000');
+    expect(osBody.spec.configuration.s3Credentials.accessKeyId.name).toBe('backup-rclone-shim-creds');
+    expect(osBody.spec.configuration.s3Credentials.accessKeyId.key).toBe('access_key');
+    expect(osBody.spec.configuration.s3Credentials.secretAccessKey.key).toBe('secret_key');
     expect(osBody.spec.retentionPolicy).toBe('30d');
 
     // 3. Cluster PATCH with spec.plugins[]
@@ -315,8 +351,12 @@ describe('enableWalArchive — plugin model', () => {
     expect(calls.find((c) => c.verb === 'create' && c.plural === 'objectstores')).toBeDefined();
   });
 
-  it('rejects non-S3 storage targets', async () => {
-    const { k8s } = makeK8sStub({});
+  // Phase 6 (2026-05-24): non-S3 upstream targets are now SUPPORTED
+  // because barman-cloud writes always go through the shim's local S3
+  // endpoint. Test the positive case: an SFTP shim binding should
+  // still produce a valid ObjectStore (pointing at the shim).
+  it('accepts non-S3 upstream targets (writes via shim)', async () => {
+    const { k8s, calls } = makeK8sStub({});
     const { db } = makeDbStub({
       activeS3Target: {
         id: 'cfg-1', storageType: 'sftp', s3Bucket: null, s3Prefix: null,
@@ -324,12 +364,18 @@ describe('enableWalArchive — plugin model', () => {
       },
     });
 
-    await expect(enableWalArchive({
+    const result = await enableWalArchive({
       db, k8s,
-      clusterNamespace: 'mail', clusterName: 'mail-db',
-      targetConfigId: 'cfg-1', retentionDays: 14,
+      clusterNamespace: 'platform', clusterName: 'system-db',
+      retentionDays: 14,
       operatorUserId: 'admin', operatorIp: null,
-    })).rejects.toThrow(/s3/i);
+    });
+
+    expect(result.destinationPath).toBe('s3://system/wal-archive/platform-system-db');
+    const osCreate = calls.find((c) => c.verb === 'create' && c.plural === 'objectstores');
+    const osBody = osCreate?.body as { spec: { configuration: { endpointURL: string } } };
+    // Regardless of upstream type, endpoint points at the SHIM.
+    expect(osBody.spec.configuration.endpointURL).toBe('http://backup-rclone-shim.platform.svc.cluster.local:9000');
   });
 
   it('preserves OTHER plugins and Postgres parameters across enable (read-merge-write)', async () => {
@@ -370,7 +416,12 @@ describe('enableWalArchive — plugin model', () => {
     expect(body.spec.postgresql?.parameters.archive_timeout).toBe('5min');
   });
 
-  it('rejects inactive backup configurations', async () => {
+  // Phase 6: rejection happens when the SHIM BINDING's target is
+  // disabled (not the operator-supplied targetConfigId which no
+  // longer exists). The mock's shimBindingRow.enabled mirrors
+  // activeS3Target.active, so setting active: false makes the
+  // binding row come back with enabled: 0.
+  it('rejects when SYSTEM shim binding target is disabled', async () => {
     const { k8s } = makeK8sStub({});
     const { db } = makeDbStub({
       activeS3Target: {
@@ -382,9 +433,20 @@ describe('enableWalArchive — plugin model', () => {
     await expect(enableWalArchive({
       db, k8s,
       clusterNamespace: 'platform', clusterName: 'system-db',
-      targetConfigId: 'cfg-1', retentionDays: 30,
+      retentionDays: 30,
       operatorUserId: 'admin', operatorIp: null,
-    })).rejects.toThrow(/not active/);
+    })).rejects.toThrow(/disabled/);
+  });
+
+  it('rejects when no SYSTEM shim binding exists', async () => {
+    const { k8s } = makeK8sStub({});
+    const { db } = makeDbStub({ noShimBinding: true });
+    await expect(enableWalArchive({
+      db, k8s,
+      clusterNamespace: 'platform', clusterName: 'system-db',
+      retentionDays: 30,
+      operatorUserId: 'admin', operatorIp: null,
+    })).rejects.toThrow(/No SYSTEM backup target bound/);
   });
 
   it('takes pg_advisory_xact_lock + records previous state in audit changes (re-enable)', async () => {
