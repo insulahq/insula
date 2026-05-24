@@ -22,6 +22,7 @@
  *                  schedule rows.
  */
 
+import { useState } from 'react';
 import { Cloud, Loader2, Power, PowerOff, AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { BackupShimClass } from '@k8s-hosting/api-contracts';
@@ -32,6 +33,7 @@ import {
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import ScheduleCard from '@/components/backups/ScheduleCard';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
+import PreSwitchConfirmModal from '@/components/backups/PreSwitchConfirmModal';
 
 interface Props {
   readonly shimClass: BackupShimClass;
@@ -68,6 +70,16 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
   const assignments = assignmentsQuery.data?.data?.assignments ?? [];
   const row = assignments.find((a) => a.className === shimClass);
   const bound = !!row?.targetId;
+
+  // Phase 5 (2026-05-24): pre-switch confirm modal state. Set when
+  // the operator picks a new target OR clicks unbind. When set,
+  // render PreSwitchConfirmModal which loads the preview + waits for
+  // operator Confirm. `targetId: null` is the unbind case — modal
+  // copy adapts. Modal closes by clearing this state.
+  const [pendingSwitch, setPendingSwitch] = useState<
+    | null
+    | { targetId: string | null; targetLabel: string }
+  >(null);
 
   const allConfigs = configsQuery.data?.data ?? [];
   // `c.enabled` is typed `number` (legacy 0/1) but a future API
@@ -117,15 +129,26 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
               shimClass={shimClass}
               currentTargetId={row?.targetId ?? null}
               enabledConfigs={enabledConfigs}
-              onPick={(targetId) => put.mutate({ className: shimClass, input: { targetId, force: false } })}
+              onPick={(targetId) => {
+                // Phase 5: open the pre-switch confirm modal instead of
+                // firing the PUT immediately. Operator sees what will
+                // be paused (schedules + WAL) and confirms before the
+                // switch happens.
+                const tgt = enabledConfigs.find((c) => c.id === targetId);
+                setPendingSwitch({
+                  targetId,
+                  targetLabel: tgt ? `${tgt.name} (${tgt.storageType.toUpperCase()})` : targetId,
+                });
+              }}
               onUnbind={() => {
-                if (
-                  window.confirm(
-                    `Unbind ${shimClass.toUpperCase()}? In-flight backups will be drained (up to ${row?.drainTimeoutSeconds ?? 0}s) before the shim reconciles.`,
-                  )
-                ) {
-                  put.mutate({ className: shimClass, input: { targetId: null, force: false } });
-                }
+                // Phase 5 (2026-05-24): route unbind through the same
+                // pre-switch modal as switch — operator sees the full
+                // list of schedules + WAL that pause as part of the
+                // unbind. Modal copy adapts to the null-target case.
+                setPendingSwitch({
+                  targetId: null,
+                  targetLabel: '(unbind — no target)',
+                });
               }}
               isPending={put.isPending}
             />
@@ -144,7 +167,13 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
                   shimClass={shimClass}
                   currentTargetId={null}
                   enabledConfigs={enabledConfigs}
-                  onPick={(targetId) => put.mutate({ className: shimClass, input: { targetId, force: false } })}
+                  onPick={(targetId) => {
+                    const tgt = enabledConfigs.find((c) => c.id === targetId);
+                    setPendingSwitch({
+                      targetId,
+                      targetLabel: tgt ? `${tgt.name} (${tgt.storageType.toUpperCase()})` : targetId,
+                    });
+                  }}
                   isPending={put.isPending}
                 />
               </div>
@@ -220,6 +249,18 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
           inline.
         </p>
       </section>
+
+      {/* Phase 5 (2026-05-24): pre-switch confirm modal — opens when the
+          operator picks a new target in TargetSwitcher; on confirm calls
+          the atomic switch-with-pause endpoint. */}
+      {pendingSwitch && (
+        <PreSwitchConfirmModal
+          className={shimClass}
+          newTargetId={pendingSwitch.targetId}
+          newTargetLabel={pendingSwitch.targetLabel}
+          onClose={() => setPendingSwitch(null)}
+        />
+      )}
     </div>
   );
 }
