@@ -256,6 +256,78 @@ else
   fail "wal-archive/clusters missing system-db"
 fi
 
+# ─── Phase 7a — split streaming vs schedule endpoints ───────────────
+echo '═══ Phase 7a — Split streaming vs schedule endpoints alive ═══'
+# Empty body → 400 from .strict() schema.
+api POST '/api/v1/system-backup/wal-archive/streaming/enable' '' SP_S_RESP SP_S_CODE
+if [[ "$SP_S_CODE" == "400" ]]; then
+  pass "streaming/enable route alive + validates body (400 on empty body)"
+else
+  fail "streaming/enable returned $SP_S_CODE on empty body (expected 400)"
+fi
+api POST '/api/v1/system-backup/wal-archive/streaming/disable' '' SD_S_RESP SD_S_CODE
+if [[ "$SD_S_CODE" == "400" ]]; then
+  pass "streaming/disable route alive + validates body (400 on empty body)"
+else
+  fail "streaming/disable returned $SD_S_CODE on empty body (expected 400)"
+fi
+api POST '/api/v1/system-backup/wal-archive/schedule/enable' '' SCH_E_RESP SCH_E_CODE
+if [[ "$SCH_E_CODE" == "400" ]]; then
+  pass "schedule/enable route alive + validates body (400 on empty body)"
+else
+  fail "schedule/enable returned $SCH_E_CODE on empty body (expected 400)"
+fi
+api POST '/api/v1/system-backup/wal-archive/schedule/disable' '' SCH_D_RESP SCH_D_CODE
+if [[ "$SCH_D_CODE" == "400" ]]; then
+  pass "schedule/disable route alive + validates body (400 on empty body)"
+else
+  fail "schedule/disable returned $SCH_D_CODE on empty body (expected 400)"
+fi
+# .strict() schema rejects unknown fields.
+api POST '/api/v1/system-backup/wal-archive/streaming/enable' \
+  '{"clusterNamespace":"platform","clusterName":"system-db","retentionDays":7,"foo":"bar"}' \
+  STR_STR_RESP STR_STR_CODE
+if [[ "$STR_STR_CODE" == "400" ]]; then
+  pass "streaming/enable .strict() rejects unknown field"
+else
+  fail "streaming/enable returned $STR_STR_CODE on unknown field (expected 400)"
+fi
+# Bad cron on schedule/enable → 400 from contract regex.
+api POST '/api/v1/system-backup/wal-archive/schedule/enable' \
+  '{"clusterNamespace":"platform","clusterName":"system-db","cron":"not a cron"}' \
+  SCH_BAD_RESP SCH_BAD_CODE
+if [[ "$SCH_BAD_CODE" == "400" ]]; then
+  pass "schedule/enable rejects bad cron (400 from contract regex)"
+else
+  fail "schedule/enable returned $SCH_BAD_CODE on bad cron (expected 400)"
+fi
+
+# ─── Phase 7b — Backup Now accepts description (annotation) ─────────
+echo '═══ Phase 7b — cnpg-backup-now accepts description ═══'
+api POST '/api/v1/admin/cnpg-backup-now' \
+  '{"namespace":"platform","clusterName":"system-db","description":"e2e test: pre-upgrade snapshot"}' \
+  BN_DESC_RESP BN_DESC_CODE
+if [[ "$BN_DESC_CODE" == "200" || "$BN_DESC_CODE" == "201" ]]; then
+  DESCNAME=$(printf '%s' "$BN_DESC_RESP" | sed -nE 's/.*"backupName":"(on-demand-[0-9]+)".*/\1/p' | head -1)
+  if [[ -n "$DESCNAME" ]]; then
+    pass "cnpg-backup-now created CR with natural-language description: $DESCNAME"
+  else
+    fail "cnpg-backup-now returned $BN_DESC_CODE but no backupName: $(printf '%s' "$BN_DESC_RESP" | head -c 200)"
+  fi
+else
+  fail "cnpg-backup-now with description returned $BN_DESC_CODE: $(printf '%s' "$BN_DESC_RESP" | head -c 200)"
+fi
+# > 200 chars → 400.
+LONG=$(printf 'x%.0s' {1..201})
+api POST '/api/v1/admin/cnpg-backup-now' \
+  "{\"namespace\":\"platform\",\"clusterName\":\"system-db\",\"description\":\"$LONG\"}" \
+  BN_LONG_RESP BN_LONG_CODE
+if [[ "$BN_LONG_CODE" == "400" ]]; then
+  pass "cnpg-backup-now rejects >200-char description (400)"
+else
+  fail "cnpg-backup-now returned $BN_LONG_CODE on >200-char description (expected 400)"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if [[ "$FAILED" -eq 0 ]]; then
