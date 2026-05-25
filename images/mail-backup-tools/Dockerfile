@@ -137,6 +137,13 @@ RUN chmod 755 /usr/local/bin/restore-mailbox.py
 COPY snapshot-upload.sh /usr/local/bin/snapshot-upload.sh
 RUN chmod 755 /usr/local/bin/snapshot-upload.sh
 
+# A3 (2026-05-25): mail-stack-standby-replicate CronJob pulls the latest
+# restic snapshot to a hostPath dir on standby nodes every 5 min. On
+# failover, the standby's local copy is promoted into the new PV
+# (avoids restic-restore latency at takeover time).
+COPY standby-replicate.sh /usr/local/bin/standby-replicate.sh
+RUN chmod 755 /usr/local/bin/standby-replicate.sh
+
 # 2026-05-13: Stalwart-native, app-level archive uploader/downloader.
 # Two modes, dispatched on ARCHIVE_MODE env:
 #   export  — reads /export/export.lz4 (written by the initContainer
