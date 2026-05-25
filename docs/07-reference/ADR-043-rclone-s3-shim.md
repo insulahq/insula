@@ -1,9 +1,42 @@
 # ADR-043: `rclone serve s3` shim — universal backup mediator
 
-**Status**: **ACCEPTED-EXTENDED 2026-05-20** — the shim is adopted as the universal mediator for ALL platform backups, not just postgres + etcd. See [BACKUP_ARCHITECTURE_RFC §13a](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) for topology.
+**Status**: **ACCEPTED-EXTENDED 2026-05-20**, **NFS-AMENDED 2026-05-25** — the shim is adopted as the universal mediator for ALL platform backups, not just postgres + etcd. See [BACKUP_ARCHITECTURE_RFC §13a](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) for topology.
 **Original decision (DEFERRED)**: 2026-05-19
 **Withdrawn (incorrectly)**: 2026-05-19 — based on a false assertion that `cnpg-plugin-pgbackrest` exists
 **Accepted + extended**: 2026-05-20 (corrects the round-5 mistake)
+**Postscript (NFS dropped)**: 2026-05-25 — see "Postscript: NFS support dropped" section below
+
+## Postscript: NFS support dropped (2026-05-25)
+
+**TL;DR**: The `nfs` storage_type was removed from the API contract, DB enum, shim renderer, and bench fixtures. The four code paths now refuse NFS at every layer.
+
+**Why** — when R-X19 (2026-05-21) made the shim DaemonSet fully unprivileged (`runAsUser:65534, drop:[ALL]`, no `CAP_SYS_ADMIN`, no `/dev/fuse`), it eliminated the kernel-mount path that the original ADR designed for NFS. The four downstream consequences:
+
+1. **rclone has no NFS *client* backend.** rclone's `nfs` is a server-side feature; it cannot consume an NFS export.
+2. **The kernel-mount alternative requires `CAP_SYS_ADMIN`.** Re-introducing that capability undoes the R-X19 hardening.
+3. **The `csi-driver-nfs` workaround was never wired.** It would have provisioned a PVC from the export and let the shim mount it as `type=local`, but the platform-api never exposed `local` as a storage_type and the operator UX cost of "deploy a separate CSI driver to support one backend type" was not justified by operator demand.
+4. **The half-shipped state was actively misleading.** Migration 0015 (added 2026-05-22) created the schema, but the API rejected NFS at create-time and the renderer hard-rejected NFS at render-time. Operators who inserted rows via SQL got opaque async `STATE_ERROR` after binding.
+
+**What changed (2026-05-25)** — see `chore(backup-rclone-shim): drop NFS support` commit:
+
+- Migration 0026 drops the four `nfs_*` columns, the `backup_configurations_nfs_required` CHECK, and narrows the `storage_type` enum to `(ssh, s3, cifs)`.
+- `packages/api-contracts/src/backup-rclone-shim.ts` narrows the `targetStorageType` zod enum.
+- `backend/src/modules/backup-rclone-shim/` removes every `case 'nfs':` branch (renderer + service + status + apply-assignment).
+- `backend/src/modules/backup-config/longhorn-reconciler.ts` narrows `clearBackupTarget`'s `kind` parameter.
+- `k8s/overlays/staging/nfs-test-server/` is deleted (the bench harness no longer has an NFS upstream to target).
+- CI guard `scripts/ci-backup-rclone-shim-check.sh` invariant 17 inverted: re-introducing `nfs` anywhere — manifests, contract enum, schema enum — fails the build.
+
+**Operator impact**: zero rows on either staging or testing carried `storage_type='nfs'` at the time of removal (the migration's `DO $$ … RAISE EXCEPTION` guard refuses to run otherwise). Operators with NFS backup destinations can:
+
+- Expose the NFS export through an SMB server (most Linux NAS distros bundle Samba) and add it as a CIFS target, OR
+- Front it with an SFTP daemon and add it as an SSH target, OR
+- Replicate it into an S3-compatible object store (MinIO, etc.) and add it as an S3 target.
+
+If a customer segment with hard NFS-only requirements emerges later, the cleanest re-introduction path is the `csi-driver-nfs` route: add a new `local` storage_type that consumes a pre-bound PVC, document the operator's CSI install step, and keep the shim itself unprivileged. The deprecated design tables below remain as historical context.
+
+---
+
+
 
 ## Why the 2026-05-19 withdrawal was wrong
 
@@ -21,12 +54,14 @@ The original ADR scoped the shim to postgres + etcd (the only S3-locked callers)
 
 ## Supported backend types (operator-selectable per class)
 
+> **2026-05-25 amendment**: NFS removed. See the postscript at the top of this ADR. The row is left in the table below as historical context.
+
 | Backend | rclone module | Pod-side requirements | Notes |
 |---|---|---|---|
 | **S3 / S3-compatible** | `s3` | none | Default for cost-aware operators (AWS S3, Hetzner Object Storage, Backblaze B2, MinIO, etc.) |
 | **SFTP** | `sftp` | none | Hetzner Storage Box, self-hosted; password or SSH-key auth |
-| **CIFS / SMB** | wrap `local` backend; share kernel-mounted via `smb.csi.k8s.io` CSI driver | SMB CSI driver installed (R-X3 provisions it) | Hetzner Storage Box CIFS, Windows shares |
-| **NFS** | wrap `local` backend; share kernel-mounted via k8s built-in `volumes[].nfs` | none for NFSv3; `csi.nfs.k8s.io` for NFSv4 features | Standard NFSv4 preferred; no Kerberos in v1 |
+| **CIFS / SMB** | `smb` (native rclone client, since R-X19) | none | Hetzner Storage Box CIFS, Windows shares |
+| **~~NFS~~** | ~~wrap `local` backend; share kernel-mounted via k8s built-in `volumes[].nfs`~~ | ~~none for NFSv3; `csi.nfs.k8s.io` for NFSv4 features~~ | **REMOVED 2026-05-25 (mig 0026) — see postscript** |
 | **WebDAV** | `webdav` | none | Optional later add — handled by rclone with no platform-api changes |
 | **GCS / Azure / Box / Dropbox / B2 / etc.** | rclone native | none | Optional later add |
 

@@ -26,9 +26,10 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import type { Database } from '../../../db/index.js';
 import type { BackupStore, BundleHandle, ArtifactRef } from '../../tenant-bundles/bundle-store.js';
-import { execConfigTablesItem } from './config-tables.js';
+import { execConfigTablesItem, ALLOWED_TABLE_TO_SQL } from './config-tables.js';
 import { execDeploymentsByIdItem } from './deployments-by-id.js';
 import { execDomainsByIdItem } from './domains-by-id.js';
+import { CONFIG_DUMP_TABLES } from '../../tenant-bundles/components/config.js';
 
 const FIXTURE_TENANT_ID = '4ec7436d-6159-4bf0-9282-d7e4cc19410b';
 const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-000000000099';
@@ -112,6 +113,16 @@ function makeFixtureDb(): Database {
       id        VARCHAR(36) PRIMARY KEY,
       hostname  VARCHAR(255) NOT NULL,
       tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id)
+    );
+    CREATE TABLE tenant_certificates (
+      id                            VARCHAR(36) PRIMARY KEY,
+      tenant_id                     VARCHAR(36) NOT NULL REFERENCES tenants(id),
+      provider_id                   VARCHAR(36) NOT NULL,
+      serial_hex                    VARCHAR(64) NOT NULL,
+      cert_pem_encrypted            TEXT        NOT NULL,
+      cert_fingerprint_sha256       VARCHAR(64) NOT NULL,
+      subject_cn                    VARCHAR(255) NOT NULL,
+      subject_full                  VARCHAR(500) NOT NULL
     );
     CREATE TABLE restore_items (
       id                 VARCHAR(36) PRIMARY KEY,
@@ -249,6 +260,51 @@ describe('in-process restore executors', () => {
       item: { id: 'item-1', restoreJobId: RESTORE_JOB_ID, bundleId: BUNDLE_ID, type: 'domains-by-id', selector: { kind: 'ids', domainIds: ['dom-missing'] } } as unknown as Parameters<typeof execDomainsByIdItem>[0]['item'],
       store: makeStoreWithDump(dump),
     })).rejects.toThrow(/dom-missing/);
+  });
+
+  it('config-tables: every CONFIG_DUMP_TABLES entry is in the restore allow-list', () => {
+    // Regression for the tenantCertificates gap: a table dumped into a
+    // bundle but missing from ALLOWED_TABLE_TO_SQL is rejected at
+    // restore-time with "table 'X' is not in the restore allow-list".
+    // The CI guard `scripts/ci-config-dump-restore-parity.sh` catches
+    // this at build time; this test also catches it inside `npm test`.
+    const missing = CONFIG_DUMP_TABLES.filter((t) => !ALLOWED_TABLE_TO_SQL[t]);
+    expect(missing).toEqual([]);
+  });
+
+  it('config-tables: restores tenantCertificates rows from a bundle', async () => {
+    // Regression for the tenantCertificates restore gap. The bundle
+    // already dumped this table (CONFIG_DUMP_TABLES includes it) but
+    // the restore allow-list was missing it, so a real operator
+    // hitting Restore would get a 400 here. This test exercises the
+    // round-trip end-to-end through execConfigTablesItem.
+    const dump = {
+      schemaVersion: 1,
+      tenantId: FIXTURE_TENANT_ID,
+      tables: {
+        tenantCertificates: [
+          {
+            id: 'cert-1',
+            tenant_id: FIXTURE_TENANT_ID,
+            provider_id: 'prov-1',
+            serial_hex: 'aabbcc',
+            cert_pem_encrypted: 'enc-blob',
+            cert_fingerprint_sha256: 'f'.repeat(64),
+            subject_cn: 'alice@tenant.test',
+            subject_full: 'CN=alice@tenant.test,O=Tenant',
+          },
+        ],
+      },
+    };
+    await execConfigTablesItem({
+      app: fakeApp(db),
+      item: { id: 'item-1', restoreJobId: RESTORE_JOB_ID, bundleId: BUNDLE_ID, type: 'config-tables', selector: { kind: 'tables', tables: ['tenantCertificates'] } } as unknown as Parameters<typeof execConfigTablesItem>[0]['item'],
+      store: makeStoreWithDump(dump),
+    });
+    const r = await db.execute({ queryChunks: [{ value: ['SELECT id, subject_cn FROM tenant_certificates ORDER BY id'] }] } as unknown as Parameters<Database['execute']>[0]);
+    expect((r as { rows: unknown[] }).rows).toEqual([
+      { id: 'cert-1', subject_cn: 'alice@tenant.test' },
+    ]);
   });
 
   it('idempotent: running deployments-by-id twice yields the same final state', async () => {
