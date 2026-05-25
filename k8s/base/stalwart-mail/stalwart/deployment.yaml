@@ -223,16 +223,23 @@ spec:
                 echo "restore-state: standby-data copy failed — falling through to restic"
               fi
               if [ -z "$$RESTIC_REPOSITORY" ]; then
-                echo "restore-state: RESTIC_REPOSITORY not set — fresh start"
+                echo "RESTORE-STATE-WARNING: RESTIC_REPOSITORY not set — Stalwart will FRESH-START with no data. Operator action required."
+                echo "$$(date -Iseconds) reason=no-restic" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
               if [ "$$ALLOW_RESTORE" != "true" ]; then
-                echo "restore-state: allow-restore annotation not set — fresh start (set mail.platform/allow-restore: \"true\" on the Deployment to enable)"
+                echo "RESTORE-STATE-WARNING: allow-restore annotation not set — Stalwart will FRESH-START with no data. Set mail.platform/allow-restore: \"true\" on the Deployment to enable restic restore."
+                mkdir -p /var/lib/stalwart/data
+                echo "$$(date -Iseconds) reason=allow-restore-not-set" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
               echo "restore-state: empty DataStore + repo configured + allow-restore=true — restoring latest snapshot"
               mkdir -p /var/lib/stalwart/data /restore-tmp
-              restic restore latest --target /restore-tmp 2>&1 || { echo "restore-state: restic restore failed — fresh start"; exit 0; }
+              restic restore latest --target /restore-tmp 2>&1 || {
+                echo "RESTORE-STATE-WARNING: restic restore failed — Stalwart will FRESH-START with no data"
+                echo "$$(date -Iseconds) reason=restic-restore-failed" > /var/lib/stalwart/data/.fresh-started-at
+                exit 0
+              }
               # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
               # A2.5 (2026-05-25): the snapshot CronJob now backs up
               # /var/lib/mail-stack/ (consolidated layout), so files land at
@@ -249,10 +256,15 @@ spec:
                 RESTORED_DATA="$$RESTORED_LEGACY"
                 echo "restore-state: detected LEGACY (pre-A2.5) snapshot layout"
               else
-                echo "restore-state: unexpected restore layout (no $$RESTORED_NEW or $$RESTORED_LEGACY) — fresh start"
+                echo "RESTORE-STATE-WARNING: unexpected restore layout (no $$RESTORED_NEW or $$RESTORED_LEGACY) — Stalwart will FRESH-START"
+                echo "$$(date -Iseconds) reason=unexpected-restic-layout" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
-              cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1 || { echo "restore-state: copy to data dir failed — fresh start"; exit 0; }
+              cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1 || {
+                echo "RESTORE-STATE-WARNING: copy to data dir failed — Stalwart will FRESH-START"
+                echo "$$(date -Iseconds) reason=restic-copy-failed" > /var/lib/stalwart/data/.fresh-started-at
+                exit 0
+              }
               echo "restore-state: restore complete ($(ls /var/lib/stalwart/data | wc -l) files)"
           envFrom:
             - secretRef:
