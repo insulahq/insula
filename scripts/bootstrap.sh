@@ -484,7 +484,7 @@ OPTIONS:
                          Tier-1 secrets bundle to import BEFORE Flux
                          reconciles. Decrypted with --age-key, then
                          every kubernetes Secret YAML inside is applied
-                         so platform-api / Stalwart / mail-pg come up
+                         so platform-api / Stalwart come up
                          with their pre-existing identities (TLS, JWT
                          signing keys, OIDC client secrets, etc.). Used
                          on a fresh cluster to recover from a previous
@@ -3898,8 +3898,8 @@ install_cnpg() {
   fi
 
   # maxConcurrentReconciles=3 (default 10): we never run more than
-  # ~5 Cluster CRs (system-db + mail-db + future per-tenant); 3
-  # workers is plenty and saves ~50 Mi resident in the operator pod.
+  # ~5 Cluster CRs (system-db + future per-tenant); 3 workers is
+  # plenty and saves ~50 Mi resident in the operator pod.
   # See cnpg/cloudnative-pg chart values.yaml for full list.
   helm_cmd upgrade --install cnpg cnpg/cloudnative-pg \
     --namespace cnpg-system \

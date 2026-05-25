@@ -172,13 +172,14 @@ export async function computeConvergence(
       group: 'postgresql.cnpg.io', version: 'v1', plural: 'clusters',
     });
     for (const c of cnpgList.items ?? []) {
-      // Only count platform/system-db + mail/mail-db (the system clusters,
-      // renamed 2026-05-07 from postgres + mail-pg). See CNPG_CLUSTERS in
-      // ./service.ts — keep this filter in sync with that list.
+      // Only count platform/system-db (the only system CNPG cluster
+      // since Stalwart migrated to RocksDB on 2026-05-12 and mail-db
+      // was deleted). Keep this filter in sync with CNPG_CLUSTERS in
+      // ./service.ts.
       const ns = c.metadata?.namespace;
       const name = c.metadata?.name;
       if (!ns || !name) continue;
-      if (!((ns === 'platform' && name === 'system-db') || (ns === 'mail' && name === 'mail-db'))) continue;
+      if (!(ns === 'platform' && name === 'system-db')) continue;
       cnpgTotal++;
       const desired = c.spec?.instances ?? 0;
       const ready = c.status?.readyInstances ?? 0;

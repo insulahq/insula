@@ -325,14 +325,15 @@ export async function getMailbox(
 }
 
 /**
- * Drift recovery (2026-05-06): JMAP-create an orphaned mailbox in Stalwart.
+ * Drift recovery (origin: 2026-05-06): JMAP-create an orphaned mailbox in Stalwart.
  *
  * Used by `updateMailbox` when the operator sets a new password on a
  * mailbox whose `stalwart_principal_id` is null — typically a leftover
- * from a `mail-pg` wipe where the platform DB row survived but Stalwart's
- * Account row was lost. Returns the new Stalwart principal id, or null
- * if Stalwart isn't reachable / not configured / the email-domain itself
- * is also orphan (no `stalwart_domain_id` to attach the account to).
+ * from a Stalwart data wipe where the platform DB row survived but
+ * Stalwart's Account row was lost. Returns the new Stalwart principal
+ * id, or null if Stalwart isn't reachable / not configured / the
+ * email-domain itself is also orphan (no `stalwart_domain_id` to
+ * attach the account to).
  *
  * Best-effort by design: failures surface as the caller's logged warning,
  * not a transaction abort. The platform-DB bcrypt is updated independently.
@@ -494,12 +495,13 @@ export async function updateMailbox(
         }
       }
     } else if (input.password !== undefined) {
-      // 2026-05-06: orphan-mailbox recovery path. The mailbox exists in
-      // platform DB but has no Stalwart counterpart (typical post-mail-pg-
-      // wipe state — see docs/02-operations/MAIL_PG_RESTORE.md for the
-      // root cause). When the operator sets a NEW password, we have an
-      // opportunity to JMAP-CREATE the mailbox in Stalwart with that
-      // plaintext, since Stalwart cannot import pre-hashed credentials
+      // Orphan-mailbox recovery path (origin: 2026-05-06). The mailbox
+      // exists in platform DB but has no Stalwart counterpart (typical
+      // after a Stalwart data wipe — historically mail-pg, post-2026-05-12
+      // the RocksDB PVC). When the operator sets a NEW password, we
+      // have an opportunity to JMAP-CREATE the mailbox in Stalwart
+      // with that plaintext, since Stalwart cannot import pre-hashed
+      // credentials
       // (verified empirically 2026-05-06: any bcrypt secret passed to
       // Account/credentials/0/secret is treated as plaintext + re-hashed).
       //

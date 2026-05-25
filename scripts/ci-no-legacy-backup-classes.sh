@@ -60,6 +60,7 @@ ALLOW_LIST=(
   "backend/src/modules/storage-lifecycle/target-resolver.ts"
   "backend/src/modules/backup-rclone-shim/rclone-push.ts"
   "backend/src/modules/backup-schedules/service.ts"
+  "backend/src/modules/backup-rclone-shim/switch-with-pause.ts"
   "backend/src/modules/tenant-bundles/global-scheduler.ts"
   "packages/api-contracts/src/backup-schedules.ts"
   # Frontend: `tenant_bundle` is a valid subsystem prop on the
