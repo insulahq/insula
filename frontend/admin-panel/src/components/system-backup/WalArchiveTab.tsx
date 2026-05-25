@@ -686,7 +686,7 @@ function formatAgoFromIso(iso: string): string {
 }
 
 /**
- * Phase 8d (2026-05-25): when CNPG's cluster.status.firstRecoverabilityPoint
+ * Phase 8d (2026-05-25): when CNPG's `cluster.status.firstRecoverabilityPoint`
  * is null (typical lag after fresh enable / CR churn / cluster restart),
  * fall back to the barman catalogue's earliest entry. The barman archive
  * is the ACTUAL source of truth — CNPG's status is just a projection it
