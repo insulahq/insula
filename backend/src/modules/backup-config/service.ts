@@ -62,6 +62,9 @@ function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
     lastSpeedtestLatencyMs: row.lastSpeedtestLatencyMs ?? null,
     lastSpeedtestPayloadBytes: row.lastSpeedtestPayloadBytes ?? null,
     lastSpeedtestError: row.lastSpeedtestError ?? null,
+    // DR safety flag (migration 0029). Surfaced so the admin UI can
+    // render a "Frozen (read-only)" badge + the Mark Read-Write button.
+    readOnly: row.readOnly,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

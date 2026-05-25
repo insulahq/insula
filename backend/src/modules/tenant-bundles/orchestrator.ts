@@ -147,6 +147,16 @@ export async function runBundle(
 ): Promise<RunBundleResult> {
   const bundleId = `bkp-${randomUUID()}`;
 
+  // DR safety: refuse to start a bundle when the resolved backup
+  // target is frozen. Otherwise the Job will fail mid-flight with an
+  // opaque HTTP error from the shim PUT. Skipped when no targetConfigId
+  // (legacy hostpath path or tests). The helper returns null for null
+  // targetId so callers don't need an extra guard.
+  if (input.targetConfigId) {
+    const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+    await requireWritableTarget(deps.db, input.targetConfigId);
+  }
+
   // Resolve the tenant's namespace + PVC up-front. We need both for
   // the files + secrets components; failing here gives a clean error
   // before any external state is touched.

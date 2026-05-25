@@ -809,6 +809,14 @@ export const backupConfigurations = pgTable('backup_configurations', {
   // backup-rclone-shim. Bounded 30..1800 s by a CHECK constraint at
   // the DB layer; default 300 s (5 min) per RFC §13a.
   drainTimeoutSeconds: integer('drain_timeout_seconds').notNull().default(300),
+  // DR safety flag (migration 0029): when true, every platform-driven
+  // write or delete against this target is refused with TARGET_FROZEN.
+  // Set by the DR restore path so a freshly restored cluster cannot
+  // overwrite or prune existing repo contents until the operator
+  // confirms integrity via POST /admin/backup-configs/:id/mark-writable.
+  // Enforced through requireWritableTarget() at every backup
+  // write/delete callsite (see scripts/ci-backup-target-ro-check.sh).
+  readOnly: boolean('read_only').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
