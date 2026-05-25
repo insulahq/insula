@@ -273,7 +273,7 @@ describe('enableWalArchive — plugin model', () => {
     expect(objectStoreCreate?.group).toBe(BARMAN_GROUP);
     expect(objectStoreCreate?.version).toBe(BARMAN_VERSION);
     const osBody = objectStoreCreate?.body as { metadata: { name: string; namespace: string }; spec: { configuration: { destinationPath: string; endpointURL?: string; s3Credentials: { accessKeyId: { name: string; key: string }; secretAccessKey: { name: string; key: string } }; wal: unknown; data: unknown }; retentionPolicy: string } };
-    expect(osBody.metadata.name).toBe('system-db-system-store');
+    expect(osBody.metadata.name).toBe('system-postgres-objectstore');
     expect(osBody.metadata.namespace).toBe('platform');
     expect(osBody.spec.configuration.destinationPath).toBe('s3://system/wal-archive/platform-system-db');
     // Phase 6: endpoint is ALWAYS the shim (not upstream), and creds are
@@ -291,7 +291,7 @@ describe('enableWalArchive — plugin model', () => {
     expect(patchBody.spec.plugins).toHaveLength(1);
     expect(patchBody.spec.plugins[0].name).toBe(BARMAN_PLUGIN_NAME);
     expect(patchBody.spec.plugins[0].isWALArchiver).toBe(true);
-    expect(patchBody.spec.plugins[0].parameters.barmanObjectName).toBe('system-db-system-store');
+    expect(patchBody.spec.plugins[0].parameters.barmanObjectName).toBe('system-postgres-objectstore');
     expect(patchBody.spec.postgresql).toBeDefined();
 
     // 4. ScheduledBackup CREATE with method=plugin
@@ -513,9 +513,9 @@ describe('disableWalArchive — plugin teardown', () => {
     const body = clusterPatch?.body as { spec: { plugins: unknown[] } };
     expect(body.spec.plugins).toEqual([]);
 
-    // SB + OS deletes
-    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'scheduledbackups' && c.name === 'mail-db-system-backup')).toBeDefined();
-    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'objectstores' && c.name === 'mail-db-system-store')).toBeDefined();
+    // SB + OS deletes — Phase 8 unifies on postgres-objectstore names.
+    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'scheduledbackups' && c.name === 'system-db-scheduled-backup')).toBeDefined();
+    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'objectstores' && c.name === 'system-postgres-objectstore')).toBeDefined();
 
     // DB delete + audit log insert
     expect(deletes.length).toBeGreaterThanOrEqual(1);
@@ -525,7 +525,7 @@ describe('disableWalArchive — plugin teardown', () => {
     const { k8s, calls } = makeK8sStub({
       existingPlugins: [
         { name: 'audit.example/plugin', isWALArchiver: false, parameters: { mode: 'verbose' } },
-        { name: BARMAN_PLUGIN_NAME, isWALArchiver: true, parameters: { barmanObjectName: 'system-db-system-store' } },
+        { name: BARMAN_PLUGIN_NAME, isWALArchiver: true, parameters: { barmanObjectName: 'system-postgres-objectstore' } },
       ],
     });
     const { db } = makeDbStub();

@@ -40,6 +40,36 @@ function isValidCron6(s: string): boolean {
   return CRON6_RE.test(s.trim());
 }
 
+/**
+ * Phase 8 (2026-05-25) — retention safety check.
+ *
+ * CNPG's barman-cloud ObjectStore has ONE retention value that applies to
+ * both WAL files AND base backups. If the operator sets retention shorter
+ * than the base-backup cadence, base files get deleted BEFORE the next
+ * scheduled base = WAL has nothing to replay onto = no DR. Compute the
+ * minimum-safe retention (2 × cadence) from the chosen cron and warn
+ * inline when the current retention falls below it.
+ *
+ * Cadence-in-days for known presets. Returns null for custom crons —
+ * operator's responsibility (we fall back to a safe 14-day default).
+ */
+function estimateCadenceDays(cron: string | null | undefined): number | null {
+  if (!cron) return null;
+  if (cron === '0 0 */6 * * *') return 0.25;
+  if (cron === '0 0 3 * * *') return 1;
+  if (cron === '0 0 3 * * 0') return 7;
+  if (cron === '0 0 3 1 * *') return 30;
+  return null;
+}
+function minSafeRetentionDays(cron: string | null | undefined): number {
+  if (!cron) return 1;
+  const cadence = estimateCadenceDays(cron);
+  // 14-day fallback for unrecognised custom crons — covers weekly safely
+  // and is the operator's safety net when they roll their own schedule.
+  if (cadence === null) return 14;
+  return Math.max(1, Math.ceil(cadence * 2));
+}
+
 const ARCHIVE_TIMEOUT_PRESETS: Array<{ value: string; label: string }> = [
   { value: '30s',   label: '30 sec (RPO ~30s)' },
   { value: '1min',  label: '1 min (RPO ~1m)' },
@@ -151,6 +181,14 @@ function WalStreamingSection({
     || retentionDays !== savedSettings.retentionDays
   );
 
+  // Phase 8 (2026-05-25): warn when retention is shorter than the
+  // base-backup cadence requires. CNPG's retentionPolicy applies to
+  // both WAL + base together, so a too-short retention deletes base
+  // files before the next base = no DR. See minSafeRetentionDays.
+  const savedCron = cluster.state?.baseBackupSchedule ?? null;
+  const minRetention = minSafeRetentionDays(savedCron);
+  const retentionTooShort = !!savedCron && retentionDays < minRetention;
+
   const onEnable = (): void => {
     void enable.mutateAsync({
       clusterNamespace: cluster.clusterNamespace,
@@ -201,9 +239,25 @@ function WalStreamingSection({
             value={retentionDays}
             onChange={(e) => setRetentionDays(parseInt(e.target.value, 10) || 30)}
             disabled={enable.isPending || disable.isPending}
-            className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            aria-invalid={retentionTooShort}
+            className={`w-full rounded-lg border bg-white px-2 py-1.5 text-sm text-gray-900 disabled:opacity-60 dark:bg-gray-700 dark:text-gray-100 ${
+              retentionTooShort
+                ? 'border-rose-400 dark:border-rose-600'
+                : 'border-gray-300 dark:border-gray-600'
+            }`}
             data-testid={`wal-retention-${cluster.clusterName}`}
           />
+          {retentionTooShort && (
+            <p
+              className="mt-0.5 text-[10px] text-rose-700 dark:text-rose-300"
+              data-testid={`wal-retention-error-${cluster.clusterName}`}
+            >
+              Retention {retentionDays}d is shorter than the base-backup
+              cadence requires (need ≥{minRetention}d for current schedule
+              <code className="ml-1">{savedCron}</code>). Risk: base backups
+              deleted before next base = no DR.
+            </p>
+          )}
         </Setting>
       </div>
       <div className="mt-3 flex items-center justify-end gap-2">
@@ -222,7 +276,7 @@ function WalStreamingSection({
             <button
               type="button"
               onClick={onEnable}
-              disabled={!hasUnsavedChanges || enable.isPending}
+              disabled={!hasUnsavedChanges || enable.isPending || retentionTooShort}
               className="inline-flex items-center gap-1 rounded-md border border-brand-300 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-50 disabled:opacity-50 dark:border-brand-600 dark:text-brand-300 dark:hover:bg-brand-900/30"
               data-testid={`wal-streaming-save-${cluster.clusterName}`}
             >
@@ -284,6 +338,14 @@ function ScheduledBackupsSection({
   const savedCron = cluster.state?.baseBackupSchedule ?? null;
   const hasUnsavedChanges = active && cron !== savedCron;
   const cronValid = isValidCron6(cron);
+
+  // Phase 8 (2026-05-25): same retention-vs-cadence safety check as
+  // WAL Streaming section, but evaluated from THIS section's editable
+  // cron against the saved retention. Warns operators picking a long
+  // cadence when retention isn't long enough to cover 2 × intervals.
+  const savedRetention = cluster.state?.retentionDays ?? null;
+  const minRetentionForNewCron = minSafeRetentionDays(cron);
+  const retentionUnsafe = savedRetention !== null && savedRetention < minRetentionForNewCron;
 
   const onEnable = (): void => {
     if (!cronValid) {
@@ -371,6 +433,18 @@ function ScheduledBackupsSection({
             </>
           )}
         </Setting>
+        {retentionUnsafe && (
+          <div
+            className="rounded border border-rose-300 bg-rose-50 p-2 text-[10px] text-rose-800 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-200"
+            data-testid={`schedule-retention-warning-${cluster.clusterName}`}
+          >
+            Current retention <strong>{savedRetention}d</strong> is shorter
+            than this cadence requires (need ≥{minRetentionForNewCron}d).
+            Either pick a shorter cadence or raise retention in the WAL
+            Streaming section first — otherwise base backups will be
+            deleted before the next one runs (no DR).
+          </div>
+        )}
       </div>
       <div className="mt-3 flex items-center justify-end gap-2">
         {enable.isError && (
@@ -388,7 +462,7 @@ function ScheduledBackupsSection({
             <button
               type="button"
               onClick={onEnable}
-              disabled={!hasUnsavedChanges || enable.isPending || !cronValid}
+              disabled={!hasUnsavedChanges || enable.isPending || !cronValid || retentionUnsafe}
               className="inline-flex items-center gap-1 rounded-md border border-brand-300 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-50 disabled:opacity-50 dark:border-brand-600 dark:text-brand-300 dark:hover:bg-brand-900/30"
               data-testid={`schedule-save-${cluster.clusterName}`}
             >
@@ -410,7 +484,7 @@ function ScheduledBackupsSection({
           <button
             type="button"
             onClick={onEnable}
-            disabled={!canEnable || enable.isPending || !cronValid}
+            disabled={!canEnable || enable.isPending || !cronValid || retentionUnsafe}
             title={!canEnable ? 'Bind a SYSTEM target on the Routing tab first.' : ''}
             className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
             data-testid={`schedule-enable-${cluster.clusterName}`}
