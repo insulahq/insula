@@ -8,7 +8,7 @@
  *   Flux/platform-api ownership war on `template.spec.volumes` —
  *   Flux's reconcile reverted the cutover ~60s after every migration.
  *
- *   The architectural fix: **PVC name is stable** (`stalwart-rocksdb-data`)
+ *   The architectural fix: **PVC name is stable** (`mail-stack-data` post-A2.5; legacy `stalwart-rocksdb-data`)
  *   across all migrations. Data moves between nodes via the **restic
  *   snapshot** that the snapshot CronJob already produces every 2 minutes.
  *   The Deployment's `template.spec.affinity` is the ONLY field that
@@ -62,7 +62,11 @@ export const MAIL_STACK_DEPLOYMENTS = [
   DEPLOYMENT_NAME,
   BULWARK_DEPLOYMENT_NAME,
 ] as const;
-const MAIL_PVC_NAME = 'stalwart-rocksdb-data';
+// A2.5 (2026-05-25): mail-stack consolidation — Stalwart + Bulwark both
+// mount this single PVC with subPaths (stalwart/, bulwark/). Legacy
+// name was `stalwart-rocksdb-data`; cutover via
+// scripts/mail-stack-consolidate.sh + the A2.5 manifest commit.
+const MAIL_PVC_NAME = 'mail-stack-data';
 const ALLOW_RESTORE_ANNOTATION = 'mail.platform/allow-restore';
 const DISK_HEADROOM_RATIO = 1.25; // target must have 25% more free than used
 

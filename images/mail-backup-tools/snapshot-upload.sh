@@ -26,7 +26,20 @@
 
 set -e
 
-DATA_DIR=/var/lib/stalwart/data
+# A2.5 (2026-05-25): backs up the consolidated mail-stack PVC root.
+# Layout under DATA_DIR after consolidation:
+#   stalwart/  ← Stalwart RocksDB
+#   bulwark/   ← Bulwark config/admin/telemetry
+# Restic captures both subtrees in one snapshot. The CronJob mounts
+# the mail-stack-data PVC at this path (no subPath) so the script
+# sees both. Legacy path /var/lib/stalwart/data is retained as a
+# fallback for clusters not yet migrated to A2.5 — if DATA_DIR
+# doesn't exist or is empty we fall back.
+DATA_DIR="${DATA_DIR:-/var/lib/mail-stack}"
+if { [ ! -d "$DATA_DIR" ] || [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; } && [ -d /var/lib/stalwart/data ]; then
+  echo "=== snapshot-upload: $DATA_DIR missing/empty, falling back to legacy /var/lib/stalwart/data ==="
+  DATA_DIR=/var/lib/stalwart/data
+fi
 PLATFORM_API_URL="${PLATFORM_API_URL:-http://platform-api.platform.svc.cluster.local:3000}"
 
 # ── Check if upload is configured ───────────────────────────────────────────

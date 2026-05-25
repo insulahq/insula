@@ -2200,7 +2200,7 @@ export const systemSettings = pgTable('system_settings', {
   //   Once Phase 1 is applied on a cluster, update this to 'rocksdb'
   //   so the admin panel can reflect the correct storage type.
   // mailRocksdbNodeName: the Kubernetes node name where the
-  //   stalwart-rocksdb-data PVC is bound. Set by the placement
+  //   mail-stack-data PVC is bound (A2.5; legacy stalwart-rocksdb-data). Set by the placement
   //   reconciler (Phase 2) when it pins the Stalwart pod to a node.
   //   Nullable — unset until placement reconciler runs.
   mailDatastoreType: varchar('mail_datastore_type', { length: 20 }).notNull().default('postgres'),
@@ -2220,7 +2220,7 @@ export const systemSettings = pgTable('system_settings', {
   //   path. 'thisNodeOnly' (Stalwart hostPort on the active node only) remains
   //   supported via the admin API for debugging single-node installs but is no
   //   longer surfaced in the operator UI by default.
-  // mailDatastorePvcSizeGi: requested size (Gi) for the stalwart-rocksdb-data PVC.
+  // mailDatastorePvcSizeGi: requested size (Gi) for the mail-stack-data PVC (A2.5; legacy stalwart-rocksdb-data).
   mailPrimaryNode: varchar('mail_primary_node', { length: 253 }),
   mailSecondaryNode: varchar('mail_secondary_node', { length: 253 }),
   mailTertiaryNode: varchar('mail_tertiary_node', { length: 253 }),
