@@ -347,7 +347,7 @@ fi
 # DB enum must not contain 'nfs'.
 SCHEMA_TS="$ROOT/backend/src/db/schema.ts"
 if [[ -f "$SCHEMA_TS" ]] && grep -E "storageTypeEnum.*'nfs'" "$SCHEMA_TS" >/dev/null; then
-  fail "Invariant 17: schema.ts storageTypeEnum re-introduced 'nfs' — NFS was dropped 2026-05-25 (migration 0026)."
+  fail "Invariant 17: schema.ts storageTypeEnum re-introduced 'nfs' — NFS was dropped 2026-05-25 (migration 0027)."
 fi
 pass "Invariant 17: NFS support fully removed"
 

@@ -71,7 +71,7 @@ resources:
   - valkey/
   # NFS test server (originally R-X17 follow-up, 2026-05-21) was
   # REMOVED 2026-05-25 alongside the platform-wide NFS drop —
-  # see ADR-043 postscript + migration 0026. No bench harness now
+  # see ADR-043 postscript + migration 0027. No bench harness now
   # requires this fixture.
   # Image promotion (was Flux Image Automation, removed 2026-05-09):
   # Now handled by the in-CI "Pin image tags in kustomization.yaml"

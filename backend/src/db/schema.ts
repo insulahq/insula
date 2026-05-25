@@ -94,10 +94,12 @@ export const ingressTargetTypeEnum = pgEnum('ingress_target_type', [
   'private_worker',
 ]);
 export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warning', 'error', 'success']);
-// NFS was dropped 2026-05-25 (migration 0026) — the unprivileged
+// NFS was dropped 2026-05-25 (migration 0027) — the unprivileged
 // rclone-shim DaemonSet (R-X19) has no rclone NFS-client backend and
 // kernel-mount would re-introduce CAP_SYS_ADMIN. See ADR-043
-// postscript.
+// postscript. (Number 0026 was already taken on main by
+// drop_pg_dump_schedules; this migration was 0026_drop_nfs in the
+// original PR but renamed to avoid the prefix collision.)
 export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs']);
 export const backupTypeEnum = pgEnum('backup_type', ['auto', 'manual', 'scheduled']);
 export const backupStatusEnum = pgEnum('backup_status', ['pending', 'in_progress', 'completed', 'failed']);
@@ -759,7 +761,7 @@ export const backupConfigurations = pgTable('backup_configurations', {
   cifsDomain: varchar('cifs_domain', { length: 255 }),
   cifsPath: varchar('cifs_path', { length: 500 }),
   // NFS columns (nfs_server / _export / _version / _options) were
-  // dropped 2026-05-25 (migration 0026) — the unprivileged rclone-shim
+  // dropped 2026-05-25 (migration 0027) — the unprivileged rclone-shim
   // DaemonSet cannot consume an NFS export. See ADR-043 postscript.
   retentionDays: integer('retention_days').notNull().default(30),
   scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
