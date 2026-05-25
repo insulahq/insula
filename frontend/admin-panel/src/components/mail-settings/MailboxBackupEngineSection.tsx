@@ -11,13 +11,13 @@ const ENGINES: { value: MailboxBackupEngineValue; label: string; tagline: string
     value: 'imap',
     label: 'IMAP MULTIAPPEND',
     tagline:
-      'Stalwart-native FETCH + MULTIAPPEND with byte-budgeted batching. Recommended default — measured ~9% faster than JMAP on the per-tenant path, simpler protocol, IMAP4rev2 + CONDSTORE + LITERAL+ all supported.',
+      'Stalwart-native FETCH + parallel MULTIAPPEND with byte-budgeted batching. Recommended default — measured ~16% faster than JMAP on capture and ~35% faster on parallel restore (K=4), plus byte-exact preservation of UTF-8 folder names + IMAP keywords. IMAP4rev2 + CONDSTORE + LITERAL+ all supported.',
   },
   {
     value: 'jmap',
     label: 'JMAP (legacy)',
     tagline:
-      'Original engine — JSON-over-HTTP with per-tenant Email/changes state. Kept for compatibility while the IMAP path burns in; safe to keep using.',
+      'Original engine — JSON-over-HTTP with per-tenant Email/changes state. Kept for compatibility; known to corrupt UTF-8 folder names on restore (e.g. "Geschäftlich" → "Gesch_ftlich"). Use only if IMAP path is unavailable.',
   },
 ];
 
