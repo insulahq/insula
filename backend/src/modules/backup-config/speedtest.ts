@@ -20,6 +20,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
 import { decrypt } from '../oidc/crypto.js';
+import { requireWritableTarget } from './writable-guard.js';
 import { rcloneObscure } from '../storage-lifecycle/rclone-obscure.js';
 import type { SpeedtestResult } from '@k8s-hosting/api-contracts';
 
@@ -65,6 +66,11 @@ export async function runSpeedtest(
   if (target.enabled !== 1) {
     throw new ApiError('TARGET_DISABLED', `Backup target ${target.name} is disabled — enable it before speedtest`, 400);
   }
+  // DR safety: speedtest writes a multi-MB payload then deletes it.
+  // Both ops are forbidden on a frozen target — refuse before we even
+  // start the Job so the operator gets a clean 409 in the chip rather
+  // than an opaque rclone failure inside the Job logs.
+  await requireWritableTarget(db, opts.targetId);
 
   const key = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!key) {
