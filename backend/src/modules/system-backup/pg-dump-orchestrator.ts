@@ -280,6 +280,12 @@ function spawnPgDump(
 export async function runPgDump(inputs: PgDumpInputs): Promise<PgDumpResult> {
   const { db, k8s, runId, namespace, cluster, database, targetConfigId, oidcEncryptionKey } = inputs;
 
+  // DR safety: refuse pg_dump on a frozen target. pg-dump writes a
+  // bundle via store.put + a compensating store.delete on failure;
+  // both are gated here before any state is touched.
+  const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+  await requireWritableTarget(db, targetConfigId);
+
   await db.update(systemBackupRuns)
     .set({ status: 'running', jobName: process.env.HOSTNAME ?? null })
     .where(eq(systemBackupRuns.id, runId));

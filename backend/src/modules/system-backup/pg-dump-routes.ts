@@ -249,6 +249,12 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     if (!row) throw new ApiError('SYSTEM_BACKUP_RUN_NOT_FOUND', 'run not found', 404);
 
     if (row.targetConfigId && row.bundleId && row.status === 'succeeded') {
+      // DR safety: refuse delete on frozen target before opening the
+      // store. Without this guard the operator could silently delete
+      // a bundle from a target the platform is supposed to be holding
+      // read-only during a DR window.
+      const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+      await requireWritableTarget(app.db, row.targetConfigId);
       try {
         const oidcKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined;
         const { store } = await resolveSystemStore(app.db, row.targetConfigId, oidcKey ?? null);

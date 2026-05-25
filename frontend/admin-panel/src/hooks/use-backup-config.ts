@@ -39,6 +39,11 @@ interface BackupConfig {
   readonly lastSpeedtestLatencyMs: number | null;
   readonly lastSpeedtestPayloadBytes: number | null;
   readonly lastSpeedtestError: string | null;
+  // DR safety flag (migration 0029). True = backup target is frozen,
+  // refuses all platform-driven writes/deletes. Flipped to false via
+  // POST /admin/backup-configs/:id/mark-writable after the operator
+  // confirms data integrity post-DR.
+  readonly readOnly: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -148,6 +153,40 @@ export function useDeactivateBackupConfig() {
     mutationFn: (id: string) =>
       apiFetch<BackupConfigResponse>(`/api/v1/admin/backup-configs/${id}/deactivate`, {
         method: 'POST',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
+  });
+}
+
+// DR safety: flip a frozen target back to read-write. The body carries
+// the type-name confirmation + the integrity-acknowledgement checkbox;
+// the backend rejects with CONFIRMATION_MISMATCH if the operator typed
+// the name wrong. Response surfaces per-cluster CNPG resume outcomes so
+// the modal can show the operator which clusters resumed archiving.
+export interface MarkWritablePayload {
+  readonly targetId: string;
+  readonly targetName: string;
+  readonly cnpgArchivingResumed: ReadonlyArray<{
+    readonly namespace: string;
+    readonly clusterName: string;
+    readonly wasAlreadyAttached: boolean;
+  }>;
+  readonly mailReconcilerTriggered: boolean;
+}
+
+// Server-side response envelope — apiFetch returns the raw JSON shape,
+// matching the convention used by TestResult / SpeedtestResult above.
+export interface MarkWritableResponse {
+  readonly data: MarkWritablePayload;
+}
+
+export function useMarkBackupTargetWritable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, confirmation }: { id: string; confirmation: string }) =>
+      apiFetch<MarkWritableResponse>(`/api/v1/admin/backup-configs/${id}/mark-writable`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmation, acknowledgeIntegrity: true }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
   });
