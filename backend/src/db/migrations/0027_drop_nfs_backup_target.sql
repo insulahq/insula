@@ -1,4 +1,6 @@
--- migration 0026 — drop NFS backup-target support entirely.
+-- migration 0027 — drop NFS backup-target support entirely.
+-- (Originally numbered 0026 but renamed to avoid colliding with
+-- 0026_drop_pg_dump_schedules.sql which landed on main first.)
 --
 -- Background: migration 0015 added `nfs` to the storage_type enum and
 -- the four nfs_* columns on backup_configurations. The design was for
