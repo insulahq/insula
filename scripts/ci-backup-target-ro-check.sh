@@ -29,8 +29,14 @@ cd "$REPO_ROOT"
 
 # ─── Registered enforcement sites (A1 Phase B + C shipped) ───────────
 # Format: <file path>::<grep pattern that should appear>
+# Pattern can be either `requireWritableTarget` (the helper) or
+# `TargetFrozenError` (a direct throw using the error class — used in
+# service.ts deleteBackupConfig / updateBackupConfig where we already
+# have the row in hand from getRawBackupConfig so the helper's extra
+# SELECT would be redundant).
 REGISTERED_SITES=(
   "backend/src/modules/backup-config/speedtest.ts::requireWritableTarget"
+  "backend/src/modules/backup-config/service.ts::TargetFrozenError"
   "backend/src/modules/tenant-bundles/orchestrator.ts::requireWritableTarget"
   "backend/src/modules/tenant-bundles/retention.ts::requireWritableTarget"
   "backend/src/modules/tenant-bundles/routes.ts::requireWritableTarget"
@@ -81,8 +87,13 @@ WATCH_SUBTREES=(
 
 # Heuristic markers — when any of these appear in a .ts file, that file
 # is plausibly a write/delete callsite. (We never block on test files
-# or *.test.ts.)
-WRITE_MARKERS='store\.delete\(|store\.put\(|barmanObjectStore|resticForget|rcloneRcat|--remove-source-files'
+# or *.test.ts.) Extended after security review:
+#   - `db\.delete\(backupConfigurations` — hard delete of a target row;
+#     a frozen target row deletion would orphan the upstream repo.
+#   - `set\(.*Encrypted` — mutating any encrypted credential field
+#     (sshKeyEncrypted / s3SecretKeyEncrypted / cifsPasswordEncrypted)
+#     could silently redirect a frozen target's writes post-unfreeze.
+WRITE_MARKERS='store\.delete\(|store\.put\(|barmanObjectStore|resticForget|rcloneRcat|--remove-source-files|db\.delete\(backupConfigurations|set\(.*Encrypted'
 
 for subtree in "${WATCH_SUBTREES[@]}"; do
   while IFS= read -r file; do

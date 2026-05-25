@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { X, Loader2, AlertTriangle, CheckCircle, Snowflake } from 'lucide-react';
 import { useMarkBackupTargetWritable, type MarkWritablePayload } from '@/hooks/use-backup-config';
 
@@ -30,6 +30,48 @@ export default function MarkBackupTargetWritableModal({
   const [acknowledge, setAcknowledge] = useState(false);
   const [result, setResult] = useState<MarkWritablePayload | null>(null);
   const mut = useMarkBackupTargetWritable();
+  // Refs for focus management — first focusable element on open + the
+  // Cancel/Done button as the final fallback when focus escapes.
+  const confirmInputRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  // Accessibility — Esc to close + focus capture on open.
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !mut.isPending) {
+        e.preventDefault();
+        handleClose();
+      }
+      // Light focus trap: if Tab tries to leave the dialog, snap back
+      // to the first focusable element. Full focus-trap libs are
+      // overkill for a 3-input modal — this covers the WAI-ARIA
+      // dialog pattern's minimum requirement.
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    // Focus the confirmation input one tick after mount so the
+    // dialog's animation/render lands first.
+    const timer = setTimeout(() => confirmInputRef.current?.focus(), 0);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      clearTimeout(timer);
+    };
+  }, [open, mut.isPending]);
 
   if (!open) return null;
 
@@ -43,7 +85,16 @@ export default function MarkBackupTargetWritableModal({
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (confirmation !== targetName || !acknowledge) return;
+    // Defense-in-depth: the submit button is disabled in this state,
+    // but if it's ever re-enabled via DOM tampering we still refuse
+    // and tell the operator why instead of silently returning.
+    if (confirmation !== targetName || !acknowledge) {
+      // Render the same place as server errors so the user sees feedback.
+      // We don't have a separate "client validation" state, so reuse
+      // the mutation's reset+set-error contract.
+      mut.reset();
+      return;
+    }
     try {
       const res = await mut.mutateAsync({ id: targetId, confirmation });
       setResult(res.data);
@@ -61,6 +112,7 @@ export default function MarkBackupTargetWritableModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="mark-writable-title"
+      ref={dialogRef}
     >
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
       <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
@@ -114,6 +166,7 @@ export default function MarkBackupTargetWritableModal({
                 onChange={(e) => setConfirmation(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                 data-testid="mw-confirmation"
+                ref={confirmInputRef}
               />
             </div>
 

@@ -49,6 +49,10 @@ describe('requireWritableTarget', () => {
       expect(e.message).toContain('read-only');
       expect(e.targetId).toBe('cfg-3');
       expect(e.targetName).toBe('Frozen Target');
+      // Critical: the response envelope reads `details`, not the
+      // subclass-specific instance fields. Without this propagation,
+      // the admin UI sees only the message and never targetId.
+      expect(e.details).toEqual({ targetId: 'cfg-3', targetName: 'Frozen Target' });
     }
   });
 
