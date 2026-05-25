@@ -23,8 +23,12 @@ interface PatchCall {
   namespace: string;
   name: string;
   body: {
-    metadata?: { annotations?: Record<string, string | null | undefined> };
-    spec?: { template?: { spec?: { nodeSelector?: Record<string, string> } } };
+    spec?: {
+      template?: {
+        metadata?: { annotations?: Record<string, string | null | undefined> };
+        spec?: { nodeSelector?: Record<string, string> };
+      };
+    };
   };
 }
 
@@ -61,22 +65,25 @@ describe('applyDeploymentAffinity (mail-stack co-location)', () => {
     }
   });
 
-  it('stamps the allow-restore annotation on stalwart-mail ONLY', async () => {
+  it('stamps the allow-restore annotation in spec.template.metadata.annotations on stalwart-mail ONLY', async () => {
+    // Fix #4: the annotation must live in the POD template (spec.template.metadata.annotations),
+    // not the Deployment object (metadata.annotations). The restore-state init container reads
+    // /podinfo via downwardAPI which mounts pod.metadata.annotations (inherited from template).
     const { apps, calls } = makeAppsMock();
     await applyDeploymentAffinity(apps, 'staging2', /* allowRestore */ true);
     const stalwart = calls.find((c) => c.name === 'stalwart-mail');
     const bulwark = calls.find((c) => c.name === 'bulwark');
-    expect(stalwart?.body.metadata?.annotations).toEqual({
+    expect(stalwart?.body.spec?.template?.metadata?.annotations).toEqual({
       'mail.platform/allow-restore': 'true',
     });
-    expect(bulwark?.body.metadata?.annotations).toBeUndefined();
+    expect(bulwark?.body.spec?.template?.metadata?.annotations).toBeUndefined();
   });
 
   it('omits the annotation block entirely when allowRestore=false', async () => {
     const { apps, calls } = makeAppsMock();
     await applyDeploymentAffinity(apps, 'staging2', false);
     for (const c of calls) {
-      expect(c.body.metadata).toBeUndefined();
+      expect(c.body.spec?.template?.metadata).toBeUndefined();
     }
   });
 
