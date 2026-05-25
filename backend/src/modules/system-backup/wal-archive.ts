@@ -49,6 +49,7 @@ import {
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { randomUUID } from 'node:crypto';
+import type { Logger } from 'pino';
 import {
   SHIM_S3_ENDPOINT_URL,
   SHIM_S3_CREDS_SECRET_NAME,
@@ -60,12 +61,32 @@ export const BARMAN_GROUP = 'barmancloud.cnpg.io';
 export const BARMAN_VERSION = 'v1';
 export const BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
 
-// CR-naming scheme. `<cluster>-system-store` is the ObjectStore that
-// pairs with `<cluster>-system-backup` (the ScheduledBackup CR). Both
-// are owned by platform-api; a Flux-managed schedule (e.g. mail-pg-daily)
-// lives alongside without colliding.
-const OBJECT_STORE_NAME = (cluster: string): string => `${cluster}-system-store`;
-const SCHEDULED_BACKUP_NAME = (cluster: string): string => `${cluster}-system-backup`;
+// Phase 8 (2026-05-25): wal-archive now SHARES the postgres-objectstore
+// reconciler's CR names so:
+//
+//   1. The CNPG barman-cloud plugin's auto-generated RBAC (Role
+//      `system-db-barman-cloud` with `resourceNames: [system-postgres-objectstore]`)
+//      covers wal-archive too. Pre-Phase-8 we created a SEPARATE
+//      `system-db-system-store` ObjectStore CR — the plugin didn't auto-
+//      grant access to it, every scheduled backup failed with
+//      "objectstores.barmancloud.cnpg.io 'system-db-system-store' is forbidden".
+//
+//   2. Only ONE ScheduledBackup CR exists at any time (instead of two
+//      with the same schedule firing duplicate backups). Whichever
+//      reconciler is active (wal-archive when row exists, postgres-objectstore
+//      otherwise) maintains it; the deferral guard prevents fights.
+//
+// Per-cluster scheme retained for hypothetical future clusters; today
+// the only cluster is platform/system-db so both functions return the
+// postgres-objectstore constants.
+const OBJECT_STORE_NAME = (_cluster: string): string => 'system-postgres-objectstore';
+const SCHEDULED_BACKUP_NAME = (_cluster: string): string => 'system-db-scheduled-backup';
+
+// Legacy CR names from Phase 6/7. cleanupLegacyCRs deletes these on
+// every enableWalStreaming / enableScheduledBackups invocation so
+// stale CRs from pre-Phase-8 don't accumulate. Idempotent (404 → ignore).
+const LEGACY_OBJECT_STORE_NAME = (cluster: string): string => `${cluster}-system-store`;
+const LEGACY_SCHEDULED_BACKUP_NAME = (cluster: string): string => `${cluster}-system-backup`;
 
 export interface EnableWalArchiveInput {
   readonly db: Database;
@@ -379,6 +400,45 @@ async function deleteObjectStoreIfPresent(
       ?? (err as { code?: number })?.code;
     if (status === 404) return;
     throw err;
+  }
+}
+
+/**
+ * Phase 8 (2026-05-25) — best-effort cleanup of pre-Phase-8 wal-archive
+ * CRs. Pre-Phase-8 we created `<cluster>-system-store` ObjectStore +
+ * `<cluster>-system-backup` ScheduledBackup; Phase 8 unifies on the
+ * postgres-objectstore reconciler's names. Without this cleanup the
+ * old CRs sit orphaned forever, the orphan ObjectStore fails RBAC,
+ * and the orphan ScheduledBackup fires duplicate backups.
+ *
+ * Idempotent. Called from enableWalStreaming + enableScheduledBackups.
+ * Errors other than 404 are logged but never thrown — cleanup must
+ * not block an otherwise-successful enable.
+ */
+async function cleanupLegacyCRs(
+  k8s: K8sClients, namespace: string, cluster: string,
+  log?: Pick<Logger, 'info' | 'warn'>,
+): Promise<void> {
+  const custom = k8s.custom as unknown as {
+    deleteNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string }) => Promise<unknown>;
+  };
+  const targets: Array<{ group: string; version: string; plural: string; name: string }> = [
+    { group: BARMAN_GROUP, version: BARMAN_VERSION, plural: 'objectstores', name: LEGACY_OBJECT_STORE_NAME(cluster) },
+    { group: CNPG_GROUP, version: CNPG_VERSION, plural: 'scheduledbackups', name: LEGACY_SCHEDULED_BACKUP_NAME(cluster) },
+  ];
+  for (const t of targets) {
+    try {
+      await custom.deleteNamespacedCustomObject({ ...t, namespace });
+      log?.info?.({ name: t.name, plural: t.plural }, 'wal-archive: deleted Phase 7c-era CR');
+    } catch (err: unknown) {
+      const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+        ?? (err as { code?: number })?.code;
+      if (status === 404) continue;
+      log?.warn?.({
+        name: t.name, plural: t.plural,
+        err: err instanceof Error ? err.message : String(err),
+      }, 'wal-archive: legacy CR cleanup failed (non-fatal)');
+    }
   }
 }
 
@@ -743,6 +803,9 @@ export async function enableWalStreaming(input: EnableWalStreamingInput): Promis
   const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
   if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
 
+  // Phase 8 (2026-05-25) — clean up legacy CRs from Phase 6/7 era.
+  await cleanupLegacyCRs(k8s, clusterNamespace, clusterName);
+
   const binding = await loadSystemShimBinding(db);
   const destinationPath = buildShimDestinationPath(clusterNamespace, clusterName);
 
@@ -921,11 +984,17 @@ export async function enableScheduledBackups(input: EnableScheduledBackupsInput)
   const binding = await loadSystemShimBinding(db);
   const destinationPath = buildShimDestinationPath(clusterNamespace, clusterName);
 
-  // Read prior state to know whether to keep isWALArchiver=true.
+  // Phase 8 (2026-05-25) — clean up legacy CRs from Phase 6/7 era.
+  // Idempotent (no-op when absent).
+  await cleanupLegacyCRs(k8s, clusterNamespace, clusterName);
+
+  // Read prior state to know whether to keep isWALArchiver=true AND
+  // whether the cron actually changed (drives delete-recreate below).
   const priorRows = await db
     .select({
       retentionDays: systemWalArchiveState.retentionDays,
       archiveTimeout: systemWalArchiveState.archiveTimeout,
+      baseBackupSchedule: systemWalArchiveState.baseBackupSchedule,
     })
     .from(systemWalArchiveState)
     .where(and(
@@ -958,6 +1027,16 @@ export async function enableScheduledBackups(input: EnableScheduledBackupsInput)
     /* archiveTimeout */ prior?.archiveTimeout ?? undefined,
     /* isWALArchiver */ walStreamingActive,
   );
+  // Phase 8 (2026-05-25): when the cron CHANGES, CNPG's
+  // ScheduledBackup status.nextScheduleTime can lag (it's computed from
+  // lastScheduleTime + cron interval, not from "now"). Operators saw
+  // "Next scheduled backup" stuck at the old schedule. Force fresh by
+  // deleting the existing CR before upsert when cron differs.
+  // First-enable (no prior cron) skips the delete — CR doesn't exist.
+  const cronChanged = prior?.baseBackupSchedule && prior.baseBackupSchedule !== cron;
+  if (cronChanged) {
+    await deleteScheduledBackupIfPresent(k8s, clusterNamespace, clusterName);
+  }
   await upsertScheduledBackup(k8s, clusterNamespace, clusterName, cron);
 
   await db.transaction(async (tx) => {
