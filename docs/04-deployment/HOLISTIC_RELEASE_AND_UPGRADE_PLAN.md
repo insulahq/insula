@@ -198,7 +198,7 @@ For failure modes (cluster partly/fully down), per-node diagnostics, and operato
 
 ---
 
-## 5. Locked Decisions (20)
+## 5. Locked Decisions (21)
 
 These are settled. Implementation MUST honour them. Changes require an amendment to this document.
 
@@ -224,6 +224,7 @@ These are settled. Implementation MUST honour them. Changes require an amendment
 | 18 | Code-sharing | CLI entrypoint at `backend/src/cli/platform-ops.ts` **directly imports** the backend TS modules under `backend/src/modules/`. No shared-library indirection; the modules ARE the source of truth. In-cluster controllers and the CLI are two surfaces over identical code paths. Pattern extends the existing `backend/src/cli/pitr-job.ts`. |
 | 19 | Self-upgrade | Daily systemd timer `platform-ops-update.timer` calls `platform-ops self-upgrade --check`. Cosign-verifies before atomic replace. Manual override: `platform-ops self-upgrade --force --version X.Y.Z`. |
 | 20 | Defense posture | No daemon. Binary runs as invoking user (root via sudo for privileged ops). No inbound network port. Cosign signature on binary AND on every container image we pull. |
+| 21 | **Upgrade compatibility model** | **Skip-multiple ALLOWED**. Operator can jump from `installed_platform_version` directly to any newer target; the target image bundles all historic migrations; runner applies all pending platform-migrations + host-migrations in version order, idempotently. **k3s remains sequential** per Rancher policy (`CLUSTER_UPGRADE_ROADMAP.md` locked decision #8); pre-flight splits multi-hop k3s upgrades into N serial SUC Plans. **Pre-flight UI walks the CHANGELOG between installed and target**, surfaces EVERY `### BREAKING` heading in the gap, and requires acknowledgment for each before the run starts — auto-update halts the same way. Every migration MUST be idempotent + self-contained relative to ordering + order-stable. CI guard `scripts/ci-migration-idempotency.sh` lints platform-migrations + shellchecks host-migrations. See §14 for full operator-experience walkthrough. |
 
 ---
 
@@ -295,11 +296,11 @@ Numbered W0–W17. Independently shippable workstreams are marked; gating relati
 **Risk**: M. Mitigation: re-run fresh-bootstrap on `testing.phoenix-host.net` end-to-end.
 
 ### W9 — Platform-migration registry
-**Goal**: Roadmap Phase 2. Drizzle-style declarative cluster migrations, run at backend startup.
-**Deliverables**: DB migration `0XXX_platform_migrations.sql`; `backend/src/modules/platform-upgrades/migrations/` directory; `runner.ts` with Postgres advisory lock + dry-run mode + checksum drift detection; wired into `backend/src/index.ts` startup after Drizzle, before HTTP listen; `PLATFORM_SKIP_MIGRATIONS=1` escape hatch; seed migration `0001_v2026_05_seed_host_config_reconciler.ts`; seed migration `0002_v2026_05_record_baseline.ts` (k3s/calico/longhorn versions to `platform_baselines` table).
+**Goal**: Roadmap Phase 2. Drizzle-style declarative cluster migrations, run at backend startup. Supports skip-multiple by applying all pending migrations in version order on every startup (Locked decision #21).
+**Deliverables**: DB migration `0XXX_platform_migrations.sql`; `backend/src/modules/platform-upgrades/migrations/` directory; `runner.ts` with Postgres advisory lock + dry-run mode + checksum drift detection; wired into `backend/src/index.ts` startup after Drizzle, before HTTP listen; `PLATFORM_SKIP_MIGRATIONS=1` escape hatch; seed migration `0001_v2026_05_seed_host_config_reconciler.ts`; seed migration `0002_v2026_05_record_baseline.ts` (k3s/calico/longhorn versions to `platform_baselines` table). **Migration authoring discipline (enforced by `scripts/ci-migration-idempotency.sh`)**: every migration MUST be idempotent (re-run is a no-op), self-contained relative to ordering (depends only on previously-numbered migrations, never on a specific source version), and order-stable (a shipped migration's position is its contract — renaming/renumbering forbidden). CI guard parses each migration for forbidden patterns (e.g. `DROP COLUMN IF EXISTS` is OK; `DROP COLUMN` without guard is not).
 **Dependencies**: W5, W8.
 **Complexity**: H.
-**Risk**: M (startup-blocking; mitigated by dry-run + escape hatch).
+**Risk**: M (startup-blocking; mitigated by dry-run + escape hatch + idempotency discipline).
 
 ### W10 — host-config-reconciler DS base (sysctls/modules/ulimits)
 **Goal**: Roadmap Phase 3. Continuous convergence; delivered as the first platform-migration to dogfood W9.
@@ -316,8 +317,8 @@ Numbered W0–W17. Independently shippable workstreams are marked; gating relati
 **Risk**: M (slow apt mirror stalls cluster; per-node timeout + failure→halt).
 
 ### W10c — host-config DS: host-migration runner
-**Goal**: Per-release one-shot imperative scripts (Locked decision #14).
-**Deliverables**: extend reconciler with `host-migrations/<version>/*.sh` directory shipped via release manifests; per-node `applied-host-migrations` ConfigMap records completion; halts on first failure; operator-resumable; shellcheck CI guard; per-script narrow allow-list of paths (any deviation requires `### BREAKING` heading in CHANGELOG).
+**Goal**: Per-release one-shot imperative scripts (Locked decisions #14 + #21). Supports skip-multiple — when a node's `applied-host-migrations` ConfigMap shows it has fallen behind by N migrations, the runner walks the entire pending set in version order on that node.
+**Deliverables**: extend reconciler with `host-migrations/<version>/*.sh` directory shipped via release manifests; per-node `applied-host-migrations` ConfigMap records completion (entries keyed by `<version>/<script-name>`); halts on first failure; operator-resumable; shellcheck CI guard (part of `scripts/ci-migration-idempotency.sh`); per-script narrow allow-list of paths (any deviation requires `### BREAKING` heading in CHANGELOG). **Host-migration authoring discipline**: idempotent (re-running a script on a node where it already applied is a no-op; use marker files in `/var/lib/platform/host-migrations/` if needed); self-contained relative to ordering (script `2026-06-004-foo.sh` may assume `2026-05-007-bar.sh` has run, but never that "we were on version X when this runs"); order-stable.
 **Dependencies**: W10, W9.
 **Complexity**: H.
 **Risk**: H. Mitigated by dry-run on control-plane first; serial; rescue snapshot still applies.
@@ -551,7 +552,93 @@ The holistic plan is delivered when:
 
 ---
 
-## 14. Change Log
+## 14. Upgrade Compatibility Model
+
+Locked policy: **skip-multiple ALLOWED**. The operator on `installed_platform_version = 2026.04.1` can click "Upgrade to 2026.08.3" and the cluster jumps straight there, applying everything pending in version order during one upgrade run. No requirement to install intermediate versions one-by-one.
+
+### What the operator sees
+
+When pre-flight runs for a multi-version gap, the UI enumerates exactly what will happen:
+
+```
+Upgrading from 2026.04.1 → 2026.08.3
+
+Pending platform-migrations (12):
+  m0207  Add platform_baselines table
+  m0208  Reseed host-config allow-list for fs.inotify
+  ...
+  m0218  Bump CNPG chart from 0.28.2 to 0.29.0
+
+Pending host-migrations (3):
+  2026-05-001  Create platform-ops group on every node
+  2026-06-004  chattr +i /etc/platform/cosign.pub
+  2026-07-002  Bump kernel.pid_max ceiling
+
+k3s version: 1.30.2 → 1.32.1
+  Will be split into 2 serial SUC Plans (Rancher policy refuses skip-a-minor):
+    Plan A: 1.30.2 → 1.31.5 (drain one node at a time)
+    Plan B: 1.31.5 → 1.32.1 (drain one node at a time)
+
+⚠ BREAKING changes in the gap (must be acknowledged):
+  ☐ 2026.05.2 — Stalwart RocksDB migration; requires 30min mail downtime
+  ☐ 2026.07.1 — Tenant API contract change in /api/v1/tenants/:id/quota
+
+[Confirm BREAKING acknowledgments above to enable Apply]
+```
+
+Auto-update behaves identically: a release whose CHANGELOG has `### BREAKING` (or any release in the gap to a non-BREAKING target has BREAKING in between) halts auto-application with the same UI surface.
+
+### The mechanism
+
+| Layer | Mechanism | Skip-multiple? |
+|---|---|---|
+| Platform image | Cluster jumps straight to target tag via Flux re-pin; intermediate images never installed | Yes (target image bundles all historic migrations) |
+| Platform-migrations | Runner reads `platform_migrations` table, applies all unapplied entries in `(version, name)` order; advisory-locked | Yes |
+| Host-migrations | Runner reads per-node `applied-host-migrations` ConfigMap, applies all unapplied scripts in version order | Yes |
+| apt/dnf packages | Desired-state convergence; not version-sequential | Yes (trivially) |
+| sysctls / kernel modules / ulimits | Desired-state convergence | Yes |
+| k3s | SUC Plans serially; pre-flight refuses skip-a-minor and synthesises N hops if needed | **No** (Rancher policy; locked decision #8) |
+| Kernel | apt/dnf-managed; distro handles ordering | Yes |
+| `platform-ops` binary | Self-upgrade pulls target version directly | Yes |
+
+### Migration-author constraints
+
+Every platform-migration AND host-migration MUST be:
+
+1. **Idempotent** — re-running on a node where it already applied is a no-op. Platform-migrations: use `IF NOT EXISTS` / `CREATE OR REPLACE` / guarded DDL. Host-migrations: marker files in `/var/lib/platform/host-migrations/<id>.applied`.
+2. **Self-contained relative to ordering** — depends only on the state left by previously-numbered migrations. Bad: "assumes 2026.06.1 has been running for 5 minutes." Good: "assumes migration `m0207` has been applied (asserts `SELECT 1 FROM platform_migrations WHERE version='m0207'`)."
+3. **Order-stable** — its position in the sequence is the contract. Renaming or renumbering a shipped migration is forbidden. CI guard refuses PRs that rewrite history.
+4. **Self-validating where possible** — refuses to run if pre-conditions aren't met, with a clear operatorError. Allows the runner to halt cleanly and surface a real diagnostic.
+
+Enforcement: `scripts/ci-migration-idempotency.sh` runs in PR CI. Parses every TS migration for forbidden patterns; shellchecks every host-migration; refuses renaming of any committed migration file.
+
+### BREAKING in the gap — UX detail
+
+When `installed=2026.04.1` and `target=2026.08.3`, pre-flight reads CHANGELOG sections for every release in the half-open range `(installed, target]`:
+
+- For each section containing `### BREAKING`, surface as a separate acknowledgment row.
+- Operator must check EVERY BREAKING checkbox before Apply enables.
+- Auto-update (staging) halts if ANY BREAKING release sits in the gap. Bell-icon notification fires; operator must acknowledge from admin UI before auto-update resumes for that target.
+- BREAKING release reached without acknowledgment = `UPGRADE_BREAKING_NOT_ACKNOWLEDGED` operatorError; run halts at pre-flight, no destructive step taken.
+
+### What happens if a multi-version run fails partway
+
+- Platform-migration N+1 fails: runner halts. `platform_migrations` table shows m0207...m0214 applied, m0215 marked `failed` with error_text. Operator-resumable from m0215 once the underlying issue is fixed.
+- Host-migration on node X fails: runner halts on that node. Other nodes continue (each is independent). Per-node ConfigMap shows `2026-06-004` `failed`. Operator can resume per-node.
+- k3s SUC Plan A succeeds, Plan B fails: cluster is on intermediate k3s version. Pre-flight on next attempt refuses skip-a-minor from the resumed state too. Operator either fixes Plan B's blocker or rolls back.
+- Cluster has rescue snapshot from before the run started (locked decision #15). Worst case: full rollback.
+
+### What this rules out
+
+- **Downgrade**: not supported by this model. Platform-migrations are forward-only (`CLUSTER_UPGRADE_ROADMAP.md` locked decision #5). Downgrade = rollback to a snapshot.
+- **Out-of-order migration**: forbidden by CI guard. The migration registry refuses to apply m0210 if m0207 is unapplied.
+- **Renaming/renumbering shipped migrations**: forbidden by CI guard.
+- **k3s skip-a-minor**: forbidden by Rancher policy; pre-flight catches.
+
+---
+
+## 15. Change Log
 
 - 2026-05-23 — Initial holistic plan committed after multi-round planning session that folded versioning, release cycle, CI/CD docs, OSS readiness, OS-level convergence, DR, and operator CLI into one umbrella covering and amending `CLUSTER_UPGRADE_ROADMAP.md`.
 - 2026-05-23 (revision) — Revised Decisions 17 + 18 from "Go binary + shared Go library" to "TypeScript binary (pkg/bun-compile) + direct module import". Triggered by parallel agent confirming orchestration logic lives canonically in TS modules (heavy work delegated to spawned Jobs); porting to Go would re-implement 4,000–8,000 LOC with perpetual maintenance overhead for mostly aesthetic gains. CLI moved to critical path (PR 9, was PR 9.5) so failure-mode/DR tooling exists from day-1 and parallel agent's snapshot primitives can be wrapped in PR 10. Controller+CLI pair PRs collapsed (W12/W13.5, W13/W11.5, W16/W16.5 each become single PRs since both surfaces import the same module). PR count: 22 → 20. Estimated calendar saving: ~3–4 weeks. Optional ~500-LOC Go wrapper for the self-upgrade + cosign-verify loop noted as deferred follow-up for static-binary purity on the security-critical bit.
+- 2026-05-25 — Added Decision 21 (upgrade compatibility model: skip-multiple ALLOWED). Added new §14 with operator-experience walkthrough, mechanism table, migration-author constraints (idempotent + self-contained + order-stable), BREAKING-walks-the-gap UX, failure-mode behaviour, and what the model rules out. Updated W9 + W10c with migration-discipline notes and `scripts/ci-migration-idempotency.sh` CI guard. Renumbered Change Log §14 → §15.
