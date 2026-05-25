@@ -20,7 +20,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ARTIFACTS="mail-pg-app-credentials|mail-db-rw|STALWART_PG_|mail_pg|mailPg|render-config"
-IGNORE="docs/|\.claude/worktrees/.*/memory/|MAIL_PG_PG_MAJOR_UPGRADE|\.md$|ci-mail-pg-removal-check\.sh|stalwart-016-spike-pg|mail-db/|no longer needed|Phase 1.*RocksDB|RocksDB.*removed|removed.*RocksDB|entropy note on mail_pg|was required by"
+# Allow comments referencing the historical mail-pg/mail-db (e.g. for
+# context on why something was removed). Exclusions keep the guard
+# focused on code-level references.
+IGNORE="docs/|\.claude/worktrees/.*/memory/|MAIL_PG_PG_MAJOR_UPGRADE|\.md$|ci-mail-pg-removal-check\.sh|stalwart-016-spike-pg|mail-db/|no longer needed|Phase 1.*RocksDB|RocksDB.*removed|removed.*RocksDB|entropy note on mail_pg|was required by|^[^:]*:\s*[#/][/* ]*.*mail[-_]pg|^[^:]*:\s*[#/][/* ]*.*mail[-_]db|historically mail-pg|history.*mail-pg|legacy.*mail-pg|legacy.*mail-db"
 
 FOUND=$(grep -rE "$ARTIFACTS" "$REPO_ROOT" \
   --include="*.ts" \

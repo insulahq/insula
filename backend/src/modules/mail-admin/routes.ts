@@ -408,11 +408,14 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     handleRotateWebmailMasterPassword,
   );
 
-  // ─── Mail PVC storage (mail-pg-1) ─────────────────────────────────
+  // ─── Mail PVC storage (Stalwart data) ─────────────────────────────
   // GET reads live size + capacity + StorageClass.allowVolumeExpansion
-  // + (best-effort) used/free from a df probe inside the CNPG primary.
-  // PATCH online-grows; rejects shrink + same-size + SC-no-expansion
-  // up-front with explicit error codes the UI surfaces in <ErrorPanel>.
+  // + (best-effort) used/free from a df probe inside the Stalwart pod.
+  // Post-RocksDB-migration (2026-05-12) the data PVC is the
+  // stalwart-data local-path volume; pre-migration this read the
+  // mail-pg-1 CNPG PVC. PATCH online-grow was removed in the 2026-05-14
+  // streamline because local-path doesn't enforce quotas
+  // (`requests.storage` is informational after creation).
   app.get(
     '/admin/mail/pvc/storage',
     { preHandler: requireRole('super_admin') },
@@ -428,16 +431,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         app.log.warn({ err }, 'mail-admin: pvc storage read failed');
         throw new ApiError(
           'MAIL_PVC_READ_FAILED',
-          'Could not read mail-pg-1 PVC state — see server logs',
+          'Could not read Stalwart data PVC state — see server logs',
           503,
         );
       }
     },
   );
-  // PATCH /admin/mail/pvc/storage was the online-grow endpoint from
-  // the pre-RocksDB CNPG era. local-path (post-migration) does not
-  // quota; `requests.storage` is informational only after creation,
-  // so the resize endpoint was deleted in the 2026-05-14 streamline.
   // ci-no-longhorn: ignore
 
   // ─── Stalwart BlobStore (singleton) ──────────────────────────────

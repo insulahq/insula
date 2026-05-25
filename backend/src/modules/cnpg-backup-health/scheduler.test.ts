@@ -42,13 +42,13 @@ function mockDb(notifiedKeys: string[]) {
 }
 
 const HEALTHY: ClusterBackupHealth = {
-  clusterName: 'mail-pg',
-  namespace: 'mail',
+  clusterName: 'system-db',
+  namespace: 'platform',
   state: 'healthy',
   lastSuccessfulBackup: {
-    name: 'mail-pg-daily-1',
-    namespace: 'mail',
-    clusterName: 'mail-pg',
+    name: 'system-db-daily-1',
+    namespace: 'platform',
+    clusterName: 'system-db',
     method: 'barmanObjectStore',
     phase: 'completed',
     startedAt: '2026-05-06T10:00:00Z',
@@ -57,19 +57,19 @@ const HEALTHY: ClusterBackupHealth = {
   },
   mostRecentFailure: null,
   lastSuccessSecondsAgo: 3600,
-  scheduledBackups: ['mail-pg-daily'],
+  scheduledBackups: ['system-db-daily'],
   clusterHasBackupSpec: true,
 };
 
 const FAILING: ClusterBackupHealth = {
-  clusterName: 'mail-pg',
-  namespace: 'mail',
+  clusterName: 'system-db',
+  namespace: 'platform',
   state: 'failing',
   lastSuccessfulBackup: HEALTHY.lastSuccessfulBackup,
   mostRecentFailure: {
-    name: 'mail-pg-daily-2',
-    namespace: 'mail',
-    clusterName: 'mail-pg',
+    name: 'system-db-daily-2',
+    namespace: 'platform',
+    clusterName: 'system-db',
     method: 'barmanObjectStore',
     phase: 'failed',
     startedAt: '2026-05-07T03:15:00Z',
@@ -77,7 +77,7 @@ const FAILING: ClusterBackupHealth = {
     error: 'cannot proceed with the backup as the cluster has no backup section',
   },
   lastSuccessSecondsAgo: 17 * 3600,
-  scheduledBackups: ['mail-pg-daily'],
+  scheduledBackups: ['system-db-daily'],
   clusterHasBackupSpec: true,
 };
 
@@ -112,9 +112,9 @@ describe('cnpg-backup-health scheduler runTick', () => {
     expect(payload.type).toBe('error');
     expect(payload.resourceType).toBe('cnpg_backup_failure');
     // dedup key = `<namespace>/<backup-name>`
-    expect(payload.resourceId).toBe('mail/mail-pg-daily-2');
+    expect(payload.resourceId).toBe('platform/system-db-daily-2');
     // Title carries cluster identity
-    expect(payload.title).toContain('mail/mail-pg');
+    expect(payload.title).toContain('platform/system-db');
     // Message includes the upstream error
     expect(payload.message).toContain('no backup section');
   });
@@ -122,25 +122,25 @@ describe('cnpg-backup-health scheduler runTick', () => {
   it('already-notified failure → dedup, no second notification', async () => {
     readHealthMock.mockResolvedValue([FAILING]);
     // Pre-load the dedup table so this Backup CR is already known
-    await runTick(mockDb(['mail/mail-pg-daily-2']), {} as never, NOOP_LOG);
+    await runTick(mockDb(['platform/system-db-daily-2']), {} as never, NOOP_LOG);
 
     expect(notifyUsersMock).not.toHaveBeenCalled();
     expect(resolveRecipientsMock).not.toHaveBeenCalled();
   });
 
   it('multiple clusters failing → one notification per Backup CR', async () => {
-    const PLATFORM_FAILING: ClusterBackupHealth = {
+    const AUX_FAILING: ClusterBackupHealth = {
       ...FAILING,
-      clusterName: 'postgres',
+      clusterName: 'postgres-aux',
       namespace: 'platform',
       mostRecentFailure: {
         ...FAILING.mostRecentFailure!,
-        name: 'postgres-system-backup-3',
+        name: 'postgres-aux-system-backup-3',
         namespace: 'platform',
-        clusterName: 'postgres',
+        clusterName: 'postgres-aux',
       },
     };
-    readHealthMock.mockResolvedValue([FAILING, PLATFORM_FAILING]);
+    readHealthMock.mockResolvedValue([FAILING, AUX_FAILING]);
     resolveRecipientsMock.mockResolvedValue(['admin-1']);
 
     await runTick(mockDb([]), {} as never, NOOP_LOG);
@@ -148,8 +148,8 @@ describe('cnpg-backup-health scheduler runTick', () => {
     expect(notifyUsersMock).toHaveBeenCalledTimes(2);
     const ids = notifyUsersMock.mock.calls.map((c) => c[2].resourceId).sort();
     expect(ids).toEqual([
-      'mail/mail-pg-daily-2',
-      'platform/postgres-system-backup-3',
+      'platform/postgres-aux-system-backup-3',
+      'platform/system-db-daily-2',
     ]);
   });
 

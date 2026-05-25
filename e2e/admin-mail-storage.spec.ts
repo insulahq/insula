@@ -31,7 +31,7 @@ async function injectAdminAuthSlow(page: import('@playwright/test').Page) {
 
 const baseStorageMock = {
   data: {
-    pvcName: 'mail-pg-1',
+    pvcName: 'mail-stack-data',
     namespace: 'mail',
     requestedBytes: 5 * 1024 ** 3,
     capacityBytes: 5 * 1024 ** 3,
@@ -60,7 +60,7 @@ test.describe('Admin Email Management → Mail Server Storage card', () => {
           contentType: 'application/json',
           body: JSON.stringify({
             data: {
-              pvcName: 'mail-pg-1',
+              pvcName: 'mail-stack-data',
               requestedBytes: 10 * 1024 ** 3,
               lastResizedAt: new Date().toISOString(),
             },
@@ -126,7 +126,7 @@ test.describe('Admin Email Management → Mail Server Storage card', () => {
     await btn.click();
     await expect(page.getByTestId('mail-pvc-resize-modal')).toBeVisible();
     const modal = page.getByTestId('mail-pvc-resize-modal');
-    await expect(modal).toContainText('Resize mail-pg-1 storage to 10 GiB');
+    await expect(modal).toContainText('Resize mail-stack-data storage to 10 GiB');
     await expect(modal).toContainText('Online expansion');
     await expect(modal).toContainText('Shrinking is NOT supported');
   });

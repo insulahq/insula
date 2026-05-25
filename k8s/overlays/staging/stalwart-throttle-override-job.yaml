@@ -17,15 +17,16 @@
 #   land. Idempotent re-runs are cheap.
 #
 #   The CronJob also re-asserts the override after Stalwart restarts
-#   (rolling deploy, node drain, mail-db PITR restore) — historically
-#   the throttle would silently re-enable from PG defaults.
+#   (rolling deploy, node drain) — historically the throttle would
+#   silently re-enable from the data-store defaults.
 #
 # Why Stalwart settings live outside k8s:
-#   Stalwart's MtaInboundThrottle config lives in mail-db (CNPG), not
-#   in any k8s resource. They're created at first install and only
-#   tunable via stalwart-cli `update MtaInboundThrottle <id>` against
-#   the JMAP mgmt API. Flux can't reconcile this; a scheduled Job
-#   invoking the cli is the canonical approach.
+#   Stalwart's MtaInboundThrottle config lives in the Stalwart data
+#   store (RocksDB), not in any k8s resource. They're created at
+#   first install and only tunable via stalwart-cli `update
+#   MtaInboundThrottle <id>` against the JMAP mgmt API. Flux can't
+#   reconcile this; a scheduled Job invoking the cli is the canonical
+#   approach.
 #
 # Idempotency:
 #   `cli update --field enable=false` is idempotent. Re-running the
