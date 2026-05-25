@@ -39,9 +39,19 @@ BEGIN
   END IF;
 END $$;
 
--- ─── Drop CHECK + columns ───────────────────────────────────────────
+-- ─── Drop CHECK constraints + columns ──────────────────────────────
+-- 2026-05-25 (caught on staging): the `ssh_must_have_credentials`
+-- CHECK constraint hard-references `'ssh'::storage_type`. After the
+-- rename-dance below renames the original enum to
+-- `storage_type_with_nfs`, that constraint's literal coerces to the
+-- OLD enum type. The subsequent `ALTER COLUMN TYPE storage_type` (new
+-- enum) then fails with "operator does not exist:
+-- storage_type <> storage_type_with_nfs" because Postgres can't
+-- compare across enum types. Drop it here; recreate after the
+-- column is on the new enum.
 ALTER TABLE backup_configurations
-  DROP CONSTRAINT IF EXISTS backup_configurations_nfs_required;
+  DROP CONSTRAINT IF EXISTS backup_configurations_nfs_required,
+  DROP CONSTRAINT IF EXISTS ssh_must_have_credentials;
 
 ALTER TABLE backup_configurations
   DROP COLUMN IF EXISTS nfs_server,
@@ -93,3 +103,15 @@ BEGIN
     EXECUTE 'DROP TYPE "storage_type_with_nfs"';
   END IF;
 END $$;
+
+-- ─── Recreate the CHECK constraint with the new enum type ──────────
+-- We dropped ssh_must_have_credentials above to allow the column type
+-- swap; restore it now that the column points at the new enum. NOT
+-- VALID matches the pre-Phase-8 shape (the original migration 0009
+-- created it that way; pre-existing rows are not re-validated).
+ALTER TABLE backup_configurations
+  ADD CONSTRAINT ssh_must_have_credentials CHECK (
+    ("storageType" <> 'ssh'::storage_type)
+    OR (ssh_key_encrypted IS NOT NULL)
+    OR (ssh_password_encrypted IS NOT NULL)
+  ) NOT VALID;
