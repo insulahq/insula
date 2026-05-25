@@ -773,10 +773,27 @@ export const backupConfigurations = pgTable('backup_configurations', {
   // DB rows were intact.
   retentionDays: integer('retention_days').notNull().default(30),
   scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
+  // `enabled` (0/1) — operator on/off switch per target. `enabled=0`
+  // hides the target from binding pickers and from the shim
+  // reconciler. The de-facto live flag — set this when adding /
+  // removing a target.
   enabled: integer('enabled').notNull().default(1),
-  // Exactly one row per cluster may have active=true. A partial unique
-  // index (`WHERE active=true`) in migration 0045 enforces that. The
-  // Longhorn reconciler syncs the active row to BackupTarget/default.
+  // `active` (boolean) — **Longhorn-BackupTarget-only** designator.
+  // Exactly one row per cluster may have active=true (partial unique
+  // index `WHERE active=true` in migration 0045). The Longhorn
+  // reconciler syncs the active row to Longhorn's single BackupTarget
+  // CR, which is what powers native PV-level snapshots offsite.
+  //
+  // **Not consulted by the shim path** (postgres barman / etcd-snap /
+  // tenant-bundles / mail-snapshot) — those use backup_target_assignments
+  // per class. A target can be enabled+bound-to-a-shim-class but
+  // active=false; backups still flow via the shim. Activating a target
+  // is a separate operator choice if they want Longhorn PV snapshots
+  // mirrored offsite in addition to the per-class restic flows.
+  //
+  // Default false is intentional: fresh clusters get no Longhorn
+  // BackupTarget until the operator picks one. Mail/system/tenant
+  // DR works through the shim regardless.
   active: boolean('active').notNull().default(false),
   lastTestedAt: timestamp('last_tested_at'),
   lastTestStatus: varchar('last_test_status', { length: 50 }),
