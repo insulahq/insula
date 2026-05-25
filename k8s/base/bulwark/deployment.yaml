@@ -141,10 +141,13 @@ spec:
               fi
               exit 0
           securityContext:
-            # cp needs to write as root to preserve the bulwark-owned
-            # files we're copying in. The fsGroup on the Pod ensures
-            # the data dir is group-writable post-init.
-            runAsUser: 0
+            # No runAsUser override — the Pod-level securityContext
+            # (runAsNonRoot:true, runAsUser:1000) applies. Source
+            # files in /standby-data/bulwark/ are already owned by
+            # UID 1000 (restic restore preserved ownership; Bulwark
+            # writes everything as 1000). cp -a from UID 1000 to a
+            # 1000-owned dir produces 1000-owned files — no root
+            # needed for ownership.
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
