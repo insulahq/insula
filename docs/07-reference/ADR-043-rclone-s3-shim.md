@@ -19,7 +19,7 @@
 
 **What changed (2026-05-25)** — see `chore(backup-rclone-shim): drop NFS support` commit:
 
-- Migration 0026 drops the four `nfs_*` columns, the `backup_configurations_nfs_required` CHECK, and narrows the `storage_type` enum to `(ssh, s3, cifs)`.
+- Migration 0027 drops the four `nfs_*` columns, the `backup_configurations_nfs_required` CHECK, and narrows the `storage_type` enum to `(ssh, s3, cifs)`. (Number 0026 was already taken by `drop_pg_dump_schedules`.)
 - `packages/api-contracts/src/backup-rclone-shim.ts` narrows the `targetStorageType` zod enum.
 - `backend/src/modules/backup-rclone-shim/` removes every `case 'nfs':` branch (renderer + service + status + apply-assignment).
 - `backend/src/modules/backup-config/longhorn-reconciler.ts` narrows `clearBackupTarget`'s `kind` parameter.
