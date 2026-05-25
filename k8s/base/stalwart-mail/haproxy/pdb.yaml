@@ -1,0 +1,25 @@
+# PodDisruptionBudget for the stalwart-haproxy DaemonSet.
+#
+# The DaemonSet itself is reconciler-managed (created by platform-api's
+# haproxy-builder, not Flux — see haproxy/kustomization.yaml header).
+# This PDB is Flux-managed because the selector + spec are static —
+# it correctly gates pods regardless of whether the DaemonSet exists.
+# When the DS is absent (port-exposure mode = thisNodeOnly), the PDB
+# selects zero pods and is effectively inert.
+#
+# maxUnavailable: 1 — voluntary disruption walks one node at a time.
+# On a 3-node staging cluster this means at most 1/3 of mail ingress
+# capacity is offline during a rolling drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: stalwart-haproxy
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-ingress
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stalwart-haproxy
