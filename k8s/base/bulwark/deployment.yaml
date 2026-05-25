@@ -215,6 +215,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+              # A2.5 (2026-05-25): consolidated mail-stack PVC. Bulwark
+              # subtree at subPath=bulwark; Stalwart sees the parent dir
+              # via subPath=stalwart. Both mount the same mail-stack-data
+              # PVC on the active mail node.
+              subPath: bulwark
             # 2026-05-18: shadow /app/.next/static/css with the
             # initContainer-prepared CSS (pristine bundle + appended
             # feature-visibility overrides). The image's layer is read-
@@ -250,7 +255,12 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: bulwark-data
+            # A2.5 (2026-05-25): switched from the old Longhorn `bulwark-data`
+            # PVC to the consolidated `mail-stack-data` local-path PVC.
+            # Co-located with Stalwart on mailActiveNode. Legacy bulwark-data
+            # PVC is kept for 48-72h safety period (see
+            # docs/02-operations/MAIL_STACK_CONSOLIDATION.md Stage 3).
+            claimName: mail-stack-data
         # 2026-05-18: ephemeral scratch space the initContainer
         # populates with the modified CSS. Replaced on every Pod start.
         - name: css-overlay

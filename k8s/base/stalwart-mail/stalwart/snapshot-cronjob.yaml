@@ -92,8 +92,14 @@ spec:
                       key: token
                       optional: true
               volumeMounts:
+                # A2.5 (2026-05-25): mount the consolidated mail-stack
+                # PVC root (no subPath) so both stalwart/ + bulwark/
+                # subtrees end up in the same restic snapshot. The
+                # snapshot-upload.sh script reads DATA_DIR=/var/lib/mail-stack
+                # by default, with a legacy fallback to /var/lib/stalwart/data
+                # for pre-A2.5 clusters.
                 - name: stalwart-data
-                  mountPath: /var/lib/stalwart/data
+                  mountPath: /var/lib/mail-stack
                   readOnly: true
               resources:
                 requests:
@@ -105,4 +111,5 @@ spec:
           volumes:
             - name: stalwart-data
               persistentVolumeClaim:
-                claimName: stalwart-rocksdb-data
+                # A2.5 (2026-05-25): consolidated PVC.
+                claimName: mail-stack-data
