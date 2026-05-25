@@ -363,4 +363,63 @@ export async function ensureMailStackPlacementApplied(
   // restore-state init container the next time Stalwart's pod is
   // recreated, which is wrong.
   await applyDeploymentAffinity(apps, activeNode, /* allowRestore */ false);
+
+  // A3 (2026-05-25): label secondary/tertiary nodes for the
+  // mail-stack-standby-replicate CronJob nodeSelector. Idempotent.
+  // Always invoked (even when no standby nodes are configured) so the
+  // label gets REMOVED from previously-elected nodes when the operator
+  // downgrades from HA back to single-node.
+  const standbyNodes: string[] = [];
+  if (row?.mailSecondaryNode) standbyNodes.push(row.mailSecondaryNode);
+  if (row?.mailTertiaryNode) standbyNodes.push(row.mailTertiaryNode);
+  const core = kc.makeApiClient(k8s.CoreV1Api);
+  await reconcileMailStandbyLabel(core, standbyNodes, opts.logger);
+}
+
+/**
+ * A3 (2026-05-25): ensure exactly the supplied set of nodes carries
+ * the `platform.example.test/mail-standby=true` label. Other
+ * nodes get the label removed (cleanup if a previous secondary was
+ * de-elected, or HA disabled entirely). Idempotent.
+ */
+async function reconcileMailStandbyLabel(
+  core: import('@kubernetes/client-node').CoreV1Api,
+  standbyNodes: readonly string[],
+  logger: PlacementOptions['logger'],
+): Promise<void> {
+  const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
+  const STANDBY_LABEL = 'platform.example.test/mail-standby';
+  const wantSet = new Set(standbyNodes);
+
+  let allNodes: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> = [];
+  try {
+    const res = await core.listNode() as { items?: typeof allNodes };
+    allNodes = res.items ?? [];
+  } catch (err) {
+    logger?.warn?.('reconcileMailStandbyLabel: listNode failed —', err);
+    return;
+  }
+
+  for (const node of allNodes) {
+    const name = node.metadata?.name;
+    if (!name) continue;
+    const hasLabel = node.metadata?.labels?.[STANDBY_LABEL] === 'true';
+    const shouldHave = wantSet.has(name);
+    if (hasLabel === shouldHave) continue;
+
+    // JSON-Patch: add or remove the label. Path uses ~1 to escape '/'.
+    const escaped = STANDBY_LABEL.replace(/~/g, '~0').replace(/\//g, '~1');
+    const patch = shouldHave
+      ? [{ op: 'add', path: `/metadata/labels/${escaped}`, value: 'true' }]
+      : [{ op: 'remove', path: `/metadata/labels/${escaped}` }];
+    try {
+      await core.patchNode(
+        { name, body: patch } as unknown as Parameters<typeof core.patchNode>[0],
+        JSON_PATCH,
+      );
+      logger?.warn?.(`reconcileMailStandbyLabel: ${shouldHave ? 'added' : 'removed'} ${STANDBY_LABEL}=true on node ${name}`);
+    } catch (err) {
+      logger?.warn?.(`reconcileMailStandbyLabel: patch ${name} failed (non-fatal) —`, err);
+    }
+  }
 }
