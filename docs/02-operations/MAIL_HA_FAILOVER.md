@@ -15,6 +15,38 @@
 - Edge cases observed during live destructive testing.
 - Diagnostic queries + recovery commands.
 
+## Critical mental model — the PVC does NOT migrate with the pod
+
+The single most important thing to understand before reading this
+runbook: when a failover happens, the `mail-stack-data` PVC on the
+dying node is **destroyed** and a **fresh empty PVC** is created on
+the target node. The data does NOT follow the pod.
+
+This is intentional. The PVC uses `local-path` provisioner so files
+live directly on one node's NVMe — the storage class delivers RocksDB
+the I/O latency it needs (Longhorn would migrate the PVC across
+nodes but is 3-7× slower per the 2026-05-22 storage perf bench;
+that trade-off is rejected).
+
+So "data preservation across node failure" comes from three layers
+of restore, NOT from the PVC moving:
+
+| Layer | Trigger | Latency | Source |
+|---|---|---|---|
+| **1. A3 standby DaemonSet FAST PATH** (default) | failover lands on a standby-labelled node with fresh `.standby-complete` | sub-second local copy | `/var/lib/mail-stack-standby/{stalwart,bulwark}/` on the new node |
+| **2. restic restore** (fallback) | FAST PATH unavailable or stale (>30 min) | seconds-to-minutes via shim → upstream | restic repo (offsite per operator's BackupStore config) |
+| **3. Fresh-start** (last resort) | both above fail | instant | empty PVC; Stalwart RocksDB initialises fresh, Bulwark generates a new admin.json |
+
+For Bulwark specifically: if it lands in fresh-start mode, the
+admin password is a new scrypt hash → operator must reset via the
+admin panel or check the pod logs for the printed bootstrap
+password. Stalwart's user mailboxes / mail metadata are similarly
+gone (all data was in the destroyed PVC).
+
+**In normal operation**, layer 1 (FAST PATH) handles the failover
+silently and operators never see data loss. The other layers are
+defence-in-depth.
+
 ## Architecture
 
 ```
