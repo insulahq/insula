@@ -1176,6 +1176,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
               'mail port-exposure startup reconcile failed; cluster may drift from DB until next operator action',
             );
           });
+
+        // A1 follow-up (2026-05-25): ensure both stalwart-mail AND
+        // bulwark Deployments are pinned to mailActiveNode on every
+        // platform-api boot. Bulwark's static manifest dropped the
+        // topologySpread + nodeSelector — without this reconciler a
+        // fresh Bulwark pod would schedule on any node, breaking the
+        // co-location invariant. Idempotent + fire-and-forget.
+        const { ensureMailStackPlacementApplied } = await import(
+          './modules/mail-admin/placement.js'
+        );
+        void ensureMailStackPlacementApplied(app.db, {
+          kubeconfigPath: kubePath,
+          logger: {
+            warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+          },
+        }).catch((err: unknown) => {
+          app.log.warn(
+            { err },
+            'mail-stack placement startup reconcile failed; bulwark + stalwart may not be co-located until next migration',
+          );
+        });
       } catch (err) {
         // Catch covers the entire mail-related scheduler block above
         // (mail-imapsync, mail-stats, cnpg-backup-health, dr-watcher,
