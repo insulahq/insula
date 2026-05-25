@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2,
   TestTube, X, Key, Copy, ExternalLink, HardDrive, Settings, Archive as ArchiveIcon,
-  Network,
+  Network, Package,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import StatCard from '@/components/ui/StatCard';
@@ -35,7 +35,6 @@ const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-6
 
 type DomainsTab = 'domains' | 'relays';
 type OpsTab = 'placement' | 'backups' | 'storage';
-type BackupTab = 'snapshot' | 'archive';
 type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
 
 /**
@@ -62,7 +61,6 @@ type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
 export default function EmailManagement() {
   const [domainsTab, setDomainsTab] = useState<DomainsTab>('domains');
   const [opsTab, setOpsTab] = useState<OpsTab>('placement');
-  const [backupTab, setBackupTab] = useState<BackupTab>('snapshot');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('mail');
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
@@ -131,17 +129,18 @@ export default function EmailManagement() {
       >
         <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
           {[
-            { key: 'mail' as SettingsTab, label: 'Mail Settings' },
-            { key: 'webmail' as SettingsTab, label: 'Webmail' },
-            { key: 'bundle-engine' as SettingsTab, label: 'Backup Engine' },
+            { key: 'mail' as SettingsTab, label: 'Server', icon: Server },
+            { key: 'webmail' as SettingsTab, label: 'Webmail', icon: Mail },
+            { key: 'bundle-engine' as SettingsTab, label: 'Backup Engine', icon: Package },
           ].map((t) => (
             <button
               key={t.key}
               type="button"
               onClick={() => setSettingsTab(t.key)}
-              className={`border-b-2 px-4 py-2.5 text-sm font-medium ${settingsTab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              className={`flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium ${settingsTab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
               data-testid={`settings-tab-${t.key}`}
             >
+              <t.icon size={13} />
               {t.label}
             </button>
           ))}
@@ -155,7 +154,7 @@ export default function EmailManagement() {
       <MailSectionCard
         icon={Server}
         title="Operations"
-        summary="Placement & migration • Backups (snapshot + archive) • Storage"
+        summary="Placement & migration • Mail archive (DR export) • Storage"
         dataTestId="mail-section-operations"
         storageKey="operations"
       >
@@ -201,38 +200,27 @@ export default function EmailManagement() {
 
         {opsTab === 'backups' && (
           <div className="space-y-3">
-            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
-              {[
-                { key: 'snapshot' as BackupTab, label: 'Snapshot (restic, 2-min interval)' },
-                { key: 'archive' as BackupTab, label: 'Archive (DR export)' },
-              ].map((t) => (
-                <button
-                  key={t.key}
-                  type="button"
-                  onClick={() => setBackupTab(t.key)}
-                  className={`border-b-2 px-4 py-2 text-sm font-medium ${
-                    backupTab === t.key
-                      ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-                  }`}
-                  data-testid={`backup-tab-${t.key}`}
-                >
-                  {t.label}
-                </button>
-              ))}
+            {/* Mail backup vocabulary cheatsheet — three distinct
+                "backup" features overlap in this app, and operators
+                routinely confuse them. Keep the disambiguation
+                inline so they don't have to dig into docs. */}
+            <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 space-y-1">
+              <p className="font-semibold">Three distinct mail-backup paths — pick by recovery need:</p>
+              <ul className="space-y-0.5 ml-4 list-disc">
+                <li>
+                  <strong>Archive</strong> (below) — Stalwart-native <code className="font-mono">stalwart -e</code> LZ4 export. Whole-server point-in-time. Use for DR drills + monthly cold backup.
+                </li>
+                <li>
+                  <strong>Snapshots</strong> — restic CronJob of the mail PVC, configured under{' '}
+                  <a href="/backups/system?tab=object" className="font-medium underline">System Backups → Object Backups</a>.
+                </li>
+                <li>
+                  <strong>Per-tenant bundles</strong> — mailbox-only capture via the engine picked in{' '}
+                  Settings → Backup Engine. Used by the Plesk-style tenant restore cart.
+                </li>
+              </ul>
             </div>
-            {backupTab === 'snapshot' && (
-              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  Mail snapshot health, restic stats, schedule + Trigger Now have moved to{' '}
-                  <a href="/backups/system?tab=object" className="font-medium text-brand-600 dark:text-brand-400 hover:underline">
-                    System Backups → Object Backups
-                  </a>{' '}
-                  alongside the other system-side backup paths.
-                </p>
-              </div>
-            )}
-            {backupTab === 'archive' && <MailArchiveCard />}
+            <MailArchiveCard />
           </div>
         )}
 

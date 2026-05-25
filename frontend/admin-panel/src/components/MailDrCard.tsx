@@ -385,7 +385,9 @@ export default function MailDrCard() {
               <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
                 Restore Stalwart to the primary node (
                 <code className="font-mono">{current.primaryNode}</code>
-                ). Data is rsynced back.
+                ). Uses FAST PATH if the primary still has pre-staged standby
+                data (≤ 5 min stale); otherwise data is rsynced from the
+                currently-active node.
               </p>
               <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 mb-2">
                 <Info size={12} className="shrink-0" />
@@ -424,8 +426,11 @@ export default function MailDrCard() {
           {showMigrateForm && (
             <div className="mt-3 space-y-2">
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Migrate RocksDB data to a specific node via rsync. Use for planned maintenance
-                or to resize by specifying a new size (optional).
+                Migrate RocksDB data to a specific node. Use for planned maintenance
+                or one-off moves to nodes outside the primary/secondary/tertiary set.
+                {' '}If the target is a standby-labelled node, the FAST PATH uses
+                pre-staged data (≤ 5 min stale); otherwise the data is rsynced from
+                the active node mid-cutover.
               </p>
               <div className="flex items-end gap-2 flex-wrap">
                 <div>
