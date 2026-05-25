@@ -62,8 +62,15 @@ function createMockDb(opts: MockDbOpts = {}) {
     return chain;
   });
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+  // buildDrRows now wraps both selects in db.transaction(). The mock
+  // tx exposes the same select chain so the existing fixture works
+  // transparently — the tx callback runs synchronously against the
+  // same queue cursor.
+  const txFn = vi.fn().mockImplementation(async (cb: (tx: { select: typeof selectFn }) => unknown) =>
+    cb({ select: selectFn }),
+  );
   return {
-    db: { select: selectFn } as unknown as Parameters<typeof buildDrRows>[0],
+    db: { select: selectFn, transaction: txFn } as unknown as Parameters<typeof buildDrRows>[0],
   };
 }
 
@@ -247,6 +254,22 @@ describe('buildDrRows', () => {
     const result = await buildDrRows(db);
     expect(result.backupConfigurations).toEqual([]);
     expect(result.backupTargetAssignments).toEqual([]);
+  });
+
+  // Documenting intentional behavior: the Zod schemas have NO
+  // cross-array FK constraint. The transaction wrapping in
+  // buildDrRows prevents the orphan-assignment scenario at write
+  // time (REPEATABLE READ snapshot), but Unit B's importer must
+  // still INSERT configs before assignments to honor the live
+  // FK (ON DELETE RESTRICT) — see project memory.
+  it('serialises orphan assignments without rejection (Unit B importer is the FK enforcer)', async () => {
+    const { db } = createMockDb({
+      configRows: [], // no configs
+      assignmentRows: [SAMPLE_ASSIGNMENT_ROW], // but assignments present
+    });
+    const result = await buildDrRows(db);
+    expect(result.backupConfigurations).toEqual([]);
+    expect(result.backupTargetAssignments).toHaveLength(1);
   });
 });
 
