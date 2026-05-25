@@ -379,20 +379,53 @@ export async function triggerRestoreBasedFailover(
     VALUES (${runId}, ${sourceNode}, ${targetNode}, 'queued', 'dr-watcher', 'preflight')
   `);
 
+  // Fix #3 (2026-05-25): only stamp 'failed-over' when migration
+  // actually succeeded. Pre-fix code did this unconditionally so a
+  // failed migration looked succeeded and dr-watcher refused to
+  // retry. Live failover test on staging hit the loop: PVC delete
+  // timed out → state wrongly went 'failed-over' → retry blocked.
+  //
+  // runMigrationStateMachine has a `failRun + return` pattern for
+  // intermediate failures (deletePvcAndWait timeout, createMailPvc
+  // failure, etc.) — it doesn't throw on those. So a try/catch on
+  // the call alone misses the dominant failure paths (code-review
+  // findings, 2026-05-25). Instead: post-call, read the
+  // mail_migration_runs row state and re-throw if it landed at
+  // 'failed'. dr-watcher's existing catch handler then sets
+  // mailDrState='degraded' so the next tick retries.
+  //
   // DR-mode flag: skip the on-demand snapshot (source unreachable).
-  await runMigrationStateMachine(runId, sourceNode, targetNode, {
-    ...deps,
-    kubeconfigPath: deps.kubeconfigPath,
-    logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
-  } as MigrationDeps, undefined, { skipFreshSnapshot: true }).catch(async (err) => {
+  try {
+    await runMigrationStateMachine(runId, sourceNode, targetNode, {
+      ...deps,
+      kubeconfigPath: deps.kubeconfigPath,
+      logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
+    } as MigrationDeps, undefined, { skipFreshSnapshot: true });
+  } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await db.execute(sql`
       UPDATE mail_migration_runs
       SET state = 'failed', error_message = ${errMsg}, finished_at = now()
       WHERE id = ${runId}
     `).catch(() => { /* best-effort */ });
-  });
+    throw err;
+  }
 
+  // Check the post-run state in DB to catch the `failRun + return`
+  // path that intermediate failures use. Without this check, a
+  // PVC-delete timeout silently returns from the state machine
+  // and execution falls through to the success-path stamp below.
+  const stateRows = await db.execute(sql`
+    SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
+  `) as { rows?: Array<{ state: string; error_message: string | null }> };
+  const stateRow = stateRows.rows?.[0];
+  if (stateRow && stateRow.state === 'failed') {
+    throw new Error(
+      `mail migration run ${runId} ended in 'failed' state: ${stateRow.error_message ?? 'no error message recorded'}`,
+    );
+  }
+
+  // Only reached on success — stamp the new active node + state.
   await db.update(systemSettings)
     .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
     .where(eq(systemSettings.id, SETTINGS_ID));
@@ -663,6 +696,14 @@ async function getMailPvcRequestedBytes(core: CoreV1Api): Promise<number> {
  * local-path PVCs are tied to a finalizer that runs the provisioner's
  * cleanup pod. Deletion blocks until the cleanup completes; we wait up
  * to `timeoutSeconds` for the apiserver to surface 404.
+ *
+ * Fix #2 (2026-05-25, A4 destructive test): when the source node's
+ * kubelet is dead, pods on it sit Terminating forever (kubelet never
+ * confirms delete). The PVC's `pvc-protection` finalizer keeps the
+ * PVC alive because at least one mounted pod still exists. Detect
+ * this case (no progress at 30s with pods still Terminating on a
+ * NotReady node) and force-delete the stuck pods, which releases
+ * the finalizer and lets normal PVC deletion proceed.
  */
 async function deletePvcAndWait(core: CoreV1Api, name: string, timeoutSeconds: number): Promise<void> {
   try {
@@ -671,10 +712,19 @@ async function deletePvcAndWait(core: CoreV1Api, name: string, timeoutSeconds: n
     if (isNotFound(err)) return; // already gone
     throw err;
   }
-  const deadline = Date.now() + timeoutSeconds * 1000;
+  const startMs = Date.now();
+  const deadline = startMs + timeoutSeconds * 1000;
+  let forceDeleteTried = false;
   while (Date.now() < deadline) {
     try {
       await core.readNamespacedPersistentVolumeClaim({ name, namespace: MAIL_NAMESPACE });
+      // After 30s of waiting, escalate: enumerate pods still mounting
+      // the PVC, force-delete any whose node is NotReady (kubelet won't
+      // confirm graceful termination, finalizer blocks PVC forever).
+      if (!forceDeleteTried && (Date.now() - startMs) >= 30_000) {
+        forceDeleteTried = true;
+        await forceDeleteStuckPodsOnDeadNodes(core, name);
+      }
       await sleep(2000);
     } catch (err) {
       if (isNotFound(err)) return;
@@ -686,6 +736,73 @@ async function deletePvcAndWait(core: CoreV1Api, name: string, timeoutSeconds: n
     `PVC ${MAIL_NAMESPACE}/${name} still exists after ${timeoutSeconds}s — finalizer may be stuck. Inspect with kubectl describe.`,
     500,
   );
+}
+
+/**
+ * Force-delete any pod still mounting the given PVC whose host node is
+ * NotReady. The kubelet on a dead node never confirms graceful
+ * termination, so pvc-protection blocks PVC deletion indefinitely.
+ *
+ * Best-effort: errors are logged and swallowed (the outer wait loop
+ * surfaces a clean timeout if this didn't resolve it).
+ */
+async function forceDeleteStuckPodsOnDeadNodes(
+  core: CoreV1Api,
+  pvcName: string,
+): Promise<void> {
+  // List all pods in mail ns. Filter to those volumes[] contains our PVC.
+  type PodShape = {
+    metadata?: { name?: string; deletionTimestamp?: string };
+    spec?: {
+      nodeName?: string;
+      volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>;
+    };
+  };
+  const podList = await core.listNamespacedPod({ namespace: MAIL_NAMESPACE }) as { items?: PodShape[] };
+  const pods = podList.items ?? [];
+  for (const pod of pods) {
+    const podName = pod.metadata?.name;
+    const nodeName = pod.spec?.nodeName;
+    const isTerminating = !!pod.metadata?.deletionTimestamp;
+    const mountsPvc = (pod.spec?.volumes ?? []).some(
+      (v) => v.persistentVolumeClaim?.claimName === pvcName,
+    );
+    // `!isTerminating` is belt-and-braces: the call sequence in
+    // runMigrationStateMachine is patchDeploymentReplicas(apps, 0) +
+    // waitForReplicaCount(apps, 0, 90) BEFORE deletePvcAndWait, so
+    // every pod listed here is either gone or Terminating already.
+    // The guard protects against a hypothetical future call-site that
+    // invokes deletePvcAndWait without first scaling Deployments down.
+    if (!podName || !nodeName || !isTerminating || !mountsPvc) continue;
+
+    // Check node Ready status. If True, leave the pod alone — kubelet
+    // is healthy and will eventually finalize the delete.
+    let nodeReady = true;
+    try {
+      const node = await core.readNode({ name: nodeName }) as {
+        status?: { conditions?: Array<{ type: string; status: string }> };
+      };
+      const readyCond = node.status?.conditions?.find((c) => c.type === 'Ready');
+      // Treat 'False' AND 'Unknown' as not-ready (kubelet not reporting).
+      nodeReady = readyCond?.status === 'True';
+    } catch {
+      nodeReady = false;
+    }
+    if (nodeReady) continue;
+
+    // Force-delete: grace 0 + propagation Background. Releases the PVC
+    // finalizer immediately.
+    try {
+      await core.deleteNamespacedPod({
+        name: podName,
+        namespace: MAIL_NAMESPACE,
+        gracePeriodSeconds: 0,
+        propagationPolicy: 'Background',
+      } as unknown as Parameters<typeof core.deleteNamespacedPod>[0]);
+    } catch {
+      // best-effort; the outer loop logs the timeout if this didn't help
+    }
+  }
 }
 
 /**
@@ -770,12 +887,21 @@ async function applyDeploymentAffinityOne(
   targetNode: string,
   allowRestore: boolean,
 ): Promise<void> {
+  // Fix #4 (2026-05-25): allow-restore annotation MUST live in
+  // spec.template.metadata.annotations (pod template) — NOT
+  // metadata.annotations (Deployment object). The restore-state init
+  // container reads /podinfo via downwardAPI which mounts
+  // pod.metadata.annotations, which inherits from the pod TEMPLATE.
+  // Pre-existing bug discovered during A4 destructive test on
+  // staging: the original code stamped the Deployment object's
+  // annotations, which never propagated to the pod, so the init
+  // container always saw allow-restore=false and fresh-started.
   const body = {
-    metadata: allowRestore
-      ? { annotations: { [ALLOW_RESTORE_ANNOTATION]: 'true' } }
-      : undefined,
     spec: {
       template: {
+        metadata: allowRestore
+          ? { annotations: { [ALLOW_RESTORE_ANNOTATION]: 'true' } }
+          : undefined,
         spec: {
           nodeSelector: {
             'kubernetes.io/hostname': targetNode,
@@ -900,6 +1026,11 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
  * Stalwart-only — Bulwark has no restore-state init container today.
  */
 async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
+  // Fix #4: clear from spec.template.metadata.annotations (pod
+  // template) to match the location applyDeploymentAffinityOne now
+  // writes to. Belt-and-braces: also clear from metadata.annotations
+  // (Deployment) so legacy clusters that have the pre-fix annotation
+  // sitting there get cleaned up too.
   await apps.patchNamespacedDeployment(
     {
       namespace: MAIL_NAMESPACE,
@@ -907,6 +1038,13 @@ async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
       body: {
         metadata: {
           annotations: { [ALLOW_RESTORE_ANNOTATION]: null },
+        },
+        spec: {
+          template: {
+            metadata: {
+              annotations: { [ALLOW_RESTORE_ANNOTATION]: null },
+            },
+          },
         },
       },
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
