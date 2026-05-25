@@ -19,6 +19,7 @@ resources:
   - pvc.yaml
   - deployment.yaml
   - service.yaml
+  - pdb.yaml
   # secret.example.yaml is NOT included — operators provide the real
   # Secret per environment (matches Roundcube's contract).
 
