@@ -17,6 +17,7 @@
  */
 
 import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ArchiveRestore, RefreshCw, AlertCircle, CheckCircle2,
   Power, PowerOff, Cloud, Link as LinkIcon, Info, PauseCircle,
@@ -30,7 +31,9 @@ import {
   useDisableScheduledBackups,
 } from '@/hooks/use-system-wal-archive';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
-import type { WalArchiveCluster } from '@k8s-hosting/api-contracts';
+import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
+import { apiFetch } from '@/lib/api-client';
+import type { WalArchiveCluster, CnpgBackupCatalogueResponse } from '@k8s-hosting/api-contracts';
 
 // 6-field cron validation: matches CNPG's robfig/cron/v3 parser. The
 // backend's baseBackupScheduleSchema applies the SAME regex
@@ -506,6 +509,20 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
   const archivingSinceLabel = cluster.status?.lastArchivedWalTime
     ? `${new Date(cluster.status.lastArchivedWalTime).toLocaleString()} (${formatAgoFromIso(cluster.status.lastArchivedWalTime)} ago)`
     : '—';
+
+  // Fallback for the "first recoverability point" cell when CNPG hasn't
+  // populated cluster.status.firstRecoverabilityPoint (lags by minutes
+  // after a fresh enable or CR churn). The barman catalogue IS the
+  // authoritative listing of what's actually upstream — use the
+  // earliest catalogue entry's startedAt as the recoverability floor.
+  const recovFallback = useRecoverabilityFallback(cluster);
+
+  const firstRecoverabilityValue = cluster.status?.firstRecoverabilityPoint
+    ?? recovFallback.earliestStartedAt;
+  const firstRecoverabilitySource = cluster.status?.firstRecoverabilityPoint
+    ? 'cnpg'
+    : (recovFallback.earliestStartedAt ? 'catalogue' : 'none');
+
   return (
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs dark:border-gray-700 dark:bg-gray-900/30">
       <SectionHeader title="Cluster archiver status" tooltip={null} />
@@ -514,14 +531,27 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
           {archivingHealthy ? archivingSinceLabel : (cluster.status?.lastArchivedWalTime ? 'unhealthy' : 'not archiving')}
         </Field>
         <Field label="First recoverability point">
-          {cluster.status?.firstRecoverabilityPoint ? (
-            new Date(cluster.status.firstRecoverabilityPoint).toLocaleString()
+          {firstRecoverabilityValue ? (
+            <span
+              title={
+                firstRecoverabilitySource === 'cnpg'
+                  ? 'Reported by CNPG (cluster.status.firstRecoverabilityPoint).'
+                  : `CNPG's status field is null (lag after recent enable / CR churn). Falling back to the earliest entry in the barman catalogue (${recovFallback.count} backups visible). The actual recoverability floor is whatever's in the catalogue, regardless of CNPG's status lag.`
+              }
+            >
+              {new Date(firstRecoverabilityValue).toLocaleString()}
+              {firstRecoverabilitySource === 'catalogue' && (
+                <span className="ml-1 text-[10px] text-gray-500 dark:text-gray-400">
+                  (from catalogue · {recovFallback.count} backups)
+                </span>
+              )}
+            </span>
           ) : (
             <span
               className="italic text-gray-500"
-              title="This is CNPG's own report — the cluster reads its barman catalog through the plugin sidecar and writes the earliest recoverable timestamp here. It can lag the actual archive by several minutes after a fresh enable or a CR churn. The 'Backups in current target' list below is the authoritative view of what's stored upstream."
+              title="No backups visible yet — neither CNPG's status nor the barman catalogue has an entry. Run 'Backup Now' on the page top to seed the archive."
             >
-              not yet reported by CNPG — see backup list below
+              no backups yet
             </span>
           )}
         </Field>
@@ -651,4 +681,58 @@ function formatAgoFromIso(iso: string): string {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
+}
+
+/**
+ * Phase 8d (2026-05-25): when CNPG's cluster.status.firstRecoverabilityPoint
+ * is null (typical lag after fresh enable / CR churn / cluster restart),
+ * fall back to the barman catalogue's earliest entry. The barman archive
+ * is the ACTUAL source of truth — CNPG's status is just a projection it
+ * builds by reading the catalog via its plugin sidecar.
+ *
+ * Steps:
+ *   1. Find the cluster's ObjectStore name via the cnpg-backup-health
+ *      endpoint (same data the HealthCard uses).
+ *   2. Fetch the catalogue via cnpg-backup-catalogue/:ns/:objectStore.
+ *      Same queryKey as SystemBackupListSection + the HealthCard's
+ *      BackupSizeTotal → TanStack Query dedups, no extra fetch.
+ *   3. Return the earliest entry's startedAt + the total count.
+ *
+ * Returns null when no backups exist OR catalogue is unavailable.
+ */
+function useRecoverabilityFallback(cluster: WalArchiveCluster): {
+  earliestStartedAt: string | null;
+  count: number;
+} {
+  const { data: healthResp } = useCnpgBackupHealth();
+  const healthRow = healthResp?.data?.find(
+    (c) => c.namespace === cluster.clusterNamespace && c.clusterName === cluster.clusterName,
+  );
+  const objectStoreName = healthRow?.objectStoreName ?? null;
+
+  const catalogueQ = useQuery({
+    queryKey: ['cnpg-backup-catalogue', cluster.clusterNamespace, objectStoreName],
+    queryFn: () =>
+      apiFetch<{ data: CnpgBackupCatalogueResponse }>(
+        `/api/v1/admin/cnpg-backup-catalogue/${encodeURIComponent(cluster.clusterNamespace)}/${encodeURIComponent(objectStoreName ?? '')}`,
+      ),
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!objectStoreName,
+  });
+  const cat = catalogueQ.data?.data;
+  if (!cat || cat.source !== 'object-store' || cat.backups.length === 0) {
+    return { earliestStartedAt: null, count: 0 };
+  }
+  // Sort by startedAt ascending; first entry is the floor.
+  const sorted = [...cat.backups].sort((a, b) => {
+    const at = a.startedAt ?? a.uploadedAt ?? '';
+    const bt = b.startedAt ?? b.uploadedAt ?? '';
+    return at.localeCompare(bt);
+  });
+  const earliest = sorted[0];
+  return {
+    earliestStartedAt: earliest.startedAt ?? earliest.uploadedAt ?? null,
+    count: cat.backups.length,
+  };
 }
