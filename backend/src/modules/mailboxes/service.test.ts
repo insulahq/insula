@@ -274,7 +274,8 @@ describe('updateMailbox', () => {
   it('orphan recovery: stalwartPrincipalId NULL + password set → tries JMAP-create + completes', async () => {
     // 2026-05-06 drift recovery: a mailbox row that exists in the
     // platform DB but has no Stalwart counterpart (e.g. after a
-    // mail-pg wipe) gets re-created in Stalwart on the operator's
+    // Stalwart data wipe — historically mail-pg, post-2026-05-12
+    // the RocksDB PVC) gets re-created in Stalwart on the operator's
     // next "Reset password" action. The platform DB bcrypt update
     // happens UNCONDITIONALLY first; the JMAP-create is best-effort
     // (a failure logs a warning but does not fail the operation).

@@ -6,7 +6,7 @@
 #
 # Sources (all from a live source cluster with active backups):
 #   - Phase 1 secrets bundle (.tar.age) + operator-private.key
-#   - Phase 2 pg_dump artifacts (platform/system-db + mail/mail-db)
+#   - Phase 2 pg_dump artifacts (platform/system-db)
 #   - (Optional) Phase 4 WAL replay — out of scope for this drill
 #
 # Target: a clean VM (Debian/Ubuntu) with SSH access. The harness
@@ -103,23 +103,6 @@ done
 curl_admin -o "$WORKDIR/platform.pgdump" "$SOURCE_ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$PG_PLATFORM_RUN/download"
 [[ -s "$WORKDIR/platform.pgdump" ]] && pass "platform pg_dump downloaded $(stat -c%s "$WORKDIR/platform.pgdump") bytes" || fail "platform dump empty"
 
-log "4) Trigger pg_dump on mail/mail-db"
-PG_MAIL=$(curl_admin -X POST "$SOURCE_ADMIN_HOST/api/v1/system-backup/pg-dump" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sourceNamespace\":\"mail\",\"sourceCluster\":\"mail-db\",\"sourceDatabase\":\"stalwart_app\",\"targetConfigId\":\"$TARGET_CONFIG_ID\",\"reason\":\"DR drill\"}")
-PG_MAIL_RUN=$(echo "$PG_MAIL" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["runId"])' 2>/dev/null || echo "")
-[[ -n "$PG_MAIL_RUN" ]] || fail "mail pg_dump failed to start: $PG_MAIL"
-# shellcheck disable=SC2034
-for poll_iter in $(seq 1 120); do
-  STATUS=$(curl_admin "$SOURCE_ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$PG_MAIL_RUN" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["status"])' 2>/dev/null || echo "?")
-  [[ "$STATUS" =~ ^(succeeded|failed)$ ]] && break
-  sleep 10
-done
-[[ "$STATUS" = "succeeded" ]] || fail "mail pg_dump status=$STATUS"
-curl_admin -o "$WORKDIR/mail.pgdump" "$SOURCE_ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$PG_MAIL_RUN/download"
-[[ -s "$WORKDIR/mail.pgdump" ]] && pass "mail pg_dump downloaded $(stat -c%s "$WORKDIR/mail.pgdump") bytes" || fail "mail dump empty"
-
 log "5) Wipe target VM + install git (bootstrap prereq)"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "[ -f /usr/local/bin/k3s-uninstall.sh ] && /usr/local/bin/k3s-uninstall.sh; \
@@ -131,7 +114,6 @@ log "6) Copy bundle + age key + dumps to target"
 scp "${SSH_OPTS[@]}" "$WORKDIR/secrets.tar.age" "${TARGET_SSH[*]}":/root/secrets.tar.age 2>&1 | tail -2
 scp "${SSH_OPTS[@]}" "$AGE_KEY_PATH"            "${TARGET_SSH[*]}":/root/operator-private.key 2>&1 | tail -2
 scp "${SSH_OPTS[@]}" "$WORKDIR/platform.pgdump" "${TARGET_SSH[*]}":/root/platform.pgdump 2>&1 | tail -2
-scp "${SSH_OPTS[@]}" "$WORKDIR/mail.pgdump"     "${TARGET_SSH[*]}":/root/mail.pgdump 2>&1 | tail -2
 pass "artifacts copied to target"
 
 log "7) Run bootstrap.sh on target (this takes 5-10 min)"
@@ -175,30 +157,22 @@ ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
    echo 'tagged'" 2>&1 | tail -3
 pass "node + longhorn tags applied"
 
-log "8) Wait for CNPG system-db + mail-db clusters to be ready (≤15 min)"
+log "8) Wait for CNPG system-db cluster to be ready (≤15 min)"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \
    for i in \$(seq 1 90); do \
      P=\$(kubectl -n platform get cluster.postgresql.cnpg.io system-db -o jsonpath='{.status.phase}' 2>/dev/null); \
-     M=\$(kubectl -n mail get cluster.postgresql.cnpg.io mail-db -o jsonpath='{.status.phase}' 2>/dev/null); \
-     echo \"platform=\$P mail=\$M (i=\$i)\"; \
-     [ \"\$P\" = 'Cluster in healthy state' ] && [ \"\$M\" = 'Cluster in healthy state' ] && exit 0; \
+     echo \"platform=\$P (i=\$i)\"; \
+     [ \"\$P\" = 'Cluster in healthy state' ] && exit 0; \
      sleep 10; \
-   done; exit 1" 2>&1 | tail -8 || fail "clusters did not reach healthy state"
-pass "both CNPG clusters healthy"
+   done; exit 1" 2>&1 | tail -8 || fail "cluster did not reach healthy state"
+pass "system-db CNPG cluster healthy"
 
 log "9) pg_restore platform DB"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \
    kubectl -n platform cp /root/platform.pgdump system-db-1:/tmp/platform.pgdump && \
-   kubectl -n platform exec postgres-1 -- bash -c 'PGPASSWORD=\$(cat /run/postgres/credentials/password 2>/dev/null || echo \$POSTGRES_PASSWORD) pg_restore --no-owner --no-privileges --clean --if-exists -U platform -d hosting_platform /tmp/platform.pgdump 2>&1 | tail -10'" \
-  2>&1 | tail -10
-
-log "10) pg_restore mail DB"
-ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
-  "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \
-   kubectl -n mail cp /root/mail.pgdump mail-db-1:/tmp/mail.pgdump && \
-   kubectl -n mail exec mail-db-1 -- bash -c 'pg_restore --no-owner --no-privileges --clean --if-exists -U app -d stalwart_app /tmp/mail.pgdump 2>&1 | tail -10'" \
+   kubectl -n platform exec system-db-1 -- bash -c 'PGPASSWORD=\$(cat /run/postgres/credentials/password 2>/dev/null || echo \$POSTGRES_PASSWORD) pg_restore --no-owner --no-privileges --clean --if-exists -U platform -d hosting_platform /tmp/platform.pgdump 2>&1 | tail -10'" \
   2>&1 | tail -10
 
 log "10b) Rewrite system_settings domain (post-pg_restore DR fixup)"

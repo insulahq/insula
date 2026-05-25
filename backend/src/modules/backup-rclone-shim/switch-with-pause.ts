@@ -51,8 +51,8 @@ const SUBSYSTEMS_BY_CLASS: Record<BackupShimClass, ReadonlyArray<string>> = {
 
 // CNPG cluster reference for WAL pause. Today only the system class
 // has an associated WAL stream (platform/system-db). Indexed by
-// shim class so a future mail-db reintroduction wouldn't require
-// editing the switch flow.
+// shim class so adding a future cluster (e.g. a per-tenant CNPG
+// backing store) wouldn't require editing the switch flow.
 const WAL_CLUSTER_BY_CLASS: Partial<Record<BackupShimClass, {
   readonly namespace: string;
   readonly clusterName: string;

@@ -3,11 +3,10 @@ import { z } from 'zod';
 /**
  * CNPG Backup CR health snapshot — one entry per CNPG Cluster CR.
  *
- * Surfaced on admin pages (Email Management for mail-pg, Storage Settings
- * for platform/postgres) so operators see backup failures without having
- * to run `kubectl get backup.postgresql.cnpg.io`. Phase 2A.2 of the mail-
- * subsystem hardening work — closes the gap that let
- * mail-pg-daily-20260505031500 fail unnoticed.
+ * Surfaced on admin Backups pages so operators see backup failures
+ * without having to run `kubectl get backup.postgresql.cnpg.io`.
+ * Closes the gap where silent ScheduledBackup failures previously
+ * went unnoticed.
  */
 export const cnpgBackupPhaseSchema = z.enum([
   'completed',

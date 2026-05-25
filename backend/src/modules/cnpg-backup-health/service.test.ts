@@ -38,7 +38,7 @@ describe('cnpg-backup-health: parsePhase', () => {
 describe('cnpg-backup-health: compareRecordsDesc', () => {
   it('most recent first by startedAt', () => {
     const a: BackupRecord = {
-      name: 'a', namespace: 'mail', clusterName: 'mail-pg',
+      name: 'a', namespace: 'platform', clusterName: 'system-db',
       method: 'barmanObjectStore', phase: 'completed',
       startedAt: '2026-05-06T10:00:00Z', stoppedAt: null, error: null,
     };
@@ -50,7 +50,7 @@ describe('cnpg-backup-health: compareRecordsDesc', () => {
 
   it('falls back to stoppedAt when startedAt missing', () => {
     const a: BackupRecord = {
-      name: 'a', namespace: 'mail', clusterName: 'mail-pg',
+      name: 'a', namespace: 'platform', clusterName: 'system-db',
       method: 'barmanObjectStore', phase: 'completed',
       startedAt: null, stoppedAt: '2026-05-06T10:00:00Z', error: null,
     };
@@ -83,112 +83,112 @@ describe('cnpg-backup-health: readBackupHealth', () => {
   it('healthy state — completed backup < 24h ago', async () => {
     const tenants = fakeTenant({
       clusters: [
-        { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
+        { metadata: { name: 'system-db', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
       backups: [
         {
-          metadata: { name: 'mail-pg-daily-1', namespace: 'mail' },
-          spec: { cluster: { name: 'mail-pg' }, method: 'barmanObjectStore' },
+          metadata: { name: 'system-db-daily-1', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'barmanObjectStore' },
           status: { phase: 'completed', startedAt: '2026-05-06T15:00:00Z' },
         },
       ],
       scheduledbackups: [
-        { metadata: { name: 'mail-pg-daily', namespace: 'mail' }, spec: { cluster: { name: 'mail-pg' } } },
+        { metadata: { name: 'system-db-daily', namespace: 'platform' }, spec: { cluster: { name: 'system-db' } } },
       ],
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
-    const mail = result.find((r) => r.clusterName === 'mail-pg');
-    expect(mail?.state).toBe('healthy');
-    expect(mail?.lastSuccessfulBackup?.name).toBe('mail-pg-daily-1');
-    expect(mail?.lastSuccessSecondsAgo).toBe(60 * 60); // 1 hour
-    expect(mail?.scheduledBackups).toEqual(['mail-pg-daily']);
-    expect(mail?.clusterHasBackupSpec).toBe(true);
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('healthy');
+    expect(cluster?.lastSuccessfulBackup?.name).toBe('system-db-daily-1');
+    expect(cluster?.lastSuccessSecondsAgo).toBe(60 * 60); // 1 hour
+    expect(cluster?.scheduledBackups).toEqual(['system-db-daily']);
+    expect(cluster?.clusterHasBackupSpec).toBe(true);
   });
 
   it('failing state — last attempt is failed (newer than last success)', async () => {
     const tenants = fakeTenant({
       clusters: [
-        { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
+        { metadata: { name: 'system-db', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
       backups: [
         // Last success 1h ago
         {
-          metadata: { name: 'old-success', namespace: 'mail' },
-          spec: { cluster: { name: 'mail-pg' }, method: 'barmanObjectStore' },
+          metadata: { name: 'old-success', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'barmanObjectStore' },
           status: { phase: 'completed', startedAt: '2026-05-06T15:00:00Z' },
         },
         // But latest attempt 5min ago FAILED
         {
-          metadata: { name: 'fresh-failure', namespace: 'mail' },
-          spec: { cluster: { name: 'mail-pg' }, method: 'barmanObjectStore' },
+          metadata: { name: 'fresh-failure', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'barmanObjectStore' },
           status: { phase: 'failed', startedAt: '2026-05-06T15:55:00Z', error: 'S3 auth failed' },
         },
       ],
       scheduledbackups: [],
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
-    const mail = result.find((r) => r.clusterName === 'mail-pg');
-    expect(mail?.state).toBe('failing');
-    expect(mail?.mostRecentFailure?.name).toBe('fresh-failure');
-    expect(mail?.mostRecentFailure?.error).toBe('S3 auth failed');
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('failing');
+    expect(cluster?.mostRecentFailure?.name).toBe('fresh-failure');
+    expect(cluster?.mostRecentFailure?.error).toBe('S3 auth failed');
     // last success still recorded so operators can see what's recoverable
-    expect(mail?.lastSuccessfulBackup?.name).toBe('old-success');
+    expect(cluster?.lastSuccessfulBackup?.name).toBe('old-success');
   });
 
   it('stale state — completed backup older than 24h', async () => {
     const tenants = fakeTenant({
       clusters: [
-        { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
+        { metadata: { name: 'system-db', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
       backups: [
         {
-          metadata: { name: 'old-success', namespace: 'mail' },
-          spec: { cluster: { name: 'mail-pg' }, method: 'barmanObjectStore' },
+          metadata: { name: 'old-success', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'barmanObjectStore' },
           status: { phase: 'completed', startedAt: '2026-05-04T15:00:00Z' }, // 49h ago
         },
       ],
       scheduledbackups: [],
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
-    const mail = result.find((r) => r.clusterName === 'mail-pg');
-    expect(mail?.state).toBe('stale');
-    expect(mail?.lastSuccessSecondsAgo).toBeGreaterThan(24 * 3600);
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('stale');
+    expect(cluster?.lastSuccessSecondsAgo).toBeGreaterThan(24 * 3600);
   });
 
   it('never_run state — no backups at all', async () => {
     const tenants = fakeTenant({
       clusters: [
-        { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
+        { metadata: { name: 'system-db', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
       backups: [],
       scheduledbackups: [],
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
-    const mail = result.find((r) => r.clusterName === 'mail-pg');
-    expect(mail?.state).toBe('never_run');
-    expect(mail?.lastSuccessfulBackup).toBeNull();
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('never_run');
+    expect(cluster?.lastSuccessfulBackup).toBeNull();
   });
 
   it('no_backup_config state — cluster has no backup spec', async () => {
     const tenants = fakeTenant({
       clusters: [
         // No spec.backup — happens transiently during recovery
-        { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: {} },
+        { metadata: { name: 'system-db', namespace: 'platform' }, spec: {} },
       ],
       backups: [],
       scheduledbackups: [
-        // But ScheduledBackup CRs exist! This is the staging mistake from
-        // 2026-05-06 — Backup CR fired against a Cluster without backup
-        // config and failed: "cannot proceed with the backup as the
-        // cluster has no backup section".
-        { metadata: { name: 'mail-pg-daily', namespace: 'mail' }, spec: { cluster: { name: 'mail-pg' } } },
+        // But ScheduledBackup CRs exist! This is the historical staging
+        // mistake from 2026-05-06 — Backup CR fired against a Cluster
+        // without backup config and failed: "cannot proceed with the
+        // backup as the cluster has no backup section".
+        { metadata: { name: 'system-db-daily', namespace: 'platform' }, spec: { cluster: { name: 'system-db' } } },
       ],
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
-    const mail = result.find((r) => r.clusterName === 'mail-pg');
-    expect(mail?.state).toBe('no_backup_config');
-    expect(mail?.clusterHasBackupSpec).toBe(false);
-    expect(mail?.scheduledBackups).toEqual(['mail-pg-daily']);
+    const cluster = result.find((r) => r.clusterName === 'system-db');
+    expect(cluster?.state).toBe('no_backup_config');
+    expect(cluster?.clusterHasBackupSpec).toBe(false);
+    expect(cluster?.scheduledBackups).toEqual(['system-db-daily']);
   });
 
   // B7 fix (2026-05-22): CNPG 1.21+ moved barman-cloud out of
@@ -401,21 +401,24 @@ describe('cnpg-backup-health: readBackupHealth', () => {
     expect(cluster?.objectStoreBackupCount).toBeUndefined();
   });
 
-  it('aggregates across both watched namespaces', async () => {
+  it('aggregates multiple clusters within the watched namespace', async () => {
+    // Today only platform/system-db is in WATCHED_NAMESPACES. This test
+    // pretends a future per-tenant CNPG cluster (system-db-tenant) lands
+    // in the same namespace and verifies the aggregator returns BOTH.
     const tenants = fakeTenant({
       clusters: [
-        { metadata: { name: 'mail-pg', namespace: 'mail' }, spec: { backup: { barmanObjectStore: {} } } },
-        { metadata: { name: 'postgres', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
+        { metadata: { name: 'system-db', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
+        { metadata: { name: 'postgres-aux', namespace: 'platform' }, spec: { backup: { barmanObjectStore: {} } } },
       ],
       backups: [
         {
-          metadata: { name: 'mail-pg-1', namespace: 'mail' },
-          spec: { cluster: { name: 'mail-pg' }, method: 'barmanObjectStore' },
+          metadata: { name: 'system-db-1', namespace: 'platform' },
+          spec: { cluster: { name: 'system-db' }, method: 'barmanObjectStore' },
           status: { phase: 'completed', startedAt: '2026-05-06T15:00:00Z' },
         },
         {
-          metadata: { name: 'postgres-1', namespace: 'platform' },
-          spec: { cluster: { name: 'postgres' }, method: 'barmanObjectStore' },
+          metadata: { name: 'postgres-aux-1', namespace: 'platform' },
+          spec: { cluster: { name: 'postgres-aux' }, method: 'barmanObjectStore' },
           status: { phase: 'completed', startedAt: '2026-05-06T15:30:00Z' },
         },
       ],
@@ -423,8 +426,8 @@ describe('cnpg-backup-health: readBackupHealth', () => {
     });
     const result = await readBackupHealth(tenants, { nowMs: NOW_MS });
     expect(result.map((r) => `${r.namespace}/${r.clusterName}`).sort()).toEqual([
-      'mail/mail-pg',
-      'platform/postgres',
+      'platform/postgres-aux',
+      'platform/system-db',
     ]);
     expect(result.every((r) => r.state === 'healthy')).toBe(true);
   });

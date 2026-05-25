@@ -106,7 +106,7 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
   // Resolve the source cluster's ObjectStore name from the health
   // endpoint instead of relying on the DEFAULT_OBJSTORE constant.
   // Future-proofs against multiple plugin-mode clusters with different
-  // ObjectStore bindings (mail-pg, per-tenant, etc.).
+  // ObjectStore bindings (per-tenant, etc.).
   const sourceClusterRow = cnpgList.find((c) => c.namespace === NS && c.clusterName === sourceName);
   const objStoreForSource = sourceClusterRow?.objectStoreName ?? DEFAULT_OBJSTORE;
   // P4c: WAL freshness for the source cluster — surfaces in Step 3 so

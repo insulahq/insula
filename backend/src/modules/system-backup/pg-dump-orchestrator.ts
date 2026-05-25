@@ -7,7 +7,8 @@
  *      `.spec.bootstrap.initdb.secret.name` and fetching that Secret
  *      from the source namespace (with a `<cluster>-app` fallback).
  *      We do NOT use Pod env secretKeyRef — it's namespace-local and
- *      breaks for cross-namespace clusters like mail/mail-pg.
+ *      would break for any cross-namespace cluster the orchestrator
+ *      might be pointed at in the future.
  *   3. Reserve a BackupStore bundle under synthetic tenantId='__system__'
  *      so system artifacts live in a dedicated subtree.
  *   4. Spawn `pg_dump --format=custom --compress=9 --no-owner

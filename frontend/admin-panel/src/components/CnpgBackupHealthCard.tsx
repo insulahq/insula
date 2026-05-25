@@ -11,8 +11,8 @@ import type {
 
 interface Props {
   /**
-   * Restrict the card to one cluster (e.g. "mail-pg" on the Email
-   * Management page). When omitted, all watched clusters are shown.
+   * Restrict the card to one cluster (e.g. "system-db"). When omitted,
+   * all watched clusters are shown.
    */
   readonly clusterFilter?: string;
 }
@@ -20,8 +20,8 @@ interface Props {
 /**
  * CNPG Backup CR health summary, surfaced on admin pages so operators
  * see when a CNPG cluster's daily/system-backup chain is broken WITHOUT
- * having to run kubectl. Phase 2A.2 of mail-subsystem hardening — closes
- * the gap that let mail-pg-daily-20260505031500 fail unnoticed.
+ * having to run kubectl. Closes the gap where silent ScheduledBackup
+ * failures previously went unnoticed.
  *
  * Visible states:
  *   - healthy       — green check, last success age
@@ -85,8 +85,8 @@ export function CnpgBackupHealthCard({ clusterFilter }: Props) {
         CNPG <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">Backup</code>{' '}
         CR status for managed PostgreSQL clusters. Daily +
         system-backup chains write to off-site S3 with 30-day retention.
-        Restore via{' '}
-        <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">scripts/reset-mail-pg.sh --restore-from-backup</code>.
+        Restore via the Backups → Restore wizard or the Phase 3
+        side-by-side flow.
       </p>
 
       <div className="space-y-3">

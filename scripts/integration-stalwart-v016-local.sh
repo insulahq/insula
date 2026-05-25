@@ -9,7 +9,7 @@
 # Prerequisites:
 #   - Local DinD k3s running (./scripts/local.sh up)
 #   - stalwart-mail overlay applied (kubectl apply -k k8s/overlays/dev/stalwart-mail/)
-#   - CNPG operator installed + mail-pg Ready
+#   - Stalwart data PVC bound (Stalwart RocksDB store)
 #   - stalwart-admin-creds Secret in namespace mail (bootstrap.sh creates it)
 #   - DOCKER_HOST=tcp://dind:2375 set (or DinD accessible)
 #
@@ -303,13 +303,13 @@ if [[ "${MAIL_STORAGE_E2E:-0}" == "1" ]]; then
       # Poll PVC until spec reflects new size (Longhorn online expansion: 5-30s)
       OBSERVED=""
       for _ in $(seq 1 30); do
-        OBSERVED=$(kctl get pvc -n ${NS} mail-pg-1 \
+        OBSERVED=$(kctl get pvc -n ${NS} mail-stack-data \
           -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || echo "")
         [[ "$OBSERVED" == "${NEW_GIB}Gi" ]] && break
         sleep 2
       done
       if [[ "$OBSERVED" == "${NEW_GIB}Gi" ]]; then
-        pass "PVC mail-pg-1 spec.resources.requests.storage → ${NEW_GIB}Gi"
+        pass "PVC mail-stack-data spec.resources.requests.storage → ${NEW_GIB}Gi"
       else
         fail "PVC resize did not propagate within 60s (observed=${OBSERVED}, expected=${NEW_GIB}Gi)"
       fi

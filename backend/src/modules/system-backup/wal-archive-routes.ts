@@ -5,10 +5,10 @@
  *   POST /api/v1/system-backup/wal-archive/enable
  *   POST /api/v1/system-backup/wal-archive/disable
  *
- * Two known clusters are listed by default (platform/system-db,
- * mail/mail-db). The list endpoint augments DB intent with a
- * snapshot of the CNPG CR's `.status` so operators see the actual
- * archive health (last archived WAL, errors).
+ * One known cluster is listed by default (platform/system-db). The
+ * list endpoint augments DB intent with a snapshot of the CNPG CR's
+ * `.status` so operators see the actual archive health (last
+ * archived WAL, errors).
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
