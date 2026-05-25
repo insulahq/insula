@@ -212,22 +212,37 @@ export async function reconcilePostgresObjectStore(
   }
 
   // ─── 4. Materialise ObjectStore CR ───────────────────────────────
+  // Phase 8 (2026-05-25): defer this too when wal-archive owns. The
+  // operator's retention setting (stored on the ObjectStore CR via
+  // wal-archive) was being clobbered back to the 30d default on every
+  // postgres-objectstore reconciliation. Now wal-archive has exclusive
+  // ownership of all three CRs (ObjectStore + ScheduledBackup +
+  // Cluster.spec.plugins) whenever a row in systemWalArchiveState
+  // exists. The shim creds Secret above (step 3) is unaffected — it's
+  // identical content regardless of who writes it.
   let objectStoreApplied = false;
-  try {
-    await materializeObjectStore(clients.custom, log);
-    objectStoreApplied = true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error({ err: msg }, 'postgres-objectstore: ObjectStore apply failed');
-    return {
-      state: 'STATE_ERROR',
-      errorMessage: msg,
-      objectStoreApplied: false,
-      scheduledBackupApplied: false,
-      scheduledBackupSuspended: false,
-      credentialsSecretApplied,
-      walArchiverEnabled: false,
-    };
+  if (walArchiveOwns) {
+    log.info(
+      { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
+      'postgres-objectstore: wal-archive owns ObjectStore — skipping reconciliation',
+    );
+  } else {
+    try {
+      await materializeObjectStore(clients.custom, log);
+      objectStoreApplied = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err: msg }, 'postgres-objectstore: ObjectStore apply failed');
+      return {
+        state: 'STATE_ERROR',
+        errorMessage: msg,
+        objectStoreApplied: false,
+        scheduledBackupApplied: false,
+        scheduledBackupSuspended: false,
+        credentialsSecretApplied,
+        walArchiverEnabled: false,
+      };
+    }
   }
 
   // ─── 5. Materialise ScheduledBackup CR (suspended when no target) ─
