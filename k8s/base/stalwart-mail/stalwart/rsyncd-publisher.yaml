@@ -42,8 +42,11 @@ data:
       path = /data
       read only = true
       list = no
-      uid = nobody
-      gid = nogroup
+      # uid/gid switches require CAP_SETUID which the sidecar drops via
+      # drop: [ALL]. The sidecar already runs as nobody (runAsUser: 65534)
+      # so the daemon serves files under that uid anyway. PVC files are
+      # world-readable (chmod 644, traversal-bit set on dirs) so nobody
+      # can read everything without a switch.
       strict modes = false
       # No auth users — gated at the network layer (NetworkPolicy below).
       # Bandwidth limit: 0 = unlimited. Adjust if upstream WAN is the bottleneck.

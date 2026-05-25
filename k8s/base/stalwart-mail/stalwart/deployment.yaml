@@ -421,7 +421,12 @@ spec:
         # turnover, not DB size — even a multi-GB Stalwart only
         # transfers a few MB per cycle.
         - name: rsyncd
-          image: instrumentisto/rsync-ssh:3.4.1
+          # instrumentisto/rsync-ssh uses Alpine-versioned tags
+          # (alpine3.23-r3), not upstream rsync versions (3.4.1).
+          # The 3.x.x tag namespace does NOT exist on Docker Hub —
+          # bootstrap test verified empty pull. Stick to the latest
+          # stable Alpine tag.
+          image: instrumentisto/rsync-ssh:alpine3.23-r3
           imagePullPolicy: IfNotPresent
           command: ["rsync"]
           args:
