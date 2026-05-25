@@ -158,3 +158,146 @@ export const importDryrunResponseSchema = z.object({
   bundleCreatedAt: z.string().datetime().nullable(),
 });
 export type ImportDryrunResponse = z.infer<typeof importDryrunResponseSchema>;
+
+// ─── DR bundle sidecars (A2) ────────────────────────────────────────
+//
+// Every secrets-bundle export now carries two extra files inside the
+// age-encrypted tar:
+//   - dr-inputs.yaml — bootstrap inputs + CNPG recovery pointers needed
+//     BEFORE system-db exists. Read by Unit B's dr-restore importer.
+//   - dr-rows.json   — JSON dump of backup_configurations +
+//     backup_target_assignments rows. Encrypted credential columns
+//     pass through as-is (PLATFORM_ENCRYPTION_KEY from the Secrets
+//     bundle decrypts them post-restore). Every config row in this
+//     dump carries readOnly:true so Unit B's importer inserts the
+//     freshly restored cluster into "DR freeze" mode.
+//
+// Schema-versioned. Bumps are explicit in PRs; readers refuse unknown
+// versions with `BundleVersionError`. Adding fields to v1 is
+// backwards-incompatible-for-the-reader only if a field is required;
+// optional additive fields don't require a bump.
+//
+// Lives in api-contracts (not backend-internal) so the future
+// platform-ops CLI can consume the schemas without a backend import.
+
+export const DR_BUNDLE_VERSION = 1;
+
+/**
+ * dr-inputs.yaml — non-Secret bootstrap inputs and CNPG recovery
+ * pointers. Per the locked PARTIAL-mode design, this carries only
+ * what's needed BEFORE the DB exists. workload_repos, dns_providers,
+ * platform_settings are NOT in this file by design (operator
+ * reconfigures via UI / fresh defaults activate automatically).
+ */
+export const drBundleVersionSchema = z.literal(DR_BUNDLE_VERSION);
+
+export const cnpgRecoveryPointerSchema = z.object({
+  /** Namespace of the CNPG Cluster CR (e.g. `platform`). */
+  namespace: z.string().min(1),
+  /** Cluster CR name (e.g. `system-db`). */
+  clusterName: z.string().min(1),
+  /** `externalClusters[0].plugin.parameters.serverName` from the
+   *  source cluster. CRITICAL: must match the source's value for
+   *  barman bootstrap.recovery to find the WAL archive. Fix from
+   *  commit 97bb0ab5 in memory project_restore_wiring_phases. */
+  serverName: z.string().min(1),
+  /** `spec.plugins[barman-cloud].parameters.barmanObjectName` from the
+   *  source cluster. Points at the ObjectStore CR (which the shim
+   *  reconciler materializes from `backup_configurations`). */
+  objectStoreName: z.string().min(1),
+});
+export type CnpgRecoveryPointer = z.infer<typeof cnpgRecoveryPointerSchema>;
+
+export const drInputsSchema = z.object({
+  drBundleVersion: drBundleVersionSchema,
+  /** ISO-8601 timestamp the bundle was built. */
+  createdAt: z.string().datetime(),
+  /** Apex domain operator used at bootstrap (e.g. `phoenix-host.net`).
+   *  Restore-side operator must re-bootstrap on the same apex. */
+  apexDomain: z.string().min(1),
+  /** Cluster name the operator chose at bootstrap (e.g. `prod-1`). */
+  clusterName: z.string().min(1),
+  /** Mesh CIDR for the cluster's pod network (e.g. `10.42.0.0/16`).
+   *  Informational on the restore path — the restored cluster's CIDR
+   *  is decided by bootstrap.sh flags, not by this value. Surfaced so
+   *  the operator can spot a mismatch in the pre-flight UI. */
+  meshCidr: z.string().min(1),
+  /** Pinned platform image tag (e.g. `0.1.0-abc1234`). Unit B will
+   *  refuse to restore a bundle whose pin doesn't match the cluster's
+   *  current image tag unless --accept-version-skew is set. */
+  platformVersion: z.string().min(1),
+  /** Per-cluster CNPG recovery pointers. Today there's only one
+   *  (system-db); mail-db was dropped 2026-05-12 (RocksDB on PVC). */
+  cnpgClusters: z.array(cnpgRecoveryPointerSchema),
+  /** `haproxy` (the locked production HA path) or `hostport`. Bundle
+   *  carries source value; Unit B warns on mismatch with the restored
+   *  cluster's current mode. */
+  mailPortMode: z.enum(['haproxy', 'hostport']),
+  /** Source cluster topology — `single` (1 node, CNPG instances=1) or
+   *  `ha` (≥3 control-plane, CNPG instances=3). Warn-only at restore;
+   *  downsize/upsize is acceptable but worth flagging. */
+  bundleTopology: z.enum(['single', 'ha']),
+});
+export type DrInputs = z.infer<typeof drInputsSchema>;
+
+/**
+ * dr-rows.json — JSON dump of the two tables that the dr-restore
+ * importer in Unit B INSERTs into the freshly bootstrapped system-db.
+ *
+ * Per the locked PARTIAL-mode design, ONLY these two tables travel:
+ * platform_settings, workload_repos, dns_providers do NOT.
+ */
+export const backupConfigurationRowSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  storageType: z.enum(['ssh', 's3', 'cifs']),
+  // All credential columns travel encrypted-at-rest. We keep them as
+  // base64-or-similar strings here without trying to validate the
+  // shape — the encrypt() helper produces a versioned base64 string
+  // and changes to its format would surface elsewhere.
+  sshHost: z.string().nullable(),
+  sshPort: z.number().int().nullable(),
+  sshUser: z.string().nullable(),
+  sshKeyEncrypted: z.string().nullable(),
+  sshPasswordEncrypted: z.string().nullable(),
+  sshPath: z.string().nullable(),
+  s3Endpoint: z.string().nullable(),
+  s3Bucket: z.string().nullable(),
+  s3Region: z.string().nullable(),
+  s3AccessKeyEncrypted: z.string().nullable(),
+  s3SecretKeyEncrypted: z.string().nullable(),
+  s3Prefix: z.string().nullable(),
+  s3UsePathStyle: z.boolean(),
+  cifsHost: z.string().nullable(),
+  cifsPort: z.number().int().nullable(),
+  cifsShare: z.string().nullable(),
+  cifsUser: z.string().nullable(),
+  cifsPasswordEncrypted: z.string().nullable(),
+  cifsDomain: z.string().nullable(),
+  cifsPath: z.string().nullable(),
+  retentionDays: z.number().int(),
+  scheduleExpression: z.string().nullable(),
+  enabled: z.number().int(),
+  active: z.boolean(),
+  drainTimeoutSeconds: z.number().int(),
+  /** Forced to TRUE for every row on export. Unit B's importer
+   *  expects this and would refuse a row with readOnly:false (that
+   *  would be a malformed bundle — DR cannot ship a writable target). */
+  readOnly: z.literal(true),
+});
+export type BackupConfigurationRow = z.infer<typeof backupConfigurationRowSchema>;
+
+export const backupTargetAssignmentRowSchema = z.object({
+  backupClass: z.enum(['system', 'tenant', 'mail']),
+  targetId: z.string().uuid(),
+  priority: z.number().int(),
+});
+export type BackupTargetAssignmentRow = z.infer<typeof backupTargetAssignmentRowSchema>;
+
+export const drRowsSchema = z.object({
+  drBundleVersion: drBundleVersionSchema,
+  createdAt: z.string().datetime(),
+  backupConfigurations: z.array(backupConfigurationRowSchema),
+  backupTargetAssignments: z.array(backupTargetAssignmentRowSchema),
+});
+export type DrRows = z.infer<typeof drRowsSchema>;

@@ -88,6 +88,13 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
         operatorIp: tenantIp(request),
         operatorUserAgent: tenantUa(request),
         reason: parsed.data.reason ?? null,
+        // A2 DR sidecars: thread bootstrap config so dr-inputs.yaml
+        // carries apex + version. Builder safely defaults if absent.
+        config: {
+          PLATFORM_BASE_DOMAIN: app.config?.PLATFORM_BASE_DOMAIN,
+          INGRESS_BASE_DOMAIN: app.config?.INGRESS_BASE_DOMAIN,
+          PLATFORM_VERSION: app.config?.PLATFORM_VERSION,
+        },
       },
       app.log as unknown as { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void; error: (...a: unknown[]) => void },
     );
