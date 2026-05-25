@@ -49,6 +49,13 @@ fi
 
 mkdir -p "$STANDBY_DIR"
 
+# A4 review: clear the completeness sentinel BEFORE any work so
+# failover readers (Stalwart + Bulwark restore-state init containers)
+# can never see a stale "complete" marker against a partially-restored
+# tree. The sentinel is re-written ONLY after both cp invocations
+# succeed below.
+rm -f "$STANDBY_DIR/.standby-complete" 2>/dev/null || true
+
 # Verify repo is reachable before any work
 if ! restic snapshots --last 1 >/dev/null 2>&1; then
   echo "standby-replicate: restic repo unreachable — leaving existing standby data in place"
@@ -91,6 +98,12 @@ fi
 # `${STANDBY_DIR:?}` guards against catastrophic `rm -rf /var` if the
 # variable is somehow empty (shellcheck SC2115).
 rm -rf "${STANDBY_DIR:?}/var" 2>/dev/null || true
+
+# A4 review: completeness sentinel — written ONLY here, after both
+# cp blocks above completed without `return 0` early-exits. Failover
+# readers gate the fast-path copy on this file's presence, so a
+# partially-restored tree (interrupted cp) is invisible to them.
+date -Iseconds > "$STANDBY_DIR/.standby-complete"
 
 # Sentinel + size report
 echo "$(date -Iseconds) snapshot=latest" > "$STANDBY_DIR/.standby-replicated-at"
