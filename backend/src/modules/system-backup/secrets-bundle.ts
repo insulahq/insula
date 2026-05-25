@@ -35,8 +35,15 @@ import {
 } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isAutoManaged } from './secrets-denylist.js';
-import { restoreTierForNamespace } from './secrets-tiers.js';
+import { restoreTierForNamespace, findMissingCriticalSecrets } from './secrets-tiers.js';
 import { readAllowlist } from './secrets-audit.js';
+import {
+  buildDrInputs,
+  buildDrRows,
+  serializeDrInputs,
+  serializeDrRows,
+} from './dr-sidecars.js';
+import type { Database } from '../../db/index.js';
 
 export interface BundleManifestItem {
   readonly namespace: string;
@@ -55,7 +62,7 @@ export interface SecretsBundle {
   readonly manifestV2: BundleManifest;
 }
 
-export interface ExportSecretsBundleDeps {
+export type ExportSecretsBundleDeps = {
   readonly k8s: K8sClients;
   /** Override `age` binary path for tests. Defaults to PATH lookup. */
   readonly ageBinary?: string;
@@ -63,7 +70,7 @@ export interface ExportSecretsBundleDeps {
   readonly generator?: BundleManifest['generator'];
   /** Optional cluster hostname for forensics. */
   readonly clusterHostname?: string | null;
-}
+} & DrSidecarOpts;
 
 interface SecretYaml {
   readonly apiVersion: string;
@@ -122,10 +129,24 @@ export async function readOperatorRecipient(k8s: K8sClients): Promise<string> {
  * survivor with its restore-tier classification, embed MANIFEST.txt +
  * MANIFEST.json. Returns the plaintext tar bytes (caller age-encrypts).
  */
+// DR sidecars: present in production callers, omitted by tests/legacy
+// callers. Discriminated union ensures both-or-neither at the type
+// layer — a partial provision (only one field) is a TS error, which
+// would otherwise silently produce a Secrets-only bundle that Unit B
+// would later refuse to import.
+type DrSidecarOpts =
+  | { readonly db: Database; readonly config: Parameters<typeof buildDrInputs>[0]['config'] }
+  | { readonly db?: undefined; readonly config?: undefined };
+
+export type BuildSecretsTarOpts = {
+  readonly generator?: BundleManifest['generator'];
+  readonly clusterHostname?: string | null;
+} & DrSidecarOpts;
+
 export async function buildSecretsTar(
   k8s: K8sClients,
   recipient: string,
-  opts: { generator?: BundleManifest['generator']; clusterHostname?: string | null } = {},
+  opts: BuildSecretsTarOpts = {},
 ): Promise<{ tarBytes: Buffer; manifest: BundleManifestItem[]; manifestV2: BundleManifest }> {
   const generator = opts.generator ?? 'in-cluster';
   const clusterHostname = opts.clusterHostname ?? null;
@@ -220,6 +241,40 @@ export async function buildSecretsTar(
     });
   });
 
+  // ─── DR sidecars (A2) ──────────────────────────────────────────────
+  // Only emitted when the caller supplies db + config. Tests can omit
+  // these and still build a Secrets-only bundle; production routes
+  // always pass them.
+  //
+  // Both sidecars are schema-validated inside their builders. If the
+  // critical-Secret presence check fails, we throw — a bundle that
+  // doesn't include the keys needed to decrypt its own dr-rows.json
+  // is unrestorable and worse than no bundle.
+  if (opts.db && opts.config) {
+    const missing = findMissingCriticalSecrets(manifest);
+    if (missing.length > 0) {
+      throw new Error(
+        `secrets bundle missing critical Secrets — bundle would be unrestorable: ${missing.join(', ')}. `
+        + 'These Secrets are tier-1 by namespace; check that the namespace is in TIER_1_PLATFORM_NAMESPACES '
+        + 'and that the denylist predicate is not filtering them out.',
+      );
+    }
+    const drInputs = await buildDrInputs({ db: opts.db, k8s, config: opts.config });
+    const drInputsBytes = serializeDrInputs(drInputs);
+    await new Promise<void>((resolve, reject) => {
+      pack.entry({ name: 'dr-inputs.yaml', size: drInputsBytes.length }, drInputsBytes, (err?: Error | null) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+    const drRows = await buildDrRows(opts.db);
+    const drRowsBytes = serializeDrRows(drRows);
+    await new Promise<void>((resolve, reject) => {
+      pack.entry({ name: 'dr-rows.json', size: drRowsBytes.length }, drRowsBytes, (err?: Error | null) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+  }
+
   pack.finalize();
   await new Promise<void>((resolve) => { pack.on('end', () => resolve()); });
   return { tarBytes: Buffer.concat(chunks), manifest, manifestV2 };
@@ -287,10 +342,21 @@ export async function ageEncrypt(
 /** Top-level: list → filter → tar with v2 MANIFEST → age. */
 export async function exportSecretsBundle(deps: ExportSecretsBundleDeps): Promise<SecretsBundle> {
   const recipient = await readOperatorRecipient(deps.k8s);
-  const { tarBytes, manifest, manifestV2 } = await buildSecretsTar(deps.k8s, recipient, {
-    generator: deps.generator,
-    clusterHostname: deps.clusterHostname,
-  });
+  // The discriminated union on BuildSecretsTarOpts enforces both-or-
+  // neither at the type layer. Build the options object explicitly
+  // along the right branch.
+  const tarOpts: BuildSecretsTarOpts = deps.db
+    ? {
+        generator: deps.generator,
+        clusterHostname: deps.clusterHostname,
+        db: deps.db,
+        config: deps.config,
+      }
+    : {
+        generator: deps.generator,
+        clusterHostname: deps.clusterHostname,
+      };
+  const { tarBytes, manifest, manifestV2 } = await buildSecretsTar(deps.k8s, recipient, tarOpts);
   const encrypted = await ageEncrypt(tarBytes, recipient, deps.ageBinary);
   const sha256 = createHash('sha256').update(encrypted).digest('hex');
   return {

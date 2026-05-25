@@ -324,3 +324,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: ./scripts/ci-backup-target-ro-check.sh
 
+  # A2 DR-bundle sidecar drift guard: a contributor adding a column to
+  # backup_configurations must also extend dr-rows.json's serialiser +
+  # the Zod schema. Without this, Unit B's restore importer silently
+  # misses fields. Also enforces DR_BUNDLE_VERSION=1 (bumps must be
+  # explicit) + the critical-Secret list.
+  dr-bundle-drift:
+    name: DR bundle sidecar drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci-dr-bundle-check.sh
+
