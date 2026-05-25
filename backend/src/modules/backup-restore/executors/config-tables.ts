@@ -24,10 +24,13 @@ import type { RestoreItem } from '../../../db/schema.js';
 import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
 
 /**
- * Tables this executor is allowed to write to. Must match the set
- * dumped by `tenant-bundles/components/config.ts` (CONFIG_DUMP_TABLES).
+ * Tables this executor is allowed to write to. MUST be a superset of
+ * `CONFIG_DUMP_TABLES` in `tenant-bundles/components/config.ts` so that
+ * every row written to a bundle can be restored from it.
+ *
+ * Symmetry is enforced at CI by `scripts/ci-config-dump-restore-parity.sh`.
  */
-const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
+export const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   tenants: 'tenants',
   users: 'users',
   domains: 'domains',
@@ -46,6 +49,7 @@ const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   tenantMtlsProviders: 'tenant_mtls_providers',
   tenantZitiProviders: 'tenant_ziti_providers',
   tenantZrokAccounts: 'tenant_zrok_accounts',
+  tenantCertificates: 'tenant_certificates',
 };
 
 interface Selector {
