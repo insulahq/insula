@@ -31,6 +31,7 @@ data:
   rsyncd.conf: |
     # rsyncd config for the mail-stack-publisher sidecar.
     # No auth — NetworkPolicy below restricts source IPs to standby pods.
+    # v2: lock file at /tmp/rsyncd.lock (readOnlyRootFilesystem-compatible).
     pid file = /tmp/rsyncd.pid
     # Default lock file is /var/run/rsyncd.lock, which fails with
     # `failed to open lock file` on the readOnlyRootFilesystem sidecar.
