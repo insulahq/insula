@@ -113,7 +113,7 @@ spec:
             - |
               set -e
               SENTINEL=/app/data/admin/admin.json
-              if [ -f "$SENTINEL" ]; then
+              if [ -f "$$SENTINEL" ]; then
                 echo "restore-state: admin.json exists — skipping restore"
                 exit 0
               fi
@@ -133,30 +133,37 @@ spec:
               # to Bulwark's fresh-start path. Admin reset is annoying
               # but better than restoring frozen-state data without
               # the operator knowing.
-              STANDBY_MAX_AGE_SECONDS=${FAST_PATH_MAX_AGE_SECONDS:-1800}
+              #
+              # $$ ESCAPING: Bulwark's manifest goes through Flux
+              # postBuild substituteFrom. Plain ${VAR} gets substituted
+              # away (live bug observed 2026-05-25 — age + limit
+              # appeared as empty in the rejection log). Double-$$
+              # tells Flux to emit a literal $; the shell sees $VAR
+              # at runtime.
+              STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
               standby_age_ok=true
-              if [ -f "$STANDBY_COMPLETE" ]; then
-                sentinel_epoch=$(cat "$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
-                : ${sentinel_epoch:=0}
-                now_epoch=$(date +%s)
-                age=$((now_epoch - sentinel_epoch))
-                if [ "$sentinel_epoch" = "0" ] || [ "$age" -gt "$STANDBY_MAX_AGE_SECONDS" ]; then
-                  echo "restore-state: standby marker is ${age}s old (limit ${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, Bulwark fresh-starts"
+              if [ -f "$$STANDBY_COMPLETE" ]; then
+                sentinel_epoch=$$(cat "$$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
+                : $${sentinel_epoch:=0}
+                now_epoch=$$(date +%s)
+                age=$$((now_epoch - sentinel_epoch))
+                if [ "$$sentinel_epoch" = "0" ] || [ "$$age" -gt "$$STANDBY_MAX_AGE_SECONDS" ]; then
+                  echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, Bulwark fresh-starts"
                   standby_age_ok=false
                 fi
               fi
-              if [ "$standby_age_ok" = "true" ] && [ -f "$STANDBY_COMPLETE" ] && [ -d "$STANDBY" ] && [ -f "$STANDBY/admin/admin.json" ]; then
-                echo "restore-state: FAST PATH — found pre-staged standby data at $STANDBY (complete marker present, age within limit)"
+              if [ "$$standby_age_ok" = "true" ] && [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY" ] && [ -f "$$STANDBY/admin/admin.json" ]; then
+                echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY (complete marker present, age within limit)"
                 # Copy preserving ownership so Bulwark's UID 1000 can
                 # read its own files (standby-replicate.sh ran the
                 # earlier copy with -a preserving original UIDs).
-                if cp -a "$STANDBY/." /app/data/; then
-                  echo "restore-state: standby-data copy complete ($(find /app/data -type f -not -path '*/lost+found/*' | wc -l) files)"
+                if cp -a "$$STANDBY/." /app/data/; then
+                  echo "restore-state: standby-data copy complete ($$(find /app/data -type f -not -path '*/lost+found/*' | wc -l) files)"
                   exit 0
                 fi
                 echo "restore-state: standby-data copy failed — Bulwark will fresh-start"
               else
-                echo "restore-state: no standby-data at $STANDBY — Bulwark will fresh-start"
+                echo "restore-state: no standby-data at $$STANDBY — Bulwark will fresh-start"
               fi
               exit 0
           securityContext:
