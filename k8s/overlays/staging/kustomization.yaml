@@ -145,8 +145,8 @@ patches:
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend
-    newTag: "20260525150916-91c81b3" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260525152318-59a6569" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
-    newTag: "20260525140645-dc25222" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260525152316-59a6569" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/phoenixtechnam/hosting-platform/tenant-panel
-    newTag: "20260525140107-388dd76" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260525152320-59a6569" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
