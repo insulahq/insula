@@ -322,3 +322,45 @@ export async function pickBestFailoverNode(
 
 // Expose MAIL_NAMESPACE so port-exposure can use the same constant.
 export { MAIL_NAMESPACE };
+
+/**
+ * Startup self-heal: ensure every Deployment in MAIL_STACK_DEPLOYMENTS
+ * is pinned to the current mailActiveNode. Without this, a fresh
+ * Bulwark Deployment (manifest carries no nodeSelector — see A1) would
+ * schedule on any node, breaking the co-location invariant that Bulwark
+ * always lives on the same node as Stalwart.
+ *
+ * Idempotent — applyDeploymentAffinity uses merge-patch semantics so
+ * re-applying the same selector is a no-op.
+ *
+ * Fire-and-forget; caller logs failures via .catch(). If
+ * mailActiveNode is null (operator hasn't run placement yet), we
+ * skip — the next placement-update or migration call will set it.
+ */
+export async function ensureMailStackPlacementApplied(
+  db: Database,
+  opts: PlacementOptions,
+): Promise<void> {
+  const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+  const activeNode = row?.mailActiveNode ?? null;
+  if (!activeNode) {
+    opts.logger?.warn?.(
+      'ensureMailStackPlacementApplied: mailActiveNode not set — skipping (placement reconciles on first migration)',
+    );
+    return;
+  }
+
+  const k8s = await import('@kubernetes/client-node');
+  const kc = new k8s.KubeConfig();
+  if (opts.kubeconfigPath) kc.loadFromFile(opts.kubeconfigPath);
+  else kc.loadFromCluster();
+  const apps = kc.makeApiClient(k8s.AppsV1Api);
+
+  const { applyDeploymentAffinity } = await import('./migration.js');
+  // allowRestore=false on startup — we're not promoting from a
+  // restore, just ensuring the current pin is set on both Deployments.
+  // Stamping the annotation on every restart would re-trigger the
+  // restore-state init container the next time Stalwart's pod is
+  // recreated, which is wrong.
+  await applyDeploymentAffinity(apps, activeNode, /* allowRestore */ false);
+}
