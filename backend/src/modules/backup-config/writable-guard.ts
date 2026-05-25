@@ -26,10 +26,15 @@ import type { Database } from '../../db/index.js';
 
 export class TargetFrozenError extends ApiError {
   constructor(targetId: string, targetName: string) {
+    // Pass targetId + targetName through ApiError.details so the
+    // global error handler surfaces them in the response envelope.
+    // Admin UI / task-center chips can pull them out to render a
+    // direct link to the frozen target without parsing the message.
     super(
       'TARGET_FROZEN',
       `Backup target '${targetName}' is read-only (frozen for DR safety). Mark it read-write from the admin UI before retrying.`,
       409,
+      { targetId, targetName },
     );
     this.name = 'TargetFrozenError';
     this.targetId = targetId;

@@ -20,7 +20,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq, and, lt } from 'drizzle-orm';
+import { eq, and, lt, inArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { backupJobs, backupConfigurations } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
@@ -76,6 +76,24 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
     )
     .limit(50);
 
+  // DR safety: pre-fetch the set of frozen targets ONCE rather than
+  // calling requireWritableTarget inside the per-bundle loop. A 50-row
+  // batch hitting 5 targets used to issue 50 SELECTs; now it issues 1.
+  const distinctTargetIds = Array.from(new Set(
+    expiredCandidates.map((c) => c.targetConfigId).filter((t): t is string => Boolean(t)),
+  ));
+  const frozenTargets = new Map<string, string>(); // id -> name
+  if (distinctTargetIds.length > 0) {
+    const rows = await app.db
+      .select({ id: backupConfigurations.id, name: backupConfigurations.name })
+      .from(backupConfigurations)
+      .where(and(
+        eq(backupConfigurations.readOnly, true),
+        inArray(backupConfigurations.id, distinctTargetIds),
+      ));
+    for (const r of rows) frozenTargets.set(r.id, r.name);
+  }
+
   for (const { id, targetConfigId } of expiredCandidates) {
     if (!targetConfigId) {
       // Pre-D-redesign row with no target_config_id; can't reach
@@ -85,22 +103,16 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
       expiredDeleted++;
       continue;
     }
+    // DR safety: skip frozen targets — the bundle row stays in its
+    // current status so the next sweep re-evaluates after operator
+    // unfreezes. Logged once at info so the skip is visible.
+    const frozenName = frozenTargets.get(targetConfigId);
+    if (frozenName !== undefined) {
+      app.log.info({ bundleId: id, targetConfigId, targetName: frozenName }, 'tenant-backup retention: skipping delete on frozen target');
+      expiredFailed++;
+      continue;
+    }
     try {
-      // DR safety: if the target is frozen, skip the delete and leave
-      // the row's status untouched so the next sweep tries again. Logs
-      // at info-level so operators see the skip in the audit trail but
-      // it's not a noisy error.
-      const { requireWritableTarget, TargetFrozenError } = await import('../backup-config/writable-guard.js');
-      try {
-        await requireWritableTarget(app.db, targetConfigId);
-      } catch (frozenErr) {
-        if (frozenErr instanceof TargetFrozenError) {
-          app.log.info({ bundleId: id, targetConfigId, targetName: frozenErr.targetName }, 'tenant-backup retention: skipping delete on frozen target');
-          expiredFailed++;
-          continue;
-        }
-        throw frozenErr;
-      }
       const store = await resolveStoreForTarget(app, targetConfigId);
       const handle = await store.open(id);
       if (handle) {
