@@ -409,6 +409,60 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+        # A5 (2026-05-25): rsyncd sidecar that serves the consolidated
+        # mail-stack PVC read-only over the cluster network. Consumed
+        # by the mail-stack-standby-replicate DaemonSet on standby
+        # nodes for intra-cluster data replication WITHOUT requiring
+        # restic / offsite backup. Consistency model is the same as
+        # the legacy restic-based snapshot: filesystem-level read
+        # while Stalwart is live; RocksDB's WAL replay handles any
+        # partial-write state on restore. rsync's delta sync means
+        # steady-state bandwidth per 5-min cycle is bounded by WAL
+        # turnover, not DB size — even a multi-GB Stalwart only
+        # transfers a few MB per cycle.
+        - name: rsyncd
+          image: instrumentisto/rsync-ssh:3.4.1
+          imagePullPolicy: IfNotPresent
+          command: ["rsync"]
+          args:
+            - "--daemon"
+            - "--no-detach"
+            - "--config=/etc/rsyncd.conf"
+            - "--port=873"
+            - "--log-file=/dev/stdout"
+          ports:
+            - name: rsync
+              containerPort: 873
+              protocol: TCP
+          volumeMounts:
+            - name: stalwart-data
+              mountPath: /data
+              readOnly: true
+            - name: rsyncd-config
+              mountPath: /etc/rsyncd.conf
+              subPath: rsyncd.conf
+              readOnly: true
+            # rsyncd writes its PID file to /tmp/rsyncd.pid (per the
+            # rsyncd.conf). readOnlyRootFilesystem:true rejects writes
+            # to the container rootfs, so /tmp needs its own emptyDir
+            # otherwise rsyncd crashes with EROFS on startup
+            # (code-review MUST-FIX, 2026-05-25).
+            - name: rsyncd-tmp
+              mountPath: /tmp
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534  # nobody
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
       volumes:
         - name: config
           configMap:
@@ -420,6 +474,15 @@ spec:
             # stalwart-rocksdb-data is kept in the cluster for 48-72h
             # safety period (see docs/02-operations/MAIL_STACK_CONSOLIDATION.md).
             claimName: mail-stack-data
+        # A5 (2026-05-25): rsyncd config for the sidecar above.
+        - name: rsyncd-config
+          configMap:
+            name: mail-stack-rsyncd-config
+        # /tmp for rsyncd PID file — required because the sidecar runs
+        # with readOnlyRootFilesystem:true.
+        - name: rsyncd-tmp
+          emptyDir:
+            sizeLimit: 10Mi
         # A4 (2026-05-25): hostPath into the standby DaemonSet's
         # pre-staged data dir. The restore-state init container uses
         # this as a FAST PATH on failover; the main container does

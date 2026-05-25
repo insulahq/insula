@@ -1,121 +1,95 @@
 #!/bin/sh
-# standby-replicate.sh — A3 (2026-05-25). Pre-stages the latest mail
-# snapshot data on standby nodes so failover can promote a node
-# without paying the restic-restore latency at takeover time.
+# standby-replicate.sh — pre-stages the latest mail data on standby
+# nodes so failover can promote a node WITHOUT paying restore latency
+# at takeover time. Runs as the DaemonSet `mail-stack-standby-replicate`
+# on every node labelled `platform.example.test/mail-standby=true`.
 #
-# Runs every 5 min via the mail-stack-standby-replicate CronJob on
-# every node labelled `platform.example.test/mail-standby=true`
-# (mailSecondaryNode and mailTertiaryNode from system_settings).
+# A5 (2026-05-25): switched from restic restore to **rsync pull** from
+# the in-cluster mail-stack-rsyncd Service (sidecar on the active
+# stalwart-mail Pod). Failover now works WITHOUT restic — restic
+# remains an independent optional offsite-backup CronJob (not part
+# of the failover hot path anymore).
 #
-# Pulls the latest restic snapshot to the hostPath dir
-# /var/lib/mail-stack-standby/ on the host. Subsequent calls reuse
-# restic's local cache to make incremental pulls fast.
+# Why rsync (not restic):
+#   - Delta sync: SST files are immutable once written → transferred
+#     once + reused. Steady-state per-cycle bandwidth = WAL turnover
+#     only, regardless of DB size.
+#   - No disk pressure: streams file-to-file, no tar staging.
+#   - In-cluster: no offsite repo dependency.
 #
-# Failure modes are non-fatal — the script always exits 0 unless
-# fundamentally misconfigured. A failed pull just leaves the previous
-# generation in place; failover may use slightly stale data (still
-# fresher than starting from no standby data at all).
+# Consistency story (same as the legacy restic snapshot):
+#   - rsync reads from a RO mount of the active node's PVC.
+#   - SST files may be partially captured mid-compaction.
+#   - RocksDB's WAL replay on restore handles partial-write state
+#     (same crash-recovery semantics as a power-loss scenario).
 #
-# Env (from the stalwart-snapshot-restic-repo Secret — the CronJob
-# reads the same Secret as the active-node snapshot CronJob since both
-# point at the same offsite repo; only the active node writes):
-#   RESTIC_REPOSITORY, RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Failure modes are non-fatal — the script always returns 0 from the
+# inner run_once function. A failed pull leaves the previous
+# generation in place; standby data may be slightly stale but is
+# still preserved.
 #
 # Env (from pod spec):
-#   PLATFORM_API_URL   internal platform API URL
-#   PLATFORM_API_TOKEN SA token for reporting freshness back
+#   PLATFORM_API_URL          internal platform API URL (for stats POST)
+#   PLATFORM_API_TOKEN        SA token for stats POST (optional)
+#   PUBLISHER_RSYNC_URL       defaults to rsync://mail-stack-rsyncd.mail.svc.cluster.local/mail-stack/
+#   LOOP_INTERVAL_SECONDS     forever-loop cadence (300 = 5 min);
+#                             unset = run once and exit
+#   NODE_NAME                 from spec.nodeName via downwardAPI
 
 set -e
 
 STANDBY_DIR=/standby-data
 PLATFORM_API_URL="${PLATFORM_API_URL:-http://platform-api.platform.svc.cluster.local:3000}"
+PUBLISHER_RSYNC_URL="${PUBLISHER_RSYNC_URL:-rsync://mail-stack-rsyncd.mail.svc.cluster.local/mail-stack/}"
 NODE_NAME="${NODE_NAME:-unknown}"
-# A3.5 (2026-05-25): when invoked from the DaemonSet (LOOP_INTERVAL_SECONDS
-# set) the script runs the replication body in a forever loop, sleeping
-# the configured interval between iterations. This ensures EVERY standby
-# node refreshes its hostPath data on its OWN cadence — vs a CronJob
-# which would schedule one Pod per fire, picking one of N nodes by
-# kube-scheduler arbitration. With LOOP_INTERVAL_SECONDS unset the
-# script runs once and exits (legacy CronJob mode for tests).
+# DaemonSet mode (LOOP_INTERVAL_SECONDS > 0) runs forever sleeping
+# between iterations so EVERY standby refreshes on its own cadence.
+# LOOP_INTERVAL_SECONDS=0 runs once and exits (for one-shot Jobs).
 LOOP_INTERVAL_SECONDS="${LOOP_INTERVAL_SECONDS:-0}"
 
 run_once() {
 echo "=== standby-replicate: node=$NODE_NAME dir=$STANDBY_DIR ==="
 
-if [ -z "${RESTIC_REPOSITORY:-}" ]; then
-  echo "standby-replicate: RESTIC_REPOSITORY not set — skipping (operator has not configured a mail BackupStore)"
-  return 0
-fi
-
 mkdir -p "$STANDBY_DIR"
+# stalwart/ + bulwark/ subdirs are created by rsync -a (transferred
+# from the publisher's PVC root). No pre-creation needed.
 
-# A4 review: clear the completeness sentinel BEFORE any work so
-# failover readers (Stalwart + Bulwark restore-state init containers)
-# can never see a stale "complete" marker against a partially-restored
-# tree. The sentinel is re-written ONLY after both cp invocations
-# succeed below.
+# Clear the completeness sentinel BEFORE any work so failover readers
+# (Stalwart + Bulwark restore-state init containers) can never see a
+# stale "complete" marker against a partially-restored tree. The
+# sentinel is re-written ONLY after rsync succeeds below.
 rm -f "$STANDBY_DIR/.standby-complete" 2>/dev/null || true
 
-# Verify repo is reachable before any work
-if ! restic snapshots --last 1 >/dev/null 2>&1; then
-  echo "standby-replicate: restic repo unreachable — leaving existing standby data in place"
-  return 0
-fi
-
-# Pull latest snapshot. Restic restores files at their ORIGINAL paths
-# under the --target dir, so the consolidated layout (A2.5) produces
-# files at $STANDBY_DIR/var/lib/mail-stack/{stalwart,bulwark}/.
+# Pull from the publisher Service via rsync.
+#
+# Flags:
+#   -a        archive mode (recursive, preserve perms/times/ownership)
+#   --delete  remove files on standby that no longer exist on source
+#             (handles SST compaction → old files deleted)
+#   --partial keep partially-transferred files for next-iteration resume
+#   --inplace --no-whole-file are NOT set; rsync writes to .tmp.<file>
+#             then renames atomically so failover readers always see a
+#             consistent file state per-file (between files, the
+#             standby-complete sentinel is the cross-file gate).
+#   --timeout 60 fail any single transfer that hangs >60s
 start_ts=$(date +%s)
-echo "standby-replicate: restic restore latest --target $STANDBY_DIR"
-if ! restic restore latest --target "$STANDBY_DIR" 2>&1; then
-  echo "standby-replicate: restic restore FAILED — leaving existing standby data in place"
+echo "standby-replicate: rsync $PUBLISHER_RSYNC_URL → $STANDBY_DIR/"
+if ! rsync -a --delete --partial --timeout=60 \
+     "$PUBLISHER_RSYNC_URL" "$STANDBY_DIR/" 2>&1; then
+  echo "standby-replicate: rsync FAILED — leaving previous generation in place"
   return 0
 fi
 end_ts=$(date +%s)
 duration=$((end_ts - start_ts))
 
-# Move the restored subtree into the expected flat layout so the
-# failover migration helper can find data at $STANDBY_DIR/{stalwart,bulwark}.
-# CRITICAL: mkdir BEFORE cp — `cp -a src/. dst/` requires dst to
-# exist, otherwise it creates dst as a file (or fails). On first run
-# of this Job on a fresh standby node the dirs don't exist yet.
-mkdir -p "$STANDBY_DIR/stalwart" "$STANDBY_DIR/bulwark"
-SRC="$STANDBY_DIR/var/lib/mail-stack"
-if [ -d "$SRC/stalwart" ]; then
-  if ! cp -a "$SRC/stalwart/." "$STANDBY_DIR/stalwart/"; then
-    echo "standby-replicate: cp stalwart FAILED — leaving previous generation"
-    return 0
-  fi
-fi
-if [ -d "$SRC/bulwark" ]; then
-  if ! cp -a "$SRC/bulwark/." "$STANDBY_DIR/bulwark/"; then
-    echo "standby-replicate: cp bulwark FAILED — leaving previous generation"
-    return 0
-  fi
-fi
-# Tidy up the deep tree once flattened. The rm is safe because
-# concurrencyPolicy: Forbid on the CronJob guarantees no overlapping run.
-# `${STANDBY_DIR:?}` guards against catastrophic `rm -rf /var` if the
-# variable is somehow empty (shellcheck SC2115).
-rm -rf "${STANDBY_DIR:?}/var" 2>/dev/null || true
-
-# A4 review: completeness sentinel — written ONLY here, after both
-# cp blocks above completed without `return 0` early-exits. Failover
-# readers gate the fast-path copy on this file's presence, so a
-# partially-restored tree (interrupted cp) is invisible to them.
-#
-# Stored as epoch-seconds (POSIX-portable across alpine BusyBox and
-# debian GNU coreutils — both date binaries support `+%s`). The
-# init containers compute age = now - stored and reject the FAST
-# PATH if older than FAST_PATH_MAX_AGE_SECONDS (default 1800s).
-# This catches the "DaemonSet was down for hours" case where stale
-# data could otherwise be silently restored.
+# Completeness sentinel — written ONLY after rsync succeeded.
+# Failover readers gate FAST PATH on this file + its age (epoch
+# seconds, both POSIX-portable + arithmetic-friendly).
 date +%s > "$STANDBY_DIR/.standby-complete"
 # Human-readable copy for operators inspecting standby state.
 date -Iseconds > "$STANDBY_DIR/.standby-complete-readable" 2>/dev/null || true
 
-# Sentinel + size report
-echo "$(date -Iseconds) snapshot=latest" > "$STANDBY_DIR/.standby-replicated-at"
+# Size report
 size_bytes=$(du -sb "$STANDBY_DIR" 2>/dev/null | awk '{print $1}')
 file_count=$(find "$STANDBY_DIR" -type f -not -path '*/lost+found/*' 2>/dev/null | wc -l)
 echo "standby-replicate: OK (${duration}s, ${size_bytes} bytes, ${file_count} files)"
@@ -138,9 +112,8 @@ echo "=== standby-replicate: done ==="
 if [ "${LOOP_INTERVAL_SECONDS}" -gt 0 ]; then
   echo "standby-replicate: DaemonSet mode — looping every ${LOOP_INTERVAL_SECONDS}s"
   while true; do
-    # Each iteration runs in a subshell so a transient set -e violation
-    # inside doesn't kill the outer loop. Errors inside run_once are
-    # already guarded with `exit 0` paths, but defence in depth.
+    # Subshell isolates a transient set -e violation inside run_once
+    # from killing the outer loop.
     if ! ( run_once ); then
       echo "standby-replicate: iteration failed (non-fatal) — sleeping then retrying"
     fi

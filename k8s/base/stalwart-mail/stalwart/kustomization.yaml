@@ -19,6 +19,7 @@ resources:
   - bootstrap-job.yaml
   - snapshot-cronjob.yaml
   - standby-replicate-daemonset.yaml
+  - rsyncd-publisher.yaml
   - pdb.yaml
 
 labels:

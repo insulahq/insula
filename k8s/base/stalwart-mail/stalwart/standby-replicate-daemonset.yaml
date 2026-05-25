@@ -1,8 +1,14 @@
-# A3 (2026-05-25): mail-stack-standby-replicate DaemonSet.
+# mail-stack-standby-replicate DaemonSet.
 #
-# Pre-stages the latest mail snapshot data on standby-labelled nodes
-# every 5 minutes so failover can promote a node WITHOUT paying the
-# restic-restore latency at takeover time.
+# Pre-stages the latest mail data on standby-labelled nodes every
+# 5 minutes so failover can promote a node WITHOUT paying any
+# restore latency at takeover time.
+#
+# A5 (2026-05-25): switched from restic-restore to rsync-pull from
+# the in-cluster mail-stack-rsyncd Service (sidecar on the active
+# stalwart-mail Pod). Failover now works WITHOUT restic. Restic
+# remains an independent optional offsite-backup CronJob, decoupled
+# from the failover hot path.
 #
 # WHY DaemonSet (not CronJob — original A3 design corrected mid-flight):
 #   A single CronJob fires one Pod per tick, kube-scheduler picks ONE
@@ -13,14 +19,16 @@
 # Node selection: any node with label
 #   platform.example.test/mail-standby=true
 # Set by platform-api's ensureMailStackPlacementApplied reconciler.
-# Until A4 wires the failover hot-path to consume `/var/lib/mail-stack-standby/`,
-# this data is collected but not yet promoted — operators can verify
-# the contents directly on each standby node's disk.
+# A4 wired the failover hot-path to consume `/var/lib/mail-stack-standby/`
+# via the FAST PATH restore-state init containers on stalwart-mail +
+# bulwark Deployments.
 #
 # Failure mode: the script (standby-replicate.sh) always returns 0
 # from its inner run_once() function. The outer loop sleeps then
-# retries, so transient restic failures roll up as one stale snapshot
-# rather than a Pod restart storm.
+# retries, so transient rsync failures roll up as one stale generation
+# rather than a Pod restart storm. The .standby-complete sentinel is
+# cleared at iteration start + re-written only on rsync success, so
+# failover readers never see a partial generation.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -53,19 +61,24 @@ spec:
           value: "true"
           effect: NoSchedule
       terminationGracePeriodSeconds: 10
+      # A5 (2026-05-25): switched from restic-restore to rsync-pull
+      # from the in-cluster mail-stack-rsyncd Service. restic Secret
+      # envFrom removed — failover now works WITHOUT restic. Restic
+      # remains an independent optional offsite-backup CronJob.
       containers:
         - name: replicate
           image: ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
           imagePullPolicy: Always
           command: ["/usr/local/bin/standby-replicate.sh"]
-          envFrom:
-            - secretRef:
-                name: stalwart-snapshot-restic-repo
-                optional: true
           env:
             - name: LOOP_INTERVAL_SECONDS
               # 300 = 5 min cadence. Matches the user-chosen RPO.
               value: "300"
+            - name: PUBLISHER_RSYNC_URL
+              # rsyncd sidecar on the active stalwart-mail Pod. Service
+              # endpoint follows the active node on every failover via
+              # selector match on app=stalwart-mail.
+              value: "rsync://mail-stack-rsyncd.mail.svc.cluster.local/mail-stack/"
             - name: PLATFORM_API_URL
               value: "http://platform-api.platform.svc.cluster.local:3000"
             - name: PLATFORM_API_TOKEN
@@ -84,10 +97,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 64Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 256Mi
       volumes:
         - name: standby-data
           hostPath:
