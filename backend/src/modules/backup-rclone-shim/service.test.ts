@@ -128,7 +128,7 @@ interface FakeRow {
   target: {
     id: string;
     name: string;
-    storageType: 's3' | 'ssh' | 'cifs' | 'nfs';
+    storageType: 's3' | 'ssh' | 'cifs';
     enabled: number;
     [k: string]: unknown;
   } | null;
@@ -252,30 +252,9 @@ describe('loadShimAssignments', () => {
     expect(outPwd.assignments[0].target.sshKey).toBeNull();
   });
 
-  it('handles NFS targets (no encrypted credentials)', async () => {
-    const rows: FakeRow[] = [
-      { className: 'mail', targetId: 'n1', priority: 0,
-        target: {
-          id: 'n1',
-          name: 'nfs-target',
-          storageType: 'nfs',
-          enabled: 1,
-          nfsServer: 'nas.example',
-          nfsExport: '/srv/backups',
-          nfsVersion: '4.2',
-          nfsOptions: 'soft,intr',
-        },
-      },
-    ];
-    const db = buildDb(rows);
-    const out = await loadShimAssignments(db, 'enc-key');
-    expect(out.assignments[0].target).toMatchObject({
-      storageType: 'nfs',
-      nfsServer: 'nas.example',
-      nfsExport: '/srv/backups',
-      nfsVersion: '4.2',
-    });
-  });
+  // NFS dropped 2026-05-25 — see ADR-043 postscript. The NFS
+  // load-and-decode test that used to live here is removed; the
+  // schema no longer accepts the value.
 
   it('handles CIFS targets with encrypted password', async () => {
     const rows: FakeRow[] = [

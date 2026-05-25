@@ -692,7 +692,7 @@ async function writeAssignment(
     className,
     targetId: row.id,
     targetName: row.name,
-    targetStorageType: row.storageType as 's3' | 'ssh' | 'cifs' | 'nfs',
+    targetStorageType: row.storageType as 's3' | 'ssh' | 'cifs',
     drainTimeoutSeconds: row.drainTimeoutSeconds,
   };
 }
