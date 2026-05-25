@@ -6,5 +6,5 @@ metadata:
   name: platform-version
   namespace: platform
 data:
-  version: "0.1.0-cd30219"
+  version: "0.1.0-64abd09"
   branch: "main"
