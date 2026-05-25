@@ -327,8 +327,8 @@ UPDATE system_settings SET mail_auto_failover_enabled=true WHERE id='system';
 
 Both `restore-state` init containers (Stalwart, Bulwark) exit 0
 cleanly when EVERY recovery path fails: empty PVC, no
-`.standby-complete`, no `RESTIC_REPOSITORY` env var. The main
-containers then start with empty data:
+`.standby-complete`, restic restore failed (or `RESTIC_REPOSITORY`
+unset). The main containers then start with empty data:
 
 - **Stalwart**: RocksDB initialises a fresh DB. All historical
   mail/users/etc. lost from the active store. Mail starts accepting
@@ -338,12 +338,68 @@ containers then start with empty data:
   pod's environment for the printed bootstrap password).
 
 This behaviour is the SAFE failure mode — pods come up Ready, no
-crashloop. The operator detects the data loss + initiates manual
-recovery (see "Recovery procedure C" below).
+crashloop.
 
-Verified by simulation 2026-05-25: the init script logic
-correctly cascades through the guards and exits 0 with a
-clear log line at each step.
+**Detecting a fresh-start (2026-05-25 alerting added)**:
+
+Every fresh-start path in both init containers now writes a sentinel
+file `.fresh-started-at` into the PVC, with content
+`<iso-timestamp> reason=<why>`. The operator can detect a fresh-start
+by checking either pod:
+
+```bash
+# Stalwart
+kubectl exec -n mail deploy/stalwart-mail -c stalwart -- \
+  cat /var/lib/stalwart/data/.fresh-started-at 2>/dev/null && \
+  echo "⚠️  STALWART WAS FRESH-STARTED — data loss occurred"
+
+# Bulwark
+kubectl exec -n mail deploy/bulwark -c bulwark -- \
+  cat /app/data/.fresh-started-at 2>/dev/null && \
+  echo "⚠️  BULWARK WAS FRESH-STARTED — admin password reset, settings lost"
+```
+
+The init container also logs a `RESTORE-STATE-WARNING:` prefixed
+message describing the reason. Grep pod logs to see why the
+fresh-start happened:
+
+```bash
+kubectl logs -n mail -l app=stalwart-mail -c restore-state --tail=20 | grep RESTORE-STATE-WARNING
+kubectl logs -n mail -l app=bulwark -c restore-state --tail=20 | grep RESTORE-STATE-WARNING
+```
+
+**Reasons logged**:
+- `no-restic` — Stalwart RESTIC_REPOSITORY env var unset (no offsite backup configured)
+- `allow-restore-not-set` — Stalwart's allow-restore annotation missing (operator did not approve restore)
+- `restic-restore-failed` — restic call failed (network, auth, repo corruption)
+- `restic-copy-failed` — restic succeeded but cp into PVC failed (disk full?)
+- `unexpected-restic-layout` — restic snapshot didn't contain `var/lib/mail-stack/{stalwart,bulwark}/`
+- `no-standby-no-restic` — Bulwark had neither standby data nor RESTIC_REPOSITORY
+- `restic-no-bulwark-subdir` — restic snapshot was pre-A2.5 (no bulwark/ subtree)
+
+**Follow-up (filed)**: platform-api should periodically check both
+sentinels + surface a banner in the admin UI. Today the detection is
+operator-pull (kubectl exec) rather than alert-push.
+
+### 9. Bulwark restic-restore fallback (added 2026-05-25)
+
+Pre-2026-05-25 Bulwark restore-state had ONLY the FAST PATH from
+standby. If failover landed on a node with no standby data, Bulwark
+fresh-started even when a valid restic snapshot existed.
+
+Now Bulwark's restore-state init container mirrors Stalwart's
+cascade:
+1. SENTINEL exists (admin.json already on PVC) → skip
+2. FAST PATH from `/standby-data/bulwark/` (with `.standby-complete`
+   age gate)
+3. **restic restore** from `RESTIC_REPOSITORY` (Secret
+   `stalwart-snapshot-restic-repo`, shared with Stalwart)
+4. Fresh-start (writes `.fresh-started-at` sentinel)
+
+Init container image switched from `alpine:3.20` to
+`mail-backup-tools` (which has restic + GNU date). Init runs once
+so image size is irrelevant. Added an emptyDir `restore-tmp`
+volume for restic's working dir.
 
 ## Diagnostic queries
 
@@ -410,22 +466,97 @@ Re-enable after maintenance window. Auto-failover does NOT trigger on
 healthy/degraded transitions — only when an active node is observed
 NotReady, so disabling is reversible at any time.
 
-### C. Recover after a failover where data was lost (no standby data + no restic)
+### C. Recover after a fresh-start (data was reset)
 
-This is the genuine worst case. Mail stack came up with fresh-start
-data after a node death where standby was empty and no restic snapshot
-exists.
+Triggered when both pods came up Ready with empty data after a
+failover where standby was unavailable and restic restore failed
+(or wasn't configured). The `.fresh-started-at` sentinel is
+present + `RESTORE-STATE-WARNING:` is in pod logs.
 
-1. Restore from the most recent restic snapshot (manually via shell):
-   ```bash
-   kubectl scale deploy stalwart-mail bulwark -n mail --replicas=0
-   kubectl wait --for=delete pod -n mail -l 'app in (stalwart-mail,bulwark)' --timeout=120s
-   PVC=$(kubectl get pv $(kubectl get pvc mail-stack-data -n mail -o jsonpath='{.spec.volumeName}') -o jsonpath='{.spec.local.path}')
-   ssh <active-node> "rm -rf $PVC/stalwart/* $PVC/bulwark/*"
-   # Spawn a restic-restore Pod that mounts the PVC and runs `restic restore latest`
-   kubectl scale deploy stalwart-mail bulwark -n mail --replicas=1
-   ```
-2. Verify CURRENT sentinel exists post-startup.
+**Step 1 — confirm the situation**:
+
+```bash
+kubectl exec -n mail deploy/stalwart-mail -c stalwart -- \
+  cat /var/lib/stalwart/data/.fresh-started-at 2>/dev/null
+kubectl exec -n mail deploy/bulwark -c bulwark -- \
+  cat /app/data/.fresh-started-at 2>/dev/null
+```
+
+If both empty → false alarm (data is fine). If either prints a
+timestamp + reason → data was reset in that subsystem.
+
+**Step 2 — pick recovery source**. Options in order of preference:
+
+| Source | When usable | Data age |
+|---|---|---|
+| Standby on another node | A3 DaemonSet still running there | Up to 5 min stale |
+| Latest restic snapshot | Restic repo reachable now | Up to 2 min stale (cron cadence) |
+| Older restic snapshot | When the latest already contains fresh-start state (because the snapshot CronJob ran AFTER the fresh-start) | Pre-incident, may be hours old |
+
+**Step 3 — recovery from latest restic snapshot** (most common):
+
+```bash
+# 1. Confirm restic is reachable from the active node
+ACTIVE=$(psql -tA -c "SELECT mail_active_node FROM system_settings WHERE id='system'")
+kubectl exec -n platform $(kubectl get pod -n platform -l app=backup-rclone-shim --field-selector spec.nodeName=$ACTIVE -o jsonpath='{.items[0].metadata.name}') -- \
+  wget -qO- --timeout=5 http://localhost:9000/ && echo "shim OK"
+
+# 2. Scale down both Deployments
+kubectl scale deploy stalwart-mail bulwark -n mail --replicas=0
+kubectl wait --for=delete pod -n mail -l 'app in (stalwart-mail,bulwark)' --timeout=120s
+
+# 3. Stamp allow-restore annotation on Stalwart's pod template
+#    (Bulwark's restore-state will retry restic on its own)
+kubectl patch deploy stalwart-mail -n mail --type=merge -p '
+  {"spec":{"template":{"metadata":{"annotations":{"mail.platform/allow-restore":"true"}}}}}'
+
+# 4. Delete CURRENT + admin.json sentinels so init containers see "empty PVC"
+PVC=$(kubectl get pv $(kubectl get pvc mail-stack-data -n mail -o jsonpath='{.spec.volumeName}') -o jsonpath='{.spec.local.path}')
+NODE=$(kubectl get pv $(kubectl get pvc mail-stack-data -n mail -o jsonpath='{.spec.volumeName}') -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}')
+ssh root@$NODE "rm -f $PVC/stalwart/CURRENT $PVC/bulwark/admin/admin.json $PVC/stalwart/.fresh-started-at $PVC/bulwark/.fresh-started-at"
+
+# 5. Scale back up — restore-state init containers will detect empty
+#    PVC + allow-restore=true + RESTIC_REPOSITORY set → restic restore
+kubectl scale deploy stalwart-mail bulwark -n mail --replicas=1
+
+# 6. Watch the restore happen
+kubectl logs -n mail -l app=stalwart-mail -c restore-state --tail=20 -f
+kubectl logs -n mail -l app=bulwark -c restore-state --tail=20 -f
+
+# 7. Verify CURRENT + admin.json present after main containers come up
+kubectl exec -n mail deploy/stalwart-mail -c stalwart -- ls /var/lib/stalwart/data/CURRENT
+kubectl exec -n mail deploy/bulwark -c bulwark -- ls /app/data/admin/admin.json
+```
+
+**Step 4 — recovery from an OLDER restic snapshot** (when fresh-start
+data has been propagated into recent snapshots):
+
+This is the case the operator hits when the original admin password
+(or specific mail data) was lost BEFORE the operator noticed the
+fresh-start, AND the snapshot CronJob already overwrote the
+authoritative data with the fresh-start state.
+
+```bash
+# 1. List snapshots in the restic repo. Run from any Pod that has
+#    the stalwart-snapshot-restic-repo Secret + restic binary.
+kubectl run restic-list --restart=Never --rm -it \
+  --image=ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest \
+  --env="$(kubectl get secret stalwart-snapshot-restic-repo -n mail -o json | jq -r '.data | to_entries[] | "\(.key)=\(.value | @base64d)"' | head -1)" \
+  --env-from='secretRef:{name: stalwart-snapshot-restic-repo}' \
+  --command -- restic snapshots --compact
+
+# 2. Identify the snapshot from BEFORE the fresh-start (compare
+#    snapshot timestamps vs the .fresh-started-at sentinel time)
+
+# 3. Run a one-shot restic-restore Job with the chosen snapshot ID,
+#    mounting mail-stack-data PVC. Same flow as Step 3 above but
+#    use `restic restore <snapshot-id>` instead of `latest`.
+```
+
+**Step 5 — if all else fails**: nuke + accept fresh-start.
+Operator resets admin passwords + asks users to recover from their
+own client-side mail copies (IMAP IDLE clients often have local
+caches).
 
 ### D. Decommission a standby node
 
