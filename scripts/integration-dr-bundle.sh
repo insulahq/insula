@@ -202,6 +202,101 @@ for crit in platform__platform-secrets.yaml platform__backup-target-key.yaml; do
   fi
 done
 
+# ─── Restore round-trip (Unit B) ────────────────────────────────────
+#
+# Phase G validates the dr-restore-bundle.sh importer can consume the
+# bundle we just produced + populate an empty DB with the right rows.
+# Uses a throwaway local Postgres (docker run) so the live system-db
+# stays clean. Skipped when --skip-restore is set OR docker is missing.
+echo "==> Phase G: dr-restore-bundle.sh round-trip"
+if [[ "${SKIP_RESTORE:-0}" == "1" ]]; then
+  echo "  (skip G: SKIP_RESTORE=1)"
+elif ! command -v docker >/dev/null 2>&1; then
+  echo "  (skip G: docker not on PATH — install or set SKIP_RESTORE=1)"
+elif ! command -v psql >/dev/null 2>&1; then
+  echo "  (skip G: psql not on PATH — install postgresql-client or set SKIP_RESTORE=1)"
+else
+  REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  PG_NAME="dr-restore-verify-$$"
+  PG_PASS="dr-verify-$(openssl rand -hex 8)"
+  PG_PORT=$(shuf -i 55432-65432 -n 1)
+  cleanup_pg() {
+    docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  }
+  trap 'cleanup_pg; cleanup' EXIT
+
+  echo "  spinning up ephemeral Postgres on :$PG_PORT..."
+  docker run -d --rm --name "$PG_NAME" -e POSTGRES_PASSWORD="$PG_PASS" -p "$PG_PORT:5432" postgres:18-alpine >/dev/null
+  # Wait for Postgres to accept connections (max 30s)
+  for _ in $(seq 1 30); do
+    if docker exec "$PG_NAME" pg_isready -U postgres >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+
+  # Apply schema migrations — every *.sql in backend/src/db/migrations
+  # in alphabetical order. Mirrors the platform-api startup migrator.
+  export DATABASE_URL="postgresql://postgres:$PG_PASS@localhost:$PG_PORT/postgres"
+  MIGRATION_FAIL=0
+  for m in "$REPO_ROOT"/backend/src/db/migrations/*.sql; do
+    if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$m" >/dev/null 2>&1; then
+      fail "G0 migration $(basename "$m") failed against ephemeral Postgres"
+      MIGRATION_FAIL=1
+      break
+    fi
+  done
+  if [[ $MIGRATION_FAIL -eq 0 ]]; then
+    ok "G0 schema migrations applied to ephemeral Postgres"
+
+    # Run the importer against the empty DB.
+    if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
+        --bundle "$WORK_DIR/bundle.age" \
+        --age-key "$AGE_KEY_FILE" \
+        --mode partial \
+        > "$WORK_DIR/restore.stdout" 2> "$WORK_DIR/restore.stderr"; then
+      ok "G1 dr-restore-bundle.sh exited 0"
+    else
+      fail "G1 dr-restore-bundle.sh failed: $(cat "$WORK_DIR/restore.stderr")"
+    fi
+
+    # Verify the JSON result is well-formed + has the expected shape.
+    if jq -e '.ok == true' "$WORK_DIR/restore.stdout" >/dev/null 2>&1; then
+      CONFIGS=$(jq -r '.importResult.configsInserted' "$WORK_DIR/restore.stdout")
+      ASSIGNS=$(jq -r '.importResult.assignmentsInserted' "$WORK_DIR/restore.stdout")
+      ok "G2 importer reports configsInserted=$CONFIGS assignmentsInserted=$ASSIGNS"
+    else
+      fail "G2 importer JSON result is not ok=true"
+    fi
+
+    # Verify the rows landed in the DB with readOnly=true on EVERY row.
+    NON_RO=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM backup_configurations WHERE read_only IS NOT TRUE")
+    if [[ "$NON_RO" == "0" ]]; then
+      TOTAL=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM backup_configurations")
+      ok "G3 every imported config has read_only=true (total=$TOTAL)"
+    else
+      fail "G3 $NON_RO row(s) in DB have read_only != true — A1 freeze invariant violated"
+    fi
+
+    # Verify the assignments landed.
+    A_TOTAL=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM backup_target_assignments")
+    ok "G4 imported $A_TOTAL backup_target_assignments rows"
+
+    # Verify idempotency: re-running the importer is a no-op (every
+    # row is skipped via ON CONFLICT DO NOTHING).
+    if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
+        --bundle "$WORK_DIR/bundle.age" --age-key "$AGE_KEY_FILE" --mode partial \
+        > "$WORK_DIR/restore2.stdout" 2>&1; then
+      RE_INSERTED=$(jq -r '.importResult.configsInserted' "$WORK_DIR/restore2.stdout")
+      if [[ "$RE_INSERTED" == "0" ]]; then
+        ok "G5 re-running importer is idempotent (0 new inserts)"
+      else
+        fail "G5 re-run inserted $RE_INSERTED configs — importer is not idempotent"
+      fi
+    else
+      fail "G5 re-run failed"
+    fi
+  fi
+fi
+
 echo
 echo "─── Summary ───"
 echo "  passed: $PASS"
