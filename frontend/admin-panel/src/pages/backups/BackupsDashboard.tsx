@@ -19,6 +19,7 @@ import {
   LifeBuoy,
   Mail,
   Package,
+  Snowflake,
 } from 'lucide-react';
 import type { BackupHealthSummary } from '@k8s-hosting/api-contracts';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
@@ -47,6 +48,56 @@ const CLASSES: readonly ClassRow[] = [
   { to: '/backups/tenants', label: 'Tenants', icon: Package,  match: (s) => s.category === 'tenant' },
   { to: '/backups/mail',    label: 'Mail',    icon: Mail,     match: (s) => isMail(s) },
 ];
+
+/**
+ * DR safety: when any backup target carries read_only=true, show an
+ * amber banner across the Backups dashboard naming each frozen target.
+ * The freeze is the operator's signal that a DR restore is in progress
+ * and they need to confirm data integrity before allowing writes again.
+ * Each row deep-links to Remote Storage Targets where the operator can
+ * use the Mark Read-Write modal.
+ */
+function FrozenTargetsBanner({
+  configs,
+}: {
+  readonly configs: ReadonlyArray<{ id: string; name: string; readOnly: boolean }>;
+}) {
+  const frozen = configs.filter((c) => c.readOnly);
+  if (frozen.length === 0) return null;
+  return (
+    <div
+      className="rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50/70 dark:bg-sky-900/20 px-4 py-3 text-sm text-sky-800 dark:text-sky-200"
+      data-testid="frozen-targets-banner"
+    >
+      <div className="flex items-start gap-2">
+        <Snowflake size={16} className="mt-0.5 flex-none text-sky-500" />
+        <div className="flex-1">
+          <div className="font-medium">
+            DR restore in progress — {frozen.length} backup target
+            {frozen.length === 1 ? ' is' : 's are'} read-only.
+          </div>
+          <p className="mt-1 text-xs">
+            Verify data integrity from each target before allowing writes.
+            Until you mark them read-write, retention prunes and new
+            backups against these targets are refused.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {frozen.map((t) => (
+              <Link
+                key={t.id}
+                to="/backups/targets"
+                className="inline-flex items-center gap-1 rounded bg-sky-100 dark:bg-sky-800/40 px-2 py-0.5 text-xs font-medium text-sky-700 dark:text-sky-200 hover:bg-sky-200 dark:hover:bg-sky-800/70"
+              >
+                <Snowflake size={10} />
+                {t.name}
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function StatCard({
   icon: Icon,
@@ -159,6 +210,8 @@ export default function BackupsDashboard() {
       </header>
 
       <BackupHealthBanner summaries={summaries} />
+
+      <FrozenTargetsBanner configs={configs} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {CLASSES.map((c) => {
