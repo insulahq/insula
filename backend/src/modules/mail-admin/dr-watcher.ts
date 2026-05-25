@@ -17,7 +17,7 @@
  * Follows the exact pattern of backup-health/scheduler.ts.
  */
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerRestoreBasedFailover } from './migration.js';
@@ -90,12 +90,22 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
 
       if (drState === 'healthy') {
         // First detection — transition to degraded and record the time.
-        await db.update(systemSettings)
-          .set({ mailDrState: 'degraded', mailLastFailoverAt: new Date() })
-          .where(eq(systemSettings.id, SETTINGS_ID));
-        log.warn(
-          `Active mail node ${settings.mailActiveNode} is NotReady — entering degraded state (threshold ${thresholdSec}s)`,
-        );
+        // CAS guard: only this replica's UPDATE will see drState=healthy;
+        // any concurrent replica's UPDATE filters zero rows and skips
+        // the log message. Prevents spurious "entering degraded state"
+        // warnings firing from each of the 3 HA platform-api replicas.
+        const cas = await db.execute(sql`
+          UPDATE system_settings
+          SET mail_dr_state = 'degraded',
+              mail_last_failover_at = now()
+          WHERE id = ${SETTINGS_ID} AND mail_dr_state = 'healthy'
+          RETURNING id
+        `) as { rows?: unknown[] };
+        if ((cas.rows ?? []).length > 0) {
+          log.warn(
+            `Active mail node ${settings.mailActiveNode} is NotReady — entering degraded state (threshold ${thresholdSec}s)`,
+          );
+        }
         return;
       }
 
@@ -118,14 +128,31 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
         return;
       }
 
+      // CAS-guarded transition degraded → failing-over. With 3 HA
+      // platform-api replicas all ticking dr-watcher every 30s,
+      // multiple replicas can pass the read above with state=degraded
+      // and race to write 'failing-over'. Only the replica whose
+      // UPDATE...WHERE state='degraded' affects a row should call
+      // triggerRestoreBasedFailover. The others see zero rows and
+      // skip — preventing duplicate mail_migration_runs INSERTs +
+      // competing PVC deletes.
+      const claimRow = await db.execute(sql`
+        UPDATE system_settings
+        SET mail_dr_state = 'failing-over'
+        WHERE id = ${SETTINGS_ID} AND mail_dr_state = 'degraded'
+        RETURNING id
+      `) as { rows?: unknown[] };
+      if ((claimRow.rows ?? []).length === 0) {
+        log.info(
+          `Auto-failover already claimed by another replica — skipping this tick`,
+        );
+        return;
+      }
+
       log.warn(
         `Node ${settings.mailActiveNode} degraded for ${Math.round(degradedSince)}s >= threshold ${thresholdSec}s — ` +
         `triggering auto-failover to ${targetNode}`,
       );
-
-      await db.update(systemSettings)
-        .set({ mailDrState: 'failing-over' })
-        .where(eq(systemSettings.id, SETTINGS_ID));
 
       try {
         await triggerRestoreBasedFailover(targetNode, { db, core, apps, batch, kubeconfigPath });

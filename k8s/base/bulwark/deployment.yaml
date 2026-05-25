@@ -126,8 +126,27 @@ spec:
               # half a bulwark/ tree on disk (Bulwark would either
               # crash on missing settings/* or worse, accept a
               # zero-length admin.json).
-              if [ -f "$STANDBY_COMPLETE" ] && [ -d "$STANDBY" ] && [ -f "$STANDBY/admin/admin.json" ]; then
-                echo "restore-state: FAST PATH — found pre-staged standby data at $STANDBY (complete marker present)"
+              #
+              # Max-age gate: same as Stalwart's restore-state. If the
+              # standby DaemonSet has been down longer than the limit
+              # (default 30 min), refuse the FAST PATH — fall through
+              # to Bulwark's fresh-start path. Admin reset is annoying
+              # but better than restoring frozen-state data without
+              # the operator knowing.
+              STANDBY_MAX_AGE_SECONDS=${FAST_PATH_MAX_AGE_SECONDS:-1800}
+              standby_age_ok=true
+              if [ -f "$STANDBY_COMPLETE" ]; then
+                sentinel_epoch=$(cat "$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
+                : ${sentinel_epoch:=0}
+                now_epoch=$(date +%s)
+                age=$((now_epoch - sentinel_epoch))
+                if [ "$sentinel_epoch" = "0" ] || [ "$age" -gt "$STANDBY_MAX_AGE_SECONDS" ]; then
+                  echo "restore-state: standby marker is ${age}s old (limit ${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, Bulwark fresh-starts"
+                  standby_age_ok=false
+                fi
+              fi
+              if [ "$standby_age_ok" = "true" ] && [ -f "$STANDBY_COMPLETE" ] && [ -d "$STANDBY" ] && [ -f "$STANDBY/admin/admin.json" ]; then
+                echo "restore-state: FAST PATH — found pre-staged standby data at $STANDBY (complete marker present, age within limit)"
                 # Copy preserving ownership so Bulwark's UID 1000 can
                 # read its own files (standby-replicate.sh ran the
                 # earlier copy with -a preserving original UIDs).
