@@ -1,0 +1,129 @@
+# A3 (2026-05-25): mail-stack-standby-replicate CronJob.
+#
+# Pre-stages the latest mail snapshot data on standby-labelled nodes
+# every 5 minutes so failover can promote a node WITHOUT paying the
+# restic-restore latency at takeover time. The standby node's
+# `/var/lib/mail-stack-standby/` hostPath holds a continuously-updated
+# copy of `stalwart/` + `bulwark/` from the latest restic snapshot.
+#
+# Node selection: any node with label
+#   platform.phoenix-host.net/mail-standby=true
+# Platform-api's placement reconciler ensures the operator-configured
+# `mailSecondaryNode` + `mailTertiaryNode` carry this label (A3
+# follow-up — until then operators apply the label manually:
+#   kubectl label node <hostname> platform.phoenix-host.net/mail-standby=true).
+#
+# Schedule: */5 * * * *  (every 5 min). Matches the user-chosen
+# replication-lag RPO. Lighter than the active-node snapshot CronJob's
+# 2-min cadence because the standby data is a READ-side mirror; the
+# 5-min staleness is bounded by the restic snapshot cadence anyway.
+#
+# WHY hostPath (not PVC) on the standby:
+#   The whole point is "data is already on the standby node's local
+#   disk when failover triggers". A PVC would require local-path
+#   provisioner to bind on the standby — which only happens after the
+#   first consumer (defeats pre-staging).
+#
+# WHY use the same restic Secret as the snapshot CronJob:
+#   Both endpoints read the same restic repo (only the active node
+#   writes; standbys read). Using one Secret avoids credential
+#   duplication + rotation drift.
+#
+# Failure mode: any error leaves the previous generation in place
+# (standby-replicate.sh always exits 0 unless misconfigured). A
+# 5-min outage of the restic repo means standby data is up to ~10
+# min stale instead of ~5 min — acceptable degradation.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mail-stack-standby-replicate
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: mail-stack-standby-replicate
+    app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    # backup-coverage: excluded:cluster-infrastructure
+    ttlSecondsAfterFinished: "3600"
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      # A Pending Job (no standby-labelled node available) would
+      # otherwise sit indefinitely — neither failed nor succeeded, so
+      # not counted against failedJobsHistoryLimit/successfulJobsHistoryLimit.
+      # 120s gives plenty of headroom for kube-scheduler to find a
+      # node when one exists; if none exists, Job transitions to Failed,
+      # joins the bounded failed-history (max 3), and gets pruned.
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: mail-stack-standby-replicate
+        spec:
+          restartPolicy: Never
+          serviceAccountName: default
+          # CRITICAL: only run on standby-labelled nodes. The label is
+          # NOT set by Flux — it's set by platform-api's placement
+          # reconciler (A3 follow-up) OR manually by the operator via
+          # `kubectl label node`. If no node carries the label, the
+          # CronJob has no candidate and the Job stays Pending — that's
+          # fine (HA hasn't been configured yet).
+          nodeSelector:
+            platform.phoenix-host.net/mail-standby: "true"
+          # Tolerate the server-only taint same as the active mail
+          # workloads — standby nodes are also server-role typically.
+          tolerations:
+            - key: platform.phoenix-host.net/server-only
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          containers:
+            - name: replicate
+              image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+              imagePullPolicy: Always
+              command: ["/usr/local/bin/standby-replicate.sh"]
+              envFrom:
+                # Same restic Secret as the active-node snapshot CronJob.
+                # When unset (operator hasn't configured a BackupStore),
+                # the script exits 0 with a skip log.
+                - secretRef:
+                    name: stalwart-snapshot-restic-repo
+                    optional: true
+              env:
+                - name: PLATFORM_API_URL
+                  value: "http://platform-api.platform.svc.cluster.local:3000"
+                - name: PLATFORM_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-api-sa-token
+                      key: token
+                      optional: true
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+              volumeMounts:
+                - name: standby-data
+                  mountPath: /standby-data
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+          volumes:
+            # hostPath — the data lives directly on the standby node's
+            # disk so failover can promote it into the new PV without
+            # network IO. Path is fixed; per-node by virtue of the
+            # nodeSelector pinning each Pod to its node.
+            - name: standby-data
+              hostPath:
+                path: /var/lib/mail-stack-standby
+                type: DirectoryOrCreate
