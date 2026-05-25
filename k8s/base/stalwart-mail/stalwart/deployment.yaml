@@ -175,11 +175,22 @@ spec:
               mkdir -p /var/lib/stalwart/data /restore-tmp
               restic restore latest --target /restore-tmp 2>&1 || { echo "restore-state: restic restore failed — fresh start"; exit 0; }
               # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
-              # The CronJob backs up /var/lib/stalwart/data, so files land at
-              # /restore-tmp/var/lib/stalwart/data/ — copy them into place.
-              RESTORED_DATA=/restore-tmp/var/lib/stalwart/data
-              if [ ! -d "$$RESTORED_DATA" ]; then
-                echo "restore-state: unexpected restore layout (no $${RESTORED_DATA}) — fresh start"
+              # A2.5 (2026-05-25): the snapshot CronJob now backs up
+              # /var/lib/mail-stack/ (consolidated layout), so files land at
+              # /restore-tmp/var/lib/mail-stack/stalwart/. Legacy snapshots
+              # taken before A2.5 backed up /var/lib/stalwart/data — fall
+              # back to that path for the ~7d retention window before all
+              # retained snapshots are new-layout.
+              RESTORED_NEW=/restore-tmp/var/lib/mail-stack/stalwart
+              RESTORED_LEGACY=/restore-tmp/var/lib/stalwart/data
+              if [ -d "$$RESTORED_NEW" ]; then
+                RESTORED_DATA="$$RESTORED_NEW"
+                echo "restore-state: detected NEW (post-A2.5) snapshot layout"
+              elif [ -d "$$RESTORED_LEGACY" ]; then
+                RESTORED_DATA="$$RESTORED_LEGACY"
+                echo "restore-state: detected LEGACY (pre-A2.5) snapshot layout"
+              else
+                echo "restore-state: unexpected restore layout (no $$RESTORED_NEW or $$RESTORED_LEGACY) — fresh start"
                 exit 0
               fi
               cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1 || { echo "restore-state: copy to data dir failed — fresh start"; exit 0; }
@@ -194,6 +205,7 @@ spec:
               readOnly: true
             - name: stalwart-data
               mountPath: /var/lib/stalwart/data
+              subPath: stalwart
             - name: pod-annotations
               mountPath: /podinfo
               readOnly: true
@@ -280,6 +292,7 @@ spec:
               readOnly: true
             - name: stalwart-data
               mountPath: /var/lib/stalwart/data
+              subPath: stalwart
           resources:
             requests:
               cpu: 100m
@@ -321,7 +334,11 @@ spec:
             name: stalwart-config
         - name: stalwart-data
           persistentVolumeClaim:
-            claimName: stalwart-rocksdb-data
+            # A2.5 (2026-05-25): consolidated PVC. Stalwart subtree at
+            # subPath=stalwart on the volumeMounts above. Legacy PVC
+            # stalwart-rocksdb-data is kept in the cluster for 48-72h
+            # safety period (see docs/02-operations/MAIL_STACK_CONSOLIDATION.md).
+            claimName: mail-stack-data
         - name: pod-annotations
           downwardAPI:
             items:
