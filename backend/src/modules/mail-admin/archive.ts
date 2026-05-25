@@ -719,7 +719,8 @@ async function createArchiveJob(
   //
   // The PVC's local-path node affinity pins the Job to the right node;
   // no explicit podAffinity needed.
-  const dataVolumeMount = { name: 'stalwart-data', mountPath: '/var/lib/stalwart/data' };
+  // A2.5 (2026-05-25): subPath=stalwart on the consolidated mail-stack-data PVC.
+  const dataVolumeMount = { name: 'stalwart-data', mountPath: '/var/lib/stalwart/data', subPath: 'stalwart' };
   const configVolumeMount = { name: 'stalwart-config', mountPath: '/etc/stalwart' };
   const exportVolumeMount = { name: 'export', mountPath: '/export' };
   const resticEnv = {
@@ -840,7 +841,7 @@ async function createArchiveJob(
           volumes: [
             {
               name: 'stalwart-data',
-              persistentVolumeClaim: { claimName: 'stalwart-rocksdb-data' },
+              persistentVolumeClaim: { claimName: 'mail-stack-data' },  // A2.5
             },
             { name: 'stalwart-config', configMap: { name: 'stalwart-config' } },
             { name: 'export', emptyDir: {} },
@@ -932,9 +933,11 @@ async function createArchiveJobNoDowntime(
   // Neither operation writes to the live primary's files. The risk
   // boundary is a buggy/malicious image — which is exactly what PSS +
   // image-signing gate on a different axis.
+  // A2.5 (2026-05-25): subPath=stalwart on consolidated mail-stack-data PVC.
   const dataVolumeMount = {
     name: 'stalwart-data',
     mountPath: '/data',
+    subPath: 'stalwart',
   };
   // emptyDir for secondary's own MANIFEST/log files (NOT the checkpoint).
   // Cross-fs from /data is fine here — RocksDB doesn't hard-link to it.
@@ -1124,7 +1127,7 @@ async function createArchiveJobNoDowntime(
           volumes: [
             {
               name: 'stalwart-data',
-              persistentVolumeClaim: { claimName: 'stalwart-rocksdb-data' },
+              persistentVolumeClaim: { claimName: 'mail-stack-data' },  // A2.5
             },
             { name: 'stalwart-config', configMap: { name: 'stalwart-config' } },
             // scratch holds only /scratch/secondary (the secondary
