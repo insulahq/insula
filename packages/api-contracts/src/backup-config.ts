@@ -168,9 +168,30 @@ export const backupConfigResponseSchema = z.object({
   lastSpeedtestLatencyMs: z.number().nullable(),
   lastSpeedtestPayloadBytes: z.number().nullable(),
   lastSpeedtestError: z.string().nullable(),
+  // DR safety flag (migration 0029). True = every platform-driven
+  // write or delete against this target is refused with TARGET_FROZEN.
+  // Flipped to false only via POST /admin/backup-configs/:id/mark-writable
+  // after the operator confirms data integrity post-DR.
+  readOnly: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
+
+// DR safety: dedicated request body for the mark-writable route. The
+// generic update path intentionally does NOT accept read_only — flipping
+// from frozen to writable requires the type-name confirmation + the
+// integrity-acknowledgement boolean, both of which the generic PATCH
+// flow would bypass.
+export const markBackupTargetWritableSchema = z.object({
+  // Operator must type the target's `name` to confirm. Server compares
+  // case-sensitive strict-equal.
+  confirmation: z.string().min(1),
+  // Hard checkbox: "I have verified data integrity from this target."
+  // Mirrors the language in the UI modal.
+  acknowledgeIntegrity: z.literal(true),
+});
+
+export type MarkBackupTargetWritableInput = z.infer<typeof markBackupTargetWritableSchema>;
 
 export type BackupConfigResponse = z.infer<typeof backupConfigResponseSchema>;
 
