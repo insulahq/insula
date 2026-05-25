@@ -763,6 +763,14 @@ export const backupConfigurations = pgTable('backup_configurations', {
   // NFS columns (nfs_server / _export / _version / _options) were
   // dropped 2026-05-25 (migration 0027) — the unprivileged rclone-shim
   // DaemonSet cannot consume an NFS export. See ADR-043 postscript.
+  //
+  // 2026-05-25 (this commit): force buildkit cache invalidation. The
+  // image 0.1.0-d81c413 was tagged on a commit whose source removed
+  // the nfsServer field, but the build picked up a cached
+  // dist/db/schema.js that still SELECT'd nfs_server. Result: every
+  // GET /admin/backup-configs 500'd with "column nfs_server does not
+  // exist", emptying the Remote Storage Targets page even though the
+  // DB rows were intact.
   retentionDays: integer('retention_days').notNull().default(30),
   scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
   enabled: integer('enabled').notNull().default(1),
