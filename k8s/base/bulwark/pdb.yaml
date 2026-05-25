@@ -1,0 +1,21 @@
+# PodDisruptionBudget for Bulwark webmail.
+#
+# Bulwark currently runs as a single replica (RWO PVC + plans to
+# co-locate with Stalwart on mailActiveNode). minAvailable: 1 ensures
+# `kubectl drain <active-mail-node>` blocks until the operator has
+# explicitly executed the mail-migration flow that moves both
+# Stalwart AND Bulwark together — accidental drains don't take
+# webmail down.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bulwark
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: bulwark

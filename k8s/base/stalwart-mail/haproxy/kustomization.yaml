@@ -11,3 +11,4 @@ kind: Kustomization
 resources:
   - configmap.yaml
   - networkpolicy.yaml
+  - pdb.yaml
