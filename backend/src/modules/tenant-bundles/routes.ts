@@ -1015,6 +1015,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', `tarball meta.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, 400);
     }
 
+    // DR safety: refuse import on a frozen target. Imports write the
+    // bundle contents to the target so the freeze applies the same way
+    // as native captures.
+    {
+      const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+      await requireWritableTarget(app.db, targetConfigId);
+    }
+
     // Allocate a fresh bundleId in this region.
     const newBundleId = `bkp-${randomUUID()}`;
     const store = await resolveStore(app, targetConfigId, { requireActive: false });
@@ -1240,6 +1248,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         throw new ApiError(code, err instanceof Error ? err.message : 'invalid id', 400);
       }
       throw new ApiError('VALIDATION_ERROR', `tenant creation failed: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
+
+    // DR safety: refuse import on a frozen target. Same rationale as
+    // the legacy import route — imports write to the target.
+    {
+      const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+      await requireWritableTarget(app.db, targetConfigId);
     }
 
     // Now register + upload the bundle against the new tenant.
@@ -1550,6 +1565,11 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // targetConfigId from the pre-D-redesign world; for those we
     // just drop the DB row.)
     if (job.targetConfigId) {
+      // DR safety: refuse delete on frozen target. The DB row stays
+      // intact until the operator unfreezes; otherwise we'd lose the
+      // bundle reference and orphan the remote object.
+      const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+      await requireWritableTarget(app.db, job.targetConfigId);
       const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
       const handle = await store.open(id);
       if (handle) await store.delete(handle);

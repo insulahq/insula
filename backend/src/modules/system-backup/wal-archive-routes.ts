@@ -1,3 +1,8 @@
+// RO-EXEMPT: these routes invoke wal-archive.ts public helpers which
+// are themselves RO-EXEMPT (lifecycle config, not per-write paths).
+// The actual WAL writes by postgres sidecars are gated via
+// wal-suspend.ts whenever a target is frozen.
+
 /**
  * Phase 4 — WAL archive routes (super_admin only).
  *
