@@ -208,7 +208,7 @@ A run stuck in `state='failed'` paired with `mail_dr_state='failed-over'`
 is the legacy bug. Manual recovery: `UPDATE system_settings SET
 mail_dr_state='degraded' WHERE id='system'` → dr-watcher retries.
 
-### 3. Standby data stale or missing
+### 3. Standby data stale (max-age gate)
 
 The FAST PATH gates on the `.standby-complete` sentinel written by
 `standby-replicate.sh` only after both `stalwart/` and `bulwark/`
@@ -216,13 +216,20 @@ subtrees finish copying. Partial restores (DaemonSet killed
 mid-cp) are invisible to the failover code.
 
 If the standby DaemonSet has been down for a long time, the sentinel
-remains from the last successful run — FAST PATH still fires with
-potentially stale data. There's no max-age check today (TODO #76).
-**Operator awareness**: if a node was offline for hours and standby
-data didn't refresh, the failover restores to that frozen state.
-Restic snapshots are the authoritative source of truth — operator can
-opt for restic restore via the `mail.platform/allow-restore` annotation
-path if the standby is suspect.
+would remain stale. **Max-age gate** (added 2026-05-25): the sentinel
+stores epoch-seconds; both init containers reject the FAST PATH if
+`now - sentinel_epoch > FAST_PATH_MAX_AGE_SECONDS` (default 1800s =
+30 min, 6× the DaemonSet's 5-min cadence). Stalwart then falls
+through to restic restore; Bulwark falls through to fresh-start.
+
+Verified by live destructive test 2026-05-25: backdated sentinel
+to 7268s old, triggered failover. Init logged:
+```
+restore-state: standby marker is 7268s old (limit 1800s) — rejecting FAST PATH, falling through to restic
+```
+
+**Operator awareness**: if a node was offline for hours, the failover
+correctly falls through. No silent stale-data restore.
 
 ### 4. Bulwark fresh-start on failover with no standby data
 
@@ -240,17 +247,71 @@ in `c46f096d` — the init runs as UID 1000 same as the main
 container. `cp -a` preserves source ownership (standby files are
 already UID 1000), so functional outcome is identical to a root cp.
 
-### 6. Concurrent dr-watcher across HA-3 replicas
+### 6. Concurrent dr-watcher across HA-3 replicas — FIXED 2026-05-25
 
-(known limitation, follow-up: task #75)
-
-Each of the 3 platform-api replicas runs `dr-watcher` every 30s.
-If multiple replicas detect NotReady simultaneously, they could all
+Each of the 3 platform-api replicas runs `dr-watcher` every 30s. If
+multiple replicas detected NotReady simultaneously, they would all
 call `triggerRestoreBasedFailover` in the same window → double-INSERT
-into `mail_migration_runs` + competing PVC deletes. Today there's no
-DB-backed lock or atomic `WHERE state='degraded'` guard on the
-state transition. Practical impact small (one wins the PVC delete,
-others race-fail with idempotent errors) but worth tightening.
+into `mail_migration_runs` + competing PVC deletes.
+
+**Fixed** by atomic CAS on both state transitions: every replica
+runs `UPDATE system_settings SET mail_dr_state='failing-over' WHERE
+mail_dr_state='degraded' RETURNING id`. Only the winning replica's
+UPDATE affects a row; others see zero rows and skip. Same pattern
+for `healthy → degraded`. Log messages moved inside the affected-rows
+guard so we don't get "entering degraded" spam from every replica
+on the same tick.
+
+### 7. Concurrent operator migration + dr-watcher failover
+
+`startMailMigration` (operator path) has a concurrency guard:
+`SELECT FROM mail_migration_runs WHERE state NOT IN ('done','failed','rolled-back')`
+returns 409 `MAIL_MIGRATION_ALREADY_RUNNING` if any active run exists.
+
+**Limitation**: `triggerRestoreBasedFailover` (the dr-watcher path)
+deliberately BYPASSES this guard — comment in code says "DR is
+force-majeure". This means:
+
+- Operator triggers explicit migration via `POST /admin/mail/migrate`.
+- Active node dies during the migration.
+- dr-watcher fires `triggerRestoreBasedFailover` → starts a SECOND
+  state machine concurrently with the operator's first one.
+- Both compete on PVC delete; first one's swapping-pvc step likely
+  fails (target PVC already gone by the second's hand).
+
+**Operator awareness**: when manually migrating, also temporarily
+set `mailAutoFailoverEnabled=false` in `system_settings` to prevent
+dr-watcher from competing. Re-enable after the migration completes.
+
+```sql
+-- Before manual migration:
+UPDATE system_settings SET mail_auto_failover_enabled=false WHERE id='system';
+
+-- After migration succeeds:
+UPDATE system_settings SET mail_auto_failover_enabled=true WHERE id='system';
+```
+
+### 8. Worst-case fresh-start (no standby + no restic)
+
+Both `restore-state` init containers (Stalwart, Bulwark) exit 0
+cleanly when EVERY recovery path fails: empty PVC, no
+`.standby-complete`, no `RESTIC_REPOSITORY` env var. The main
+containers then start with empty data:
+
+- **Stalwart**: RocksDB initialises a fresh DB. All historical
+  mail/users/etc. lost from the active store. Mail starts accepting
+  new traffic.
+- **Bulwark**: regenerates admin.json with a random scrypt-hashed
+  password. Operator must reset via the admin panel (or check the
+  pod's environment for the printed bootstrap password).
+
+This behaviour is the SAFE failure mode — pods come up Ready, no
+crashloop. The operator detects the data loss + initiates manual
+recovery (see "Recovery procedure C" below).
+
+Verified by simulation 2026-05-25: the init script logic
+correctly cascades through the guards and exits 0 with a
+clear log line at each step.
 
 ## Diagnostic queries
 
