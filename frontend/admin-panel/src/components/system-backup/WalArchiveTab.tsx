@@ -546,6 +546,8 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
                 </span>
               )}
             </span>
+          ) : recovFallback.state === 'loading' ? (
+            <span className="italic text-gray-500">checking catalogue…</span>
           ) : (
             <span
               className="italic text-gray-500"
@@ -703,8 +705,16 @@ function formatAgoFromIso(iso: string): string {
 function useRecoverabilityFallback(cluster: WalArchiveCluster): {
   earliestStartedAt: string | null;
   count: number;
+  /**
+   * 'loading' = either health OR catalogue query still in flight; the
+   * UI MUST NOT show "no backups yet" during loading because that
+   * misleads operators when the catalogue is about to arrive with N
+   * entries. 'ready' = the underlying queries have settled and the
+   * returned counts/dates reflect actual state.
+   */
+  state: 'loading' | 'ready';
 } {
-  const { data: healthResp } = useCnpgBackupHealth();
+  const { data: healthResp, isLoading: healthLoading } = useCnpgBackupHealth();
   const healthRow = healthResp?.data?.find(
     (c) => c.namespace === cluster.clusterNamespace && c.clusterName === cluster.clusterName,
   );
@@ -720,9 +730,16 @@ function useRecoverabilityFallback(cluster: WalArchiveCluster): {
     retry: false,
     enabled: !!objectStoreName,
   });
+
+  // While health is fetching OR objectStoreName is known but catalogue
+  // is still in flight, we don't yet know whether the archive is empty.
+  // Surface as 'loading' so the UI shows a spinner-equivalent string
+  // instead of the misleading "no backups yet" empty-state.
+  const loading = healthLoading || (objectStoreName !== null && catalogueQ.isLoading);
+
   const cat = catalogueQ.data?.data;
   if (!cat || cat.source !== 'object-store' || cat.backups.length === 0) {
-    return { earliestStartedAt: null, count: 0 };
+    return { earliestStartedAt: null, count: 0, state: loading ? 'loading' : 'ready' };
   }
   // Sort by startedAt ascending; first entry is the floor.
   const sorted = [...cat.backups].sort((a, b) => {
@@ -734,5 +751,6 @@ function useRecoverabilityFallback(cluster: WalArchiveCluster): {
   return {
     earliestStartedAt: earliest.startedAt ?? earliest.uploadedAt ?? null,
     count: cat.backups.length,
+    state: 'ready',
   };
 }
