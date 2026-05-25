@@ -1,0 +1,95 @@
+# A3 (2026-05-25): mail-stack-standby-replicate DaemonSet.
+#
+# Pre-stages the latest mail snapshot data on standby-labelled nodes
+# every 5 minutes so failover can promote a node WITHOUT paying the
+# restic-restore latency at takeover time.
+#
+# WHY DaemonSet (not CronJob — original A3 design corrected mid-flight):
+#   A single CronJob fires one Pod per tick, kube-scheduler picks ONE
+#   of the N labelled nodes. The other (N-1) standby nodes' data
+#   would fall behind unpredictably. A DaemonSet runs one Pod PER
+#   labelled node, so EVERY standby refreshes on its OWN cadence.
+#
+# Node selection: any node with label
+#   platform.phoenix-host.net/mail-standby=true
+# Set by platform-api's ensureMailStackPlacementApplied reconciler.
+# Until A4 wires the failover hot-path to consume `/var/lib/mail-stack-standby/`,
+# this data is collected but not yet promoted — operators can verify
+# the contents directly on each standby node's disk.
+#
+# Failure mode: the script (standby-replicate.sh) always returns 0
+# from its inner run_once() function. The outer loop sleeps then
+# retries, so transient restic failures roll up as one stale snapshot
+# rather than a Pod restart storm.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mail-stack-standby-replicate
+  namespace: mail
+  labels:
+    app: mail-stack-standby-replicate
+    app.kubernetes.io/component: mail-stack-standby-replicate
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    matchLabels:
+      app: mail-stack-standby-replicate
+  template:
+    metadata:
+      labels:
+        app: mail-stack-standby-replicate
+        app.kubernetes.io/component: mail-stack-standby-replicate
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      # Only run on standby-labelled nodes. With no candidate, the
+      # DaemonSet schedules zero pods — that's the correct quiescent
+      # state when HA hasn't been configured.
+      nodeSelector:
+        platform.phoenix-host.net/mail-standby: "true"
+      tolerations:
+        - key: platform.phoenix-host.net/server-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: replicate
+          image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/standby-replicate.sh"]
+          envFrom:
+            - secretRef:
+                name: stalwart-snapshot-restic-repo
+                optional: true
+          env:
+            - name: LOOP_INTERVAL_SECONDS
+              # 300 = 5 min cadence. Matches the user-chosen RPO.
+              value: "300"
+            - name: PLATFORM_API_URL
+              value: "http://platform-api.platform.svc.cluster.local:3000"
+            - name: PLATFORM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-sa-token
+                  key: token
+                  optional: true
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: standby-data
+              mountPath: /standby-data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: standby-data
+          hostPath:
+            path: /var/lib/mail-stack-standby
+            type: DirectoryOrCreate
