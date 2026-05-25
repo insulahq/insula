@@ -103,7 +103,16 @@ rm -rf "${STANDBY_DIR:?}/var" 2>/dev/null || true
 # cp blocks above completed without `return 0` early-exits. Failover
 # readers gate the fast-path copy on this file's presence, so a
 # partially-restored tree (interrupted cp) is invisible to them.
-date -Iseconds > "$STANDBY_DIR/.standby-complete"
+#
+# Stored as epoch-seconds (POSIX-portable across alpine BusyBox and
+# debian GNU coreutils — both date binaries support `+%s`). The
+# init containers compute age = now - stored and reject the FAST
+# PATH if older than FAST_PATH_MAX_AGE_SECONDS (default 1800s).
+# This catches the "DaemonSet was down for hours" case where stale
+# data could otherwise be silently restored.
+date +%s > "$STANDBY_DIR/.standby-complete"
+# Human-readable copy for operators inspecting standby state.
+date -Iseconds > "$STANDBY_DIR/.standby-complete-readable" 2>/dev/null || true
 
 # Sentinel + size report
 echo "$(date -Iseconds) snapshot=latest" > "$STANDBY_DIR/.standby-replicated-at"

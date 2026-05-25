@@ -188,8 +188,33 @@ spec:
               # (interrupted cp on either) is invisible here. Without
               # this gate, the init could copy a half-written tree
               # and Stalwart would crash on inconsistent RocksDB state.
-              if [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY_STALWART" ] && [ -f "$$STANDBY_STALWART/CURRENT" ]; then
-                echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY_STALWART (complete marker present)"
+              #
+              # MAX-AGE GATE: the sentinel includes a date -Iseconds
+              # written by standby-replicate.sh on success. Reject the
+              # FAST PATH if the marker is older than 30 min (6× the
+              # 5-min DaemonSet cadence). Catches the case where the
+              # DaemonSet has been down for hours — better to take the
+              # restic-restore latency than silently restore frozen
+              # data. Honour FAST_PATH_MAX_AGE_SECONDS env override
+              # (default 1800s = 30 min).
+              # .standby-complete now contains epoch-seconds (since the
+              # standby-replicate.sh refactor for alpine/debian
+              # portability). `date +%s` works identically on both
+              # BusyBox and GNU coreutils — no `date -d` parsing.
+              STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
+              standby_age_ok=true
+              if [ -f "$$STANDBY_COMPLETE" ]; then
+                sentinel_epoch=$$(cat "$$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
+                : $${sentinel_epoch:=0}
+                now_epoch=$$(date +%s)
+                age=$$((now_epoch - sentinel_epoch))
+                if [ "$$sentinel_epoch" = "0" ] || [ "$$age" -gt "$$STANDBY_MAX_AGE_SECONDS" ]; then
+                  echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, falling through to restic"
+                  standby_age_ok=false
+                fi
+              fi
+              if [ "$$standby_age_ok" = "true" ] && [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY_STALWART" ] && [ -f "$$STANDBY_STALWART/CURRENT" ]; then
+                echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY_STALWART (complete marker present, age within limit)"
                 mkdir -p /var/lib/stalwart/data
                 if cp -a "$$STANDBY_STALWART/." /var/lib/stalwart/data/ 2>&1; then
                   echo "restore-state: standby-data copy complete ($(ls /var/lib/stalwart/data | wc -l) files) — skipping restic"
