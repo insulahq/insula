@@ -1,0 +1,30 @@
+# PodDisruptionBudget for the Stalwart mail server pod.
+#
+# Stalwart is a single-replica Deployment pinned to mailActiveNode via
+# local-path PVC node-affinity (see placement.ts + mail-pvc.ts). A
+# voluntary disruption (kubectl drain on the active node, k3s upgrade,
+# etc.) would evict the pod with no replacement — mail goes down for
+# the duration of restore-from-snapshot on the chosen target node.
+#
+# minAvailable: 1 = block voluntary evictions until the operator has
+# explicitly executed the mail-migration flow (which suspends the
+# CronJob, swaps node affinity, recreates the pod on the new node, and
+# only then allows the old pod to terminate). This forces a controlled
+# failover instead of an accidental one.
+#
+# This does NOT protect against involuntary disruption (node hardware
+# failure) — that's what the DR watcher + restore-based failover is
+# for. PDBs only gate the kubelet's voluntary-eviction API.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: stalwart-mail
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stalwart
