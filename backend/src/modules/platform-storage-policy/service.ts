@@ -137,20 +137,17 @@ export function leaderElectReplicasForSystemTier(
 // CNPG clusters. Apply HA flips spec.instances 1↔3 — CNPG streams
 // replication from primary, no manual data migration needed.
 //
-// mail-pg: dedicated CNPG cluster for Stalwart 0.16. Independent
-// snapshot/recovery cycle from platform-PG; same Apply-HA scaling
-// path so a single admin action scales both clusters together.
-// (Cut 2 / M6.2 — stalwart-mail deploy layer.)
 // Cluster names track the role-based naming scheme (no version baggage).
 // Cluster name history (cleaned up 2026-05-07):
 //   platform: postgres → postgres-18 → system-db
-//   mail:     mail-pg  → mail-pg-17 → mail-pg-18 → mail-db
 // Future PG-major bumps follow the dump+restore-into-same-named-cluster
 // pattern (or transient-then-rename), so this list stays version-stable.
+//
+// 2026-05-12: the mail-namespace cluster (formerly mail-pg → mail-db)
+// was deleted when Stalwart migrated its DataStore to RocksDB on a
+// local-path PVC. No PostgreSQL cluster lives in the mail namespace.
 const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'system-db' },
-  // mail-db removed 2026-05-12: Stalwart DataStore migrated from CNPG-Postgres
-  // to RocksDB on local-path PVC. No PostgreSQL cluster in the mail namespace.
 ];
 // CNPG instance count tracks the same readyServerCount-aware policy
 // so postgres replication fans out across every server in HA mode

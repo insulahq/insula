@@ -7,17 +7,16 @@ import { readBackupHealth } from './service.js';
 /**
  * GET /api/v1/admin/cnpg-backup-health
  *
- * Returns CNPG `Backup` CR health snapshot per cluster (mail-pg in
- * `mail` namespace + postgres in `platform` namespace by default —
- * see WATCHED_NAMESPACES in service.ts). Used by the admin panel to
- * surface backup failures + staleness without operators needing to
- * run `kubectl get backup.postgresql.cnpg.io` manually.
+ * Returns CNPG `Backup` CR health snapshot per cluster (system-db in
+ * `platform` namespace — see WATCHED_NAMESPACES in service.ts). Used
+ * by the admin panel to surface backup failures + staleness without
+ * operators needing to run `kubectl get backup.postgresql.cnpg.io`
+ * manually.
  *
- * Phase 2A.2 — closes the gap that let mail-pg-daily-20260505031500
- * fail unnoticed for 24h. The mistake that prompted this work: an
- * operator wiped mail-pg expecting CNPG to recreate clean, not
- * realising a fresh backup existed that would have restored every
- * mailbox's credentials.
+ * Phase 2A.2 (origin) — closes the gap that let a silent
+ * ScheduledBackup failure (spec.backup temporarily unset during a
+ * recovery exercise) go unnoticed for 24h. The prompting incident
+ * was on the mail-pg cluster, since deleted; the lesson generalises.
  *
  * Read-only — every authenticated admin role can see the page so
  * operators don't get gated by permissions during incidents.

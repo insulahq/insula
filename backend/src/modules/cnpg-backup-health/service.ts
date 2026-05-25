@@ -8,11 +8,10 @@
  * has its own lifecycle (started → running → completed | failed) and
  * is created by `ScheduledBackup` CRs at the configured cron times.
  *
- * Why this matters: on 2026-05-06 a `mail-pg-daily-20260505031500`
- * Backup failed silently because mail-pg's spec.backup section was
- * temporarily unset (during a recovery exercise). Nothing in the
- * platform alerted on it; the failure was only noticed when the
- * operator listed Backup CRs by hand. Phase 2A.2 adds visibility.
+ * Why this matters: a silent ScheduledBackup failure (spec.backup
+ * temporarily unset during a recovery exercise) is exactly the kind
+ * of incident an operator only notices when they `kubectl get backups`
+ * by hand. This module surfaces it.
  *
  * Pure functions over the K8s API response. The HTTP route in
  * `routes.ts` calls into here and serialises the result. The future
@@ -30,11 +29,12 @@ const SCHEDULED_BACKUP_PLURAL = 'scheduledbackups';
 const CLUSTER_PLURAL = 'clusters';
 
 /**
- * Namespaces this module looks at. Hard-coded for the platform's two
- * known CNPG clusters (mail-pg in `mail`, postgres in `platform`).
+ * Namespaces this module looks at. The only system CNPG cluster is
+ * platform/system-db; pre-2026-05-12 we also watched mail/mail-db
+ * but Stalwart migrated to RocksDB and that cluster was deleted.
  * Extend if a future cluster ships a third CNPG database.
  */
-export const WATCHED_NAMESPACES: readonly string[] = ['mail', 'platform'];
+export const WATCHED_NAMESPACES: readonly string[] = ['platform'];
 
 export type BackupPhase =
   | 'completed'

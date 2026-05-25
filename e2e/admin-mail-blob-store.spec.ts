@@ -72,7 +72,7 @@ test.describe('Admin Email Management → Stalwart Blob Storage card', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           data: {
-            pvcName: 'mail-pg-1',
+            pvcName: 'mail-stack-data',
             namespace: 'mail',
             requestedBytes: 5 * 1024 ** 3,
             capacityBytes: 5 * 1024 ** 3,

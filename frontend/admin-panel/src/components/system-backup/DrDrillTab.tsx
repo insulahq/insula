@@ -38,8 +38,7 @@ export default function DrDrillTab() {
         </h3>
         <ul className="text-sm text-gray-600 dark:text-gray-400 space-y-1.5 list-disc pl-5">
           <li><strong>Secrets bundle</strong> (Phase 1) — age-encrypted tarball + the operator's age private key</li>
-          <li><strong>Platform pg_dump</strong> (Phase 2) — most recent succeeded run for <code>platform/postgres</code></li>
-          <li><strong>Mail pg_dump</strong> (Phase 2) — most recent succeeded run for <code>mail/mail-pg</code></li>
+          <li><strong>System pg_dump</strong> (Phase 2) — most recent succeeded run for <code>platform/system-db</code></li>
           <li><strong>WAL archive</strong> (Phase 4) — optional, for sub-snapshot RPO via PITR</li>
         </ul>
       </section>
@@ -59,8 +58,7 @@ export default function DrDrillTab() {
           <li>Tag the node: <code className="text-xs">kubectl label nodes --all platform.phoenix-host.net/node-role=server --overwrite</code></li>
           <li>Tag Longhorn node: <code className="text-xs">kubectl -n longhorn-system patch nodes.longhorn.io/&lt;name&gt; --type=merge -p '{`{"spec":{"tags":["system"]}}`}'</code></li>
           <li>Wait for CNPG clusters to reach <code>Cluster in healthy state</code> (≤15 min)</li>
-          <li>Restore platform: <code className="text-xs">kubectl -n platform exec postgres-1 -c postgres -- pg_restore --clean --if-exists -d hosting_platform &lt; platform.pgdump</code></li>
-          <li>Restore mail: <code className="text-xs">kubectl -n mail exec mail-pg-1 -c postgres -- pg_restore --clean --if-exists -d stalwart_app &lt; mail.pgdump</code></li>
+          <li>Restore platform: <code className="text-xs">kubectl -n platform exec system-db-1 -c postgres -- pg_restore --clean --if-exists -d hosting_platform &lt; platform.pgdump</code></li>
           <li>Rewrite system_settings to new domain: <code className="text-xs">bash scripts/admin-domain-rewrite.sh --domain &lt;new-apex&gt;</code> (bumps platform-api automatically)</li>
           <li>Verify admin login on the restored cluster</li>
         </ol>
@@ -76,7 +74,7 @@ export default function DrDrillTab() {
         <ul className="text-sm text-amber-800 dark:text-amber-300 space-y-1 list-disc pl-5">
           <li>The fresh VM needs <code>git</code> installed before bootstrap</li>
           <li>K8s + Longhorn node tags must be applied manually before CNPG provisions PVCs (otherwise <code>longhorn-system-local</code> SC has no eligible nodes)</li>
-          <li>pg_dump runs from the platform-api image with pg_dump v17 (matches platform/postgres 17.5). It can EXPORT from mail-pg's 16.9 server, but the resulting archive's format isn't readable by pg_restore 16 — mail-pg in-place restore requires running <code>pg_restore</code> from inside the mail-pg pod (its own pg_restore is version-matched). The DR drill harness does this via <code>kubectl exec</code>.</li>
+          <li>pg_dump runs from the platform-api image with pg_dump v17 (matches platform/system-db 17.x). Pod-side <code>pg_restore</code> is preferred via <code>kubectl exec</code> for a version-matched binary.</li>
           <li>After pg_restore, run <code>scripts/admin-domain-rewrite.sh --domain &lt;new-apex&gt;</code> to rewrite <code>system_settings.admin_panel_url</code> et al. to your target domain (the dump carries the source's domain — without rewriting, the ingress-reconciler keeps reasserting it)</li>
         </ul>
       </section>

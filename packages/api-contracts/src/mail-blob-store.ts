@@ -8,7 +8,7 @@ import { z } from 'zod';
  * Default / Sharded / S3 / Azure / FileSystem / FoundationDb / PostgreSql / MySql.
  *
  * The platform UI exposes four variants operators care about:
- *   - Default — blobs in the configured DataStore (mail-pg PG by default;
+ *   - Default — blobs in the configured DataStore (RocksDB by default;
  *     blows up on disk at scale but works without external infra).
  *   - S3 — blobs in an external S3-compatible bucket.
  *   - FileSystem — blobs on the Pod's local disk (INCOMPATIBLE with

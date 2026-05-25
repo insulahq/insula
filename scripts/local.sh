@@ -927,8 +927,8 @@ cmd_mail_up() {
     echo "Pod not ready within 3 minutes. Recent events:"
     k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
     echo ""
-    echo "Check CNPG mail-pg cluster is also ready:"
-    k3s_exec kubectl get cluster mail-pg -n mail 2>/dev/null || true
+    echo "Check Stalwart RocksDB PVC is bound:"
+    k3s_exec kubectl -n mail get pvc mail-stack-data 2>/dev/null || true
     return 1
   }
   echo ""
