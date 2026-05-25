@@ -171,6 +171,31 @@ spec:
                 echo "restore-state: allow-restore annotation not set — fresh start (set mail.platform/allow-restore: \"true\" on the Deployment to enable)"
                 exit 0
               fi
+              # A4 (2026-05-25): FAST PATH — if the standby DaemonSet
+              # (A3) has pre-staged data on this node's hostPath, copy
+              # from there instead of paying the restic-restore network
+              # latency. Standby data is at most 5 min stale (DaemonSet
+              # cadence). A failover that lands on a standby-labelled
+              # node uses this path; cold-start failover to an
+              # unlabelled node falls through to restic.
+              STANDBY_STALWART=/standby-data/stalwart
+              STANDBY_COMPLETE=/standby-data/.standby-complete
+              # Gate on BOTH the CURRENT sentinel AND the
+              # .standby-complete marker — the marker is only written
+              # by the A3 DaemonSet after both stalwart+bulwark
+              # subtrees finish copying, so a partial restore
+              # (interrupted cp on either) is invisible here. Without
+              # this gate, the init could copy a half-written tree
+              # and Stalwart would crash on inconsistent RocksDB state.
+              if [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY_STALWART" ] && [ -f "$$STANDBY_STALWART/CURRENT" ]; then
+                echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY_STALWART (complete marker present)"
+                mkdir -p /var/lib/stalwart/data
+                if cp -a "$$STANDBY_STALWART/." /var/lib/stalwart/data/ 2>&1; then
+                  echo "restore-state: standby-data copy complete ($(ls /var/lib/stalwart/data | wc -l) files) — skipping restic"
+                  exit 0
+                fi
+                echo "restore-state: standby-data copy failed — falling through to restic"
+              fi
               echo "restore-state: empty DataStore + repo configured + allow-restore=true — restoring latest snapshot"
               mkdir -p /var/lib/stalwart/data /restore-tmp
               restic restore latest --target /restore-tmp 2>&1 || { echo "restore-state: restic restore failed — fresh start"; exit 0; }
@@ -208,6 +233,16 @@ spec:
               subPath: stalwart
             - name: pod-annotations
               mountPath: /podinfo
+              readOnly: true
+            # A4 (2026-05-25): mount the standby DaemonSet's hostPath
+            # so the FAST PATH in restore-state can read pre-staged
+            # data. The hostPath dir only exists on standby-labelled
+            # nodes; the init container's `if [ -d ... ]` guard makes
+            # the mount safe on other nodes (kubelet creates the empty
+            # dir via DirectoryOrCreate, the guard sees no CURRENT
+            # sentinel and falls through to restic).
+            - name: standby-data
+              mountPath: /standby-data
               readOnly: true
       containers:
         - name: stalwart
@@ -339,6 +374,16 @@ spec:
             # stalwart-rocksdb-data is kept in the cluster for 48-72h
             # safety period (see docs/02-operations/MAIL_STACK_CONSOLIDATION.md).
             claimName: mail-stack-data
+        # A4 (2026-05-25): hostPath into the standby DaemonSet's
+        # pre-staged data dir. The restore-state init container uses
+        # this as a FAST PATH on failover; the main container does
+        # NOT mount it (data has already been copied into the PVC by
+        # then). DirectoryOrCreate so non-standby nodes don't fail
+        # the mount — the init container's existence guard handles it.
+        - name: standby-data
+          hostPath:
+            path: /var/lib/mail-stack-standby
+            type: DirectoryOrCreate
         - name: pod-annotations
           downwardAPI:
             items:
