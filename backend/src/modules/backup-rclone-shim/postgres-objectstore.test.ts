@@ -221,13 +221,12 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     });
   });
 
-  // Phase 6 (2026-05-24) dual-reconciler ownership guard. When the
-  // operator has enabled WAL streaming via the UI (i.e. a row exists
-  // in systemWalArchiveState), this reconciler must SKIP the
-  // patchClusterWalArchiver call — wal-archive.ts owns the field
-  // exclusively. The shim creds + ObjectStore + ScheduledBackup
-  // continue to be applied (they're harmless additions).
-  it('defers Cluster patch to wal-archive when systemWalArchiveState has a row', async () => {
+  // Phase 6 (2026-05-24) dual-reconciler ownership guard.
+  // Phase 8 (2026-05-25) extended: defer ObjectStore + ScheduledBackup
+  // too — wal-archive owns ALL three CRs (ObjectStore + ScheduledBackup
+  // + Cluster.spec.plugins). Only the shim creds Secret stays managed
+  // by postgres-objectstore (identical content regardless of who writes).
+  it('defers ALL CRs to wal-archive when systemWalArchiveState has a row', async () => {
     const db = fakeDb(
       [{ targetId: 't-1', storageType: 's3', enabled: 1 }],
       [{ ns: 'platform' }], // wal-archive-state row exists → defer
@@ -235,17 +234,26 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     const clients = fakeClients();
     await reconcilePostgresObjectStore(db, clients as never, silentLog());
 
-    // No cluster patch.
+    // No Cluster patch.
     const clusterPatchCall = clients.custom.patchNamespacedCustomObject.mock.calls.find(
       (c) => (c[0] as { plural?: string }).plural === 'clusters',
     );
     expect(clusterPatchCall).toBeUndefined();
 
-    // But ObjectStore + ScheduledBackup were still created (harmless).
-    const objectStoreCall = clients.custom.createNamespacedCustomObject.mock.calls.find(
+    // No ObjectStore create either (Phase 8: wal-archive owns it).
+    const objectStoreCreate = clients.custom.createNamespacedCustomObject.mock.calls.find(
       (c) => (c[0] as { plural?: string }).plural === 'objectstores',
     );
-    expect(objectStoreCall).toBeDefined();
+    expect(objectStoreCreate).toBeUndefined();
+
+    // No ScheduledBackup create either.
+    const scheduledBackupCreate = clients.custom.createNamespacedCustomObject.mock.calls.find(
+      (c) => (c[0] as { plural?: string }).plural === 'scheduledbackups',
+    );
+    expect(scheduledBackupCreate).toBeUndefined();
+
+    // But shim creds Secret IS still materialised (harmless; same content).
+    expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
   });
 
   it('falls back to `add` op when Cluster patch returns 422 (path missing)', async () => {
