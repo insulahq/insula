@@ -224,10 +224,11 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
 
     // B9 (2026-05-22): restic backend target also goes through the
-    // shim. The shim's `tenant` bucket route handles cifs/nfs/sftp
+    // shim. The shim's `tenant` bucket route handles cifs/sftp
     // upstreams that resolveBackupTarget would otherwise throw 501
-    // on. Legacy direct fallback only fires when the shim Secret
-    // isn't available.
+    // on. (NFS was dropped 2026-05-25; see ADR-043 postscript.)
+    // Legacy direct fallback only fires when the shim Secret isn't
+    // available.
     let target;
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -428,10 +429,11 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
 async function resolveStoreForUpload(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   // B9 (2026-05-22): bundle component uploads from Job pods route
   // through the shim. Without this, the file/mailboxes Jobs hit a
-  // PUT /internal/bundles/.../restic-stream that, for cifs/nfs cfg
+  // PUT /internal/bundles/.../restic-stream that, for cifs cfg
   // targets, threw 501 NOT_IMPLEMENTED → the Job's
   // `Streaming tar to platform-api restic-stream... curl: (22)
-  // error: 501` we saw on staging.
+  // error: 501` we saw on staging. (NFS dropped 2026-05-25; see
+  // ADR-043 postscript.)
   //
   // The shim path is the source of truth; the legacy cfg-direct
   // fallback only kicks in when the BACKUP_TARGET_KEY Secret isn't

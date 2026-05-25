@@ -70,9 +70,10 @@ export const shimAssignmentRowSchema = z.object({
   className: backupShimClassEnum,
   targetId: z.string().min(1).max(36).nullable(),
   targetName: z.string().nullable(),
-  /** Storage type of the bound target (or null when unassigned). */
+  /** Storage type of the bound target (or null when unassigned).
+   *  NFS was dropped 2026-05-25 — see ADR-043 postscript. */
   targetStorageType: z
-    .enum(['s3', 'ssh', 'cifs', 'nfs'])
+    .enum(['s3', 'ssh', 'cifs'])
     .nullable(),
   /** Per-target drain timeout used for ops on this class. Already
    *  defaulted server-side. */

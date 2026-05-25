@@ -427,16 +427,7 @@ function rowToTargetConfig(
         cifsPath: row.cifsPath,
       };
 
-    case 'nfs':
-      return {
-        ...base,
-        storageType: 'nfs',
-        nfsServer: row.nfsServer,
-        nfsExport: row.nfsExport,
-        nfsVersion: row.nfsVersion,
-        nfsOptions: row.nfsOptions,
-      };
-
+    // NFS dropped 2026-05-25 (migration 0026) — see ADR-043 postscript.
     default:
       throw new Error(
         `backup_configurations '${row.id}' has unknown storage_type '${row.storageType as string}'`,
