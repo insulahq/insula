@@ -273,9 +273,34 @@ export default function RemoteStorageTargetsPage() {
     } catch { /* error shown below */ }
   };
 
+  // Decide whether the form has a complete set of newly-typed secrets
+  // for the current storageType + sshAuthMethod. Used in edit mode to
+  // pick between /test-draft (test the unsaved new creds) and
+  // /:id/test (test the stored row).
+  const hasCompleteNewSecret = (): boolean => {
+    if (!changeSecret) return false;
+    if (storageType === 'ssh') {
+      if (sshAuthMethod === 'key') return form.ssh_key.trim().length > 0;
+      return form.ssh_password.trim().length > 0;
+    }
+    if (storageType === 'cifs') return form.cifs_password.trim().length > 0;
+    // S3 needs BOTH keys; either one alone fails test-draft validation.
+    return form.s3_access_key.trim().length > 0 && form.s3_secret_key.trim().length > 0;
+  };
+
   const handleDraftTest = async () => {
     setDraftResult(null);
     try {
+      // Edit mode without a complete new-secret set: the stored creds
+      // are what would actually be used, but /test-draft can't see
+      // them (server never returns secrets). Route to the existing-
+      // config endpoint instead so the operator can verify the
+      // already-persisted target without re-typing the key/password.
+      if (editingId && !hasCompleteNewSecret()) {
+        const result = await testConfig.mutateAsync(editingId);
+        setDraftResult(result.data);
+        return;
+      }
       const result = await testDraft.mutateAsync(buildInput());
       setDraftResult(result.data);
     } catch (err) {
@@ -338,13 +363,39 @@ export default function RemoteStorageTargetsPage() {
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
           data-testid="add-backup-config-button"
         >
-          {showForm ? <X size={14} /> : <Plus size={14} />}
-          {showForm ? 'Cancel' : 'Add Backup Target'}
+          <Plus size={14} />
+          Add Backup Target
         </button>
       </header>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="backup-config-form">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          data-testid="backup-config-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="backup-config-modal-title"
+        >
+          <div className="fixed inset-0 bg-black/50" onClick={resetForm} />
+          <div className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-5">
+              <h2
+                id="backup-config-modal-title"
+                className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+              >
+                {editingId ? 'Edit Backup Target' : 'Add Backup Target'}
+              </h2>
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
+                aria-label="Close"
+                data-testid="backup-config-modal-close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleCreate} className="space-y-4" data-testid="backup-config-form">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="bc-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Name</label>
@@ -631,12 +682,20 @@ export default function RemoteStorageTargetsPage() {
           <div className="flex justify-end gap-2">
             <button
               type="button"
+              onClick={resetForm}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
+              data-testid="bc-cancel"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
               onClick={handleDraftTest}
-              disabled={testDraft.isPending}
+              disabled={testDraft.isPending || testConfig.isPending}
               className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
               data-testid="bc-test-draft"
             >
-              {testDraft.isPending ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+              {(testDraft.isPending || testConfig.isPending) ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
               Test Connection
             </button>
             <button
@@ -649,7 +708,9 @@ export default function RemoteStorageTargetsPage() {
               {editingId ? 'Save Changes' : 'Create Backup Target'}
             </button>
           </div>
-        </form>
+            </form>
+          </div>
+        </div>
       )}
 
       {isLoading && (
@@ -869,11 +930,11 @@ function SpeedtestButton({ configId, configName }: { readonly configId: string; 
         type="button"
         onClick={handleClick}
         disabled={mutation.isPending}
-        className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-900/30 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/50 disabled:opacity-50 shadow-sm"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
         data-testid={`speedtest-${configId}`}
         title="Upload + download a 100 MB test payload to measure throughput"
       >
-        {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}
+        {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Gauge size={12} />}
         {mutation.isPending ? 'Running speedtest…' : 'Run Speedtest'}
       </button>
       {modalState && (
