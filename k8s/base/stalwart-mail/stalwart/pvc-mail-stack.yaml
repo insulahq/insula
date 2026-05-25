@@ -1,0 +1,53 @@
+# Combined mail-stack PVC — single local-path volume that holds BOTH
+# Stalwart's RocksDB AND Bulwark's config/admin/telemetry data via
+# subPaths.
+#
+# Layout once consolidated (A2.5 commit will move Deployments to this):
+#   <pvc-mount>/
+#     stalwart/     # ← Stalwart RocksDB; mounted at /var/lib/stalwart/data via subPath=stalwart
+#     bulwark/      # ← Bulwark /app/data; mounted via subPath=bulwark
+#
+# WHY local-path (not Longhorn — see ci-no-longhorn allow-list):  # ci-no-longhorn: ignore
+#   RocksDB is I/O-latency-bound — the 2026-05-22 storage perf bench
+#   (project_stalwart_storage_perf_2026_05_22) showed Longhorn 1-replica  # ci-no-longhorn: ignore
+#   delivers 3-7x worse latency than local-path on RocksDB workloads.
+#   Bulwark's 60 KB working set is negligible — local-path saves the
+#   Longhorn replication overhead with no downside.  # ci-no-longhorn: ignore
+#
+# Coexists with the legacy `stalwart-rocksdb-data` PVC during the
+# A2→A2.5 transition. The legacy PVC stays in the kustomization until
+# the cutover script (scripts/mail-stack-consolidate.sh) has migrated
+# its contents into this PVC's stalwart/ subdirectory. After A2.5,
+# the legacy PVC manifest is removed but the cluster-side PVC stays
+# for 7d as a safety net before the operator deletes it.
+#
+# Size: 30Gi (legacy was 20Gi for Stalwart-only). Bulwark adds <100 MB
+# even at thousands of accounts. local-path provisioner does NOT quota
+# requests.storage (informational only) — the actual limit is the
+# node's NVMe capacity. To grow: move the pinned mail node to a host
+# with a larger disk via the live migration pipeline.
+#
+# CAVEAT (same as legacy): local-path is not replicated. If the active
+# mail node fails, the data on this PVC is at risk. Mitigation:
+#   1. stalwart-snapshot CronJob (snapshot-cronjob.yaml) — restic
+#      every 2 min to the configured BackupStore.
+#   2. restore-state initContainer in Stalwart Deployment (A2.5 extends
+#      it to handle both subtrees).
+#   3. dr-watcher + applyDeploymentAffinity — automatic node failover
+#      when mailAutoFailoverEnabled (A4 verifies E2E).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mail-stack-data
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
