@@ -271,6 +271,14 @@ function describeBackup(b: {
     label = 'Pre-restore checkpoint';
   } else if (b.backupId.includes('-daily-') || b.backupId.includes('-scheduled-')) {
     label = 'Scheduled Backup';
+  } else if (/^\d{8}T\d{6}$/.test(b.backupId)) {
+    // Phase 8 (2026-05-25) — pure barman timestamp (YYYYMMDDTHHMMSS).
+    // The CR that would have told us the kind has been GC'd by CNPG
+    // (CRs don't survive past a few days under default settings).
+    // Best-effort label: scheduled backups are by far the most common
+    // anonymous timestamp source. Operators can still match against
+    // the Date column if they need to be sure.
+    label = 'Scheduled Backup';
   } else {
     label = b.backupId;
   }
