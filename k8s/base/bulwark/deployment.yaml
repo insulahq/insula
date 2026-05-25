@@ -31,18 +31,26 @@ metadata:
     # patch container env (e.g. on engine flip) without Flux reverting.
     kustomize.toolkit.fluxcd.io/ssa: Merge
 spec:
-  # Replicas owned by platform-storage-policy (mirrors Roundcube). Fresh
-  # clusters land at k8s default = 1 until the policy fires.
+  # Single replica, pinned to mailActiveNode by platform-api's
+  # mail-stack-placement reconciler (see migration.ts:applyDeploymentAffinity).
+  # The PVC is RWO so > 1 replica is structurally impossible — the
+  # second pod would hang in Init forever waiting on PVC attach.
+  #
+  # Co-location rationale: Bulwark talks to Stalwart via JMAP; pinning
+  # both to the same node minimises latency, and a shared failover
+  # primitive (both Deployments move together on dr-watcher trigger)
+  # keeps the mail stack as one atomic unit.
+  #
+  # Historical: prior config used topologySpread + replicas owned by
+  # platform-storage-policy. Removed 2026-05-25 when the bulwark stuck-
+  # in-Init bug was traced to that exact pattern (RWO PVC + replicas=2
+  # + topologySpread = always-pending second pod).
+  replicas: 1
   strategy:
-    # Stateless except for the /app/data PVC (admin config + per-user
-    # settings). Multi-replica deployments all mount the same RWO PVC —
-    # only one Mounts, so HA > 1 requires switching to RWX at provision.
-    # Single-replica + rolling-update with maxUnavailable=0 / maxSurge=1
-    # gives zero-downtime image bumps.
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    # Single-replica + Recreate. RollingUpdate with maxSurge=1 cannot
+    # work — the surge pod would attempt to attach the same RWO PVC
+    # while the old pod still holds it. Recreate ensures clean handoff.
+    type: Recreate
   selector:
     matchLabels:
       app: bulwark
@@ -53,15 +61,10 @@ spec:
         app.kubernetes.io/part-of: hosting-platform
         app.kubernetes.io/component: webmail
     spec:
-      # One-per-node placement; DoNotSchedule keeps a node-failure window
-      # from leaving 2 pods on one surviving node + 0 on another.
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: DoNotSchedule
-          labelSelector:
-            matchLabels:
-              app: bulwark
+      # nodeSelector is applied dynamically by platform-api's
+      # applyDeploymentAffinity (see migration.ts) — same pattern as
+      # the Stalwart Deployment. Bulwark follows the mailActiveNode
+      # so a failover of one is a failover of both.
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
