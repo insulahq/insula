@@ -23,6 +23,11 @@
  */
 
 import yaml from 'js-yaml';
+// js-yaml 4.x defaults to CORE_SCHEMA which already rejects unsafe
+// tags like !!js/function and !!js/regexp. We pass JSON_SCHEMA
+// explicitly to signal intent and protect against an accidental
+// downgrade to a pre-4.x version that allowed those tags.
+const SAFE_LOAD_OPTS: yaml.LoadOptions = { schema: yaml.JSON_SCHEMA };
 import {
   DR_BUNDLE_VERSION,
   drInputsSchema,
@@ -34,6 +39,7 @@ import {
 import {
   backupConfigurations,
   backupTargetAssignments,
+  platformStoragePolicy,
   systemSettings,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -163,6 +169,10 @@ export async function buildDrInputs(deps: BuildDrInputsDeps): Promise<DrInputs> 
 }
 
 async function readMeshCidr(k8s: K8sClients): Promise<string> {
+  // SDK shape assumption: @kubernetes/client-node v1.x returns the
+  // object body directly from readNamespacedConfigMap (no `.body`
+  // wrapper, which existed in 0.x). Same pattern as other reads in
+  // this codebase (see backend/src/modules/system-backup/wal-archive.ts).
   const core = k8s.core as unknown as {
     readNamespacedConfigMap: (a: { namespace: string; name: string }) => Promise<{ data?: Record<string, string> }>;
   };
@@ -178,6 +188,11 @@ async function readMeshCidr(k8s: K8sClients): Promise<string> {
 function defaultClusterCRReader(k8s: K8sClients): ClusterCRReader {
   return {
     async readClusterCR(namespace: string, name: string) {
+      // SDK shape assumption: @kubernetes/client-node v1.x returns the
+      // CR body directly (no `.body` wrapper). Same pattern as
+      // wal-archive.ts:readClusterCR. If the SDK shape changes, the
+      // optional chaining further down (`cr.spec?.plugins?.find`)
+      // degrades gracefully — pointer simply omitted from sidecar.
       const custom = k8s.custom as unknown as {
         getNamespacedCustomObject: (a: {
           group: string; version: string; namespace: string; plural: string; name: string;
@@ -224,9 +239,6 @@ async function readCnpgPointer(
 
 async function readBundleTopology(db: Database): Promise<'single' | 'ha'> {
   try {
-    // Late-import to avoid a hard dep on the platformStoragePolicy
-    // schema at module init — keeps test mocks lean.
-    const { platformStoragePolicy } = await import('../../db/schema.js');
     const [row] = await db
       .select({ tier: platformStoragePolicy.systemTier })
       .from(platformStoragePolicy)
@@ -244,8 +256,16 @@ async function readBundleTopology(db: Database): Promise<'single' | 'ha'> {
  * table. Forces readOnly:true on every config row.
  */
 export async function buildDrRows(db: Database): Promise<DrRows> {
-  const configRows = await db.select().from(backupConfigurations);
-  const assignmentRows = await db.select().from(backupTargetAssignments);
+  // Snapshot both tables in a single repeatable-read transaction so
+  // a concurrent INSERT of (config + assignment) between the two
+  // reads can't produce a dangling assignment in the dump (Unit B's
+  // FK-aware importer would fail on it). RESTRICT on the FK means
+  // the inverse (config deleted, assignment kept) is impossible.
+  const { configRows, assignmentRows } = await db.transaction(async (tx) => {
+    const cfgs = await tx.select().from(backupConfigurations);
+    const asgs = await tx.select().from(backupTargetAssignments);
+    return { configRows: cfgs, assignmentRows: asgs };
+  });
 
   const rows: DrRows = {
     drBundleVersion: DR_BUNDLE_VERSION,
@@ -285,6 +305,9 @@ export async function buildDrRows(db: Database): Promise<DrRows> {
       readOnly: true as const,
     })),
     backupTargetAssignments: assignmentRows.map((r) => ({
+      // Drizzle's column is varchar('backup_class'); the Zod parse on
+      // the next line is the authoritative validator that rejects
+      // unexpected values. No runtime cast needed.
       backupClass: r.backupClass as 'system' | 'tenant' | 'mail',
       targetId: r.targetId,
       priority: r.priority,
@@ -312,7 +335,7 @@ export function serializeDrRows(rows: DrRows): Buffer {
 
 export function parseDrInputs(raw: Buffer | string): DrInputs {
   const text = typeof raw === 'string' ? raw : raw.toString('utf8');
-  const parsed: unknown = yaml.load(text);
+  const parsed: unknown = yaml.load(text, SAFE_LOAD_OPTS);
   // Version-check BEFORE the full Zod parse so we emit a precise error
   // for forward-incompatible bundles instead of a noisy schema diff.
   const v = (parsed as { drBundleVersion?: unknown })?.drBundleVersion;

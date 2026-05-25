@@ -62,7 +62,7 @@ export interface SecretsBundle {
   readonly manifestV2: BundleManifest;
 }
 
-export interface ExportSecretsBundleDeps {
+export type ExportSecretsBundleDeps = {
   readonly k8s: K8sClients;
   /** Override `age` binary path for tests. Defaults to PATH lookup. */
   readonly ageBinary?: string;
@@ -70,13 +70,7 @@ export interface ExportSecretsBundleDeps {
   readonly generator?: BundleManifest['generator'];
   /** Optional cluster hostname for forensics. */
   readonly clusterHostname?: string | null;
-  /** DR sidecars (A2). When both are provided, every bundle gains
-   *  dr-inputs.yaml + dr-rows.json so a future Unit B restore importer
-   *  can decode the addressing capability. Optional only so unit tests
-   *  + legacy callers can produce Secrets-only bundles. */
-  readonly db?: Database;
-  readonly config?: Parameters<typeof buildDrInputs>[0]['config'];
-}
+} & DrSidecarOpts;
 
 interface SecretYaml {
   readonly apiVersion: string;
@@ -135,16 +129,19 @@ export async function readOperatorRecipient(k8s: K8sClients): Promise<string> {
  * survivor with its restore-tier classification, embed MANIFEST.txt +
  * MANIFEST.json. Returns the plaintext tar bytes (caller age-encrypts).
  */
-export interface BuildSecretsTarOpts {
+// DR sidecars: present in production callers, omitted by tests/legacy
+// callers. Discriminated union ensures both-or-neither at the type
+// layer — a partial provision (only one field) is a TS error, which
+// would otherwise silently produce a Secrets-only bundle that Unit B
+// would later refuse to import.
+type DrSidecarOpts =
+  | { readonly db: Database; readonly config: Parameters<typeof buildDrInputs>[0]['config'] }
+  | { readonly db?: undefined; readonly config?: undefined };
+
+export type BuildSecretsTarOpts = {
   readonly generator?: BundleManifest['generator'];
   readonly clusterHostname?: string | null;
-  /** DR sidecars: when present, the bundle gains dr-inputs.yaml +
-   *  dr-rows.json. Optional only so legacy callers and tests can build
-   *  a bundle without standing up a full DB+config mock. Production
-   *  callers (routes.ts, sweeper.ts) MUST pass both. */
-  readonly db?: Database;
-  readonly config?: Parameters<typeof buildDrInputs>[0]['config'];
-}
+} & DrSidecarOpts;
 
 export async function buildSecretsTar(
   k8s: K8sClients,
@@ -345,12 +342,21 @@ export async function ageEncrypt(
 /** Top-level: list → filter → tar with v2 MANIFEST → age. */
 export async function exportSecretsBundle(deps: ExportSecretsBundleDeps): Promise<SecretsBundle> {
   const recipient = await readOperatorRecipient(deps.k8s);
-  const { tarBytes, manifest, manifestV2 } = await buildSecretsTar(deps.k8s, recipient, {
-    generator: deps.generator,
-    clusterHostname: deps.clusterHostname,
-    db: deps.db,
-    config: deps.config,
-  });
+  // The discriminated union on BuildSecretsTarOpts enforces both-or-
+  // neither at the type layer. Build the options object explicitly
+  // along the right branch.
+  const tarOpts: BuildSecretsTarOpts = deps.db
+    ? {
+        generator: deps.generator,
+        clusterHostname: deps.clusterHostname,
+        db: deps.db,
+        config: deps.config,
+      }
+    : {
+        generator: deps.generator,
+        clusterHostname: deps.clusterHostname,
+      };
+  const { tarBytes, manifest, manifestV2 } = await buildSecretsTar(deps.k8s, recipient, tarOpts);
   const encrypted = await ageEncrypt(tarBytes, recipient, deps.ageBinary);
   const sha256 = createHash('sha256').update(encrypted).digest('hex');
   return {
