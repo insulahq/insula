@@ -220,6 +220,14 @@ export async function snapshotTenant(
 ): Promise<typeof storageSnapshots.$inferSelect> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
+  // DR safety: refuse to start a tenant snapshot when the routed
+  // target is frozen. Without this guard the operator would see the
+  // snapshot reach 'creating' state before the rclone Job fails with
+  // an opaque error inside the Job's logs.
+  if (ctx.targetId) {
+    const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+    await requireWritableTarget(ctx.db, ctx.targetId);
+  }
   // Phase 6: pre-flight quota check. Manual + pre-restore snapshots
   // count against the tenant's plan cap; the system-initiated paths
   // (resize/archive) skip this via their own service entry points
@@ -2012,6 +2020,13 @@ export async function getOperation(db: Database, opId: string) {
 export async function deleteSnapshot(ctx: ServiceCtx, snapshotId: string): Promise<void> {
   const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
   if (!snap) throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} not found`, 404);
+  // DR safety: refuse to delete from a frozen target. The DB row is
+  // not deleted either — the operator must explicitly unfreeze the
+  // target before any cleanup happens.
+  if (snap.targetId) {
+    const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+    await requireWritableTarget(ctx.db, snap.targetId);
+  }
   // Use the per-target resolver so the remote archive lands in (or out
   // of) the SAME store that originally received the upload. The
   // previous ctx.store.delete() call routed every delete to the legacy
@@ -2041,9 +2056,23 @@ export async function expireSnapshots(ctx: ServiceCtx): Promise<number> {
   const due = await ctx.db.select().from(storageSnapshots).where(
     and(lte(storageSnapshots.expiresAt, now), eq(storageSnapshots.status, 'ready')),
   );
+  // DR safety: pre-fetch the read_only flag for every routed target
+  // so we can skip retention-expire on frozen targets without spamming
+  // the helper one call per snapshot.
+  const { requireWritableTarget, TargetFrozenError } = await import('../backup-config/writable-guard.js');
   let reaped = 0;
   for (const snap of due) {
     try {
+      // Skip frozen targets entirely — the DB row stays 'ready' so the
+      // next sweep re-evaluates once the operator unfreezes.
+      if (snap.targetId) {
+        try {
+          await requireWritableTarget(ctx.db, snap.targetId);
+        } catch (frozenErr) {
+          if (frozenErr instanceof TargetFrozenError) continue;
+          throw frozenErr;
+        }
+      }
       // Per-target delete (same rationale as deleteSnapshot above —
       // legacy ctx.store would route every expire to the wrong bucket
       // for Phase 3+ snapshots). TARGET_REMOVED means the target's
