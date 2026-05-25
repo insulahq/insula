@@ -201,14 +201,14 @@ describe('buildDestinationPath', () => {
   it('handles null prefix', () => {
     expect(buildDestinationPath(
       { id: '1', storageType: 's3', s3Bucket: 'b', s3Prefix: null, s3Endpoint: null, s3Region: null, active: true, name: null },
-      'mail', 'mail-db',
-    )).toBe('s3://b/wal-archive/mail-mail-db');
+      'platform', 'system-db',
+    )).toBe('s3://b/wal-archive/platform-system-db');
   });
   it('strips leading/trailing slashes from prefix', () => {
     expect(buildDestinationPath(
       { id: '1', storageType: 's3', s3Bucket: 'b', s3Prefix: '//op///', s3Endpoint: null, s3Region: null, active: true, name: null },
-      'mail', 'mail-db',
-    )).toBe('s3://b/op/wal-archive/mail-mail-db');
+      'platform', 'system-db',
+    )).toBe('s3://b/op/wal-archive/platform-system-db');
   });
 });
 
@@ -312,7 +312,7 @@ describe('enableWalArchive — plugin model', () => {
 
     await enableWalArchive({
       db, k8s,
-      clusterNamespace: 'mail', clusterName: 'mail-db',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       targetConfigId: 'cfg-1', retentionDays: 14,
       operatorUserId: 'admin', operatorIp: null,
       baseBackupSchedule: '0 0 4 * * *',
@@ -503,7 +503,7 @@ describe('disableWalArchive — plugin teardown', () => {
 
     await disableWalArchive({
       db, k8s,
-      clusterNamespace: 'mail', clusterName: 'mail-db',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       operatorUserId: 'admin', operatorIp: null,
     });
 

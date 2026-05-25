@@ -174,8 +174,8 @@ async function notifyForFailure(
     title: `Database backup failed: ${cluster.namespace}/${cluster.clusterName}`,
     message:
       `CNPG backup ${backup.namespace}/${backup.name} failed. ${reason} ${recoveryHint} ` +
-      `Inspect via Email Management → Database Backup Health, or run ` +
-      `\`./scripts/reset-mail-pg.sh --list-backups\`.`,
+      `Inspect via /backups/system → Backups, or run ` +
+      `\`kubectl -n ${backup.namespace} get backup.postgresql.cnpg.io\`.`,
     resourceType: RESOURCE_TYPE,
     resourceId: `${backup.namespace}/${backup.name}`,
   });

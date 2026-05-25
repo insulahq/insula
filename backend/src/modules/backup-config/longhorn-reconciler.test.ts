@@ -81,8 +81,9 @@ describe('reconcileBackupTarget', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await reconcileBackupTarget(tenants as any, INPUT);
 
-    // Called three times — longhorn-system, platform ns, mail ns (M6.3 mirror)
-    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(3);
+    // Called twice — longhorn-system + platform ns. Mail-ns mirror was
+    // retired with the CNPG mail-pg cluster (2026-05-12).
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
     const [args] = tenants.core.replaceNamespacedSecret.mock.calls[0];
     expect(args.name).toBe('longhorn-backup-credentials');
     expect(args.namespace).toBe('longhorn-system');
@@ -117,8 +118,8 @@ describe('reconcileBackupTarget', () => {
     await reconcileBackupTarget(tenants as any, INPUT);
 
     const calls = tenants.core.replaceNamespacedSecret.mock.calls;
-    // 3 calls: longhorn-system + platform + mail (M6.3 mirror)
-    expect(calls).toHaveLength(3);
+    // 2 calls: longhorn-system + platform (mail-ns mirror retired 2026-05-12)
+    expect(calls).toHaveLength(2);
     const [, platformArgs] = calls;
     expect(platformArgs[0].name).toBe('backup-credentials');
     expect(platformArgs[0].namespace).toBe('platform');
@@ -126,22 +127,15 @@ describe('reconcileBackupTarget', () => {
     expect(platformArgs[0].body.stringData.AWS_ACCESS_KEY_ID).toBe(INPUT.accessKeyId);
     expect(platformArgs[0].body.stringData.S3_BUCKET).toBe(INPUT.bucket);
     expect(platformArgs[0].body.stringData.S3_REGION).toBe(INPUT.region);
-    // Third call mirrors creds to mail namespace for barman-cloud (CNPG mail-pg)
-    const [,, mailArgs] = calls;
-    expect(mailArgs[0].name).toBe('backup-credentials');
-    expect(mailArgs[0].namespace).toBe('mail');
-    expect(mailArgs[0].body.stringData.AWS_ACCESS_KEY_ID).toBe(INPUT.accessKeyId);
   });
 
   it('continues successfully when the platform-ns sync fails (best-effort)', async () => {
     // Longhorn-ns call succeeds, BackupTarget patch succeeds, but
     // platform-ns call fails. The reconciler should log + return, not
     // throw, so the operator sees the Longhorn target go live.
-    // Mail-ns call also succeeds (separate try/catch).
     tenants.core.replaceNamespacedSecret
       .mockResolvedValueOnce({})   // longhorn-system: ok
-      .mockRejectedValueOnce({ statusCode: 500, message: 'platform ns down' })  // platform: fail
-      .mockResolvedValueOnce({}); // mail: ok
+      .mockRejectedValueOnce({ statusCode: 500, message: 'platform ns down' });  // platform: fail
     tenants.custom.patchClusterCustomObject.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -149,7 +143,7 @@ describe('reconcileBackupTarget', () => {
     expect(tenants.custom.patchClusterCustomObject).toHaveBeenCalled();
   });
 
-  it('falls back to create when the Secret does not yet exist (all three namespaces)', async () => {
+  it('falls back to create when the Secret does not yet exist (both namespaces)', async () => {
     tenants.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
     tenants.core.createNamespacedSecret.mockResolvedValue({});
     tenants.custom.patchClusterCustomObject.mockResolvedValue({});
@@ -157,16 +151,14 @@ describe('reconcileBackupTarget', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await reconcileBackupTarget(tenants as any, INPUT);
 
-    // 3 replace attempts (all 404) → 3 create fallbacks: longhorn-system, platform, mail
-    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(3);
-    expect(tenants.core.createNamespacedSecret).toHaveBeenCalledTimes(3);
+    // 2 replace attempts (all 404) → 2 create fallbacks: longhorn-system, platform
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
+    expect(tenants.core.createNamespacedSecret).toHaveBeenCalledTimes(2);
     const calls = tenants.core.createNamespacedSecret.mock.calls;
     expect(calls[0][0].namespace).toBe('longhorn-system');
     expect(calls[0][0].body.metadata.name).toBe('longhorn-backup-credentials');
     expect(calls[1][0].namespace).toBe('platform');
     expect(calls[1][0].body.metadata.name).toBe('backup-credentials');
-    expect(calls[2][0].namespace).toBe('mail');
-    expect(calls[2][0].body.metadata.name).toBe('backup-credentials');
   });
 
   it('patches BackupTarget/default with correct S3 URL', async () => {
@@ -270,15 +262,16 @@ describe('reconcileBackupTarget — SSH variant', () => {
   let tenants: ReturnType<typeof createMockTenants>;
   beforeEach(() => { tenants = createMockTenants(); });
 
-  it('writes SSH_* keys + TARGET_KIND=ssh to platform-ns and mail-ns Secrets', async () => {
+  it('writes SSH_* keys + TARGET_KIND=ssh to platform-ns Secret', async () => {
     tenants.core.replaceNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
-    // Two Secret calls — platform-ns + mail-ns mirror (M6.3).
-    // Longhorn-system is never touched for SSH (BackupTarget only talks S3).
-    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
+    // One Secret call — platform-ns only. Longhorn-system is never
+    // touched for SSH (BackupTarget only talks S3). Mail-ns mirror was
+    // retired with the CNPG mail-pg cluster (2026-05-12).
+    expect(tenants.core.replaceNamespacedSecret).toHaveBeenCalledTimes(1);
     const [args] = tenants.core.replaceNamespacedSecret.mock.calls[0];
     expect(args.name).toBe('backup-credentials');
     expect(args.namespace).toBe('platform');
@@ -288,11 +281,6 @@ describe('reconcileBackupTarget — SSH variant', () => {
     expect(args.body.stringData.SSH_USER).toBe(SSH_INPUT.user);
     expect(args.body.stringData.SSH_PATH).toBe(SSH_INPUT.path);
     expect(args.body.stringData.SSH_PRIVATE_KEY).toBe(SSH_INPUT.privateKey);
-    // Mail mirror carries the same SSH data (barman-cloud will fail silently
-    // on SSH-target, which is expected — SSH is not a CNPG-native transport)
-    const [, mailArgs] = tenants.core.replaceNamespacedSecret.mock.calls;
-    expect(mailArgs[0].namespace).toBe('mail');
-    expect(mailArgs[0].body.stringData.TARGET_KIND).toBe('ssh');
   });
 
   it('clears stale AWS_* keys when activating SSH after a prior S3 config', async () => {
@@ -324,22 +312,19 @@ describe('reconcileBackupTarget — SSH variant', () => {
     expect(tenants.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
   });
 
-  it('falls back to createNamespacedSecret on 404 for SSH variant (platform + mail)', async () => {
+  it('falls back to createNamespacedSecret on 404 for SSH variant (platform-ns)', async () => {
     tenants.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
     tenants.core.createNamespacedSecret.mockResolvedValue({});
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await reconcileBackupTarget(tenants as any, SSH_INPUT);
 
-    // 2 replace attempts (all 404) → 2 create fallbacks: platform + mail
-    expect(tenants.core.createNamespacedSecret).toHaveBeenCalledTimes(2);
+    // 1 replace attempt (404) → 1 create fallback: platform-ns only.
+    expect(tenants.core.createNamespacedSecret).toHaveBeenCalledTimes(1);
     const [args] = tenants.core.createNamespacedSecret.mock.calls[0];
     expect(args.namespace).toBe('platform');
     expect(args.body.metadata.name).toBe('backup-credentials');
     expect(args.body.stringData.TARGET_KIND).toBe('ssh');
-    const [, mailArgs] = tenants.core.createNamespacedSecret.mock.calls;
-    expect(mailArgs[0].namespace).toBe('mail');
-    expect(mailArgs[0].body.metadata.name).toBe('backup-credentials');
   });
 
   it('propagates non-404 errors from the SSH Secret write', async () => {

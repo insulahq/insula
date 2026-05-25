@@ -60,11 +60,11 @@ export async function createPgDumpJob(
 
   // Pod env: only what the orchestrator needs to bootstrap. PGUSER /
   // PGPASSWORD are NOT here — they're resolved at runtime by reading
-  // the CNPG cluster's bootstrap Secret in its own namespace, which
-  // works for cross-namespace clusters like mail/mail-pg (pod env
-  // secretKeyRef is namespace-local). JWT_SECRET is also dropped:
-  // pg-dump-job never issues or verifies JWTs, so mounting it here
-  // would needlessly widen the blast radius of a container escape.
+  // the CNPG cluster's bootstrap Secret in its own namespace; pod env
+  // secretKeyRef is namespace-local and would break for any
+  // cross-namespace target. JWT_SECRET is also dropped: pg-dump-job
+  // never issues or verifies JWTs, so mounting it here would
+  // needlessly widen the blast radius of a container escape.
   const env: Array<Record<string, unknown>> = [
     { name: 'NODE_ENV', value: 'production' },
     { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'platform-db-credentials', key: 'url' } } },

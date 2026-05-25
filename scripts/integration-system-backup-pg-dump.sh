@@ -26,8 +26,8 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 TARGET_CONFIG_ID="${TARGET_CONFIG_ID:-}"
 SOURCE_NS="${SOURCE_NS:-platform}"
 # Renamed from `postgres` 2026-05-07 (CNPG cluster rename — drop
-# version baggage; system-db / mail-db). Override via SOURCE_CLUSTER
-# when testing legacy clusters.
+# version baggage). Override via SOURCE_CLUSTER when testing
+# alternate clusters.
 SOURCE_CLUSTER="${SOURCE_CLUSTER:-system-db}"
 SOURCE_DB="${SOURCE_DB:-hosting_platform}"
 

@@ -151,9 +151,9 @@ describe('createBackupNow', () => {
 
   it('uses the input clusterName (not the source-cluster constant) in the spec', async () => {
     const { api, created } = makeCustom();
-    await createBackupNow(api, { namespace: 'mail', clusterName: 'mail-db' });
+    await createBackupNow(api, { namespace: 'platform', clusterName: 'tenant-pg-xyz' });
     const spec = created[0]?.spec as { cluster?: { name?: string } };
-    expect(spec.cluster?.name).toBe('mail-db');
+    expect(spec.cluster?.name).toBe('tenant-pg-xyz');
   });
 
   // Phase 7b/c (2026-05-24): operator description plumbed through as

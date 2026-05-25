@@ -250,9 +250,8 @@ export default function PitrProgressModal({ jobName, onClose, taskStatus, taskDe
             <div role="alert" className="mb-3 flex items-start gap-2 rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200">
               <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
               <span>
-                <strong>Restore FAILED.</strong> Source PVCs retain reclaim — operator can recover via the auto-recovery
-                runbook (see <code className="font-mono">scripts/reset-mail-pg.sh --restore-from-backup</code> or
-                inspect the Job pod logs: <code className="font-mono">kubectl -n platform logs job/{jobName}</code>).
+                <strong>Restore FAILED.</strong> Source PVCs retain reclaim — inspect the Job pod logs:{' '}
+                <code className="font-mono">kubectl -n platform logs job/{jobName}</code>.
               </span>
             </div>
           )}
