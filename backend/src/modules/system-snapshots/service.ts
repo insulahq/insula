@@ -288,7 +288,11 @@ export async function listSystemPvcSnapshots(
   // per-snapshot rows into storage_snapshots (Option B, deferred).
   if (db) {
     try {
-      const mailRow = result.find((r) => r.namespace === 'mail' && r.pvcName === 'stalwart-rocksdb-data');
+      // A2.5 (2026-05-25): mail PVC name is now mail-stack-data (consolidated
+      // Stalwart + Bulwark under subPaths). Legacy stalwart-rocksdb-data
+      // remains in the cluster for the 48-72h safety window post-cutover
+      // but the live snapshot stats track the new PVC.
+      const mailRow = result.find((r) => r.namespace === 'mail' && r.pvcName === 'mail-stack-data');
       if (mailRow) {
         const [s] = await db.select({ stats: systemSettings.mailSnapshotLastRunStats })
           .from(systemSettings)

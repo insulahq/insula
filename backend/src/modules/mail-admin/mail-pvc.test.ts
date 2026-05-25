@@ -111,7 +111,7 @@ describe('mail-pvc.getMailPvcStorage', () => {
   it('returns read-only shape with expansionAllowed=false, lastResizedAt=null', async () => {
     const r = await getMailPvcStorage({ kubeconfigPath: undefined });
     expect(r).toMatchObject({
-      pvcName: 'stalwart-rocksdb-data',
+      pvcName: 'mail-stack-data',
       namespace: 'mail',
       requestedBytes: 20 * 1024 ** 3,
       capacityBytes: 20 * 1024 ** 3,

@@ -1,5 +1,5 @@
 /**
- * Mail PVC storage — read the stalwart-rocksdb-data PVC.
+ * Mail PVC storage — read the mail-stack-data PVC (A2.5; legacy stalwart-rocksdb-data).
  *
  * Mail standardised on local-path PVC after the RocksDB migration
  * (only storage class fast enough for `stalwart -e` import/export at
@@ -17,9 +17,12 @@ import {
 } from '@k8s-hosting/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
-// Phase 1 (RocksDB migration): switched from CNPG PVC (mail-db-1) to the
-// Stalwart RocksDB DataStore PVC (stalwart-rocksdb-data, local-path, 20Gi).
-const MAIL_PVC_NAME = 'stalwart-rocksdb-data';
+// A2.5 (2026-05-25): mail-stack consolidation — the PVC now holds
+// BOTH Stalwart RocksDB AND Bulwark config under subPaths
+// (stalwart/, bulwark/). Default size 30Gi (legacy was 20Gi
+// Stalwart-only). Legacy stalwart-rocksdb-data PVC kept in cluster
+// for 48-72h safety period (see docs/02-operations/MAIL_STACK_CONSOLIDATION.md).
+const MAIL_PVC_NAME = 'mail-stack-data';
 
 export interface MailPvcOptions {
   readonly kubeconfigPath: string | undefined;
