@@ -23,13 +23,51 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { readClusterCR } from './wal-archive.js';
 
 const CNPG_GROUP = 'postgresql.cnpg.io';
 const CNPG_VERSION = 'v1';
 const BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
-const MERGE_PATCH = { headers: { 'Content-Type': 'application/merge-patch+json' } } as const;
 const OBJECT_STORE_NAME = (cluster: string) => `${cluster}-objectstore`;
+
+// Per-cluster mutex to serialize concurrent suspend/resume on the same
+// Cluster CR. Without this, two simultaneous mark-writable POSTs for
+// targets routing through the same cluster could each read the CR
+// (seeing no barman plugin), build `[...existing, entry]` from stale
+// state, and issue conflicting merge-patches. The second patch's
+// `spec.plugins` is computed against the pre-first-patch snapshot and
+// could either lose entries or produce a duplicate barman entry that
+// the CNPG admission webhook rejects.
+//
+// Map key is `${namespace}/${cluster}`. The promise chain is single-
+// threaded per key; the Map is unbounded but cluster count is small
+// (≤ instances per platform) so leakage is bounded by cluster count.
+const clusterLocks = new Map<string, Promise<unknown>>();
+
+async function withClusterLock<T>(
+  namespace: string,
+  cluster: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = `${namespace}/${cluster}`;
+  const prior = clusterLocks.get(key) ?? Promise.resolve();
+  let release: () => void = () => {};
+  const slot = new Promise<void>((resolve) => { release = resolve; });
+  const next = prior.then(() => slot);
+  clusterLocks.set(key, next);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    // Clean up the map entry IFF we're still the head — otherwise a
+    // later caller has already pushed its own chain on top.
+    if (clusterLocks.get(key) === next) {
+      clusterLocks.delete(key);
+    }
+  }
+}
 
 // Structural shape we accept from any ClusterCR plugin list. Matches
 // the readonly shape exported (transitively) from wal-archive.ts —
@@ -57,17 +95,19 @@ export async function suspendCnpgArchiving(
   namespace: string,
   cluster: string,
 ): Promise<boolean> {
-  const cr = await readClusterCR(k8s, namespace, cluster);
-  if (!cr) {
-    // Cluster doesn't exist (or is being torn down) — nothing to do.
-    return false;
-  }
-  const existing = cr.spec?.plugins ?? [];
-  const hadBarman = existing.some((p) => p.name === BARMAN_PLUGIN_NAME);
-  if (!hadBarman) return false;
-  const merged = existing.filter((p) => p.name !== BARMAN_PLUGIN_NAME);
-  await patchPlugins(k8s, namespace, cluster, merged);
-  return true;
+  return withClusterLock(namespace, cluster, async () => {
+    const cr = await readClusterCR(k8s, namespace, cluster);
+    if (!cr) {
+      // Cluster doesn't exist (or is being torn down) — nothing to do.
+      return false;
+    }
+    const existing = cr.spec?.plugins ?? [];
+    const hadBarman = existing.some((p) => p.name === BARMAN_PLUGIN_NAME);
+    if (!hadBarman) return false;
+    const merged = existing.filter((p) => p.name !== BARMAN_PLUGIN_NAME);
+    await patchPlugins(k8s, namespace, cluster, merged);
+    return true;
+  });
 }
 
 /**
@@ -85,21 +125,23 @@ export async function resumeCnpgArchiving(
   cluster: string,
   options: { objectStoreName?: string; isWALArchiver?: boolean } = {},
 ): Promise<boolean> {
-  const cr = await readClusterCR(k8s, namespace, cluster);
-  if (!cr) {
-    throw new Error(`CNPG cluster ${namespace}/${cluster} not found — cannot resume archiving`);
-  }
-  const existing = cr.spec?.plugins ?? [];
-  if (existing.some((p) => p.name === BARMAN_PLUGIN_NAME)) {
-    return false;
-  }
-  const entry: PluginEntry = {
-    name: BARMAN_PLUGIN_NAME,
-    isWALArchiver: options.isWALArchiver ?? true,
-    parameters: { barmanObjectName: options.objectStoreName ?? OBJECT_STORE_NAME(cluster) },
-  };
-  await patchPlugins(k8s, namespace, cluster, [...existing, entry]);
-  return true;
+  return withClusterLock(namespace, cluster, async () => {
+    const cr = await readClusterCR(k8s, namespace, cluster);
+    if (!cr) {
+      throw new Error(`CNPG cluster ${namespace}/${cluster} not found — cannot resume archiving`);
+    }
+    const existing = cr.spec?.plugins ?? [];
+    if (existing.some((p) => p.name === BARMAN_PLUGIN_NAME)) {
+      return false;
+    }
+    const entry: PluginEntry = {
+      name: BARMAN_PLUGIN_NAME,
+      isWALArchiver: options.isWALArchiver ?? true,
+      parameters: { barmanObjectName: options.objectStoreName ?? OBJECT_STORE_NAME(cluster) },
+    };
+    await patchPlugins(k8s, namespace, cluster, [...existing, entry]);
+    return true;
+  });
 }
 
 async function patchPlugins(

@@ -147,12 +147,17 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const u = request.user as { sub?: string; id?: string } | undefined;
+    const u = request.user as { sub?: string; id?: string; jti?: string } | undefined;
     const userId = u?.sub ?? u?.id ?? null;
     if (!userId) {
       throw new ApiError('AUTHENTICATION_REQUIRED', 'Mark-writable requires an authenticated user', 401);
     }
     const operatorIp = (request.ip as string | undefined) ?? null;
+    // Forensic capture for the compromised-admin threat model: jti
+    // distinguishes captured-token replays from legitimate browser
+    // sessions sharing an IP; UA distinguishes sessions sharing both.
+    const operatorJti = u?.jti ?? null;
+    const operatorUserAgent = (request.headers['user-agent'] as string | undefined) ?? null;
     const result = await markBackupTargetWritable({
       db: app.db,
       k8s,
@@ -160,6 +165,8 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
       confirmation: parsed.data.confirmation,
       operatorUserId: userId,
       operatorIp,
+      operatorJti,
+      operatorUserAgent,
     });
     return success(result);
   });

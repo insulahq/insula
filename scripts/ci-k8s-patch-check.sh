@@ -87,16 +87,57 @@ for hit in "${HITS[@]}"; do
   # *_PATCH constants like STALWART_PORTS_PATCH or MIGRATION_AFFINITY_PATCH),
   # OR an inline call to one of the helper functions.
   #
-  # The general `[A-Z_]+_PATCH\b` clause is permissive but safe: the
-  # second positional arg is typed as `ConfigurationOptions` so a
-  # non-middleware constant ending in _PATCH would fail TypeScript at
-  # compile time before reaching this check.
+  # The general `[A-Z_]+_PATCH\b` clause is permissive but safe IFF the
+  # constant is sourced from shared/k8s-patch.ts (or transitively from
+  # withTag()). It is NOT safe if the constant is locally shadowed,
+  # which happened in wal-suspend.ts (a plain `{ headers: {...} }` bag
+  # that the SDK silently ignored). The check below catches this by
+  # rejecting files that DEFINE a *_PATCH constant locally without
+  # importing it from k8s-patch.ts.
   if echo "$WINDOW" | grep -qE '\b(MERGE_PATCH|STRATEGIC_MERGE_PATCH|JSON_PATCH|[A-Z_]+_PATCH|applyPatch\(|strategicMergePatch\()\b'; then
     continue
   fi
   FAIL=1
   FAIL_LINES+=("${FILE}:${LINE}")
 done
+
+# Shadow-name detector: any file that defines a local `const *_PATCH =`
+# must NOT also call patchNamespaced* — the local definition will be the
+# resolved name and silently bypass the SDK's middleware contract. If
+# the file also imports a *_PATCH from k8s-patch.ts that's the canonical
+# one and we let it pass; otherwise it's a bypass.
+SHADOW_FAIL_LINES=()
+while IFS= read -r FILE; do
+  case "$FILE" in
+    */shared/k8s-patch.ts) continue ;;  # the canonical definition lives here
+    */node_modules/*) continue ;;
+    */dist/*) continue ;;
+  esac
+  if grep -qE 'patchNamespaced|patchClusterCustomObject' "$FILE" \
+     && grep -qE '^[[:space:]]*const[[:space:]]+[A-Z_]+_PATCH[[:space:]]*=' "$FILE" \
+     && ! grep -qE "from '[^']*shared/k8s-patch" "$FILE"; then
+    SHADOW_FAIL_LINES+=("$FILE")
+    FAIL=1
+  fi
+done < <(find backend/src -name '*.ts' -not -name '*.test.ts')
+
+if [ ${#SHADOW_FAIL_LINES[@]} -gt 0 ]; then
+  echo "❌ ci-k8s-patch-check: local *_PATCH constants shadow the canonical export from shared/k8s-patch.ts."
+  echo
+  echo "  Affected files:"
+  for s in "${SHADOW_FAIL_LINES[@]}"; do
+    echo "    $s"
+  done
+  echo
+  echo "  Fix: remove the local constant + import the canonical one:"
+  echo "       import { MERGE_PATCH } from '../../shared/k8s-patch.js';"
+  echo
+  echo "  Why: the SDK's v1.x patch methods take a middleware-shaped"
+  echo "       opts arg, not a plain headers bag. A locally-defined"
+  echo "       \`{ headers: {...} }\` is silently ignored, the Content-"
+  echo "       Type defaults to json-patch+json, and merge-object bodies"
+  echo "       fail apiserver parsing."
+fi
 
 if [ $FAIL -ne 0 ]; then
   echo "❌ ci-k8s-patch-check: patchNamespaced* / patchClusterCustomObject call sites are missing an explicit Content-Type middleware shim."

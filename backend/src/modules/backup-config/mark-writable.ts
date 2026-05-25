@@ -16,7 +16,7 @@
  * enforces both auth + the type-name confirmation contract.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import {
   backupConfigurations,
@@ -33,10 +33,22 @@ export interface MarkWritableInput {
   readonly db: Database;
   readonly k8s: K8sClients | undefined;
   readonly targetId: string;
-  /** Operator typed this; route layer already verified `==target.name`. */
+  /** The operator-typed target name. This function — NOT the route
+   *  layer — does the strict-equal verification against target.name,
+   *  AND uses it in the UPDATE WHERE predicate so a concurrent rename
+   *  between SELECT and UPDATE cannot let an attacker confirm one name
+   *  while flipping a row that has since been renamed to something
+   *  different. */
   readonly confirmation: string;
   readonly operatorUserId: string;
   readonly operatorIp: string | null;
+  /** JWT `jti` (token id) — forensic attribution for the compromised-
+   *  admin threat model. Two captured-token replays from the same IP
+   *  are distinguishable by jti. Optional only so unit tests don't
+   *  need to fake one. */
+  readonly operatorJti?: string | null;
+  /** User-Agent header — distinguishes browser sessions sharing an IP. */
+  readonly operatorUserAgent?: string | null;
 }
 
 export interface MarkWritableResult {
@@ -67,7 +79,8 @@ export interface MarkWritableResult {
 export async function markBackupTargetWritable(
   input: MarkWritableInput,
 ): Promise<MarkWritableResult> {
-  const { db, k8s, targetId, confirmation, operatorUserId, operatorIp } = input;
+  const { db, k8s, targetId, confirmation, operatorUserId, operatorIp,
+    operatorJti, operatorUserAgent } = input;
 
   // Lookup target + verify the operator typed the right name. The
   // confirmation check IS the safety gate — every other field on the
@@ -94,10 +107,18 @@ export async function markBackupTargetWritable(
       400,
     );
   }
+  // Idempotent: target is already writable. Return without writing an
+  // audit_log row (otherwise re-clicking the modal would spam the
+  // audit trail with no-op entries that hide real flips). Still walk
+  // the CNPG cluster list because manual detach can leave archiving
+  // off even when the flag is false.
   if (!target.readOnly) {
-    // Idempotent: target is already writable. Still walk the CNPG
-    // cluster list in case archiving was manually detached.
-    // No-op on the audit log to avoid noise.
+    return {
+      targetId,
+      targetName: target.name,
+      cnpgArchivingResumed: [],
+      mailReconcilerTriggered: false,
+    };
   }
 
   // Find every CNPG cluster whose WAL archive points at this target.
@@ -111,12 +132,31 @@ export async function markBackupTargetWritable(
     .from(systemWalArchiveState)
     .where(eq(systemWalArchiveState.targetConfigId, targetId));
 
-  // Flip the flag + write audit log in one transaction.
+  // Flip the flag + write audit log in one transaction. The UPDATE
+  // carries a WHERE predicate on BOTH id AND name=<confirmation>
+  // so a concurrent PATCH that renames the row between our SELECT
+  // and this UPDATE cannot let an attacker confirm one name while
+  // flipping a row that is now called something different. We require
+  // exactly one affected row; zero rows means a rename raced us.
   await db.transaction(async (tx) => {
-    await tx
+    const updated = await tx
       .update(backupConfigurations)
       .set({ readOnly: false, updatedAt: new Date() })
-      .where(eq(backupConfigurations.id, targetId));
+      .where(and(
+        eq(backupConfigurations.id, targetId),
+        eq(backupConfigurations.name, confirmation),
+      ))
+      .returning({ id: backupConfigurations.id });
+    if (updated.length === 0) {
+      // Either the row was deleted, or it was renamed between SELECT
+      // and UPDATE. Treat as confirmation mismatch — leaks nothing
+      // about the current name.
+      throw new ApiError(
+        'CONFIRMATION_MISMATCH',
+        'Confirmation does not match the target name',
+        400,
+      );
+    }
     await tx.insert(auditLogs).values({
       id: randomUUID(),
       actionType: 'backup_target_mark_writable',
@@ -131,6 +171,8 @@ export async function markBackupTargetWritable(
         targetName: target.name,
         previousReadOnly: target.readOnly,
         clustersResuming: archivingClusters.map((c) => `${c.clusterNamespace}/${c.clusterName}`),
+        operatorJti: operatorJti ?? null,
+        operatorUserAgent: operatorUserAgent ?? null,
       },
       ipAddress: operatorIp,
     });

@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
-import { eq, and, sql, desc, lte } from 'drizzle-orm';
+import { eq, and, sql, desc, lte, inArray } from 'drizzle-orm';
 import {
   tenants,
   storageSnapshots,
   storageOperations,
   hostingPlans,
+  backupConfigurations,
 } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
@@ -2056,23 +2057,30 @@ export async function expireSnapshots(ctx: ServiceCtx): Promise<number> {
   const due = await ctx.db.select().from(storageSnapshots).where(
     and(lte(storageSnapshots.expiresAt, now), eq(storageSnapshots.status, 'ready')),
   );
-  // DR safety: pre-fetch the read_only flag for every routed target
-  // so we can skip retention-expire on frozen targets without spamming
-  // the helper one call per snapshot.
-  const { requireWritableTarget, TargetFrozenError } = await import('../backup-config/writable-guard.js');
+  // DR safety: pre-fetch the set of frozen target IDs ONCE rather
+  // than calling requireWritableTarget per-snapshot. A daily sweep
+  // with 1000 expired snapshots across 10 targets used to issue 1000
+  // SELECTs; now it issues exactly 1.
+  const distinctTargets = Array.from(new Set(
+    due.map((s) => s.targetId).filter((t): t is string => Boolean(t)),
+  ));
+  const frozenTargetIds = new Set<string>();
+  if (distinctTargets.length > 0) {
+    const rows = await ctx.db
+      .select({ id: backupConfigurations.id })
+      .from(backupConfigurations)
+      .where(and(
+        eq(backupConfigurations.readOnly, true),
+        inArray(backupConfigurations.id, distinctTargets),
+      ));
+    for (const r of rows) frozenTargetIds.add(r.id);
+  }
   let reaped = 0;
   for (const snap of due) {
     try {
       // Skip frozen targets entirely — the DB row stays 'ready' so the
       // next sweep re-evaluates once the operator unfreezes.
-      if (snap.targetId) {
-        try {
-          await requireWritableTarget(ctx.db, snap.targetId);
-        } catch (frozenErr) {
-          if (frozenErr instanceof TargetFrozenError) continue;
-          throw frozenErr;
-        }
-      }
+      if (snap.targetId && frozenTargetIds.has(snap.targetId)) continue;
       // Per-target delete (same rationale as deleteSnapshot above —
       // legacy ctx.store would route every expire to the wrong bucket
       // for Phase 3+ snapshots). TARGET_REMOVED means the target's
