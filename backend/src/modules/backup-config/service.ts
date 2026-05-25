@@ -163,7 +163,16 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
 }
 
 export async function updateBackupConfig(db: Database, id: string, input: UpdateBackupConfigInput, encryptionKey: string) {
-  await getRawBackupConfig(db, id);
+  const row = await getRawBackupConfig(db, id);
+  // DR safety: refuse credential / connection updates on frozen
+  // targets. Without this guard a compromised admin could swap S3
+  // credentials on a frozen DR repo so future writes go to an
+  // attacker-controlled bucket once the operator unfreezes.
+  // Operator must mark the target read-write first (super_admin gesture).
+  if (row.readOnly) {
+    const { TargetFrozenError } = await import('./writable-guard.js');
+    throw new TargetFrozenError(id, row.name);
+  }
 
   const updateValues: Record<string, unknown> = {};
 
@@ -208,6 +217,15 @@ export async function deleteBackupConfig(db: Database, id: string) {
       'Cannot delete the active backup target. Deactivate it first.',
       409,
     );
+  }
+  // DR safety: refuse to delete a frozen target row. Otherwise a
+  // compromised admin could erase the DR repo's address + credentials
+  // so the operator has nothing to unfreeze. Mark it read-write first
+  // (super_admin gesture) — that's the only path that can lift the
+  // freeze, and it's audited.
+  if (row.readOnly) {
+    const { TargetFrozenError } = await import('./writable-guard.js');
+    throw new TargetFrozenError(id, row.name);
   }
   await db.delete(backupConfigurations).where(eq(backupConfigurations.id, id));
 }
