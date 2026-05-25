@@ -62,7 +62,7 @@ export type BackupClass = 'system' | 'tenant' | 'mail';
 export interface BackupTargetConfig {
   readonly id: string;
   readonly name: string;
-  readonly storageType: 's3' | 'ssh' | 'cifs' | 'nfs';
+  readonly storageType: 's3' | 'ssh' | 'cifs';
   // S3 fields
   readonly s3Endpoint?: string | null;
   readonly s3Bucket?: string | null;
@@ -90,12 +90,7 @@ export interface BackupTargetConfig {
   readonly cifsPassword?: string | null;
   readonly cifsDomain?: string | null;
   readonly cifsPath?: string | null;
-  // NFS
-  readonly nfsServer?: string | null;
-  readonly nfsExport?: string | null;
-  readonly nfsVersion?: string | null;
-  readonly nfsOptions?: string | null;
-  readonly nfsPath?: string | null;
+  // NFS was dropped 2026-05-25 — see ADR-043 postscript.
 }
 
 export interface ClassAssignment {
@@ -139,11 +134,11 @@ export interface RenderedShimConfig {
   /** Which classes have an upstream bound. Drives the UI + drain
    *  orchestrator + status reporting. */
   readonly assignedClasses: ReadonlyArray<BackupClass>;
-  /** Volume mounts needed for posix-backed targets (CIFS, NFS, SFTP).
-   *  R-X17: SFTP is now a POSIX mount via sshfs (FUSE), so all three
+  /** Volume mounts needed for posix-backed targets (CIFS, SFTP).
+   *  R-X17: SFTP is now a POSIX mount via sshfs (FUSE), so both
    *  remote types are uniformly "POSIX upstream". The service merges
    *  these into the DaemonSet Pod spec — privileged mode is enabled
-   *  iff this array is non-empty. */
+   *  iff this array is non-empty. (NFS dropped 2026-05-25.) */
   readonly posixMounts: ReadonlyArray<PosixMount>;
   /** PEM-format SSH private keys to project into a Secret volume at
    *  /etc/rclone/ssh-keys/upstream.pem. Empty when SFTP target uses
@@ -166,7 +161,7 @@ export interface PosixMount {
    *  retained as a record so the DaemonSet patcher knows to add the
    *  CAP_SYS_ADMIN / privileged bits + the mount-helper volume. */
   readonly mountPath: string;
-  readonly storageType: 'sftp' | 'cifs' | 'nfs';
+  readonly storageType: 'sftp' | 'cifs';
   readonly target: BackupTargetConfig;
 }
 
@@ -360,10 +355,6 @@ function upstreamRootPath(t: BackupTargetConfig): string {
       if (t.cifsPath) parts.push(stripSlashes(t.cifsPath));
       return parts.join('/');
     }
-    case 'nfs':
-      // Reachable via storageType union but no API path creates NFS
-      // targets — treat as POSIX with optional path.
-      return t.nfsPath ? stripSlashes(t.nfsPath) : '';
     default:
       throw new Error(
         `Unsupported storage_type '${(t as { storageType: string }).storageType}'`,
@@ -401,13 +392,6 @@ function renderUpstreamSection(
         // for "how many POSIX-style backends are bound" logging.
         posixMount: { mountPath: MOUNT_POINT, storageType: 'cifs', target: t },
       };
-    case 'nfs':
-      // Same comment as upstreamRootPath: NFS is unreachable via API.
-      // If a row somehow exists, surface a clear error rather than
-      // silently misroute.
-      throw new Error(
-        `NFS storage_type is not supported via the rclone-serve-s3 unified architecture. NFS target '${t.name}' must be migrated to a PVC-backed Local target.`,
-      );
     default:
       throw new Error(
         `Unsupported storage_type '${(t as { storageType: string }).storageType}'`,
@@ -605,11 +589,6 @@ export function computeInputHash(
       target.cifsPassword,
       target.cifsDomain,
       target.cifsPath,
-      target.nfsServer,
-      target.nfsExport,
-      target.nfsVersion,
-      target.nfsOptions,
-      target.nfsPath,
     ];
     for (const v of credFields) {
       h.update(v ?? '');

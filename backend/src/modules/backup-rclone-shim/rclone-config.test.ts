@@ -60,16 +60,6 @@ const cifsTarget: BackupTargetConfig = {
   cifsPath: 'backup',
 };
 
-const nfsTarget: BackupTargetConfig = {
-  id: 't-nfs',
-  name: 'corp-nfs',
-  storageType: 'nfs',
-  nfsServer: '10.0.0.10',
-  nfsExport: '/exports/backup',
-  nfsVersion: '4.2',
-  nfsOptions: 'soft,timeo=600',
-};
-
 function assign(className: BackupClass, target: BackupTargetConfig): ClassAssignment {
   return { className, target };
 }
@@ -290,18 +280,6 @@ describe('renderShimConfig — CIFS', () => {
     expect(() =>
       renderShimConfig(FIXED_KEY, [assign('mail', { ...cifsTarget, cifsPassword: null })]),
     ).toThrow(/missing required/);
-  });
-});
-
-// ───────────────────────────────────────────────────────────────────────────
-// NFS — explicitly rejected in R-X20
-// ───────────────────────────────────────────────────────────────────────────
-
-describe('renderShimConfig — NFS rejected with actionable error', () => {
-  it('throws when NFS target is bound', () => {
-    expect(() => renderShimConfig(FIXED_KEY, [assign('tenant', nfsTarget)])).toThrow(
-      /NFS storage_type is not supported/,
-    );
   });
 });
 

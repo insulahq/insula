@@ -68,7 +68,7 @@ export async function listCurrentShimAssignments(
       className,
       targetId: r.targetId,
       targetName: r.targetName,
-      targetStorageType: r.targetStorageType as 's3' | 'ssh' | 'cifs' | 'nfs',
+      targetStorageType: r.targetStorageType as 's3' | 'ssh' | 'cifs',
       drainTimeoutSeconds: r.drainTimeoutSeconds,
     });
   }

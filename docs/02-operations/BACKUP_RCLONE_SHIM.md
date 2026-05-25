@@ -258,9 +258,10 @@ ServiceAccount a ClusterRole with cluster-wide `secrets:
 The shim is a per-node `rclone serve s3` DaemonSet that mediates every
 backup pipeline’s upstream storage. Three buckets (`system`, `tenant`,
 `mail` — each with a `-raw` passthrough alias) front one operator-chosen
-target type (S3, SFTP, CIFS, NFS) per class. One platform-wide
-`BACKUP_TARGET_KEY` Secret drives every derived credential (rclone
-`crypt`, restic password, the shim’s own S3 access/secret) via HKDF.
+target type (S3, SFTP, CIFS) per class. (NFS was dropped 2026-05-25 —
+see ADR-043 postscript.) One platform-wide `BACKUP_TARGET_KEY` Secret
+drives every derived credential (rclone `crypt`, restic password, the
+shim’s own S3 access/secret) via HKDF.
 
 See [`docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md`](../04-deployment/BACKUP_ARCHITECTURE_RFC.md)
 for the full architecture (RFC §13a/§13b).
