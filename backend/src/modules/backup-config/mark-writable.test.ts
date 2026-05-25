@@ -52,7 +52,12 @@ function createMockDb(opts: MockDbOpts = {}) {
   const fromFn = vi.fn().mockReturnValue({ where: whereSelect });
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
-  const updateWhereFn = vi.fn().mockResolvedValue(undefined);
+  // UPDATE chain: .set(...).where(...).returning(...) — returns one
+  // affected row by default so the TOCTOU mismatch branch only fires
+  // when a test sets updateReturning=[].
+  const updateReturning = opts.target ? [{ id: opts.target ? (opts.target as { id: string }).id : 'cfg-1' }] : [{ id: 'cfg-1' }];
+  const updateReturningFn = vi.fn().mockResolvedValue(updateReturning);
+  const updateWhereFn = vi.fn().mockReturnValue({ returning: updateReturningFn });
   const updateSetFn = vi.fn().mockReturnValue({ where: updateWhereFn });
   const updateFn = vi.fn().mockReturnValue({ set: updateSetFn });
 
@@ -68,7 +73,7 @@ function createMockDb(opts: MockDbOpts = {}) {
       select: selectFn,
       transaction: txFn,
     } as unknown as Parameters<typeof markBackupTargetWritable>[0]['db'],
-    mocks: { selectFn, updateFn, updateSetFn, insertFn, insertValuesFn, txFn },
+    mocks: { selectFn, updateFn, updateSetFn, insertFn, insertValuesFn, txFn, updateReturningFn },
   };
 }
 
@@ -186,5 +191,67 @@ describe('markBackupTargetWritable', () => {
       operatorUserId: 'u-1', operatorIp: null,
     });
     expect(result.mailReconcilerTriggered).toBe(false);
+  });
+
+  it('idempotent: target already writable -> early return + NO audit log written + NO CNPG resume', async () => {
+    const alreadyWritable = { ...TARGET_ROW, readOnly: false };
+    const { db, mocks } = createMockDb({ target: alreadyWritable });
+    const result = await markBackupTargetWritable({
+      db, k8s: fakeK8s(), targetId: 'cfg-1', confirmation: 'Hetzner SSH',
+      operatorUserId: 'u-1', operatorIp: null,
+    });
+    expect(result.targetId).toBe('cfg-1');
+    expect(result.cnpgArchivingResumed).toEqual([]);
+    expect(result.mailReconcilerTriggered).toBe(false);
+    expect(mocks.insertValuesFn).not.toHaveBeenCalled();
+    expect(mocks.txFn).not.toHaveBeenCalled();
+    expect(resumeMock).not.toHaveBeenCalled();
+  });
+
+  it('TOCTOU rename race: UPDATE WHERE id=$1 AND name=$2 returns 0 rows -> CONFIRMATION_MISMATCH', async () => {
+    const { db, mocks } = createMockDb({ target: TARGET_ROW });
+    mocks.updateReturningFn.mockResolvedValueOnce([]); // simulate name changed between SELECT and UPDATE
+    try {
+      await markBackupTargetWritable({
+        db, k8s: fakeK8s(), targetId: 'cfg-1', confirmation: 'Hetzner SSH',
+        operatorUserId: 'u-1', operatorIp: null,
+      });
+      expect.fail('should have thrown');
+    } catch (err) {
+      const e = err as ApiError;
+      expect(e.code).toBe('CONFIRMATION_MISMATCH');
+      expect(e.status).toBe(400);
+      // Same generic message — leaks nothing about the new name.
+      expect(e.message).not.toContain('Hetzner SSH');
+    }
+  });
+
+  it('forensic capture: audit log row carries jti + userAgent when provided', async () => {
+    const { db, mocks } = createMockDb({ target: TARGET_ROW });
+    await markBackupTargetWritable({
+      db, k8s: fakeK8s(), targetId: 'cfg-1', confirmation: 'Hetzner SSH',
+      operatorUserId: 'u-1', operatorIp: '203.0.113.5',
+      operatorJti: 'jti-abc-123', operatorUserAgent: 'Mozilla/5.0 (test)',
+    });
+    expect(mocks.insertValuesFn).toHaveBeenCalledWith(expect.objectContaining({
+      changes: expect.objectContaining({
+        operatorJti: 'jti-abc-123',
+        operatorUserAgent: 'Mozilla/5.0 (test)',
+      }),
+    }));
+  });
+
+  it('audit log row carries operatorJti/UserAgent=null when caller omits them', async () => {
+    const { db, mocks } = createMockDb({ target: TARGET_ROW });
+    await markBackupTargetWritable({
+      db, k8s: fakeK8s(), targetId: 'cfg-1', confirmation: 'Hetzner SSH',
+      operatorUserId: 'u-1', operatorIp: null,
+    });
+    expect(mocks.insertValuesFn).toHaveBeenCalledWith(expect.objectContaining({
+      changes: expect.objectContaining({
+        operatorJti: null,
+        operatorUserAgent: null,
+      }),
+    }));
   });
 });

@@ -253,6 +253,23 @@ describe('updateBackupConfig', () => {
     expect(setValues.retentionDays).toBe(60);
     expect(setValues.sshKeyEncrypted).toBeUndefined();
   });
+
+  // DR safety: a compromised admin must NOT be able to silently swap
+  // credentials on a frozen target (e.g. point the S3 endpoint at an
+  // attacker-controlled bucket so future writes after unfreeze leak).
+  // The freeze blocks ALL updates; operator must mark-writable first.
+  it('refuses with TARGET_FROZEN when target is read-only', async () => {
+    const frozen = { ...S3_ROW, readOnly: true };
+    const { db, mocks } = createMockDb([frozen]);
+    await expect(updateBackupConfig(db, 'cfg-2', {
+      s3_access_key: 'AKIA-attacker-key',
+      s3_secret_key: 'attacker-secret',
+    }, ENCRYPTION_KEY)).rejects.toMatchObject({
+      code: 'TARGET_FROZEN',
+      status: 409,
+    });
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+  });
 });
 
 describe('deleteBackupConfig', () => {
@@ -269,6 +286,20 @@ describe('deleteBackupConfig', () => {
       code: 'BACKUP_CONFIG_NOT_FOUND',
       status: 404,
     });
+  });
+
+  // DR safety: a compromised admin must NOT be able to delete a frozen
+  // target row (which would orphan the upstream DR repo + remove the
+  // only path to unfreeze). The freeze blocks delete entirely; operator
+  // must use POST /admin/backup-configs/:id/mark-writable first.
+  it('refuses with TARGET_FROZEN when target is read-only', async () => {
+    const frozen = { ...SSH_ROW, readOnly: true, active: false };
+    const { db, mocks } = createMockDb([frozen]);
+    await expect(deleteBackupConfig(db, 'cfg-1')).rejects.toMatchObject({
+      code: 'TARGET_FROZEN',
+      status: 409,
+    });
+    expect(mocks.deleteWhere).not.toHaveBeenCalled();
   });
 });
 
