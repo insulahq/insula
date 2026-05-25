@@ -1,0 +1,151 @@
+# A5 (2026-05-25): intra-cluster mail-stack data publisher.
+#
+# Pairs with the rsyncd sidecar on the stalwart-mail Pod (see deployment.yaml).
+# Standby nodes pull from this Service to populate their
+# /var/lib/mail-stack-standby/ hostPath, replacing the legacy restic-based
+# standby DaemonSet flow. Failover now works WITHOUT restic — restic
+# remains an independent optional offsite-backup CronJob.
+#
+# Architecture:
+#   stalwart-mail Pod (active node)
+#     ├── stalwart container       (RW mount of mail-stack-data PVC)
+#     └── rsyncd sidecar           (RO mount of same PVC, port 873)
+#                ↑
+#                │ rsync pull every 5 min via Service
+#                │
+#   mail-stack-standby-replicate DaemonSet on standby-labelled nodes
+#     └── rsync -av --delete rsync://mail-stack-rsyncd.mail.svc.cluster.local/mail-stack/ /standby-data/
+#
+# Service selector matches the stalwart-mail Pod label, so the endpoint
+# automatically follows the active mail node on every failover/failback.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mail-stack-rsyncd-config
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-stack-publisher
+data:
+  rsyncd.conf: |
+    # rsyncd config for the mail-stack-publisher sidecar.
+    # No auth — NetworkPolicy below restricts source IPs to standby pods.
+    pid file = /tmp/rsyncd.pid
+    use chroot = no
+    max connections = 8
+    timeout = 300
+    log file = /dev/stdout
+    log format = "%h %u %m %f %b"
+
+    [mail-stack]
+      path = /data
+      read only = true
+      list = no
+      uid = nobody
+      gid = nogroup
+      strict modes = false
+      # No auth users — gated at the network layer (NetworkPolicy below).
+      # Bandwidth limit: 0 = unlimited. Adjust if upstream WAN is the bottleneck.
+      max verbosity = 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mail-stack-rsyncd
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-stack-publisher
+spec:
+  # ClusterIP — selectorless wouldn't work; we need the routing to
+  # follow the stalwart-mail Pod which moves on failover.
+  type: ClusterIP
+  selector:
+    app: stalwart-mail
+  ports:
+    - name: rsync
+      port: 873
+      targetPort: rsync
+      protocol: TCP
+---
+# Allow standby DaemonSet pods to reach the rsyncd port. Defense-in-depth
+# over the no-auth rsyncd config — restricts the unauthenticated read-only
+# port to the one workload that should consume it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mail-stack-rsyncd-allow-standby
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-stack-publisher
+spec:
+  podSelector:
+    matchLabels:
+      app: stalwart-mail
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mail-stack-standby-replicate
+      ports:
+        - protocol: TCP
+          port: 873
+---
+# Egress companion. The existing stalwart-mail NetworkPolicy declares
+# Egress policyType, which means the mail namespace effectively has
+# default-deny semantics for any pod that becomes a NetworkPolicy
+# target. The standby DaemonSet pod is otherwise unrestricted, but
+# being explicit here is belt-and-braces — and matches the symmetry
+# of the ingress rule above.
+#
+# Allows the DaemonSet pod to:
+#   - reach the rsyncd Service on port 873 (mail namespace)
+#   - reach platform-api on port 3000 (platform namespace) for stats POST
+#   - DNS resolution (kube-dns)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mail-stack-standby-replicate-egress
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-stack-publisher
+spec:
+  podSelector:
+    matchLabels:
+      app: mail-stack-standby-replicate
+  policyTypes: [Egress]
+  egress:
+    # rsyncd publisher (in-namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: stalwart-mail
+      ports:
+        - protocol: TCP
+          port: 873
+    # platform-api stats POST
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app: platform-api
+      ports:
+        - protocol: TCP
+          port: 3000
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
