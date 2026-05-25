@@ -68,6 +68,14 @@ jobs:
         run: ./scripts/ci-tenant-bundles-schema-audit.sh
       - name: Audit tenant PVC/Secret creation sites
         run: ./scripts/ci-tenant-bundles-resource-audit.sh
+      # Every table dumped to a bundle MUST also appear in the restore
+      # executor's allow-list — otherwise rows hit the bundle but are
+      # rejected at restore-time ("table X is not in the restore
+      # allow-list"). This is how tenantCertificates was found in
+      # production. The guard demands CONFIG_DUMP_TABLES ⊆
+      # ALLOWED_TABLE_TO_SQL.
+      - name: Audit config dump ↔ restore allow-list parity
+        run: ./scripts/ci-config-dump-restore-parity.sh
 
   test:
     name: Test

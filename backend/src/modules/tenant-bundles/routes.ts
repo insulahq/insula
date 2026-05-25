@@ -1741,9 +1741,10 @@ async function resolveStore(
       400);
   }
 
-  // B9 shim-first: cifs/nfs go through the rclone-shim (the shim
+  // B9 shim-first: cifs goes through the rclone-shim (the shim
   // mediates ALL upstream protocols). Falls back to the direct cfg
   // resolver below when BACKUP_TARGET_KEY isn't bootstrapped.
+  // (NFS was dropped 2026-05-25; see ADR-043 postscript.)
   return resolveShimFirstBackupStore(
     app, 'tenant',
     () => resolveDirectStore(app, cfg),

@@ -321,36 +321,35 @@ for file in $VIOLATIONS; do
 done
 pass "Invariant 16: no new legacy backup-credentials uses"
 
-# ─── 17. R-X17 follow-up: NFS test server is staging-only ─────────
-# `nfs-test-server` is a Deployment + Service + NetworkPolicy added
-# in 2026-05-21 to exercise the shim's NFS upstream path during
-# benchmarks. It runs nfs-server-alpine privileged with an emptyDir
-# backing store — fine for staging, must NEVER ship to production.
-#
-# Enforcement: the manifests must live under k8s/overlays/staging/
-# only. Listing them in k8s/base/, k8s/overlays/production/, or any
-# overlay outside `staging/` is rejected.
-NFS_TEST_VIOLATIONS=""
-# Anchor the match to `name: nfs-test-server` so YAML comments (e.g.
-# "see nfs-test-server for an example") don't false-positive. The
-# manifest's resource name is the load-bearing pattern.
+# ─── 17. NFS support fully removed ─────────────────────────────────
+# NFS storage_type was dropped 2026-05-25 (migration 0026) because
+# the unprivileged R-X19 shim has no NFS-client backend — see ADR-043
+# postscript. Three things MUST stay gone:
+#   1. The staging `nfs-test-server` manifests (no bench harness now
+#      depends on them).
+#   2. Any `storage_type='nfs'` mention in the API contract or DB enum.
+#   3. The PUT-assignment route accepting NFS rows.
+# This invariant rejects regressions on (1) and (2). (3) is enforced
+# by typescript narrowing of the union.
+NFS_OVERLAY_REMNANTS=""
 while IFS= read -r f; do
   rel="${f#$ROOT/}"
-  case "$rel" in
-    k8s/overlays/staging/*) ;;  # allowed
-    *) NFS_TEST_VIOLATIONS="$NFS_TEST_VIOLATIONS $rel" ;;
-  esac
+  NFS_OVERLAY_REMNANTS="$NFS_OVERLAY_REMNANTS $rel"
 done < <(grep -rlPE --include='*.yaml' '^\s*name:\s*nfs-test-server\s*$' "$ROOT/k8s/" 2>/dev/null || true)
-if [[ -n "$NFS_TEST_VIOLATIONS" ]]; then
-  fail "Invariant 17: nfs-test-server referenced outside staging overlay:$NFS_TEST_VIOLATIONS"
+if [[ -n "$NFS_OVERLAY_REMNANTS" ]]; then
+  fail "Invariant 17: nfs-test-server manifest(s) reappeared:$NFS_OVERLAY_REMNANTS — NFS was dropped 2026-05-25 (see ADR-043 postscript)."
 fi
-# And the kustomization itself must include it for staging — otherwise
-# the bench harness has no upstream to point at.
-STAGING_KUST="$ROOT/k8s/overlays/staging/kustomization.yaml"
-if [[ -f "$STAGING_KUST" ]] && ! grep -q "nfs-test-server" "$STAGING_KUST"; then
-  fail "Invariant 17: staging kustomization.yaml does not include nfs-test-server/ — bench harness expects it"
+# Contract enum must not contain 'nfs'.
+SHIM_CONTRACT="$ROOT/packages/api-contracts/src/backup-rclone-shim.ts"
+if [[ -f "$SHIM_CONTRACT" ]] && grep -E "z\.enum\(\[.*'nfs'.*\]\)" "$SHIM_CONTRACT" >/dev/null; then
+  fail "Invariant 17: backup-rclone-shim.ts targetStorageType enum re-introduced 'nfs' — NFS was dropped 2026-05-25."
 fi
-pass "Invariant 17: nfs-test-server is staging-only"
+# DB enum must not contain 'nfs'.
+SCHEMA_TS="$ROOT/backend/src/db/schema.ts"
+if [[ -f "$SCHEMA_TS" ]] && grep -E "storageTypeEnum.*'nfs'" "$SCHEMA_TS" >/dev/null; then
+  fail "Invariant 17: schema.ts storageTypeEnum re-introduced 'nfs' — NFS was dropped 2026-05-25 (migration 0026)."
+fi
+pass "Invariant 17: NFS support fully removed"
 
 # ─── 18. R-X19 — DaemonSet is fully unprivileged (no kernel mounts) ──
 # The R-X19 architecture serves all four upstream types (S3, SFTP,
