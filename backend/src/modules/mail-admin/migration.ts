@@ -914,19 +914,45 @@ async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
   );
 }
 
-async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promise<void> {
+/**
+ * Scale a single Deployment in the mail namespace.
+ * Used by the wrapper below to fan out across MAIL_STACK_DEPLOYMENTS.
+ */
+async function patchDeploymentReplicasOne(
+  apps: AppsV1Api,
+  name: string,
+  replicas: number,
+): Promise<void> {
   await apps.patchNamespacedDeployment(
     {
       namespace: MAIL_NAMESPACE,
-      name: DEPLOYMENT_NAME,
+      name,
       body: { spec: { replicas } },
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
     MIGRATION_DEPLOYMENT_PATCH,
   );
 }
 
+/**
+ * A4 (2026-05-25): scale EVERY Deployment in MAIL_STACK_DEPLOYMENTS
+ * together. Migration moves the whole mail stack atomically — scaling
+ * only Stalwart while leaving Bulwark trying to mount the deleted
+ * legacy PVC would CrashLoopBackOff Bulwark for the entire migration
+ * window.
+ */
+async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promise<void> {
+  for (const name of MAIL_STACK_DEPLOYMENTS) {
+    await patchDeploymentReplicasOne(apps, name, replicas);
+  }
+}
+
 async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSeconds: number): Promise<void> {
-  await waitForStalwartReplicaCount(apps, target, { timeoutSeconds });
+  // Wait for EACH mail-stack Deployment to reach `target` ready replicas.
+  // Sequential because the rollout-wait helper polls each in turn — total
+  // wait time is bounded by `timeoutSeconds` per Deployment.
+  for (const name of MAIL_STACK_DEPLOYMENTS) {
+    await waitForStalwartReplicaCount(apps, target, { timeoutSeconds, deploymentName: name });
+  }
 }
 
 // ── Snapshot helpers ──────────────────────────────────────────────────────────

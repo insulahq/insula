@@ -149,22 +149,27 @@ export async function waitForStalwartRollout(
 export async function waitForStalwartReplicaCount(
   apps: AppsV1Api,
   target: number,
-  opts: { timeoutSeconds?: number; pollIntervalMs?: number } = {},
+  opts: { timeoutSeconds?: number; pollIntervalMs?: number; deploymentName?: string } = {},
 ): Promise<void> {
   const timeoutSeconds = opts.timeoutSeconds ?? 90;
   const pollIntervalMs = opts.pollIntervalMs ?? 3_000;
+  // A4 (2026-05-25): callers can pass `deploymentName` to wait for any
+  // mail-stack Deployment (stalwart-mail OR bulwark). Default preserves
+  // historical Stalwart-only behaviour for callers that haven't been
+  // updated.
+  const deploymentName = opts.deploymentName ?? DEPLOYMENT_NAME;
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
     let dep: DeploymentRolloutShape;
     try {
       dep = await apps.readNamespacedDeployment({
-        name: DEPLOYMENT_NAME,
+        name: deploymentName,
         namespace: MAIL_NS,
       }) as DeploymentRolloutShape;
     } catch (err) {
       throw new ApiError(
         'MAIL_MIGRATION_SCALE_READ_FAILED',
-        `Could not read Stalwart Deployment during replica-count wait: ${(err as Error).message ?? String(err)}`,
+        `Could not read Deployment ${deploymentName} during replica-count wait: ${(err as Error).message ?? String(err)}`,
         500,
       );
     }
@@ -178,7 +183,7 @@ export async function waitForStalwartReplicaCount(
   }
   throw new ApiError(
     'MAIL_MIGRATION_SCALE_TIMEOUT',
-    `Stalwart Deployment did not reach ${target} ready replica(s) within ${timeoutSeconds}s`,
+    `Deployment ${deploymentName} did not reach ${target} ready replica(s) within ${timeoutSeconds}s`,
     500,
   );
 }
