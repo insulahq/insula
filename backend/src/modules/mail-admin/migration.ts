@@ -49,6 +49,19 @@ import { parseQuantity } from './mail-pvc.js';
 const MAIL_NAMESPACE = 'mail';
 const SETTINGS_ID = 'system';
 const DEPLOYMENT_NAME = 'stalwart-mail';
+const BULWARK_DEPLOYMENT_NAME = 'bulwark';
+/**
+ * Mail-stack co-location list. Every Deployment here gets the same
+ * nodeSelector pin to mailActiveNode and moves together on failover.
+ * Stalwart and Bulwark must always land on the same node (Bulwark
+ * talks to Stalwart via JMAP; co-location minimises latency + keeps
+ * the failover primitive atomic). See ADR-043 + project_nfs_dropped
+ * memory.
+ */
+export const MAIL_STACK_DEPLOYMENTS = [
+  DEPLOYMENT_NAME,
+  BULWARK_DEPLOYMENT_NAME,
+] as const;
 const MAIL_PVC_NAME = 'stalwart-rocksdb-data';
 const ALLOW_RESTORE_ANNOTATION = 'mail.platform/allow-restore';
 const DISK_HEADROOM_RATIO = 1.25; // target must have 25% more free than used
@@ -737,8 +750,19 @@ async function createMailPvc(core: CoreV1Api, targetNode: string, sizeGiB: numbe
  * use `nodeSelector` today and there's no reason for an operator to
  * pin Stalwart globally via that field, so this is stable.
  */
-async function applyDeploymentAffinity(
+/**
+ * Pin a Deployment's pod template to `targetNode` via nodeSelector.
+ * Optionally stamps the `mail.platform/allow-restore` annotation —
+ * the caller is responsible for passing `allowRestore=false` for
+ * Bulwark (it has no restore-state init container today, so the
+ * annotation would have no effect; A2 will give it one).
+ *
+ * Idempotent — patches are merge-patch semantics, so applying the
+ * same selector twice is a no-op.
+ */
+async function applyDeploymentAffinityOne(
   apps: AppsV1Api,
+  name: string,
   targetNode: string,
   allowRestore: boolean,
 ): Promise<void> {
@@ -759,7 +783,7 @@ async function applyDeploymentAffinity(
   await apps.patchNamespacedDeployment(
     {
       namespace: MAIL_NAMESPACE,
-      name: DEPLOYMENT_NAME,
+      name,
       body,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
     MIGRATION_AFFINITY_PATCH,
@@ -767,12 +791,26 @@ async function applyDeploymentAffinity(
 }
 
 /**
- * Remove the `mail.platform/allow-restore` annotation after a
- * successful migration so subsequent pod restarts don't trigger the
- * restore-state initContainer's restic path.
+ * Apply node-pin to every Deployment in MAIL_STACK_DEPLOYMENTS in
+ * sequence. Stalwart and Bulwark always move together. A failure on
+ * the second Deployment leaves the first patched — recoverable on
+ * the next migration tick (the patches are idempotent).
  *
- * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
+ * `allowRestore` only stamps the annotation on Stalwart (it has no
+ * meaning for Bulwark today; A2 will give Bulwark its own restore
+ * path that consumes the same annotation).
  */
+export async function applyDeploymentAffinity(
+  apps: AppsV1Api,
+  targetNode: string,
+  allowRestore: boolean,
+): Promise<void> {
+  for (const name of MAIL_STACK_DEPLOYMENTS) {
+    const stamp = allowRestore && name === DEPLOYMENT_NAME;
+    await applyDeploymentAffinityOne(apps, name, targetNode, stamp);
+  }
+}
+
 /**
  * Suspend the `stalwart-snapshot` CronJob and force-delete all of its
  * existing Completed pods.
@@ -849,6 +887,14 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
   }
 }
 
+/**
+ * Remove the `mail.platform/allow-restore` annotation after a
+ * successful migration so subsequent pod restarts don't trigger the
+ * restore-state initContainer's restic path.
+ *
+ * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
+ * Stalwart-only — Bulwark has no restore-state init container today.
+ */
 async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
   await apps.patchNamespacedDeployment(
     {
