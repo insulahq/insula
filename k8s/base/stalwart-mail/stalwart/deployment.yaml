@@ -39,7 +39,7 @@ metadata:
     # Stakater Reloader: roll on config or credentials change.
     # stalwart-snapshot-restic-repo: rolling on backup-target change
     # ensures restore-state on next pod start picks up new credentials.
-    configmap.reloader.stakater.com/reload: "stalwart-config"
+    configmap.reloader.stakater.com/reload: "stalwart-config,mail-stack-rsyncd-config"
     secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
     # Field-ownership note (Phase 1 streamline, 2026-05-15):
     #
