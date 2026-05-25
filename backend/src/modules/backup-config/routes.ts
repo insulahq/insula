@@ -6,8 +6,10 @@ import { ApiError } from '../../shared/errors.js';
 import {
   createBackupConfigSchema,
   updateBackupConfigSchema,
+  markBackupTargetWritableSchema,
   type CreateBackupConfigInput,
 } from '@k8s-hosting/api-contracts';
+import { markBackupTargetWritable } from './mark-writable.js';
 import type { ZodError } from 'zod';
 import { z } from 'zod';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -129,6 +131,36 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/backup-configs/:id/test', async (request) => {
     const { id } = request.params as { id: string };
     const result = await service.testConnection(app.db, id, encryptionKey);
+    return success(result);
+  });
+
+  // POST /api/v1/admin/backup-configs/:id/mark-writable — DR safety:
+  // operator-confirmed flip from read_only=true to read_only=false.
+  // Requires {confirmation: targetName, acknowledgeIntegrity: true}
+  // in the body. Also re-attaches CNPG WAL archiving for every cluster
+  // routing through this target. super_admin only.
+  app.post('/admin/backup-configs/:id/mark-writable', {
+    onRequest: [requireRole('super_admin')],
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const parsed = markBackupTargetWritableSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
+    }
+    const u = request.user as { sub?: string; id?: string } | undefined;
+    const userId = u?.sub ?? u?.id ?? null;
+    if (!userId) {
+      throw new ApiError('AUTHENTICATION_REQUIRED', 'Mark-writable requires an authenticated user', 401);
+    }
+    const operatorIp = (request.ip as string | undefined) ?? null;
+    const result = await markBackupTargetWritable({
+      db: app.db,
+      k8s,
+      targetId: id,
+      confirmation: parsed.data.confirmation,
+      operatorUserId: userId,
+      operatorIp,
+    });
     return success(result);
   });
 

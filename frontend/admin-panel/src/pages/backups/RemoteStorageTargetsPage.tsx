@@ -18,7 +18,7 @@
  */
 
 import { useState, lazy, Suspense, type FormEvent } from 'react';
-import { Cloud, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, HardDrive, Zap, CheckCircle, Edit2, Gauge } from 'lucide-react';
+import { Cloud, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, HardDrive, Zap, CheckCircle, Edit2, Gauge, Snowflake } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
   useBackupConfigs,
@@ -82,6 +82,10 @@ export default function RemoteStorageTargetsPage() {
     latencyMs: number;
     error?: { code: string; message: string };
   } | null>(null);
+  // DR safety: which target's "Mark Read-Write" modal is currently
+  // open. Lifted here (not inside the row) so the modal survives row
+  // re-renders triggered by the underlying query refresh.
+  const [markWritableTarget, setMarkWritableTarget] = useState<{ id: string; name: string } | null>(null);
 
   const configs = response?.data ?? [];
 
@@ -743,6 +747,18 @@ export default function RemoteStorageTargetsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {/* DR safety: frozen targets display a prominent badge.
+                      The Mark Read-Write button appears below in the
+                      action row for super_admin roles. */}
+                  {config.readOnly && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md bg-sky-100 dark:bg-sky-900/30 px-2 py-0.5 text-xs font-medium text-sky-700 dark:text-sky-300"
+                      data-testid={`readonly-badge-${config.id}`}
+                      title="This target is frozen — backup writes and deletes are refused until you mark it read-write."
+                    >
+                      <Snowflake size={11} /> Frozen (read-only)
+                    </span>
+                  )}
                   {config.active && (
                     <span className="inline-flex items-center gap-1 rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300" data-testid={`active-badge-${config.id}`}>
                       <Zap size={11} /> Active
@@ -800,6 +816,20 @@ export default function RemoteStorageTargetsPage() {
                   <TestTube size={12} /> Test Connection
                 </button>
                 <SpeedtestButton configId={config.id} configName={config.name} />
+                {/* DR safety: Mark Read-Write button only renders when
+                    the target is frozen. Visually prominent (amber border)
+                    so the operator's eye is drawn to it on a restored
+                    cluster's Targets page. */}
+                {config.readOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setMarkWritableTarget({ id: config.id, name: config.name })}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                    data-testid={`mark-writable-${config.id}`}
+                  >
+                    <Snowflake size={12} /> Mark Read-Write
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => startEdit(config)}
@@ -861,9 +891,23 @@ export default function RemoteStorageTargetsPage() {
         </div>
       )}
 
+      {/* DR safety: Mark Read-Write modal. Lazy-loaded so unrelated
+          page loads don't pull in the modal bundle. */}
+      {markWritableTarget && (
+        <Suspense fallback={null}>
+          <MarkBackupTargetWritableModalLazy
+            open
+            targetId={markWritableTarget.id}
+            targetName={markWritableTarget.name}
+            onClose={() => setMarkWritableTarget(null)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
+
+const MarkBackupTargetWritableModalLazy = lazy(() => import('@/components/MarkBackupTargetWritableModal'));
 
 
 // ─── Phase 10: Speedtest button + result row ─────────────────────────

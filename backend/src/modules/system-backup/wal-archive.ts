@@ -1,3 +1,11 @@
+// RO-EXEMPT: this module orchestrates the WAL-archive LIFECYCLE
+// (enable/disable Cluster.spec.plugins + ScheduledBackup CRs +
+// ObjectStore CRs). The actual WAL writes happen INSIDE postgres
+// pod sidecars after the config is in place, not in this code. The
+// DR-safety equivalent for archiving uses suspend/resume helpers in
+// wal-suspend.ts, which the mark-writable route invokes whenever an
+// operator flips a target back to read-write.
+
 /**
  * System Backup Phase 4 — WAL archive runtime config (Barman Cloud Plugin).
  *
