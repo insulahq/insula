@@ -427,7 +427,7 @@ function rowToTargetConfig(
         cifsPath: row.cifsPath,
       };
 
-    // NFS dropped 2026-05-25 (migration 0026) — see ADR-043 postscript.
+    // NFS dropped 2026-05-25 (migration 0027) — see ADR-043 postscript.
     default:
       throw new Error(
         `backup_configurations '${row.id}' has unknown storage_type '${row.storageType as string}'`,
