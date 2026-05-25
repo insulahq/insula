@@ -86,6 +86,21 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
       continue;
     }
     try {
+      // DR safety: if the target is frozen, skip the delete and leave
+      // the row's status untouched so the next sweep tries again. Logs
+      // at info-level so operators see the skip in the audit trail but
+      // it's not a noisy error.
+      const { requireWritableTarget, TargetFrozenError } = await import('../backup-config/writable-guard.js');
+      try {
+        await requireWritableTarget(app.db, targetConfigId);
+      } catch (frozenErr) {
+        if (frozenErr instanceof TargetFrozenError) {
+          app.log.info({ bundleId: id, targetConfigId, targetName: frozenErr.targetName }, 'tenant-backup retention: skipping delete on frozen target');
+          expiredFailed++;
+          continue;
+        }
+        throw frozenErr;
+      }
       const store = await resolveStoreForTarget(app, targetConfigId);
       const handle = await store.open(id);
       if (handle) {

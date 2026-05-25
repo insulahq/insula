@@ -237,6 +237,29 @@ export async function getMailSnapshotStatus(
 export async function triggerMailSnapshot(
   opts: SnapshotOptions,
 ): Promise<MailSnapshotTriggerResponse> {
+  // DR safety: if the `mail` backup class is bound to a frozen target,
+  // refuse the snapshot before we spawn the Job. Otherwise the Job
+  // will fail mid-flight against the upstream that the shim refuses
+  // to write through.
+  if (opts.db) {
+    const { eq, inArray } = await import('drizzle-orm');
+    const { backupTargetAssignments, backupConfigurations } = await import('../../db/schema.js');
+    const rows = await opts.db
+      .select({ targetId: backupTargetAssignments.targetId })
+      .from(backupTargetAssignments)
+      .innerJoin(
+        backupConfigurations,
+        eq(backupConfigurations.id, backupTargetAssignments.targetId),
+      )
+      .where(inArray(backupTargetAssignments.backupClass, ['mail']))
+      .orderBy(backupTargetAssignments.priority)
+      .limit(1);
+    if (rows[0]?.targetId) {
+      const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
+      await requireWritableTarget(opts.db, rows[0].targetId);
+    }
+  }
+
   const { batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   // Read the CronJob to get the job template
