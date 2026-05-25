@@ -36,6 +36,14 @@ export interface ExportRunInput {
   readonly operatorIp: string | null;
   readonly operatorUserAgent: string | null;
   readonly reason: string | null;
+  /** App config snapshot, threaded through to the DR sidecar builder
+   *  so dr-inputs.yaml carries apexDomain + platformVersion. Optional
+   *  for legacy callers; production routes always pass it. */
+  readonly config?: {
+    readonly PLATFORM_BASE_DOMAIN?: string;
+    readonly INGRESS_BASE_DOMAIN?: string;
+    readonly PLATFORM_VERSION?: string;
+  };
 }
 
 export interface CreateExportResult {
@@ -171,7 +179,11 @@ async function runExport(runId: string, input: ExportRunInput, logger: FastifyLo
       .set({ status: 'running' })
       .where(eq(systemBackupRuns.id, runId));
 
-    const bundle = await exportSecretsBundle({ k8s: input.k8s });
+    const bundle = await exportSecretsBundle({
+      k8s: input.k8s,
+      db: input.db,
+      config: input.config,
+    });
     const signed = signDownloadToken({ runId, ttlSeconds: DOWNLOAD_TTL_SECONDS }, input.jwtSecret);
 
     await input.db.update(systemBackupRuns)
