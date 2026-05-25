@@ -163,14 +163,6 @@ spec:
                 echo "restore-state: DataStore exists — skipping restore"
                 exit 0
               fi
-              if [ -z "$$RESTIC_REPOSITORY" ]; then
-                echo "restore-state: RESTIC_REPOSITORY not set — fresh start"
-                exit 0
-              fi
-              if [ "$$ALLOW_RESTORE" != "true" ]; then
-                echo "restore-state: allow-restore annotation not set — fresh start (set mail.platform/allow-restore: \"true\" on the Deployment to enable)"
-                exit 0
-              fi
               # A4 (2026-05-25): FAST PATH — if the standby DaemonSet
               # (A3) has pre-staged data on this node's hostPath, copy
               # from there instead of paying the restic-restore network
@@ -178,6 +170,15 @@ spec:
               # cadence). A failover that lands on a standby-labelled
               # node uses this path; cold-start failover to an
               # unlabelled node falls through to restic.
+              #
+              # FAST PATH runs BEFORE the allow-restore guard because
+              # the .standby-complete marker is the local equivalent
+              # of operator approval — the standby DaemonSet only
+              # writes the marker after a successful restic pull, so
+              # the data is already operator-vetted. Without this
+              # ordering, a restore-based failover (which sets
+              # mailActiveNode but does not stamp the allow-restore
+              # annotation) would fresh-start with no data.
               STANDBY_STALWART=/standby-data/stalwart
               STANDBY_COMPLETE=/standby-data/.standby-complete
               # Gate on BOTH the CURRENT sentinel AND the
@@ -195,6 +196,14 @@ spec:
                   exit 0
                 fi
                 echo "restore-state: standby-data copy failed — falling through to restic"
+              fi
+              if [ -z "$$RESTIC_REPOSITORY" ]; then
+                echo "restore-state: RESTIC_REPOSITORY not set — fresh start"
+                exit 0
+              fi
+              if [ "$$ALLOW_RESTORE" != "true" ]; then
+                echo "restore-state: allow-restore annotation not set — fresh start (set mail.platform/allow-restore: \"true\" on the Deployment to enable)"
+                exit 0
               fi
               echo "restore-state: empty DataStore + repo configured + allow-restore=true — restoring latest snapshot"
               mkdir -p /var/lib/stalwart/data /restore-tmp
