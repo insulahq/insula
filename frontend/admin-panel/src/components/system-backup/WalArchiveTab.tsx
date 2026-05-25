@@ -517,8 +517,11 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
           {cluster.status?.firstRecoverabilityPoint ? (
             new Date(cluster.status.firstRecoverabilityPoint).toLocaleString()
           ) : (
-            <span className="italic text-gray-500" title="CNPG populates this after the first successful base backup. Trigger 'Backup Now' on the page top to seed it.">
-              awaiting first base backup
+            <span
+              className="italic text-gray-500"
+              title="This is CNPG's own report — the cluster reads its barman catalog through the plugin sidecar and writes the earliest recoverable timestamp here. It can lag the actual archive by several minutes after a fresh enable or a CR churn. The 'Backups in current target' list below is the authoritative view of what's stored upstream."
+            >
+              not yet reported by CNPG — see backup list below
             </span>
           )}
         </Field>
