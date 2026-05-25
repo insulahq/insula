@@ -9,6 +9,7 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - pvc.yaml
+  - pvc-mail-stack.yaml
   - deployment.yaml
   - service.yaml
   - ingress-mgmt.yaml
