@@ -30,12 +30,21 @@ set -e
 STANDBY_DIR=/standby-data
 PLATFORM_API_URL="${PLATFORM_API_URL:-http://platform-api.platform.svc.cluster.local:3000}"
 NODE_NAME="${NODE_NAME:-unknown}"
+# A3.5 (2026-05-25): when invoked from the DaemonSet (LOOP_INTERVAL_SECONDS
+# set) the script runs the replication body in a forever loop, sleeping
+# the configured interval between iterations. This ensures EVERY standby
+# node refreshes its hostPath data on its OWN cadence — vs a CronJob
+# which would schedule one Pod per fire, picking one of N nodes by
+# kube-scheduler arbitration. With LOOP_INTERVAL_SECONDS unset the
+# script runs once and exits (legacy CronJob mode for tests).
+LOOP_INTERVAL_SECONDS="${LOOP_INTERVAL_SECONDS:-0}"
 
+run_once() {
 echo "=== standby-replicate: node=$NODE_NAME dir=$STANDBY_DIR ==="
 
 if [ -z "${RESTIC_REPOSITORY:-}" ]; then
   echo "standby-replicate: RESTIC_REPOSITORY not set — skipping (operator has not configured a mail BackupStore)"
-  exit 0
+  return 0
 fi
 
 mkdir -p "$STANDBY_DIR"
@@ -43,7 +52,7 @@ mkdir -p "$STANDBY_DIR"
 # Verify repo is reachable before any work
 if ! restic snapshots --last 1 >/dev/null 2>&1; then
   echo "standby-replicate: restic repo unreachable — leaving existing standby data in place"
-  exit 0
+  return 0
 fi
 
 # Pull latest snapshot. Restic restores files at their ORIGINAL paths
@@ -53,7 +62,7 @@ start_ts=$(date +%s)
 echo "standby-replicate: restic restore latest --target $STANDBY_DIR"
 if ! restic restore latest --target "$STANDBY_DIR" 2>&1; then
   echo "standby-replicate: restic restore FAILED — leaving existing standby data in place"
-  exit 0
+  return 0
 fi
 end_ts=$(date +%s)
 duration=$((end_ts - start_ts))
@@ -68,13 +77,13 @@ SRC="$STANDBY_DIR/var/lib/mail-stack"
 if [ -d "$SRC/stalwart" ]; then
   if ! cp -a "$SRC/stalwart/." "$STANDBY_DIR/stalwart/"; then
     echo "standby-replicate: cp stalwart FAILED — leaving previous generation"
-    exit 0
+    return 0
   fi
 fi
 if [ -d "$SRC/bulwark" ]; then
   if ! cp -a "$SRC/bulwark/." "$STANDBY_DIR/bulwark/"; then
     echo "standby-replicate: cp bulwark FAILED — leaving previous generation"
-    exit 0
+    return 0
   fi
 fi
 # Tidy up the deep tree once flattened. The rm is safe because
@@ -102,3 +111,19 @@ if [ -n "${PLATFORM_API_TOKEN:-}" ]; then
 fi
 
 echo "=== standby-replicate: done ==="
+}
+
+if [ "${LOOP_INTERVAL_SECONDS}" -gt 0 ]; then
+  echo "standby-replicate: DaemonSet mode — looping every ${LOOP_INTERVAL_SECONDS}s"
+  while true; do
+    # Each iteration runs in a subshell so a transient set -e violation
+    # inside doesn't kill the outer loop. Errors inside run_once are
+    # already guarded with `exit 0` paths, but defence in depth.
+    if ! ( run_once ); then
+      echo "standby-replicate: iteration failed (non-fatal) — sleeping then retrying"
+    fi
+    sleep "${LOOP_INTERVAL_SECONDS}"
+  done
+else
+  run_once
+fi

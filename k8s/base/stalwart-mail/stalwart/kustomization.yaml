@@ -18,7 +18,7 @@ resources:
   - bootstrap-plan-cm.yaml
   - bootstrap-job.yaml
   - snapshot-cronjob.yaml
-  - standby-replicate-cronjob.yaml
+  - standby-replicate-daemonset.yaml
   - pdb.yaml
 
 labels:
