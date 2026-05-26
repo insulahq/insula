@@ -385,7 +385,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // button. Returns the result so the UI can show "what changed".
   app.post(
     '/admin/mail/stalwart-reprovision',
-    { preHandler: requireRole('admin') },
+    // Match the rotate-admin-password / rotate-stalwart-password
+    // privilege level — `requireRole('admin')` excludes super_admin
+    // (the role check is exact, not hierarchical), which would lock
+    // the actual operator out of their own re-provision button.
+    { preHandler: requireRole('super_admin') },
     async (req: { user?: { sub?: string } }) => {
       const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
