@@ -191,20 +191,39 @@ export const DR_BUNDLE_VERSION = 1;
  */
 export const drBundleVersionSchema = z.literal(DR_BUNDLE_VERSION);
 
+/** DNS-label regex matching CNPG's webhook + barman-cloud serverName
+ *  conventions. Mirrors `NAME_RE` in
+ *  backend/src/modules/postgres-barman-restore/service.ts so the bundle
+ *  cannot smuggle path-traversal sequences, special characters, or
+ *  uppercase chars into the K8s API or the S3 bucket path. The 50-char
+ *  cap matches CNPG's cluster-name webhook limit; cluster recovery
+ *  appends `-dr-<13-digit-ts>` so the practical input cap is ~36 chars,
+ *  but we enforce 50 here to match CNPG and use a tighter cap at the
+ *  consumer site (security review SEC#1 + TS review HIGH#3). */
+const DNS_LABEL_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
+const drDnsLabel = (max = 50) =>
+  z.string().min(1).max(max).regex(DNS_LABEL_RE, 'must be a DNS-label-compatible name (lowercase alphanumeric + hyphens/dots)');
+
 export const cnpgRecoveryPointerSchema = z.object({
   /** Namespace of the CNPG Cluster CR (e.g. `platform`). */
-  namespace: z.string().min(1),
-  /** Cluster CR name (e.g. `system-db`). */
-  clusterName: z.string().min(1),
+  namespace: drDnsLabel(),
+  /** Cluster CR name (e.g. `system-db`). 36-char cap leaves room for
+   *  the `-dr-<13-digit-ts>` suffix the recovery orchestrator appends
+   *  while staying under CNPG's 50-char limit. */
+  clusterName: drDnsLabel(36),
   /** `externalClusters[0].plugin.parameters.serverName` from the
    *  source cluster. CRITICAL: must match the source's value for
    *  barman bootstrap.recovery to find the WAL archive. Fix from
-   *  commit 97bb0ab5 in memory project_restore_wiring_phases. */
-  serverName: z.string().min(1),
+   *  commit 97bb0ab5 in memory project_restore_wiring_phases.
+   *  DNS-label-validated so a crafted bundle can't smuggle
+   *  path-traversal sequences into the S3 bucket path
+   *  (security review HIGH#1). */
+  serverName: drDnsLabel(),
   /** `spec.plugins[barman-cloud].parameters.barmanObjectName` from the
    *  source cluster. Points at the ObjectStore CR (which the shim
-   *  reconciler materializes from `backup_configurations`). */
-  objectStoreName: z.string().min(1),
+   *  reconciler materializes from `backup_configurations`).
+   *  DNS-label-validated for the same reason as serverName. */
+  objectStoreName: drDnsLabel(),
 });
 export type CnpgRecoveryPointer = z.infer<typeof cnpgRecoveryPointerSchema>;
 
