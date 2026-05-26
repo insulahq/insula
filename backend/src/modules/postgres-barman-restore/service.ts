@@ -306,6 +306,17 @@ export async function createBarmanRestore(
   validateClusterName(inputs.namespace, 'namespace');
   validateClusterName(inputs.sourceClusterName, 'sourceClusterName');
   validateClusterName(inputs.newClusterName, 'newClusterName');
+  // Defense-in-depth (security review HIGH#1): the bundle Zod schema
+  // validates serverName / objectStoreName at parse time, but a future
+  // internal caller could pass synthesized values that bypass Zod. Apply
+  // the same DNS-label regex at the API boundary so a crafted value
+  // can't reach the barman-cloud plugin parameters verbatim.
+  if (inputs.serverNameOverride !== undefined) {
+    validateClusterName(inputs.serverNameOverride, 'serverNameOverride');
+  }
+  if (inputs.objectStoreOverride !== undefined) {
+    validateClusterName(inputs.objectStoreOverride, 'objectStoreOverride');
+  }
   if (inputs.newClusterName === inputs.sourceClusterName) {
     throw new BarmanRestoreError('newClusterName MUST differ from sourceClusterName — side-by-side restore creates a separate Cluster CR', 400);
   }

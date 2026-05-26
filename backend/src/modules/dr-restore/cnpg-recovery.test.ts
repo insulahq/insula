@@ -17,12 +17,28 @@ function makeK8sStub(opts: {
   clusterExists?: boolean;
   objectStoreExists?: boolean;
   sideBySideReady?: boolean;
+  /** Simulates the side-by-side cluster being unmanaged (status read
+   *  returns a 403-equivalent BarmanRestoreError via getBarmanRestoreStatus).
+   *  Used to test review HIGH#2: poll loop should re-throw immediately
+   *  instead of retrying for 30 min on a permanent failure. */
+  sideBySideUnmanaged?: boolean;
   promoteJobSucceeds?: boolean;
 }) {
   const custom = {
     getNamespacedCustomObject: vi.fn(async (req: { plural: string; name: string }) => {
       // Side-by-side cluster status poll: returns ready=true after one call
       if (req.plural === 'clusters' && req.name.includes('-dr-')) {
+        if (opts.sideBySideUnmanaged) {
+          // Mirror what cnpg-recovery would see when the side-by-side
+          // exists but lacks the managed-by label (foreign cluster
+          // with the same name). getBarmanRestoreStatus throws
+          // BarmanRestoreError 403 in this case.
+          return {
+            metadata: { labels: { 'app.kubernetes.io/managed-by': 'foreign-controller' } },
+            status: { phase: 'Setting up primary', readyInstances: 0, instances: 1 },
+            spec: { instances: 1 },
+          };
+        }
         return {
           metadata: { labels: { 'app.kubernetes.io/managed-by': 'platform-api-postgres-barman-restore' } },
           status: opts.sideBySideReady === false
@@ -175,6 +191,41 @@ describe('runCnpgRecovery — orchestration', () => {
     });
   });
 
+  // Review HIGH#2: BarmanRestoreError (403/404 — permanent failures)
+  // raised by getBarmanRestoreStatus during the side-by-side poll must
+  // re-throw immediately rather than be retried for the 30-min poll
+  // budget. Without this fix, a 403 on the unmanaged-cluster check
+  // surfaces 30 min later as a misleading "did not reach ready=true"
+  // timeout, costing the operator that much extra DR clock time.
+  it('re-throws BarmanRestoreError from poll loop without retrying', async () => {
+    const k8s = makeK8sStub({ sideBySideUnmanaged: true });
+    const barmanStub = vi.fn(async () => ({
+      newClusterName: 'system-db-dr-1', namespace: 'platform',
+      objectStoreName: 'os', recoveryTargetTime: null, clusterUid: 'uid',
+      freshBackupTriggered: false, freshBackupId: null, freshBackupWarning: null,
+    }));
+    const promoteStub = vi.fn();
+    const opts: CnpgRecoveryOpts = {
+      k8s: k8s as never,
+      db: FAKE_DB,
+      pointers: [FAKE_POINTER],
+      confirmClusterNames: new Map([['system-db', 'system-db']]),
+      _barmanRestoreClient: barmanStub as never,
+      _promoteClient: promoteStub as never,
+      // If the re-throw weren't in place, this short timeout would fire
+      // first and produce a different error. The re-throw should beat
+      // the timeout.
+      restoreTimeoutMs: 60_000,
+    };
+    await expect(runCnpgRecovery(opts)).rejects.toMatchObject({
+      name: 'CnpgRecoveryError',
+      // 403 from getBarmanRestoreStatus's managed-by label guard
+      code: 403,
+    });
+    // Promote should NEVER have been called — we throw before reaching it.
+    expect(promoteStub).not.toHaveBeenCalled();
+  });
+
   it('surfaces CnpgRecoveryError when promote Job fails', async () => {
     const k8s = makeK8sStub({ promoteJobSucceeds: false });
     const barmanStub = vi.fn(async () => ({
@@ -199,6 +250,49 @@ describe('runCnpgRecovery — orchestration', () => {
       promoteTimeoutMs: 60_000,
     };
     await expect(runCnpgRecovery(opts)).rejects.toBeInstanceOf(CnpgRecoveryError);
+  });
+
+  // Review MEDIUM#9: refuse a bundle whose cnpgClusters[] is empty —
+  // platform always has at least system-db. Empty pointers signal a
+  // corrupted or crafted bundle.
+  it('refuses an empty pointers array (400)', async () => {
+    const k8s = makeK8sStub({});
+    const opts: CnpgRecoveryOpts = {
+      k8s: k8s as never,
+      db: FAKE_DB,
+      pointers: [],
+      confirmClusterNames: new Map(),
+    };
+    await expect(runCnpgRecovery(opts)).rejects.toMatchObject({
+      name: 'CnpgRecoveryError',
+      code: 400,
+      message: expect.stringContaining('cnpgClusters[] is empty'),
+    });
+  });
+
+  // Review HIGH#3: a bundle whose clusterName + DR suffix exceeds CNPG's
+  // 50-char webhook cap surfaces a clean error early instead of letting
+  // the CNPG webhook reject the CR mid-flight.
+  it('rejects a source clusterName that would produce a >50-char DR name', async () => {
+    const k8s = makeK8sStub({});
+    const tooLong: CnpgRecoveryPointer = {
+      ...FAKE_POINTER,
+      // 34 chars + 17-char "-dr-<13-digit-ts>" suffix = 51 chars > 50 limit.
+      clusterName: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    };
+    const opts: CnpgRecoveryOpts = {
+      k8s: k8s as never,
+      db: FAKE_DB,
+      pointers: [tooLong],
+      confirmClusterNames: new Map([[tooLong.clusterName, tooLong.clusterName]]),
+      _barmanRestoreClient: vi.fn() as never,
+      _promoteClient: vi.fn() as never,
+    };
+    await expect(runCnpgRecovery(opts)).rejects.toMatchObject({
+      name: 'CnpgRecoveryError',
+      code: 422,
+      message: expect.stringMatching(/CNPG limit 50/),
+    });
   });
 
   it('runs pointers sequentially (no concurrent CNPG promotes)', async () => {

@@ -58,10 +58,18 @@ const RESTIC_SECRET_NAME = 'stalwart-snapshot-restic-repo';
 
 export class MailRestoreError extends Error {
   readonly code: number;
-  constructor(message: string, code = 500) {
+  /** Internal diagnostic detail — node names, PVC names, state-machine
+   *  internals that are safe in operator-terminal context but should
+   *  NOT be surfaced verbatim to an HTTP response body. The public
+   *  `.message` field carries a short stable description; future API
+   *  callers should log `.detail` separately and serialize only
+   *  `.message` to clients (security review LOW#11). */
+  readonly detail?: string;
+  constructor(message: string, code = 500, detail?: string) {
     super(message);
     this.name = 'MailRestoreError';
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -170,9 +178,16 @@ export async function restoreMailData(
       kubeconfigPath: opts.kubeconfigPath,
     });
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // Public message is stable + operator-actionable, with no
+    // node/PVC/state-machine names that could leak topology when
+    // surfaced over HTTP. Detail (logged separately to stderr by
+    // the CLI runner) carries the verbose diagnostic for the
+    // terminal-facing operator (security review LOW#11).
     throw new MailRestoreError(
-      `Mail restore failover state machine failed: ${err instanceof Error ? err.message : String(err)}. Inspect with: kubectl -n mail get pods + SELECT * FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1`,
+      'Mail restore failover state machine failed. Inspect: kubectl -n mail get pods + SELECT * FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1',
       500,
+      detail,
     );
   }
   const durationMs = Date.now() - startedAt;
