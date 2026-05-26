@@ -3,55 +3,41 @@ import { runStalwartDomainReconcilerTick } from './stalwart-domain-reconciler.js
 
 // ── Fake DB ──────────────────────────────────────────────────────────
 //
-// The reconciler now resolves hostname via webmail-settings.getMailServerHostname
-// which we mock at the module boundary so we control the exact resolved
-// string per test (skipping the multi-source fallback chain).
+// Reconciler reads platform_settings.mail_server_hostname DIRECTLY
+// (no fallback chain — must be explicitly set). The dbStub returns
+// a Drizzle-shape result for that lookup.
 
-vi.mock('../webmail-settings/service.js', () => ({
-  getMailServerHostname: vi.fn(),
-}));
-
-import { getMailServerHostname } from '../webmail-settings/service.js';
-
-function setHostname(value: string | null): void {
-  // null mocks the production-sentinel fallback 'mail.example.com'
-  // (the value defaultMailHostname returns when ingress_base_domain
-  // is unset) so the reconciler treats it as "unresolved".
-  vi.mocked(getMailServerHostname).mockResolvedValue(value ?? 'mail.example.com');
-}
-
-// dbStub is now unused by the hostname path (mocked above) but kept
-// as a shape the reconciler accepts.
-function dbStub() {
+function dbStub(hostname: string | null) {
   return {
-    select: () => ({ from: () => ({ where: () => [] }) }),
+    select: () => ({
+      from: () => ({
+        where: () => (hostname ? [{ key: 'mail_server_hostname', value: hostname }] : []),
+      }),
+    }),
   };
 }
 
 // ── JMAP transport mock ──────────────────────────────────────────────
-//
-// Returns canned responses keyed by the JMAP method name in the
-// request. Records every call so tests can assert what x:* sequence
-// the reconciler issued.
 
 interface JmapMockBehavior {
-  domains?: ReadonlyArray<{ id: string; name: string }>;
-  acmeProviders?: ReadonlyArray<{ id: string; name: string }>;
+  /** Existing AcmeProvider list — non-empty means already present. */
+  acmeProviders?: ReadonlyArray<{ id: string }>;
+  /** Existing NetworkListener names. */
   listeners?: ReadonlyArray<{ name: string }>;
-  /** If set, the next x:Domain/set create returns this id. */
-  newDomainId?: string;
-  /** If set, the next x:AcmeProvider/set create returns this id. */
+  /** Current SystemSettings.defaultHostname. Empty string by default. */
+  defaultHostname?: string;
+  /** ID Stalwart returns after a new AcmeProvider create. */
   newAcmeProviderId?: string;
-  /** Domain currently-stored certificateManagement (for the get-before-update). */
-  certManagement?: {
-    '@type': string;
-    acmeProviderId?: string;
-    subjectAlternativeNames?: Record<string, boolean>;
-  };
 }
 
 function buildJmapMock(behavior: JmapMockBehavior) {
   const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+  // Mutate when the reconciler calls SystemSettings/set so a follow-up
+  // SystemSettings/get (e.g. a same-tick re-read in future tests) sees
+  // the new value. Today the reconciler only calls /get once per tick.
+  let liveDefaultHostname = behavior.defaultHostname ?? '';
+  // x:AcmeProvider/get returns whatever the most-recent /set created.
+  let currentAcme = behavior.acmeProviders ? [...behavior.acmeProviders] : [];
 
   const transport = async (_auth: string, body: unknown) => {
     const req = body as { methodCalls: ReadonlyArray<[string, Record<string, unknown>, string]> };
@@ -62,30 +48,22 @@ function buildJmapMock(behavior: JmapMockBehavior) {
       methodResponses: [[method, payload, 'c0']] as ReadonlyArray<[string, Record<string, unknown>, string]>,
     });
 
-    // x:Domain/get with ids:null → full list
-    if (method === 'x:Domain/get' && args.ids === null) {
-      return wrap({ list: behavior.domains ?? [] });
+    if (method === 'x:SystemSettings/get') {
+      return wrap({ list: [{ defaultHostname: liveDefaultHostname }] });
     }
-    // x:Domain/get with ids:[id] → certificateManagement read
-    if (method === 'x:Domain/get' && Array.isArray(args.ids)) {
-      return wrap({
-        list: behavior.certManagement
-          ? [{ certificateManagement: behavior.certManagement }]
-          : [{}],
-      });
-    }
-    if (method === 'x:Domain/set' && args.create) {
-      const id = behavior.newDomainId ?? 'newdomain';
-      return wrap({ created: { d: { id } }, notCreated: null });
-    }
-    if (method === 'x:Domain/set' && args.update) {
+    if (method === 'x:SystemSettings/set') {
+      const upd = (args.update as Record<string, Record<string, unknown>> | undefined)?.singleton;
+      if (upd && typeof upd.defaultHostname === 'string') {
+        liveDefaultHostname = upd.defaultHostname;
+      }
       return wrap({ updated: {} });
     }
     if (method === 'x:AcmeProvider/get') {
-      return wrap({ list: behavior.acmeProviders ?? [] });
+      return wrap({ list: currentAcme });
     }
     if (method === 'x:AcmeProvider/set' && args.create) {
       const id = behavior.newAcmeProviderId ?? 'newacme';
+      currentAcme = [{ id }];
       return wrap({ created: { letsencrypt: { id } }, notCreated: null });
     }
     if (method === 'x:NetworkListener/get') {
@@ -97,9 +75,6 @@ function buildJmapMock(behavior: JmapMockBehavior) {
       ids.forEach((id) => (created[id] = { id: `nl-${id}` }));
       return wrap({ created, notCreated: null });
     }
-    if (method === 'x:Task/set') {
-      return wrap({ created: { r: { id: 'task1' } }, notCreated: null });
-    }
     return wrap({});
   };
 
@@ -108,105 +83,105 @@ function buildJmapMock(behavior: JmapMockBehavior) {
 
 const logger = { warn: () => {}, info: () => {} };
 
-// Stub readStalwartCredentials via env so the transport-bypass path
-// inside the reconciler succeeds.
 beforeEach(() => {
   vi.stubEnv('STALWART_ADMIN_PASSWORD', 'test-pw');
 });
 
 describe('mail-admin stalwart-domain-reconciler', () => {
-  it('no-ops when mail_server_hostname is unset', async () => {
+  it('no-ops with explanatory note when mail_server_hostname is unset', async () => {
     const { transport, calls } = buildJmapMock({});
-    await runStalwartDomainReconcilerTick({
+    const result = await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname(null), dbStub()) as any,
+      db: dbStub(null) as any,
       jmapTransport: transport,
       logger,
     });
     expect(calls).toEqual([]);
+    expect(result.mailHostname).toBeNull();
+    expect(result.noOp).toBe(true);
+    expect(result.notes[0]).toMatch(/mail_server_hostname is not set/);
   });
 
-  it('on empty Stalwart: creates Domain + AcmeProvider + 3 listeners + fires AcmeRenewal', async () => {
+  it('fresh Stalwart: syncs hostname + creates AcmeProvider + creates 3 listeners (no Domain or AcmeRenewal)', async () => {
     const { transport, calls } = buildJmapMock({
-      domains: [],
       acmeProviders: [],
       listeners: [],
-      newDomainId: 'd-new',
+      defaultHostname: '',
       newAcmeProviderId: 'ap-new',
     });
-    await runStalwartDomainReconcilerTick({
+    const result = await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mail.example.net'), dbStub()) as any,
+      db: dbStub('mail.example.net') as any,
       jmapTransport: transport,
       logger,
     });
     const methods = calls.map((c) => c.method);
-    // Domain get → Domain set create → AcmeProvider get → AcmeProvider set
-    // create → Domain get (for certMgmt) → Domain set update → NetworkListener
-    // get → NetworkListener set create → Task set AcmeRenewal
+    // Note the second x:AcmeProvider/get: that's the defensive
+    // read-back after create to capture the hash ID Stalwart
+    // assigns (see ensureAcmeProvider comment for rationale).
     expect(methods).toEqual([
-      'x:Domain/get', 'x:Domain/set',
-      'x:AcmeProvider/get', 'x:AcmeProvider/set',
-      'x:Domain/get', 'x:Domain/set',
+      'x:SystemSettings/get', 'x:SystemSettings/set',
+      'x:AcmeProvider/get', 'x:AcmeProvider/set', 'x:AcmeProvider/get',
       'x:NetworkListener/get', 'x:NetworkListener/set',
-      'x:Task/set',
     ]);
+    // x:Domain/* and x:Task/* should NEVER be invoked — those are
+    // tenant-flow concerns.
+    expect(methods.some((m) => m.startsWith('x:Domain'))).toBe(false);
+    expect(methods.some((m) => m.startsWith('x:Task'))).toBe(false);
 
-    const listenerCreate = calls[7].args.create as Record<string, unknown>;
-    expect(Object.keys(listenerCreate).sort()).toEqual(['http-acme', 'imap', 'submission']);
+    expect(result.mailHostname).toBe('mail.example.net');
+    expect(result.defaultHostnameUpdated).toBe(true);
+    expect(result.acmeProviderCreated).toBe(true);
+    expect(result.listenersCreated.sort()).toEqual(['http-acme', 'imap', 'submission']);
+    expect(result.noOp).toBe(false);
+
+    // AcmeProvider create body uses bootstrap-compatible shape:
+    // `directory` (not directoryUrl), contact map keyed by
+    // hostmaster@<apex>, no `name` field.
+    const acmeCreate = (calls.find((c) => c.method === 'x:AcmeProvider/set')!.args.create as Record<string, Record<string, unknown>>).letsencrypt;
+    expect(acmeCreate).toHaveProperty('directory');
+    expect(acmeCreate).not.toHaveProperty('directoryUrl');
+    expect(acmeCreate).not.toHaveProperty('name');
+    expect(acmeCreate).toHaveProperty('contact');
   });
 
-  it('on fully-configured Stalwart: 4 GET calls + fire AcmeRenewal (idempotent)', async () => {
+  it('fully-configured: 3 GETs only (no writes), noOp=true', async () => {
     const { transport, calls } = buildJmapMock({
-      domains: [{ id: 'd1', name: 'example.net' }],
-      acmeProviders: [{ id: 'ap1', name: 'letsencrypt' }],
-      listeners: [
-        { name: 'smtp' }, { name: 'submissions' }, { name: 'imaps' },
-        { name: 'http-acme' }, { name: 'submission' }, { name: 'imap' },
-      ],
-      certManagement: {
-        '@type': 'Automatic',
-        acmeProviderId: 'ap1',
-        subjectAlternativeNames: { mail: true },
-      },
+      acmeProviders: [{ id: 'ap1' }],
+      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      defaultHostname: 'mail.example.net',
     });
-    await runStalwartDomainReconcilerTick({
+    const result = await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mail.example.net'), dbStub()) as any,
+      db: dbStub('mail.example.net') as any,
       jmapTransport: transport,
       logger,
     });
     const methods = calls.map((c) => c.method);
-    expect(methods).toEqual([
-      'x:Domain/get', 'x:AcmeProvider/get',
-      'x:Domain/get', 'x:NetworkListener/get',
-      'x:Task/set',
-    ]);
+    expect(methods).toEqual(['x:SystemSettings/get', 'x:AcmeProvider/get', 'x:NetworkListener/get']);
+    expect(result.defaultHostnameUpdated).toBe(false);
+    expect(result.acmeProviderCreated).toBe(false);
+    expect(result.listenersCreated).toEqual([]);
+    expect(result.noOp).toBe(true);
   });
 
-  it('on partial state: creates only the missing listener(s)', async () => {
+  it('partial state: creates only the missing listeners', async () => {
     const { transport, calls } = buildJmapMock({
-      domains: [{ id: 'd1', name: 'example.net' }],
-      acmeProviders: [{ id: 'ap1', name: 'letsencrypt' }],
-      // http-acme is present, submission + imap missing
-      listeners: [{ name: 'smtp' }, { name: 'submissions' }, { name: 'http-acme' }],
-      certManagement: {
-        '@type': 'Automatic',
-        acmeProviderId: 'ap1',
-        subjectAlternativeNames: { mail: true },
-      },
+      acmeProviders: [{ id: 'ap1' }],
+      listeners: [{ name: 'http-acme' }],
+      defaultHostname: 'mail.example.net',
     });
     await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mail.example.net'), dbStub()) as any,
+      db: dbStub('mail.example.net') as any,
       jmapTransport: transport,
       logger,
     });
@@ -216,100 +191,35 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     expect(Object.keys(create).sort()).toEqual(['imap', 'submission']);
   });
 
-  it('apex derivation: strips mail. prefix and picks correct SAN', async () => {
+  it('hostname is case-normalised on the way to Stalwart', async () => {
+    const { transport, calls } = buildJmapMock({ defaultHostname: '' });
+    await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('MAIL.Example.NET') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    const setCall = calls.find((c) => c.method === 'x:SystemSettings/set');
+    const upd = (setCall!.args.update as Record<string, Record<string, unknown>>).singleton;
+    expect(upd.defaultHostname).toBe('mail.example.net');
+  });
+
+  it('hostname already in sync: skips SystemSettings/set patch (only the GET)', async () => {
     const { transport, calls } = buildJmapMock({
-      domains: [],
-      acmeProviders: [],
-      listeners: [],
-    });
-    await runStalwartDomainReconcilerTick({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      core: {} as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mail.staging.example.test'), dbStub()) as any,
-      jmapTransport: transport,
-      logger,
-    });
-    const domainSet = calls.find((c) => c.method === 'x:Domain/set' && c.args.create);
-    const create = domainSet!.args.create as Record<string, { name: string }>;
-    expect(create.d.name).toBe('staging.example.test');
-  });
-
-  it('apex derivation: no mail. prefix → uses hostname as-is', async () => {
-    const { transport, calls } = buildJmapMock({ domains: [], acmeProviders: [], listeners: [] });
-    await runStalwartDomainReconcilerTick({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      core: {} as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mx1.example.net'), dbStub()) as any,
-      jmapTransport: transport,
-      logger,
-    });
-    const domainSet = calls.find((c) => c.method === 'x:Domain/set' && c.args.create);
-    const create = domainSet!.args.create as Record<string, { name: string }>;
-    expect(create.d.name).toBe('mx1.example.net');
-  });
-
-  it('result shape: noOp=false + correct booleans on fresh install', async () => {
-    const { transport } = buildJmapMock({ domains: [], acmeProviders: [], listeners: [] });
-    const result = await runStalwartDomainReconcilerTick({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      core: {} as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mail.example.net'), dbStub()) as any,
-      jmapTransport: transport,
-      logger,
-    });
-    expect(result.apex).toBe('example.net');
-    expect(result.sanKey).toBe('mail');
-    expect(result.domainCreated).toBe(true);
-    expect(result.acmeProviderCreated).toBe(true);
-    expect(result.certManagementUpdated).toBe(true);
-    expect(result.listenersCreated.sort()).toEqual(['http-acme', 'imap', 'submission']);
-    expect(result.acmeRenewalFired).toBe(true);
-    expect(result.noOp).toBe(false);
-  });
-
-  it('result shape: noOp=true + all booleans false on fully-configured cluster', async () => {
-    const { transport } = buildJmapMock({
-      domains: [{ id: 'd1', name: 'example.net' }],
-      acmeProviders: [{ id: 'ap1', name: 'letsencrypt' }],
+      defaultHostname: 'mail.example.net',
       listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
-      certManagement: {
-        '@type': 'Automatic',
-        acmeProviderId: 'ap1',
-        subjectAlternativeNames: { mail: true },
-      },
+      acmeProviders: [{ id: 'ap1' }],
     });
-    const result = await runStalwartDomainReconcilerTick({
+    await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname('mail.example.net'), dbStub()) as any,
+      db: dbStub('mail.example.net') as any,
       jmapTransport: transport,
       logger,
     });
-    expect(result.domainCreated).toBe(false);
-    expect(result.acmeProviderCreated).toBe(false);
-    expect(result.certManagementUpdated).toBe(false);
-    expect(result.listenersCreated).toEqual([]);
-    // AcmeRenewal still fires (Stalwart-side idempotent), but noOp
-    // gates on whether anything CHANGED on our side.
-    expect(result.noOp).toBe(true);
-  });
-
-  it('result shape: empty hostname yields noOp with explanatory note', async () => {
-    const { transport } = buildJmapMock({});
-    const result = await runStalwartDomainReconcilerTick({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      core: {} as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: (setHostname(null), dbStub()) as any,
-      jmapTransport: transport,
-      logger,
-    });
-    expect(result.apex).toBeNull();
-    expect(result.noOp).toBe(true);
-    expect(result.notes[0]).toMatch(/mail hostname unresolved/);
+    expect(calls.filter((c) => c.method === 'x:SystemSettings/set')).toHaveLength(0);
   });
 });
