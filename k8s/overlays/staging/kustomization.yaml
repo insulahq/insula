@@ -145,8 +145,8 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/hosting-platform/backend
-    newTag: "20260526001908-05a439f" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260526100957-fb62b13" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/hosting-platform/admin-panel
-    newTag: "20260526001907-05a439f" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260526100958-fb62b13" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/hosting-platform/tenant-panel
-    newTag: "20260526001911-05a439f" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260526101000-fb62b13" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
