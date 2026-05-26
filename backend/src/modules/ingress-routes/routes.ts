@@ -36,6 +36,7 @@ import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   createIngressRouteSchema,
+  createTenantWafRuleExclusionRequestSchema,
   updateIngressRouteSchema,
   updateRedirectSettingsSchema,
   updateSecuritySettingsSchema,
@@ -46,6 +47,22 @@ import {
   toggleAuthUserSchema,
   changeAuthUserPasswordSchema,
 } from '@k8s-hosting/api-contracts';
+import {
+  createExclusionForTenantRoute,
+  deleteExclusionForTenantRoute,
+  listExclusionsForTenantRoute,
+  WafRuleExclusionError,
+} from '../waf-rule-exclusions/service.js';
+import { reconcileWafExclusions } from '../waf-rule-exclusions/reconciler.js';
+
+// Same minimal shape as security-hardening/routes.ts:userOf — keeps
+// the audit `createdBy` field aligned with the rest of the platform
+// instead of relying on a `'tenant'` literal that loses context.
+interface AuthedRequestForWaf {
+  readonly user?: { readonly sub?: string; readonly email?: string };
+}
+const actorOf = (req: AuthedRequestForWaf): string =>
+  req.user?.email ?? req.user?.sub ?? 'unknown';
 
 export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   const getK8s = () => {
@@ -458,6 +475,133 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const limit = query.limit ? Math.min(Number(query.limit), 100) : 50;
     const logs = await listWafLogs(app.db, routeId, limit);
     return success(logs);
+  });
+
+  // ─── WAF Exclusions (B2 — tenant-scoped) ──────────────────────────────────
+  //
+  // Tenants can self-manage CRS rule exclusions for ONE of their routes.
+  // The server forces hostnameRegex = `^<route.hostname>$` so a tenant
+  // can never whitelist a rule on a domain they don't own. Each mutation
+  // triggers an inline reconcile of the shared modsec-crs sidecar's
+  // exclusions ConfigMap so the change applies within seconds; the
+  // 5-min scheduler covers drift.
+
+  const triggerWafExclusionReconcile = async (): Promise<void> => {
+    const k8s = getK8s();
+    if (!k8s) return;
+    try {
+      await reconcileWafExclusions(app.db, { core: k8s.core, apps: k8s.apps }, app.log);
+    } catch (err) {
+      app.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'tenant-waf-exclusion: inline reconcile failed (scheduler will retry)',
+      );
+    }
+  };
+
+  const wafExclusionErrorToReply = (err: unknown): {
+    status: number;
+    body: { error: { code: string; message: string } };
+  } => {
+    if (err instanceof WafRuleExclusionError) {
+      // NOT_TENANT_OWNED collapses to 404 so we don't leak the existence
+      // of admin-scoped row UUIDs to tenants who happen to guess one.
+      // ROUTE_NOT_FOUND already returns 404; this just keeps the two
+      // "the resource doesn't exist for you" paths indistinguishable.
+      const status =
+        err.code === 'ROUTE_NOT_FOUND' || err.code === 'NOT_FOUND' || err.code === 'NOT_TENANT_OWNED' ? 404
+        : err.code === 'DUPLICATE' || err.code === 'OVER_CAPACITY' ? 409
+        : 400;
+      return { status, body: { error: { code: err.code, message: err.message } } };
+    }
+    throw err;
+  };
+
+  // GET /api/v1/tenants/:tenantId/routes/:routeId/waf-exclusions
+  app.get('/tenants/:tenantId/routes/:routeId/waf-exclusions', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
+    schema: {
+      tags: ['Ingress Route WAF'],
+      summary: 'List WAF rule exclusions owned by this tenant for this route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
+    try {
+      const exclusions = await listExclusionsForTenantRoute(app.db, tenantId, routeId);
+      return success({ exclusions });
+    } catch (err) {
+      const { status, body } = wafExclusionErrorToReply(err);
+      return reply.status(status).send(body);
+    }
+  });
+
+  // POST /api/v1/tenants/:tenantId/routes/:routeId/waf-exclusions
+  app.post('/tenants/:tenantId/routes/:routeId/waf-exclusions', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
+    schema: {
+      tags: ['Ingress Route WAF'],
+      summary: 'Add a tenant-scoped WAF rule exclusion for this route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
+    const parsed = createTenantWafRuleExclusionRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'INVALID_BODY',
+          message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+        },
+      });
+    }
+    const actor = actorOf(request as unknown as AuthedRequestForWaf);
+    try {
+      const created = await createExclusionForTenantRoute(
+        app.db,
+        tenantId,
+        routeId,
+        parsed.data,
+        actor,
+      );
+      app.log.warn(
+        { actor, tenantId, routeId, exclusion: created },
+        'tenant-waf-exclusion: created',
+      );
+      // Fire-and-forget reconcile — the rendered ConfigMap picks up the
+      // new row + the modsec-crs Deployment rolls. We don't await
+      // pod-ready; the 5-min scheduler is the safety net.
+      await triggerWafExclusionReconcile();
+      return success(created);
+    } catch (err) {
+      const { status, body } = wafExclusionErrorToReply(err);
+      return reply.status(status).send(body);
+    }
+  });
+
+  // DELETE /api/v1/tenants/:tenantId/routes/:routeId/waf-exclusions/:id
+  app.delete('/tenants/:tenantId/routes/:routeId/waf-exclusions/:id', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
+    schema: {
+      tags: ['Ingress Route WAF'],
+      summary: 'Delete a tenant-owned WAF rule exclusion',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { tenantId, routeId, id } = request.params as {
+      tenantId: string;
+      routeId: string;
+      id: string;
+    };
+    try {
+      await deleteExclusionForTenantRoute(app.db, tenantId, routeId, id);
+      app.log.warn({ tenantId, routeId, id }, 'tenant-waf-exclusion: deleted');
+      await triggerWafExclusionReconcile();
+      return success({ deleted: true });
+    } catch (err) {
+      const { status, body } = wafExclusionErrorToReply(err);
+      return reply.status(status).send(body);
+    }
   });
 
   // ─── Client-facing: Ingress Base Domain ──────────────────────────────────

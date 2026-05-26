@@ -61,6 +61,10 @@ export const wafRuleExclusionSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   disabled: z.boolean(),
+  // B2 (2026-05-26): non-null when the row is owned by a tenant, null
+  // when admin-created. Always co-non-null with routeId (DB CHECK).
+  tenantId: z.string().uuid().nullable(),
+  routeId: z.string().uuid().nullable(),
 });
 export type WafRuleExclusion = z.infer<typeof wafRuleExclusionSchema>;
 
@@ -68,6 +72,21 @@ export const wafRuleExclusionListResponseSchema = z.object({
   exclusions: z.array(wafRuleExclusionSchema),
 });
 export type WafRuleExclusionListResponse = z.infer<typeof wafRuleExclusionListResponseSchema>;
+
+// ─── Tenant-scoped CRUD ──────────────────────────────────────────────────
+//
+// B2: tenants can manage exclusions for ONE of their routes (and only
+// that route). The server resolves hostnameRegex from the route's
+// hostname — clients never supply it. tenantId + routeId come from the
+// URL path; the body carries only the ruleId/scope/reason knobs.
+
+export const createTenantWafRuleExclusionRequestSchema = z.object({
+  ruleId: z.string().regex(/^[0-9]+$/),
+  scope: wafRuleExclusionScopeSchema,
+  reason: z.string().min(1).max(1024),
+});
+export type CreateTenantWafRuleExclusionRequest =
+  z.infer<typeof createTenantWafRuleExclusionRequestSchema>;
 
 /**
  * Refine: hostnameRegex must parse as a JS RegExp. Same engine that

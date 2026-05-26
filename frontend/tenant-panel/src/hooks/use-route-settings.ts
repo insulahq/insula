@@ -132,10 +132,13 @@ export function useUpdateRouteSecurity(tenantId: string | undefined, routeId: st
       readonly rate_limit_rps?: number | null;
       readonly rate_limit_connections?: number | null;
       readonly rate_limit_burst?: number | null;
+      // Only `waf_enabled` is mutated from the tenant UI under the
+      // shared-sidecar architecture. The other waf_* fields the backend
+      // Zod schema accepts (waf_owasp_crs, waf_anomaly_threshold,
+      // waf_excluded_rules) have no runtime effect — they're left in
+      // the contract for the admin path + a future per-route WAF re-
+      // enable, but never sent from this hook.
       readonly waf_enabled?: boolean;
-      readonly waf_owasp_core_rules?: boolean;
-      readonly waf_anomaly_threshold?: number;
-      readonly waf_excluded_rule_ids?: string | null;
     }) =>
       apiFetch<{ data: RouteDetailResponse }>(
         `${routeBasePath(tenantId!, routeId!)}/security`,
@@ -304,5 +307,73 @@ export function useRouteWafLogs(tenantId: string | undefined, routeId: string | 
         `${routeBasePath(tenantId!, routeId!)}/waf-logs`,
       ),
     enabled: Boolean(tenantId && routeId),
+  });
+}
+
+// ─── WAF Exclusions (B2 — tenant-scoped) ────────────────────────────────────
+
+export interface WafRuleExclusionEntry {
+  readonly id: string;
+  readonly ruleId: string;
+  readonly hostnameRegex: string;
+  readonly scope: 'args_names_only' | 'full_disable';
+  readonly reason: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly disabled: boolean;
+  readonly tenantId: string | null;
+  readonly routeId: string | null;
+}
+
+export function useRouteWafExclusions(
+  tenantId: string | undefined,
+  routeId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['route-waf-exclusions', tenantId, routeId],
+    queryFn: () =>
+      apiFetch<{ data: { exclusions: readonly WafRuleExclusionEntry[] } }>(
+        `${routeBasePath(tenantId!, routeId!)}/waf-exclusions`,
+      ),
+    enabled: Boolean(tenantId && routeId),
+  });
+}
+
+export function useCreateRouteWafExclusion(
+  tenantId: string | undefined,
+  routeId: string | undefined,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      readonly ruleId: string;
+      readonly scope: 'args_names_only' | 'full_disable';
+      readonly reason: string;
+    }) =>
+      apiFetch<{ data: WafRuleExclusionEntry }>(
+        `${routeBasePath(tenantId!, routeId!)}/waf-exclusions`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['route-waf-exclusions', tenantId, routeId] });
+    },
+  });
+}
+
+export function useDeleteRouteWafExclusion(
+  tenantId: string | undefined,
+  routeId: string | undefined,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { deleted: true } }>(
+        `${routeBasePath(tenantId!, routeId!)}/waf-exclusions/${id}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['route-waf-exclusions', tenantId, routeId] });
+    },
   });
 }

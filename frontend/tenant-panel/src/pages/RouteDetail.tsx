@@ -23,9 +23,13 @@ import {
   useDeleteDirUser,
   useToggleDirUser,
   useRouteWafLogs,
+  useRouteWafExclusions,
+  useCreateRouteWafExclusion,
+  useDeleteRouteWafExclusion,
   type RouteDetailResponse,
   type ProtectedDir,
   type WafLogEntry,
+  type WafRuleExclusionEntry,
 } from '@/hooks/use-route-settings';
 
 const INPUT_CLASS =
@@ -322,11 +326,13 @@ function SecurityTab({ tenantId, routeId, route }: {
   const { data: logsData, isLoading: wafLogsLoading } = useRouteWafLogs(tenantId, routeId);
   const wafLogs = logsData?.data ?? [];
 
-  /* ── WAF state ── */
+  /* ── WAF state ──
+     OWASP CRS toggle, anomaly threshold, and excluded rule IDs columns
+     were dropped from this UI 2026-05-26. The post-Traefik WAF runs as
+     a SHARED modsec-crs sidecar — per-route values are inert (see
+     annotation-sync.ts:351-375). Domain-scoped rule exclusions are now
+     managed via the WAF Exclusions panel below (B2 design). */
   const [wafEnabled, setWafEnabled] = useState(route.wafEnabled);
-  const [wafOwaspCoreRules, setWafOwaspCoreRules] = useState(route.wafOwaspCoreRules);
-  const [wafAnomalyThreshold, setWafAnomalyThreshold] = useState(route.wafAnomalyThreshold);
-  const [wafExcludedRuleIds, setWafExcludedRuleIds] = useState(route.wafExcludedRuleIds ?? '');
   const [wafDirty, setWafDirty] = useState(false);
   const [showWafLog, setShowWafLog] = useState(false);
   const markWafDirty = () => setWafDirty(true);
@@ -361,12 +367,11 @@ function SecurityTab({ tenantId, routeId, route }: {
     setWafSaveError(null);
     setWafSaving(true);
     try {
-      await updateSecurity.mutateAsync({
-        waf_enabled: wafEnabled,
-        waf_owasp_core_rules: wafOwaspCoreRules,
-        waf_anomaly_threshold: wafAnomalyThreshold,
-        waf_excluded_rule_ids: wafExcludedRuleIds || null,
-      });
+      // Only `waf_enabled` is sent — the other waf_* mutation fields the
+      // backend Zod schema accepts (waf_owasp_crs, waf_anomaly_threshold,
+      // waf_excluded_rules) have no runtime effect under the shared-sidecar
+      // architecture, so we don't surface them to tenants.
+      await updateSecurity.mutateAsync({ waf_enabled: wafEnabled });
       setWafDirty(false);
     } catch (err) {
       setWafSaveError(err instanceof Error ? err.message : 'Failed to save WAF settings');
@@ -412,7 +417,8 @@ function SecurityTab({ tenantId, routeId, route }: {
   return (
     <div className="space-y-6" data-testid="security-tab">
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        Configure access control and protection for this route. All settings are enforced at the NGINX Ingress level before requests reach your application.
+        Configure access control and protection for this route. All settings are enforced
+        at the Traefik ingress layer before requests reach your application.
       </p>
 
       {/* ── WAF Card ── */}
@@ -438,20 +444,6 @@ function SecurityTab({ tenantId, routeId, route }: {
           data-testid="waf-form"
         >
 
-        {/* Architecture note — per-route directives are inert today;
-            see ADR-038. Kept visible so tenants/operators understand
-            why the three lower fields don't change behaviour. */}
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-200" data-testid="waf-architecture-note">
-          <p>
-            <strong>Note:</strong> WAF runs as a shared OWASP CRS sidecar (ModSecurity).
-            The toggle below enables WAF for this route. Per-route customisations
-            (OWASP Core Rules, anomaly threshold, excluded rule IDs) are recorded
-            here for future use but do <em>not</em> change the live config — the
-            sidecar honours a single platform-wide CRS profile. See ADR-038 for
-            the trade-off + the re-enable path when in-process WAF stabilises.
-          </p>
-        </div>
-
         <div>
           <label className="flex items-center justify-between">
             <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
@@ -473,77 +465,11 @@ function SecurityTab({ tenantId, routeId, route }: {
             </button>
           </label>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            ModSecurity Web Application Firewall protects against common web attacks (SQL injection, XSS, etc.).
-          </p>
-        </div>
-
-        {/* Per-route WAF directives — inert today, kept for forwards-
-            compat. Inputs are disabled with `title` tooltips explaining
-            why. Values persist to the DB; when the in-process WAF re-
-            enable lands these controls become live again with no
-            schema change. */}
-        <div title="Inert: shared sidecar honours its own CRS bundle config. See ADR-038." aria-disabled="true">
-          <label className="flex items-center justify-between opacity-60">
-            <span className="text-sm text-gray-700 dark:text-gray-300">OWASP Core Rules</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={wafOwaspCoreRules}
-              disabled
-              onClick={() => { setWafOwaspCoreRules(!wafOwaspCoreRules); markWafDirty(); }}
-              className={clsx(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed rounded-full border-2 border-transparent transition-colors',
-                wafOwaspCoreRules ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-              )}
-              data-testid="waf-owasp-toggle"
-            >
-              <span className={clsx(
-                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                wafOwaspCoreRules ? 'translate-x-5' : 'translate-x-0',
-              )} />
-            </button>
-          </label>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 opacity-60">
-            Setting persists but has no runtime effect — the shared ModSecurity sidecar always uses the OWASP CRS bundle.
-          </p>
-        </div>
-
-        <div title="Inert: shared sidecar honours its own anomaly threshold env var. See ADR-038." aria-disabled="true" className="opacity-60">
-          <label htmlFor="waf-anomaly-threshold" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Anomaly Threshold: {wafAnomalyThreshold}
-          </label>
-          <input
-            id="waf-anomaly-threshold"
-            type="range"
-            min="1"
-            max="50"
-            value={wafAnomalyThreshold}
-            disabled
-            onChange={(e) => { setWafAnomalyThreshold(Number(e.target.value)); markWafDirty(); }}
-            className="mt-2 w-full max-w-sm accent-blue-600 cursor-not-allowed"
-            data-testid="waf-anomaly-threshold-slider"
-          />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Setting persists but has no runtime effect — the shared sidecar enforces a platform-wide threshold.
-          </p>
-        </div>
-
-        <div title="Inert: per-route excluded rules require in-process WAF (not available today). See ADR-038." aria-disabled="true" className="opacity-60">
-          <label htmlFor="waf-excluded-rules" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Excluded Rule IDs
-          </label>
-          <input
-            id="waf-excluded-rules"
-            type="text"
-            className={INPUT_CLASS + ' mt-1 cursor-not-allowed'}
-            placeholder="942100, 942200"
-            value={wafExcludedRuleIds}
-            disabled
-            onChange={(e) => { setWafExcludedRuleIds(e.target.value); markWafDirty(); }}
-            data-testid="waf-excluded-rules-input"
-          />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Setting persists but has no runtime effect — the shared sidecar uses a platform-wide ruleset.
+            ModSecurity / OWASP CRS Web Application Firewall protects against common web
+            attacks (SQL injection, XSS, LFI/RFI, etc.). Inspection runs on a shared
+            cluster sidecar; events tagged with this route's hostname appear in the WAF
+            Log section below, and the Exclusions panel scopes rule suppressions to
+            <em> this domain only</em>.
           </p>
         </div>
 
@@ -592,6 +518,13 @@ function SecurityTab({ tenantId, routeId, route }: {
         </form>
         )}
       </div>
+
+      {/* ── WAF Exclusions Card (B2) ── */}
+      <WafExclusionsSection
+        tenantId={tenantId}
+        routeId={routeId}
+        hostname={route.hostname}
+      />
 
       {/* ── IP Allowlist Card ── */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
@@ -1296,6 +1229,264 @@ function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ─── WAF Exclusions Section (B2) ────────────────────────────────────────────
+//
+// Lists tenant-scoped WAF rule exclusions for the current route and lets the
+// tenant add new ones or delete existing ones. The hostnameRegex is always
+// derived server-side from the route's hostname — the tenant only picks
+// (ruleId, scope, reason). See backend/src/modules/waf-rule-exclusions/
+// service.ts:createExclusionForTenantRoute for the server-side enforcement.
+
+function WafExclusionsSection({ tenantId, routeId, hostname }: {
+  readonly tenantId: string;
+  readonly routeId: string;
+  readonly hostname: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const { data, isLoading, isError, error } = useRouteWafExclusions(tenantId, routeId);
+  const exclusions = data?.data?.exclusions ?? [];
+  const del = useDeleteRouteWafExclusion(tenantId, routeId);
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between px-5 py-4 text-left"
+        data-testid="waf-exclusions-section"
+        aria-expanded={open}
+        aria-controls="waf-exclusions-body"
+        aria-label={`WAF Exclusions${exclusions.length > 0 ? ` (${exclusions.length} configured)` : ''}`}
+      >
+        <div className="flex items-center gap-2">
+          {open ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">WAF Exclusions</h3>
+        </div>
+        {exclusions.length > 0 && (
+          <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+            {exclusions.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div id="waf-exclusions-body" className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-3" data-testid="waf-exclusions-body">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Suppress specific OWASP CRS rules for <strong className="font-mono">{hostname}</strong>{' '}
+            when they false-positive on your traffic. Exclusions you add here apply{' '}
+            <em>only</em> to this domain — they don't affect any other tenant or your
+            other routes. The platform reconciler propagates changes within ~10 seconds.
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Prefer <code className="text-[11px]">args_names_only</code> first — it
+            keeps the rule scanning request bodies + headers but stops it from
+            firing on JSON / form field <em>names</em>, which is the most common
+            false-positive cause for APIs. Use <code className="text-[11px]">full_disable</code>{' '}
+            only when args_names_only isn't enough.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+              data-testid="waf-exclusions-add"
+            >
+              <Save size={12} /> Add exclusion
+            </button>
+          </div>
+
+          {isLoading && (
+            <div className="flex items-center justify-center py-4">
+              <Loader2 size={20} className="animate-spin text-blue-600" />
+            </div>
+          )}
+          {isError && (
+            <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-3 text-xs text-red-700 dark:text-red-300">
+              Failed to load exclusions: {error instanceof Error ? error.message : 'unknown error'}
+            </div>
+          )}
+          {!isLoading && !isError && exclusions.length === 0 && (
+            <div className="rounded-md border border-dashed border-gray-300 dark:border-gray-600 p-4 text-center text-xs text-gray-500 dark:text-gray-400" data-testid="waf-exclusions-empty">
+              No exclusions configured. The full OWASP CRS rule set is in effect for this domain.
+            </div>
+          )}
+          {exclusions.length > 0 && (
+            <div className="overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
+              <table className="min-w-full text-xs">
+                <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-500 uppercase">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Rule ID</th>
+                    <th className="px-3 py-2 text-left">Scope</th>
+                    <th className="px-3 py-2 text-left">Reason</th>
+                    <th className="px-3 py-2 text-left">Added</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                  {exclusions.map((ex) => (
+                    <WafExclusionRow
+                      key={ex.id}
+                      ex={ex}
+                      onDelete={() => {
+                        if (window.confirm(`Delete exclusion for rule ${ex.ruleId}?`)) {
+                          del.mutate(ex.id);
+                        }
+                      }}
+                      isDeleting={del.isPending && del.variables === ex.id}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {addOpen && (
+            <AddWafExclusionModal
+              tenantId={tenantId}
+              routeId={routeId}
+              hostname={hostname}
+              onClose={() => setAddOpen(false)}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WafExclusionRow({ ex, onDelete, isDeleting }: {
+  readonly ex: WafRuleExclusionEntry;
+  readonly onDelete: () => void;
+  readonly isDeleting: boolean;
+}) {
+  return (
+    <tr data-testid={`waf-exclusion-row-${ex.id}`}>
+      <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">{ex.ruleId}</td>
+      <td className="px-3 py-2">
+        <span className={clsx(
+          'inline-flex rounded px-2 py-0.5 text-[10px] uppercase font-medium',
+          ex.scope === 'full_disable'
+            ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
+            : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
+        )}>{ex.scope}</span>
+      </td>
+      <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[280px] truncate" title={ex.reason}>{ex.reason}</td>
+      <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
+        {new Date(ex.createdAt).toISOString().replace('T', ' ').slice(0, 16)}
+      </td>
+      <td className="px-3 py-2 text-right">
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={isDeleting}
+          className="inline-flex items-center gap-1 rounded border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+          data-testid={`waf-exclusion-delete-${ex.id}`}
+        >
+          {isDeleting ? 'Deleting…' : 'Delete'}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
+  readonly tenantId: string;
+  readonly routeId: string;
+  readonly hostname: string;
+  readonly onClose: () => void;
+}) {
+  const [ruleId, setRuleId] = useState('');
+  const [scope, setScope] = useState<'args_names_only' | 'full_disable'>('args_names_only');
+  const [reason, setReason] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const create = useCreateRouteWafExclusion(tenantId, routeId);
+
+  const valid = /^[0-9]+$/.test(ruleId.trim()) && reason.trim().length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl" data-testid="add-waf-exclusion-modal">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Add WAF exclusion</h3>
+        <p className="text-xs text-gray-600 dark:text-gray-400 mb-4">
+          Scoped to <strong className="font-mono">{hostname}</strong> — your other
+          routes (and other tenants) are unaffected.
+        </p>
+        <div className="space-y-3 text-sm">
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Rule ID</span>
+            <input
+              value={ruleId}
+              onChange={(e) => setRuleId(e.target.value)}
+              placeholder="930120"
+              className={INPUT_CLASS + ' font-mono'}
+              data-testid="add-waf-exclusion-rule-id"
+            />
+            <span className="text-[10px] text-gray-500">
+              The 6-digit CRS rule number — find it in the WAF Log column for the
+              false-positive event you want to suppress.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Scope</span>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as 'args_names_only' | 'full_disable')}
+              className={INPUT_CLASS}
+              data-testid="add-waf-exclusion-scope"
+            >
+              <option value="args_names_only">args_names_only — keep ARG values + headers scanned (recommended)</option>
+              <option value="full_disable">full_disable — disable the rule entirely for this domain</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Reason</span>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              className={INPUT_CLASS}
+              placeholder="why this rule is being suppressed for this domain"
+              data-testid="add-waf-exclusion-reason"
+            />
+          </label>
+        </div>
+        {err && (
+          <div className="mt-3 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-3 py-2 text-xs text-red-700 dark:text-red-200">
+            {err}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setErr(null);
+              create.mutate(
+                { ruleId: ruleId.trim(), scope, reason: reason.trim() },
+                {
+                  onSuccess: onClose,
+                  onError: (e) => setErr(e instanceof Error ? e.message : 'Failed to add exclusion'),
+                },
+              );
+            }}
+            disabled={!valid || create.isPending}
+            className="rounded-md px-3 py-1.5 text-sm border border-emerald-300 bg-emerald-600 dark:bg-emerald-700 text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 disabled:opacity-50"
+            data-testid="add-waf-exclusion-submit"
+          >
+            {create.isPending ? 'Saving…' : 'Add exclusion'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
