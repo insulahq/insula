@@ -2,14 +2,29 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runStalwartDomainReconcilerTick } from './stalwart-domain-reconciler.js';
 
 // ── Fake DB ──────────────────────────────────────────────────────────
+//
+// The reconciler now resolves hostname via webmail-settings.getMailServerHostname
+// which we mock at the module boundary so we control the exact resolved
+// string per test (skipping the multi-source fallback chain).
 
-function dbStub(hostname: string | null) {
+vi.mock('../webmail-settings/service.js', () => ({
+  getMailServerHostname: vi.fn(),
+}));
+
+import { getMailServerHostname } from '../webmail-settings/service.js';
+
+function setHostname(value: string | null): void {
+  // null mocks the production-sentinel fallback 'mail.example.com'
+  // (the value defaultMailHostname returns when ingress_base_domain
+  // is unset) so the reconciler treats it as "unresolved".
+  vi.mocked(getMailServerHostname).mockResolvedValue(value ?? 'mail.example.com');
+}
+
+// dbStub is now unused by the hostname path (mocked above) but kept
+// as a shape the reconciler accepts.
+function dbStub() {
   return {
-    select: () => ({
-      from: () => ({
-        where: () => (hostname === null ? [] : [{ key: 'mail_server_hostname', value: hostname }]),
-      }),
-    }),
+    select: () => ({ from: () => ({ where: () => [] }) }),
   };
 }
 
@@ -106,7 +121,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub(null) as any,
+      db: (setHostname(null), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
@@ -125,7 +140,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mail.example.com') as any,
+      db: (setHostname('mail.example.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
@@ -147,7 +162,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
 
   it('on fully-configured Stalwart: 4 GET calls + fire AcmeRenewal (idempotent)', async () => {
     const { transport, calls } = buildJmapMock({
-      domains: [{ id: 'd1', name: 'example.com' }],
+      domains: [{ id: 'd1', name: 'example.net' }],
       acmeProviders: [{ id: 'ap1', name: 'letsencrypt' }],
       listeners: [
         { name: 'smtp' }, { name: 'submissions' }, { name: 'imaps' },
@@ -163,7 +178,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mail.example.com') as any,
+      db: (setHostname('mail.example.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
@@ -177,7 +192,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
 
   it('on partial state: creates only the missing listener(s)', async () => {
     const { transport, calls } = buildJmapMock({
-      domains: [{ id: 'd1', name: 'example.com' }],
+      domains: [{ id: 'd1', name: 'example.net' }],
       acmeProviders: [{ id: 'ap1', name: 'letsencrypt' }],
       // http-acme is present, submission + imap missing
       listeners: [{ name: 'smtp' }, { name: 'submissions' }, { name: 'http-acme' }],
@@ -191,7 +206,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mail.example.com') as any,
+      db: (setHostname('mail.example.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
@@ -211,7 +226,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mail.staging.phoenix-host.net') as any,
+      db: (setHostname('mail.staging.phoenix-host.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
@@ -226,13 +241,13 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mx1.example.com') as any,
+      db: (setHostname('mx1.example.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
     const domainSet = calls.find((c) => c.method === 'x:Domain/set' && c.args.create);
     const create = domainSet!.args.create as Record<string, { name: string }>;
-    expect(create.d.name).toBe('mx1.example.com');
+    expect(create.d.name).toBe('mx1.example.net');
   });
 
   it('result shape: noOp=false + correct booleans on fresh install', async () => {
@@ -241,11 +256,11 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mail.example.com') as any,
+      db: (setHostname('mail.example.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
-    expect(result.apex).toBe('example.com');
+    expect(result.apex).toBe('example.net');
     expect(result.sanKey).toBe('mail');
     expect(result.domainCreated).toBe(true);
     expect(result.acmeProviderCreated).toBe(true);
@@ -257,7 +272,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
 
   it('result shape: noOp=true + all booleans false on fully-configured cluster', async () => {
     const { transport } = buildJmapMock({
-      domains: [{ id: 'd1', name: 'example.com' }],
+      domains: [{ id: 'd1', name: 'example.net' }],
       acmeProviders: [{ id: 'ap1', name: 'letsencrypt' }],
       listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
       certManagement: {
@@ -270,7 +285,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub('mail.example.com') as any,
+      db: (setHostname('mail.example.net'), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
@@ -289,12 +304,12 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       core: {} as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: dbStub(null) as any,
+      db: (setHostname(null), dbStub()) as any,
       jmapTransport: transport,
       logger,
     });
     expect(result.apex).toBeNull();
     expect(result.noOp).toBe(true);
-    expect(result.notes[0]).toMatch(/mail_server_hostname/);
+    expect(result.notes[0]).toMatch(/mail hostname unresolved/);
   });
 });
