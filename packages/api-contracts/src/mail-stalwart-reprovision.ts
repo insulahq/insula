@@ -17,14 +17,17 @@ import { z } from 'zod';
  */
 
 export const stalwartReprovisionResponseSchema = z.object({
-  apex: z.string().nullable(),
-  sanKey: z.string().nullable(),
-  domainCreated: z.boolean(),
+  /** The operator-set mail hostname the reconciler used (null when unset). */
+  mailHostname: z.string().nullable(),
+  /** True when Stalwart SystemSettings.defaultHostname was patched. */
+  defaultHostnameUpdated: z.boolean(),
+  /** True when the Let's Encrypt AcmeProvider was created this run. */
   acmeProviderCreated: z.boolean(),
-  certManagementUpdated: z.boolean(),
+  /** Names of NetworkListeners newly created (subset of http-acme/submission/imap). */
   listenersCreated: z.array(z.string()),
-  acmeRenewalFired: z.boolean(),
+  /** Free-form per-step notes (skip reasons, errors that didn't abort the tick). */
   notes: z.array(z.string()),
+  /** Convenience: true when no Stalwart state was changed. */
   noOp: z.boolean(),
 });
 
