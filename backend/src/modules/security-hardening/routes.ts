@@ -20,6 +20,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { ApiError } from '../../shared/errors.js';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { buildSecurityHardeningSnapshot, triggerProbeRefresh } from './service.js';
 import { loadSecurityHardeningClients } from './k8s-client.js';
@@ -226,10 +227,20 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           const response = await listDecisions(kubeconfigPath, parsed.data);
           return success(response);
         } catch (err) {
-          return reply.status(502).send({
-            error: 'CROWDSEC_UNREACHABLE',
-            message: err instanceof Error ? err.message : String(err),
-          });
+          // Throw the platform ApiError so the global error-handler
+          // middleware emits the standard {error:{code,message,...}}
+          // envelope. The previous flat shape `{error,message}` was
+          // unparseable by the frontend api-client, which fell back to
+          // `res.statusText` ("Bad Gateway") and left operators with
+          // no clue why "Banned IPs" was failing — the inner LAPI
+          // status code never reached the UI.
+          throw new ApiError(
+            'CROWDSEC_UNREACHABLE',
+            err instanceof Error ? err.message : String(err),
+            502,
+            undefined,
+            'Check the CrowdSec pod is Running and the platform-api bouncer is registered (cscli bouncers list).',
+          );
         }
       },
     );
