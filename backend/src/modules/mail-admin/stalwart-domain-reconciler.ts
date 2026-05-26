@@ -43,19 +43,9 @@
 
 import type { CoreV1Api } from '@kubernetes/client-node';
 
-import { eq } from 'drizzle-orm';
-
 import { readStalwartCredentials } from './credentials.js';
-import { platformSettings } from '../../db/schema.js';
+import { getMailServerHostname } from '../webmail-settings/service.js';
 import type { Database } from '../../db/index.js';
-
-async function getSetting(db: Database, key: string): Promise<string | null> {
-  const [row] = await db
-    .select()
-    .from(platformSettings)
-    .where(eq(platformSettings.key, key));
-  return row?.value ?? null;
-}
 
 /**
  * Default tick: 30 min.
@@ -201,13 +191,29 @@ export async function runStalwartDomainReconcilerTick(
     };
   };
 
-  // 1. Read the operator-chosen mail hostname (set via Admin UI → Mail
-  //    Settings → SMTP/IMAP hostname). Apex is derived by stripping the
-  //    leading `mail.` label, falling back to the full hostname if there
-  //    is no such prefix.
-  const mailHostname = await getSetting(deps.db, 'mail_server_hostname');
-  if (!mailHostname || mailHostname.trim().length === 0) {
-    return emptyResult('mail_server_hostname is unset — set it via Admin UI → Mail Settings');
+  // 1. Resolve the effective mail hostname via the same fallback chain
+  //    the rest of the platform uses (webmail-settings/getMailServerHostname):
+  //      a. platform_settings.mail_server_hostname (operator override
+  //         via Admin UI → Mail Settings → SMTP/IMAP hostname)
+  //      b. STALWART_HOSTNAME env (set by bootstrap.sh)
+  //      c. MAIL_SERVER_HOSTNAME env (legacy)
+  //      d. derived as `mail.<ingress_base_domain>` from
+  //         platform_settings.ingress_base_domain
+  //      e. final fallback: 'mail.example.com'
+  //
+  //    Going through getMailServerHostname instead of reading
+  //    mail_server_hostname directly closes a pre-2026-05-26 bug
+  //    where fresh installs never set the platform_settings row
+  //    (only set on first operator save), so the reconciler
+  //    early-returned with noOp and the "no changes needed" modal
+  //    misled the operator. On a fresh install ingress_base_domain
+  //    is always populated by bootstrap, so the apex flows through
+  //    the (d) branch and Stalwart gets its Domain entry.
+  //
+  //    Apex derived by stripping the leading `mail.` label.
+  const mailHostname = await getMailServerHostname(deps.db);
+  if (!mailHostname || mailHostname.trim().length === 0 || mailHostname.trim() === 'mail.example.com') {
+    return emptyResult('mail hostname unresolved — set ingress_base_domain or mail_server_hostname');
   }
   const trimmedHost = mailHostname.trim().toLowerCase();
   const apex = trimmedHost.startsWith('mail.') ? trimmedHost.slice('mail.'.length) : trimmedHost;
