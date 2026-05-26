@@ -1,13 +1,121 @@
 import type { FastifyInstance } from 'fastify';
+import { eq, and, desc, lt, sql, or, ilike } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { createMailboxSchema, updateMailboxSchema, mailboxAccessSchema } from '@k8s-hosting/api-contracts';
-import { mailboxes } from '../../db/schema.js';
+import { mailboxes, tenants, emailDomains, domains } from '../../db/schema.js';
 import * as service from './service.js';
-import { success } from '../../shared/response.js';
+import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { JwtPayload } from '../../middleware/auth.js';
 
 export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
+  // ─── Admin cross-tenant mailbox list ───
+  //
+  // Cursor-paginated by created_at descending. Search matches
+  // local_part / full_address / display_name / email_domain.domain_name
+  // / tenant.name. Used by the admin Tenants → Email Accounts tab.
+
+  app.register(async (adminScope) => {
+    adminScope.addHook('onRequest', authenticate);
+
+    adminScope.get('/admin/mailboxes', {
+      onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
+    }, async (request) => {
+      const query = request.query as Record<string, unknown>;
+      const { limit, cursor } = parsePaginationParams(query);
+      const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
+
+      const filters = [];
+      if (search) {
+        const pattern = `%${search}%`;
+        const orExpr = or(
+          ilike(mailboxes.localPart, pattern),
+          ilike(mailboxes.fullAddress, pattern),
+          ilike(mailboxes.displayName, pattern),
+          ilike(domains.domainName, pattern),
+          ilike(tenants.name, pattern),
+        );
+        if (orExpr) filters.push(orExpr);
+      }
+
+      const cursorConds = [];
+      if (cursor) {
+        const decoded = decodeCursor(cursor);
+        cursorConds.push(lt(mailboxes.createdAt, new Date(decoded.sort)));
+      }
+      const allConds = [...filters, ...cursorConds];
+      const where = allConds.length === 0
+        ? undefined
+        : allConds.length === 1 ? allConds[0] : and(...allConds);
+
+      const rows = await app.db
+        .select({
+          id: mailboxes.id,
+          emailDomainId: mailboxes.emailDomainId,
+          tenantId: mailboxes.tenantId,
+          localPart: mailboxes.localPart,
+          fullAddress: mailboxes.fullAddress,
+          displayName: mailboxes.displayName,
+          quotaMb: mailboxes.quotaMb,
+          usedMb: mailboxes.usedMb,
+          status: mailboxes.status,
+          mailboxType: mailboxes.mailboxType,
+          autoReply: mailboxes.autoReply,
+          autoReplySubject: mailboxes.autoReplySubject,
+          createdAt: mailboxes.createdAt,
+          updatedAt: mailboxes.updatedAt,
+          tenantName: tenants.name,
+          emailDomain: domains.domainName,
+        })
+        .from(mailboxes)
+        .leftJoin(tenants, eq(mailboxes.tenantId, tenants.id))
+        .leftJoin(emailDomains, eq(mailboxes.emailDomainId, emailDomains.id))
+        .leftJoin(domains, eq(emailDomains.domainId, domains.id))
+        .where(where)
+        .orderBy(desc(mailboxes.createdAt))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const data = rows.slice(0, limit);
+
+      let nextCursor: string | null = null;
+      if (hasMore && data.length > 0) {
+        const last = data[data.length - 1];
+        nextCursor = encodeCursor({
+          resource: 'mailbox',
+          sort: last.createdAt.toISOString(),
+          id: last.id,
+        });
+      }
+
+      const countWhere = filters.length === 0
+        ? undefined
+        : filters.length === 1 ? filters[0] : and(...filters);
+      const [countResult] = await app.db
+        .select({ count: sql<number>`count(*)` })
+        .from(mailboxes)
+        .leftJoin(tenants, eq(mailboxes.tenantId, tenants.id))
+        .leftJoin(emailDomains, eq(mailboxes.emailDomainId, emailDomains.id))
+        .leftJoin(domains, eq(emailDomains.domainId, domains.id))
+        .where(countWhere);
+
+      return paginated(
+        data.map((r) => ({
+          ...r,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+        {
+          cursor: nextCursor,
+          has_more: hasMore,
+          page_size: data.length,
+          total_count: Number(countResult?.count ?? 0),
+        },
+      );
+    });
+  });
+
   // ─── Client-scoped mailbox CRUD ───
 
   app.register(async (tenantScope) => {

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi } from 'vitest';
-import CronJobs from '../pages/CronJobs';
+import CronJobsTab from '../pages/tenants/CronJobsTab';
 import CreateCronJobModal from '../components/CreateCronJobModal';
 
 function createWrapper() {
@@ -18,31 +18,29 @@ function createWrapper() {
   };
 }
 
-describe('CronJobs page', () => {
-  it('renders heading with Clock icon', () => {
-    render(<CronJobs />, { wrapper: createWrapper() });
-    expect(screen.getByText('Cron Jobs')).toBeInTheDocument();
-  });
-
+describe('CronJobsTab', () => {
+  // Heading "Cron Jobs" now lives on the parent TenantsLayout (tab strip),
+  // not on the tab body itself. We assert the in-tab affordances here;
+  // layout-level assertions belong with the layout test.
   it('renders searchable tenant selector', () => {
-    render(<CronJobs />, { wrapper: createWrapper() });
+    render(<CronJobsTab />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tenant-search-select')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Search tenants...')).toBeInTheDocument();
   });
 
   it('shows all tenants by default without a prompt to select', () => {
-    render(<CronJobs />, { wrapper: createWrapper() });
+    render(<CronJobsTab />, { wrapper: createWrapper() });
     expect(screen.queryByTestId('select-tenant-prompt')).not.toBeInTheDocument();
   });
 
   it('renders Add Cron Job button', () => {
-    render(<CronJobs />, { wrapper: createWrapper() });
+    render(<CronJobsTab />, { wrapper: createWrapper() });
     expect(screen.getByTestId('add-cron-job-button')).toBeInTheDocument();
     expect(screen.getByText('Add Cron Job')).toBeInTheDocument();
   });
 
   it('disables Add Cron Job button when no tenant selected', () => {
-    render(<CronJobs />, { wrapper: createWrapper() });
+    render(<CronJobsTab />, { wrapper: createWrapper() });
     expect(screen.getByTestId('add-cron-job-button')).toBeDisabled();
   });
 });

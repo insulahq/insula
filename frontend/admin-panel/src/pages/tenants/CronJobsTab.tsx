@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Plus, Loader2, Clock, Play, Pause, RotateCw, Trash2, Globe, Terminal } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Plus, Search, Loader2, Play, Pause, Trash2, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
-import { useCronJobs, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
+import { useCronJobs } from '@/hooks/use-cron-jobs';
+import { useTenants } from '@/hooks/use-tenants';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
 import { useBulkEnableCronJobs, useBulkDisableCronJobs, useBulkDeleteCronJobs } from '@/hooks/use-bulk-cron-jobs';
@@ -35,26 +37,28 @@ function formatDuration(ms: number | null | undefined): string | null {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export default function CronJobs() {
+export default function CronJobsTab() {
+  const navigate = useNavigate();
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'enable' | 'disable' | 'delete' | null>(null);
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
-  // Reset pagination when tenant selection changes
   useEffect(() => {
     pagination.resetPagination();
-  }, [selectedTenantId]);
+  }, [selectedTenantId, debouncedSearch]);
 
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs({
     tenantId: selectedTenantId ?? undefined,
+    search: debouncedSearch || undefined,
     limit: pagination.limit,
     cursor: pagination.cursor,
   });
-  const updateCronJob = useUpdateCronJob(selectedTenantId ?? undefined);
-  const runCronJob = useRunCronJob(selectedTenantId ?? undefined);
-  const deleteCronJob = useDeleteCronJob(selectedTenantId ?? undefined);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  const { data: tenantsData } = useTenants({ limit: 100 });
+  const tenantMap = new Map((tenantsData?.data ?? []).map((c) => [c.id, c.name]));
 
   const cronJobs = cronJobsData?.data ?? [];
   const totalCount = cronJobsData?.pagination?.total_count ?? 0;
@@ -66,6 +70,14 @@ export default function CronJobs() {
   const bulkEnable = useBulkEnableCronJobs();
   const bulkDisable = useBulkDisableCronJobs();
   const bulkDelete = useBulkDeleteCronJobs();
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    const key = '__cronSearchTimeout';
+    const w = window as unknown as Record<string, ReturnType<typeof setTimeout>>;
+    clearTimeout(w[key]);
+    w[key] = setTimeout(() => setDebouncedSearch(value), 300);
+  };
 
   const handleBulkAction = async () => {
     if (!confirmAction) return;
@@ -91,10 +103,23 @@ export default function CronJobs() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
-          <Clock size={24} className="text-gray-700 dark:text-gray-300" />
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Cron Jobs</h1>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <SearchableTenantSelect
+            selectedTenantId={selectedTenantId}
+            onSelect={setSelectedTenantId}
+          />
+          <div className="relative flex-1 max-w-sm">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="search"
+              placeholder="Search cron jobs..."
+              value={search}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              data-testid="cron-search"
+            />
+          </div>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -110,13 +135,6 @@ export default function CronJobs() {
           <Plus size={16} />
           Add Cron Job
         </button>
-      </div>
-
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <SearchableTenantSelect
-          selectedTenantId={selectedTenantId}
-          onSelect={setSelectedTenantId}
-        />
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -146,26 +164,28 @@ export default function CronJobs() {
                       />
                     </th>
                     <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Tenant" sortKey="tenantId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Schedule" sortKey="schedule" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <th className="hidden px-5 py-3 md:table-cell">Target</th>
                     <SortableHeader label="Enabled" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Last Run" sortKey="lastRunAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                     <SortableHeader label="Status" sortKey="lastRunStatus" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
-                    <th className="px-5 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                   {sortedCronJobs.map((job) => (
                     <tr
                       key={job.id}
-                      className={`transition-colors ${
+                      className={`transition-colors cursor-pointer ${
                         selection.isSelected(job.id)
                           ? 'bg-brand-50 dark:bg-brand-900/20'
                           : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                       }`}
+                      onClick={() => navigate(`/tenants/${job.tenantId}`)}
+                      data-testid={`cron-row-${job.id}`}
                     >
-                      <td className="w-10 px-3 py-3.5">
+                      <td className="w-10 px-3 py-3.5" onClick={(e) => e.stopPropagation()}>
                         <SelectCheckbox
                           checked={selection.isSelected(job.id)}
                           onChange={() => selection.toggle(job.id)}
@@ -173,6 +193,9 @@ export default function CronJobs() {
                       </td>
                       <td className="px-5 py-3.5">
                         <span className="font-medium text-gray-900 dark:text-gray-100">{job.name}</span>
+                      </td>
+                      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
+                        {tenantMap.get(job.tenantId) ?? '—'}
                       </td>
                       <td className="px-5 py-3.5">
                         <TypeBadge type={job.type} />
@@ -200,7 +223,7 @@ export default function CronJobs() {
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                         {job.lastRunAt
                           ? new Date(job.lastRunAt).toLocaleString()
-                          : '\u2014'}
+                          : '—'}
                       </td>
                       <td className="hidden px-5 py-3.5 lg:table-cell">
                         {job.lastRunStatus ? (
@@ -227,49 +250,19 @@ export default function CronJobs() {
                             </div>
                           </div>
                         ) : (
-                          <span className="text-sm text-gray-400">{'\u2014'}</span>
+                          <span className="text-sm text-gray-400">—</span>
                         )}
-                      </td>
-                      <td className="px-5 py-3.5 text-right">
-                        <div className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => updateCronJob.mutate({ cronJobId: job.id, enabled: !job.enabled })}
-                            className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                            title={job.enabled ? 'Stop (disable)' : 'Start (enable)'}
-                            data-testid={`toggle-cron-${job.id}`}
-                          >
-                            {job.enabled ? <Pause size={12} /> : <Play size={12} />}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => runCronJob.mutate(job.id)}
-                            className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                            title="Run Now"
-                            data-testid={`run-cron-${job.id}`}
-                          >
-                            <RotateCw size={12} />
-                          </button>
-                          {deleteConfirmId === job.id ? (
-                            <>
-                              <button type="button" onClick={async () => { await deleteCronJob.mutateAsync(job.id); setDeleteConfirmId(null); }} disabled={deleteCronJob.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-cron-${job.id}`}>Confirm</button>
-                              <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
-                            </>
-                          ) : (
-                            <button type="button" onClick={() => setDeleteConfirmId(job.id)} className="rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20" data-testid={`delete-cron-${job.id}`}>
-                              <Trash2 size={12} />
-                            </button>
-                          )}
-                        </div>
                       </td>
                     </tr>
                   ))}
                   {cronJobs.length === 0 && (
                     <tr>
                       <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-                        {selectedTenantId
-                          ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
-                          : 'No cron jobs found across any tenant.'}
+                        {debouncedSearch
+                          ? 'No cron jobs found matching your search.'
+                          : selectedTenantId
+                            ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
+                            : 'No cron jobs found across any tenant.'}
                       </td>
                     </tr>
                   )}
@@ -314,7 +307,6 @@ export default function CronJobs() {
         </button>
       </BulkActionBar>
 
-      {/* Confirmation dialog */}
       {confirmAction && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>

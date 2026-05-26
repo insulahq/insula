@@ -6,14 +6,16 @@ interface UseCronJobsParams {
   readonly tenantId?: string;
   readonly limit?: number;
   readonly cursor?: string;
+  readonly search?: string;
 }
 
 export function useCronJobs(params: UseCronJobsParams = {}) {
-  const { tenantId, limit, cursor } = params;
+  const { tenantId, limit, cursor, search } = params;
 
   const searchParams = new URLSearchParams();
   if (limit) searchParams.set('limit', String(limit));
   if (cursor) searchParams.set('cursor', cursor);
+  if (search) searchParams.set('search', search);
 
   const qs = searchParams.toString();
   const basePath = tenantId
@@ -22,7 +24,7 @@ export function useCronJobs(params: UseCronJobsParams = {}) {
   const path = `${basePath}${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor }],
+    queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor, search }],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
   });
 }

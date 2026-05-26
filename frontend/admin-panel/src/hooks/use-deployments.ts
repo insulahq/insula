@@ -47,6 +47,54 @@ export function useDeployments(tenantId: string | undefined, type?: string) {
   });
 }
 
+// Cross-tenant deployment list backed by GET /admin/deployments
+// (offset/page pagination). Joined to tenant + catalog entry for the
+// admin Tenants → Workloads tab.
+export interface AdminDeployment extends Deployment {
+  readonly tenantName: string | null;
+  readonly catalogEntryName: string | null;
+  readonly catalogEntryCode: string | null;
+  readonly catalogEntryType: string | null;
+}
+
+interface AdminDeploymentsResponse {
+  readonly data: readonly AdminDeployment[];
+  readonly pagination: {
+    readonly page: number;
+    readonly page_size: number;
+    readonly total_count: number;
+    readonly total_pages: number;
+    readonly has_more: boolean;
+  };
+}
+
+interface UseAllDeploymentsParams {
+  readonly page?: number;
+  readonly limit?: number;
+  readonly tenantId?: string;
+  readonly status?: string;
+  readonly catalogEntryId?: string;
+  readonly includeDeleted?: boolean;
+  readonly search?: string;
+}
+
+export function useAllDeployments(params: UseAllDeploymentsParams = {}) {
+  const { page = 1, limit = 20, tenantId, status, catalogEntryId, includeDeleted, search } = params;
+  const qs = new URLSearchParams();
+  qs.set('page', String(page));
+  qs.set('limit', String(limit));
+  if (tenantId) qs.set('tenant_id', tenantId);
+  if (status) qs.set('status', status);
+  if (catalogEntryId) qs.set('catalog_entry_id', catalogEntryId);
+  if (includeDeleted) qs.set('include_deleted', 'true');
+  if (search) qs.set('search', search);
+
+  return useQuery({
+    queryKey: ['deployments', 'admin', { page, limit, tenantId, status, catalogEntryId, includeDeleted, search }],
+    queryFn: () => apiFetch<AdminDeploymentsResponse>(`/api/v1/admin/deployments?${qs.toString()}`),
+  });
+}
+
 export function useDeployment(tenantId: string | undefined, deploymentId: string | undefined) {
   return useQuery({
     queryKey: ['deployments', tenantId, deploymentId],
