@@ -198,26 +198,41 @@ async function main(): Promise<void> {
   const k8sClients = args.mode === 'full' ? createK8sClients(args.kubeconfig) : undefined;
 
   try {
-    const result = await runDrRestore({
-      db,
-      mode: args.mode,
-      bundlePath: args.bundle,
-      ageKeyPath: args.ageKey,
-      ageBinary: args.ageBinary,
-      strict: args.strict,
-      config: {
-        PLATFORM_BASE_DOMAIN: config.PLATFORM_BASE_DOMAIN,
-        INGRESS_BASE_DOMAIN: config.INGRESS_BASE_DOMAIN,
-        PLATFORM_VERSION: config.PLATFORM_VERSION,
-      },
-      ...(args.mode === 'full'
-        ? {
-            k8s: k8sClients,
-            confirmClusterNames: args.confirmClusters,
-            targetMailNode: args.targetMailNode,
-          }
-        : {}),
-    });
+    // The discriminated union on RunDrRestoreOpts forces us to build
+    // two distinct opts shapes — TS won't accept a spread-pattern that
+    // mixes the partial + full member shapes. argv-parse already
+    // guarantees targetMailNode + confirmClusters for mode=full, so
+    // the non-null reads here are correct by construction.
+    const result = args.mode === 'full'
+      ? await runDrRestore({
+          db,
+          mode: 'full',
+          bundlePath: args.bundle,
+          ageKeyPath: args.ageKey,
+          ageBinary: args.ageBinary,
+          strict: args.strict,
+          config: {
+            PLATFORM_BASE_DOMAIN: config.PLATFORM_BASE_DOMAIN,
+            INGRESS_BASE_DOMAIN: config.INGRESS_BASE_DOMAIN,
+            PLATFORM_VERSION: config.PLATFORM_VERSION,
+          },
+          k8s: k8sClients!,
+          confirmClusterNames: args.confirmClusters,
+          targetMailNode: args.targetMailNode!,
+        })
+      : await runDrRestore({
+          db,
+          mode: 'partial',
+          bundlePath: args.bundle,
+          ageKeyPath: args.ageKey,
+          ageBinary: args.ageBinary,
+          strict: args.strict,
+          config: {
+            PLATFORM_BASE_DOMAIN: config.PLATFORM_BASE_DOMAIN,
+            INGRESS_BASE_DOMAIN: config.INGRESS_BASE_DOMAIN,
+            PLATFORM_VERSION: config.PLATFORM_VERSION,
+          },
+        });
 
     if (result.importResult.drift.hasDrift) {
       process.stderr.write(`dr-restore-runner: WARN drift detected (continuing):\n`);
@@ -248,6 +263,13 @@ async function main(): Promise<void> {
     else label = 'UNEXPECTED';
     const fullMessage = (err as Error).message ?? String(err);
     process.stderr.write(`dr-restore-runner: ${label} — ${fullMessage}\n`);
+    // MailRestoreError carries an internal `.detail` field separated
+    // from the public message (security review LOW#11). The operator-
+    // facing terminal benefits from seeing it; the stdout JSON path
+    // below intentionally does NOT include it.
+    if (err instanceof MailRestoreError && err.detail) {
+      process.stderr.write(`dr-restore-runner: detail: ${err.detail}\n`);
+    }
     // Stdout JSON (security review M-S2): emit ONLY the label, never
     // the verbatim error body. age's stderr can include the key file
     // path or recipient fingerprint — if a CI pipeline captures

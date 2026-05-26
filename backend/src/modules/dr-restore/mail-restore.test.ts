@@ -121,18 +121,26 @@ describe('restoreMailData — happy path', () => {
     const failoverImpl = vi.fn(async () => {
       throw new Error('migration state machine: deletePvcAndWait timeout');
     });
-    await expect(restoreMailData({
-      db: FAKE_DB,
-      core: core as never,
-      apps: {} as never,
-      batch: {} as never,
-      targetMailNode: 'staging1',
-      _failoverImpl: failoverImpl as never,
-    })).rejects.toMatchObject({
-      name: 'MailRestoreError',
-      code: 500,
-      message: expect.stringContaining('mail_migration_runs'),
-    });
+    try {
+      await restoreMailData({
+        db: FAKE_DB,
+        core: core as never,
+        apps: {} as never,
+        batch: {} as never,
+        targetMailNode: 'staging1',
+        _failoverImpl: failoverImpl as never,
+      });
+      throw new Error('expected MailRestoreError, but call resolved');
+    } catch (err) {
+      // Public message: operator-actionable, no internal detail leak.
+      expect(err).toBeInstanceOf(MailRestoreError);
+      const e = err as MailRestoreError;
+      expect(e.code).toBe(500);
+      expect(e.message).toContain('mail_migration_runs');
+      // Detail: full state-machine error stays here for operator
+      // diagnosis but is NOT in the public message (security review LOW#11).
+      expect(e.detail).toContain('deletePvcAndWait timeout');
+    }
   });
 });
 
@@ -141,5 +149,25 @@ describe('MailRestoreError', () => {
     const err = new MailRestoreError('test', 412);
     expect(err.code).toBe(412);
     expect(err.name).toBe('MailRestoreError');
+  });
+
+  // Review LOW#11: detail field separated from public message so future
+  // API callers can log .detail (with internal topology — node names,
+  // PVC names) but surface only .message over HTTP.
+  it('separates the detail field from the public message', () => {
+    const err = new MailRestoreError(
+      'Mail restore failover state machine failed. Inspect: kubectl ...',
+      500,
+      'deletePvcAndWait timeout on node staging1 PVC mail-stack-data',
+    );
+    expect(err.message).not.toContain('staging1');
+    expect(err.message).not.toContain('mail-stack-data');
+    expect(err.detail).toContain('staging1');
+    expect(err.detail).toContain('mail-stack-data');
+  });
+
+  it('detail defaults to undefined when not supplied', () => {
+    const err = new MailRestoreError('public message', 500);
+    expect(err.detail).toBeUndefined();
   });
 });
