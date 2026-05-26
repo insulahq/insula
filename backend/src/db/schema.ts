@@ -1179,9 +1179,22 @@ export const wafRuleExclusions = pgTable('waf_rule_exclusions', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   disabled: boolean('disabled').notNull().default(false),
+  // B2 (migration 0031, 2026-05-26): nullable tenant + route ownership.
+  // Both NULL = admin-scoped (current behaviour). Both set = tenant-
+  // scoped, hostnameRegex must exactly match the route's hostname (the
+  // service layer forces this server-side — clients can't pick the
+  // regex). DB CHECK constraint enforces "both or neither". FK ON
+  // DELETE CASCADE drops the row when its tenant or route is removed.
+  tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'cascade' }),
+  routeId: varchar('route_id', { length: 36 }).references(() => ingressRoutes.id, { onDelete: 'cascade' }),
 }, (table) => [
   index('waf_rule_exclusions_disabled_idx').on(table.disabled),
   index('waf_rule_exclusions_rule_id_idx').on(table.ruleId),
+  // Partial index — mirrors the `WHERE tenant_id IS NOT NULL` clause
+  // in migration 0031 so a `db:generate` regeneration doesn't widen
+  // it to include the (NULL, NULL) admin-scoped rows that dominate
+  // this table.
+  index('waf_rule_exclusions_tenant_route_idx').on(table.tenantId, table.routeId).where(isNotNull(table.tenantId)),
 ]);
 
 // F3 — CrowdSec auto-ban audit table. One row per evaluator decision
