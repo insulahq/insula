@@ -859,6 +859,184 @@ else
   fail "F4: ConfigMap still contains exclusion content: $(echo "$h_cm_final" | head -c 300)"
 fi
 
+# ─── Phase K — B2: tenant-scoped WAF exclusions ───────────────────────
+#
+# Verifies the new self-service path that lets tenant users add CRS
+# exclusions for ONE of THEIR ingress routes. The server forces
+# hostnameRegex from the route record (not from the client body), and
+# enforces tenant ownership both on the (tenant, route) lookup and on
+# delete. End-to-end coverage:
+#
+#   1. Pick a real (tenant_id, route_id, hostname) tuple from the DB.
+#   2. POST creates an exclusion via the tenant route — hostnameRegex is
+#      auto-derived as ^<hostname>$ regardless of the client body.
+#   3. The created row appears in the admin listing too (one table).
+#   4. Cross-tenant probe: POST same tenant exclusion under a DIFFERENT
+#      (made-up) tenantId path → 404 ROUTE_NOT_FOUND (proves the lookup
+#      requires (route_id, tenant_id) to match, not just route_id).
+#   5. DELETE removes the row.
+#   6. ConfigMap reflects both create and delete via reconciler.
+#
+# We DON'T need a tenant-user JWT for this phase — the cross-tenant
+# protection is enforced inside loadTenantRoute (route must belong to
+# the named tenant), independent of which token was used.
+
+phase "Phase K — B2 tenant-scoped WAF exclusions"
+
+# K0: discover an existing ingress route that belongs to a tenant.
+# Pick the most-recent active route to minimise the chance the harness
+# fights with a long-lived operator session. Skip the phase cleanly if
+# no tenant routes exist (clean staging install case).
+k_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
+  SELECT d.tenant_id, ir.id, ir.hostname
+  FROM ingress_routes ir
+  JOIN domains d ON d.id = ir.domain_id
+  WHERE d.tenant_id IS NOT NULL
+  ORDER BY ir.created_at DESC
+  LIMIT 1;
+\"" 2>/dev/null | tr -d '\r' | grep -E '^[a-f0-9-]+\|[a-f0-9-]+\|' || true)
+
+if [[ -z "$k_route_tuple" ]]; then
+  warn "K: no tenant routes on this cluster — phase skipped"
+else
+  K_TENANT_ID=$(echo "$k_route_tuple" | cut -d'|' -f1)
+  K_ROUTE_ID=$(echo "$k_route_tuple" | cut -d'|' -f2)
+  K_HOSTNAME=$(echo "$k_route_tuple" | cut -d'|' -f3)
+  K_EXPECTED_REGEX="^$(printf '%s' "$K_HOSTNAME" | sed 's/[.]/\\./g')\$"
+  K_RULE_ID='942100'  # CRS SQLi rule — common false-positive on JSON APIs
+
+  cleanup_k() {
+    # Best-effort delete via admin API. The tenant path enforces
+    # (tenant, route) but the admin endpoint can wipe any row by id.
+    for id in $(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    data = json.load(sys.stdin)['data']['exclusions']
+    for x in data:
+        if x.get('tenantId') == '$K_TENANT_ID' and x.get('routeId') == '$K_ROUTE_ID' and x['ruleId'] == '$K_RULE_ID':
+            print(x['id'])
+except Exception:
+    pass
+" 2>/dev/null); do
+      api_internal DELETE "/admin/security/waf-rule-exclusions/$id" >/dev/null 2>&1 || true
+    done
+  }
+  trap 'cleanup; cleanup_test_ban_symbolic; cleanup_f2; cleanup_f4; cleanup_k' EXIT INT TERM
+  cleanup_k
+
+  # K1: GET initial state is reachable + returns an array.
+  k_list_before=$(api_internal GET "/tenants/$K_TENANT_ID/routes/$K_ROUTE_ID/waf-exclusions")
+  if echo "$k_list_before" | grep -q '"exclusions"'; then
+    ok "K1: tenant GET /waf-exclusions reachable"
+  else
+    fail "K1: tenant GET failed: $(echo "$k_list_before" | head -c 200)"
+  fi
+
+  # K2: POST creates a tenant-scoped exclusion. Body does NOT carry
+  # hostnameRegex — the server derives it.
+  k_create=$(api_internal POST "/tenants/$K_TENANT_ID/routes/$K_ROUTE_ID/waf-exclusions" \
+    "{\"ruleId\":\"$K_RULE_ID\",\"scope\":\"args_names_only\",\"reason\":\"harness K test — tenant-scoped\"}")
+  k_id=$(echo "$k_create" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || true)
+  if [[ -n "$k_id" && "$k_id" =~ ^[a-f0-9-]{36}$ ]]; then
+    ok "K2: tenant exclusion created (id=$k_id)"
+  else
+    fail "K2: tenant create failed or returned no id: $(echo "$k_create" | head -c 300)"
+  fi
+
+  # K3: hostnameRegex was auto-derived from the route's hostname.
+  # K_EXPECTED_REGEX already has metacharacters escaped — match the
+  # JSON-encoded form (the API response double-escapes the backslash).
+  k_expected_json=$(printf '%s' "$K_EXPECTED_REGEX" | sed 's/\\/\\\\/g')
+  if echo "$k_create" | grep -qF "\"hostnameRegex\":\"$k_expected_json\""; then
+    ok "K3: hostnameRegex auto-set to ^$K_HOSTNAME\$ (server-derived, not client-supplied)"
+  else
+    fail "K3: hostnameRegex NOT what we expected: $(echo "$k_create" | head -c 400)"
+  fi
+
+  # K4: tenantId + routeId stamped on the row.
+  if echo "$k_create" | grep -qE "\"tenantId\":\"$K_TENANT_ID\"" \
+     && echo "$k_create" | grep -qE "\"routeId\":\"$K_ROUTE_ID\""; then
+    ok "K4: tenantId + routeId stamped on created row"
+  else
+    fail "K4: ownership columns missing on response: $(echo "$k_create" | head -c 400)"
+  fi
+
+  # K5: cross-tenant probe — try posting same payload under a bogus
+  # tenant id. Should return 404 ROUTE_NOT_FOUND because loadTenantRoute
+  # joins on (route_id, domain.tenant_id) and refuses the mismatch.
+  K_FAKE_TENANT='00000000-0000-0000-0000-000000000000'
+  k_xtest=$(api_internal POST "/tenants/$K_FAKE_TENANT/routes/$K_ROUTE_ID/waf-exclusions" \
+    "{\"ruleId\":\"$K_RULE_ID\",\"scope\":\"args_names_only\",\"reason\":\"cross-tenant probe\"}")
+  if echo "$k_xtest" | grep -qE "ROUTE_NOT_FOUND|not found"; then
+    ok "K5: cross-tenant POST rejected (ROUTE_NOT_FOUND) — server enforces (tenant, route) pairing"
+  else
+    fail "K5: cross-tenant POST did NOT get rejected: $(echo "$k_xtest" | head -c 300)"
+  fi
+
+  # K6: the new row also appears in the admin listing (shared table).
+  if [[ -n "${k_id:-}" ]]; then
+    k_admin_list=$(api_internal GET /admin/security/waf-rule-exclusions)
+    if echo "$k_admin_list" | grep -qF "$k_id"; then
+      ok "K6: row appears in admin listing too (shared waf_rule_exclusions table)"
+    else
+      fail "K6: tenant row missing from admin list: $(echo "$k_admin_list" | head -c 400)"
+    fi
+  fi
+
+  # K7: reconciler picked it up — modsec-crs ConfigMap contains the
+  # rendered SecRule. Same retry pattern as Phase H.
+  k_cm=""
+  for _i in 1 2 3 4 5; do
+    sleep 2
+    k_cm=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+    if echo "$k_cm" | grep -qE "ctl:ruleRemoveTargetById=$K_RULE_ID;ARGS_NAMES"; then
+      break
+    fi
+  done
+  if echo "$k_cm" | grep -qE "ctl:ruleRemoveTargetById=$K_RULE_ID;ARGS_NAMES"; then
+    ok "K7: ConfigMap rendered SecRule for tenant-scoped exclusion"
+  else
+    fail "K7: ConfigMap missing rendered tenant exclusion: $(echo "$k_cm" | head -c 400)"
+  fi
+
+  # K8: cross-tenant DELETE probe — try to delete the row via a wrong
+  # tenant id. Should 404 (loadTenantRoute again).
+  if [[ -n "${k_id:-}" ]]; then
+    k_xdel=$(api_internal DELETE "/tenants/$K_FAKE_TENANT/routes/$K_ROUTE_ID/waf-exclusions/$k_id")
+    if echo "$k_xdel" | grep -qE "ROUTE_NOT_FOUND|not found"; then
+      ok "K8: cross-tenant DELETE rejected — tenant cannot delete other tenants' exclusions"
+    else
+      fail "K8: cross-tenant DELETE did NOT get rejected: $(echo "$k_xdel" | head -c 300)"
+    fi
+  fi
+
+  # K9: tenant DELETE removes the row.
+  if [[ -n "${k_id:-}" ]]; then
+    k_del=$(api_internal DELETE "/tenants/$K_TENANT_ID/routes/$K_ROUTE_ID/waf-exclusions/$k_id")
+    if echo "$k_del" | grep -q '"deleted"'; then
+      ok "K9: tenant DELETE removed the row"
+    else
+      fail "K9: tenant DELETE failed: $(echo "$k_del" | head -c 300)"
+    fi
+  fi
+
+  # K10: ConfigMap reverts to the empty-body banner after delete +
+  # reconcile.
+  k_cm_after=""
+  for _i in 1 2 3 4 5; do
+    sleep 2
+    k_cm_after=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+    if echo "$k_cm_after" | grep -q "No DB-rendered exclusions are currently enabled"; then
+      break
+    fi
+  done
+  if echo "$k_cm_after" | grep -q "No DB-rendered exclusions are currently enabled"; then
+    ok "K10: ConfigMap reverted to empty-body after tenant DELETE"
+  else
+    fail "K10: ConfigMap still contains tenant exclusion: $(echo "$k_cm_after" | head -c 300)"
+  fi
+fi
+
 # ─── Phase I — F1+F6 Stage C: L4 enforcement toggle (status + dryrun) ─
 #
 # Scope: verify the read + dryrun-toggle paths work end-to-end without
