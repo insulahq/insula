@@ -1147,6 +1147,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => proxyNetworksStop());
 
+        // Stalwart Domain + Listener self-healing reconciler. Bridges the
+        // gap when bootstrap.sh:configure_stalwart_full silently dropped
+        // a step (or never ran), or when admin operator-edits the
+        // mail_server_hostname and expects the cert / Stalwart Domain /
+        // submission+imap+http-acme listeners to follow. Decouples mail
+        // bring-up from NS-delegation status — ACME HTTP-01 only needs
+        // the A record + port 80, not a full apex delegation. See
+        // backend/src/modules/mail-admin/stalwart-domain-reconciler.ts
+        // header for the full rationale.
+        const { startStalwartDomainReconciler } = await import(
+          './modules/mail-admin/stalwart-domain-reconciler.js'
+        );
+        const stalwartDomainStop = startStalwartDomainReconciler({
+          core: k8sForImapsync.core,
+          db: app.db,
+          kubeconfigPath: kubePath,
+          logger: {
+            warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+            info: (...args: unknown[]) => app.log.info(args.join(' ')),
+          },
+        });
+        app.addHook('onClose', () => stalwartDomainStop());
+
         // IMAP-concurrency reverter: tenant-bundles capture + backup-restore
         // executors transiently elevate Stalwart's x:Imap.maxConcurrent from
         // 16 → 64 around mailbox Jobs to let imap-restore.py --workers 4
