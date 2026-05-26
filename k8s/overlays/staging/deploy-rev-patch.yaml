@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.1.0-05a439f"
+        platform.phoenix-host.net/deploy-rev: "0.1.0-13917de"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.1.0-05a439f"
+        platform.phoenix-host.net/deploy-rev: "0.1.0-13917de"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +34,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.1.0-05a439f"
+        platform.phoenix-host.net/deploy-rev: "0.1.0-13917de"
 ---
 # firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
@@ -48,4 +48,20 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.1.0-05a439f"
+        platform.phoenix-host.net/deploy-rev: "0.1.0-13917de"
+---
+# mail-stack-standby-replicate — :latest-tagged DaemonSet
+# (mail-backup-tools image) — same rationale as above. New
+# script changes in images/mail-backup-tools/ are baked into
+# :latest by ci-mail-backup-tools.yml; this annotation
+# ensures the running Pods restart to pick them up.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mail-stack-standby-replicate
+  namespace: mail
+spec:
+  template:
+    metadata:
+      annotations:
+        platform.phoenix-host.net/deploy-rev: "0.1.0-13917de"
