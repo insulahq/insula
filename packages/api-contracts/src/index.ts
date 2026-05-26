@@ -98,6 +98,7 @@ export * from './mail-snapshot.js';
 export * from './mail-archive.js';
 export * from './mail-placement.js';
 export * from './mail-health.js';
+export * from './mail-standby-reports.js';
 export * from './security-hardening.js';
 export * from './secrets-audit.js';
 export * from './secrets-bundle.js';
