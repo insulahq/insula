@@ -5,7 +5,7 @@ import MailSectionCard from '@/components/MailSectionCard';
 import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
-import MailStorageCard from '@/components/MailStorageCard';
+import MailNodeStorageCards from '@/components/email/MailNodeStorageCards';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
 
 type OpsTab = 'placement' | 'backups' | 'storage';
@@ -97,7 +97,7 @@ export default function EmailOperationsPage() {
 
         {tab === 'storage' && (
           <div className="space-y-4">
-            <MailStorageCard />
+            <MailNodeStorageCards />
             <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
               <summary className="cursor-pointer px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
                 Blob store (S3-compatible, for large attachments)
