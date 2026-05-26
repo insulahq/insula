@@ -1393,9 +1393,9 @@ function StaticBlocklistCard({ onOpenAdd }: { onOpenAdd: () => void }) {
     <div className="rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50/40 dark:bg-purple-900/10 p-4" data-testid="static-blocklist-card">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-medium text-purple-900 dark:text-purple-100">Static blocklist — long-term bans (1 year)</div>
+          <div className="text-sm font-medium text-purple-900 dark:text-purple-100">Static blocklist — permanent bans</div>
           <div className="text-[11px] text-purple-800 dark:text-purple-200/70 mt-1">
-            For known-bad IPs from your own threat intelligence. Static bans appear in the table below with a <code className="text-[10px]">static</code> badge and a <strong>1 year</strong> expiry (re-add manually if still needed).
+            For known-bad IPs from your own threat intelligence. Static bans appear in the table below with a <code className="text-[10px]">static</code> badge and an effectively-permanent (100 year) expiry — CrowdSec has no "never expires" flag, so the longest practical duration is the truest expression of "permanent".
           </div>
         </div>
         <button
@@ -1424,12 +1424,12 @@ function StaticBanModal({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="static-ban-modal">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Add static ban (1 year)</h3>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Add static ban (permanent)</h3>
           <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
         </div>
         <div className="px-5 py-4 space-y-3 text-sm">
           <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-2 text-xs text-amber-800 dark:text-amber-200">
-            Static bans last <strong>1 year</strong>. The operator must re-add manually after expiry. For shorter bans use the regular &ldquo;Add manual ban&rdquo; flow.
+            Static bans are <strong>effectively permanent</strong> (100-year duration — the longest practical setting; CrowdSec has no "never expires" flag). Use the regular &ldquo;Add manual ban&rdquo; flow for shorter, time-boxed bans.
           </div>
           <div>
             <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">IP / CIDR</label>
@@ -1622,6 +1622,7 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
 
 export function WafExclusionsTab() {
   const [includeDisabled, setIncludeDisabled] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const { data, isLoading, isError, error, refetch, isFetching } = useWafRuleExclusions({ includeDisabled });
   const exclusions: ReadonlyArray<WafRuleExclusion> = data?.data?.exclusions ?? [];
   const update = useUpdateWafRuleExclusion();
@@ -1671,6 +1672,14 @@ export function WafExclusionsTab() {
           data-testid="exclusions-refresh"
         >
           <RefreshCw size={12} className={isFetching ? 'animate-spin' : ''} /> Reload
+        </button>
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+          data-testid="exclusions-add"
+        >
+          <Plus size={12} /> Add exclusion
         </button>
       </div>
 
@@ -1750,14 +1759,28 @@ export function WafExclusionsTab() {
               {exclusions.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
-                    No exclusions configured. Use the <strong>Whitelist</strong> button on
-                    rows in the <em>WAF Events</em> tab to add surgical exclusions.
+                    No exclusions configured. Use <strong>Add exclusion</strong> above for
+                    a manual entry, or the <strong>Whitelist</strong> button on rows in the
+                    <em> WAF Events</em> tab to add a surgical exclusion pre-filled from an
+                    event.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+      )}
+
+      {addOpen && (
+        <WhitelistRuleModal
+          // Empty prefill — operator types everything from scratch.
+          // The modal reuses the WAF-Events "Whitelist this rule" form so
+          // there's only one validation surface (regex parseability,
+          // anti-injection on the host regex, rule-id digits) instead of
+          // two diverging copies.
+          prefill={{ ruleId: '', hostnameRegex: '^example\\.com$', reason: '' }}
+          onClose={() => setAddOpen(false)}
+        />
       )}
     </section>
   );
