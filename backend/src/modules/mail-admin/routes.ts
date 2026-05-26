@@ -50,6 +50,7 @@ import {
   updateMailArchiveSchedule,
 } from './archive-schedule.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
+import { getStandbyReports, recordStandbyReport } from './standby-reports.js';
 import {
   getMailSnapshotSchedule,
   updateMailSnapshotSchedule,
@@ -1156,6 +1157,69 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       }
       await recordMailSnapshotLastRun(app.db, { totalSnapshotSizeBytes, snapshotCount });
       return success({ recorded: true });
+    },
+  );
+
+  // ─── Internal: standby-replicate per-iteration report ───────────
+  // Called by the mail-stack-standby-replicate DaemonSet on every
+  // successful 5-min rsync. Stores per-node freshness data the
+  // operator surface uses to render "node X: 2 min ago, 18 MB,
+  // 59 files". Same auth pattern as snapshot-last-run above
+  // (PLATFORM_INTERNAL_SECRET bearer).
+  app.post(
+    '/internal/mail/standby-replicate-report',
+    { config: { skipAuth: true } },
+    async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
+      const expectedToken = process.env.PLATFORM_INTERNAL_SECRET
+        ?? process.env.PLATFORM_INTERNAL_TOKEN;
+      if (!expectedToken) {
+        throw new ApiError(
+          'INTERNAL_TOKEN_NOT_CONFIGURED',
+          'PLATFORM_INTERNAL_SECRET env var must be set for /internal/* endpoints',
+          503,
+        );
+      }
+      const auth = req.headers['authorization'] ?? '';
+      const token = Array.isArray(auth) ? auth[0] : auth;
+      if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
+        throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
+      }
+      const body = req.body as {
+        node?: unknown;
+        sizeBytes?: unknown;
+        fileCount?: unknown;
+        durationSeconds?: unknown;
+      };
+      const node = typeof body.node === 'string' ? body.node.trim() : '';
+      if (!node || node.length > 253) {
+        throw new ApiError('VALIDATION_ERROR', 'node must be a non-empty hostname (≤253 chars)', 400);
+      }
+      const sizeBytes = Number(body.sizeBytes ?? 0);
+      const fileCount = Number(body.fileCount ?? 0);
+      const durationSeconds = Number(body.durationSeconds ?? 0);
+      if (
+        !Number.isFinite(sizeBytes) || sizeBytes < 0 ||
+        !Number.isFinite(fileCount) || fileCount < 0 ||
+        !Number.isFinite(durationSeconds) || durationSeconds < 0
+      ) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          'sizeBytes, fileCount, durationSeconds must be non-negative numbers',
+          400,
+        );
+      }
+      await recordStandbyReport(app.db, { node, sizeBytes, fileCount, durationSeconds });
+      return success({ recorded: true });
+    },
+  );
+
+  // ─── Admin: read standby-replicate per-node freshness ────────────
+  app.get(
+    '/admin/mail/standby-reports',
+    { preHandler: requireRole('admin') },
+    async () => {
+      const reports = await getStandbyReports(app.db);
+      return success({ reports });
     },
   );
 
