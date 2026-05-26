@@ -297,6 +297,70 @@ else
   fi
 fi
 
+# ─────────────────────────────────────────────────────────────────────
+# Phase H — Unit C surface (full-mode CLI argv handling)
+# ─────────────────────────────────────────────────────────────────────
+# Real CNPG recovery + mail restore requires a multi-node staging
+# cluster with Longhorn + barman archive + mail PVC populated — that
+# coverage lives in the staging E2E suite. Here we exercise the CLI
+# surface: required-arg validation, label dispatch on the stdout JSON,
+# help-text presence.
+
+echo
+echo "==> Phase H: Unit C full-mode CLI surface"
+
+# H1: --mode=full without --target-mail-node fails fast with exit 2.
+if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
+    --bundle /dev/null --age-key /dev/null --mode full \
+    > "$WORK_DIR/h1.stdout" 2> "$WORK_DIR/h1.stderr"; then
+  fail "H1 mode=full without --target-mail-node should exit non-zero"
+else
+  EXIT_CODE=$?
+  if [[ "$EXIT_CODE" == "2" ]] && grep -q "target-mail-node" "$WORK_DIR/h1.stderr"; then
+    ok "H1 mode=full without --target-mail-node exits 2 with clear error"
+  else
+    fail "H1 expected exit 2 + target-mail-node mention; got exit $EXIT_CODE: $(cat "$WORK_DIR/h1.stderr")"
+  fi
+fi
+
+# H2: --mode=full without --confirm-cluster fails fast.
+if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
+    --bundle /dev/null --age-key /dev/null --mode full \
+    --target-mail-node staging1 \
+    > "$WORK_DIR/h2.stdout" 2> "$WORK_DIR/h2.stderr"; then
+  fail "H2 mode=full without --confirm-cluster should exit non-zero"
+else
+  EXIT_CODE=$?
+  if [[ "$EXIT_CODE" == "2" ]] && grep -q "confirm-cluster" "$WORK_DIR/h2.stderr"; then
+    ok "H2 mode=full without --confirm-cluster exits 2 with clear error"
+  else
+    fail "H2 expected exit 2 + confirm-cluster mention; got exit $EXIT_CODE"
+  fi
+fi
+
+# H3: unknown --mode value rejected (defense-in-depth — the TS-narrowed
+# union doesn't help if the operator typos).
+if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
+    --bundle /dev/null --age-key /dev/null --mode unknown-mode \
+    > "$WORK_DIR/h3.stdout" 2> "$WORK_DIR/h3.stderr"; then
+  fail "H3 mode=unknown-mode should exit non-zero"
+else
+  EXIT_CODE=$?
+  if [[ "$EXIT_CODE" == "2" ]]; then
+    ok "H3 unknown --mode value exits 2"
+  else
+    fail "H3 expected exit 2; got $EXIT_CODE"
+  fi
+fi
+
+# H4: --help mentions both modes (catches a future regression where
+# the help text drifts from the supported surface).
+if "$REPO_ROOT/scripts/dr-restore-bundle.sh" --help 2>/dev/null | grep -q "partial|full"; then
+  ok "H4 --help mentions both partial and full modes"
+else
+  fail "H4 --help text doesn't mention 'partial|full'"
+fi
+
 echo
 echo "─── Summary ───"
 echo "  passed: $PASS"

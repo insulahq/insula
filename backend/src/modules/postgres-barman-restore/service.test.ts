@@ -234,6 +234,64 @@ describe('createBarmanRestore', () => {
       recoveryTargetTime: null,
     })).rejects.toMatchObject({ code: 409 });
   });
+
+  // ── Unit C DR overrides ──────────────────────────────────────────────
+  // The DR flow points at the OLD cluster's archive (recorded in the
+  // bundle) — which may have a different serverName + objectStore from
+  // the freshly-bootstrapped source. The overrides let DR pass the
+  // bundle values verbatim. These tests pin the wiring: without them
+  // a future refactor that drops the override would silently misroute
+  // bootstrap.recovery to the wrong (empty) archive.
+
+  it('serverNameOverride wins over sourceClusterName in externalClusters[]', async () => {
+    const { api, created } = makeCustom({ source: sourceCluster });
+    await createBarmanRestore(api, {
+      namespace: 'platform',
+      sourceClusterName: 'system-db',
+      newClusterName: 'restored-dr',
+      recoveryTargetTime: null,
+      serverNameOverride: 'old-cluster-archive',
+    });
+    expect(created).toHaveLength(1);
+    const params = (created[0] as any).spec.externalClusters[0].plugin.parameters;
+    expect(params.serverName).toBe('old-cluster-archive');
+  });
+
+  it('objectStoreOverride wins over source plugin parameter', async () => {
+    const { api, created } = makeCustom({ source: sourceCluster });
+    await createBarmanRestore(api, {
+      namespace: 'platform',
+      sourceClusterName: 'system-db',
+      newClusterName: 'restored-dr-2',
+      recoveryTargetTime: null,
+      objectStoreOverride: 'old-cluster-objectstore',
+    });
+    expect(created).toHaveLength(1);
+    const params = (created[0] as any).spec.externalClusters[0].plugin.parameters;
+    expect(params.barmanObjectName).toBe('old-cluster-objectstore');
+  });
+
+  it('skipFreshBackup honours per-call flag even without the env var', async () => {
+    // Re-disable the env-driven skip so the per-call flag is the only
+    // signal that suppresses the fresh-backup mitigation.
+    delete process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP;
+    const { api, created } = makeCustom({ source: sourceCluster });
+    const result = await createBarmanRestore(api, {
+      namespace: 'platform',
+      sourceClusterName: 'system-db',
+      newClusterName: 'restored-dr-3',
+      recoveryTargetTime: '2026-05-22T12:00:00Z',
+      skipFreshBackup: true,
+    });
+    // With skipFreshBackup=true, NO Backup CR was created (only the
+    // restored Cluster CR). The mock collects every createNamespacedCustomObject
+    // call into `created`; a non-skipped run would have a Backup + a Cluster.
+    expect(created.filter((c: any) => c.kind === 'Backup')).toHaveLength(0);
+    expect(result.freshBackupTriggered).toBe(false);
+    expect(result.freshBackupId).toBeNull();
+    // Restore the test default for downstream tests.
+    process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP = 'true';
+  });
 });
 
 describe('getBarmanRestoreStatus', () => {

@@ -97,6 +97,33 @@ export interface CreateBarmanRestoreInput {
   /** Optional — when set, the new Cluster is sized to N instances.
    *  Defaults to 1 (cheapest restore; operator can scale up later). */
   readonly instances?: number;
+  /** Optional override for the barman-cloud `serverName` plugin parameter
+   *  on `externalClusters[0]`. Defaults to `sourceClusterName`.
+   *
+   *  DR-only escape hatch (Unit C): in DR full-mode the SOURCE cluster
+   *  is the freshly-bootstrapped one (same name as the old cluster by
+   *  bootstrap convention, but the barman archive serverName is whatever
+   *  the OLD cluster was named in the bundle). When the bundle's
+   *  `cnpgClusters[].serverName` differs from the live source's name,
+   *  pass the bundle value here so bootstrap.recovery finds the archive.
+   *  When omitted, behaves exactly as before. */
+  readonly serverNameOverride?: string;
+  /** Optional override for the barman-cloud `barmanObjectName` plugin
+   *  parameter. Defaults to the value read from the source cluster's
+   *  `spec.plugins[barman-cloud].parameters.barmanObjectName`.
+   *
+   *  DR-only (Unit C): when restoring from a bundle, the bundle records
+   *  the OLD cluster's ObjectStore name. If the freshly-bootstrapped
+   *  source has the same name (bootstrap convention), this is a no-op.
+   *  If they differ, pass the bundle value. When omitted, behaves
+   *  exactly as before. */
+  readonly objectStoreOverride?: string;
+  /** Skip the PRE-restore fresh CNPG Backup. In DR mode the source
+   *  is a freshly-bootstrapped cluster with no useful WAL to flush, so
+   *  the mitigation is a no-op and only adds latency. Default false
+   *  (preserves the existing "always run pre-restore backup when
+   *  recoveryTargetTime is set" behaviour). */
+  readonly skipFreshBackup?: boolean;
 }
 
 export interface CreateBarmanRestoreResult {
@@ -279,6 +306,17 @@ export async function createBarmanRestore(
   validateClusterName(inputs.namespace, 'namespace');
   validateClusterName(inputs.sourceClusterName, 'sourceClusterName');
   validateClusterName(inputs.newClusterName, 'newClusterName');
+  // Defense-in-depth (security review HIGH#1): the bundle Zod schema
+  // validates serverName / objectStoreName at parse time, but a future
+  // internal caller could pass synthesized values that bypass Zod. Apply
+  // the same DNS-label regex at the API boundary so a crafted value
+  // can't reach the barman-cloud plugin parameters verbatim.
+  if (inputs.serverNameOverride !== undefined) {
+    validateClusterName(inputs.serverNameOverride, 'serverNameOverride');
+  }
+  if (inputs.objectStoreOverride !== undefined) {
+    validateClusterName(inputs.objectStoreOverride, 'objectStoreOverride');
+  }
   if (inputs.newClusterName === inputs.sourceClusterName) {
     throw new BarmanRestoreError('newClusterName MUST differ from sourceClusterName — side-by-side restore creates a separate Cluster CR', 400);
   }
@@ -322,11 +360,25 @@ export async function createBarmanRestore(
     throw err;
   }
 
-  const objectStore = getObjectStoreName(source);
+  // Resolve the ObjectStore name. Default = whatever the source cluster's
+  // barman-cloud plugin parameter says; DR (Unit C) can pass an explicit
+  // override from the bundle when the live source's value differs from
+  // the archive's. The validity check (must be non-empty) applies to
+  // both paths.
+  const sourceObjectStore = getObjectStoreName(source);
+  const objectStore = inputs.objectStoreOverride ?? sourceObjectStore;
   if (!objectStore) {
     throw new BarmanRestoreError(
       `Source cluster ${inputs.namespace}/${inputs.sourceClusterName} does not use the barman-cloud plugin — barman-cloud restore is only available for plugin-mode clusters`,
       422,
+    );
+  }
+  if (inputs.objectStoreOverride && sourceObjectStore && sourceObjectStore !== inputs.objectStoreOverride) {
+    // Informational log only — operator may legitimately be restoring a
+    // bundle whose objectStore was renamed after the source went down.
+    log?.warn?.(
+      { sourceObjectStore, override: inputs.objectStoreOverride },
+      'barman-restore: objectStoreOverride differs from source cluster plugin value — using override',
     );
   }
 
@@ -412,7 +464,12 @@ export async function createBarmanRestore(
             name: BARMAN_PLUGIN_NAME,
             parameters: {
               [PARAM_OBJECT_NAME]: objectStore,
-              serverName: inputs.sourceClusterName,
+              // serverName resolution: bundle override > sourceClusterName
+              // (the historical default). DR full-mode (Unit C) passes the
+              // bundle's `cnpgClusters[].serverName` here so bootstrap.
+              // recovery resolves the OLD cluster's archive even when the
+              // freshly-bootstrapped source has a different name.
+              serverName: inputs.serverNameOverride ?? inputs.sourceClusterName,
             },
           },
         },
@@ -449,7 +506,12 @@ export async function createBarmanRestore(
   // Disabled when SKIP_FRESH_BACKUP=true (test mode) or when no
   // recoveryTargetTime is set (no WAL replay needed → no gap to close).
   let freshBackup: { ok: boolean; backupId?: string; warning?: string } = { ok: true };
-  const skipFresh = process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP === 'true';
+  // DR / test escape hatches:
+  //   - per-call `inputs.skipFreshBackup` (Unit C — DR full-mode source is
+  //     a freshly-bootstrapped cluster with no useful WAL to flush)
+  //   - env BARMAN_RESTORE_SKIP_FRESH_BACKUP=true (CI default for harness)
+  const skipFresh = inputs.skipFreshBackup === true
+    || process.env.BARMAN_RESTORE_SKIP_FRESH_BACKUP === 'true';
   if (inputs.recoveryTargetTime && !skipFresh) {
     log?.info?.({ source: inputs.sourceClusterName }, 'barman-restore: triggering fresh backup to close WAL gap before restore');
     freshBackup = await triggerFreshBarmanBackup(custom, inputs.namespace, inputs.sourceClusterName, log);
@@ -479,7 +541,7 @@ export async function createBarmanRestore(
     objectStoreName: objectStore,
     recoveryTargetTime: inputs.recoveryTargetTime,
     clusterUid: created.metadata?.uid ?? '',
-    freshBackupTriggered: !!inputs.recoveryTargetTime && !skipFresh,
+    freshBackupTriggered: Boolean(inputs.recoveryTargetTime) && !skipFresh,
     freshBackupId: freshBackup.backupId ?? null,
     freshBackupWarning: freshBackup.warning ?? null,
   };
