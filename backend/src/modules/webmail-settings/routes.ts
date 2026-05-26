@@ -206,6 +206,35 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       }
     }
 
+    // Stalwart Domain + Listener self-heal — runs after every hostname
+    // save so the operator doesn't have to wait for the 60s reconciler
+    // tick. Idempotent: ensures the x:Domain entry, AcmeProvider,
+    // Automatic certificateManagement with the new SAN, the three
+    // required listeners (http-acme/submission/imap), and fires
+    // AcmeRenewal. Non-blocking — any failure is logged and the
+    // scheduled tick will retry. Skips silently if k8s isn't wired
+    // (test/dev contexts).
+    if (k8s && parsed.data.mailServerHostname !== undefined) {
+      try {
+        const { runStalwartDomainReconcilerTick } = await import(
+          '../mail-admin/stalwart-domain-reconciler.js'
+        );
+        await runStalwartDomainReconcilerTick({
+          core: k8s.core,
+          db: app.db,
+          logger: {
+            warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+            info: (...args: unknown[]) => app.log.info(args.join(' ')),
+          },
+        });
+      } catch (err) {
+        app.log.warn(
+          { err },
+          'webmail-settings: inline Stalwart domain reconcile failed (scheduler will retry)',
+        );
+      }
+    }
+
     // Phase 3.B.3: if the global rate limit default was changed,
     // reconcile the Stalwart outbound config.
     if (k8s && parsed.data.emailSendRateLimitDefault !== undefined) {

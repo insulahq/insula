@@ -2,7 +2,14 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import EmailManagement from '../pages/EmailManagement';
+// Page split 2026-05-26: the legacy EmailManagement.tsx was replaced
+// by three child pages under /email/* sharing EmailPageHeader. This
+// test now targets EmailDomainsPage (header + Domains & Relays
+// section, the default landing) which preserves every test-id the
+// suite asserts on.
+import EmailDomainsPage from '../pages/email/EmailDomainsPage';
+
+const EmailManagement = EmailDomainsPage;
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({

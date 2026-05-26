@@ -377,6 +377,37 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // until we rename the UI label in a follow-up.
   app.post('/admin/mail/rotate-stalwart-password', { preHandler: requireRole('super_admin') }, handleRotateAdminPassword);
 
+  // Re-provision Stalwart (Domain + AcmeProvider + Cert Management + 3
+  // required NetworkListeners + AcmeRenewal task). Idempotent — every
+  // step checks for existence before creating, never destroys
+  // operator-customized objects. Same code path as the 30-min scheduled
+  // reconciler, just triggered on-demand by the operator's "Re-provision"
+  // button. Returns the result so the UI can show "what changed".
+  app.post(
+    '/admin/mail/stalwart-reprovision',
+    { preHandler: requireRole('admin') },
+    async (req: { user?: { sub?: string } }) => {
+      const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const cfg = app.config as Record<string, unknown>;
+      const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      app.log.warn(
+        { userId: req.user?.sub ?? 'unknown' },
+        'mail-admin: operator-triggered Stalwart re-provision',
+      );
+      const result = await runStalwartDomainReconcilerTick({
+        core: k8s.core,
+        db: app.db,
+        kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        logger: {
+          warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+          info: (...args: unknown[]) => app.log.info(args.join(' ')),
+        },
+      });
+      return success(result);
+    },
+  );
+
   // Cut 3 (2026-05-05): rotate the Stalwart `master@master.local` Account
   // password (consumed by Roundcube's jwt_auth plugin for IMAP master-
   // user impersonation). Same JMAP+Secret mechanics as the admin route
