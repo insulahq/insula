@@ -327,6 +327,13 @@ export async function ageEncrypt(
     const err: Buffer[] = [];
     proc.stdout.on('data', (c: Buffer) => out.push(c));
     proc.stderr.on('data', (c: Buffer) => err.push(c));
+    // EPIPE protection (Unit B TS review HIGH-1): when `age` exits
+    // early it closes stdin before we finish writing. For payloads
+    // >64 KB (OS pipe buffer), Node raises EPIPE on proc.stdin and
+    // converts the unhandled stream error into an uncaught exception.
+    // Swallow it: the 'close' handler below rejects with the
+    // meaningful error from age's stderr.
+    proc.stdin.on('error', () => { /* see EPIPE note above */ });
     proc.on('error', reject);
     proc.on('close', (code) => {
       if (code !== 0) {

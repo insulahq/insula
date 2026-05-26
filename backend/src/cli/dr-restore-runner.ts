@@ -49,24 +49,35 @@ function parseArgs(argv: ReadonlyArray<string>): Args {
   let mode: string | undefined;
   let strict = false;
   let ageBinary: string | undefined;
+  // Helper: read the value of a flag that requires one. Exits 2 with
+  // a "requires a value" message rather than silently treating the
+  // next flag as the value (or `undefined` if at end of argv).
+  const takeValue = (i: number, flag: string): { value: string; nextIndex: number } => {
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith('--')) {
+      process.stderr.write(`dr-restore-runner: ${flag} requires a value\n`);
+      process.exit(2);
+    }
+    return { value: v, nextIndex: i + 1 };
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
-      case '--bundle':
-        bundle = argv[++i];
-        break;
-      case '--age-key':
-        ageKey = argv[++i];
-        break;
-      case '--mode':
-        mode = argv[++i];
-        break;
+      case '--bundle': {
+        const t = takeValue(i, '--bundle'); bundle = t.value; i = t.nextIndex; break;
+      }
+      case '--age-key': {
+        const t = takeValue(i, '--age-key'); ageKey = t.value; i = t.nextIndex; break;
+      }
+      case '--mode': {
+        const t = takeValue(i, '--mode'); mode = t.value; i = t.nextIndex; break;
+      }
       case '--strict':
         strict = true;
         break;
-      case '--age-binary':
-        ageBinary = argv[++i];
-        break;
+      case '--age-binary': {
+        const t = takeValue(i, '--age-binary'); ageBinary = t.value; i = t.nextIndex; break;
+      }
       case '-h':
       case '--help':
         printHelp();
@@ -142,18 +153,22 @@ async function main(): Promise<void> {
     await closeDb();
     process.exit(0);
   } catch (err) {
-    if (err instanceof LegacyBundleError) {
-      process.stderr.write(`dr-restore-runner: LEGACY_BUNDLE — ${err.message}\n`);
-    } else if (err instanceof BundleVersionError) {
-      process.stderr.write(`dr-restore-runner: UNKNOWN_VERSION — ${err.message}\n`);
-    } else if (err instanceof BundleDecryptError) {
-      process.stderr.write(`dr-restore-runner: DECRYPT_ERROR — ${err.message}\n`);
-    } else if (err instanceof DrImportError) {
-      process.stderr.write(`dr-restore-runner: IMPORT_ERROR — ${err.message}\n`);
-    } else {
-      process.stderr.write(`dr-restore-runner: UNEXPECTED — ${(err as Error).message ?? String(err)}\n`);
-    }
-    process.stdout.write(JSON.stringify({ ok: false, error: (err as Error).message ?? String(err) }) + '\n');
+    // Stderr: full diagnostic — operator-facing, intended for a
+    // terminal or journalctl, NOT a public log artefact.
+    let label: 'LEGACY_BUNDLE' | 'UNKNOWN_VERSION' | 'DECRYPT_ERROR' | 'IMPORT_ERROR' | 'UNEXPECTED';
+    if (err instanceof LegacyBundleError) label = 'LEGACY_BUNDLE';
+    else if (err instanceof BundleVersionError) label = 'UNKNOWN_VERSION';
+    else if (err instanceof BundleDecryptError) label = 'DECRYPT_ERROR';
+    else if (err instanceof DrImportError) label = 'IMPORT_ERROR';
+    else label = 'UNEXPECTED';
+    const fullMessage = (err as Error).message ?? String(err);
+    process.stderr.write(`dr-restore-runner: ${label} — ${fullMessage}\n`);
+    // Stdout JSON (security review M-S2): emit ONLY the label, never
+    // the verbatim error body. age's stderr can include the key file
+    // path or recipient fingerprint — if a CI pipeline captures
+    // stdout to a public artefact, that path leaks. The label is
+    // enough for programmatic dispatch; stderr is the diagnostic.
+    process.stdout.write(JSON.stringify({ ok: false, errorCode: label }) + '\n');
     await closeDb();
     process.exit(1);
   }

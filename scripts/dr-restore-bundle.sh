@@ -39,8 +39,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT/backend"
 
-# Pass argv through to the TS runner via `tsx` (already a dev dep
-# in this repo — see backend/package.json `dev: tsx watch ...` and
-# `db:migrate: tsx src/db/migrate.ts`). Same pattern as the migrate
-# script + the existing pitr-job ts entrypoint.
-exec npx tsx src/cli/dr-restore-runner.ts "$@"
+# Pass argv through to the TS runner via `tsx`. We resolve the
+# binary directly from node_modules/.bin instead of `npx tsx` so
+# the shim NEVER attempts a registry download on a cold node
+# (security review I-S1). Prerequisite: `npm ci` has been run.
+TSX_BIN="$REPO_ROOT/backend/node_modules/.bin/tsx"
+if [[ ! -x "$TSX_BIN" ]]; then
+  echo "dr-restore-bundle.sh: tsx not found at $TSX_BIN" >&2
+  echo "                     run 'cd backend && npm ci' first" >&2
+  exit 2
+fi
+exec "$TSX_BIN" src/cli/dr-restore-runner.ts "$@"
