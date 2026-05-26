@@ -89,7 +89,7 @@ import type {
   CrowdsecAutobanOutcome,
   CrowdsecAutobanRun,
   CrowdsecL4Mode,
-  WafRuleExclusion,
+  WafRuleExclusionAdminListResponse,
   WafRuleExclusionScope,
 } from '@k8s-hosting/api-contracts';
 import { buildHostnameRegexFromEventHost } from '@k8s-hosting/api-contracts';
@@ -1624,7 +1624,7 @@ export function WafExclusionsTab() {
   const [includeDisabled, setIncludeDisabled] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const { data, isLoading, isError, error, refetch, isFetching } = useWafRuleExclusions({ includeDisabled });
-  const exclusions: ReadonlyArray<WafRuleExclusion> = data?.data?.exclusions ?? [];
+  const exclusions: WafRuleExclusionAdminListResponse['exclusions'] = data?.data?.exclusions ?? [];
   const update = useUpdateWafRuleExclusion();
   const del = useDeleteWafRuleExclusion();
 
@@ -1698,6 +1698,7 @@ export function WafExclusionsTab() {
                 <th className="px-4 py-2 text-left">Rule</th>
                 <th className="px-4 py-2 text-left">Host regex (X-Forwarded-Host)</th>
                 <th className="px-4 py-2 text-left">Scope</th>
+                <th className="px-4 py-2 text-left">Owner</th>
                 <th className="px-4 py-2 text-left">Reason</th>
                 <th className="px-4 py-2 text-left">By / when</th>
                 <th className="px-4 py-2 text-left">Status</th>
@@ -1714,6 +1715,25 @@ export function WafExclusionsTab() {
                       <span className="rounded bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200 px-2 py-0.5 text-[10px] uppercase">full disable</span>
                     ) : (
                       <span className="rounded bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-200 px-2 py-0.5 text-[10px] uppercase">args_names</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-xs">
+                    {/* B2 — tenant-owned rows show the tenant name as a
+                        link to /clients/:tenantId; admin-owned rows show
+                        a plain "admin" badge. tenantName is provided by
+                        the admin LEFT JOIN; tenantId only is enough for
+                        the link target. */}
+                    {x.tenantId ? (
+                      <a
+                        href={`/clients/${x.tenantId}`}
+                        className="inline-flex items-center gap-1 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 px-2 py-0.5 text-[10px] hover:underline"
+                        data-testid={`exclusion-tenant-${x.id}`}
+                        title={`Tenant-scoped exclusion. Click to open ${x.tenantName ?? x.tenantId}.`}
+                      >
+                        {x.tenantName ?? x.tenantId.slice(0, 8)}
+                      </a>
+                    ) : (
+                      <span className="rounded bg-gray-100 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400 px-2 py-0.5 text-[10px] uppercase">admin</span>
                     )}
                   </td>
                   <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-[280px]">{x.reason}</td>
@@ -1758,7 +1778,7 @@ export function WafExclusionsTab() {
               ))}
               {exclusions.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                  <td colSpan={8} className="px-4 py-8 text-center text-sm text-gray-500">
                     No exclusions configured. Use <strong>Add exclusion</strong> above for
                     a manual entry, or the <strong>Whitelist</strong> button on rows in the
                     <em> WAF Events</em> tab to add a surgical exclusion pre-filled from an

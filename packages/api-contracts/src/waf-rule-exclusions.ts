@@ -73,6 +73,18 @@ export const wafRuleExclusionListResponseSchema = z.object({
 });
 export type WafRuleExclusionListResponse = z.infer<typeof wafRuleExclusionListResponseSchema>;
 
+/**
+ * Admin list variant — same row shape PLUS tenantName from a LEFT JOIN
+ * on tenants. Null for admin-scoped (tenantId IS NULL) rows.
+ */
+export const wafRuleExclusionAdminListResponseSchema = z.object({
+  exclusions: z.array(wafRuleExclusionSchema.extend({
+    tenantName: z.string().nullable(),
+  })),
+});
+export type WafRuleExclusionAdminListResponse =
+  z.infer<typeof wafRuleExclusionAdminListResponseSchema>;
+
 // ─── Tenant-scoped CRUD ──────────────────────────────────────────────────
 //
 // B2: tenants can manage exclusions for ONE of their routes (and only
