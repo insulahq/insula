@@ -258,28 +258,37 @@ export const backupConfigurationRowSchema = z.object({
   sshHost: z.string().nullable(),
   sshPort: z.number().int().nullable(),
   sshUser: z.string().nullable(),
-  sshKeyEncrypted: z.string().nullable(),
-  sshPasswordEncrypted: z.string().nullable(),
+  // ssh credential columns are `text` in the DB (no length cap). The
+  // SSH-private-key encrypted blob can run to several KB after AES-GCM
+  // + base64. We allow the same range here.
+  sshKeyEncrypted: z.string().max(16384).nullable(),
+  sshPasswordEncrypted: z.string().max(16384).nullable(),
   sshPath: z.string().nullable(),
   s3Endpoint: z.string().nullable(),
   s3Bucket: z.string().nullable(),
   s3Region: z.string().nullable(),
-  s3AccessKeyEncrypted: z.string().nullable(),
-  s3SecretKeyEncrypted: z.string().nullable(),
+  // s3/cifs encrypted columns are varchar(500) in the DB (database
+  // review M-D2). Zod cap mirrors the DB cap so an oversized blob
+  // fails at parse time with a clear error rather than mid-INSERT.
+  s3AccessKeyEncrypted: z.string().max(500).nullable(),
+  s3SecretKeyEncrypted: z.string().max(500).nullable(),
   s3Prefix: z.string().nullable(),
   s3UsePathStyle: z.boolean(),
   cifsHost: z.string().nullable(),
   cifsPort: z.number().int().nullable(),
   cifsShare: z.string().nullable(),
   cifsUser: z.string().nullable(),
-  cifsPasswordEncrypted: z.string().nullable(),
+  cifsPasswordEncrypted: z.string().max(500).nullable(),
   cifsDomain: z.string().nullable(),
   cifsPath: z.string().nullable(),
   retentionDays: z.number().int(),
   scheduleExpression: z.string().nullable(),
   enabled: z.number().int(),
   active: z.boolean(),
-  drainTimeoutSeconds: z.number().int(),
+  // Range matches the CHECK constraint added in migration 0017
+  // (database review M-D1): an out-of-range source value now fails
+  // at parse time, before any transaction opens.
+  drainTimeoutSeconds: z.number().int().min(30).max(1800),
   /** Forced to TRUE for every row on export. Unit B's importer
    *  expects this and would refuse a row with readOnly:false (that
    *  would be a malformed bundle — DR cannot ship a writable target). */

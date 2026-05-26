@@ -18,6 +18,8 @@ interface MockOpts {
   assignThrowOn?: number;
   /** Storage policy tier returned by probeClusterState (sets cluster.topology). */
   storagePolicyTier?: 'local' | 'ha' | null;
+  /** mailPortExposureMode returned by probeClusterState (sets cluster.mailPortMode). */
+  systemSettingsMode?: 'allServerNodes' | 'thisNodeOnly' | null;
 }
 
 function createMockDb(opts: MockOpts = {}) {
@@ -60,10 +62,21 @@ function createMockDb(opts: MockOpts = {}) {
   });
   const setConfigBudget = (n: number) => { configBudget = n; };
 
-  // probeClusterState's storage-policy lookup
+  // probeClusterState makes TWO .select().from().limit() calls now:
+  // first platform_storage_policy.tier, then system_settings.mode. The
+  // mock returns them in that order via a call counter.
+  let probeCallIndex = 0;
   const limitFn = vi.fn().mockImplementation(() => {
-    if (opts.storagePolicyTier === undefined) return Promise.resolve([]);
-    return Promise.resolve(opts.storagePolicyTier === null ? [] : [{ tier: opts.storagePolicyTier }]);
+    const idx = probeCallIndex++;
+    if (idx === 0) {
+      if (opts.storagePolicyTier === undefined) return Promise.resolve([]);
+      return Promise.resolve(opts.storagePolicyTier === null ? [] : [{ tier: opts.storagePolicyTier }]);
+    }
+    if (idx === 1) {
+      if (opts.systemSettingsMode === undefined) return Promise.resolve([]);
+      return Promise.resolve(opts.systemSettingsMode === null ? [] : [{ mode: opts.systemSettingsMode }]);
+    }
+    return Promise.resolve([]);
   });
   const fromFn = vi.fn().mockReturnValue({ limit: limitFn });
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
@@ -136,6 +149,15 @@ beforeEach(() => {
 // ─── importDrRows ────────────────────────────────────────────────────
 
 describe('importDrRows — invariants', () => {
+  // NOTE (DB review D-L4): this test verifies the IMPORTER's loop
+  // sequencing against a mock, NOT the Postgres FK enforcement. The
+  // real FK (backup_target_assignments.targetId → backup_configurations.id
+  // ON DELETE RESTRICT, not DEFERRABLE) is exercised by Phase G of
+  // scripts/integration-dr-bundle.sh, which runs the importer against
+  // an ephemeral docker-postgres-18-alpine with the actual schema.
+  // A future refactor that moves assignments into Promise.all would
+  // pass this mock test while breaking the live FK — Phase G catches
+  // that.
   it('inserts configs BEFORE assignments (FK order)', async () => {
     const { db, mocks } = createMockDb();
     mocks.setConfigBudget(SAMPLE_ROWS.backupConfigurations.length);
@@ -143,9 +165,15 @@ describe('importDrRows — invariants', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     });
-    expect(mocks.insertedTables).toEqual(['backup_configurations', 'backup_target_assignments']);
+    // After the config + assignment inserts, the importer ALSO writes
+    // one audit_log row (security review M-S3). The mock dispatches
+    // anything past the config budget through assignValues — so the
+    // audit insert shows up as a third entry. We assert the FIRST two
+    // are in the right order; the audit row is verified separately.
+    expect(mocks.insertedTables[0]).toBe('backup_configurations');
+    expect(mocks.insertedTables[1]).toBe('backup_target_assignments');
   });
 
   it('forces readOnly=true and active=false on every config row', async () => {
@@ -157,7 +185,7 @@ describe('importDrRows — invariants', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     });
     const inserted = mocks.configValues.mock.calls[0][0];
     expect(inserted.readOnly).toBe(true);
@@ -174,7 +202,7 @@ describe('importDrRows — invariants', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     });
     const inserted = mocks.configValues.mock.calls[0][0];
     expect(inserted.enabled).toBe(0);
@@ -187,7 +215,7 @@ describe('importDrRows — invariants', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     });
     const inserted = mocks.configValues.mock.calls[0][0];
     expect(inserted.s3AccessKeyEncrypted).toBe('enc-access');
@@ -208,7 +236,7 @@ describe('importDrRows — invariants', () => {
         ...SAMPLE_ROWS,
         backupConfigurations: [SAMPLE_CONFIG, { ...SAMPLE_CONFIG, id: '22222222-3333-4444-8555-666666666666' }],
       },
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     });
     expect(result.configsInserted).toBe(1);
     expect(result.configsSkippedExisting).toBe(1);
@@ -222,7 +250,7 @@ describe('importDrRows — invariants', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     })).rejects.toThrow(/FK violation/);
     // Transaction callback was invoked once + the insert promise
     // rejected — the outer txFn re-throws (no catch in our mock).
@@ -233,6 +261,33 @@ describe('importDrRows — invariants', () => {
 // ─── Drift detection ─────────────────────────────────────────────────
 
 describe('importDrRows — drift report', () => {
+  // Audit log row (security review M-S3): one row per successful
+  // import, inside the same transaction so rollback also discards it.
+  it('writes one audit_log row with actionType=dr_bundle_import inside the txn', async () => {
+    const { db, mocks } = createMockDb();
+    mocks.setConfigBudget(SAMPLE_ROWS.backupConfigurations.length);
+    await importDrRows({
+      db,
+      drInputs: SAMPLE_INPUTS,
+      drRows: SAMPLE_ROWS,
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
+    });
+    // The audit row lands in the assignValues mock (anything past the
+    // config budget is dispatched through it). Find the call that
+    // carries an actionType field — that's the audit row.
+    const auditCall = mocks.assignValues.mock.calls.find((c) => {
+      const v = c[0] as { actionType?: string };
+      return v?.actionType === 'dr_bundle_import';
+    });
+    expect(auditCall).toBeDefined();
+    const row = auditCall![0] as Record<string, unknown>;
+    expect(row.resourceType).toBe('backup_configuration');
+    expect(row.actorType).toBe('system');
+    const changes = row.changes as Record<string, unknown>;
+    expect(changes.bundleApex).toBe(SAMPLE_INPUTS.apexDomain);
+    expect(changes.configsInserted).toBeDefined();
+  });
+
   it('returns hasDrift=false when bundle matches cluster', async () => {
     const { db, mocks } = createMockDb();
     mocks.setConfigBudget(SAMPLE_ROWS.backupConfigurations.length);
@@ -244,6 +299,7 @@ describe('importDrRows — drift report', () => {
         apex: 'staging.phoenix-host.net',
         platformVersion: '0.1.0-abc1234',
         topology: 'ha',
+        mailPortMode: 'haproxy',
       },
     });
     expect(result.drift.hasDrift).toBe(false);
@@ -257,7 +313,7 @@ describe('importDrRows — drift report', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: 'prod.phoenix-host.net', platformVersion: null, topology: null },
+      cluster: { apex: 'prod.phoenix-host.net', platformVersion: null, topology: null, mailPortMode: null },
     });
     expect(result.drift.hasDrift).toBe(true);
     expect(result.drift.notes[0]).toContain('apex');
@@ -273,7 +329,7 @@ describe('importDrRows — drift report', () => {
       db,
       drInputs: singleInputs,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: 'ha' },
+      cluster: { apex: null, platformVersion: null, topology: 'ha', mailPortMode: null },
     });
     expect(result.drift.notes.find((n) => n.includes('topology'))).toBeDefined();
   });
@@ -284,7 +340,7 @@ describe('importDrRows — drift report', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: 'wrong.example', platformVersion: null, topology: null },
+      cluster: { apex: 'wrong.example', platformVersion: null, topology: null, mailPortMode: null },
       strict: true,
     })).rejects.toThrowError(DrImportError);
     expect(mocks.txFn).not.toHaveBeenCalled();
@@ -300,9 +356,27 @@ describe('importDrRows — drift report', () => {
       db,
       drInputs: SAMPLE_INPUTS,
       drRows: SAMPLE_ROWS,
-      cluster: { apex: null, platformVersion: null, topology: null },
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: null },
     });
     expect(result.drift.hasDrift).toBe(false);
+  });
+
+  // TS review M-4: mailPortMode drift must be surfaced because the
+  // wrong port-exposure mode silently misconfigures the mail stack
+  // (see feedback_mail_arch_changes.md).
+  it('detects mailPortMode mismatch (haproxy bundle into hostport cluster)', async () => {
+    const { db, mocks } = createMockDb();
+    mocks.setConfigBudget(SAMPLE_ROWS.backupConfigurations.length);
+    const result = await importDrRows({
+      db,
+      drInputs: SAMPLE_INPUTS, // bundle says 'haproxy'
+      drRows: SAMPLE_ROWS,
+      cluster: { apex: null, platformVersion: null, topology: null, mailPortMode: 'hostport' },
+    });
+    expect(result.drift.hasDrift).toBe(true);
+    expect(result.drift.notes.find((n) => n.includes('mailPortMode'))).toBeDefined();
+    expect(result.drift.bundleMailPortMode).toBe('haproxy');
+    expect(result.drift.clusterMailPortMode).toBe('hostport');
   });
 });
 
@@ -336,5 +410,20 @@ describe('probeClusterState', () => {
     const { db } = createMockDb({ storagePolicyTier: 'local' });
     const state = await probeClusterState(db, {});
     expect(state.topology).toBe('single');
+  });
+
+  it('maps system_settings.mailPortExposureMode to the bundle enum', async () => {
+    const { db: db1 } = createMockDb({ systemSettingsMode: 'allServerNodes' });
+    const s1 = await probeClusterState(db1, {});
+    expect(s1.mailPortMode).toBe('haproxy');
+    const { db: db2 } = createMockDb({ systemSettingsMode: 'thisNodeOnly' });
+    const s2 = await probeClusterState(db2, {});
+    expect(s2.mailPortMode).toBe('hostport');
+  });
+
+  it('returns null mailPortMode when system_settings is empty (fresh bootstrap)', async () => {
+    const { db } = createMockDb({ systemSettingsMode: null });
+    const state = await probeClusterState(db, {});
+    expect(state.mailPortMode).toBeNull();
   });
 });

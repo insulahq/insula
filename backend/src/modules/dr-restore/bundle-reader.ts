@@ -16,7 +16,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import * as path from 'node:path';
 import * as tar from 'tar-stream';
 import { Readable } from 'node:stream';
 import {
@@ -25,6 +27,13 @@ import {
   BundleVersionError,
 } from '../system-backup/dr-sidecars.js';
 import type { DrInputs, DrRows } from '@k8s-hosting/api-contracts';
+
+// Hard upper bound on the encrypted bundle size. A legitimate bundle
+// is a few hundred KB (Secrets YAMLs + sidecars). The cap exists to
+// stop a corrupt or adversarial multi-GB file from OOM'ing the import
+// process before the operator can intervene (security review M-S1).
+// 512 MiB chosen as ~1000× the largest realistic bundle.
+const MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
 
 export class LegacyBundleError extends Error {
   constructor(reason: string) {
@@ -80,9 +89,41 @@ export interface ReadBundleOpts {
  */
 export async function readBundle(opts: ReadBundleOpts): Promise<ReadBundleResult> {
   const ageBinary = opts.ageBinary ?? 'age';
+
+  // ── 1. Bundle size pre-check (security review M-S1) ───────────────
+  const st = await stat(opts.bundlePath);
+  if (st.size > MAX_BUNDLE_BYTES) {
+    throw new BundleDecryptError(
+      `bundle file exceeds ${MAX_BUNDLE_BYTES} bytes (${st.size}) — refusing to load to prevent OOM`,
+    );
+  }
+  if (st.size === 0) {
+    throw new BundleDecryptError('bundle file is empty');
+  }
+
+  // ── 2. Optional --age-binary validation (security review L-S4) ─────
+  // Validate ONLY when the operator supplied a non-default path. The
+  // default 'age' is resolved via PATH by spawn(), which we trust.
+  if (opts.ageBinary) {
+    try {
+      await access(ageBinary, fsConstants.X_OK);
+    } catch {
+      throw new BundleDecryptError(
+        `--age-binary ${ageBinary} is not an executable file`,
+      );
+    }
+  }
+
   const bundleBytes = await readFile(opts.bundlePath);
 
-  // ── age decrypt via subprocess pipe ────────────────────────────────
+  // ── 3. age decrypt via subprocess pipe ─────────────────────────────
+  // EPIPE protection (TS review HIGH-1): when `age` exits early (wrong
+  // key, malformed header), it closes stdin before we finish writing.
+  // For bundles >64 KB (the OS pipe buffer), Node.js then raises EPIPE
+  // on proc.stdin and — without an 'error' listener — converts the
+  // stream error into an uncaught exception that crashes the process.
+  // Swallow it: the 'close' handler below already rejects with the
+  // meaningful error from age's stderr.
   const tarBytes = await new Promise<Buffer>((resolve, reject) => {
     const proc = spawn(ageBinary, ['-d', '-i', opts.ageKeyPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -91,6 +132,7 @@ export async function readBundle(opts: ReadBundleOpts): Promise<ReadBundleResult
     const err: Buffer[] = [];
     proc.stdout.on('data', (c: Buffer) => out.push(c));
     proc.stderr.on('data', (c: Buffer) => err.push(c));
+    proc.stdin.on('error', () => { /* see EPIPE note above */ });
     proc.on('error', (e) => reject(new BundleDecryptError(e.message)));
     proc.on('close', (code) => {
       if (code !== 0) {
@@ -174,7 +216,20 @@ async function extractTar(bytes: Buffer): Promise<TarEntry[]> {
       const chunks: Buffer[] = [];
       stream.on('data', (c: Buffer) => chunks.push(c));
       stream.on('end', () => {
-        entries.push({ filename: header.name, content: Buffer.concat(chunks) });
+        // Security review L-S5: normalise the tar entry name to its
+        // basename + reject path traversal sequences. Unit B doesn't
+        // write entries to disk (only returns the array), but Unit C
+        // might — locking the contract now prevents a future restore
+        // pipeline from being tricked by `../../etc/passwd` entries.
+        const raw = header.name;
+        const base = path.basename(raw);
+        if (!base || base.includes('..') || path.isAbsolute(raw)) {
+          // Adversarial entry — skip silently so a normal bundle
+          // with a single bad entry doesn't take out the whole read.
+          next();
+          return;
+        }
+        entries.push({ filename: base, content: Buffer.concat(chunks) });
         next();
       });
       stream.on('error', reject);

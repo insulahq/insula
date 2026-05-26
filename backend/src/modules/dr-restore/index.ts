@@ -25,10 +25,12 @@
  *     the locked PARTIAL design)
  */
 
-import { readBundle, BundleDecryptError, LegacyBundleError } from './bundle-reader.js';
-import { importDrRows, probeClusterState, DrImportError, type ImportResult } from './db-import.js';
+import { readBundle } from './bundle-reader.js';
+import { importDrRows, probeClusterState, type ImportResult } from './db-import.js';
 import type { Database } from '../../db/index.js';
 
+// Re-exports for callers (CLI runner, future platform-ops binary) so
+// they can catch typed errors without reaching into submodules.
 export { BundleDecryptError, LegacyBundleError } from './bundle-reader.js';
 export { DrImportError } from './db-import.js';
 export type { ImportResult, DriftReport } from './db-import.js';

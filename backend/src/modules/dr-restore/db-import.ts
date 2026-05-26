@@ -30,10 +30,11 @@
  * abort by setting --strict in the CLI shim.
  */
 
-import { eq, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import {
   backupConfigurations,
   backupTargetAssignments,
+  auditLogs,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type {
@@ -44,11 +45,15 @@ import type {
 } from '@k8s-hosting/api-contracts';
 
 export class DrImportError extends Error {
-  readonly cause: string;
-  constructor(message: string, cause: string) {
-    super(`${message}: ${cause}`);
+  // Renamed from `cause` (TS review M-1): ES2022 declares
+  // Error.cause: unknown on the base class. Shadowing it with a
+  // narrower string type confused any catch handler that expected
+  // the native shape. Use a distinct name for the structured detail.
+  readonly causeDetail: string;
+  constructor(message: string, causeDetail: string) {
+    super(`${message}: ${causeDetail}`);
     this.name = 'DrImportError';
-    this.cause = cause;
+    this.causeDetail = causeDetail;
   }
 }
 
@@ -59,7 +64,9 @@ export interface DriftReport {
   readonly clusterVersion: string | null;
   readonly bundleTopology: 'single' | 'ha';
   readonly clusterTopology: 'single' | 'ha' | null;
-  /** True if any of (apex / version / topology) doesn't match. */
+  readonly bundleMailPortMode: 'haproxy' | 'hostport';
+  readonly clusterMailPortMode: 'haproxy' | 'hostport' | null;
+  /** True if any compared field doesn't match. */
   readonly hasDrift: boolean;
   /** Human-readable summary lines, one per detected mismatch. */
   readonly notes: ReadonlyArray<string>;
@@ -84,6 +91,11 @@ export interface ImportOpts {
     readonly apex: string | null;
     readonly platformVersion: string | null;
     readonly topology: 'single' | 'ha' | null;
+    /** Live mailPortExposureMode from system_settings, mapped to the
+     *  same enum the bundle carries. Null on fresh bootstrap where
+     *  system_settings is empty — drift detector treats null as
+     *  "unknown, no mismatch claimed". */
+    readonly mailPortMode: 'haproxy' | 'hostport' | null;
   };
   /** When true, drift is a hard error (DrImportError thrown before
    *  any INSERT). Default: false (drift is warned, import proceeds). */
@@ -135,6 +147,41 @@ export async function importDrRows(opts: ImportOpts): Promise<ImportResult> {
       if (insertResult.length > 0) assignmentsInserted++;
       else assignmentsSkippedExisting++;
     }
+
+    // ── 3. Audit log row (security review M-S3) ────────────────────
+    // The DR import is a privileged action: it plants the addressing
+    // capability for every future backup. Without an audit trail,
+    // post-DR forensics can't reconstruct what was imported when.
+    // Inside the same transaction as the inserts so a roll-back also
+    // discards the audit entry — no "import audited but didn't
+    // happen" inconsistency.
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'dr_bundle_import',
+      resourceType: 'backup_configuration',
+      resourceId: 'bulk',
+      // actorId is NOT NULL on the audit_logs table; for system-
+      // driven actions with no user session, the convention is the
+      // nil UUID + actorType='system'. Queryable by `WHERE actor_type
+      // = 'system'` for post-DR forensics.
+      actorId: '00000000-0000-0000-0000-000000000000',
+      actorType: 'system',
+      httpMethod: 'CLI',
+      httpPath: 'scripts/dr-restore-bundle.sh',
+      httpStatus: 200,
+      changes: {
+        bundleApex: opts.drInputs.apexDomain,
+        bundleClusterName: opts.drInputs.clusterName,
+        bundlePlatformVersion: opts.drInputs.platformVersion,
+        bundleCreatedAt: opts.drInputs.createdAt,
+        configsInserted,
+        configsSkippedExisting,
+        assignmentsInserted,
+        assignmentsSkippedExisting,
+        driftNotes: drift.notes,
+      },
+      ipAddress: null,
+    });
 
     return { configsInserted, configsSkippedExisting, assignmentsInserted, assignmentsSkippedExisting };
   });
@@ -210,6 +257,21 @@ function computeDrift(
   if (cluster.topology && cluster.topology !== inputs.bundleTopology) {
     notes.push(`topology: bundle=${inputs.bundleTopology} cluster=${cluster.topology}`);
   }
+  // TS review M-4: mailPortMode mismatch is the case
+  // `feedback_mail_arch_changes.md` warns about — silently restoring
+  // a `haproxy` bundle onto a `hostport` cluster (or vice-versa)
+  // produces a misconfigured mail stack that takes inbound traffic
+  // through the wrong port-exposure path.
+  if (cluster.mailPortMode && cluster.mailPortMode !== inputs.mailPortMode) {
+    notes.push(`mailPortMode: bundle=${inputs.mailPortMode} cluster=${cluster.mailPortMode}`);
+  }
+  // CNPG serverName drift surfaces the class of bug commit 97bb0ab5
+  // fixed: a mismatch routes barman recovery to the wrong S3 prefix
+  // (silently empty restore). We don't have the live cluster's CNPG
+  // serverName in `cluster` (would require a k8s read) — for now we
+  // just record the BUNDLE's pointers as informational so the
+  // operator can spot-check. The platform-ops CLI's pre-flight
+  // (upgrade plan PR 10+14) will do the live cross-check.
   return {
     bundleApex: inputs.apexDomain,
     clusterApex: cluster.apex,
@@ -217,6 +279,8 @@ function computeDrift(
     clusterVersion: cluster.platformVersion,
     bundleTopology: inputs.bundleTopology,
     clusterTopology: cluster.topology,
+    bundleMailPortMode: inputs.mailPortMode,
+    clusterMailPortMode: cluster.mailPortMode,
     hasDrift: notes.length > 0,
     notes,
   };
@@ -251,12 +315,22 @@ export async function probeClusterState(
   } catch {
     // Fresh schema may not have the table yet; treat as null.
   }
-  // Silence the unused import warning when sql is conditionally
-  // referenced (kept for future drift-check queries).
-  void sql;
-  // Silence the unused import warning when eq is conditionally
-  // referenced (kept for future drift-check queries).
-  void eq;
 
-  return { apex, platformVersion, topology };
+  // Mail port mode from system_settings singleton. Mapped to the
+  // bundle enum: 'allServerNodes' → 'haproxy', 'thisNodeOnly' →
+  // 'hostport'. Empty table → null (fresh bootstrap, no mismatch).
+  let mailPortMode: 'haproxy' | 'hostport' | null = null;
+  try {
+    const { systemSettings } = await import('../../db/schema.js');
+    const [row] = await db
+      .select({ mode: systemSettings.mailPortExposureMode })
+      .from(systemSettings)
+      .limit(1);
+    if (row?.mode === 'allServerNodes') mailPortMode = 'haproxy';
+    else if (row?.mode === 'thisNodeOnly') mailPortMode = 'hostport';
+  } catch {
+    // Fresh schema may not have the table yet; treat as null.
+  }
+
+  return { apex, platformVersion, topology, mailPortMode };
 }
