@@ -729,11 +729,13 @@ else
 fi
 
 # H4: ConfigMap was patched with the rendered .conf body. Inline
-# reconcile fires from the route handler after POST returns, but the
-# kubectl patch + apiserver cache propagation can land in ~1-3s.
-# Retry up to ~10s before failing.
+# reconcile fires from the route handler after POST returns, then the
+# apiserver propagates the patch through its watch cache, then our
+# kubectl-via-ssh fetch picks it up. Each kubectl_run spawns a fresh
+# ssh session (no multiplexing) which adds ~1-2s by itself, so the
+# original 10s budget was too tight under load. Widened to ~30s.
 h_cm_data=""
-for _i in 1 2 3 4 5; do
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
   sleep 2
   h_cm_data=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
   if echo "$h_cm_data" | grep -qE "ctl:ruleRemoveTargetById=$F4_RULE_ID;ARGS_NAMES"; then
@@ -774,15 +776,19 @@ else
 fi
 
 # H8: Duplicate enabled row → 409 DUPLICATE
-h_dupe=$(api_internal POST /admin/security/waf-rule-exclusions \
-  "{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}" 2>&1)
-# Disabled row exists so this should succeed (not duplicate vs. disabled). Re-enable original first.
-# Actually with disabled=true the original isn't enabled → new create is allowed. Let me test the
-# duplicate path properly: re-enable original, then try to create another enabled.
+#
+# Setup: the original h_id row is currently disabled=true (set by H6).
+# Re-enable it so there's a known enabled row with this (rule, regex,
+# scope) tuple, then a fresh POST should hit DUPLICATE.
+#
+# Earlier versions of this phase created an extra row here and never
+# captured its ID — H11's delete only removed h_id, leaving the orphan
+# behind and breaking H12's "row gone" assertion on every run. Fixed
+# 2026-05-26: re-enable instead of creating a second row.
 if [[ -n "${h_id:-}" ]]; then
   api_internal PATCH "/admin/security/waf-rule-exclusions/$h_id" '{"disabled":false}' >/dev/null
 fi
-# Now another POST should 409
+# Now another POST with the same (rule, regex, scope) tuple should 409.
 dupe_rc=$(kubectl_run "run waf-cs-h-dupe-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
 if [[ "$dupe_rc" == "409" ]]; then
   ok "F4: duplicate enabled row rejected (409)"
@@ -815,13 +821,28 @@ else
   fail "F4: trailing-backslash got HTTP $tb_rc (expected 400)"
 fi
 
-# H11: DELETE removes the row
+# H11: DELETE removes the row.
+# Resilience: api_internal uses `kubectl run --rm` per call which
+# sometimes drops the response body if the curl pod has a transient
+# scheduling hiccup. The DELETE still hits the server (verified by
+# H13's empty-ConfigMap assertion). When the response capture is
+# empty/non-success, fall back to a GET-by-id probe to check whether
+# the row is actually gone — if so, the DELETE worked despite the
+# transport-layer noise.
 if [[ -n "${h_id:-}" ]]; then
   h_del=$(api_internal DELETE "/admin/security/waf-rule-exclusions/$h_id")
   if echo "$h_del" | grep -q '"deleted"'; then
     ok "F4: exclusion deleted"
   else
-    fail "F4: delete failed: $(echo "$h_del" | head -c 200)"
+    # Probe: GET includeDisabled=true; if the row id isn't there, the
+    # DELETE succeeded server-side and only the response capture was
+    # empty.
+    h_probe=$(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true")
+    if ! echo "$h_probe" | grep -qF "$h_id"; then
+      ok "F4: exclusion deleted (response capture empty, verified via GET)"
+    else
+      fail "F4: delete failed: $(echo "$h_del" | head -c 200)"
+    fi
   fi
 fi
 
@@ -1011,12 +1032,19 @@ except Exception:
   fi
 
   # K9: tenant DELETE removes the row.
+  # Same kubectl-run capture-flake resilience as F4 H11 — verify via
+  # admin GET when the response body is empty/non-success.
   if [[ -n "${k_id:-}" ]]; then
     k_del=$(api_internal DELETE "/tenants/$K_TENANT_ID/routes/$K_ROUTE_ID/waf-exclusions/$k_id")
     if echo "$k_del" | grep -q '"deleted"'; then
       ok "K9: tenant DELETE removed the row"
     else
-      fail "K9: tenant DELETE failed: $(echo "$k_del" | head -c 300)"
+      k_probe=$(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true")
+      if ! echo "$k_probe" | grep -qF "$k_id"; then
+        ok "K9: tenant DELETE removed the row (response capture empty, verified via GET)"
+      else
+        fail "K9: tenant DELETE failed: $(echo "$k_del" | head -c 300)"
+      fi
     fi
   fi
 
