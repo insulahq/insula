@@ -32,6 +32,7 @@ import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 import { getMailPvcStorage } from './mail-pvc.js';
+import { getMailNodeStorage } from './mail-node-storage.js';
 import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-store.js';
 import {
   startMailArchive,
@@ -474,6 +475,51 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
   // ci-no-longhorn: ignore
+
+  // ─── Per-mail-node storage cards ────────────────────────────────
+  // Returns one entry per mail-relevant node (active + placement
+  // slots + standby-labelled). Drives the Storage tab on the
+  // /email/operations page — see frontend/components/email/
+  // MailNodeStorageCards.tsx. Best-effort: any failed sub-probe
+  // yields null for that field, not a 503 on the whole response.
+  app.get(
+    '/admin/mail/storage/per-node',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+      try {
+        const k8s = await import('@kubernetes/client-node');
+        const kc = new k8s.KubeConfig();
+        if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
+        else kc.loadFromCluster();
+        const core = kc.makeApiClient(k8s.CoreV1Api);
+        const exec = new k8s.Exec(kc);
+        const placement = await getMailPlacement(app.db, { kubeconfigPath });
+        const nodes = await getMailNodeStorage({
+          core,
+          exec,
+          db: app.db,
+          placement: {
+            activeNode: placement.activeNode,
+            primaryNode: placement.primaryNode,
+            secondaryNode: placement.secondaryNode,
+            tertiaryNode: placement.tertiaryNode,
+          },
+          logger: { warn: (...args: unknown[]) => app.log.warn(args.join(' ')) },
+        });
+        return success({ nodes });
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: per-node storage read failed');
+        throw new ApiError(
+          'MAIL_NODE_STORAGE_FAILED',
+          'Could not read per-node mail storage — see server logs',
+          503,
+        );
+      }
+    },
+  );
 
   // ─── Stalwart BlobStore (singleton) ──────────────────────────────
   // GET reads the current backend type via short-lived Pod running
