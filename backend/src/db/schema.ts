@@ -2201,6 +2201,19 @@ export const systemSettings = pgTable('system_settings', {
     snapshotCount: number;
     runAt: string;
   } | null>(),
+  // 0030 (A5 follow-up): per-node mail-stack-standby-replicate freshness
+  // reports. Posted by the DaemonSet on every successful iteration via
+  // POST /internal/mail/standby-replicate-report. Keyed by node hostname
+  // (Pod's spec.nodeName via downwardAPI). UI: MailDrCard → Standby
+  // section, traffic-light by age (<10m green, <30m amber, else red).
+  mailStandbyReports: jsonb('mail_standby_reports').$type<
+    Record<string, {
+      sizeBytes: number;
+      fileCount: number;
+      durationSeconds: number;
+      reportedAt: string;
+    }>
+  >(),
   // 0101: RocksDB DataStore tracking (Phase 1 migration).
   // mailDatastoreType: which DataStore engine is live on this cluster.
   //   'postgres' = CNPG-backed (legacy default until manually migrated).
