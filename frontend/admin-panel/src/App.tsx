@@ -28,7 +28,9 @@ import RemoteStorageTargetsPage from '@/pages/backups/RemoteStorageTargetsPage';
 import DisasterRecoveryPage from '@/pages/backups/DisasterRecoveryPage';
 import AdminUsers from '@/pages/AdminUsers';
 import ExportImport from '@/pages/ExportImport';
-import EmailManagement from '@/pages/EmailManagement';
+import EmailDomainsPage from '@/pages/email/EmailDomainsPage';
+import EmailSettingsPage from '@/pages/email/EmailSettingsPage';
+import EmailOperationsPage from '@/pages/email/EmailOperationsPage';
 import TlsSettings from '@/pages/TlsSettings';
 import SystemSettingsPage from '@/pages/SystemSettings';
 import AuditLogs from '@/pages/AuditLogs';
@@ -135,7 +137,16 @@ export default function App() {
                 replace the placeholder CPU/Mem/Disk tiles. */}
             <Route path="monitoring/health" element={<Navigate to="/monitoring?tab=health" replace />} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
-            <Route path="settings/email" element={<EmailManagement />} />
+            {/* Email moved out of /settings/email into its own sidebar
+                group on 2026-05-26 (3 child pages: domains/settings/
+                operations, each rendering the shared header + tiles +
+                MailHealthBanner). Legacy URL redirects to the daily-
+                driver Domains & Relays page. */}
+            <Route path="settings/email" element={<Navigate to="/email/domains" replace />} />
+            <Route path="email" element={<Navigate to="/email/domains" replace />} />
+            <Route path="email/domains" element={<EmailDomainsPage />} />
+            <Route path="email/settings" element={<EmailSettingsPage />} />
+            <Route path="email/operations" element={<EmailOperationsPage />} />
             <Route path="settings/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiSettings /></ProtectedRoute>} />
             <Route path="settings/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksSettings /></ProtectedRoute>} />
             {/* 2026-05-21 Wave 1: route renamed for path-prefix
