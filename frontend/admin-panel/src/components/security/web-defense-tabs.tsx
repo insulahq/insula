@@ -259,12 +259,17 @@ export function WafEventsTab() {
               type="datetime-local"
               value={fromTime}
               onChange={(e) => setFromTime(e.target.value)}
-              // `[&::-webkit-calendar-picker-indicator]:hidden` hides the
-              // native calendar/clock glyph on Chromium so the input is
-              // a plain text field matching the rest of the filter bar.
-              // Firefox doesn't render the indicator at all; this is a
-              // Chromium-only cleanup that's a no-op elsewhere.
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
+              // Open the native picker on ANY click in the field — the
+              // calendar indicator is hidden (the Chromium glyph clashes
+              // with the bar's plain look), so without showPicker() the
+              // operator can only edit by typing. `showPicker()` is
+              // unsupported on Safari < 16.4; the try/catch lets it fall
+              // back to the native text-input behaviour silently there.
+              onClick={(e) => {
+                const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
+                try { el.showPicker?.(); } catch { /* unsupported — fall back to typing */ }
+              }}
+              className="w-[160px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
               data-testid="waf-filter-from-time"
             />
           </FilterField>
@@ -273,7 +278,11 @@ export function WafEventsTab() {
               type="datetime-local"
               value={toTime}
               onChange={(e) => setToTime(e.target.value)}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
+              onClick={(e) => {
+                const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
+                try { el.showPicker?.(); } catch { /* unsupported — fall back to typing */ }
+              }}
+              className="w-[160px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
               data-testid="waf-filter-to-time"
             />
           </FilterField>

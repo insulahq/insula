@@ -34,8 +34,11 @@ export function useWafEvents(query: WafEventsQuery, opts: { live: boolean } = { 
   if (query.ruleId) params.set('ruleId', query.ruleId);
   if (query.severity) params.set('severity', query.severity);
   if (query.host) params.set('host', query.host);
+  if (query.sourceIp) params.set('sourceIp', query.sourceIp);
   if (query.scope) params.set('scope', query.scope);
   if (typeof query.sinceSeconds === 'number') params.set('sinceSeconds', String(query.sinceSeconds));
+  if (query.fromTime) params.set('fromTime', query.fromTime);
+  if (query.toTime) params.set('toTime', query.toTime);
   if (typeof query.limit === 'number') params.set('limit', String(query.limit));
   const qs = params.toString();
   const url = qs ? `/api/v1/admin/security/waf-events?${qs}` : '/api/v1/admin/security/waf-events';
