@@ -1,0 +1,55 @@
+name: Pin Lag Check
+
+# Catch "orphaned image" state at PR time and via hourly cron instead
+# of at "where's my deploy?" time. The Build Images workflow's auto-pin
+# step has its own concurrency-group + reset-and-reapply recovery (see
+# .github/workflows/build-deploy.yml :: update-staging-version), but in
+# the rare case where a pin still doesn't land — e.g. cross-workflow
+# collision, a force-push, or a buggy future workflow that touches the
+# pin files — the previous pin lingers and the just-built image becomes
+# a permanent GHCR orphan. This guard surfaces that state.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # Avoid running on every PR — only when it could matter. The
+      # guard is checking origin/main's pin state, not the PR diff, so
+      # in theory it could fire on any PR. In practice we only care if
+      # the PR touches anything that lands on main (code or k8s), so
+      # we exclude pure-doc PRs. The path list intentionally mirrors
+      # the build-deploy.yml positive triggers.
+      - 'backend/**'
+      - 'frontend/**'
+      - 'packages/**'
+      - 'k8s/**'
+      - 'images/**'
+      - '.github/workflows/**'
+      - '.github/scripts/**'
+  schedule:
+    # Hourly sweep so a lag introduced outside the PR/push path
+    # (force-push, manual edit) gets caught within an hour.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-pin-lag:
+    name: Verify staging pin is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On pull_request, check the BASE branch (origin/main) — the
+          # PR's HEAD likely doesn't touch the pin files, and we want
+          # to flag if main itself is in a stale state before merging
+          # more PRs on top of it.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          # 100 commits ≫ the auto-pin churn rate; the script looks at
+          # most ~10 commits back before giving up.
+          fetch-depth: 100
+
+      - name: Run check
+        run: ./.github/scripts/check-pin-lag.sh
