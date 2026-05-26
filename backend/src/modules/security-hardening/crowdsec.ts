@@ -166,6 +166,18 @@ async function lapiGet<T>(path: string, key: string): Promise<T> {
       signal: ctrl.signal,
     });
     if (!res.ok) {
+      // 403 means the bouncer key was rejected — almost always because
+      // the registered bouncer entry was lost on a CrowdSec restart
+      // (the bouncer registration lives in CrowdSec's sqlite DB; if
+      // the pod's storage is ephemeral the entry is dropped on restart
+      // even though our Secret still holds the same key value).
+      // Surface a remediation hint instead of the bare status code so
+      // operators can fix it without spelunking logs.
+      if (res.status === 403) {
+        throw new Error(
+          `LAPI GET ${path} → HTTP 403 (bouncer key rejected; the platform-api bouncer is likely no longer registered with CrowdSec — re-run \`scripts/bootstrap.sh --resume-from-phase3\` or \`kubectl -n crowdsec exec deploy/crowdsec -- cscli bouncers add platform-api -k <key-from-platform-api-bouncer-key-Secret>\`)`,
+        );
+      }
       throw new Error(`LAPI GET ${path} → HTTP ${res.status}`);
     }
     return (await res.json()) as T;
