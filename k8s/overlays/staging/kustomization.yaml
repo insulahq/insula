@@ -147,6 +147,6 @@ images:
   - name: ghcr.io/insulahq/hosting-platform/backend
     newTag: "20260526144730-3c77460" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/hosting-platform/admin-panel
-    newTag: "20260526144733-3c77460" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260526182747-bed72f0" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/hosting-platform/tenant-panel
     newTag: "20260526144728-3c77460" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
