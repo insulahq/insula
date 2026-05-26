@@ -95,6 +95,17 @@ const navItems: ReadonlyArray<NavItem> = [
       { kind: 'item', to: '/backups/disaster-recovery',    icon: LifeBuoy,        label: 'Disaster Recovery' },
     ],
   },
+  {
+    kind: 'group',
+    id: 'email',
+    icon: Mail,
+    label: 'Email',
+    children: [
+      { kind: 'item', to: '/email/domains',    icon: Globe,    label: 'Domains & Relays' },
+      { kind: 'item', to: '/email/settings',   icon: Settings, label: 'Settings' },
+      { kind: 'item', to: '/email/operations', icon: Server,   label: 'Operations' },
+    ],
+  },
   { kind: 'item',  to: '/cron-jobs',              icon: Clock,           label: 'Cron Jobs' },
   {
     kind: 'group',

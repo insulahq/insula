@@ -9,7 +9,9 @@ import {
   ChevronDown,
   Info,
   Database,
+  Wrench,
 } from 'lucide-react';
+import StalwartReprovisionModal from '@/components/StalwartReprovisionModal';
 import {
   useMailPlacement,
   useUpdateMailPlacement,
@@ -56,6 +58,7 @@ export default function MailDrCard() {
   const [migrateTarget, setMigrateTarget] = useState<string>('');
   const [showMigrateForm, setShowMigrateForm] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [showReprovision, setShowReprovision] = useState(false);
 
   // Init draft from server data
   useEffect(() => {
@@ -410,6 +413,33 @@ export default function MailDrCard() {
           )}
         </div>
 
+        {/* Re-provision Stalwart — recovery tool for missing/drifted
+            x:Domain, AcmeProvider, certManagement, or required
+            NetworkListeners. Self-healing reconciler runs every 30 min
+            anyway; this button surfaces it on demand with a
+            "what changed" report. */}
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              Re-provision Stalwart
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Ensure the platform domain, ACME provider, cert
+              management, and required listeners (submission/imap/
+              http-acme) exist in Stalwart. Idempotent — safe on a
+              healthy cluster (no-op).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowReprovision(true)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+            data-testid="mail-dr-reprovision-button"
+          >
+            <Wrench size={12} /> Re-provision…
+          </button>
+        </div>
+
         {/* Live migrate */}
         <div>
           <button
@@ -495,6 +525,10 @@ export default function MailDrCard() {
             void qc.invalidateQueries({ queryKey: PLACEMENT_KEY });
           }}
         />
+      )}
+
+      {showReprovision && (
+        <StalwartReprovisionModal onClose={() => setShowReprovision(false)} />
       )}
     </div>
   );
