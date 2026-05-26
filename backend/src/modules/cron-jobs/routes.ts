@@ -44,7 +44,8 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
   app.get('/admin/cron-jobs', async (request) => {
     const query = request.query as Record<string, unknown>;
     const { limit, cursor } = parsePaginationParams(query);
-    const result = await service.listAllCronJobs(app.db, { limit, cursor });
+    const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
+    const result = await service.listAllCronJobs(app.db, { limit, cursor, search });
     return paginated(result.data, result.pagination);
   });
 

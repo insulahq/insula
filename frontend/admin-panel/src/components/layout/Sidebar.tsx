@@ -6,7 +6,6 @@ import {
   Globe,
   AppWindow,
   Database,
-  Clock,
   Shield,
   ShieldAlert,
   ShieldCheck,
@@ -79,7 +78,6 @@ function isChildMatch(child: SimpleNavItem, pathname: string): boolean {
 const navItems: ReadonlyArray<NavItem> = [
   { kind: 'item',  to: '/',                       icon: LayoutDashboard, label: 'Dashboard' },
   { kind: 'item',  to: '/tenants',                icon: Users,           label: 'Tenants' },
-  { kind: 'item',  to: '/domains',                icon: Globe,           label: 'Domains' },
   { kind: 'item',  to: '/applications',           icon: AppWindow,       label: 'Applications' },
   {
     kind: 'group',
@@ -106,7 +104,6 @@ const navItems: ReadonlyArray<NavItem> = [
       { kind: 'item', to: '/email/operations', icon: Server,   label: 'Operations' },
     ],
   },
-  { kind: 'item',  to: '/cron-jobs',              icon: Clock,           label: 'Cron Jobs' },
   {
     kind: 'group',
     id: 'security',

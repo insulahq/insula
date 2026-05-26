@@ -1,5 +1,5 @@
-import { eq, and, desc, lt, sql } from 'drizzle-orm';
-import { cronJobs } from '../../db/schema.js';
+import { eq, and, desc, lt, sql, ilike, or } from 'drizzle-orm';
+import { cronJobs, tenants } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -39,29 +39,58 @@ export async function getCronJobById(db: Database, tenantId: string, cronJobId: 
   return job;
 }
 
+export type AdminCronJobRow = typeof cronJobs.$inferSelect & { tenantName: string | null };
+
 export async function listAllCronJobs(
   db: Database,
-  params: { limit: number; cursor?: string },
-): Promise<{ data: typeof cronJobs.$inferSelect[]; pagination: PaginationMeta }> {
-  const { limit, cursor } = params;
+  params: { limit: number; cursor?: string; search?: string },
+): Promise<{ data: AdminCronJobRow[]; pagination: PaginationMeta }> {
+  const { limit, cursor, search } = params;
 
-  const conditions = [];
-  if (cursor) {
-    const decoded = decodeCursor(cursor);
-    conditions.push(lt(cronJobs.createdAt, new Date(decoded.sort)));
+  const filters = [];
+  if (search) {
+    const pattern = `%${search}%`;
+    filters.push(or(ilike(cronJobs.name, pattern), ilike(cronJobs.url, pattern), ilike(tenants.name, pattern)));
   }
 
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const cursorConds = [];
+  if (cursor) {
+    const decoded = decodeCursor(cursor);
+    cursorConds.push(lt(cronJobs.createdAt, new Date(decoded.sort)));
+  }
+
+  const allConds = [...filters, ...cursorConds];
+  const where = allConds.length > 0 ? and(...allConds) : undefined;
 
   const rows = await db
-    .select()
+    .select({
+      id: cronJobs.id,
+      tenantId: cronJobs.tenantId,
+      name: cronJobs.name,
+      type: cronJobs.type,
+      schedule: cronJobs.schedule,
+      command: cronJobs.command,
+      url: cronJobs.url,
+      httpMethod: cronJobs.httpMethod,
+      deploymentId: cronJobs.deploymentId,
+      enabled: cronJobs.enabled,
+      lastRunAt: cronJobs.lastRunAt,
+      lastRunStatus: cronJobs.lastRunStatus,
+      lastRunDurationMs: cronJobs.lastRunDurationMs,
+      lastRunResponseCode: cronJobs.lastRunResponseCode,
+      lastRunOutput: cronJobs.lastRunOutput,
+      createdAt: cronJobs.createdAt,
+      updatedAt: cronJobs.updatedAt,
+      tenantName: tenants.name,
+    })
     .from(cronJobs)
+    .leftJoin(tenants, eq(cronJobs.tenantId, tenants.id))
     .where(where)
     .orderBy(desc(cronJobs.createdAt))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit);
+  const data = rows.slice(0, limit) as AdminCronJobRow[];
 
   let nextCursor: string | null = null;
   if (hasMore && data.length > 0) {
@@ -73,9 +102,14 @@ export async function listAllCronJobs(
     });
   }
 
+  // Count uses filters only (no cursor) so total_count reflects the
+  // full filtered set, not the remaining-after-cursor slice.
+  const countWhere = filters.length > 0 ? and(...filters) : undefined;
   const [countResult] = await db
     .select({ count: sql<number>`count(*)` })
-    .from(cronJobs);
+    .from(cronJobs)
+    .leftJoin(tenants, eq(cronJobs.tenantId, tenants.id))
+    .where(countWhere);
 
   return {
     data,

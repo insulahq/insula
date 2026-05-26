@@ -1,12 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, sql, desc, lt, or, ilike } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { auditLogs, refreshTokens, users, userPasskeys } from '../../db/schema.js';
+import { auditLogs, refreshTokens, users, userPasskeys, tenants } from '../../db/schema.js';
 import { createAdminUserSchema, updateAdminUserSchema } from '@k8s-hosting/api-contracts';
-import { success } from '../../shared/response.js';
+import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import {
   findSessionIdByHash,
   hashRefreshToken,
@@ -120,6 +121,89 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(users.panel, 'admin'));
 
     return success(adminUsers);
+  });
+
+  // GET /api/v1/admin/tenant-users — list all tenant-panel users
+  // (primary + sub-users) across tenants for the admin Tenants → Users
+  // tab. Cursor-paginated by created_at descending; search matches
+  // email/full_name/tenant.name. Read-only for super_admin/admin/support.
+  app.get('/admin/tenant-users', {
+    onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
+  }, async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const { limit, cursor } = parsePaginationParams(query);
+    const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
+
+    const filters = [eq(users.panel, 'tenant')];
+    if (search) {
+      const pattern = `%${search}%`;
+      const orExpr = or(
+        ilike(users.email, pattern),
+        ilike(users.fullName, pattern),
+        ilike(tenants.name, pattern),
+      );
+      if (orExpr) filters.push(orExpr);
+    }
+
+    const cursorConds = [];
+    if (cursor) {
+      const decoded = decodeCursor(cursor);
+      cursorConds.push(lt(users.createdAt, new Date(decoded.sort)));
+    }
+    const allConds = [...filters, ...cursorConds];
+    const where = allConds.length === 1 ? allConds[0] : and(...allConds);
+
+    const rows = await app.db
+      .select({
+        id: users.id,
+        email: users.email,
+        fullName: users.fullName,
+        roleName: users.roleName,
+        status: users.status,
+        tenantId: users.tenantId,
+        tenantName: tenants.name,
+        lastLoginAt: users.lastLoginAt,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .leftJoin(tenants, eq(users.tenantId, tenants.id))
+      .where(where)
+      .orderBy(desc(users.createdAt))
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const data = rows.slice(0, limit);
+
+    let nextCursor: string | null = null;
+    if (hasMore && data.length > 0) {
+      const last = data[data.length - 1];
+      nextCursor = encodeCursor({
+        resource: 'tenant_user',
+        sort: last.createdAt.toISOString(),
+        id: last.id,
+      });
+    }
+
+    const countWhere = filters.length === 1 ? filters[0] : and(...filters);
+    const [countResult] = await app.db
+      .select({ count: sql<number>`count(*)` })
+      .from(users)
+      .leftJoin(tenants, eq(users.tenantId, tenants.id))
+      .where(countWhere);
+
+    return paginated(
+      data.map((r) => ({
+        ...r,
+        lastLoginAt: r.lastLoginAt ? r.lastLoginAt.toISOString() : null,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      {
+        cursor: nextCursor,
+        has_more: hasMore,
+        page_size: data.length,
+        total_count: Number(countResult?.count ?? 0),
+      },
+    );
   });
 
   // ─── Active Sessions (refresh tokens) — 2026-05-21 ────────────────
