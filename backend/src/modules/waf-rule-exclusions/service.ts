@@ -22,7 +22,7 @@ import {
   type WafRuleExclusion,
 } from '@k8s-hosting/api-contracts';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { domains, ingressRoutes, wafRuleExclusions } from '../../db/schema.js';
+import { domains, ingressRoutes, tenants, wafRuleExclusions } from '../../db/schema.js';
 
 // Loose Db alias — matches `deps.db: NodePgDatabase<any>` used by the
 // route module so callers don't need to launder schema types.
@@ -123,6 +123,51 @@ export const listExclusions = async (
     .where(where)
     .orderBy(asc(wafRuleExclusions.createdAt), asc(wafRuleExclusions.id));
   return rows.map(rowToContract);
+};
+
+/**
+ * Admin-facing list enriched with the tenant's display name when the
+ * row is tenant-owned. Admin-scoped rows surface tenantName=null.
+ * LEFT JOIN so admin (tenantId IS NULL) rows still appear.
+ */
+export const listExclusionsForAdmin = async (
+  db: Db,
+  opts: { includeDisabled?: boolean } = {},
+): Promise<Array<WafRuleExclusion & { tenantName: string | null }>> => {
+  const where = opts.includeDisabled ? undefined : eq(wafRuleExclusions.disabled, false);
+  const rows = await db
+    .select({
+      id: wafRuleExclusions.id,
+      ruleId: wafRuleExclusions.ruleId,
+      hostnameRegex: wafRuleExclusions.hostnameRegex,
+      scope: wafRuleExclusions.scope,
+      reason: wafRuleExclusions.reason,
+      createdBy: wafRuleExclusions.createdBy,
+      createdAt: wafRuleExclusions.createdAt,
+      updatedAt: wafRuleExclusions.updatedAt,
+      disabled: wafRuleExclusions.disabled,
+      tenantId: wafRuleExclusions.tenantId,
+      routeId: wafRuleExclusions.routeId,
+      tenantName: tenants.name,
+    })
+    .from(wafRuleExclusions)
+    .leftJoin(tenants, eq(tenants.id, wafRuleExclusions.tenantId))
+    .where(where)
+    .orderBy(asc(wafRuleExclusions.createdAt), asc(wafRuleExclusions.id));
+  return rows.map((row) => ({
+    id: row.id,
+    ruleId: row.ruleId,
+    hostnameRegex: row.hostnameRegex,
+    scope: row.scope as WafRuleExclusion['scope'],
+    reason: row.reason,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    disabled: row.disabled,
+    tenantId: row.tenantId ?? null,
+    routeId: row.routeId ?? null,
+    tenantName: row.tenantName ?? null,
+  }));
 };
 
 /**
