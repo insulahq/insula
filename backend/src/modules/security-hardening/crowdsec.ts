@@ -73,7 +73,13 @@ export const MANUAL_BAN_REASON_PREFIX = 'admin-panel:';
  */
 export const MANUAL_STATIC_BAN_REASON_PREFIX = 'admin-panel-static:';
 
-const STATIC_BAN_DURATION = '8760h'; // 1 year — schema's upper bound
+// 100 years — effectively permanent. CrowdSec stores decisions with
+// an absolute `until` timestamp, so there is no "never expires" sentinel
+// flag; the longest practical duration is the safety story. Verified
+// against cscli on 2026-05-26: `--duration 876000h` parses cleanly,
+// rounds to `875999h59m57s`, and Go's time.Duration int64 has plenty of
+// headroom (max ~292 years).
+const STATIC_BAN_DURATION = '876000h';
 
 const LAPI_HTTP_TIMEOUT_MS = 8_000;
 
@@ -306,11 +312,12 @@ export async function addBan(
 }
 
 /**
- * F2 — Static (long-duration) operator ban. Same code path as addBan but
- * with the static prefix + 8760h duration (1 year — the schema's upper
- * bound). The list endpoint flags these with staticByOperator=true.
- * Operators have to re-add yearly; alternative storage (own DB table +
- * reconciler) was deferred per the F2 design.
+ * F2 — Static (effectively-permanent) operator ban. Same code path as
+ * addBan but with the static prefix + 100-year duration. The list
+ * endpoint flags these with staticByOperator=true. Bumped from 1-year
+ * to 100-year on 2026-05-26 so operators no longer have to re-add
+ * known-bad IPs annually; CrowdSec has no "never expires" flag, so a
+ * very-long duration is the only available expression of "permanent".
  */
 export async function addStaticBan(
   kubeconfigPath: string | undefined,
