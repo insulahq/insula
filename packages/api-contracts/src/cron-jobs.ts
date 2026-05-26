@@ -61,6 +61,19 @@ export const cronJobResponseSchema = z.object({
 
 export const cronJobListResponseSchema = paginatedResponseSchema(cronJobResponseSchema);
 
+// ─── Admin cross-tenant cron-job list ───────────────────────────────────────
+//
+// /admin/cron-jobs returns rows joined to their owning tenant so the
+// admin Tenants → Cron Jobs tab can render a tenant column without a
+// second fetch.
+export const adminCronJobResponseSchema = cronJobResponseSchema.extend({
+  tenantName: z.string().nullable(),
+});
+export type AdminCronJobResponse = z.infer<typeof adminCronJobResponseSchema>;
+
+export const adminCronJobListResponseSchema = paginatedResponseSchema(adminCronJobResponseSchema);
+export type AdminCronJobListResponse = z.infer<typeof adminCronJobListResponseSchema>;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CreateCronJobInput = z.infer<typeof createCronJobSchema>;

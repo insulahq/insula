@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Globe, Shield, ShieldCheck, Lock, Trash2 } from 'lucide-react';
+import { Search, Loader2, Globe, ShieldCheck, Lock, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
-import CreateDomainModal from '@/components/CreateDomainModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import { useDomains } from '@/hooks/use-domains';
 import { useTenants } from '@/hooks/use-tenants';
@@ -15,17 +14,15 @@ import { useBulkVerifyDomains, useBulkDeleteDomains } from '@/hooks/use-bulk-dom
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
-export default function Domains() {
+export default function DomainsTab() {
   const navigate = useNavigate();
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [showCreate, setShowCreate] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'verify' | 'delete' | null>(null);
 
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
-  // Reset pagination when search or tenant filter changes
   useEffect(() => {
     pagination.resetPagination();
   }, [debouncedSearch, selectedTenantId]);
@@ -36,9 +33,7 @@ export default function Domains() {
   );
 
   const { data: tenantsData } = useTenants({ limit: 100 });
-  const tenantMap = new Map(
-    (tenantsData?.data ?? []).map((c) => [c.id, c.name]),
-  );
+  const tenantMap = new Map((tenantsData?.data ?? []).map((c) => [c.id, c.name]));
 
   const domains = domainsData?.data ?? [];
   const totalCount = domainsData?.pagination?.total_count ?? 0;
@@ -74,18 +69,6 @@ export default function Domains() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Domains</h1>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"
-          data-testid="add-domain-button"
-        >
-          <Plus size={16} />
-          Add Domain
-        </button>
-      </div>
-
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <SearchableTenantSelect
           selectedTenantId={selectedTenantId}
@@ -148,7 +131,7 @@ export default function Domains() {
                           ? 'bg-brand-50 dark:bg-brand-900/20'
                           : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                       }`}
-                      onClick={() => navigate(`/tenants/${domain.tenantId}/domains/${domain.id}`)}
+                      onClick={() => navigate(`/tenants/${domain.tenantId}`)}
                       data-testid={`domain-row-${domain.id}`}
                     >
                       <td className="w-10 px-3 py-3.5" onClick={(e) => e.stopPropagation()}>
@@ -164,7 +147,7 @@ export default function Domains() {
                         </div>
                       </td>
                       <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
-                        {tenantMap.get(domain.tenantId) ?? '\u2014'}
+                        {tenantMap.get(domain.tenantId) ?? '—'}
                       </td>
                       <td className="px-5 py-3.5">
                         <StatusBadge status={domain.status as 'active' | 'pending' | 'unverified' | 'verified' | 'suspended' | 'deleted'} />
@@ -176,7 +159,7 @@ export default function Domains() {
                         <TlsBadge domain={domain} />
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
-                        {domain.createdAt ? new Date(domain.createdAt).toLocaleDateString() : '\u2014'}
+                        {domain.createdAt ? new Date(domain.createdAt).toLocaleDateString() : '—'}
                       </td>
                     </tr>
                   ))}
@@ -185,9 +168,7 @@ export default function Domains() {
                       <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No domains found matching your search.'
-                          : selectedTenantId
-                            ? 'No domains yet. Click "Add Domain" to create one.'
-                            : 'No domains found across any tenant.'}
+                          : 'No domains found across any tenant.'}
                       </td>
                     </tr>
                   )}
@@ -225,7 +206,6 @@ export default function Domains() {
         </button>
       </BulkActionBar>
 
-      {/* Confirmation dialog */}
       {confirmAction && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -260,12 +240,6 @@ export default function Domains() {
           </div>
         </div>
       )}
-
-      <CreateDomainModal
-        open={showCreate}
-        onClose={() => setShowCreate(false)}
-        tenantId={selectedTenantId}
-      />
     </div>
   );
 }

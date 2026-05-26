@@ -12,7 +12,7 @@ import { reconcileDeploymentStatuses } from './status-reconciler.js';
 import { restartDeployment } from './k8s-deployer.js';
 import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
-import { eq, and, ne, inArray, desc, sql } from 'drizzle-orm';
+import { eq, and, ne, inArray, desc, sql, or, ilike } from 'drizzle-orm';
 import { catalogEntries, deployments, tenants } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 import { getFileManagerImage } from '../file-manager/image.js';
@@ -825,6 +825,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const catalogFilter = query.catalog_entry_id ? String(query.catalog_entry_id) : undefined;
     const tenantFilter = query.tenant_id ? String(query.tenant_id) : undefined;
     const includeDeleted = query.include_deleted === 'true';
+    const searchTerm = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
     const offset = (page - 1) * limit;
 
     const conditions = [];
@@ -832,6 +833,16 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (statusFilter) conditions.push(eq(deployments.status, statusFilter as typeof deployments.status.enumValues[number]));
     if (catalogFilter) conditions.push(eq(deployments.catalogEntryId, catalogFilter));
     if (tenantFilter) conditions.push(eq(deployments.tenantId, tenantFilter));
+    if (searchTerm) {
+      const pattern = `%${searchTerm}%`;
+      const orExpr = or(
+        ilike(deployments.name, pattern),
+        ilike(tenants.name, pattern),
+        ilike(catalogEntries.name, pattern),
+        ilike(catalogEntries.code, pattern),
+      );
+      if (orExpr) conditions.push(orExpr);
+    }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
