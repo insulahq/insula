@@ -341,6 +341,22 @@ jobs:
               metadata:
                 annotations:
                   platform.phoenix-host.net/deploy-rev: "${VERSION}"
+          ---
+          # mail-stack-standby-replicate — :latest-tagged DaemonSet
+          # (mail-backup-tools image) — same rationale as above. New
+          # script changes in images/mail-backup-tools/ are baked into
+          # :latest by ci-mail-backup-tools.yml; this annotation
+          # ensures the running Pods restart to pick them up.
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: mail-stack-standby-replicate
+            namespace: mail
+          spec:
+            template:
+              metadata:
+                annotations:
+                  platform.phoenix-host.net/deploy-rev: "${VERSION}"
           PATCH
           if ! grep -q "deploy-rev-patch.yaml" k8s/overlays/staging/kustomization.yaml; then
             sed -i '/^  - path: platform-version-patch.yaml/a\  - path: deploy-rev-patch.yaml' k8s/overlays/staging/kustomization.yaml
