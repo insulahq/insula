@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, Loader2, Copy, CheckCircle, KeyRound } from 'lucide-react';
+import { X, Loader2, Copy, CheckCircle, KeyRound, ChevronDown, ChevronRight } from 'lucide-react';
 import { useCreateTenant, useDeleteTenant } from '@/hooks/use-tenants';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { usePlans, useRegions } from '@/hooks/use-plans';
@@ -75,6 +75,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
   const [createdTenant, setCreatedTenant] = useState<CreatedTenant | null>(null);
   const [view, setView] = useState<'form' | 'credentials' | 'provisioning'>('form');
   const [copied, setCopied] = useState(false);
+  const [showBilling, setShowBilling] = useState(false);
 
   const plans = plansData?.data ?? [];
   const regions = regionsData?.data ?? [];
@@ -97,6 +98,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
     setCreatedTenant(null);
     setView('form');
     setCopied(false);
+    setShowBilling(false);
     createTenant.reset();
   };
 
@@ -107,19 +109,27 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const hasAnyBillingField =
+      billingStreetAddress !== '' ||
+      billingPostalAddress !== '' ||
+      billingCity !== '' ||
+      billingCountry !== '';
+    const billingAddress = hasAnyBillingField
+      ? {
+          street_address: billingStreetAddress,
+          postal_address: billingPostalAddress,
+          city: billingCity,
+          country: billingCountry,
+        }
+      : undefined;
     try {
       const result = await createTenant.mutateAsync({
         name,
         contact_name: contactName,
         primary_email: primaryEmail,
         secondary_email: secondaryEmail || undefined,
-        phone_e164: phoneE164,
-        billing_address: {
-          street_address: billingStreetAddress,
-          postal_address: billingPostalAddress,
-          city: billingCity,
-          country: billingCountry,
-        },
+        phone_e164: phoneE164 || undefined,
+        billing_address: billingAddress,
         plan_id: planId,
         // region_id intentionally omitted — server auto-fills platform apex region.
         node_name: nodeName || undefined,
@@ -200,8 +210,8 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="create-tenant-modal">
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
-      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
-        <div className="flex items-center justify-between mb-5">
+      <div className="relative flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-white dark:bg-gray-800 shadow-xl">
+        <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Create Tenant</h2>
           <button
             onClick={handleClose}
@@ -211,6 +221,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
             <X size={20} />
           </button>
         </div>
+        <div className="overflow-y-auto px-6 py-5">
 
         {view === 'credentials' && credentials && (
           <div className="space-y-4" data-testid="tenant-credentials">
@@ -327,87 +338,99 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
 
           <div>
             <label htmlFor="phone-e164" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Tenant Phone *
+              Tenant Phone
             </label>
             <input
               id="phone-e164"
               type="tel"
-              required
               value={phoneE164}
               onChange={(e) => setPhoneE164(e.target.value)}
               className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              placeholder="+14155552671"
+              placeholder="+14155552671 (optional)"
               pattern="^\+[1-9]\d{1,14}$"
               data-testid="phone-input"
             />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">ITU-T E.164 format (leading +, country code, no spaces).</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Optional. ITU-T E.164 format (leading +, country code, no spaces).</p>
           </div>
 
-          <fieldset className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
-            <legend className="px-2 text-sm font-medium text-gray-700 dark:text-gray-300">Billing Address</legend>
-            <div>
-              <label htmlFor="billing-street" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                Street Address *
-              </label>
-              <input
-                id="billing-street"
-                type="text"
-                required
-                value={billingStreetAddress}
-                onChange={(e) => setBillingStreetAddress(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                placeholder="123 Main Street"
-                data-testid="billing-street-input"
-              />
-            </div>
-            <div>
-              <label htmlFor="billing-postal" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                Postal Address *
-              </label>
-              <input
-                id="billing-postal"
-                type="text"
-                required
-                value={billingPostalAddress}
-                onChange={(e) => setBillingPostalAddress(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                placeholder="P.O. Box 456 or same as Street"
-                data-testid="billing-postal-input"
-              />
-            </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label htmlFor="billing-city" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                  City *
-                </label>
-                <input
-                  id="billing-city"
-                  type="text"
-                  required
-                  value={billingCity}
-                  onChange={(e) => setBillingCity(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                  placeholder="San Francisco"
-                  data-testid="billing-city-input"
-                />
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700">
+            <button
+              type="button"
+              onClick={() => setShowBilling((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg"
+              aria-expanded={showBilling}
+              aria-controls="billing-address-fields"
+              data-testid="billing-toggle"
+            >
+              <span className="flex items-center gap-2">
+                {showBilling ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                Billing Address
+                <span className="text-xs font-normal text-gray-500 dark:text-gray-400">(optional)</span>
+              </span>
+            </button>
+            {showBilling && (
+              <div id="billing-address-fields" className="space-y-3 px-3 pb-3 pt-1">
+                <div>
+                  <label htmlFor="billing-street" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                    Street Address
+                  </label>
+                  <input
+                    id="billing-street"
+                    type="text"
+                    value={billingStreetAddress}
+                    onChange={(e) => setBillingStreetAddress(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    placeholder="123 Main Street"
+                    data-testid="billing-street-input"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="billing-postal" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                    Postal Address
+                  </label>
+                  <input
+                    id="billing-postal"
+                    type="text"
+                    value={billingPostalAddress}
+                    onChange={(e) => setBillingPostalAddress(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    placeholder="P.O. Box 456 or same as Street"
+                    data-testid="billing-postal-input"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="billing-city" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                      City
+                    </label>
+                    <input
+                      id="billing-city"
+                      type="text"
+                      value={billingCity}
+                      onChange={(e) => setBillingCity(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      placeholder="San Francisco"
+                      data-testid="billing-city-input"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="billing-country" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                      Country
+                    </label>
+                    <input
+                      id="billing-country"
+                      type="text"
+                      value={billingCountry}
+                      onChange={(e) => setBillingCountry(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      placeholder="US"
+                      data-testid="billing-country-input"
+                    />
+                  </div>
+                </div>
               </div>
-              <div>
-                <label htmlFor="billing-country" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                  Country *
-                </label>
-                <input
-                  id="billing-country"
-                  type="text"
-                  required
-                  value={billingCountry}
-                  onChange={(e) => setBillingCountry(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                  placeholder="US"
-                  data-testid="billing-country-input"
-                />
-              </div>
-            </div>
-          </fieldset>
+            )}
+          </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
@@ -500,6 +523,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
             </button>
           </div>
         </form>}
+        </div>
       </div>
     </div>
   );
