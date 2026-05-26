@@ -74,7 +74,14 @@ rm -f "$STANDBY_DIR/.standby-complete" 2>/dev/null || true
 #   --timeout 60 fail any single transfer that hangs >60s
 start_ts=$(date +%s)
 echo "standby-replicate: rsync $PUBLISHER_RSYNC_URL → $STANDBY_DIR/"
+# --exclude=lost+found: the ext4 filesystem-level lost+found dir
+# exists at the PVC root, owned by root:root mode 0700. The nobody-
+# uid rsyncd sidecar can't enter it (Permission denied), which
+# previously exited rsync with code 23 even though all real data
+# transferred fine. Filter at the sender so the receiver never
+# tries to delete it either.
 if ! rsync -a --delete --partial --timeout=60 \
+     --exclude='lost+found/' \
      "$PUBLISHER_RSYNC_URL" "$STANDBY_DIR/" 2>&1; then
   echo "standby-replicate: rsync FAILED — leaving previous generation in place"
   return 0
