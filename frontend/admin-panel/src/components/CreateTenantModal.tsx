@@ -434,27 +434,6 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="plan" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Plan *
-              </label>
-              <select
-                id="plan"
-                required
-                value={planId}
-                onChange={(e) => setPlanId(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                data-testid="plan-select"
-              >
-                <option value="">Select plan...</option>
-                {plans.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({formatCurrency(p.monthlyPriceUsd, currency)}/mo)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
               <label htmlFor="node" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Node (primary data location)
               </label>
@@ -501,6 +480,27 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 HA costs 2× storage and requires ≥3 tenant-capable nodes to stay fully replicated.
               </p>
+            </div>
+
+            <div>
+              <label htmlFor="plan" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Plan *
+              </label>
+              <select
+                id="plan"
+                required
+                value={planId}
+                onChange={(e) => setPlanId(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                data-testid="plan-select"
+              >
+                <option value="">Select plan...</option>
+                {plans.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({formatCurrency(p.monthlyPriceUsd, currency)}/mo)
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
