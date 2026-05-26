@@ -3,8 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import Domains from '../pages/Domains';
-import CreateDomainModal from '../components/CreateDomainModal';
+import DomainsTab from '../pages/tenants/DomainsTab';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
@@ -65,13 +64,11 @@ function createWrapper() {
 
 function setupMockApi() {
   mockApiFetch.mockImplementation((url: string) => {
-    // Single tenant fetch for selected tenant display
     if (typeof url === 'string' && url.match(/\/tenants\/tenant-\d+$/)) {
       const id = url.split('/').pop();
       const tenant = MOCK_CLIENTS.find((c) => c.id === id);
       return Promise.resolve({ data: tenant ?? null });
     }
-    // Tenant search
     if (typeof url === 'string' && url.includes('/tenants') && !url.includes('/domains')) {
       if (url.includes('search=')) {
         return Promise.resolve({
@@ -98,103 +95,48 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Domains page', () => {
+describe('DomainsTab', () => {
+  // Heading "Domains" lives on the parent TenantsLayout. We assert
+  // tab-body affordances here. The Add Domain button + modal were
+  // removed when Domains became a read/manage tab — adding domains
+  // is now a tenant-scoped operation accessed from Tenant Detail.
   it('renders with searchable tenant selector', () => {
-    render(<Domains />, { wrapper: createWrapper() });
+    render(<DomainsTab />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tenant-search-select')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Search tenants...')).toBeInTheDocument();
   });
 
   it('shows all tenants by default without a prompt to select', () => {
-    render(<Domains />, { wrapper: createWrapper() });
+    render(<DomainsTab />, { wrapper: createWrapper() });
     expect(screen.queryByTestId('select-tenant-prompt')).not.toBeInTheDocument();
   });
 
-  it('add domain button is always enabled', () => {
-    render(<Domains />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('add-domain-button')).toBeEnabled();
+  it('does NOT render an Add Domain button (read-only cross-tenant view)', () => {
+    render(<DomainsTab />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('add-domain-button')).not.toBeInTheDocument();
   });
 
   it('has a search input', () => {
-    render(<Domains />, { wrapper: createWrapper() });
+    render(<DomainsTab />, { wrapper: createWrapper() });
     expect(screen.getByTestId('domain-search')).toBeInTheDocument();
   });
 });
 
-describe('CreateDomainModal', () => {
-  it('renders form fields when open', () => {
-    const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
-      wrapper: createWrapper(),
-    });
-    expect(screen.getByTestId('create-domain-modal')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Add Domain' })).toBeInTheDocument();
-    expect(screen.getByTestId('domain-name-input')).toBeInTheDocument();
-    expect(screen.getByTestId('dns-mode-select')).toBeInTheDocument();
-  });
-
-  it('is hidden when closed', () => {
-    const onClose = vi.fn();
-    render(<CreateDomainModal open={false} onClose={onClose} tenantId="tenant-1" />, {
-      wrapper: createWrapper(),
-    });
-    expect(screen.queryByTestId('create-domain-modal')).not.toBeInTheDocument();
-  });
-
-  it('has required domain name field', () => {
-    const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
-      wrapper: createWrapper(),
-    });
-    expect(screen.getByTestId('domain-name-input')).toBeRequired();
-  });
-
-  it('has required dns mode field', () => {
-    const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
-      wrapper: createWrapper(),
-    });
-    expect(screen.getByTestId('dns-mode-select')).toBeRequired();
-  });
-
-  it('defaults dns mode to cname', () => {
-    const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
-      wrapper: createWrapper(),
-    });
-    const select = screen.getByTestId('dns-mode-select') as HTMLSelectElement;
-    expect(select.value).toBe('cname');
-  });
-
-  it('has submit and cancel buttons', () => {
-    const onClose = vi.fn();
-    render(<CreateDomainModal open={true} onClose={onClose} tenantId="tenant-1" />, {
-      wrapper: createWrapper(),
-    });
-    expect(screen.getByTestId('submit-domain-button')).toBeInTheDocument();
-    expect(screen.getByText('Cancel')).toBeInTheDocument();
-  });
-});
-
-describe('Domain row expansion', () => {
+describe('Domain row click', () => {
   async function selectTenantAndWaitForDomains() {
     const user = userEvent.setup();
     setupMockApi();
-    render(<Domains />, { wrapper: createWrapper() });
+    render(<DomainsTab />, { wrapper: createWrapper() });
 
-    // Type in the searchable tenant select to find a tenant
     const searchInput = screen.getByTestId('tenant-search-input');
     await user.type(searchInput, 'Acme');
 
-    // Wait for search results to appear
     await waitFor(() => {
       expect(screen.getByTestId('tenant-option-tenant-1')).toBeInTheDocument();
     });
 
-    // Click on the tenant to select it
     await user.click(screen.getByTestId('tenant-option-tenant-1'));
 
-    // Wait for domain rows to appear
     await waitFor(() => {
       expect(screen.getByTestId('domain-row-domain-1')).toBeInTheDocument();
     });

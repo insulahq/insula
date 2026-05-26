@@ -6,11 +6,15 @@ import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import { NodeTerminalHost } from '@/components/NodeTerminalHost';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
-import Tenants from '@/pages/Tenants';
+import TenantsLayout from '@/pages/tenants/TenantsLayout';
+import TenantsListTab from '@/pages/tenants/TenantsListTab';
+import DomainsTab from '@/pages/tenants/DomainsTab';
+import WorkloadsTab from '@/pages/tenants/WorkloadsTab';
+import UsersTab from '@/pages/tenants/UsersTab';
+import EmailAccountsTab from '@/pages/tenants/EmailAccountsTab';
+import CronJobsTab from '@/pages/tenants/CronJobsTab';
 import TenantDetail from '@/pages/TenantDetail';
-import Domains from '@/pages/Domains';
 import Monitoring from '@/pages/Monitoring';
-import CronJobs from '@/pages/CronJobs';
 import Settings from '@/pages/Settings';
 import Applications from '@/pages/Applications';
 import UserSettings from '@/pages/UserSettings';
@@ -93,9 +97,16 @@ export default function App() {
             }
           >
             <Route index element={<Dashboard />} />
-            <Route path="tenants" element={<Tenants />} />
+            <Route path="tenants" element={<TenantsLayout />}>
+              <Route index element={<Navigate to="list" replace />} />
+              <Route path="list" element={<TenantsListTab />} />
+              <Route path="domains" element={<DomainsTab />} />
+              <Route path="workloads" element={<WorkloadsTab />} />
+              <Route path="users" element={<UsersTab />} />
+              <Route path="email-accounts" element={<EmailAccountsTab />} />
+              <Route path="cron-jobs" element={<CronJobsTab />} />
+            </Route>
             <Route path="tenants/:id" element={<TenantDetail />} />
-            <Route path="domains" element={<Domains />} />
             <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
             <Route path="backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupsDashboard /></ProtectedRoute>} />
@@ -104,7 +115,6 @@ export default function App() {
             <Route path="backups/mail" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><MailBackupsPage /></ProtectedRoute>} />
             <Route path="backups/targets" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RemoteStorageTargetsPage /></ProtectedRoute>} />
             <Route path="backups/disaster-recovery" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DisasterRecoveryPage /></ProtectedRoute>} />
-            <Route path="cron-jobs" element={<CronJobs />} />
             {/* Security Hub (2026-05-21): /security top-level retired —
                 the legacy mock page (hardcoded NETWORK_POLICIES array)
                 is replaced by the new posture/network-trust/identity/

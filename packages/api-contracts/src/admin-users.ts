@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { paginatedResponseSchema } from './shared.js';
 
 export const createAdminUserSchema = z.object({
   email: z.string().email(),
@@ -29,3 +30,26 @@ export const adminUserResponseSchema = z.object({
 });
 
 export type AdminUserResponse = z.infer<typeof adminUserResponseSchema>;
+
+// ─── Tenant-Users (cross-tenant admin list) ─────────────────────────────────
+//
+// Tenant-panel users (panel='tenant') and sub-users joined to their owning
+// tenant. Returned by GET /admin/tenant-users for the admin Tenants → Users
+// tab. Includes a `tenantName` projection so the UI can render the tenant
+// column without a second fetch.
+export const tenantUserResponseSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  fullName: z.string(),
+  roleName: z.string(),
+  status: z.string(),
+  tenantId: z.string().nullable(),
+  tenantName: z.string().nullable(),
+  lastLoginAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+export type TenantUserResponse = z.infer<typeof tenantUserResponseSchema>;
+
+export const tenantUserListResponseSchema = paginatedResponseSchema(tenantUserResponseSchema);
+export type TenantUserListResponse = z.infer<typeof tenantUserListResponseSchema>;

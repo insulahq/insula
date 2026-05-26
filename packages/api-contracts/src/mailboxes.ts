@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { paginatedResponseSchema } from './shared.js';
 
 export const createMailboxSchema = z.object({
   local_part: z.string().min(1).max(64).regex(/^[a-zA-Z0-9._-]+$/, 'Invalid mailbox name'),
@@ -40,6 +41,21 @@ export const mailboxResponseSchema = z.object({
 });
 
 export type MailboxResponse = z.infer<typeof mailboxResponseSchema>;
+
+// ─── Admin cross-tenant mailbox list ────────────────────────────────────────
+//
+// Returned by GET /admin/mailboxes for the admin Tenants → Email Accounts
+// tab. Mailbox row joined to its tenant + email domain so the UI can render
+// tenant/domain columns without a second fetch.
+export const adminMailboxResponseSchema = mailboxResponseSchema.extend({
+  tenantName: z.string().nullable(),
+  emailDomain: z.string().nullable(),
+});
+
+export type AdminMailboxResponse = z.infer<typeof adminMailboxResponseSchema>;
+
+export const adminMailboxListResponseSchema = paginatedResponseSchema(adminMailboxResponseSchema);
+export type AdminMailboxListResponse = z.infer<typeof adminMailboxListResponseSchema>;
 
 export const mailboxAccessSchema = z.object({
   user_id: z.string().uuid(),

@@ -15,7 +15,7 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useAllTenantMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
 
-export default function Tenants() {
+export default function TenantsListTab() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -63,9 +63,6 @@ export default function Tenants() {
   };
 
   const [bulkResult, setBulkResult] = useState<{ action: 'suspend' | 'reactivate' | 'delete'; result: BulkResult } | null>(null);
-  // Phase B3: open the bulk-progress modal when the bulk operation
-  // returns a bulkOpId so the operator can watch per-tenant hook
-  // progress in real time.
   const [bulkProgress, setBulkProgress] = useState<{
     bulkOpId: string;
     action: 'suspend' | 'reactivate' | 'delete';
@@ -81,9 +78,6 @@ export default function Tenants() {
       else if (confirmAction === 'reactivate') res = await bulkReactivate.mutateAsync(ids);
       else res = await bulkDelete.mutateAsync(ids);
       selection.deselectAll();
-      // Open the live progress modal first so the operator sees
-      // hook_runs draining; the static result modal stays hidden
-      // unless they explicitly want the per-tenant errored view.
       if (res.data.bulkOpId) {
         setBulkProgress({
           bulkOpId: res.data.bulkOpId,
@@ -91,11 +85,6 @@ export default function Tenants() {
           tenantCount: ids.length,
         });
       } else {
-        // Backwards-compat: if backend didn't return a bulkOpId
-        // (older deploy), fall back to the static result modal.
-        // The shape is structurally compatible — succeeded/failed
-        // arrays carry the same per-tenant info, just minus the
-        // live transition_id link.
         const compat: BulkResult = {
           succeeded: res.data.succeeded.map((r) => r.id),
           failed: res.data.failed.map((r) => ({ id: r.id, error: r.error ?? 'unknown' })),
@@ -111,18 +100,7 @@ export default function Tenants() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Tenants</h1>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"
-        >
-          <Plus size={16} />
-          Add Tenant
-        </button>
-      </div>
-
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative flex-1 max-w-sm">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
@@ -134,6 +112,13 @@ export default function Tenants() {
             data-testid="tenant-search"
           />
         </div>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"
+        >
+          <Plus size={16} />
+          Add Tenant
+        </button>
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -219,24 +204,9 @@ export default function Tenants() {
                           )}
                         </div>
                       </td>
-                      <MetricsCell
-                        metrics={metricsMap[tenant.id]}
-                        loading={metricsLoading}
-                        resource="cpu"
-                        tenantStatus={tenant.status}
-                      />
-                      <MetricsCell
-                        metrics={metricsMap[tenant.id]}
-                        loading={metricsLoading}
-                        resource="memory"
-                        tenantStatus={tenant.status}
-                      />
-                      <MetricsCell
-                        metrics={metricsMap[tenant.id]}
-                        loading={metricsLoading}
-                        resource="storage"
-                        tenantStatus={tenant.status}
-                      />
+                      <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="cpu" tenantStatus={tenant.status} />
+                      <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="memory" tenantStatus={tenant.status} />
+                      <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="storage" tenantStatus={tenant.status} />
                       <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
                         {tenant.nodeName ? (
                           <span className="font-mono text-gray-700 dark:text-gray-300">{tenant.nodeName}</span>
@@ -306,7 +276,6 @@ export default function Tenants() {
         </button>
       </BulkActionBar>
 
-      {/* Confirmation dialog */}
       {confirmAction && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -397,11 +366,6 @@ function MetricsCell({
   readonly resource: 'cpu' | 'memory' | 'storage';
   readonly tenantStatus?: string;
 }) {
-  // Suspended/archived tenants have no live workloads — Deployments are scaled
-  // to zero (suspended) or namespace is being torn down (archived). The
-  // metrics number that comes back is either stale or zero, and the green
-  // "healthy" dot is misleading. Render an em-dash placeholder instead so the
-  // row keeps consistent column widths.
   if (tenantStatus === 'suspended' || tenantStatus === 'archived') {
     return (
       <td className="hidden px-3 py-3.5 text-xs font-mono text-gray-400 dark:text-gray-500 md:table-cell">
