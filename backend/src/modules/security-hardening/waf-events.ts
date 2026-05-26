@@ -106,18 +106,16 @@ function buildFilters(query: WafEventsQuery) {
   if (query.scope === 'admin-host') filters.push(isNull(wafLogs.routeId));
   if (query.scope === 'tenant-route') filters.push(sql`${wafLogs.routeId} IS NOT NULL`);
   // Time filter:
-  //   - When fromTime/toTime is provided, use them (UI's "DateTime range
-  //     overrides Window" mode). 30-day hard cap still applies via the
-  //     fromTime floor below — otherwise an unbounded toTime=now query
-  //     with no fromTime would scan the whole table.
+  //   - When fromTime/toTime is provided, use them as-is (UI's
+  //     "DateTime range overrides Window" mode). The previous version
+  //     clamped fromTime forward to a 30-day floor, which silently
+  //     rewrote operator queries: picking "from 1 year ago" returned
+  //     last-30-days data and looked like the filter was ignored.
+  //     The DEFAULT_LIMIT (200 rows) + desc order index walk keeps
+  //     the scan bounded without rewriting the range.
   //   - Otherwise apply sinceSeconds (Zod schema enforces ≥ 60s).
   if (query.fromTime || query.toTime) {
-    // Hard cap: even with an explicit range, never let the lower bound
-    // walk past 30 days. Closes the same footgun as the sinceSeconds cap.
-    const hardFloor = new Date(Date.now() - 2_592_000 * 1000);
-    const fromCandidate = query.fromTime ? new Date(query.fromTime) : hardFloor;
-    const fromBound = fromCandidate.getTime() < hardFloor.getTime() ? hardFloor : fromCandidate;
-    filters.push(gte(wafLogs.createdAt, fromBound));
+    if (query.fromTime) filters.push(gte(wafLogs.createdAt, new Date(query.fromTime)));
     if (query.toTime) filters.push(sql`${wafLogs.createdAt} <= ${new Date(query.toTime)}`);
   } else {
     const sinceSeconds = query.sinceSeconds ?? DEFAULT_SINCE_SECONDS;

@@ -249,9 +249,34 @@ export function WafEventsTab() {
       {/* Stats panel */}
       {payload?.stats && <WafStatsPanel stats={payload.stats} />}
 
-      {/* Filter bar */}
+      {/* Filter bar — datetime range first so the operator's "narrow
+          to a specific time" decision is the leftmost control, then
+          the row-attribute filters (rule, severity, host, IP, …). */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-filters">
         <div className="flex flex-wrap items-end gap-3">
+          <FilterField label="From (datetime)">
+            <input
+              type="datetime-local"
+              value={fromTime}
+              onChange={(e) => setFromTime(e.target.value)}
+              // `[&::-webkit-calendar-picker-indicator]:hidden` hides the
+              // native calendar/clock glyph on Chromium so the input is
+              // a plain text field matching the rest of the filter bar.
+              // Firefox doesn't render the indicator at all; this is a
+              // Chromium-only cleanup that's a no-op elsewhere.
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
+              data-testid="waf-filter-from-time"
+            />
+          </FilterField>
+          <FilterField label="To (datetime)">
+            <input
+              type="datetime-local"
+              value={toTime}
+              onChange={(e) => setToTime(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
+              data-testid="waf-filter-to-time"
+            />
+          </FilterField>
           <FilterField label="Rule ID(s)" hint="comma-separated">
             <input
               type="text"
@@ -322,24 +347,6 @@ export function WafEventsTab() {
                 <option key={o.seconds} value={o.seconds}>{o.label}</option>
               ))}
             </select>
-          </FilterField>
-          <FilterField label="From (datetime)">
-            <input
-              type="datetime-local"
-              value={fromTime}
-              onChange={(e) => setFromTime(e.target.value)}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
-              data-testid="waf-filter-from-time"
-            />
-          </FilterField>
-          <FilterField label="To (datetime)">
-            <input
-              type="datetime-local"
-              value={toTime}
-              onChange={(e) => setToTime(e.target.value)}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
-              data-testid="waf-filter-to-time"
-            />
           </FilterField>
           <button
             type="button"
