@@ -16,12 +16,13 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
+  type CreateTenantWafRuleExclusionRequest,
   type CreateWafRuleExclusionRequest,
   type UpdateWafRuleExclusionRequest,
   type WafRuleExclusion,
 } from '@k8s-hosting/api-contracts';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { wafRuleExclusions } from '../../db/schema.js';
+import { domains, ingressRoutes, wafRuleExclusions } from '../../db/schema.js';
 
 // Loose Db alias — matches `deps.db: NodePgDatabase<any>` used by the
 // route module so callers don't need to launder schema types.
@@ -37,13 +38,62 @@ export class WafRuleExclusionError extends Error {
       | 'DUPLICATE'
       | 'NOT_FOUND'
       | 'OVER_CAPACITY'
-      | 'INVALID_REGEX',
+      | 'INVALID_REGEX'
+      // B2: tenant-scoped operations.
+      | 'ROUTE_NOT_FOUND'
+      | 'NOT_TENANT_OWNED',
     message: string,
   ) {
     super(message);
     this.name = 'WafRuleExclusionError';
   }
 }
+
+/**
+ * B2 (2026-05-26): turn a hostname into a SecRule-safe anchored regex.
+ * `^foo\.bar\.com$` matches X-Forwarded-Host exactly; metacharacter
+ * escape blocks the operator-IP-trust class of footgun where a stray
+ * `.` matches more than the tenant's domain. Mirrors the helper used
+ * by the admin WhitelistRuleModal pre-fill, but lives server-side
+ * here because tenants don't get to choose the regex — the server
+ * derives it from the route they're operating on.
+ */
+const buildHostnameRegexFromHostname = (hostname: string): string => {
+  const escaped = hostname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return `^${escaped}$`;
+};
+
+/**
+ * B2: load a route AND verify it belongs to the named tenant. Returns
+ * the row (caller wants .hostname for hostnameRegex derivation). Throws
+ * ROUTE_NOT_FOUND if either the route doesn't exist or it isn't owned
+ * by the tenant — same error in both cases so tenants can't probe
+ * other tenants' route IDs.
+ */
+const loadTenantRoute = async (
+  db: Db,
+  tenantId: string,
+  routeId: string,
+): Promise<{ id: string; hostname: string }> => {
+  const rows = await db
+    .select({
+      id: ingressRoutes.id,
+      hostname: ingressRoutes.hostname,
+      domainTenantId: domains.tenantId,
+    })
+    .from(ingressRoutes)
+    .innerJoin(domains, eq(domains.id, ingressRoutes.domainId))
+    .where(eq(ingressRoutes.id, routeId))
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.domainTenantId !== tenantId) {
+    throw new WafRuleExclusionError(
+      'ROUTE_NOT_FOUND',
+      `route ${routeId} not found for tenant ${tenantId}`,
+    );
+  }
+  return { id: row.id, hostname: row.hostname };
+};
 
 const rowToContract = (row: typeof wafRuleExclusions.$inferSelect): WafRuleExclusion => ({
   id: row.id,
@@ -55,6 +105,11 @@ const rowToContract = (row: typeof wafRuleExclusions.$inferSelect): WafRuleExclu
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
   disabled: row.disabled,
+  // B2: tenant ownership columns are nullable; admin-scoped rows
+  // surface as null/null, tenant-scoped rows as the IDs (both, by
+  // the DB CHECK constraint).
+  tenantId: row.tenantId ?? null,
+  routeId: row.routeId ?? null,
 });
 
 export const listExclusions = async (
@@ -238,5 +293,156 @@ export const deleteExclusion = async (db: Db, id: string): Promise<void> => {
     if ((result as unknown as { rowCount?: number }).rowCount === 0) {
       throw new WafRuleExclusionError('NOT_FOUND', `exclusion ${id} not found`);
     }
+  });
+};
+
+// ─── B2 — Tenant-scoped variants ─────────────────────────────────────────
+//
+// Three thin wrappers that mirror list/create/delete but force tenant_id
+// + route_id ownership at every step. The reconciler doesn't need to
+// know about the new columns — listExclusionsForReconciler already
+// returns every enabled row regardless of ownership, which is exactly
+// what should happen (tenant rows render into the same ConfigMap with
+// their auto-derived hostnameRegex).
+
+/**
+ * List exclusions for a single tenant route. Verifies tenant ownership;
+ * returns ROUTE_NOT_FOUND for a route the tenant doesn't own (same
+ * error as "doesn't exist" — don't leak route-ID enumeration).
+ */
+export const listExclusionsForTenantRoute = async (
+  db: Db,
+  tenantId: string,
+  routeId: string,
+  opts: { includeDisabled?: boolean } = {},
+): Promise<WafRuleExclusion[]> => {
+  await loadTenantRoute(db, tenantId, routeId);
+  const baseWhere = and(
+    eq(wafRuleExclusions.tenantId, tenantId),
+    eq(wafRuleExclusions.routeId, routeId),
+  );
+  const where = opts.includeDisabled
+    ? baseWhere
+    : and(baseWhere, eq(wafRuleExclusions.disabled, false));
+  const rows = await db
+    .select()
+    .from(wafRuleExclusions)
+    .where(where)
+    .orderBy(asc(wafRuleExclusions.createdAt), asc(wafRuleExclusions.id));
+  return rows.map(rowToContract);
+};
+
+/**
+ * Create a tenant-scoped exclusion. Server forces hostnameRegex =
+ * `^<route.hostname>$` so tenants cannot whitelist a rule on any host
+ * outside their domain.
+ */
+export const createExclusionForTenantRoute = async (
+  db: Db,
+  tenantId: string,
+  routeId: string,
+  input: CreateTenantWafRuleExclusionRequest,
+  createdBy: string,
+): Promise<WafRuleExclusion> => {
+  return db.transaction(async (tx) => {
+    // Take the advisory lock BEFORE the ownership check so a concurrent
+    // route delete can't slip past loadTenantRoute and then fire a raw
+    // FK violation during INSERT. loadTenantRoute reads via the
+    // transaction so it sees the same snapshot as the insert.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${ADVISORY_LOCK_ID})`);
+    const route = await loadTenantRoute(tx, tenantId, routeId);
+    const hostnameRegex = buildHostnameRegexFromHostname(route.hostname);
+
+    const countRows = await tx
+      .select({ enabled: sql<number>`count(*)::int` })
+      .from(wafRuleExclusions)
+      .where(eq(wafRuleExclusions.disabled, false));
+    const enabledCount = Number(countRows[0]?.enabled ?? 0);
+    if (enabledCount >= MAX_ENABLED) {
+      throw new WafRuleExclusionError(
+        'OVER_CAPACITY',
+        `cannot create more than ${MAX_ENABLED} enabled exclusions`,
+      );
+    }
+
+    const dupes = await tx
+      .select({ id: wafRuleExclusions.id })
+      .from(wafRuleExclusions)
+      .where(
+        and(
+          eq(wafRuleExclusions.ruleId, input.ruleId),
+          eq(wafRuleExclusions.hostnameRegex, hostnameRegex),
+          eq(wafRuleExclusions.scope, input.scope),
+          eq(wafRuleExclusions.disabled, false),
+        ),
+      )
+      .limit(1);
+    if (dupes.length > 0) {
+      throw new WafRuleExclusionError(
+        'DUPLICATE',
+        `an enabled exclusion already exists for rule ${input.ruleId} on ${route.hostname} (${input.scope})`,
+      );
+    }
+
+    const id = randomUUID();
+    const now = new Date();
+    await tx.insert(wafRuleExclusions).values({
+      id,
+      ruleId: input.ruleId,
+      hostnameRegex,
+      scope: input.scope,
+      reason: input.reason,
+      createdBy,
+      createdAt: now,
+      updatedAt: now,
+      disabled: false,
+      tenantId,
+      routeId,
+    });
+
+    const [row] = await tx.select().from(wafRuleExclusions).where(eq(wafRuleExclusions.id, id));
+    return rowToContract(row!);
+  });
+};
+
+/**
+ * Delete a tenant-scoped exclusion. Requires the row to be tenant-owned
+ * AND the tenant_id + route_id match the path. Returns NOT_TENANT_OWNED
+ * if the row exists but doesn't belong to (tenant, route) — distinct
+ * from NOT_FOUND so the route can map that to 403 vs 404. Admin-owned
+ * rows (tenant_id IS NULL) are never reachable from this path.
+ */
+export const deleteExclusionForTenantRoute = async (
+  db: Db,
+  tenantId: string,
+  routeId: string,
+  id: string,
+): Promise<void> => {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${ADVISORY_LOCK_ID})`);
+    // Ownership check inside the same transaction as the delete so a
+    // concurrent route delete + admin row create can't race past the
+    // pairing check. tx is passed through (loadTenantRoute accepts a Db
+    // alias which includes the tx type).
+    await loadTenantRoute(tx, tenantId, routeId);
+    const [row] = await tx
+      .select({
+        id: wafRuleExclusions.id,
+        tenantId: wafRuleExclusions.tenantId,
+        routeId: wafRuleExclusions.routeId,
+      })
+      .from(wafRuleExclusions)
+      .where(eq(wafRuleExclusions.id, id))
+      .limit(1);
+    if (!row) {
+      throw new WafRuleExclusionError('NOT_FOUND', `exclusion ${id} not found`);
+    }
+    if (row.tenantId !== tenantId || row.routeId !== routeId) {
+      throw new WafRuleExclusionError(
+        'NOT_TENANT_OWNED',
+        `exclusion ${id} is not owned by tenant ${tenantId} route ${routeId}`,
+      );
+    }
+    await tx.delete(wafRuleExclusions).where(eq(wafRuleExclusions.id, id));
   });
 };
