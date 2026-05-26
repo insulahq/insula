@@ -53,12 +53,26 @@ export const wafEventsQuerySchema = z.object({
    * caller can't slip ILIKE wildcards past the substring intent.
    */
   host: z.string().max(255).regex(/^[a-zA-Z0-9.\-]*$/, 'hostname filter must be plain DNS characters').optional(),
+  /**
+   * Substring match on source_ip (case-insensitive). Allows IPv4, IPv6, and CIDR
+   * characters only — same anti-wildcard rationale as `host`.
+   */
+  sourceIp: z.string().max(64).regex(/^[a-fA-F0-9.:/]*$/, 'sourceIp filter must be plain IP characters').optional(),
   scope: wafEventScopeSchema.optional(),
   /**
    * Max age in seconds. Default 86400 (24h). Min 60s, max 30d — no unbounded
    * scans (closes a footgun where sinceSeconds=0 would walk the whole table).
+   *
+   * IGNORED when fromTime or toTime is provided.
    */
   sinceSeconds: z.coerce.number().int().min(60).max(2592000).optional(),
+  /**
+   * Lower bound of the listing window (ISO datetime). When set together with
+   * `toTime`, overrides `sinceSeconds`. When only one of from/to is provided,
+   * the other side is unbounded (subject to the 30d hard cap applied server-side).
+   */
+  fromTime: z.string().datetime({ offset: true }).optional(),
+  toTime: z.string().datetime({ offset: true }).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 export type WafEventsQuery = z.infer<typeof wafEventsQuerySchema>;

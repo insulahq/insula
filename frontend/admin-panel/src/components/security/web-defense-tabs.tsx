@@ -7,9 +7,14 @@
  * surfaces WAF / Bans / Exclusions — those moved here.
  *
  * Exports (consumed by frontend/admin-panel/src/pages/WebDefensePage.tsx):
- *   - WafEventsTab, BannedIpsTab, WafExclusionsTab — main tab content
- *   - CrowdsecL4Card — L4 enforcement toggle (rendered as a banner
- *     above the tabs on the Web Defense page)
+ *   - WafEventsTab     — cluster-wide ModSec/CRS event stream + filters
+ *   - BannedIpsTab     — active CrowdSec bans table + Static Blocklist
+ *   - WafExclusionsTab — per-route CRS rule exclusions + IP Allowlist
+ *   - WafSettingsTab   — CrowdSec status, Console, auto-ban, L4 toggle
+ *
+ * History note (2026-05-26): on the previous page layout the L4
+ * banner sat above the tabs as a top-of-page card. It moved into
+ * WafSettingsTab so operators only see one canonical L4 surface.
  *
  * Internal helpers (WafStatsPanel, BanIpModal, AllowlistCard, etc.)
  * are not exported — they are implementation details of the four
@@ -115,8 +120,15 @@ export function WafEventsTab() {
   const [ruleId, setRuleId] = useState('');
   const [severity, setSeverity] = useState<'' | WafEventSeverity>('');
   const [host, setHost] = useState('');
+  const [sourceIp, setSourceIp] = useState('');
   const [scope, setScope] = useState<'' | WafEventScope>('');
   const [sinceSeconds, setSinceSeconds] = useState(86_400);
+  // DateTime range. When either bound is set, the backend ignores Window.
+  // Both bounds are `<input type="datetime-local">` values, i.e. local time
+  // strings of the shape `YYYY-MM-DDTHH:MM`. Converted to UTC ISO at query
+  // time so the cutoff matches the operator's clock.
+  const [fromTime, setFromTime] = useState('');
+  const [toTime, setToTime] = useState('');
   const [live, setLive] = useState(false);
   // Lifted to tab-level so the BanIpModal can render once and survive
   // any WafEventRow re-mounting from the 30s refetch.
@@ -138,15 +150,29 @@ export function WafEventsTab() {
   // query 13 times for "admin.example".
   const debouncedRuleId = useDebouncedValue(ruleId, 400);
   const debouncedHost = useDebouncedValue(host, 400);
+  const debouncedSourceIp = useDebouncedValue(sourceIp, 400);
+
+  // True when the operator has set a custom datetime range. Window selector
+  // is disabled in that case so the UI matches the backend's override rule.
+  const rangeActive = Boolean(fromTime || toTime);
 
   const query: WafEventsQuery = useMemo(() => {
-    const q: WafEventsQuery = { sinceSeconds, limit: 200 };
+    const q: WafEventsQuery = { limit: 200 };
+    if (rangeActive) {
+      // Convert local-time string -> UTC ISO. `new Date('YYYY-MM-DDTHH:MM')`
+      // is treated as local time per HTML spec.
+      if (fromTime) q.fromTime = new Date(fromTime).toISOString();
+      if (toTime) q.toTime = new Date(toTime).toISOString();
+    } else {
+      q.sinceSeconds = sinceSeconds;
+    }
     if (debouncedRuleId.trim()) q.ruleId = debouncedRuleId.trim();
     if (severity) q.severity = severity;
     if (debouncedHost.trim()) q.host = debouncedHost.trim();
+    if (debouncedSourceIp.trim()) q.sourceIp = debouncedSourceIp.trim();
     if (scope) q.scope = scope;
     return q;
-  }, [debouncedRuleId, severity, debouncedHost, scope, sinceSeconds]);
+  }, [debouncedRuleId, severity, debouncedHost, debouncedSourceIp, scope, sinceSeconds, fromTime, toTime, rangeActive]);
 
   const { data, isLoading, isError, isFetching, error, refetch } = useWafEvents(query, { live });
   const payload: WafEventsResponse | undefined = data?.data;
@@ -258,6 +284,16 @@ export function WafEventsTab() {
               data-testid="waf-filter-host"
             />
           </FilterField>
+          <FilterField label="Source IP" hint="exact or partial">
+            <input
+              type="text"
+              value={sourceIp}
+              onChange={(e) => setSourceIp(e.target.value)}
+              placeholder="1.2.3.4"
+              className="w-40 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              data-testid="waf-filter-source-ip"
+            />
+          </FilterField>
           <FilterField label="Scope">
             <select
               value={scope}
@@ -270,21 +306,53 @@ export function WafEventsTab() {
               ))}
             </select>
           </FilterField>
-          <FilterField label="Window">
+          <FilterField
+            label="Window"
+            hint={rangeActive ? 'overridden by datetime range' : undefined}
+          >
             <select
               value={sinceSeconds}
               onChange={(e) => setSinceSeconds(Number(e.target.value))}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              disabled={rangeActive}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="waf-filter-since"
+              title={rangeActive ? 'Disabled while a datetime range is set. Clear From/To to use the Window selector.' : undefined}
             >
               {SINCE_OPTIONS.map((o) => (
                 <option key={o.seconds} value={o.seconds}>{o.label}</option>
               ))}
             </select>
           </FilterField>
+          <FilterField label="From (datetime)">
+            <input
+              type="datetime-local"
+              value={fromTime}
+              onChange={(e) => setFromTime(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="waf-filter-from-time"
+            />
+          </FilterField>
+          <FilterField label="To (datetime)">
+            <input
+              type="datetime-local"
+              value={toTime}
+              onChange={(e) => setToTime(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="waf-filter-to-time"
+            />
+          </FilterField>
           <button
             type="button"
-            onClick={() => { setRuleId(''); setSeverity(''); setHost(''); setScope(''); setSinceSeconds(86_400); }}
+            onClick={() => {
+              setRuleId('');
+              setSeverity('');
+              setHost('');
+              setSourceIp('');
+              setScope('');
+              setSinceSeconds(86_400);
+              setFromTime('');
+              setToTime('');
+            }}
             className="ml-auto inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
             data-testid="waf-filter-clear"
           >
@@ -373,7 +441,7 @@ export function WafEventsTab() {
                       <WafEmptyState
                         scraperStatus={payload.scraperStatus}
                         lastInsertAt={payload.stats.mostRecentAt}
-                        hasActiveFilters={Boolean(ruleId || severity || host || scope)}
+                        hasActiveFilters={Boolean(ruleId || severity || host || sourceIp || scope || rangeActive)}
                       />
                     </td>
                   </tr>
@@ -743,7 +811,6 @@ export function BannedIpsTab() {
   }, [debouncedQ, scope, manualOnly, staticOnly]);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCrowdsecDecisions(query);
-  const status = useCrowdsecStatus();
   const del = useDeleteCrowdsecDecision();
 
   const payload = data?.data;
@@ -757,20 +824,11 @@ export function BannedIpsTab() {
         propagates to all <code className="text-xs">traefik</code> DaemonSet pods within a few seconds.
       </div>
 
-      {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
-
-      {/* F2 — Allowlist + Static blocklist (operator-managed lists) */}
-      <AllowlistCard />
+      {/* F2 — Static blocklist (long-term, operator-managed list).
+          Allowlist + CrowdSec status panel + Console + autoban + L4
+          all moved to the WAF Settings tab so the Banned IPs tab is
+          just "the list + the things you do to the list". */}
       <StaticBlocklistCard onOpenAdd={() => setStaticAddOpen(true)} />
-
-      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
-      <CrowdsecConsoleCard />
-
-      {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
-      <CrowdsecAutobanCard />
-
-      {/* F1+F6 — L4 enforcement toggle (highest-risk, operator IP guard) */}
-      <CrowdsecL4Card />
 
       {/* Controls */}
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
@@ -1556,14 +1614,28 @@ export function WafExclusionsTab() {
   return (
     <section className="space-y-4" data-testid="waf-exclusions-tab">
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        DB-backed CRS rule exclusions. Operators add entries from the
-        <strong> WAF Events tab</strong> (Whitelist button on each event row).
-        The backend renders the enabled rows into the
-        <code className="text-xs mx-1">modsec-crs-exclusions-dynamic</code>
-        ConfigMap and rolls the <code className="text-xs">modsec-crs</code>
-        Deployment. Companion to the static, repo-versioned exclusions in
-        <code className="text-xs mx-1">k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml</code>.
+        Operator-managed "trust this" surfaces. Two kinds:
+        <ul className="list-disc pl-5 mt-2 space-y-1">
+          <li>
+            <strong>IP allowlist</strong> — IPs that are NEVER banned, regardless
+            of CrowdSec scenario hits, community blocklist, or L4 enforcement.
+          </li>
+          <li>
+            <strong>WAF rule exclusions</strong> — DB-backed CRS rule
+            exclusions. Operators add entries from the
+            <strong> WAF Events tab</strong> (Whitelist button on each event
+            row). The backend renders the enabled rows into the
+            <code className="text-xs mx-1">modsec-crs-exclusions-dynamic</code>
+            ConfigMap and rolls the <code className="text-xs">modsec-crs</code>
+            Deployment. Companion to the static, repo-versioned exclusions in
+            <code className="text-xs mx-1">k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml</code>.
+          </li>
+        </ul>
       </div>
+
+      {/* IP allowlist moved here from the Banned IPs tab — same "operator
+          says trust this" semantics as the rule exclusions below. */}
+      <AllowlistCard />
 
       <div className="flex items-center gap-3">
         <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
@@ -1671,6 +1743,42 @@ export function WafExclusionsTab() {
           </table>
         </div>
       )}
+    </section>
+  );
+}
+
+// ─── WAF Settings tab ─────────────────────────────────────────────────
+//
+// Cluster-wide CrowdSec configuration: live status panel, Console
+// enrollment (optional), auto-ban tuning + calibration dry-run, and
+// the L4 host-firewall enforcement toggle (highest-risk feature).
+//
+// Lives behind its own tab so the day-to-day Banned IPs view stays
+// focused on the actual ban list. Each card was previously stacked
+// at the top of Banned IPs, which buried the table the operator
+// usually came to look at.
+
+export function WafSettingsTab() {
+  const status = useCrowdsecStatus();
+  return (
+    <section className="space-y-4" data-testid="waf-settings-tab">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
+        Cluster-wide CrowdSec configuration. The L4 enforcement toggle
+        below has the highest blast radius of any platform feature —
+        review the operator-IP-trust check before flipping it to
+        <code className="text-xs mx-1">enforce</code>.
+      </div>
+
+      {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
+
+      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
+      <CrowdsecConsoleCard />
+
+      {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
+      <CrowdsecAutobanCard />
+
+      {/* F1+F6 — L4 enforcement toggle (highest-risk, operator IP guard) */}
+      <CrowdsecL4Card />
     </section>
   );
 }
@@ -2185,7 +2293,7 @@ function AutobanRunRow({ r }: { r: CrowdsecAutobanRun }) {
 
 // ─── F1+F6 — CrowdSec L4 enforcement card ────────────────────────────
 
-export function CrowdsecL4Card() {
+function CrowdsecL4Card() {
   const status = useCrowdsecL4Status();
   const patch = usePatchCrowdsecL4Mode();
   const [err, setErr] = useState<string | null>(null);
