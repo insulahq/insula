@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.1.0-a4483fc"
+        platform.example.test/deploy-rev: "0.1.0-3d2ed4d"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.1.0-a4483fc"
+        platform.example.test/deploy-rev: "0.1.0-3d2ed4d"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +34,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.1.0-a4483fc"
+        platform.example.test/deploy-rev: "0.1.0-3d2ed4d"
 ---
 # firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
@@ -48,7 +48,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.1.0-a4483fc"
+        platform.example.test/deploy-rev: "0.1.0-3d2ed4d"
 ---
 # mail-stack-standby-replicate — :latest-tagged DaemonSet
 # (mail-backup-tools image) — same rationale as above. New
@@ -64,4 +64,4 @@ spec:
   template:
     metadata:
       annotations:
-        platform.example.test/deploy-rev: "0.1.0-a4483fc"
+        platform.example.test/deploy-rev: "0.1.0-3d2ed4d"
