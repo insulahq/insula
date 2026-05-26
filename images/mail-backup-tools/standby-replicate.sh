@@ -109,7 +109,7 @@ if [ -n "${PLATFORM_API_TOKEN:-}" ]; then
   curl -sS -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $PLATFORM_API_TOKEN" \
     -H "Content-Type: application/json" \
-    -X POST "${PLATFORM_API_URL}/internal/mail/standby-replicate-report" \
+    -X POST "${PLATFORM_API_URL}/api/v1/internal/mail/standby-replicate-report" \
     -d "$payload" || echo "standby-replicate: report to platform-api failed (non-fatal)"
 fi
 
