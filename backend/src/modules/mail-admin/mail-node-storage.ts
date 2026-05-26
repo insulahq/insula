@@ -292,7 +292,16 @@ async function tryDuInStalwartPod(
     };
     const pod = (pods.items ?? []).find((p) => p.status?.phase === 'Running');
     if (!pod?.metadata?.name) return null;
-    const stdout = await execStdoutCapture(exec, pod.metadata.name, ['du', '-sb', '/var/lib/mail-stack']);
+    // Path resolves to the Stalwart RocksDB DataStore mount inside
+    // the stalwart container. The container subPath-mounts the PVC's
+    // stalwart/ subtree at /var/lib/stalwart/data — so this matches
+    // the legacy mail-pvc.ts probe and the running Stalwart's actual
+    // data root. The bulwark/ subtree is on the same PVC but mounted
+    // by the bulwark Deployment in a different pod; we don't probe
+    // it here because the operator-facing question is "how much disk
+    // is mail consuming on the active mail node?", and stalwart is
+    // >99% of that.
+    const stdout = await execStdoutCapture(exec, pod.metadata.name, ['du', '-sb', '/var/lib/stalwart/data']);
     const firstField = stdout.trim().split(/\s+/, 1)[0];
     const n = Number(firstField);
     return Number.isFinite(n) && n >= 0 ? n : null;

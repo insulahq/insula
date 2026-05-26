@@ -1,51 +1,73 @@
 /**
- * Stalwart Domain + Listener self-healing reconciler.
+ * Stalwart platform-infrastructure self-healing reconciler.
  *
- * Bridges the gap between `scripts/bootstrap.sh:configure_stalwart_full()`
- * (the one-shot installer that creates the Stalwart `x:Domain` entry,
- * AcmeProvider, `Automatic` certificateManagement, AcmeRenewal task, and
- * the three NetworkListeners `http-acme`/`submission`/`imap`) and the
- * runtime reality that:
+ * Owns ONLY the cluster-level pieces Stalwart needs:
  *
- *   1. Bootstrap can drop steps silently — `configure_stalwart_full` did
- *      not exist in earlier bootstrap versions, and old clusters that
- *      installed before it landed will never have these objects.
- *   2. Operator-edited `mail_server_hostname` in Admin UI → Mail Settings
- *      previously only updated Stalwart's `SystemSettings.defaultHostname`
- *      (banners + EHLO). The Domain entry stayed bound to whatever
- *      hostname bootstrap installed with — and stayed `Manual` (no
- *      ACME). So a re-hostname'd install kept serving the rcgen
- *      self-signed cert.
- *   3. Stalwart's embedded store is the source of truth; nothing else
- *      reconciles drift. A wipe + restore (or operator-tinkering via
- *      the upstream web-admin UI) could remove a listener and we'd
- *      have no way to detect it.
+ *   1. `SystemSettings.defaultHostname` — the mail server's FQDN
+ *      identity (drives SMTP banners + outbound EHLO + the cert SAN
+ *      selection on inbound TLS). Source-of-truth is operator-set
+ *      `platform_settings.mail_server_hostname`.
+ *   2. `x:AcmeProvider` (letsencrypt) — cluster-level Let's Encrypt
+ *      account; referenced by per-domain certificateManagement that
+ *      tenant provisioning creates separately.
+ *   3. NetworkListeners `http-acme/80`, `submission/587`, `imap/143` —
+ *      bootstrap's `configure_stalwart_full` step adds these but
+ *      older installs (or external Stalwart mutations) may lose them.
  *
- * **Design** — self-healing, not authoritative. Every step is gated on
- * an existence check (idempotent). The reconciler never destroys
- * existing entries — operator-customized ports / extra listeners /
- * additional domains stay untouched. If the world is already correct,
- * the tick is a no-op (3 x:* GETs).
+ * **Explicitly NOT owned by the reconciler**:
+ *   - `x:Domain` entries — mail domains are tenant property
+ *     (including the SYSTEM tenant's apex). They're created by the
+ *     tenant-provisioning flow when an email-enabled tenant domain
+ *     is verified, not by this reconciler. Earlier versions of this
+ *     module created a Domain for the apex-stripped form of the
+ *     mail hostname — that was wrong and surfaced as an orphan row
+ *     on staging 2026-05-26. Operators may need to clean up old
+ *     orphan entries via the upstream Stalwart admin UI.
+ *   - `AcmeRenewal` task — per-Domain, fired by the tenant flow
+ *     when the domain's certificateManagement is set Automatic.
  *
- * **Mail bring-up decoupled from NS delegation** — this is the explicit
- * point. ACME HTTP-01 needs only:
- *   - DNS A record for the mail hostname resolving to the public IPs
- *   - Port 80 reachable
- *   - Stalwart's `http-acme` listener bound (this reconciler ensures it)
- * Full NS delegation (MX/SPF/DKIM/DMARC publishing under the apex) is
- * orthogonal and only matters for outbound deliverability.
+ * **Design** — self-healing, not authoritative. Every step is gated
+ * on an existence/equality check (idempotent). The reconciler never
+ * destroys anything; if the world is already correct, the tick is a
+ * pure read pass.
  *
- * **Tick cadence**: 60s (matches proxy-networks-reconciler).
- * **Inline trigger**: also called from `PATCH /admin/webmail-settings`
- * so a hostname save reconciles immediately rather than waiting for
- * the next tick.
+ * **Decoupled from NS delegation** — ACME HTTP-01 (used by per-domain
+ * cert acquisition) only needs the A record + port 80 + the
+ * http-acme listener (item 3 above), not a full apex NS delegation.
+ *
+ * **Tick cadence**: 30 min. Bootstrap dropping steps is the bring-up
+ * case (handled by the immediate startup tick); operator hostname
+ * edits trigger inline via PATCH /admin/webmail-settings; the
+ * scheduled tick only exists to catch external drift.
  */
 
 import type { CoreV1Api } from '@kubernetes/client-node';
 
+import { eq } from 'drizzle-orm';
+
 import { readStalwartCredentials } from './credentials.js';
-import { getMailServerHostname } from '../webmail-settings/service.js';
+import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+
+/**
+ * Read `mail_server_hostname` DIRECTLY from platform_settings — NOT
+ * via webmail-settings.getMailServerHostname which has a fallback
+ * chain (env STALWART_HOSTNAME → mail.<ingress_base_domain> →
+ * mail.example.com). Reconciler intent is "only act when the
+ * operator has explicitly chosen a mail hostname", because the
+ * fallback paths can derive the wrong apex on clusters whose
+ * platform-apex isn't intended to be a mail-serving domain
+ * (e.g. an infrastructure-only apex with tenant-domain mail
+ * served separately).
+ */
+async function getExplicitMailHostname(db: Database): Promise<string | null> {
+  const [row] = await db
+    .select()
+    .from(platformSettings)
+    .where(eq(platformSettings.key, 'mail_server_hostname'));
+  const v = row?.value?.trim();
+  return v && v.length > 0 ? v : null;
+}
 
 /**
  * Default tick: 30 min.
@@ -133,16 +155,13 @@ export interface StalwartDomainReconcilerDeps {
  * precondition failed (see `notes` for the reason).
  */
 export interface StalwartReconcileResult {
-  /** Apex the reconciler used (derived from mail_server_hostname). */
-  readonly apex: string | null;
-  /** SAN key used (e.g. "mail" for mail.example.com). */
-  readonly sanKey: string | null;
-  readonly domainCreated: boolean;
+  /** Mail hostname the reconciler used (from platform_settings). */
+  readonly mailHostname: string | null;
+  /** True when SystemSettings.defaultHostname was patched this tick. */
+  readonly defaultHostnameUpdated: boolean;
   readonly acmeProviderCreated: boolean;
-  readonly certManagementUpdated: boolean;
   /** Names of listeners newly created (subset of REQUIRED_LISTENERS). */
   readonly listenersCreated: ReadonlyArray<string>;
-  readonly acmeRenewalFired: boolean;
   /** Free-form per-step notes for the UI ("skipped — no admin creds", etc). */
   readonly notes: ReadonlyArray<string>;
   /** Convenience: true if every step was a clean no-op (idempotent re-run). */
@@ -179,45 +198,43 @@ export async function runStalwartDomainReconcilerTick(
   const emptyResult = (note: string): StalwartReconcileResult => {
     notes.push(note);
     return {
-      apex: null,
-      sanKey: null,
-      domainCreated: false,
+      mailHostname: null,
+      defaultHostnameUpdated: false,
       acmeProviderCreated: false,
-      certManagementUpdated: false,
       listenersCreated: [],
-      acmeRenewalFired: false,
       notes,
       noOp: true,
     };
   };
 
-  // 1. Resolve the effective mail hostname via the same fallback chain
-  //    the rest of the platform uses (webmail-settings/getMailServerHostname):
-  //      a. platform_settings.mail_server_hostname (operator override
-  //         via Admin UI → Mail Settings → SMTP/IMAP hostname)
-  //      b. STALWART_HOSTNAME env (set by bootstrap.sh)
-  //      c. MAIL_SERVER_HOSTNAME env (legacy)
-  //      d. derived as `mail.<ingress_base_domain>` from
-  //         platform_settings.ingress_base_domain
-  //      e. final fallback: 'mail.example.com'
+  // 1. Resolve mail hostname — EXPLICIT operator-set value only.
   //
-  //    Going through getMailServerHostname instead of reading
-  //    mail_server_hostname directly closes a pre-2026-05-26 bug
-  //    where fresh installs never set the platform_settings row
-  //    (only set on first operator save), so the reconciler
-  //    early-returned with noOp and the "no changes needed" modal
-  //    misled the operator. On a fresh install ingress_base_domain
-  //    is always populated by bootstrap, so the apex flows through
-  //    the (d) branch and Stalwart gets its Domain entry.
+  //    Earlier (2026-05-26 morning) this routed through
+  //    webmail-settings.getMailServerHostname which has a fallback
+  //    chain ending in `mail.<ingress_base_domain>`. That misfired on
+  //    staging: `ingress_base_domain` is the platform's apex
+  //    (intentionally NOT a mail-serving domain on this cluster), so
+  //    the reconciler synthesized `mail.staging.phoenix-host.net` →
+  //    stripped `mail.` → apex `staging.phoenix-host.net` and created
+  //    a Stalwart x:Domain entry for that apex. Operator flagged it
+  //    as wrong: `staging.phoenix-host.net` isn't a mail domain.
   //
-  //    Apex derived by stripping the leading `mail.` label.
-  const mailHostname = await getMailServerHostname(deps.db);
-  if (!mailHostname || mailHostname.trim().length === 0 || mailHostname.trim() === 'mail.example.com') {
-    return emptyResult('mail hostname unresolved — set ingress_base_domain or mail_server_hostname');
+  //    Fix: require the operator to explicitly choose a mail hostname
+  //    via Admin UI → Email → Settings → Server (which writes
+  //    platform_settings.mail_server_hostname directly). No implicit
+  //    apex derivation — if the hostname isn't set, the reconciler
+  //    no-ops with a note pointing the operator at the right form.
+  //
+  //    Apex for the Stalwart x:Domain entry is still derived by
+  //    stripping the leading `mail.` label, but the input is now
+  //    operator-chosen so the result is intentional.
+  const mailHostname = await getExplicitMailHostname(deps.db);
+  if (!mailHostname) {
+    return emptyResult(
+      'mail_server_hostname is not set — choose it via Admin UI → Email → Settings → Server (SMTP/IMAP hostname)',
+    );
   }
-  const trimmedHost = mailHostname.trim().toLowerCase();
-  const apex = trimmedHost.startsWith('mail.') ? trimmedHost.slice('mail.'.length) : trimmedHost;
-  const sanKey = trimmedHost.startsWith('mail.') ? 'mail' : trimmedHost.split('.')[0];
+  const trimmedHost = mailHostname.toLowerCase();
 
   // 2. Build JMAP transport. Prod path: exec curl inside a Running
   //    Stalwart pod (matches proxy-networks-reconciler.ts pattern —
@@ -231,7 +248,7 @@ export async function runStalwartDomainReconcilerTick(
   } catch (err) {
     log.warn('Stalwart admin creds not available — skipping tick:', err);
     notes.push(`admin creds unavailable: ${err instanceof Error ? err.message : String(err)}`);
-    return { apex, sanKey, domainCreated: false, acmeProviderCreated: false, certManagementUpdated: false, listenersCreated: [], acmeRenewalFired: false, notes, noOp: true };
+    return { mailHostname: trimmedHost, defaultHostnameUpdated: false, acmeProviderCreated: false, listenersCreated: [], notes, noOp: true };
   }
 
   let jmapCall: JmapCall;
@@ -241,7 +258,7 @@ export async function runStalwartDomainReconcilerTick(
     const podName = await findStalwartPodName(deps.core, log);
     if (!podName) {
       notes.push('no Running Stalwart pod found');
-      return { apex, sanKey, domainCreated: false, acmeProviderCreated: false, certManagementUpdated: false, listenersCreated: [], acmeRenewalFired: false, notes, noOp: true };
+      return { mailHostname: trimmedHost, defaultHostnameUpdated: false, acmeProviderCreated: false, listenersCreated: [], notes, noOp: true };
     }
     const transport: ExecTransport = {
       core: deps.core,
@@ -251,46 +268,28 @@ export async function runStalwartDomainReconcilerTick(
     jmapCall = (a, b) => jmapPostViaExec(transport, a, b);
   }
 
-  let domainId: string | null;
-  let domainCreated = false;
+  // 3. Sync Stalwart's SystemSettings.defaultHostname to the
+  //    operator-set hostname (banners + EHLO + cert-SAN selection).
+  let defaultHostnameUpdated = false;
   try {
-    const r = await ensureDomain(jmapCall, auth, apex, log);
-    domainId = r.id;
-    domainCreated = r.created;
+    defaultHostnameUpdated = await ensureDefaultHostname(jmapCall, auth, trimmedHost, log);
   } catch (err) {
-    notes.push(`x:Domain ensure failed: ${err instanceof Error ? err.message : String(err)}`);
-    log.warn('Stalwart x:Domain ensure failed:', err);
-    return { apex, sanKey, domainCreated: false, acmeProviderCreated: false, certManagementUpdated: false, listenersCreated: [], acmeRenewalFired: false, notes, noOp: false };
-  }
-  if (!domainId) {
-    notes.push('x:Domain create rejected');
-    return { apex, sanKey, domainCreated: false, acmeProviderCreated: false, certManagementUpdated: false, listenersCreated: [], acmeRenewalFired: false, notes, noOp: false };
+    notes.push(`SystemSettings.defaultHostname sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn('Stalwart SystemSettings.defaultHostname sync failed:', err);
   }
 
-  let acmeProviderId: string | null;
+  // 4. Ensure x:AcmeProvider (cluster-level Let's Encrypt account
+  //    that per-domain certificateManagement entries reference).
   let acmeProviderCreated = false;
   try {
-    const r = await ensureAcmeProvider(jmapCall, auth, log);
-    acmeProviderId = r.id;
+    const r = await ensureAcmeProvider(jmapCall, auth, trimmedHost, log);
     acmeProviderCreated = r.created;
   } catch (err) {
     notes.push(`x:AcmeProvider ensure failed: ${err instanceof Error ? err.message : String(err)}`);
     log.warn('Stalwart x:AcmeProvider ensure failed:', err);
-    return { apex, sanKey, domainCreated, acmeProviderCreated: false, certManagementUpdated: false, listenersCreated: [], acmeRenewalFired: false, notes, noOp: false };
-  }
-  if (!acmeProviderId) {
-    notes.push('x:AcmeProvider create rejected');
-    return { apex, sanKey, domainCreated, acmeProviderCreated: false, certManagementUpdated: false, listenersCreated: [], acmeRenewalFired: false, notes, noOp: false };
   }
 
-  let certManagementUpdated = false;
-  try {
-    certManagementUpdated = await ensureDomainCertManagement(jmapCall, auth, domainId, acmeProviderId, sanKey, log);
-  } catch (err) {
-    notes.push(`Domain.certificateManagement ensure failed: ${err instanceof Error ? err.message : String(err)}`);
-    log.warn('Stalwart Domain.certificateManagement ensure failed:', err);
-  }
-
+  // 5. Ensure the three required NetworkListeners exist.
   let listenersCreated: ReadonlyArray<string> = [];
   try {
     listenersCreated = await ensureRequiredListeners(jmapCall, auth, log);
@@ -299,78 +298,105 @@ export async function runStalwartDomainReconcilerTick(
     log.warn('Stalwart NetworkListener ensure failed:', err);
   }
 
-  let acmeRenewalFired = false;
-  try {
-    acmeRenewalFired = await fireAcmeRenewal(jmapCall, auth, domainId, log);
-  } catch (err) {
-    notes.push(`AcmeRenewal fire failed: ${err instanceof Error ? err.message : String(err)}`);
-    log.warn('Stalwart AcmeRenewal task fire failed:', err);
-  }
-
   const noOp =
-    !domainCreated
+    !defaultHostnameUpdated
     && !acmeProviderCreated
-    && !certManagementUpdated
     && listenersCreated.length === 0;
-  return { apex, sanKey, domainCreated, acmeProviderCreated, certManagementUpdated, listenersCreated, acmeRenewalFired, notes, noOp };
+  return {
+    mailHostname: trimmedHost,
+    defaultHostnameUpdated,
+    acmeProviderCreated,
+    listenersCreated,
+    notes,
+    noOp,
+  };
 }
 
 // ── Internal: each ensure step ────────────────────────────────────────
 
-async function ensureDomain(
+/**
+ * Patch Stalwart SystemSettings.defaultHostname to `desired` if it
+ * differs. Returns true when an update was issued.
+ */
+async function ensureDefaultHostname(
+  jmapCall: JmapCall,
+  auth: string,
+  desired: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<boolean> {
+  const getRes = await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      [
+        'x:SystemSettings/get',
+        { ids: ['singleton'], properties: ['defaultHostname'] },
+        'c0',
+      ],
+    ],
+  });
+  const args = getRes.methodResponses[0]?.[1] as { list?: ReadonlyArray<{ defaultHostname?: unknown }> };
+  const current = args?.list?.[0]?.defaultHostname;
+  if (typeof current === 'string' && current.toLowerCase() === desired) {
+    return false;
+  }
+  await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      [
+        'x:SystemSettings/set',
+        { update: { singleton: { defaultHostname: desired } } },
+        'c0',
+      ],
+    ],
+  });
+  log.info(`Stalwart SystemSettings.defaultHostname → ${desired}`);
+  return true;
+}
+
+/**
+ * Resolve the AcmeProvider hash ID for `letsencrypt`, creating it if
+ * absent.
+ *
+ * **Schema gotchas verified against staging 2026-05-26** (mirrors
+ * scripts/bootstrap.sh:5682-5701 which is the canonical working
+ * pattern):
+ *
+ *   - Property name on x:AcmeProvider/set create is `directory`
+ *     (NOT `directoryUrl` — Stalwart 0.16 rejects that).
+ *   - No `name` field. The map key (`letsencrypt`) is the creation
+ *     handle; `name` is also rejected as "Invalid property".
+ *   - `contact` is required by Let's Encrypt (RFC 8555 §7.3.1
+ *     terms-of-service acceptance); omit and the eventual ACME
+ *     order errors with a 400 from the LE staging directory.
+ *
+ * **ID resolution gotcha** (also verified on staging Phase K):
+ *   The hash ID assigned by Stalwart is NOT the creation key. It's
+ *   the autogenerated `id` field on the created object. Read it
+ *   back via x:AcmeProvider/get rather than trusting the /set
+ *   response shape — some Stalwart releases return `created:{key:{}}`
+ *   without the id, which would silently leave the downstream
+ *   Domain.certificateManagement=Manual.
+ */
+async function ensureAcmeProvider(
   jmapCall: JmapCall,
   auth: string,
   apex: string,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<{ id: string | null; created: boolean }> {
-  const getRes = await jmapCall(auth, {
-    using: [JMAP_CORE, JMAP_STALWART],
-    methodCalls: [
-      ['x:Domain/get', { accountId: ADMIN_ACCOUNT_ID, ids: null, properties: ['id', 'name'] }, 'c0'],
-    ],
-  });
-  const args = getRes.methodResponses[0]?.[1] as { list?: ReadonlyArray<{ id?: string; name?: string }> };
-  const list = args?.list ?? [];
-  const existing = list.find((d) => d.name?.toLowerCase() === apex);
-  if (existing?.id) {
-    return { id: existing.id, created: false };
-  }
-
-  const setRes = await jmapCall(auth, {
-    using: [JMAP_CORE, JMAP_STALWART],
-    methodCalls: [
-      ['x:Domain/set', { accountId: ADMIN_ACCOUNT_ID, create: { d: { name: apex } } }, 'c0'],
-    ],
-  });
-  const setArgs = setRes.methodResponses[0]?.[1] as {
-    created?: Record<string, { id?: string }>;
-    notCreated?: Record<string, { description?: string }>;
+  // Helper: read back the first AcmeProvider's id, or null.
+  const readId = async (): Promise<string | null> => {
+    const getRes = await jmapCall(auth, {
+      using: [JMAP_CORE, JMAP_STALWART],
+      methodCalls: [
+        ['x:AcmeProvider/get', { accountId: ADMIN_ACCOUNT_ID, ids: null, properties: ['id'] }, 'c0'],
+      ],
+    });
+    const args = getRes.methodResponses[0]?.[1] as { list?: ReadonlyArray<{ id?: string }> };
+    return args?.list?.[0]?.id ?? null;
   };
-  const notCreated = setArgs?.notCreated ?? {};
-  if (Object.keys(notCreated).length > 0) {
-    log.warn(`x:Domain/set create rejected for apex=${apex}:`, JSON.stringify(notCreated));
-    return { id: null, created: false };
-  }
-  const id = setArgs?.created?.d?.id ?? null;
-  if (id) log.info(`Stalwart x:Domain created for apex=${apex} (id=${id})`);
-  return { id, created: id !== null };
-}
 
-async function ensureAcmeProvider(
-  jmapCall: JmapCall,
-  auth: string,
-  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
-): Promise<{ id: string | null; created: boolean }> {
-  const getRes = await jmapCall(auth, {
-    using: [JMAP_CORE, JMAP_STALWART],
-    methodCalls: [
-      ['x:AcmeProvider/get', { accountId: ADMIN_ACCOUNT_ID, ids: null, properties: ['id', 'name'] }, 'c0'],
-    ],
-  });
-  const args = getRes.methodResponses[0]?.[1] as { list?: ReadonlyArray<{ id?: string; name?: string }> };
-  const list = args?.list ?? [];
-  const existing = list[0];
-  if (existing?.id) return { id: existing.id, created: false };
+  const existing = await readId();
+  if (existing) return { id: existing, created: false };
 
   const setRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
@@ -381,9 +407,9 @@ async function ensureAcmeProvider(
           accountId: ADMIN_ACCOUNT_ID,
           create: {
             [ACME_PROVIDER_KEY]: {
-              name: ACME_PROVIDER_KEY,
-              directoryUrl: 'https://acme-v02.api.letsencrypt.org/directory',
+              directory: 'https://acme-v02.api.letsencrypt.org/directory',
               challengeType: 'Http01',
+              contact: { [`hostmaster@${apex}`]: true },
             },
           },
         },
@@ -392,78 +418,17 @@ async function ensureAcmeProvider(
     ],
   });
   const setArgs = setRes.methodResponses[0]?.[1] as {
-    created?: Record<string, { id?: string }>;
-    notCreated?: Record<string, { description?: string }>;
+    notCreated?: Record<string, { description?: string; properties?: string[] }>;
   };
   const notCreated = setArgs?.notCreated ?? {};
   if (Object.keys(notCreated).length > 0) {
     log.warn('x:AcmeProvider/set create rejected:', JSON.stringify(notCreated));
     return { id: null, created: false };
   }
-  const id = setArgs?.created?.[ACME_PROVIDER_KEY]?.id ?? null;
+  // Defensive read-back instead of trusting the /set response shape.
+  const id = await readId();
   if (id) log.info(`Stalwart x:AcmeProvider created (id=${id})`);
   return { id, created: id !== null };
-}
-
-async function ensureDomainCertManagement(
-  jmapCall: JmapCall,
-  auth: string,
-  domainId: string,
-  acmeProviderId: string,
-  sanKey: string,
-  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
-): Promise<boolean> {
-  // Read current certificateManagement to avoid a no-op patch (Stalwart
-  // accepts it but every patch advances ETag → cache invalidations
-  // elsewhere).
-  const getRes = await jmapCall(auth, {
-    using: [JMAP_CORE, JMAP_STALWART],
-    methodCalls: [
-      [
-        'x:Domain/get',
-        { accountId: ADMIN_ACCOUNT_ID, ids: [domainId], properties: ['certificateManagement'] },
-        'c0',
-      ],
-    ],
-  });
-  const args = getRes.methodResponses[0]?.[1] as {
-    list?: ReadonlyArray<{ certificateManagement?: CertManagement }>;
-  };
-  const current = args?.list?.[0]?.certificateManagement;
-  if (
-    current?.['@type'] === 'Automatic'
-    && current.acmeProviderId === acmeProviderId
-    && current.subjectAlternativeNames
-    && current.subjectAlternativeNames[sanKey] === true
-  ) {
-    return false; // already correct — no patch needed
-  }
-
-  await jmapCall(auth, {
-    using: [JMAP_CORE, JMAP_STALWART],
-    methodCalls: [
-      [
-        'x:Domain/set',
-        {
-          accountId: ADMIN_ACCOUNT_ID,
-          update: {
-            [domainId]: {
-              certificateManagement: {
-                '@type': 'Automatic',
-                acmeProviderId,
-                subjectAlternativeNames: { [sanKey]: true },
-              },
-            },
-          },
-        },
-        'c0',
-      ],
-    ],
-  });
-  log.info(
-    `Stalwart Domain.certificateManagement = Automatic (domainId=${domainId}, acme=${acmeProviderId}, san=${sanKey})`,
-  );
-  return true;
 }
 
 async function ensureRequiredListeners(
@@ -516,47 +481,7 @@ async function ensureRequiredListeners(
   return created;
 }
 
-async function fireAcmeRenewal(
-  jmapCall: JmapCall,
-  auth: string,
-  domainId: string,
-  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
-): Promise<boolean> {
-  // x:Task/set AcmeRenewal — idempotent on the Stalwart side (skips
-  // LE round-trip if the cert is fresh + valid for its SANs).
-  const setRes = await jmapCall(auth, {
-    using: [JMAP_CORE, JMAP_STALWART],
-    methodCalls: [
-      [
-        'x:Task/set',
-        {
-          accountId: ADMIN_ACCOUNT_ID,
-          create: { r: { '@type': 'AcmeRenewal', domainId } },
-        },
-        'c0',
-      ],
-    ],
-  });
-  const setArgs = setRes.methodResponses[0]?.[1] as {
-    notCreated?: Record<string, { description?: string }>;
-  };
-  const notCreated = setArgs?.notCreated ?? {};
-  if (Object.keys(notCreated).length > 0) {
-    // Common case: task with same key is in-flight; treat as soft-warn.
-    log.warn('x:Task/set AcmeRenewal noop:', JSON.stringify(notCreated));
-    return false;
-  }
-  log.info(`Stalwart AcmeRenewal task fired (domainId=${domainId})`);
-  return true;
-}
-
 // ── JMAP transport (exec into Stalwart pod) ──────────────────────────
-
-interface CertManagement {
-  readonly '@type'?: string;
-  readonly acmeProviderId?: string;
-  readonly subjectAlternativeNames?: Record<string, boolean>;
-}
 
 interface ExecTransport {
   readonly core: CoreV1Api;

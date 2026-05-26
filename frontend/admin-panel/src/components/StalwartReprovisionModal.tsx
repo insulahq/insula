@@ -86,25 +86,25 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
           {!result && (
             <>
               <p className="text-sm text-gray-700 dark:text-gray-300">
-                Re-runs the Stalwart bring-up sequence: ensures the platform
-                domain entry, ACME provider, automatic certificate
-                management, and the three required network listeners
-                (<code className="font-mono">http-acme/80</code>,{' '}
+                Re-runs Stalwart&apos;s cluster-infrastructure bring-up:
+                syncs <code className="font-mono">SystemSettings.defaultHostname</code>{' '}
+                (mail-server banner identity) to the hostname set under
+                Email → Settings → Server, ensures the Let&apos;s Encrypt
+                AcmeProvider exists, and ensures the three required
+                network listeners (<code className="font-mono">http-acme/80</code>,{' '}
                 <code className="font-mono">submission/587</code>,{' '}
-                <code className="font-mono">imap/143</code>) all exist
-                inside Stalwart, then fires an ACME renewal task.
+                <code className="font-mono">imap/143</code>).
               </p>
 
               <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-xs text-emerald-800 dark:text-emerald-200 flex items-start gap-2">
                 <CheckCircle size={14} className="mt-0.5 shrink-0" />
                 <div>
-                  <strong>Safe to click multiple times.</strong> Each step
-                  checks whether the underlying Stalwart object already
-                  exists before creating it. A fully-configured Stalwart
-                  yields a no-op result (4 read calls + one ACME-renewal
-                  fire that Stalwart itself skips when the cert is fresh).
-                  Operator-customized listeners or additional domains are
-                  never touched.
+                  <strong>Safe to click multiple times.</strong> Each
+                  step checks the live Stalwart state before touching
+                  anything. A fully-configured cluster yields a no-op
+                  result (read-only verification pass). Tenant mail
+                  domains, custom listeners, and any other operator
+                  customisation are never modified.
                 </div>
               </div>
 
@@ -113,8 +113,8 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
                   <strong>When to use:</strong>
                 </p>
                 <ul className="space-y-0.5 ml-4 list-disc text-gray-600 dark:text-gray-400">
-                  <li>Bootstrap dropped a step (cluster installed before this reconciler existed, or earlier bootstrap version)</li>
-                  <li>After editing the mail hostname (Settings → Server) without seeing the cert flip from self-signed to Let&apos;s Encrypt</li>
+                  <li>After editing the mail hostname (Settings → Server) without seeing Stalwart adopt the new banner</li>
+                  <li>Bootstrap dropped a step (older bootstrap version, partial install) — listeners missing</li>
                   <li>If the upstream Stalwart admin UI was used to delete a listener and you want it back</li>
                 </ul>
               </div>
@@ -125,9 +125,9 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
                 </p>
                 <ul className="space-y-0.5 ml-4 list-disc text-gray-600 dark:text-gray-400">
                   <li>Restart the Stalwart pod or interrupt running connections</li>
-                  <li>Publish or modify any DNS records (MX/SPF/DKIM/DMARC) — those are tenant-domain concerns handled separately</li>
-                  <li>Delete any existing Stalwart domain, account, listener, or AcmeProvider</li>
-                  <li>Touch other tenant domains — only ensures the platform&apos;s own mail-hostname apex is configured</li>
+                  <li>Publish or modify any DNS records (MX/SPF/DKIM/DMARC)</li>
+                  <li>Create, modify, or delete any Stalwart Domain entry — mail domains belong to tenant provisioning, including SYSTEM tenant</li>
+                  <li>Issue or renew TLS certificates — per-domain certs are owned by the tenant flow</li>
                 </ul>
               </div>
 
@@ -181,21 +181,20 @@ function ReprovisionResultView({
 }) {
   const rows: Array<{ label: string; done: boolean; value: string }> = [
     {
-      label: 'Domain',
-      done: result.domainCreated,
-      value: result.apex ?? '—',
+      label: 'Mail hostname',
+      done: result.defaultHostnameUpdated,
+      value: result.mailHostname
+        ? (result.defaultHostnameUpdated
+            ? `Synced SystemSettings.defaultHostname → ${result.mailHostname}`
+            : `Already ${result.mailHostname}`)
+        : '—',
     },
     {
       label: 'ACME provider',
       done: result.acmeProviderCreated,
-      value: result.acmeProviderCreated ? 'Created Let’s Encrypt' : 'Already present',
-    },
-    {
-      label: 'Cert management',
-      done: result.certManagementUpdated,
-      value: result.certManagementUpdated
-        ? `Set Automatic with SAN ${result.sanKey ?? ''}`
-        : 'Already set to Automatic',
+      value: result.acmeProviderCreated
+        ? 'Created Let’s Encrypt account'
+        : 'Already present',
     },
     {
       label: 'Network listeners',
@@ -204,13 +203,6 @@ function ReprovisionResultView({
         result.listenersCreated.length > 0
           ? `Created: ${result.listenersCreated.join(', ')}`
           : 'All present (http-acme, submission, imap)',
-    },
-    {
-      label: 'ACME renewal task',
-      done: result.acmeRenewalFired,
-      value: result.acmeRenewalFired
-        ? 'Fired (Stalwart will contact Let’s Encrypt if cert needs renewal)'
-        : 'Suppressed (Stalwart task with same key in-flight or recent)',
     },
   ];
 
@@ -227,18 +219,18 @@ function ReprovisionResultView({
         <div>
           {result.noOp ? (
             <span>
-              <strong>No changes needed.</strong> Stalwart was already
-              fully provisioned for{' '}
-              <code className="font-mono">{result.apex ?? 'this mail hostname'}</code>.
-              Mail health card will reflect any cert renewal within
-              ~30 seconds.
+              <strong>No changes needed.</strong> Stalwart
+              infrastructure already in sync with hostname{' '}
+              <code className="font-mono">{result.mailHostname ?? '(unset)'}</code>.
+              Mail health card will re-probe within ~30 seconds.
             </span>
           ) : (
             <span>
-              <strong>Re-provision complete.</strong> Stalwart now has
-              the required objects. Wait ~30–60 seconds for the mail
-              health card to re-probe; the certificate may take a few
-              minutes more if Let&apos;s Encrypt is contacted.
+              <strong>Re-provision complete.</strong> Stalwart
+              infrastructure brought in line. Wait ~30–60 seconds for
+              the mail health card to re-probe. TLS certs and per-
+              tenant Domain entries are not touched here — those are
+              owned by the tenant flow.
             </span>
           )}
         </div>
