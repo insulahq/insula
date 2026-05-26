@@ -86,14 +86,19 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
           {!result && (
             <>
               <p className="text-sm text-gray-700 dark:text-gray-300">
-                Re-runs Stalwart&apos;s cluster-infrastructure bring-up:
+                Mirrors bootstrap&apos;s mail bring-up sequence: finds the
+                Stalwart Domain matching the mail hostname (longest-
+                suffix match — typically the SYSTEM tenant&apos;s apex),
                 syncs <code className="font-mono">SystemSettings.defaultHostname</code>{' '}
-                (mail-server banner identity) to the hostname set under
-                Email → Settings → Server, ensures the Let&apos;s Encrypt
-                AcmeProvider exists, and ensures the three required
-                network listeners (<code className="font-mono">http-acme/80</code>,{' '}
+                + <code className="font-mono">defaultDomainId</code>,
+                ensures the Let&apos;s Encrypt AcmeProvider, adds the
+                hostname SAN to the matched Domain&apos;s certificate
+                management (set to Automatic), ensures the three
+                required listeners (<code className="font-mono">http-acme/80</code>,{' '}
                 <code className="font-mono">submission/587</code>,{' '}
-                <code className="font-mono">imap/143</code>).
+                <code className="font-mono">imap/143</code>), and fires
+                an ACME renewal task. Stalwart&apos;s built-in ACME
+                client acquires the cert.
               </p>
 
               <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-xs text-emerald-800 dark:text-emerald-200 flex items-start gap-2">
@@ -185,16 +190,28 @@ function ReprovisionResultView({
       done: result.defaultHostnameUpdated,
       value: result.mailHostname
         ? (result.defaultHostnameUpdated
-            ? `Synced SystemSettings.defaultHostname → ${result.mailHostname}`
+            ? `Synced → ${result.mailHostname}`
             : `Already ${result.mailHostname}`)
+        : '—',
+    },
+    {
+      label: 'Matched Domain',
+      done: false,
+      value: result.matchedDomain
+        ? `${result.matchedDomain.name} (SAN key: ${result.sanKey ?? '—'})`
         : '—',
     },
     {
       label: 'ACME provider',
       done: result.acmeProviderCreated,
-      value: result.acmeProviderCreated
-        ? 'Created Let’s Encrypt account'
-        : 'Already present',
+      value: result.acmeProviderCreated ? 'Created Let’s Encrypt account' : 'Already present',
+    },
+    {
+      label: 'Cert management',
+      done: result.certManagementUpdated,
+      value: result.certManagementUpdated
+        ? 'Set Automatic + added hostname SAN'
+        : 'Already Automatic with correct SAN',
     },
     {
       label: 'Network listeners',
@@ -203,6 +220,13 @@ function ReprovisionResultView({
         result.listenersCreated.length > 0
           ? `Created: ${result.listenersCreated.join(', ')}`
           : 'All present (http-acme, submission, imap)',
+    },
+    {
+      label: 'ACME renewal',
+      done: result.acmeRenewalFired,
+      value: result.acmeRenewalFired
+        ? 'Fired — Stalwart’s ACME client will obtain/renew the cert'
+        : 'Suppressed (in-flight or recent fire)',
     },
   ];
 
