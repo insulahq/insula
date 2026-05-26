@@ -2,6 +2,30 @@ import { useState } from 'react';
 import { Loader2, CheckCircle, AlertTriangle, X, Wrench } from 'lucide-react';
 import { useMailStalwartReprovision } from '@/hooks/use-mail-stalwart-reprovision';
 import type { StalwartReprovisionResponse } from '@k8s-hosting/api-contracts';
+import { ApiError } from '@/lib/api-client';
+
+/**
+ * Render a useful error string even when the underlying message is
+ * empty. Common case: HTTP/2 strips res.statusText, so an ApiError
+ * built from a non-2xx response without an error.message field ends
+ * up with an empty Error.message — the modal would otherwise render
+ * an invisible red banner. Falls back to the HTTP status + error
+ * code so the operator at least gets something to grep server logs
+ * for.
+ */
+function formatReprovisionError(err: unknown): string {
+  if (err instanceof ApiError) {
+    const parts: string[] = [];
+    if (err.message && err.message.trim() !== '') parts.push(err.message);
+    parts.push(`HTTP ${err.status}`);
+    if (err.code && err.code !== 'UNKNOWN') parts.push(err.code);
+    return parts.join(' — ');
+  }
+  if (err instanceof Error && err.message && err.message.trim() !== '') {
+    return err.message;
+  }
+  return 'Re-provision failed — see platform-api logs (no error message returned)';
+}
 
 interface Props {
   readonly onClose: () => void;
@@ -110,7 +134,7 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
               {mut.isError && (
                 <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
                   <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                  <span>{mut.error instanceof Error ? mut.error.message : 'Re-provision failed'}</span>
+                  <span data-testid="reprovision-error">{formatReprovisionError(mut.error)}</span>
                 </div>
               )}
 
