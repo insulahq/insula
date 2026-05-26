@@ -5,7 +5,6 @@ import {
   Loader2,
   Check,
   ArrowRight,
-  RefreshCw,
   ChevronDown,
   Info,
   Database,
@@ -54,9 +53,10 @@ export default function MailDrCard() {
   } | null>(null);
 
   const [migrationRunId, setMigrationRunId] = useState<string | null>(null);
-  const [failoverTarget, setFailoverTarget] = useState<string | null>(null);
-  const [migrateTarget, setMigrateTarget] = useState<string>('');
-  const [showMigrateForm, setShowMigrateForm] = useState(false);
+  // Consolidated "Move mail to…" target — replaces the legacy Manual
+  // Failover + Fail-back + Live Migrate trio. The action dispatched
+  // is inferred from which node the operator picked: see handleMove.
+  const [moveTarget, setMoveTarget] = useState<string>('');
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showReprovision, setShowReprovision] = useState(false);
 
@@ -144,39 +144,62 @@ export default function MailDrCard() {
     }
   }
 
-  async function handleFailover() {
+  // Single "Move mail to…" dispatcher. The legacy split between
+  // Manual Failover / Fail-back / Live Migrate corresponded 1:1 to a
+  // target-vs-current-state predicate, with all three ultimately
+  // calling the same migration orchestrator server-side. We collapse
+  // the trio into one control here and route to the appropriate hook
+  // based on the picked target:
+  //
+  //   - target == primary AND active != primary → useMailFailback
+  //   - target == secondary || tertiary         → useMailFailover
+  //   - any other candidate                     → useStartMailMigration
+  //
+  // Selection of activeNode itself is impossible (option disabled).
+  async function handleMove() {
+    if (!moveTarget || moveTarget === current.activeNode) return;
     try {
-      const result = await failover.mutateAsync({ targetNode: failoverTarget, confirm: true });
+      let result;
+      if (
+        current.activeNode
+        && current.primaryNode
+        && current.activeNode !== current.primaryNode
+        && moveTarget === current.primaryNode
+      ) {
+        result = await failback.mutateAsync({ confirm: true });
+      } else if (
+        moveTarget === current.secondaryNode
+        || moveTarget === current.tertiaryNode
+      ) {
+        result = await failover.mutateAsync({ targetNode: moveTarget, confirm: true });
+      } else {
+        result = await migrate.mutateAsync({ targetNode: moveTarget, confirm: true });
+      }
       setMigrationRunId(result.data.runId);
-      setFailoverTarget(null);
+      setMoveTarget('');
     } catch {
-      // surfaced via failover.isError
+      // surfaced via the relevant hook's isError below
     }
   }
 
-  async function handleFailback() {
-    try {
-      const result = await failback.mutateAsync({ confirm: true });
-      setMigrationRunId(result.data.runId);
-    } catch {
-      // surfaced via failback.isError
-    }
-  }
+  const movePending = failover.isPending || failback.isPending || migrate.isPending;
+  const moveError = failover.error ?? failback.error ?? migrate.error ?? null;
+  const moveHasError = failover.isError || failback.isError || migrate.isError;
 
-  async function handleMigrate() {
-    if (!migrateTarget) return;
-    try {
-      const result = await migrate.mutateAsync({ targetNode: migrateTarget, confirm: true });
-      setMigrationRunId(result.data.runId);
-      setShowMigrateForm(false);
-      setMigrateTarget('');
-    } catch {
-      // surfaced via migrate.isError
-    }
+  // Per-target action label so the operator knows what they're about
+  // to trigger before they click. Matches handleMove's dispatch logic.
+  function actionLabelForTarget(target: string): string {
+    if (!target) return 'Move mail';
+    if (
+      current.activeNode
+      && current.primaryNode
+      && current.activeNode !== current.primaryNode
+      && target === current.primaryNode
+    ) return 'Fail back to primary';
+    if (target === current.secondaryNode) return 'Fail over to secondary';
+    if (target === current.tertiaryNode) return 'Fail over to tertiary';
+    return 'Live-migrate to selected node';
   }
-
-  const canFailback = current.activeNode && current.primaryNode && current.activeNode !== current.primaryNode;
-  const failoverTargetNode = failoverTarget ?? current.secondaryNode ?? current.tertiaryNode ?? null;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-5">
@@ -338,79 +361,80 @@ export default function MailDrCard() {
           Manual operations
         </div>
 
-        {/* Failover */}
-        <div className="flex flex-wrap items-start gap-3">
-          <div className="flex-1 min-w-[200px]">
-            <div className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">
-              Manual failover
+        {/* Move mail to… — consolidated dispatcher.
+            Replaces the legacy Manual Failover + Fail-back + Live
+            Migrate trio (2026-05-26) — each was a thin wrapper around
+            the same migration orchestrator, the only difference being
+            which target nodes were offered. The unified dropdown
+            sources all candidates; the button label updates as the
+            operator picks a target so they know which DR action is
+            implied before clicking. */}
+        <div className="space-y-2">
+          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            Move mail to…
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Single dispatcher: picks the right DR action (fail-over,
+            fail-back, or live-migrate) based on which node you choose.
+            Standby-labelled targets use the FAST PATH (pre-staged
+            data, ≤ 5 min stale); other targets rsync from the active
+            node mid-cutover.
+          </p>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                Target node
+              </label>
+              <select
+                value={moveTarget}
+                onChange={(e) => setMoveTarget(e.target.value)}
+                data-testid="mail-dr-move-target"
+                className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              >
+                <option value="">— select node —</option>
+                {candidates.map((c) => {
+                  const isCurrent = c.hostname === current.activeNode;
+                  const roleParts: string[] = [];
+                  if (c.hostname === current.primaryNode) roleParts.push('primary');
+                  if (c.hostname === current.secondaryNode) roleParts.push('secondary');
+                  if (c.hostname === current.tertiaryNode) roleParts.push('tertiary');
+                  const role = roleParts.length > 0 ? ` [${roleParts.join('/')}]` : '';
+                  return (
+                    <option
+                      key={c.hostname}
+                      value={c.hostname}
+                      disabled={isCurrent}
+                    >
+                      {c.hostname}{role} — {bytesToGiB(c.freeDiskBytes)} GiB free
+                      {isCurrent ? ' (current)' : ''}
+                    </option>
+                  );
+                })}
+              </select>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              Migrate to secondary/tertiary immediately. Use when the primary is healthy
-              but you need to move Stalwart (maintenance, hardware replacement).
-            </p>
-            <select
-              value={failoverTarget ?? ''}
-              onChange={(e) => setFailoverTarget(e.target.value || null)}
-              data-testid="mail-dr-failover-target"
-              className="w-full max-w-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 mb-2"
-            >
-              {current.secondaryNode && (
-                <option value={current.secondaryNode}>
-                  Secondary: {current.secondaryNode}
-                </option>
-              )}
-              {current.tertiaryNode && (
-                <option value={current.tertiaryNode}>
-                  Tertiary: {current.tertiaryNode}
-                </option>
-              )}
-              {!current.secondaryNode && !current.tertiaryNode && (
-                <option value="" disabled>No secondary/tertiary configured</option>
-              )}
-            </select>
             <button
               type="button"
-              onClick={handleFailover}
-              disabled={!failoverTargetNode || failover.isPending}
-              data-testid="mail-dr-failover-button"
+              onClick={handleMove}
+              disabled={!moveTarget || moveTarget === current.activeNode || movePending}
+              data-testid="mail-dr-move-button"
               className="inline-flex items-center gap-2 rounded-lg border border-amber-500 bg-amber-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {failover.isPending ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
-              {failover.isPending ? 'Starting…' : 'Failover'}
+              {movePending ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
+              {movePending ? 'Starting…' : actionLabelForTarget(moveTarget)}
             </button>
-            {failover.isError && <ErrorBanner error={failover.error} />}
           </div>
-
-          {/* Fail-back */}
-          {canFailback && (
-            <div className="flex-1 min-w-[200px]">
-              <div className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">
-                Fail-back to primary
-              </div>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                Restore Stalwart to the primary node (
-                <code className="font-mono">{current.primaryNode}</code>
-                ). Uses FAST PATH if the primary still has pre-staged standby
-                data (≤ 5 min stale); otherwise data is rsynced from the
-                currently-active node.
-              </p>
-              <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 mb-2">
-                <Info size={12} className="shrink-0" />
-                Operator-only — auto-failover cannot trigger fail-back.
-              </div>
-              <button
-                type="button"
-                onClick={handleFailback}
-                disabled={failback.isPending}
-                data-testid="mail-dr-failback-button"
-                className="inline-flex items-center gap-2 rounded-lg border border-blue-500 bg-blue-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {failback.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                {failback.isPending ? 'Starting…' : 'Fail-back'}
-              </button>
-              {failback.isError && <ErrorBanner error={failback.error} />}
+          {/* Auto-failover behaviour reminder — only relevant when the
+              active node isn't the primary (i.e. a fail-over already
+              happened); explains why the operator must manually pick
+              the primary as the next target. */}
+          {current.activeNode && current.primaryNode && current.activeNode !== current.primaryNode && (
+            <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+              <Info size={12} className="shrink-0" />
+              Currently failed-over. Pick <code className="font-mono">{current.primaryNode}</code>{' '}
+              to fail back — auto-failover policy never triggers fail-back on its own.
             </div>
           )}
+          {moveHasError && <ErrorBanner error={moveError} />}
         </div>
 
         {/* Re-provision Stalwart — recovery tool for missing/drifted
@@ -438,66 +462,6 @@ export default function MailDrCard() {
           >
             <Wrench size={12} /> Re-provision…
           </button>
-        </div>
-
-        {/* Live migrate */}
-        <div>
-          <button
-            type="button"
-            onClick={() => setShowMigrateForm(!showMigrateForm)}
-            className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
-            data-testid="mail-dr-migrate-toggle"
-          >
-            <ChevronDown
-              size={14}
-              className={`transition-transform ${showMigrateForm ? 'rotate-180' : ''}`}
-            />
-            Live migrate to any node
-          </button>
-
-          {showMigrateForm && (
-            <div className="mt-3 space-y-2">
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Migrate RocksDB data to a specific node. Use for planned maintenance
-                or one-off moves to nodes outside the primary/secondary/tertiary set.
-                {' '}If the target is a standby-labelled node, the FAST PATH uses
-                pre-staged data (≤ 5 min stale); otherwise the data is rsynced from
-                the active node mid-cutover.
-              </p>
-              <div className="flex items-end gap-2 flex-wrap">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                    Target node
-                  </label>
-                  <select
-                    value={migrateTarget}
-                    onChange={(e) => setMigrateTarget(e.target.value)}
-                    data-testid="mail-dr-migrate-target"
-                    className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                  >
-                    <option value="">— select node —</option>
-                    {candidates.map((c) => (
-                      <option key={c.hostname} value={c.hostname} disabled={c.hostname === current.activeNode}>
-                        {c.hostname} ({bytesToGiB(c.freeDiskBytes)} GiB free)
-                        {c.hostname === current.activeNode ? ' (current)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleMigrate}
-                  disabled={!migrateTarget || migrate.isPending}
-                  data-testid="mail-dr-migrate-button"
-                  className="inline-flex items-center gap-2 rounded-lg border border-gray-500 bg-gray-700 dark:bg-gray-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {migrate.isPending ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
-                  {migrate.isPending ? 'Starting…' : 'Migrate'}
-                </button>
-              </div>
-              {migrate.isError && <ErrorBanner error={migrate.error} />}
-            </div>
-          )}
         </div>
       </div>
 
