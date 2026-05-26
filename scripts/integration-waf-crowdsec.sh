@@ -1020,20 +1020,27 @@ except Exception:
     fi
   fi
 
-  # K10: ConfigMap reverts to the empty-body banner after delete +
-  # reconcile.
+  # K10: the SPECIFIC tenant exclusion's rendered SecRule is gone from
+  # the ConfigMap. We don't check "ConfigMap is fully empty" because
+  # admin-scoped exclusions from operator workflows (or leftover Phase H
+  # state on shared staging) may legitimately still be present. Retry
+  # budget: up to 30s — the reconciler waits for the prior modsec-crs
+  # Deployment rollout to settle before patching, so a back-to-back
+  # create→delete in K can put us in the middle of a rolling restart.
   k_cm_after=""
-  for _i in 1 2 3 4 5; do
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     sleep 2
     k_cm_after=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
-    if echo "$k_cm_after" | grep -q "No DB-rendered exclusions are currently enabled"; then
+    # The deleted row's tag was `^<K_HOSTNAME>$` — once removed, the
+    # rendered SecRule with that anchored regex won't be in the CM.
+    if ! echo "$k_cm_after" | grep -qF "$K_EXPECTED_REGEX"; then
       break
     fi
   done
-  if echo "$k_cm_after" | grep -q "No DB-rendered exclusions are currently enabled"; then
-    ok "K10: ConfigMap reverted to empty-body after tenant DELETE"
+  if ! echo "$k_cm_after" | grep -qF "$K_EXPECTED_REGEX"; then
+    ok "K10: tenant exclusion's SecRule removed from ConfigMap after DELETE"
   else
-    fail "K10: ConfigMap still contains tenant exclusion: $(echo "$k_cm_after" | head -c 300)"
+    fail "K10: ConfigMap still contains the tenant SecRule for $K_HOSTNAME: $(echo "$k_cm_after" | head -c 400)"
   fi
 fi
 

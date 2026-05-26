@@ -18,16 +18,20 @@ import type {
   CreateWafRuleExclusionRequest,
   UpdateWafRuleExclusionRequest,
   WafRuleExclusion,
-  WafRuleExclusionListResponse,
+  WafRuleExclusionAdminListResponse,
 } from '@k8s-hosting/api-contracts';
 
 interface Envelope<T> {
   readonly data: T;
 }
 
+// Admin list response includes the LEFT-JOINed tenants.name so the
+// Tenant column can render the tenant's display name with a link.
+// Tenant-scoped rows have non-null tenantId/routeId/tenantName; admin-
+// scoped rows surface tenantName=null and the column renders "—".
 export function useWafRuleExclusions(opts: { includeDisabled?: boolean } = {}) {
   const qs = opts.includeDisabled ? '?includeDisabled=true' : '';
-  return useQuery<Envelope<WafRuleExclusionListResponse>>({
+  return useQuery<Envelope<WafRuleExclusionAdminListResponse>>({
     queryKey: ['waf-rule-exclusions', { includeDisabled: !!opts.includeDisabled }],
     queryFn: () => apiFetch(`/api/v1/admin/security/waf-rule-exclusions${qs}`),
     staleTime: 5_000,

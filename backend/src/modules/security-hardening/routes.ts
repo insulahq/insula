@@ -54,7 +54,7 @@ import { calibrateAutoban, listRecentRuns, loadConfig as loadAutobanConfig, SETT
 import {
   createExclusion as createWafExclusion,
   deleteExclusion as deleteWafExclusion,
-  listExclusions as listWafExclusions,
+  listExclusionsForAdmin as listWafExclusions,
   updateExclusion as updateWafExclusion,
   WafRuleExclusionError,
 } from '../waf-rule-exclusions/service.js';
