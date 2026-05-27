@@ -82,17 +82,20 @@ spec:
                 - secretRef:
                     name: stalwart-snapshot-restic-repo
                     optional: true
+                # Retention policy comes from a ConfigMap that the
+                # platform-api applyMailSnapshotRetention reconciler
+                # owns + updates on every backup_schedules[mail] write.
+                # ConfigMap is intentionally NOT part of the Flux kustomize
+                # tree — if Flux owned it, every reconcile cycle would
+                # revert the operator's retention to manifest defaults
+                # (caught 2026-05-27 — strategic-merge patch on the
+                # CronJob env array got overwritten by kustomize-controller).
+                # optional:true so a fresh cluster without the ConfigMap
+                # falls back to snapshot-upload.sh's --keep-last 48 default.
+                - configMapRef:
+                    name: mail-snapshot-retention
+                    optional: true
               env:
-                # Retention policy — operator-set via backup_schedules[mail].
-                # The platform-api applyMailSnapshotRetention reconciler
-                # patches these on every backup_schedules[mail] write +
-                # on platform-api startup. Defaults preserve the
-                # pre-2026-05-27 hardcoded behaviour (~96min retention)
-                # and get overwritten on first reconciler tick.
-                - name: RETENTION_DAYS
-                  value: "0"
-                - name: RETENTION_COUNT
-                  value: "48"
                 - name: PLATFORM_API_URL
                   value: "http://platform-api.platform.svc.cluster.local:3000"
                 - name: PLATFORM_API_TOKEN
