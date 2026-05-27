@@ -111,6 +111,7 @@ import { emailDkimRotateRoutes } from './modules/email-dkim/rotate-routes.js';
 import { mailSubmitRoutes } from './modules/mail-submit/routes.js';
 import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { mailAdminRoutes } from './modules/mail-admin/routes.js';
+import { registerMailDriftRoutes } from './modules/mail-drift/routes.js';
 import { emailAutodiscoverRoutes } from './modules/email-autodiscover/routes.js';
 import { emailSslStatusRoutes } from './modules/email-ssl-status/routes.js';
 import { mailStatsRoutes } from './modules/mail-stats/routes.js';
@@ -503,6 +504,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailSubmitRoutes, { prefix: '/api/v1' });
   await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   await app.register(mailAdminRoutes, { prefix: '/api/v1' });
+  await app.register(registerMailDriftRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
   // Email tenants hit these BEFORE auth, at well-known paths on
   // the platform base URL (or at autoconfig.<domain> / autodiscover.<domain>
