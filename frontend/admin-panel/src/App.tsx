@@ -29,6 +29,7 @@ import EmailDomainsPage from '@/pages/email/EmailDomainsPage';
 import EmailSettingsPage from '@/pages/email/EmailSettingsPage';
 import EmailOperationsPage from '@/pages/email/EmailOperationsPage';
 import EmailDriftPage from '@/pages/email/EmailDriftPage';
+import EmailBackupsPage from '@/pages/email/EmailBackupsPage';
 import AuditLogs from '@/pages/AuditLogs';
 import Placeholder from '@/pages/Placeholder';
 // Cluster group (operations / infrastructure)
@@ -140,6 +141,7 @@ export default function App() {
             <Route path="email/settings" element={<EmailSettingsPage />} />
             <Route path="email/operations" element={<EmailOperationsPage />} />
             <Route path="email/drift" element={<EmailDriftPage />} />
+            <Route path="email/backups" element={<EmailBackupsPage />} />
 
             {/* Cluster — operations / infrastructure (replaces standalone
                 Nodes & Storage + the cluster-relevant slices of the
