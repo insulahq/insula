@@ -309,3 +309,113 @@ export async function recordMailSnapshotLastRun(
 // shim class directly and lets the shim reconciler materialise the
 // Secret on its 5-minute tick (or inline via the apply-assignment
 // pipeline when an operator uses the new /backups/mail UI).
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Retention reconciler (2026-05-27)
+//
+// Pre-fix: snapshot-upload.sh hardcoded `restic forget --keep-last 48`.
+// Operator-set values in backup_schedules.mail (retention_days +
+// retention_count) had zero effect — the UI accepted the input, the DB
+// stored it, but the actual restic forget command never saw it.
+//
+// This reconciler reads backup_schedules[mail] and patches the
+// stalwart-snapshot CronJob's RETENTION_DAYS + RETENTION_COUNT env vars.
+// snapshot-upload.sh reads those env vars and builds the restic forget
+// args dynamically. Default fallback (--keep-last 48) preserved for
+// safety if both env vars are unset/0.
+//
+// Trigger points:
+//   - Inline call from backup-schedules.updateSchedule when subsystem='mail'
+//     so the operator's PATCH takes effect on the NEXT snapshot fire
+//     (~2 min worst case).
+//   - Platform-api startup self-heal: catches drift if a previous reconcile
+//     was interrupted or the manifest defaults override a real config.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function applyMailSnapshotRetention(
+  db: Database,
+  opts: SnapshotSettingsOptions,
+): Promise<{ retentionDays: number; retentionCount: number; patched: boolean }> {
+  const { backupSchedules } = await import('../../db/schema.js');
+
+  const [row] = await db
+    .select({
+      retentionDays: backupSchedules.retentionDays,
+      retentionCount: backupSchedules.retentionCount,
+    })
+    .from(backupSchedules)
+    .where(eq(backupSchedules.subsystem, 'mail'));
+
+  // No backup_schedules row → use safe legacy defaults (matches manifest).
+  const retentionDays = row?.retentionDays ?? 0;
+  const retentionCount = row?.retentionCount ?? 48;
+
+  const { batch } = await loadK8sTenants(opts.kubeconfigPath);
+
+  // Patch ALL three env-bearing locations in the CronJob template. We
+  // replace the entire env array because patchStrategy on env is tricky:
+  // strategic-merge with `patchMergeKey: name` would merge by name, but
+  // some k8s versions don't preserve order, and we need stable ordering
+  // for the SecretRef-bearing entries.
+  //
+  // The patch builds the full env list mirroring the manifest +
+  // overriding RETENTION_*. Other entries (PLATFORM_API_URL,
+  // PLATFORM_API_TOKEN) are preserved verbatim.
+  const newEnv = [
+    { name: 'RETENTION_DAYS', value: String(retentionDays) },
+    { name: 'RETENTION_COUNT', value: String(retentionCount) },
+    { name: 'PLATFORM_API_URL', value: 'http://platform-api.platform.svc.cluster.local:3000' },
+    {
+      name: 'PLATFORM_API_TOKEN',
+      valueFrom: {
+        secretKeyRef: {
+          name: 'platform-api-sa-token',
+          key: 'token',
+          optional: true,
+        },
+      },
+    },
+  ];
+
+  try {
+    await batch.patchNamespacedCronJob(
+      {
+        namespace: MAIL_NAMESPACE,
+        name: SNAPSHOT_CRONJOB_NAME,
+        body: {
+          spec: {
+            jobTemplate: {
+              spec: {
+                template: {
+                  spec: {
+                    containers: [
+                      {
+                        name: 'upload',
+                        env: newEnv,
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
+      STRATEGIC_MERGE_PATCH,
+    );
+    return { retentionDays, retentionCount, patched: true };
+  } catch (err) {
+    if (isNotFound(err)) {
+      // CronJob doesn't exist yet (fresh install / mail stack still
+      // bringing up). Not fatal — the manifest defaults will apply
+      // once the CronJob is created, and the next reconcile tick will
+      // override them with the real values.
+      return { retentionDays, retentionCount, patched: false };
+    }
+    throw new ApiError(
+      'SNAPSHOT_RETENTION_PATCH_FAILED',
+      `Failed to patch CronJob retention env: ${(err as Error).message ?? String(err)}`,
+      500,
+    );
+  }
+}
