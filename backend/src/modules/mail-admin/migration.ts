@@ -728,10 +728,21 @@ async function runMigrationStateMachine(
   try {
     const preflight = await validateTargetRestoreReadiness(core, targetNode, log);
     if (!preflight.ok) {
-      await failRun(db, runId, preflight.reason, taskId);
-      return;
+      // Recovery mode: operator has already type-to-confirmed an
+      // acknowledged-destructive action. The preflight stays
+      // informational — log the warning but proceed. The operator
+      // sees the warning in the migration progress modal and can
+      // cancel if needed. For regular migrations the preflight
+      // remains a hard block.
+      if (opts.recoverFromBrokenState) {
+        log.warn(`[migration ${runId}] recovery preflight WARNING (operator-acknowledged): ${preflight.reason}`);
+      } else {
+        await failRun(db, runId, preflight.reason, taskId);
+        return;
+      }
+    } else {
+      log.info(`[migration ${runId}] preflight passed: ${preflight.path}`);
     }
-    log.info(`[migration ${runId}] preflight passed: ${preflight.path}`);
   } catch (err) {
     await failRun(
       db, runId,
@@ -1756,20 +1767,36 @@ async function validateTargetRestoreReadiness(
     };
   }
 
-  // Check (b): backup-rclone-shim Service has ≥1 Endpoint? (restic fallback path)
+  // Check (b): backup-rclone-shim has ≥1 Ready pod? (restic fallback path).
+  //
+  // Pre-fix this used `readNamespacedEndpoints` which silently returned
+  // empty subsets on k8s 1.33+ (the v1 Endpoints API is deprecated in
+  // favor of discovery.k8s.io/v1 EndpointSlice). Caught on staging E2E
+  // 2026-05-27 — preflight wrongly reported "no Endpoints" even though
+  // 4 shim pods were Running. Counting Ready pods directly is robust
+  // across k8s versions and is the same information from the operator's
+  // standpoint (a Ready pod = a backend the Service routes to).
   let shimEndpointCount = 0;
   try {
-    const ep = await core.readNamespacedEndpoints({
-      name: RCLONE_SHIM_SERVICE,
+    const pods = await core.listNamespacedPod({
       namespace: RCLONE_SHIM_NAMESPACE,
-    }) as { subsets?: ReadonlyArray<{ addresses?: ReadonlyArray<unknown> }> };
-    shimEndpointCount = (ep.subsets ?? []).reduce(
-      (sum, s) => sum + (s.addresses?.length ?? 0),
-      0,
-    );
+      labelSelector: `app=${RCLONE_SHIM_SERVICE}`,
+    }) as {
+      items: ReadonlyArray<{
+        status?: {
+          phase?: string;
+          conditions?: ReadonlyArray<{ type?: string; status?: string }>;
+        };
+      }>;
+    };
+    shimEndpointCount = pods.items.filter((p) => {
+      if (p.status?.phase !== 'Running') return false;
+      const ready = p.status?.conditions?.find((c) => c.type === 'Ready');
+      return ready?.status === 'True';
+    }).length;
   } catch (err) {
     log.warn(
-      `[preflight] reading backup-rclone-shim endpoints failed (treating as 0): ${err instanceof Error ? err.message : String(err)}`,
+      `[preflight] reading backup-rclone-shim pods failed (treating as 0): ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
