@@ -42,7 +42,7 @@ export default function DnsServers() {
       <div className="flex items-center gap-3">
         <Globe size={28} className="text-brand-500" />
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">DNS Servers</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">DNS Providers</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">Manage DNS provider groups and servers for domain provisioning.</p>
         </div>
       </div>

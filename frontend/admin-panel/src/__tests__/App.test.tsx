@@ -58,7 +58,8 @@ describe('Layout', () => {
     renderWithProviders(<Layout />);
     expect(screen.getByText('Tenants')).toBeInTheDocument();
     expect(screen.getByText('Monitoring')).toBeInTheDocument();
-    expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.getByText('Cluster')).toBeInTheDocument();
+    expect(screen.getByText('Platform Settings')).toBeInTheDocument();
   });
 
   it('shows brand name', () => {
