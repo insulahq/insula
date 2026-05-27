@@ -65,6 +65,8 @@ import {
   startMailMigration,
   getMailMigrationStatus,
   cancelMailMigration,
+  startMailRecover,
+  getMailRecoveryStatus,
 } from './migration.js';
 import { getMailHealth } from './health.js';
 import { getMailPortExposure, updateMailPortExposure } from './port-exposure.js';
@@ -1516,6 +1518,68 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof ApiError) throw err;
         app.log.warn({ err, runId }, 'mail-admin: migrate status read failed');
         throw new ApiError('MAIL_MIGRATE_STATUS_FAILED', 'Could not read migration status — see server logs', 503);
+      }
+    },
+  );
+
+  // ─── Mail recovery ────────────────────────────────────────────────
+  // GET  /admin/mail/recovery-status — drives the "Recover Mail" button
+  //                                    visibility on the placement card.
+  // POST /admin/mail/recover         — operator-triggered recovery to
+  //                                    an explicit target node.
+  app.get(
+    '/admin/mail/recovery-status',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const cfg = app.config as Record<string, unknown>;
+      const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      try {
+        const status = await getMailRecoveryStatus({ db: app.db, core: k8s.core });
+        return success({ status });
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: recovery-status failed');
+        throw new ApiError('MAIL_RECOVERY_STATUS_FAILED', 'Could not read mail recovery status', 500);
+      }
+    },
+  );
+
+  app.post(
+    '/admin/mail/recover',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const { mailRecoverRequestSchema } = await import('@k8s-hosting/api-contracts');
+      const parsed = mailRecoverRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'invalid recover body', 400);
+      }
+      if (parsed.data.confirmTargetNode !== parsed.data.targetNode) {
+        throw new ApiError('CONFIRM_MISMATCH', `confirmTargetNode must match targetNode (${parsed.data.targetNode})`, 400);
+      }
+      const userId = req.user?.sub ?? 'unknown';
+      app.log.warn(
+        { userId, targetNode: parsed.data.targetNode },
+        'mail-admin: operator-triggered RECOVERY (destructive — accepts that data not in standby/restic is lost)',
+      );
+
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const cfg = app.config as Record<string, unknown>;
+      const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      try {
+        const result = await startMailRecover(parsed.data.targetNode, {
+          db: app.db,
+          core: k8s.core,
+          apps: k8s.apps,
+          batch: k8s.batch,
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+          userId: req.user?.sub ?? null,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: recovery start failed');
+        throw new ApiError('MAIL_RECOVERY_FAILED', 'Could not start mail recovery — see server logs', 500);
       }
     },
   );
