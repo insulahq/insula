@@ -175,18 +175,43 @@ spec:
             - |
               set -e
               SENTINEL=/var/lib/stalwart/data/CURRENT
+              APPLIED_MARKER=/var/lib/stalwart/data/.restore-applied-at
               ALLOW_RESTORE=$$(cat /podinfo/allow-restore 2>/dev/null || echo "false")
-              # Per-snapshot restore (2026-05-27): read annotation FIRST so we
-              # can override both the SENTINEL skip AND the FAST PATH branch.
-              # If set, the operator typed-to-confirm a destructive rollback —
-              # we must wipe any pre-existing data and force the restic path
-              # with the chosen id. The annotation has been observed to leak
-              # data into the PVC via kubelet subPath auto-create + Bulwark's
-              # init-container side-effects on a shared PVC, so the SENTINEL
-              # check would otherwise silently bypass per-snapshot restore.
+              # Diagnostic dump (2026-05-27): the downwardAPI propagation
+              # has bitten us a few times — print what we actually see in
+              # /podinfo so post-mortems don't require pod-still-alive logs.
+              echo "restore-state DIAG: /podinfo contents:"
+              for f in /podinfo/*; do
+                [ -f "$$f" ] && echo "  $$f = '$$(cat "$$f")'"
+              done
+              echo "restore-state DIAG: PVC initial inventory:"
+              ls /var/lib/stalwart/data 2>&1 | head -5
+              echo "  ... ($$(ls /var/lib/stalwart/data 2>/dev/null | wc -l) entries)"
+              # Per-snapshot restore (2026-05-27): the annotation may persist
+              # on the pod template across many pod restarts. Make this
+              # idempotent by recording the LAST applied snapshot id in a
+              # sentinel inside the data dir. Restart sequence:
+              #   • PRE_RESTORE_ID empty       → existing flow (FAST PATH /
+              #                                  restic-latest / SENTINEL skip)
+              #   • PRE_RESTORE_ID == applied  → no-op (already restored
+              #                                  this id; just start Stalwart)
+              #   • PRE_RESTORE_ID != applied  → wipe + restic restore <id>
+              #                                  + write applied marker
+              #
+              # This means the migration NEVER needs to clear the
+              # restore-snapshot-id annotation (which would trigger a
+              # rollout churn — old pod killed, new pod created without the
+              # annotation, init container short-circuits, etc.). The
+              # annotation can live on the pod template forever; safety is
+              # provided by the applied marker.
               PRE_RESTORE_ID=$$(cat /podinfo/restore-snapshot-id 2>/dev/null || echo "")
+              APPLIED_ID=$$(cat "$$APPLIED_MARKER" 2>/dev/null | head -1 || echo "")
+              if [ -n "$$PRE_RESTORE_ID" ] && [ "$$PRE_RESTORE_ID" = "$$APPLIED_ID" ]; then
+                echo "restore-state: per-snapshot restore '$$PRE_RESTORE_ID' already applied on this DataStore — no-op"
+                exit 0
+              fi
               if [ -n "$$PRE_RESTORE_ID" ]; then
-                echo "restore-state: per-snapshot restore requested (id='$$PRE_RESTORE_ID') — wiping any existing DataStore before restic"
+                echo "restore-state: per-snapshot restore requested (id='$$PRE_RESTORE_ID', last applied='$$APPLIED_ID') — wiping any existing DataStore before restic"
                 # Remove every file + hidden file under the mount, but NOT
                 # the mount itself (rm -rf /var/lib/stalwart/data would fail
                 # on the mount point).
@@ -374,7 +399,16 @@ spec:
                 echo "RESTORE-STATE-FATAL: cp to /var/lib/stalwart/data failed after successful restic restore — refusing to fresh-start. Likely cause: PVC out of inodes or permission mismatch on local-path volume." >&2
                 exit 1
               fi
-              echo "restore-state: restore complete ($(ls /var/lib/stalwart/data | wc -l) files)"
+              echo "restore-state: restore complete ($$(ls /var/lib/stalwart/data | wc -l) files)"
+              # Idempotency marker: record WHICH snapshot id we just
+              # restored. On the next pod restart (with the same
+              # annotation still in place), this short-circuits the wipe
+              # + restic at the top of the script. Empty when restic
+              # restored 'latest' since 'latest' is not a stable id —
+              # subsequent restarts will hit the SENTINEL skip instead.
+              if [ "$$RESTORE_ID" != "latest" ]; then
+                echo "$$RESTORE_ID" > /var/lib/stalwart/data/.restore-applied-at
+              fi
           envFrom:
             - secretRef:
                 name: stalwart-snapshot-restic-repo
