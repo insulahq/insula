@@ -164,6 +164,13 @@ export interface StalwartReconcileResult {
   /** True when SystemSettings.defaultHostname + defaultDomainId were patched. */
   readonly defaultHostnameUpdated: boolean;
   readonly acmeProviderCreated: boolean;
+  /**
+   * True when the cert-anchor Domain was CREATED this tick (because no Stalwart
+   * Domain with name == mailHostname existed). This is platform-owned infra
+   * (not a tenant decision), so the reconciler self-heals it without operator
+   * intervention. Always paired with certManagementUpdated=true on the same tick.
+   */
+  readonly certAnchorDomainCreated: boolean;
   /** True when matched Domain.certificateManagement was patched to Automatic. */
   readonly certManagementUpdated: boolean;
   /** Names of listeners newly created (subset of REQUIRED_LISTENERS). */
@@ -214,6 +221,7 @@ export async function runStalwartDomainReconcilerTick(
       sanKey: null,
       defaultHostnameUpdated: false,
       acmeProviderCreated: false,
+      certAnchorDomainCreated: false,
       certManagementUpdated: false,
       listenersCreated: [],
       acmeRenewalFired: false,
@@ -278,25 +286,37 @@ export async function runStalwartDomainReconcilerTick(
     jmapCall = (a, b) => jmapPostViaExec(transport, a, b);
   }
 
-  // 3. Find the Stalwart Domain via EXACT name match. Per 2026-05-26
-  //    architecture: bootstrap creates Domain.name = mail hostname
-  //    (e.g. mail.staging.example.test) and that Domain IS the
-  //    cert anchor. No SAN-prefix tricks. Operator-driven hostname
-  //    changes require the operator to add the new hostname as a
-  //    Stalwart email-domain first via Admin UI → Email → Domains
-  //    & Relays (mailboxes optional — Domain entry exists just as
-  //    cert anchor).
+  // 3. Find the Stalwart Domain via EXACT name match — and self-heal
+  //    if missing. The cert-anchor Domain (Domain.name == mail hostname)
+  //    is PLATFORM-OWNED infra, not a tenant decision: there's no admin
+  //    UI to create it (Email → Domains & Relays lists tenant email
+  //    domains only) and bootstrap.sh's `configure_stalwart_full` step
+  //    only runs once at install. If Stalwart loses its data (storage
+  //    migration, mobility move, accidental DB wipe) the cert anchor
+  //    vanishes and there's no path back without re-bootstrap. Caught
+  //    on staging.example.test 2026-05-27 — reconciler had been a
+  //    no-op for weeks because the cert-anchor Domain was missing.
+  //
+  //    Auto-creation is safe: a Stalwart Domain entry with no mailboxes
+  //    serves only as the cert anchor; tenant mail isn't affected.
   let matchedDomain: { name: string; id: string } | null;
+  let certAnchorDomainCreated = false;
   try {
     matchedDomain = await findExactDomain(jmapCall, auth, trimmedHost);
   } catch (err) {
     return empty({ mailHostname: trimmedHost }, `Domain lookup failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!matchedDomain) {
-    return empty(
-      { mailHostname: trimmedHost },
-      `No Stalwart Domain named '${trimmedHost}' — add it via Admin UI → Email → Domains & Relays first (mailboxes optional), then re-run`,
-    );
+    try {
+      matchedDomain = await createCertAnchorDomain(jmapCall, auth, trimmedHost, log);
+      certAnchorDomainCreated = true;
+      notes.push(`cert-anchor Domain '${trimmedHost}' was missing — created (platform-owned, no mailboxes)`);
+    } catch (err) {
+      return empty(
+        { mailHostname: trimmedHost },
+        `cert-anchor Domain '${trimmedHost}' is missing and create failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // 4. Sync SystemSettings.defaultHostname + defaultDomainId (both
@@ -311,11 +331,16 @@ export async function runStalwartDomainReconcilerTick(
     log.warn('Stalwart SystemSettings sync failed:', err);
   }
 
-  // 5. Ensure x:AcmeProvider.
+  // 5. Ensure x:AcmeProvider. Contact email is hostmaster@<apex>
+  //    (matches bootstrap.sh convention). Apex comes from
+  //    platform_settings.ingress_base_domain. If unset, fall back to
+  //    the mail hostname so the create still goes through — LE accepts
+  //    any RFC-shaped email at the contact field (it isn't delivered).
+  const platformApex = await getPlatformApexForContact(deps.db, trimmedHost);
   let acmeProviderId: string | null = null;
   let acmeProviderCreated = false;
   try {
-    const r = await ensureAcmeProvider(jmapCall, auth, matchedDomain.name, log);
+    const r = await ensureAcmeProvider(jmapCall, auth, platformApex, log);
     acmeProviderId = r.id;
     acmeProviderCreated = r.created;
   } catch (err) {
@@ -360,7 +385,8 @@ export async function runStalwartDomainReconcilerTick(
   }
 
   const noOp =
-    !defaultHostnameUpdated
+    !certAnchorDomainCreated
+    && !defaultHostnameUpdated
     && !acmeProviderCreated
     && !certManagementUpdated
     && listenersCreated.length === 0;
@@ -371,12 +397,77 @@ export async function runStalwartDomainReconcilerTick(
     sanKey: null,
     defaultHostnameUpdated,
     acmeProviderCreated,
+    certAnchorDomainCreated,
     certManagementUpdated,
     listenersCreated,
     acmeRenewalFired,
     notes,
     noOp,
   };
+}
+
+/**
+ * Resolve the platform apex for use as the ACME contact email
+ * (hostmaster@<apex>). Prefers platform_settings.ingress_base_domain
+ * (the operator-set value from bootstrap); falls back to the mail
+ * hostname when unset. LE doesn't deliver to or validate the contact
+ * field, so the fallback is safe.
+ */
+async function getPlatformApexForContact(db: Database, mailHostname: string): Promise<string> {
+  try {
+    const [row] = await db
+      .select()
+      .from(platformSettings)
+      .where(eq(platformSettings.key, 'ingress_base_domain'));
+    const v = row?.value?.trim();
+    if (v && v.length > 0) return v.toLowerCase();
+  } catch {
+    // ignore — fall through
+  }
+  return mailHostname;
+}
+
+/**
+ * Create the cert-anchor Domain entry. The new entry has no mailbox
+ * directory, no DKIM keys yet (Stalwart auto-derives), and the default
+ * @type:Manual cert/dkim management — step 6 immediately patches cert
+ * management to Automatic. Returns the created Domain's {name, id}.
+ */
+async function createCertAnchorDomain(
+  jmapCall: JmapCall,
+  auth: string,
+  mailHostname: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<{ name: string; id: string }> {
+  const createKey = 'newcertanchor';
+  const setRes = await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      [
+        'x:Domain/set',
+        { accountId: ADMIN_ACCOUNT_ID, create: { [createKey]: { name: mailHostname } } },
+        'c0',
+      ],
+    ],
+  });
+  const args = setRes.methodResponses[0]?.[1] as {
+    created?: Record<string, { id?: string }>;
+    notCreated?: Record<string, { description?: string }>;
+  };
+  const nc = args?.notCreated ?? {};
+  if (Object.keys(nc).length > 0) {
+    throw new Error(`x:Domain/set rejected: ${JSON.stringify(nc)}`);
+  }
+  const newId = args?.created?.[createKey]?.id;
+  if (typeof newId !== 'string' || newId.length === 0) {
+    // Defensive read-back — some Stalwart releases omit `id` in created shape.
+    const back = await findExactDomain(jmapCall, auth, mailHostname);
+    if (!back) throw new Error('x:Domain/set returned no id and Domain not found on read-back');
+    log.info(`Stalwart cert-anchor Domain '${mailHostname}' created (read-back id=${back.id})`);
+    return back;
+  }
+  log.info(`Stalwart cert-anchor Domain '${mailHostname}' created (id=${newId})`);
+  return { name: mailHostname, id: newId };
 }
 
 // ── Internal: each ensure step ────────────────────────────────────────

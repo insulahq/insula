@@ -27,6 +27,12 @@ export const stalwartReprovisionResponseSchema = z.object({
   defaultHostnameUpdated: z.boolean(),
   /** True when the Let's Encrypt AcmeProvider was created this run. */
   acmeProviderCreated: z.boolean(),
+  /**
+   * True when the cert-anchor Domain was created this run (was missing).
+   * The reconciler auto-creates it because it's platform infra, not a
+   * tenant decision (and there's no admin UI to add it manually).
+   */
+  certAnchorDomainCreated: z.boolean().default(false),
   /** True when matched Domain.certificateManagement was patched. */
   certManagementUpdated: z.boolean(),
   /** Names of NetworkListeners newly created (subset of http-acme/submission/imap). */
