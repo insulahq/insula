@@ -1292,6 +1292,89 @@ async function finishArchiveTask(
     .catch(() => undefined);
 }
 
+/**
+ * Reconcile archive runs that the orchestrator never finished.
+ *
+ * Why: the orchestrator runs as a fire-and-forget background promise.
+ * If the platform-api pod is killed mid-run (OOM, rolling restart,
+ * eviction) the row stays in a non-terminal state forever. The Job
+ * itself is GC'd by Kubernetes `ttlSecondsAfterFinished` (typically a
+ * few hours), so a few hours after the crash the row points at a Job
+ * that no longer exists — and the operator's progress modal spins
+ * forever.
+ *
+ * Strategy:
+ *   - Find rows in ACTIVE_STATES whose started_at is older than
+ *     ARCHIVE_TIMEOUT_SECONDS + safety margin (we use 2× the timeout
+ *     to avoid racing in-flight runs).
+ *   - For each, check whether the associated Job still exists.
+ *     - Missing → mark failed (`orchestrator abandoned this run`).
+ *     - Present and in a terminal Job state → defer to live orchestrator
+ *       (it will pick it up on its next poll cycle); the next reconcile
+ *       tick handles the case where the orchestrator never resumes.
+ *   - For rows older than 24h with no recorded job_name (orchestrator
+ *     was killed before it could even submit), mark failed unconditionally.
+ *
+ * Idempotent. Safe to call from multiple replicas (the UPDATE only
+ * succeeds when state is still non-terminal).
+ */
+export async function reconcileAbandonedArchiveRuns(
+  deps: ArchiveDeps,
+  log?: { info: (m: string) => void; warn: (m: string) => void },
+): Promise<{ checked: number; markedFailed: number }> {
+  const minAgeSeconds = ARCHIVE_TIMEOUT_SECONDS * 2;
+  // make_interval(secs => $N) keeps the numeric param fully parameterised;
+  // the prior `(${secs} || ' seconds')::interval` pattern concatenates
+  // strings inside the engine and is the wrong idiom even when the
+  // input is a compile-time constant.
+  const rows = await deps.db.execute(sql`
+    SELECT id, job_name, started_at
+    FROM mail_archive_runs
+    WHERE state NOT IN ('succeeded', 'failed')
+      AND started_at < now() - make_interval(secs => ${minAgeSeconds})
+  `) as unknown as { rows?: Array<{ id: string; job_name: string | null; started_at: Date | string }> };
+  const items = rows.rows ?? [];
+  let markedFailed = 0;
+  for (const row of items) {
+    const reason = await classifyAbandoned(row, deps);
+    if (reason) {
+      await markRunFailed(deps.db, row.id, reason);
+      markedFailed += 1;
+      log?.info(`[archive-reconciler] marked ${row.id} as failed: ${reason}`);
+    }
+  }
+  return { checked: items.length, markedFailed };
+}
+
+async function classifyAbandoned(
+  row: { id: string; job_name: string | null },
+  deps: ArchiveDeps,
+): Promise<string | null> {
+  if (!row.job_name) {
+    return 'orchestrator killed before Job was submitted (no job_name recorded)';
+  }
+  try {
+    await deps.batch.readNamespacedJob({
+      namespace: MAIL_NAMESPACE,
+      name: row.job_name,
+    } as unknown as Parameters<typeof deps.batch.readNamespacedJob>[0]);
+    // Job still exists — leave alone. If it's stuck the next tick will
+    // hit ARCHIVE_TIMEOUT_SECONDS × 2 and we'll re-check then.
+    return null;
+  } catch (err) {
+    if (isNotFound(err)) {
+      return `archive Job ${row.job_name} no longer exists in cluster (likely orchestrator crash + ttlSecondsAfterFinished GC)`;
+    }
+    return null; // transient API error — try again next tick
+  }
+}
+
+function isNotFound(err: unknown): boolean {
+  const code = (err as { code?: number; statusCode?: number })?.code
+    ?? (err as { code?: number; statusCode?: number })?.statusCode;
+  return code === 404;
+}
+
 async function markRunFailed(db: Database, runId: string, errMsg: string): Promise<void> {
   await db.execute(sql`
     UPDATE mail_archive_runs SET

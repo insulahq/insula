@@ -114,7 +114,6 @@ const navItems: ReadonlyArray<NavItem> = [
       { kind: 'item', to: '/email/domains',    icon: Globe,         label: 'Domains & Relays' },
       { kind: 'item', to: '/email/settings',   icon: Settings,      label: 'Settings' },
       { kind: 'item', to: '/email/operations', icon: Server,        label: 'Operations' },
-      { kind: 'item', to: '/email/backups',    icon: Package,       label: 'Offsite Backups' },
       { kind: 'item', to: '/email/drift',      icon: AlertTriangle, label: 'Data Drift' },
     ],
   },
