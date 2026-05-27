@@ -142,9 +142,26 @@ spec:
         #   stalwart-snapshot-restic-repo Secret), we restore the latest
         #   snapshot to /restore-tmp, then run `stalwart -i` to import it.
         #
-        # EXIT POLICY: ALWAYS exit 0. A restore failure must not prevent
-        #   Stalwart from starting in degraded mode — the operator can
-        #   trigger a manual restore via platform-api after investigating.
+        # EXIT POLICY:
+        #   - Cold-start (allow-restore=false): exit 0 even when restic
+        #     fails — operator hasn't authorised a restore, fresh-start
+        #     is intentional for new clusters and lets the pod come up.
+        #   - Restore-required (allow-restore=true OR FAST PATH path):
+        #     exit 1 if all restore attempts fail. CrashLoopBackOff is
+        #     CORRECT here: silent data loss is much worse than mail
+        #     downtime, and the operator needs to fix the backup target
+        #     (or accept data loss by clearing the allow-restore
+        #     annotation manually) before Stalwart should start.
+        #
+        # 2026-05-27 (post-staging-tenant-domain-loss investigation):
+        #   The original "ALWAYS exit 0" policy was the root cause of the
+        #   2026-05-25 19:23 silent data-loss on staging. Single-attempt
+        #   `restic restore` with no preflight + always-exit-0 meant any
+        #   transient network blip during a failover wiped tenant data
+        #   while the migration state machine happily marked state=done.
+        #   See migration.ts:verifyRestoreContent for the corresponding
+        #   post-condition check that catches drift if this path is ever
+        #   bypassed.
         #
         # $$ ESCAPING: all shell variables use $$ (double-dollar) to
         #   survive Flux postBuild substituteFrom rendering. Flux collapses
@@ -220,26 +237,72 @@ spec:
                   echo "restore-state: standby-data copy complete ($(ls /var/lib/stalwart/data | wc -l) files) — skipping restic"
                   exit 0
                 fi
-                echo "restore-state: standby-data copy failed — falling through to restic"
+                # FAST PATH cp failed — falling through to restic. This is
+                # the failover-in-progress case: allow-restore is implicit
+                # via the standby marker, so a subsequent restic failure
+                # must also crash-loop (handled by RESTIC_REQUIRED below).
+                echo "restore-state: standby-data copy failed — falling through to restic (RESTIC_REQUIRED=true since this is a failover landing)"
+                RESTIC_REQUIRED=true
               fi
               if [ -z "$$RESTIC_REPOSITORY" ]; then
+                if [ "$${RESTIC_REQUIRED:-false}" = "true" ]; then
+                  echo "RESTORE-STATE-FATAL: RESTIC_REPOSITORY not set AND FAST PATH copy failed during failover — refusing to fresh-start because tenant data would be lost. Configure stalwart-snapshot-restic-repo Secret before retrying." >&2
+                  exit 1
+                fi
                 echo "RESTORE-STATE-WARNING: RESTIC_REPOSITORY not set — Stalwart will FRESH-START with no data. Operator action required."
                 echo "$$(date -Iseconds) reason=no-restic" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
-              if [ "$$ALLOW_RESTORE" != "true" ]; then
+              if [ "$$ALLOW_RESTORE" != "true" ] && [ "$${RESTIC_REQUIRED:-false}" != "true" ]; then
                 echo "RESTORE-STATE-WARNING: allow-restore annotation not set — Stalwart will FRESH-START with no data. Set mail.platform/allow-restore: \"true\" on the Deployment to enable restic restore."
                 mkdir -p /var/lib/stalwart/data
                 echo "$$(date -Iseconds) reason=allow-restore-not-set" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
-              echo "restore-state: empty DataStore + repo configured + allow-restore=true — restoring latest snapshot"
+              echo "restore-state: empty DataStore + repo configured + (allow-restore=true OR failover-fallthrough) — restoring latest snapshot"
               mkdir -p /var/lib/stalwart/data /restore-tmp
-              restic restore latest --target /restore-tmp 2>&1 || {
-                echo "RESTORE-STATE-WARNING: restic restore failed — Stalwart will FRESH-START with no data"
-                echo "$$(date -Iseconds) reason=restic-restore-failed" > /var/lib/stalwart/data/.fresh-started-at
-                exit 0
-              }
+
+              # Preflight: verify the backup target is reachable BEFORE
+              # spending minutes on a restore that will time out. `restic
+              # snapshots --latest 1` does a cheap LIST/HEAD on the repo
+              # backend and exits in 1-5s on success or fails fast with
+              # a clear error on DNS/auth/network/permission issues.
+              # Without this, a misconfigured backup-target Secret manifests
+              # as a confusing "restic restore failed" minutes later —
+              # caught on staging 2026-05-25 19:23 (single-attempt restic
+              # restore timed out, no diagnostic context).
+              echo "restore-state: probing backup target reachability..."
+              if ! restic snapshots --latest 1 --quiet 2>&1; then
+                echo "RESTORE-STATE-FATAL: backup target unreachable (restic snapshots probe failed) — refusing to start with empty data because allow-restore=true. Check stalwart-snapshot-restic-repo Secret, BackupTarget Service, and DNS." >&2
+                exit 1
+              fi
+
+              # Retry restic restore up to 3 times. Each restic invocation
+              # has its own internal timeouts; a transient blip (rate
+              # limit, brief outage, S3 5xx) often clears within 30s.
+              # Pod-restart retries (via CrashLoopBackOff) cycle at 0/10/
+              # 20/40/80/160/300s — coarse. In-container retry catches
+              # the common transient case in <2 min.
+              RESTORE_ATTEMPT=0
+              RESTORE_OK=false
+              while [ "$$RESTORE_ATTEMPT" -lt 3 ]; do
+                RESTORE_ATTEMPT=$$((RESTORE_ATTEMPT + 1))
+                echo "restore-state: restic restore attempt $${RESTORE_ATTEMPT}/3..."
+                if restic restore latest --target /restore-tmp 2>&1; then
+                  RESTORE_OK=true
+                  break
+                fi
+                echo "restore-state: attempt $${RESTORE_ATTEMPT} failed; cleaning /restore-tmp before retry"
+                rm -rf /restore-tmp/* /restore-tmp/.* 2>/dev/null || true
+                if [ "$$RESTORE_ATTEMPT" -lt 3 ]; then
+                  echo "restore-state: sleeping 30s before retry..."
+                  sleep 30
+                fi
+              done
+              if [ "$$RESTORE_OK" != "true" ]; then
+                echo "RESTORE-STATE-FATAL: restic restore failed after 3 attempts — refusing to fresh-start because tenant data would be silently lost. Pod will CrashLoopBackOff until operator fixes the backup target OR explicitly clears the allow-restore annotation to acknowledge data loss." >&2
+                exit 1
+              fi
               # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
               # A2.5 (2026-05-25): the snapshot CronJob now backs up
               # /var/lib/mail-stack/ (consolidated layout), so files land at
@@ -256,15 +319,13 @@ spec:
                 RESTORED_DATA="$$RESTORED_LEGACY"
                 echo "restore-state: detected LEGACY (pre-A2.5) snapshot layout"
               else
-                echo "RESTORE-STATE-WARNING: unexpected restore layout (no $$RESTORED_NEW or $$RESTORED_LEGACY) — Stalwart will FRESH-START"
-                echo "$$(date -Iseconds) reason=unexpected-restic-layout" > /var/lib/stalwart/data/.fresh-started-at
-                exit 0
+                echo "RESTORE-STATE-FATAL: restic reported success but neither $$RESTORED_NEW nor $$RESTORED_LEGACY exists in restored tree — refusing to fresh-start. Snapshot is malformed; investigate the snapshot CronJob output before retrying." >&2
+                exit 1
               fi
-              cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1 || {
-                echo "RESTORE-STATE-WARNING: copy to data dir failed — Stalwart will FRESH-START"
-                echo "$$(date -Iseconds) reason=restic-copy-failed" > /var/lib/stalwart/data/.fresh-started-at
-                exit 0
-              }
+              if ! cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1; then
+                echo "RESTORE-STATE-FATAL: cp to /var/lib/stalwart/data failed after successful restic restore — refusing to fresh-start. Likely cause: PVC out of inodes or permission mismatch on local-path volume." >&2
+                exit 1
+              fi
               echo "restore-state: restore complete ($(ls /var/lib/stalwart/data | wc -l) files)"
           envFrom:
             - secretRef:
