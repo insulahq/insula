@@ -5594,7 +5594,7 @@ spec:
           # around active mailbox Jobs (so imap-restore.py --workers 4 can
           # open four concurrent connections per user — the effective
           # per-user cap is ~maxConcurrent/16). The 5-min
-          # `startImapConcurrencyReverter` scheduler in platform-api
+          # 'startImapConcurrencyReverter' scheduler in platform-api
           # returns the setting to 16 when no jobs are in-flight, so
           # Stalwart sits at the memory-conservative default during idle
           # periods (per-user buffered-APPEND worst case is
@@ -5724,21 +5724,31 @@ spec:
           fi
 
           # 5b. Wire Domain.certificateManagement = Automatic with the
-          # AcmeProvider HASH ID. No subjectAlternativeNames map needed
-          # in the new architecture: STALWART_DOMAIN IS the mail hostname
-          # itself, so the cert Stalwart's ACME client acquires covers
-          # exactly Domain.name (= STALWART_HOSTNAME). The pre-2026-05-26
-          # pattern set STALWART_DOMAIN to the apex and added a SAN map
-          # ({mail: true}) so the cert covered apex + mail.<apex>; that
-          # forced an unnecessary Stalwart "email domain" entry for the
-          # apex and confused operator mental model.
-          jmap_call "\$(jq -n --arg a "\$ACCT" --arg did "\$DOMAIN_ID" --arg pid "\${ACME_PROVIDER_ID}" \
+          # AcmeProvider HASH ID + EXPLICIT subjectAlternativeNames map
+          # pinning the SAN list to exactly {STALWART_HOSTNAME: true}.
+          #
+          # Why explicit-SAN (and not the empty {} default):
+          # Stalwart 0.16 with subjectAlternativeNames={} auto-adds SANs
+          # for autoconfig./autodiscover./mta-sts./ua-auto-config.<host>
+          # — every one becomes an HTTP-01 challenge LE must validate,
+          # and a single 404 fails the whole order. Operationally this
+          # also (a) explodes per-tenant ingress (every tenant domain
+          # = 4 extra Traefik routes just for mail auto-config) and
+          # (b) breaks portability — moving the mail node IP requires
+          # re-pointing every subdomain in DNS before the next renewal
+          # or the cert silently fails. Mail-client auto-config still
+          # works via RFC 6186 SRV records (_imaps._tcp., _submissions._tcp.)
+          # which Stalwart publishes in the computed zone file, so the
+          # tenant UX (Thunderbird/Apple Mail/iOS auto-config) is
+          # preserved without any HTTPS subdomain endpoints.
+          jmap_call "\$(jq -n --arg a "\$ACCT" --arg did "\$DOMAIN_ID" --arg pid "\${ACME_PROVIDER_ID}" --arg san "\${STALWART_HOSTNAME}" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:Domain/set",
                 {accountId:\$a,update:{(\$did):{
                   certificateManagement:{
                     "@type":"Automatic",
-                    acmeProviderId:\$pid
+                    acmeProviderId:\$pid,
+                    subjectAlternativeNames:{(\$san):true}
                   }
                 }}},
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
