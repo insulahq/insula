@@ -84,8 +84,22 @@ spec:
                   # custom-columns + post-filter. NotReady nodes (Ready
                   # condition False/Unknown) are dropped so we never
                   # advertise an IP that won't accept connections.
-                  IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address' --no-headers \
-                    | awk '$2=="True" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}' \
+                  #
+                  # Also filter by per-node ingress eligibility labels:
+                  #   - ingress-mode != "none"  → node opts out of all
+                  #     external ingress (e.g. dedicated DB nodes)
+                  #   - exposure    != "private"→ node is on a private
+                  #     subnet (mesh-only); its ExternalIP would route
+                  #     external clients to an unreachable address
+                  # Missing labels render as `<none>` in custom-columns,
+                  # which is treated as "default = include" (correct
+                  # for both filters). This is what makes a worker node
+                  # with ingress-mode=local INCLUDED here so Traefik's
+                  # Service externalIPs cover it — required for ACME
+                  # HTTP-01 challenges when mail (or any TLS-anchored
+                  # workload) ends up on the worker.
+                  IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address,INGRESS:.metadata.labels.platform\.example-host\.net/ingress-mode,EXPOSURE:.metadata.labels.platform\.example-host\.net/exposure' --no-headers \
+                    | awk '$2=="True" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4!="none" && $5!="private" {print $3}' \
                     | sort -u)
                   if [ -z "$IPS" ]; then
                     echo "no Ready nodes with ExternalIP — leaving Service untouched" >&2
