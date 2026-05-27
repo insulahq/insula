@@ -735,8 +735,42 @@ export function extractEhloHostname(ehloLine: string | null): string | null {
 // Default implementations of the dep overrides (used in production).
 // ─────────────────────────────────────────────────────────────────────
 
-async function defaultResolveAddresses(hostname: string): Promise<{ a: string[]; aaaa: string[] }> {
+/**
+ * External DNS resolver for deliverability probes. Critical: the
+ * platform-api pod's default resolver is the in-cluster coredns, which
+ * (a) returns synthesised PTR records for k8s node names (e.g. PTR
+ * 192.0.2.116 → "staging2" instead of the real Hetzner PTR
+ * "mail.staging.example.test"), and (b) is rate-limited /
+ * flagged as an "open resolver" by Spamhaus and friends, returning
+ * error TXTs instead of real listing answers.
+ *
+ * Every deliverability probe needs PUBLIC DNS state — the receiver's
+ * view — so we route them through Cloudflare + Google by default.
+ * Override with MAIL_HEALTH_EXTERNAL_DNS=ip1,ip2,... for clusters
+ * that run a local recursive resolver (the right answer for high-
+ * volume blocklist queries that get throttled on public resolvers).
+ *
+ * 2026-05-27: caught when a freshly-bootstrapped staging cluster
+ * with correctly-configured Hetzner PTRs (all 3 server IPs → mail.<apex>)
+ * still reported "PTR returns staging2 instead of mail.staging…" —
+ * coredns's automatic Node-name records were shadowing the real lookup.
+ */
+function externalDnsServers(): string[] {
+  const fromEnv = process.env.MAIL_HEALTH_EXTERNAL_DNS;
+  if (fromEnv && fromEnv.trim().length > 0) {
+    return fromEnv.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return ['1.1.1.1', '8.8.8.8'];
+}
+
+function externalResolver(): Resolver {
   const r = new Resolver();
+  r.setServers(externalDnsServers());
+  return r;
+}
+
+async function defaultResolveAddresses(hostname: string): Promise<{ a: string[]; aaaa: string[] }> {
+  const r = externalResolver();
   const [a, aaaa] = await Promise.all([
     r.resolve4(hostname).catch(() => [] as string[]),
     r.resolve6(hostname).catch(() => [] as string[]),
@@ -745,12 +779,12 @@ async function defaultResolveAddresses(hostname: string): Promise<{ a: string[];
 }
 
 async function defaultResolvePtr(ip: string): Promise<string[]> {
-  const r = new Resolver();
+  const r = externalResolver();
   return r.reverse(ip);
 }
 
 async function defaultResolveBlocklist(zone: string, queryName: string): Promise<{ listed: boolean; reasonTxt: string | null }> {
-  const r = new Resolver();
+  const r = externalResolver();
   // Listed iff the A record exists. The convention is `127.0.0.X` codes
   // but presence alone is enough for our reporting.
   try {
