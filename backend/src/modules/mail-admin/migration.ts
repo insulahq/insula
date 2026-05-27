@@ -214,7 +214,14 @@ export async function startMailMigration(
   // Same-node check skipped in recovery mode: operator may legitimately
   // want to recover to the node system thinks is active (when the pod
   // is actually broken on a different node).
-  if (!opts.recoverFromBrokenState && sourceNode === targetNode) {
+  //
+  // Also skipped when restoring a specific snapshot — in-place rollback
+  // (snapshot → same node) is the natural operator UX from /backups/mail,
+  // and the PVC swap + restore-state init flow handles same-node
+  // correctly (PVC is recreated empty, init container restores from
+  // the chosen snapshot id).
+  const allowSameNode = opts.recoverFromBrokenState || Boolean(opts.restoreSnapshotId);
+  if (!allowSameNode && sourceNode === targetNode) {
     throw new ApiError('MAIL_MIGRATION_SAME_NODE', 'Source and target nodes are the same', 400);
   }
 
