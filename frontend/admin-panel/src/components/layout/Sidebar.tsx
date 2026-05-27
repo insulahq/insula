@@ -34,6 +34,7 @@ import {
   ChevronDown,
   ChevronRight,
   X,
+  AlertTriangle,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
@@ -110,9 +111,10 @@ const navItems: ReadonlyArray<NavItem> = [
     icon: Mail,
     label: 'Email',
     children: [
-      { kind: 'item', to: '/email/domains',    icon: Globe,    label: 'Domains & Relays' },
-      { kind: 'item', to: '/email/settings',   icon: Settings, label: 'Settings' },
-      { kind: 'item', to: '/email/operations', icon: Server,   label: 'Operations' },
+      { kind: 'item', to: '/email/domains',    icon: Globe,         label: 'Domains & Relays' },
+      { kind: 'item', to: '/email/settings',   icon: Settings,      label: 'Settings' },
+      { kind: 'item', to: '/email/operations', icon: Server,        label: 'Operations' },
+      { kind: 'item', to: '/email/drift',      icon: AlertTriangle, label: 'Data Drift' },
     ],
   },
   {

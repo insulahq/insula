@@ -22,6 +22,21 @@ vi.mock('../../db/schema.js', () => ({
     tenantId: 'tenant_id',
   },
   domains: { id: 'id', domainName: 'domain_name' },
+  // 2026-05-27: drift-persistence + admin notification fan-out added to
+  // the reconciler. Stub the new schema exports just enough for the
+  // chained query builders to run; the mock DB (createMockDb) returns
+  // empty arrays for the new query shapes, so no field is dereferenced.
+  mailDriftItems: {
+    id: 'id', kind: 'kind', expectedName: 'expected_name',
+    expectedStalwartId: 'expected_stalwart_id', platformRowId: 'platform_row_id',
+    firstDetectedAt: 'first_detected_at', lastSeenAt: 'last_seen_at',
+    resolvedAt: 'resolved_at', resolvedVia: 'resolved_via', notes: 'notes',
+  },
+  users: { id: 'id', roleName: 'role_name' },
+  notifications: {
+    id: 'id', userId: 'user_id', type: 'type', title: 'title',
+    message: 'message', resourceType: 'resource_type',
+  },
 }));
 
 // ── JMAP client mock ──────────────────────────────────────────────────────────
@@ -53,13 +68,17 @@ const { createPrincipalsSyncScheduler } = await import('./principals-sync.js');
 // ── Mock DB ───────────────────────────────────────────────────────────────────
 
 /**
- * The reconciler issues two distinct query shapes:
+ * The reconciler issues two main query shapes for the platform tables:
  *
- *   1. Mailboxes:     db.select({...}).from(mailboxes)
- *      — awaited directly from `.from()`, no further chain.
- *
- *   2. Email domains: db.select({...}).from(emailDomains).innerJoin(domains, ...)
- *      — awaited from `.innerJoin()`, no `.where()` call.
+ *   Call 0: Mailboxes —      db.select({...}).from(mailboxes)
+ *                            — awaited directly from `.from()`, no further chain.
+ *   Call 1: Email domains —  db.select({...}).from(emailDomains).innerJoin(domains, ...)
+ *                            — awaited from `.innerJoin()`.
+ *   Call 2: Active drift —   db.select({...}).from(mailDriftItems).where(isNull(resolvedAt))
+ *                            — awaited from `.where()`, returns active drift rows.
+ *   Call 3: Admin users —    db.select({id}).from(users).where(inArray(roleName, [...]))
+ *                            — only invoked when NEW drift items appear; returns admin ids
+ *                            for notification fan-out.
  *
  * We track how many times `from()` has been called to return the right data.
  */
@@ -71,31 +90,49 @@ function createMockDb(
   const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
   const updateFn = vi.fn().mockReturnValue({ set: updateSet });
 
+  // Generic insert mock — values() returns a resolved promise so the
+  // drift-item + notification inserts await cleanly without further setup.
+  const insertValues = vi.fn().mockResolvedValue(undefined);
+  const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+
   let fromCallIndex = 0;
 
   const fromFn = vi.fn().mockImplementation(() => {
     const callIndex = fromCallIndex++;
     if (callIndex === 0) {
-      // Mailboxes query: db.select().from(mailboxes)
-      // The reconciler awaits this directly — wrap in a resolved Promise.
+      // Call 0: db.select().from(mailboxes) — awaited directly
       const p = Promise.resolve(mailboxRows) as unknown as Promise<typeof mailboxRows> & {
         innerJoin: ReturnType<typeof vi.fn>;
+        where: ReturnType<typeof vi.fn>;
       };
-      p.innerJoin = vi.fn(); // never called for mailboxes
+      p.innerJoin = vi.fn();
+      p.where = vi.fn();
       return p;
     }
-    // Email-domains query: db.select().from(emailDomains).innerJoin(...)
+    if (callIndex === 1) {
+      // Call 1: db.select().from(emailDomains).innerJoin(domains, ...)
+      return {
+        innerJoin: vi.fn().mockResolvedValue(emailDomainRows),
+      };
+    }
+    // Calls 2+: drift-persistence (active rows) and admin-user fan-out.
+    // Default to empty results so the sync pipeline completes cleanly.
+    // Tests that exercise drift state can override the mock.
     return {
-      innerJoin: vi.fn().mockResolvedValue(emailDomainRows),
+      where: vi.fn().mockResolvedValue([]),
+      innerJoin: vi.fn().mockResolvedValue([]),
     };
   });
 
   return {
     select: vi.fn().mockReturnValue({ from: fromFn }),
     update: updateFn,
+    insert: insertFn,
     _updateFn: updateFn,
     _updateSet: updateSet,
     _updateWhere: updateWhere,
+    _insertFn: insertFn,
+    _insertValues: insertValues,
   } as unknown as Parameters<typeof createPrincipalsSyncScheduler>[0];
 }
 
