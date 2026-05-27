@@ -324,13 +324,16 @@ export async function runStalwartDomainReconcilerTick(
   }
 
   // 6. Ensure matched Domain.certificateManagement = Automatic +
-  //    points at our AcmeProvider. No SAN map — Domain.name IS the
-  //    mail hostname so cert covers it directly.
+  //    points at our AcmeProvider + subjectAlternativeNames pinned
+  //    to {matchedDomain.name: true}. Without the explicit SAN map,
+  //    Stalwart auto-adds autoconfig./autodiscover./mta-sts. SANs and
+  //    LE's HTTP-01 validation fails per the Traefik ingress setup —
+  //    see ingress-acme.yaml header for the full reasoning.
   let certManagementUpdated = false;
   if (acmeProviderId) {
     try {
       certManagementUpdated = await ensureDomainCertManagement(
-        jmapCall, auth, matchedDomain.id, acmeProviderId, log,
+        jmapCall, auth, matchedDomain.id, acmeProviderId, matchedDomain.name, log,
       );
     } catch (err) {
       notes.push(`Domain.certificateManagement ensure failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -465,14 +468,17 @@ async function ensureDefaultHostname(
 
 /**
  * Ensure matched Domain.certificateManagement = Automatic pointing
- * at the AcmeProvider. No SAN map — Domain.name IS the mail hostname.
- * Mirrors bootstrap.sh:configure_stalwart_full step 5b.
+ * at the AcmeProvider, with subjectAlternativeNames pinned to exactly
+ * {mailHostname: true}. Mirrors bootstrap.sh:configure_stalwart_full
+ * step 5b — see that section for the operational reasoning (autoconfig
+ * subdomain SANs would explode per-tenant ingress + break portability).
  */
 async function ensureDomainCertManagement(
   jmapCall: JmapCall,
   auth: string,
   domainId: string,
   acmeProviderId: string,
+  mailHostname: string,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<boolean> {
   const getRes = await jmapCall(auth, {
@@ -491,7 +497,10 @@ async function ensureDomainCertManagement(
   const cm = args?.list?.[0]?.certificateManagement ?? {};
   const cmType = typeof cm['@type'] === 'string' ? (cm['@type'] as string) : 'Manual';
   const existingProviderId = typeof cm.acmeProviderId === 'string' ? (cm.acmeProviderId as string) : '';
-  if (cmType === 'Automatic' && existingProviderId === acmeProviderId) {
+  const sans = (cm.subjectAlternativeNames ?? {}) as Record<string, unknown>;
+  const sanKeys = Object.keys(sans);
+  const sansAlreadyExplicit = sanKeys.length === 1 && sanKeys[0] === mailHostname && sans[mailHostname] === true;
+  if (cmType === 'Automatic' && existingProviderId === acmeProviderId && sansAlreadyExplicit) {
     return false;
   }
   await jmapCall(auth, {
@@ -506,6 +515,7 @@ async function ensureDomainCertManagement(
               certificateManagement: {
                 '@type': 'Automatic',
                 acmeProviderId,
+                subjectAlternativeNames: { [mailHostname]: true },
               },
             },
           },
@@ -514,7 +524,7 @@ async function ensureDomainCertManagement(
       ],
     ],
   });
-  log.info(`Stalwart Domain.certificateManagement = Automatic (domainId=${domainId}, acme=${acmeProviderId})`);
+  log.info(`Stalwart Domain.certificateManagement = Automatic (domainId=${domainId}, acme=${acmeProviderId}, san=${mailHostname})`);
   return true;
 }
 
