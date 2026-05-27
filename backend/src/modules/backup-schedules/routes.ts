@@ -72,6 +72,33 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
     const row = await service.updateSchedule(app.db, subsystem, parsed.data, actorIdOf(request));
+
+    // 2026-05-27: for mail subsystem, propagate retention to the actual
+    // restic forget command via the stalwart-snapshot CronJob env. Pre-fix
+    // operator-set retention in this DB row had ZERO effect — snapshot-
+    // upload.sh hardcoded --keep-last 48. Inline patch ensures the change
+    // takes effect on the NEXT snapshot fire (~2 min worst case).
+    if (subsystem === 'mail') {
+      try {
+        const { applyMailSnapshotRetention } = await import('../mail-admin/snapshot-settings.js');
+        const cfg = app.config as Record<string, unknown>;
+        const r = await applyMailSnapshotRetention(app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.info(
+          { retentionDays: r.retentionDays, retentionCount: r.retentionCount, patched: r.patched },
+          'backup-schedules: propagated mail retention to stalwart-snapshot CronJob env',
+        );
+      } catch (err) {
+        // Don't fail the DB write — operator's intent is persisted. Log
+        // loudly so the operator sees if K8s patching failed.
+        app.log.warn(
+          { err, subsystem },
+          'backup-schedules: mail retention DB write succeeded but K8s CronJob patch failed — retention in DB but NOT yet applied to next snapshot. Re-run the update OR wait for platform-api startup reconciler to catch up.',
+        );
+      }
+    }
+
     return success(row);
   });
 }
