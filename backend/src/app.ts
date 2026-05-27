@@ -1172,6 +1172,26 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => stalwartDomainStop());
 
+        // 2026-05-27: self-heal the stalwart-snapshot CronJob retention env
+        // on startup so operator-set values in backup_schedules.mail take
+        // effect even if a prior write completed before this PR shipped
+        // (when the CronJob had hardcoded --keep-last 48). Fire-and-forget;
+        // failures are non-fatal (CronJob may not exist yet on fresh installs).
+        void (async () => {
+          try {
+            const { applyMailSnapshotRetention } = await import(
+              './modules/mail-admin/snapshot-settings.js'
+            );
+            const r = await applyMailSnapshotRetention(app.db, { kubeconfigPath: kubePath });
+            app.log.info(
+              { retentionDays: r.retentionDays, retentionCount: r.retentionCount, patched: r.patched },
+              'startup: applied mail snapshot retention to stalwart-snapshot CronJob env',
+            );
+          } catch (err) {
+            app.log.warn({ err }, 'startup: applyMailSnapshotRetention failed (non-fatal)');
+          }
+        })();
+
         // IMAP-concurrency reverter: tenant-bundles capture + backup-restore
         // executors transiently elevate Stalwart's x:Imap.maxConcurrent from
         // 16 → 64 around mailbox Jobs to let imap-restore.py --workers 4

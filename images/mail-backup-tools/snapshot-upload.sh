@@ -74,9 +74,38 @@ restic backup \
   "$DATA_DIR"
 
 echo "=== snapshot-upload: backup complete — running restic forget/prune ==="
-# Keep last 48 snapshots (covers ~4 days at 2-min schedule).
-restic forget \
-  --keep-last 48 \
+# Retention policy: driven by operator-set values in backup_schedules[mail].
+# The platform-api reconciler patches the CronJob env to match. Defaults
+# preserve the pre-2026-05-27 behaviour for backwards-compat.
+#
+#   RETENTION_DAYS  = backup_schedules.mail.retention_days
+#                     → maps to restic --keep-daily (one snapshot per day,
+#                       retained for N days). 0 = use --keep-last fallback.
+#   RETENTION_COUNT = backup_schedules.mail.retention_count
+#                     → maps to restic --keep-last (minimum-recent kept
+#                       regardless of age). Empty/0 = no minimum.
+#
+# At least ONE of (--keep-daily, --keep-last) must be set or restic refuses.
+# Fallback to --keep-last 48 (~96 min at 2-min cadence) when neither env
+# var is present — matches the legacy hardcoded behaviour.
+RETENTION_DAYS="${RETENTION_DAYS:-0}"
+RETENTION_COUNT="${RETENTION_COUNT:-0}"
+
+KEEP_ARGS=""
+if [ "$RETENTION_DAYS" -gt 0 ] 2>/dev/null; then
+  KEEP_ARGS="$KEEP_ARGS --keep-daily $RETENTION_DAYS"
+fi
+if [ "$RETENTION_COUNT" -gt 0 ] 2>/dev/null; then
+  KEEP_ARGS="$KEEP_ARGS --keep-last $RETENTION_COUNT"
+fi
+if [ -z "$KEEP_ARGS" ]; then
+  echo "=== snapshot-upload: NEITHER RETENTION_DAYS nor RETENTION_COUNT set — falling back to --keep-last 48 ==="
+  KEEP_ARGS="--keep-last 48"
+fi
+
+echo "=== snapshot-upload: applying retention: restic forget $KEEP_ARGS ==="
+# shellcheck disable=SC2086 # KEEP_ARGS intentionally word-split
+restic forget $KEEP_ARGS \
   --prune \
   --tag "stalwart-snapshot" \
   --quiet
