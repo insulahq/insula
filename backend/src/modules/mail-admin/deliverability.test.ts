@@ -220,6 +220,31 @@ describe('DNSBL probes', () => {
     }));
     expect(r.blocklists.every((b) => b.severity === 'skipped')).toBe(true);
   });
+
+  it('downgrades Spamhaus open-resolver refusal to skipped (NOT a real listing)', async () => {
+    // Spamhaus returns 127.255.255.254 + TXT explaining the query came
+    // via a public/open recursive resolver. Pre-fix the probe reported
+    // this as `severity: fail, listed: true` — a false positive that
+    // flipped the health card to red even though delivery was fine.
+    const r = await probeDeliverability(makeDeps({
+      resolveBlocklist: async (zone) => {
+        if (zone === 'zen.spamhaus.org') {
+          return {
+            listed: false,
+            reasonTxt: 'Error: open resolver; https://check.spamhaus.org/returnc/pub/1.1.1.1/',
+            error: 'open_resolver',
+          };
+        }
+        return { listed: false, reasonTxt: null };
+      },
+    }));
+    const zen = r.blocklists.find((b) => b.zone === 'zen.spamhaus.org');
+    expect(zen?.severity).toBe('skipped');
+    expect(zen?.listed).toBe(false);
+    expect(zen?.actual).toMatch(/open_resolver/);
+    expect(zen?.remediation).toMatch(/MAIL_HEALTH_EXTERNAL_DNS/);
+    expect(r.healthy).toBe(true);
+  });
 });
 
 describe('cert SAN match probe', () => {
