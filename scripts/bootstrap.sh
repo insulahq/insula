@@ -6306,17 +6306,26 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # valid IP address") — caught fresh-install on testing.phoenix-host.net
   # 2026-05-17 after the staging stalwart-mail overlay started using
   # ${STALWART_EXTERNAL_IP} (commit 8a1ab700).
-  # Retry the apply on transient webhook errors. The Longhorn + CNPG
-  # admission webhooks (which wait_for_admission_webhooks() blocks on
-  # above) can flicker AFTER the initial readiness probe — pod GC,
-  # control-plane scheduling, or k3s in-tree controller restarts can
-  # briefly drop the service endpoint between our endpoint check and
-  # the kubectl apply landing. Without retry, a single transient
-  # "no endpoints available for service longhorn-admission-webhook"
-  # aborts bootstrap under `set -e`. Caught on fresh re-imaged
-  # testing.phoenix-host.net 2026-05-16: the apply hit the race after
-  # wait_for_admission_webhooks returned green, requiring a manual
-  # bootstrap re-run.
+  # Retry the apply on transient races. Two known flake classes:
+  #
+  #   1. Admission-webhook flicker. Longhorn + CNPG webhooks (which
+  #      wait_for_admission_webhooks() blocks on above) can drop their
+  #      service endpoint AFTER the initial readiness probe — pod GC,
+  #      control-plane scheduling, or k3s in-tree controller restarts
+  #      between endpoint check and apply landing. Surfaces as
+  #      "failed calling webhook" or "no endpoints available for service".
+  #
+  #   2. CRD-discovery race. When a CRD and a CR of that CRD are in
+  #      the same `kubectl apply -k` stream (e.g. plugin-barman-cloud
+  #      installs the ObjectStore CRD AND k8s/base/database.yaml
+  #      includes a `kind: ObjectStore` CR), kubectl applies the CRD
+  #      successfully but the apiserver's REST-mapper hasn't refreshed
+  #      its discovery cache before kubectl tries to apply the CR.
+  #      Surfaces as "no matches for kind … ensure CRDs are installed
+  #      first". Caught fresh-install on testing.phoenix-host.net
+  #      2026-05-27 — the second bootstrap pass succeeds because the
+  #      CRD is already registered, so a retry is the minimal fix
+  #      (no need to split into a CRD pre-pass).
   #
   # 6 attempts × 10s backoff = 1 min cap. Hard-fails after exhaustion
   # with the underlying kubectl error.
@@ -6337,17 +6346,21 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
       apply_ok=true
       break
     fi
-    # Webhook flake → retry. Any other error → fail fast.
-    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service'; then
+    # Webhook flake OR CRD-discovery race → retry. Any other error → fail fast.
+    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first'; then
       echo "$apply_err" >&2
       error "kubectl apply -k failed with non-retriable error"
     fi
-    log "  apply attempt ${apply_attempt}/6 hit transient webhook error — retrying in 10s..."
+    local race_kind="transient webhook error"
+    if echo "$apply_err" | grep -qE 'no matches for kind|ensure CRDs are installed first'; then
+      race_kind="CRD-discovery race (CRD applied but not yet in REST mapper)"
+    fi
+    log "  apply attempt ${apply_attempt}/6 hit ${race_kind} — retrying in 10s..."
     sleep 10
   done
   if [[ "$apply_ok" != "true" ]]; then
     echo "$apply_err" >&2
-    error "kubectl apply -k failed after 6 retries — the Longhorn or CNPG admission webhook never stabilised."
+    error "kubectl apply -k failed after 6 retries — admission webhook or CRD registration never stabilised."
   fi
   log "Platform manifests applied with domain ${PLATFORM_DOMAIN} (env=${PLATFORM_ENV})."
 }
