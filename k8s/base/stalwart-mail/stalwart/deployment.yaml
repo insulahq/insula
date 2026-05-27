@@ -262,16 +262,19 @@ spec:
               # Per-snapshot restore (2026-05-27): if the operator triggered
               # a point-in-time restore from /backups/mail, the annotation
               # mail.platform/restore-snapshot-id holds the chosen restic
-              # short id. Otherwise use `latest` (the default failover path).
+              # id. Otherwise use `latest` (the default failover path).
+              # restic accepts EITHER the 8-char short id OR the 64-char
+              # full id; both are whitelisted here. Anything else falls
+              # back to `latest` so untrusted annotation values can never
+              # reach the restic command line.
               RESTORE_ID=$$(cat /podinfo/restore-snapshot-id 2>/dev/null || echo "")
-              # Whitelist the short id to defang command injection — restic
-              # short ids are 8 lowercase hex chars; anything else falls back
-              # to `latest` rather than passing untrusted input to restic.
               case "$$RESTORE_ID" in
                 ''|*[!0-9a-f]*) RESTORE_ID=latest ;;
                 *)
                   ID_LEN=$$(printf %s "$$RESTORE_ID" | wc -c)
-                  if [ "$$ID_LEN" -ne 8 ]; then RESTORE_ID=latest; fi
+                  if [ "$$ID_LEN" -ne 8 ] && [ "$$ID_LEN" -ne 64 ]; then
+                    RESTORE_ID=latest
+                  fi
                   ;;
               esac
               echo "restore-state: empty DataStore + repo configured + (allow-restore=true OR failover-fallthrough) — restoring snapshot '$$RESTORE_ID'"
