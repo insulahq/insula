@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import PlanManagement from '../pages/PlanManagement';
+import PlansPage from '../pages/platform/PlansPage';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
@@ -39,17 +39,17 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('PlanManagement page', () => {
+describe('PlansPage', () => {
   it('shows loading state while fetching', () => {
     mockApiFetch.mockReturnValue(new Promise(() => {}));
-    render(<PlanManagement />, { wrapper: createWrapper() });
+    render(<PlansPage />, { wrapper: createWrapper() });
     const spinner = document.querySelector('.animate-spin');
     expect(spinner).toBeInTheDocument();
   });
 
   it('renders page heading and description', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<PlanManagement />, { wrapper: createWrapper() });
+    render(<PlansPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByText('Hosting Plans')).toBeInTheDocument();
     });
@@ -58,7 +58,7 @@ describe('PlanManagement page', () => {
 
   it('shows empty state when no plans exist', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<PlanManagement />, { wrapper: createWrapper() });
+    render(<PlansPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByText('No hosting plans configured.')).toBeInTheDocument();
     });
@@ -66,7 +66,7 @@ describe('PlanManagement page', () => {
 
   it('shows add plan button', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<PlanManagement />, { wrapper: createWrapper() });
+    render(<PlansPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-plan-button')).toBeInTheDocument();
     });
@@ -75,7 +75,7 @@ describe('PlanManagement page', () => {
 
   it('shows add form when button is clicked', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<PlanManagement />, { wrapper: createWrapper() });
+    render(<PlansPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-plan-button')).toBeInTheDocument();
     });
@@ -103,7 +103,7 @@ describe('PlanManagement page', () => {
         },
       ],
     });
-    render(<PlanManagement />, { wrapper: createWrapper() });
+    render(<PlansPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('plan-plan-1')).toBeInTheDocument();
     });

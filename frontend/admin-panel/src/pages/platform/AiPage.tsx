@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Plus, Trash2, CheckCircle, XCircle, Loader2, Power, PowerOff, Pencil, AlertCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Plus, Trash2, CheckCircle, XCircle, Loader2, Power, PowerOff, Pencil, AlertCircle } from 'lucide-react';
 import {
   useAiProviders, useCreateAiProvider, useUpdateAiProvider, useDeleteAiProvider,
   useAiModels, useCreateAiModel, useUpdateAiModel, useDeleteAiModel,
@@ -251,14 +250,9 @@ export default function AiSettings() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link to="/settings" className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
-          <ArrowLeft size={20} />
-        </Link>
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">AI Settings</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Configure AI providers and models for the code editor</p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">AI Providers</h1>
+        <p className="text-sm text-gray-500 dark:text-gray-400">Configure AI providers and models for the code editor</p>
       </div>
 
       {isLoading && <div className="flex items-center gap-2 py-8"><Loader2 size={20} className="animate-spin text-gray-400" /><span className="text-sm text-gray-500">Loading...</span></div>}
