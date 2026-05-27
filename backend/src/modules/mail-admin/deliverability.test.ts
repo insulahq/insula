@@ -221,17 +221,21 @@ describe('DNSBL probes', () => {
     expect(r.blocklists.every((b) => b.severity === 'skipped')).toBe(true);
   });
 
-  it('downgrades Spamhaus open-resolver refusal to skipped (NOT a real listing)', async () => {
+  it('downgrades Spamhaus open-resolver refusal to skipped + surfaces per-IP lookup URL', async () => {
     // Spamhaus returns 127.255.255.254 + TXT explaining the query came
     // via a public/open recursive resolver. Pre-fix the probe reported
     // this as `severity: fail, listed: true` — a false positive that
     // flipped the health card to red even though delivery was fine.
+    // Iteration 2: the surfaced URL must contain the ACTUAL CLUSTER IP
+    // (not the resolver IP from Spamhaus's confused TXT) so the
+    // operator can click through to a real web-form lookup.
     const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
       resolveBlocklist: async (zone) => {
         if (zone === 'zen.spamhaus.org') {
           return {
             listed: false,
-            reasonTxt: 'Error: open resolver; https://check.spamhaus.org/returnc/pub/1.1.1.1/',
+            reasonTxt: 'Error: open resolver; https://check.spamhaus.org/returnc/pub/172.68.24.5/',
             error: 'open_resolver',
           };
         }
@@ -242,8 +246,27 @@ describe('DNSBL probes', () => {
     expect(zen?.severity).toBe('skipped');
     expect(zen?.listed).toBe(false);
     expect(zen?.actual).toMatch(/open_resolver/);
-    expect(zen?.remediation).toMatch(/MAIL_HEALTH_EXTERNAL_DNS/);
+    // lookupUrl MUST have the CLUSTER IP, NOT the resolver IP from Spamhaus's TXT.
+    expect(zen?.lookupUrl).toBe('https://check.spamhaus.org/ip/198.51.100.10');
+    expect(zen?.lookupUrl).not.toContain('172.68.24.5');
+    // Remediation includes the same per-IP URL so the operator can
+    // click through from the modal text too.
+    expect(zen?.remediation).toContain('https://check.spamhaus.org/ip/198.51.100.10');
     expect(r.healthy).toBe(true);
+  });
+
+  it('surfaces per-IP lookup URL for real listings (not a homepage link)', async () => {
+    const r = await probeDeliverability(makeDeps({
+      resolveBlocklist: async (zone) => ({
+        listed: zone === 'b.barracudacentral.org',
+        reasonTxt: null,
+      }),
+    }));
+    const barracuda = r.blocklists.find((b) => b.zone === 'b.barracudacentral.org');
+    expect(barracuda?.severity).toBe('fail');
+    expect(barracuda?.listed).toBe(true);
+    expect(barracuda?.lookupUrl).toContain('198.51.100.10');
+    expect(barracuda?.lookupUrl).toMatch(/^https:/);
   });
 });
 
