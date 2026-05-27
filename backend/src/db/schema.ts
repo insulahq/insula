@@ -3270,3 +3270,30 @@ export const clusterTrustedProxyRanges = pgTable('cluster_trusted_proxy_ranges',
 
 export type ClusterTrustedProxyRange = typeof clusterTrustedProxyRanges.$inferSelect;
 export type NewClusterTrustedProxyRange = typeof clusterTrustedProxyRanges.$inferInsert;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mail drift items (migration 0032). Persisted drift state surfaced by
+// stalwart-principals-sync — platform_db rows whose corresponding Stalwart
+// entry has vanished (typical cause: a failed mail-stack failover prior to
+// the 2026-05-27 fixes).
+//
+// Pre-migration behaviour: log.warn only. Operationally invisible.
+// Post-migration: admin notification + UI alert + per-item "Recreate empty"
+// action (the snapshot-restore action is a separate future PR).
+//
+// See migration 0032_mail_drift_items.sql for column semantics.
+export const mailDriftItems = pgTable('mail_drift_items', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: varchar('kind', { length: 16 }).notNull(),
+  expectedName: varchar('expected_name', { length: 255 }).notNull(),
+  expectedStalwartId: varchar('expected_stalwart_id', { length: 64 }),
+  platformRowId: varchar('platform_row_id', { length: 36 }).notNull(),
+  firstDetectedAt: timestamp('first_detected_at').notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at').notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at'),
+  resolvedVia: varchar('resolved_via', { length: 32 }),
+  notes: text('notes'),
+});
+
+export type MailDriftItem = typeof mailDriftItems.$inferSelect;
+export type NewMailDriftItem = typeof mailDriftItems.$inferInsert;
