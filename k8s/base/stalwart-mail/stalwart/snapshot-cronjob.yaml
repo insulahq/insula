@@ -83,6 +83,16 @@ spec:
                     name: stalwart-snapshot-restic-repo
                     optional: true
               env:
+                # Retention policy — operator-set via backup_schedules[mail].
+                # The platform-api applyMailSnapshotRetention reconciler
+                # patches these on every backup_schedules[mail] write +
+                # on platform-api startup. Defaults preserve the
+                # pre-2026-05-27 hardcoded behaviour (~96min retention)
+                # and get overwritten on first reconciler tick.
+                - name: RETENTION_DAYS
+                  value: "0"
+                - name: RETENTION_COUNT
+                  value: "48"
                 - name: PLATFORM_API_URL
                   value: "http://platform-api.platform.svc.cluster.local:3000"
                 - name: PLATFORM_API_TOKEN
