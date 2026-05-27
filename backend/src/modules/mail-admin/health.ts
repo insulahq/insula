@@ -690,12 +690,23 @@ async function defaultCertExec(
   ];
 
   const { PassThrough, Writable } = await import('node:stream');
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     const stdout = new PassThrough();
     stdout.on('data', (c: Buffer) => chunks.push(c));
     const stderr = new Writable({ write(_c, _e, cb) { cb(); } });
-    const timer = setTimeout(() => reject(new Error('cert probe timed out')), PROBE_TIMEOUT_MS + 5_000);
+    const timer = setTimeout(() => {
+      resolve({ subject: null, issuer: null, notAfter: null, error: 'cert probe timed out' });
+    }, PROBE_TIMEOUT_MS + 5_000);
+    // 2026-05-27: this fn always resolves — never rejects. The whole
+    // mail-health endpoint pipes every component through Promise.all;
+    // any reject would bubble up and 503 the entire response, losing
+    // OTHER healthy components. Common case that triggers this:
+    // stalwart-mail pod stuck in Init (PVC not mounted) → apiserver
+    // returns 400 "pod does not have a host assigned" on exec → ws
+    // upgrade fails → the .catch(reject) below would propagate. Now
+    // we resolve with an operator-readable error in the component
+    // so the rest of the health card still renders.
     exec.exec(
       MAIL_NAMESPACE, podName, STALWART_CONTAINER, cmd,
       stdout, stderr, null, false,
@@ -720,7 +731,20 @@ async function defaultCertExec(
           error: null,
         });
       },
-    ).catch(reject);
+    ).catch((err: Error) => {
+      clearTimeout(timer);
+      const msg = err.message ?? String(err);
+      // Operator-actionable error text when the WebSocket upgrade
+      // fails. The most common cause is the Stalwart pod itself being
+      // unhealthy (Init / pending / no host assigned) which means the
+      // OTHER components (pod, rocksdb) will show what's wrong.
+      resolve({
+        subject: null,
+        issuer: null,
+        notAfter: null,
+        error: `cert probe exec failed: ${msg.slice(0, 200)}`,
+      });
+    });
   });
 }
 
