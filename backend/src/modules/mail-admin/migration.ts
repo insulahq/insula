@@ -174,9 +174,24 @@ export async function startMailMigration(
     throw new ApiError('MAIL_NODE_NOT_FOUND', `Node '${targetNode}' not found in the cluster`, 404);
   }
 
-  const sourceNode = row?.mailActiveNode ?? row?.mailPrimaryNode ?? null;
-  if (!sourceNode) {
-    throw new ApiError('MAIL_NO_ACTIVE_NODE', 'No active mail node is configured in system_settings', 409);
+  // Resolve source node. Recovery mode reads the ACTUAL PVC bound-node
+  // because system_settings.mailActiveNode is stale when the stack is
+  // broken (the whole reason recovery is being triggered).
+  let sourceNode: string | null;
+  if (opts.recoverFromBrokenState) {
+    sourceNode = await readActualPvcBoundNode(core);
+    if (!sourceNode) {
+      throw new ApiError(
+        'MAIL_RECOVERY_NO_PVC',
+        `Recovery requires the mail-stack-data PVC to exist (so its current bound-node can be read). Found no PVC — bootstrap mail first.`,
+        409,
+      );
+    }
+  } else {
+    sourceNode = row?.mailActiveNode ?? row?.mailPrimaryNode ?? null;
+    if (!sourceNode) {
+      throw new ApiError('MAIL_NO_ACTIVE_NODE', 'No active mail node is configured in system_settings', 409);
+    }
   }
   // Defense-in-depth: the Zod schema (`kubernetesNodeNameSchema`)
   // enforces RFC 1123 on inbound API payloads, but `sourceNode` is
@@ -185,34 +200,35 @@ export async function startMailMigration(
   if (!/^[a-z0-9]([a-z0-9-.]{0,251}[a-z0-9])?$/.test(sourceNode)) {
     throw new ApiError(
       'MAIL_INVALID_SOURCE_NODE',
-      `Active mail node '${sourceNode}' is not a valid RFC 1123 hostname — refusing to migrate. Fix system_settings.mailActiveNode manually.`,
+      `Source mail node '${sourceNode}' is not a valid RFC 1123 hostname — refusing to migrate. Fix system_settings.mailActiveNode manually.`,
       500,
     );
   }
-  if (sourceNode === targetNode) {
+  // Same-node check skipped in recovery mode: operator may legitimately
+  // want to recover to the node system thinks is active (when the pod
+  // is actually broken on a different node).
+  if (!opts.recoverFromBrokenState && sourceNode === targetNode) {
     throw new ApiError('MAIL_MIGRATION_SAME_NODE', 'Source and target nodes are the same', 400);
   }
 
-  // **Phase 1 streamline (2026-05-15) precondition** — Phase K live-test
-  // on staging surfaced a fatal gap: the migration architecture deletes
-  // the source PVC and relies on the snapshot CronJob's restic backup
-  // to restore data on the target node. If no backup target is
-  // configured, the snapshot CronJob silently no-ops AND
-  // `triggerMailSnapshot` succeeds without producing a real snapshot —
-  // the migration then deletes the PVC and the restore-state
-  // initContainer has nothing to restore. The DataStore is lost.
-  //
-  // Refuse migration when no `mailSnapshotBackupStoreId` is set. The
-  // UI surfaces this gap via the Phase 10 backup-target CTA on
-  // MailSnapshotHealthCard, but a programmatic caller hitting
-  // /admin/mail/migrate directly needs this hard-fail.
-  if (!row?.mailSnapshotBackupStoreId) {
+  // Backup-target check skipped in recovery mode: by definition we're
+  // recovering from a broken state where the safety backup is moot
+  // (source data may already be lost). The snapshot step is also
+  // implicitly skipped via skipFreshSnapshot=true (enforced below).
+  if (!opts.recoverFromBrokenState && !row?.mailSnapshotBackupStoreId) {
     throw new ApiError(
       'MAIL_MIGRATION_NO_BACKUP_TARGET',
       'Mail migration requires a configured backup target. Go to Settings → Backups to add a CIFS / S3 / Hetzner-Storage-Box BackupStore, then Email Management → Operations → Backups to select it.',
       412, // Precondition Failed
     );
   }
+
+  // Recovery mode always implies skipFreshSnapshot=true. Caller may
+  // have already set it; enforce here so the precondition check above
+  // and the state-machine step 2 agree.
+  const effectiveOpts: MigrationOptions = opts.recoverFromBrokenState
+    ? { ...opts, skipFreshSnapshot: true }
+    : opts;
 
   const runId = randomUUID();
   await db.execute(sql`
@@ -256,7 +272,7 @@ export async function startMailMigration(
   }
 
   // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId
-  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, opts, taskId).catch(async (err) => {
+  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, effectiveOpts, taskId).catch(async (err) => {
     const isCancelled = err instanceof MigrationCancelledError;
     const errMsg = isCancelled
       ? `cancelled by operator at step '${err.cancelledAtStep}'`
@@ -278,6 +294,42 @@ export async function startMailMigration(
   });
 
   return { runId, taskId };
+}
+
+/**
+ * Operator-triggered MAIL RECOVER — used when the mail-stack is in a
+ * broken state (Pod stuck Pending / CrashLoopBackOff; PVC bound on a
+ * node that can't host Stalwart). Distinct from regular migration:
+ *
+ *   - Source node is read from the ACTUAL PVC bound-node (not from
+ *     system_settings.mailActiveNode which is stale).
+ *   - All "is this state safe to migrate from" preconditions are
+ *     skipped: no requirement for a configured backup target, no
+ *     same-source-target rejection, no fresh-snapshot step.
+ *   - Stuck source pods are force-deleted EARLY (before scale-down)
+ *     so waitForReplicaCount(0) doesn't hang on them.
+ *
+ * UI flow: detected broken state → "Recover Mail" button → target node
+ * picker + type-to-confirm → POST /admin/mail/recover { targetNode }.
+ *
+ * After success: system_settings.mailActiveNode is updated to
+ * targetNode by the same code path as migration (line ~803 in
+ * runMigrationStateMachine — done is `mailDrState='healthy'` +
+ * `mailActiveNode=target`).
+ *
+ * SAFETY: this is destructive. Any data not already in the rsync
+ * standby (for FAST PATH restore) or the offsite restic repo (for
+ * cold restore) is LOST. The UI MUST surface this clearly.
+ */
+export async function startMailRecover(
+  targetNode: string,
+  deps: MigrationDeps,
+): Promise<{ runId: string; taskId: string | null }> {
+  return startMailMigration(
+    { kind: 'explicit', targetNode },
+    deps,
+    { recoverFromBrokenState: true },
+  );
 }
 
 /**
@@ -498,8 +550,29 @@ export interface MigrationOptions {
    *   - DR caller — source is dead, can't snapshot anyway.
    *   - Mail backup-restore flow — pointless to backup data we're
    *     about to overwrite with an older snapshot.
+   *   - Recovery flow — source is broken, can't snapshot.
    */
   readonly skipFreshSnapshot?: boolean;
+
+  /**
+   * Recovery mode — set by startMailRecover. Changes preconditions:
+   *   - Source node = actual PVC bound-node (NOT system_settings.mailActiveNode
+   *     which is likely stale when the system is broken).
+   *   - Skip same-source-target rejection (operator legitimately wants
+   *     to recover to the node system thinks is active when the pod
+   *     is actually stuck elsewhere).
+   *   - Skip MAIL_MIGRATION_NO_BACKUP_TARGET (backup is for safety
+   *     before destructive ops; recovery is BY DEFINITION destructive
+   *     of broken state, no point taking a backup).
+   *   - Always implies skipFreshSnapshot=true.
+   *   - Force-delete stuck source pods early (before patchReplicas)
+   *     because they may already be Pending/CrashLoopBackOff and
+   *     waitForReplicaCount(0) would never complete cleanly.
+   *
+   * NOTE: this is operator-acknowledged destructive recovery. Caller
+   * MUST type-to-confirm in the UI before this flag is set.
+   */
+  readonly recoverFromBrokenState?: boolean;
 }
 
 /**
@@ -706,9 +779,28 @@ async function runMigrationStateMachine(
     }
   }
 
-  // Step 3: Scale Stalwart to 0 (releases the source PVC mount)
+  // Step 3: Scale Stalwart to 0 (releases the source PVC mount).
+  //
+  // Recovery mode: stuck pods (Pending / CrashLoopBackOff on dead or
+  // unreachable nodes) may never release the PVC mount cleanly even
+  // after replicas=0 is patched. Pre-emptively force-delete them so
+  // waitForReplicaCount(0) doesn't hang for the full 90s timeout.
+  //
+  // Ordering: forceDeleteStuckPodsOnDeadNodes' inner guard only acts on
+  // pods that ALREADY have deletionTimestamp set (in Terminating). So we
+  // patch replicas=0 FIRST (which adds deletionTimestamp via the
+  // Deployment controller), THEN force-delete the ones that won't die
+  // naturally. Calling force-delete before scale-down would be a no-op.
   await setStep(db, runId, 'scaling-down', 'running', taskId);
   await patchDeploymentReplicas(apps, 0);
+  if (opts.recoverFromBrokenState) {
+    try {
+      await forceDeleteStuckPodsOnDeadNodes(core, MAIL_PVC_NAME);
+      log.info(`[migration ${runId}] recovery: force-deleted any stuck Terminating pods referencing ${MAIL_PVC_NAME}`);
+    } catch (err) {
+      log.warn(`[migration ${runId}] recovery: force-delete pass failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   await waitForReplicaCount(apps, 0, 90);
 
   // Step 4: Swap the PVC binding to the target node + signal restore-on-start.
@@ -866,6 +958,54 @@ async function runMigrationStateMachine(
 }
 
 // ── PVC helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Read the actual node a PVC is bound to via its selected-node annotation.
+ * Used by recovery flow to find the real source node when system_settings.
+ * mailActiveNode is stale.
+ */
+async function readActualPvcBoundNode(core: CoreV1Api): Promise<string | null> {
+  try {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({
+      name: MAIL_PVC_NAME,
+      namespace: MAIL_NAMESPACE,
+    }) as { metadata?: { annotations?: Record<string, string> }; spec?: { volumeName?: string } };
+    const selectedNode = pvc.metadata?.annotations?.['volume.kubernetes.io/selected-node'];
+    if (selectedNode) return selectedNode;
+    // Older PVCs without the annotation — fall back to reading the bound PV's nodeAffinity.
+    const pvName = pvc.spec?.volumeName;
+    if (!pvName) return null;
+    const pv = await core.readPersistentVolume({ name: pvName }) as {
+      spec?: {
+        nodeAffinity?: {
+          required?: {
+            nodeSelectorTerms?: ReadonlyArray<{
+              matchExpressions?: ReadonlyArray<{ key?: string; values?: string[] }>;
+            }>;
+          };
+        };
+      };
+    };
+    // Scan ALL terms × ALL matchExpressions for key === 'kubernetes.io/hostname'.
+    // Local-path provisioner always uses that key, but a Longhorn-backed PV
+    // would have topology.kubernetes.io/zone in matchExpressions[0] and the
+    // hostname key elsewhere — pre-fix readers took [0][0] blindly and would
+    // have returned a zone string as a node name (caught by code review).
+    const terms = pv.spec?.nodeAffinity?.required?.nodeSelectorTerms ?? [];
+    for (const term of terms) {
+      const exprs = term.matchExpressions ?? [];
+      for (const expr of exprs) {
+        if (expr.key === 'kubernetes.io/hostname' && expr.values && expr.values.length > 0) {
+          return expr.values[0];
+        }
+      }
+    }
+    return null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
 
 /**
  * Read the current PVC's requested storage size in bytes.
@@ -1686,4 +1826,133 @@ async function checkMailBackupTargetConfigured(db: Database): Promise<boolean> {
     // silently skip a step the operator may need.
     return true;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Broken-state detection — drives the "Recover Mail" button visibility.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface MailRecoveryStatus {
+  /**
+   * 'healthy' — Stalwart pod Ready on the active node.
+   * 'broken'  — operator-actionable. Pod Pending/CrashLoopBackOff > 2 min,
+   *             OR PVC bound on a node other than the active one.
+   * 'unknown' — couldn't read state (cluster API error).
+   */
+  readonly state: 'healthy' | 'broken' | 'unknown';
+  readonly reason: string | null;
+  /** Node where the PVC is currently bound (actual reality). */
+  readonly pvcNode: string | null;
+  /** Node system_settings thinks is active. */
+  readonly expectedActiveNode: string | null;
+  /** Stalwart pod's current phase, or null when no pod. */
+  readonly podPhase: string | null;
+  /** Operator-suggested recovery target (mailPrimaryNode preferred). */
+  readonly suggestedTargetNode: string | null;
+}
+
+const BROKEN_POD_AGE_THRESHOLD_MS = 2 * 60 * 1000;
+
+export async function getMailRecoveryStatus(
+  deps: { db: Database; core: CoreV1Api },
+): Promise<MailRecoveryStatus> {
+  let pvcNode: string | null = null;
+  let podPhase: string | null = null;
+  let podCreatedAt: number | null = null;
+  let podWaitingReason: string | null = null;
+
+  try {
+    pvcNode = await readActualPvcBoundNode(deps.core);
+  } catch (err) {
+    // PVC read failure on a non-404 (cluster API flapping, RBAC drift,
+    // network) means we can't tell whether the system is broken. Return
+    // state='unknown' so the UI hides the recovery banner — better than
+    // silently reporting healthy on a missing-PVC clue. The pod read
+    // catch below uses the same pattern.
+    return {
+      state: 'unknown',
+      reason: `Could not read mail-stack-data PVC: ${err instanceof Error ? err.message : String(err)}`,
+      pvcNode: null,
+      expectedActiveNode: null,
+      podPhase: null,
+      suggestedTargetNode: null,
+    };
+  }
+
+  try {
+    const pods = await deps.core.listNamespacedPod({
+      namespace: MAIL_NAMESPACE,
+      labelSelector: 'app=stalwart-mail',
+    }) as {
+      items: ReadonlyArray<{
+        status?: {
+          phase?: string;
+          startTime?: string;
+          containerStatuses?: ReadonlyArray<{ state?: { waiting?: { reason?: string } } }>;
+          initContainerStatuses?: ReadonlyArray<{ state?: { waiting?: { reason?: string } } }>;
+        };
+        metadata?: { creationTimestamp?: string };
+      }>;
+    };
+    const p = pods.items[0];
+    podPhase = p?.status?.phase ?? null;
+    const created = p?.metadata?.creationTimestamp;
+    podCreatedAt = created ? Date.parse(created) : null;
+    podWaitingReason =
+      p?.status?.initContainerStatuses?.[0]?.state?.waiting?.reason
+      ?? p?.status?.containerStatuses?.[0]?.state?.waiting?.reason
+      ?? null;
+  } catch {
+    return {
+      state: 'unknown',
+      reason: 'Could not read stalwart-mail pods from cluster API',
+      pvcNode, expectedActiveNode: null, podPhase: null, suggestedTargetNode: null,
+    };
+  }
+
+  const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+  const expectedActiveNode = row?.mailActiveNode ?? null;
+  const suggestedTargetNode = row?.mailPrimaryNode ?? row?.mailSecondaryNode ?? expectedActiveNode;
+
+  // Healthy: pod Running + container Ready (close-enough: phase=Running and
+  // no waiting reason on the main container). Init-time waiting is OK only
+  // briefly (< 2 min); past that we treat it as broken.
+  const podAgeMs = podCreatedAt ? Date.now() - podCreatedAt : 0;
+  if (podPhase === 'Running' && !podWaitingReason) {
+    // Cross-check PVC location matches the active node (per HA invariant
+    // the PVC SHOULD be bound on mailActiveNode). Mismatch is a bug
+    // state — the operator's recovery action realigns the two.
+    if (pvcNode && expectedActiveNode && pvcNode !== expectedActiveNode) {
+      return {
+        state: 'broken',
+        reason: `PVC bound on '${pvcNode}' but system thinks active node is '${expectedActiveNode}'. Recovery realigns them.`,
+        pvcNode, expectedActiveNode, podPhase, suggestedTargetNode,
+      };
+    }
+    return {
+      state: 'healthy',
+      reason: null,
+      pvcNode, expectedActiveNode, podPhase, suggestedTargetNode,
+    };
+  }
+  if (podPhase === 'Pending' && podAgeMs > BROKEN_POD_AGE_THRESHOLD_MS) {
+    return {
+      state: 'broken',
+      reason: `stalwart-mail pod stuck Pending for ${Math.floor(podAgeMs / 60_000)} min${podWaitingReason ? ` (waiting: ${podWaitingReason})` : ''}. PVC currently bound on '${pvcNode ?? 'unknown'}'.`,
+      pvcNode, expectedActiveNode, podPhase, suggestedTargetNode,
+    };
+  }
+  if (podWaitingReason && ['CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull'].includes(podWaitingReason)) {
+    return {
+      state: 'broken',
+      reason: `stalwart-mail container in ${podWaitingReason}. PVC currently bound on '${pvcNode ?? 'unknown'}'.`,
+      pvcNode, expectedActiveNode, podPhase, suggestedTargetNode,
+    };
+  }
+  // Transient (Pending < 2 min, no waiting reason) — defer judgement.
+  return {
+    state: 'healthy',
+    reason: null,
+    pvcNode, expectedActiveNode, podPhase, suggestedTargetNode,
+  };
 }

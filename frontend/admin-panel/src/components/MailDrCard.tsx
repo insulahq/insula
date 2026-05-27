@@ -19,6 +19,7 @@ import {
   PLACEMENT_KEY,
 } from '@/hooks/use-mail-placement';
 import { useStartMailMigration } from '@/hooks/use-mail-migration';
+import { useMailRecoveryStatus, useStartMailRecover } from '@/hooks/use-mail-recovery';
 import { useMailStandbyReports } from '@/hooks/use-mail-standby-reports';
 import { useQueryClient } from '@tanstack/react-query';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
@@ -437,6 +438,11 @@ export default function MailDrCard() {
           {moveHasError && <ErrorBanner error={moveError} />}
         </div>
 
+        {/* Mail Recovery — when system is in broken state (PVC bound on
+            wrong node, Pod stuck Pending/CrashLoop). Section auto-shows
+            only when getMailRecoveryStatus reports state='broken'. */}
+        <MailRecoverSection />
+
         {/* Re-provision Stalwart — recovery tool for missing/drifted
             x:Domain, AcmeProvider, certManagement, or required
             NetworkListeners. Self-healing reconciler runs every 30 min
@@ -647,6 +653,219 @@ function ErrorBanner({ error }: { readonly error: unknown }) {
     <div role="alert" className="flex items-start gap-2.5 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5 text-sm text-red-700 dark:text-red-300 mt-2">
       <AlertTriangle size={14} className="mt-0.5 shrink-0" />
       <span>{error instanceof Error ? error.message : 'Operation failed — see server logs.'}</span>
+    </div>
+  );
+}
+
+/**
+ * Mail Recovery section — only renders when the backend detection
+ * (`/admin/mail/recovery-status`) reports state='broken'. Operator
+ * picks a target node + types it to confirm, then triggers the
+ * destructive recover flow. Reuses MailMigrationProgressModal for
+ * progress (recovery IS a specialised migration).
+ */
+function MailRecoverSection() {
+  const status = useMailRecoveryStatus();
+  const placement = useMailPlacement();
+  const recover = useStartMailRecover();
+  const [showModal, setShowModal] = useState(false);
+  const [progressRunId, setProgressRunId] = useState<string | null>(null);
+
+  const data = status.data?.data.status;
+  const candidates = placement.data?.data.candidateNodes ?? [];
+
+  // Only render when state is 'broken'. Healthy state = no section,
+  // operators don't need to think about recovery. Unknown state =
+  // probe failed; section also hidden so we don't drive false alarms.
+  if (!data || data.state !== 'broken') return null;
+
+  return (
+    <>
+      <div className="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-4 space-y-3">
+        <div className="flex items-start gap-2">
+          <AlertTriangle size={18} className="text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-red-900 dark:text-red-200">
+              Mail-stack is in a BROKEN state
+            </div>
+            <p className="mt-1 text-xs text-red-800 dark:text-red-300">
+              {data.reason ?? 'Stalwart pod is not Ready.'}
+            </p>
+            <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
+              <dt className="text-red-700 dark:text-red-400">PVC bound on:</dt>
+              <dd className="font-mono text-red-900 dark:text-red-200">{data.pvcNode ?? '(none)'}</dd>
+              <dt className="text-red-700 dark:text-red-400">System expects active:</dt>
+              <dd className="font-mono text-red-900 dark:text-red-200">{data.expectedActiveNode ?? '(unset)'}</dd>
+              <dt className="text-red-700 dark:text-red-400">Pod phase:</dt>
+              <dd className="font-mono text-red-900 dark:text-red-200">{data.podPhase ?? '(no pod)'}</dd>
+            </dl>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowModal(true)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/40"
+            data-testid="mail-dr-recover-button"
+          >
+            <Wrench size={12} /> Recover Mail…
+          </button>
+        </div>
+      </div>
+
+      {showModal && (
+        <RecoverModal
+          // Default target: prefer the suggested (mailPrimaryNode) IF it
+          // isn't the broken node. Otherwise pick the first non-broken
+          // candidate. Operator can override.
+          defaultTarget={
+            (data.suggestedTargetNode && data.suggestedTargetNode !== data.pvcNode)
+              ? data.suggestedTargetNode
+              : (candidates.find((c) => c.hostname !== data.pvcNode)?.hostname
+                 ?? data.suggestedTargetNode
+                 ?? candidates[0]?.hostname
+                 ?? '')
+          }
+          brokenNode={data.pvcNode}
+          candidates={candidates}
+          onClose={() => setShowModal(false)}
+          onStarted={(runId) => { setShowModal(false); setProgressRunId(runId); }}
+          recover={recover}
+        />
+      )}
+      {progressRunId && (
+        <MailMigrationProgressModal runId={progressRunId} onClose={() => setProgressRunId(null)} />
+      )}
+    </>
+  );
+}
+
+function RecoverModal({ defaultTarget, brokenNode, candidates, onClose, onStarted, recover }: {
+  readonly defaultTarget: string;
+  /** Node where the PVC is currently bound (the broken one). UI marks it visibly. */
+  readonly brokenNode: string | null;
+  readonly candidates: ReadonlyArray<NodeCandidate>;
+  readonly onClose: () => void;
+  readonly onStarted: (runId: string) => void;
+  readonly recover: ReturnType<typeof useStartMailRecover>;
+}) {
+  const [target, setTarget] = useState(defaultTarget);
+  const [typed, setTyped] = useState('');
+
+  const handleRun = async () => {
+    try {
+      const r = await recover.mutateAsync({ targetNode: target, confirmTargetNode: typed });
+      onStarted(r.data.runId);
+    } catch {
+      // surfaced via recover.isError
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+      data-testid="mail-recover-modal"
+    >
+      <div
+        className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <AlertTriangle size={18} className="text-red-500" />
+            Recover mail to a working node
+          </h3>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5 text-sm text-red-800 dark:text-red-200">
+            <strong>This is destructive.</strong> Recovery deletes the
+            current (broken) PVC and re-creates it on the chosen target.
+            Data not already in the rsync standby for that target OR in
+            the offsite restic repo will be PERMANENTLY LOST.
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Target node</label>
+            <select
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              className="block w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500"
+              data-testid="mail-recover-target-select"
+            >
+              {candidates.map((c) => {
+                const isBroken = c.hostname === brokenNode;
+                const isUnready = !c.ready;
+                const suffix = isBroken
+                  ? ' — CURRENTLY BROKEN (will re-trigger same failure)'
+                  : isUnready
+                    ? ' — NotReady'
+                    : '';
+                return (
+                  <option key={c.hostname} value={c.hostname}>
+                    {c.hostname} ({c.role}{suffix})
+                  </option>
+                );
+              })}
+            </select>
+            {target === brokenNode && (
+              <p className="mt-1 text-xs text-red-700 dark:text-red-400 font-medium">
+                You're picking the currently-broken node as the recovery target.
+                Unless you've already fixed the underlying issue (network, disk,
+                node label), this will re-trigger the same failure.
+              </p>
+            )}
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Mail-standby-labelled targets restore in seconds via FAST PATH
+              from the local rsync data. Other targets fall back to restic-restore
+              from the offsite backup (slower; needs backup-rclone-shim reachability
+              from the target node).
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Type <code className="font-mono px-1 rounded bg-gray-100 dark:bg-gray-700">{target}</code> to confirm
+            </label>
+            <input
+              type="text"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              className="block w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500"
+              data-testid="mail-recover-confirm-input"
+              autoFocus
+            />
+          </div>
+
+          {recover.isError && (
+            <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5 text-sm text-red-700 dark:text-red-300">
+              Recovery failed: {(recover.error as Error).message}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleRun}
+              disabled={typed !== target || !target || recover.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              data-testid="mail-recover-run"
+            >
+              {recover.isPending ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
+              {recover.isPending ? 'Starting…' : 'Recover Mail'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
