@@ -64,6 +64,7 @@ import { getMailPlacement, updateMailPlacement } from './placement.js';
 import {
   startMailMigration,
   getMailMigrationStatus,
+  cancelMailMigration,
 } from './migration.js';
 import { getMailHealth } from './health.js';
 import { getMailPortExposure, updateMailPortExposure } from './port-exposure.js';
@@ -1515,6 +1516,33 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof ApiError) throw err;
         app.log.warn({ err, runId }, 'mail-admin: migrate status read failed');
         throw new ApiError('MAIL_MIGRATE_STATUS_FAILED', 'Could not read migration status — see server logs', 503);
+      }
+    },
+  );
+
+  // POST /admin/mail/migrate/:runId/cancel — operator abort. Marks the
+  // cancel_requested flag; the state machine bails at its next checkpoint
+  // (within ~1 step). For long in-flight K8s waits, the cancel takes
+  // effect when the wait completes/times out (worst case ~10 min per
+  // deployment). See migration.ts:cancelMailMigration JSDoc for limits.
+  app.post(
+    '/admin/mail/migrate/:runId/cancel',
+    { preHandler: requireRole('super_admin') },
+    async (req: { params: unknown; user?: { sub?: string } }) => {
+      const params = req.params as { runId?: string };
+      const runId = params.runId ?? '';
+      if (!/^[0-9a-f-]{36}$/.test(runId)) {
+        throw new ApiError('VALIDATION_ERROR', 'runId must be a UUID', 400);
+      }
+      const userId = req.user?.sub ?? 'unknown';
+      app.log.warn({ userId, runId }, 'mail-admin: operator-triggered migration cancel');
+      try {
+        const result = await cancelMailMigration(runId, { db: app.db });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId, runId }, 'mail-admin: migrate cancel failed');
+        throw new ApiError('MAIL_MIGRATE_CANCEL_FAILED', 'Could not cancel migration — see server logs', 500);
       }
     },
   );

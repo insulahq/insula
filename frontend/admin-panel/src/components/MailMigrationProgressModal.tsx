@@ -1,5 +1,6 @@
-import { X, ArrowRight, CheckCircle, XCircle, Loader2 } from 'lucide-react';
-import { useMailMigrationStatus } from '@/hooks/use-mail-migration';
+import { useState } from 'react';
+import { X, ArrowRight, CheckCircle, XCircle, Loader2, Ban } from 'lucide-react';
+import { useMailMigrationStatus, useCancelMailMigration } from '@/hooks/use-mail-migration';
 import type { MailMigrationStatusResponse } from '@k8s-hosting/api-contracts';
 
 // Migration step labels — kept in sync with mailMigrationStatusResponseSchema.state
@@ -40,8 +41,22 @@ interface Props {
 export default function MailMigrationProgressModal({ runId, onClose }: Props) {
   const { data, isLoading, isError } = useMailMigrationStatus(runId);
   const status = data?.data;
+  const cancel = useCancelMailMigration();
+  const [cancelConfirm, setCancelConfirm] = useState(false);
 
   const isTerminal = status?.state === 'done' || status?.state === 'failed' || status?.state === 'rolled-back';
+  const isCancelInFlight = cancel.isPending;
+  const handleCancel = async () => {
+    if (!cancelConfirm) {
+      setCancelConfirm(true);
+      return;
+    }
+    try {
+      await cancel.mutateAsync(runId);
+    } catch {
+      // surfaced via cancel.isError
+    }
+  };
 
   return (
     <div
@@ -114,6 +129,39 @@ export default function MailMigrationProgressModal({ runId, onClose }: Props) {
               </span>
             </div>
           </>
+        )}
+
+        {!isTerminal && status && (
+          <div className="space-y-2">
+            {cancel.isError && (
+              <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                Cancel failed: {(cancel.error as Error).message}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={isCancelInFlight}
+                className={cancelConfirm
+                  ? 'inline-flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50'
+                  : 'inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50'}
+                data-testid="migration-cancel"
+              >
+                {isCancelInFlight ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}
+                {isCancelInFlight ? 'Cancelling…' : cancelConfirm ? 'Click again to confirm cancel' : 'Cancel migration'}
+              </button>
+            </div>
+            {cancelConfirm && !isCancelInFlight && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                The state machine bails at the next step checkpoint. If it's currently in a long
+                K8s wait (e.g. waiting for Stalwart to scale up), cancel takes effect when the wait
+                times out (worst case ~10 min). Already-completed steps (PVC swap, scale-down)
+                are NOT rolled back — you may need to run a follow-up migration to restore
+                placement.
+              </p>
+            )}
+          </div>
         )}
 
         {isTerminal && (
