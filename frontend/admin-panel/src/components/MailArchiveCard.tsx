@@ -112,14 +112,48 @@ export default function MailArchiveCard() {
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
           Mail Archive (app-level, point-in-time)
         </h2>
+        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+          Deprecated
+        </span>
+      </div>
+
+      {/* ── DEPRECATED banner ── */}
+      <div
+        role="alert"
+        className="rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-600 dark:bg-amber-900/30 dark:text-amber-100"
+      >
+        <div className="flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div className="space-y-1.5">
+            <p className="font-semibold">
+              This pipeline is deprecated — prefer{' '}
+              <a
+                href="/backups/mail"
+                className="underline hover:no-underline"
+              >
+                /backups/mail
+              </a>{' '}
+              for restore and point-in-time recovery.
+            </p>
+            <p className="text-xs">
+              The <code className="rounded bg-amber-100 px-1 dark:bg-amber-900/60">stalwart -e</code>{' '}
+              logical export below is a separate pipeline from the
+              continuous restic snapshot the platform takes every 2 minutes.
+              The restic path (Backups → Mail) is the supported way to
+              browse, choose, and restore from arbitrary points in time
+              with no operator-managed downtime. The buttons here are kept
+              only for migrating-out use cases and will be removed once we
+              ship export-to-PST/MBOX.
+            </p>
+          </div>
+        </div>
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Store-agnostic LZ4 export via Stalwart&apos;s own{' '}
         <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code>. The default{' '}
         <strong>no-downtime</strong> path opens RocksDB as a secondary, takes a hard-linked checkpoint,
-        and exports from there — live Stalwart keeps serving SMTP/IMAP throughout. Use for weekly
-        archival, pre-upgrade safety points, or long-term retention. A fallback{' '}
+        and exports from there — live Stalwart keeps serving SMTP/IMAP throughout. A fallback{' '}
         <strong>downtime</strong> mode (scale to 0, export, scale back, ~60–120s mail downtime) is
         available if the no-downtime path is unavailable.
       </p>

@@ -1,18 +1,27 @@
 /**
- * Mail snapshot management — Stalwart state export (stalwart -e) via CronJob.
+ * Mail snapshot management — restic backup of the raw RocksDB DataStore
+ * via the `stalwart-snapshot` CronJob.
  *
- * The stalwart binary (not stalwart-cli) supports store-agnostic export/import:
- *   Export: stalwart -c /etc/stalwart/config.json -e <output-path>
- *   Import: stalwart -c /etc/stalwart/config.json -i <input-path>
- * Output format: LZ4-compressed binary (~6× compression), store-agnostic.
+ * NOT `stalwart -e`. That's mechanism #2 (mail-admin/archive.ts), a
+ * logical export operator-triggered from /email/operations. This module
+ * is mechanism #1: continuous file-level backup of /var/lib/mail-stack/
+ * to a restic repo on the configured BackupTarget.
  *
- * A CronJob (k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml) runs the
- * export every 2 minutes. This module manages and observes that CronJob, and
- * can trigger one-shot manual snapshot Jobs.
+ * Why direct restic and not `stalwart -e`: `stalwart -e` opens RocksDB
+ * which causes a LOCK conflict with the live Stalwart process. restic
+ * just reads the immutable SST files, so it can run with the PVC mounted
+ * RO while Stalwart keeps serving SMTP/IMAP.
  *
- * Used for DR recovery when DataStore moves to RocksDB on local-path: on pod
- * reschedule the restore-state initContainer in the Stalwart Deployment
- * downloads the latest snapshot and runs `stalwart -i`.
+ * The CronJob (k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml)
+ * runs every 2 minutes. This module manages + observes it, and can
+ * trigger one-shot manual Jobs (used by the migration state machine's
+ * pre-migration backup step).
+ *
+ * The companion `restore-state` initContainer in the Stalwart Deployment
+ * runs `restic restore <id>` on a fresh PVC, where <id> is either
+ * `latest` (default) or the snapshot pinned via the
+ * `mail.platform/restore-snapshot-id` annotation (per-snapshot restore
+ * flow from /backups/mail).
  *
  * GET  /admin/mail/snapshot-status
  * POST /admin/mail/snapshot/trigger
