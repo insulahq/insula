@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import ExportImport from '../pages/ExportImport';
+import ExportImportPage from '../pages/platform/ExportImportPage';
 
 vi.mock('@/lib/api-client', () => ({
   API_BASE: 'http://localhost:3000',
@@ -36,41 +36,41 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('ExportImport page', () => {
+describe('ExportImportPage', () => {
   it('renders page heading', () => {
-    render(<ExportImport />, { wrapper: createWrapper() });
+    render(<ExportImportPage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('export-import-heading')).toBeInTheDocument();
     expect(screen.getByText('Export / Import')).toBeInTheDocument();
   });
 
   it('shows export section with button', () => {
-    render(<ExportImport />, { wrapper: createWrapper() });
+    render(<ExportImportPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Export')).toBeInTheDocument();
     expect(screen.getByTestId('export-button')).toBeInTheDocument();
     expect(screen.getByText('Export Data')).toBeInTheDocument();
   });
 
   it('shows import section with file chooser', () => {
-    render(<ExportImport />, { wrapper: createWrapper() });
+    render(<ExportImportPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Import')).toBeInTheDocument();
     expect(screen.getByTestId('import-file-button')).toBeInTheDocument();
     expect(screen.getByText('Choose File')).toBeInTheDocument();
   });
 
   it('has hidden file input for JSON upload', () => {
-    render(<ExportImport />, { wrapper: createWrapper() });
+    render(<ExportImportPage />, { wrapper: createWrapper() });
     const fileInput = screen.getByTestId('import-file-input');
     expect(fileInput).toBeInTheDocument();
     expect(fileInput).toHaveAttribute('accept', '.json');
   });
 
   it('shows export description text', () => {
-    render(<ExportImport />, { wrapper: createWrapper() });
+    render(<ExportImportPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Download all tenants, domains, plans, and DNS servers as a JSON file.')).toBeInTheDocument();
   });
 
   it('shows import description text', () => {
-    render(<ExportImport />, { wrapper: createWrapper() });
+    render(<ExportImportPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Upload a previously exported JSON file to restore or migrate data.')).toBeInTheDocument();
   });
 });

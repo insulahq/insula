@@ -59,11 +59,11 @@ export default function PlatformStorageHaBanner() {
 
         <div className="flex items-center gap-2 shrink-0">
           <Link
-            to="/nodes-and-storage?tab=ha"
+            to="/cluster/cluster-policies"
             data-testid="platform-storage-ha-banner-link"
             className="text-sm font-medium underline text-purple-800 dark:text-purple-200"
           >
-            Cluster Settings
+            Cluster Policies
           </Link>
           <button
             type="button"

@@ -107,7 +107,7 @@ describe('PlatformStorageHaBanner', () => {
     expect(banner.textContent).toContain('Local Mode');
   });
 
-  it('links to the Cluster Settings tab on the Nodes & Storage page', () => {
+  it('links to the Cluster Policies page', () => {
     mockUsePolicy.mockReturnValue(policyResponse({
       systemTier: 'local',
       pinnedByAdmin: false,
@@ -115,8 +115,8 @@ describe('PlatformStorageHaBanner', () => {
     }));
     renderBanner();
     const link = screen.getByTestId('platform-storage-ha-banner-link');
-    expect(link.getAttribute('href')).toBe('/nodes-and-storage?tab=ha');
-    expect(link.textContent).toBe('Cluster Settings');
+    expect(link.getAttribute('href')).toBe('/cluster/cluster-policies');
+    expect(link.textContent).toBe('Cluster Policies');
   });
 
   it('can be dismissed', () => {

@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import OidcSettings from '../pages/OidcSettings';
+import OidcPage from '../pages/security/OidcPage';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
@@ -53,17 +53,17 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('OidcSettings page', () => {
+describe('OidcPage', () => {
   it('shows loading state while fetching', () => {
     mockApiFetch.mockReturnValue(new Promise(() => {}));
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     const spinner = document.querySelector('.animate-spin');
     expect(spinner).toBeInTheDocument();
   });
 
   it('renders page heading and description', async () => {
     setupMockApi();
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByText('OIDC / SSO Configuration')).toBeInTheDocument();
     });
@@ -72,7 +72,7 @@ describe('OidcSettings page', () => {
 
   it('shows providers section', async () => {
     setupMockApi();
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('providers-section')).toBeInTheDocument();
     });
@@ -81,7 +81,7 @@ describe('OidcSettings page', () => {
 
   it('shows global settings section', async () => {
     setupMockApi();
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('auth-ingress-section')).toBeInTheDocument();
     });
@@ -90,7 +90,7 @@ describe('OidcSettings page', () => {
 
   it('shows add provider button', async () => {
     setupMockApi();
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-provider-button')).toBeInTheDocument();
     });
@@ -99,7 +99,7 @@ describe('OidcSettings page', () => {
 
   it('shows empty state when no providers exist', async () => {
     setupMockApi();
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByText('No OIDC providers configured.')).toBeInTheDocument();
     });
@@ -107,7 +107,7 @@ describe('OidcSettings page', () => {
 
   it('shows auth toggles in combined section', async () => {
     setupMockApi();
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('disable-local-tenant-toggle')).toBeInTheDocument();
     });
@@ -130,7 +130,7 @@ describe('OidcSettings page', () => {
         updatedAt: '2026-01-01T00:00:00Z',
       },
     ]);
-    render(<OidcSettings />, { wrapper: createWrapper() });
+    render(<OidcPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('provider-prov-1')).toBeInTheDocument();
     });

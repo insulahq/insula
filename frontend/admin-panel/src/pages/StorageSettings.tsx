@@ -100,8 +100,8 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <div>
               Longhorn URL is not configured.{' '}
-              <Link to="/settings/system" className="underline font-medium">
-                Set it in System Settings →
+              <Link to="/platform/integrations" className="underline font-medium">
+                Set it in Platform Settings → Integrations →
               </Link>
             </div>
           </div>
@@ -116,7 +116,7 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Active Backup Target</h2>
           </div>
           <Link
-            to="/settings/backups"
+            to="/backups/targets"
             className="text-sm text-brand-600 dark:text-brand-400 hover:underline"
             data-testid="manage-backup-targets-link"
           >
@@ -180,7 +180,7 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
               No backup target is active. Longhorn volumes won't be backed up until one is configured.
             </p>
             <Link
-              to="/settings/backups"
+              to="/backups/targets"
               className="mt-2 inline-flex items-center gap-1.5 text-brand-600 dark:text-brand-400 hover:underline"
             >
               Configure →
