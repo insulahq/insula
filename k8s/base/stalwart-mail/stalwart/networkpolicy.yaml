@@ -121,3 +121,22 @@ spec:
       ports:
         - protocol: TCP
           port: 80
+    # backup-rclone-shim in the platform namespace — needed by:
+    #   - the restore-state init container (restic restore from
+    #     offsite backup target)
+    #   - the snapshot-upload script during recovery flows
+    # The shim's own NetworkPolicy (in platform namespace) allows
+    # ingress from same-namespace by default; this egress completes
+    # the cross-namespace path. Caught 2026-05-27 — recovery flow
+    # init container timed out reading from the shim's ClusterIP
+    # because mail-namespace egress was restricted to 25/465/587/443/80.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app: backup-rclone-shim
+      ports:
+        - protocol: TCP
+          port: 9000
