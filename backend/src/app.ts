@@ -712,14 +712,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // schedule_interval) is due. Conditional-claim UPDATE on
       // mail_archive_last_scheduled_run_at ensures only one of the
       // 3 platform-api replicas fires each scheduled run.
+      //
+      // Also reconciles abandoned runs (rows in non-terminal state
+      // whose Job no longer exists) on every tick. Catches the case
+      // where a prior platform-api pod was OOM-killed mid-run and the
+      // operator's progress modal would otherwise spin forever.
       const mailArchiveTimer = setInterval(async () => {
         try {
           const { maybeFireArchiveSchedule } = await import('./modules/mail-admin/archive-schedule.js');
-          const { startMailArchive } = await import('./modules/mail-admin/archive.js');
+          const { startMailArchive, reconcileAbandonedArchiveRuns } = await import('./modules/mail-admin/archive.js');
           const cfg = app.config as Record<string, unknown>;
           const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
           const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
           const k8s = createK8sClients(kubeconfigPath);
+          await reconcileAbandonedArchiveRuns(
+            { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-reconciler' },
+            { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
+          ).catch((err) => app.log.warn({ err }, '[archive-reconciler] tick error'));
           await maybeFireArchiveSchedule(
             app.db,
             () => startMailArchive(
