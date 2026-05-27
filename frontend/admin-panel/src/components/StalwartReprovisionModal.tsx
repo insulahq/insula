@@ -86,14 +86,19 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
           {!result && (
             <>
               <p className="text-sm text-gray-700 dark:text-gray-300">
-                Re-runs Stalwart&apos;s cluster-infrastructure bring-up:
-                syncs <code className="font-mono">SystemSettings.defaultHostname</code>{' '}
-                (mail-server banner identity) to the hostname set under
-                Email → Settings → Server, ensures the Let&apos;s Encrypt
-                AcmeProvider exists, and ensures the three required
-                network listeners (<code className="font-mono">http-acme/80</code>,{' '}
+                Mirrors bootstrap&apos;s mail bring-up: finds the
+                Stalwart Domain whose name EXACTLY equals the mail
+                hostname (operator adds it via Email → Domains &
+                Relays — mailboxes optional), syncs{' '}
+                <code className="font-mono">SystemSettings.defaultHostname</code>{' '}
+                + <code className="font-mono">defaultDomainId</code>,
+                ensures the Let&apos;s Encrypt AcmeProvider, sets
+                that Domain&apos;s certificateManagement to Automatic,
+                ensures listeners (<code className="font-mono">http-acme/80</code>,{' '}
                 <code className="font-mono">submission/587</code>,{' '}
-                <code className="font-mono">imap/143</code>).
+                <code className="font-mono">imap/143</code>), and
+                fires an ACME renewal task. Stalwart&apos;s built-in
+                ACME client acquires the cert.
               </p>
 
               <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-xs text-emerald-800 dark:text-emerald-200 flex items-start gap-2">
@@ -126,8 +131,8 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
                 <ul className="space-y-0.5 ml-4 list-disc text-gray-600 dark:text-gray-400">
                   <li>Restart the Stalwart pod or interrupt running connections</li>
                   <li>Publish or modify any DNS records (MX/SPF/DKIM/DMARC)</li>
-                  <li>Create, modify, or delete any Stalwart Domain entry — mail domains belong to tenant provisioning, including SYSTEM tenant</li>
-                  <li>Issue or renew TLS certificates — per-domain certs are owned by the tenant flow</li>
+                  <li>CREATE any Stalwart Domain entry — operator must add the mail hostname via Email → Domains & Relays first (mailboxes optional)</li>
+                  <li>Touch other Stalwart Domains, AcmeProviders, or listeners</li>
                 </ul>
               </div>
 
@@ -185,16 +190,28 @@ function ReprovisionResultView({
       done: result.defaultHostnameUpdated,
       value: result.mailHostname
         ? (result.defaultHostnameUpdated
-            ? `Synced SystemSettings.defaultHostname → ${result.mailHostname}`
+            ? `Synced → ${result.mailHostname}`
             : `Already ${result.mailHostname}`)
         : '—',
     },
     {
+      label: 'Matched Stalwart Domain',
+      done: false,
+      value: result.matchedDomain
+        ? `${result.matchedDomain.name} (id=${result.matchedDomain.id})`
+        : '— not found, add via Email → Domains & Relays',
+    },
+    {
       label: 'ACME provider',
       done: result.acmeProviderCreated,
-      value: result.acmeProviderCreated
-        ? 'Created Let’s Encrypt account'
-        : 'Already present',
+      value: result.acmeProviderCreated ? 'Created Let’s Encrypt account' : 'Already present',
+    },
+    {
+      label: 'Cert management',
+      done: result.certManagementUpdated,
+      value: result.certManagementUpdated
+        ? 'Set Automatic + pointed at AcmeProvider'
+        : 'Already Automatic + correctly wired',
     },
     {
       label: 'Network listeners',
@@ -203,6 +220,13 @@ function ReprovisionResultView({
         result.listenersCreated.length > 0
           ? `Created: ${result.listenersCreated.join(', ')}`
           : 'All present (http-acme, submission, imap)',
+    },
+    {
+      label: 'ACME renewal',
+      done: result.acmeRenewalFired,
+      value: result.acmeRenewalFired
+        ? 'Fired — Stalwart’s ACME client will obtain/renew the cert'
+        : 'Suppressed (in-flight or recent fire)',
     },
   ];
 
