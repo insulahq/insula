@@ -70,17 +70,36 @@ const BLOCKLISTS: ReadonlyArray<{
   readonly name: string;
   readonly zone: string;
   readonly listedSeverity: 'fail' | 'warning' | 'advisory';
-  readonly lookupUrl: string;
+  /**
+   * Per-IP web-form URL template — `{ip}` is substituted with the IP
+   * actually being checked. The web form bypasses DNS-resolver
+   * restrictions (Spamhaus DNS refuses public-resolver queries with
+   * 127.255.255.254 + an open-resolver TXT, but the web form happily
+   * looks up any IP). Operators click these URLs to verify in cases
+   * where the DNS probe was refused / skipped.
+   *
+   * Pre-2026-05-27 these were generic homepage URLs (e.g. `check.spamhaus.org/`)
+   * which forced operators to manually re-type their IP into a search
+   * form — and made it look like the probe was showing the WRONG IP.
+   */
+  readonly lookupUrlTemplate: string;
 }> = [
-  { name: 'Spamhaus ZEN', zone: 'zen.spamhaus.org', listedSeverity: 'fail', lookupUrl: 'https://check.spamhaus.org/' },
-  { name: 'Barracuda', zone: 'b.barracudacentral.org', listedSeverity: 'fail', lookupUrl: 'https://www.barracudacentral.org/rbl/removal-request' },
-  { name: 'SpamCop', zone: 'bl.spamcop.net', listedSeverity: 'fail', lookupUrl: 'https://www.spamcop.net/bl.shtml' },
-  { name: 'SORBS Aggregate', zone: 'dnsbl.sorbs.net', listedSeverity: 'warning', lookupUrl: 'https://www.sorbs.net/lookup.shtml' },
-  { name: 'PSBL', zone: 'psbl.surriel.com', listedSeverity: 'warning', lookupUrl: 'https://psbl.org/' },
-  { name: 'Mailspike', zone: 'bl.mailspike.net', listedSeverity: 'warning', lookupUrl: 'https://mailspike.org/blacklist.html' },
-  { name: 'UCEPROTECT L1', zone: 'dnsbl-1.uceprotect.net', listedSeverity: 'advisory', lookupUrl: 'https://www.uceprotect.net/en/rblcheck.php' },
-  { name: 'Backscatterer', zone: 'ips.backscatterer.org', listedSeverity: 'advisory', lookupUrl: 'https://www.backscatterer.org/?target=test' },
+  // Spamhaus's `/ip/<ip>` route is the canonical per-IP lookup page in
+  // the new (2024+) Spamhaus web UI. Bypasses the open-resolver block.
+  { name: 'Spamhaus ZEN', zone: 'zen.spamhaus.org', listedSeverity: 'fail', lookupUrlTemplate: 'https://check.spamhaus.org/ip/{ip}' },
+  { name: 'Barracuda', zone: 'b.barracudacentral.org', listedSeverity: 'fail', lookupUrlTemplate: 'https://www.barracudacentral.org/lookups/lookup-reputation?ip={ip}' },
+  { name: 'SpamCop', zone: 'bl.spamcop.net', listedSeverity: 'fail', lookupUrlTemplate: 'https://www.spamcop.net/w3m?action=checkblock&ip={ip}' },
+  { name: 'SORBS Aggregate', zone: 'dnsbl.sorbs.net', listedSeverity: 'warning', lookupUrlTemplate: 'https://www.sorbs.net/lookup.shtml?{ip}' },
+  { name: 'PSBL', zone: 'psbl.surriel.com', listedSeverity: 'warning', lookupUrlTemplate: 'https://psbl.org/listing?ip={ip}' },
+  { name: 'Mailspike', zone: 'bl.mailspike.net', listedSeverity: 'warning', lookupUrlTemplate: 'https://mailspike.org/iprep.html?ip={ip}' },
+  { name: 'UCEPROTECT L1', zone: 'dnsbl-1.uceprotect.net', listedSeverity: 'advisory', lookupUrlTemplate: 'https://www.uceprotect.net/en/rblcheck.php?ipr={ip}' },
+  { name: 'Backscatterer', zone: 'ips.backscatterer.org', listedSeverity: 'advisory', lookupUrlTemplate: 'https://www.backscatterer.org/?target={ip}' },
 ];
+
+/** Substitute `{ip}` in the template; URI-encode IP for safety. */
+function formatLookupUrl(template: string, ip: string): string {
+  return template.replace('{ip}', encodeURIComponent(ip));
+}
 
 export interface DeliverabilityDeps {
   /** mail.<apex> or operator override from webmail-settings; null disables probes. */
@@ -451,22 +470,26 @@ async function probeBlocklistOne(
     // local recursive resolver via MAIL_HEALTH_EXTERNAL_DNS. Surface
     // as `skipped` so this config issue doesn't red-light delivery.
     if (error) {
+      const perIpUrl = formatLookupUrl(bl.lookupUrlTemplate, ip);
       const explain: Record<string, string> = {
         open_resolver:
-          `${bl.name} refused the query because it came from a public recursive resolver. ` +
-          `Set MAIL_HEALTH_EXTERNAL_DNS=<your-local-resolver-ip> in the platform-api Deployment env ` +
-          `(point at a local Unbound/BIND instance — not 1.1.1.1 or 8.8.8.8). This is NOT a listing; ` +
-          `actual mail delivery is unaffected.`,
+          `${bl.name}'s DNS endpoint refuses queries from public recursive resolvers ` +
+          `(Cloudflare 1.1.1.1, Google 8.8.8.8) — this is a Spamhaus-family business ` +
+          `policy, not a real listing. Check ${ip} manually at ${perIpUrl} ` +
+          `(web form bypasses the DNS restriction). For automated checks, run a ` +
+          `local recursive resolver and set MAIL_HEALTH_EXTERNAL_DNS=<its-ip> in ` +
+          `the platform-api Deployment env.`,
         rate_limited:
-          `${bl.name} rate-limited the platform-api's resolver. Lower probe frequency or move to a ` +
-          `dedicated recursive resolver via MAIL_HEALTH_EXTERNAL_DNS.`,
+          `${bl.name} rate-limited the platform-api's resolver. Check ${ip} manually at ${perIpUrl}. ` +
+          `For automation, move to a dedicated recursive resolver via MAIL_HEALTH_EXTERNAL_DNS.`,
         typo:
           `${bl.name} reports the zone is misspelled (operator should update BLOCKLISTS in code).`,
         paid_only:
-          `${bl.name} requires a paid Data Query Service subscription. Free DNSBL queries refused.`,
+          `${bl.name} requires a paid Data Query Service subscription for DNS queries. ` +
+          `Check ${ip} manually at ${perIpUrl} — the web form is still free.`,
         other:
-          `${bl.name} returned a non-listing return code in the 127.255.255.0/24 reserved range — ` +
-          `see ${bl.lookupUrl} for the operator's interpretation table.`,
+          `${bl.name} returned a non-listing return code in the 127.255.255.0/24 reserved range. ` +
+          `Check ${ip} manually at ${perIpUrl}.`,
       };
       return {
         severity: 'skipped',
@@ -479,7 +502,7 @@ async function probeBlocklistOne(
         zone: bl.zone,
         listed: false,
         reasonTxt,
-        lookupUrl: bl.lookupUrl,
+        lookupUrl: formatLookupUrl(bl.lookupUrlTemplate, ip),
       };
     }
     if (!listed) {
@@ -494,7 +517,7 @@ async function probeBlocklistOne(
         zone: bl.zone,
         listed: false,
         reasonTxt: null,
-        lookupUrl: bl.lookupUrl,
+        lookupUrl: formatLookupUrl(bl.lookupUrlTemplate, ip),
       };
     }
     return {
@@ -509,13 +532,13 @@ async function probeBlocklistOne(
           : bl.listedSeverity === 'warning'
             ? 'This blocklist is consumed by some receivers — expect partial delivery degradation. '
             : 'This blocklist is noisy and rarely acted on — informational. ') +
-        `Request delisting at ${bl.lookupUrl}.`,
+        `Request delisting at ${formatLookupUrl(bl.lookupUrlTemplate, ip)}.`,
       ip,
       list: bl.name,
       zone: bl.zone,
       listed: true,
       reasonTxt,
-      lookupUrl: bl.lookupUrl,
+      lookupUrl: formatLookupUrl(bl.lookupUrlTemplate, ip),
     };
   } catch (err) {
     // DNSBL lookup errors (NXDOMAIN, SERVFAIL, timeout) are common and
@@ -534,7 +557,7 @@ async function probeBlocklistOne(
       zone: bl.zone,
       listed: false,
       reasonTxt: null,
-      lookupUrl: bl.lookupUrl,
+      lookupUrl: formatLookupUrl(bl.lookupUrlTemplate, ip),
     };
   }
 }
