@@ -162,7 +162,13 @@ function buildListJob(name: string): Record<string, unknown> {
               // restic snapshots --json prints a JSON array to stdout, one
               // entry per snapshot. --no-cache to avoid touching /root in
               // a pod that's about to be deleted.
-              command: ['sh', '-c', 'restic snapshots --json --no-cache 2>/dev/null'],
+              // --no-lock: read-only LIST does not need the repo lock.
+              // Without it, a killed/OOMed listing Pod leaves a stale lock
+              // on the repo that blocks the snapshot CronJob's
+              // `restic forget` step until manually unlocked. Caught
+              // 2026-05-27 on staging — list Pod from prior list call
+              // left a 3-hour stale lock that broke every snapshot run.
+              command: ['sh', '-c', 'restic snapshots --json --no-cache --no-lock 2>/dev/null'],
               envFrom: [
                 {
                   secretRef: {
@@ -333,15 +339,13 @@ export async function startMailBackupRestore(opts: {
 }): Promise<MailBackupRestoreResponse> {
   const { startMailMigration } = await import('./migration.js');
 
-  // For now, restore-from-snapshot uses the migration state machine with
-  // skipFreshSnapshot=true. The restore-state init container will restore
-  // restic-latest, not the specific shortId. Iteration 2 will plumb the
-  // shortId through a Deployment annotation that the init container reads.
-  //
-  // Operator-visible behaviour: a Migration progress modal appears,
-  // 'snapshotting' step is skipped (no offsite backup of soon-to-be-
-  // overwritten data), and the mail-stack is restored to its latest
-  // restic state on the chosen target.
+  // Per-snapshot restore: migration state machine with skipFreshSnapshot=true
+  // (pointless to back up data we're about to overwrite) plus
+  // restoreSnapshotId stamped on the pod template. The restore-state init
+  // container reads the annotation via downwardAPI and runs
+  // `restic restore <shortId>` instead of `restic restore latest`.
+  // Annotations are cleared at step 7 on success so future failovers
+  // default to `latest` again.
   const result = await startMailMigration(
     { kind: 'explicit', targetNode: opts.targetNode },
     {
@@ -352,7 +356,7 @@ export async function startMailBackupRestore(opts: {
       kubeconfigPath: opts.kubeconfigPath,
       userId: opts.userId,
     },
-    { skipFreshSnapshot: true },
+    { skipFreshSnapshot: true, restoreSnapshotId: opts.shortId },
   );
 
   if (!result?.runId) {

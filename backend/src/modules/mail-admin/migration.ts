@@ -69,6 +69,13 @@ export const MAIL_STACK_DEPLOYMENTS = [
 // scripts/mail-stack-consolidate.sh + the A2.5 manifest commit.
 const MAIL_PVC_NAME = 'mail-stack-data';
 const ALLOW_RESTORE_ANNOTATION = 'mail.platform/allow-restore';
+/**
+ * When set on the Stalwart pod template, the restore-state init container
+ * runs `restic restore <id>` instead of `restic restore latest`. Used by
+ * the per-snapshot restore flow from /backups/mail. Cleared at the same
+ * time as ALLOW_RESTORE_ANNOTATION on migration success.
+ */
+const RESTORE_SNAPSHOT_ID_ANNOTATION = 'mail.platform/restore-snapshot-id';
 const DISK_HEADROOM_RATIO = 1.25; // target must have 25% more free than used
 
 /**
@@ -573,6 +580,21 @@ export interface MigrationOptions {
    * MUST type-to-confirm in the UI before this flag is set.
    */
   readonly recoverFromBrokenState?: boolean;
+
+  /**
+   * Pin the restore-state init container to a specific restic snapshot
+   * (short id, e.g. 'a1b2c3d4') instead of `latest`. Used by the
+   * per-snapshot restore flow from /backups/mail.
+   *
+   * Implementation: stamped as the mail.platform/restore-snapshot-id
+   * annotation on the Stalwart pod template at the swapping-pvc step,
+   * then cleared at the same time as allow-restore on success so
+   * subsequent failovers default to `latest` again.
+   *
+   * Also implies skipFreshSnapshot=true (pointless to back up data
+   * we're about to overwrite with an older snapshot).
+   */
+  readonly restoreSnapshotId?: string;
 }
 
 /**
@@ -864,7 +886,12 @@ async function runMigrationStateMachine(
   }
 
   try {
-    await applyDeploymentAffinity(apps, targetNode, /* allowRestore */ true);
+    await applyDeploymentAffinity(
+      apps,
+      targetNode,
+      /* allowRestore */ true,
+      opts.restoreSnapshotId ?? null,
+    );
   } catch (err) {
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to apply target-node affinity: ${(err as Error).message}`, taskId);
@@ -1259,6 +1286,7 @@ async function applyDeploymentAffinityOne(
   name: string,
   targetNode: string,
   allowRestore: boolean,
+  restoreSnapshotId: string | null,
 ): Promise<void> {
   // Fix #4 (2026-05-25): allow-restore annotation MUST live in
   // spec.template.metadata.annotations (pod template) — NOT
@@ -1269,12 +1297,16 @@ async function applyDeploymentAffinityOne(
   // staging: the original code stamped the Deployment object's
   // annotations, which never propagated to the pod, so the init
   // container always saw allow-restore=false and fresh-started.
+  //
+  // restore-snapshot-id (2026-05-27) follows the same rule for the
+  // same reason — pod-template annotations only.
+  const annotations: Record<string, string> = {};
+  if (allowRestore) annotations[ALLOW_RESTORE_ANNOTATION] = 'true';
+  if (restoreSnapshotId) annotations[RESTORE_SNAPSHOT_ID_ANNOTATION] = restoreSnapshotId;
   const body = {
     spec: {
       template: {
-        metadata: allowRestore
-          ? { annotations: { [ALLOW_RESTORE_ANNOTATION]: 'true' } }
-          : undefined,
+        metadata: Object.keys(annotations).length > 0 ? { annotations } : undefined,
         spec: {
           nodeSelector: {
             'kubernetes.io/hostname': targetNode,
@@ -1299,18 +1331,20 @@ async function applyDeploymentAffinityOne(
  * the second Deployment leaves the first patched — recoverable on
  * the next migration tick (the patches are idempotent).
  *
- * `allowRestore` only stamps the annotation on Stalwart (it has no
- * meaning for Bulwark today; A2 will give Bulwark its own restore
- * path that consumes the same annotation).
+ * `allowRestore` and `restoreSnapshotId` only stamp annotations on
+ * Stalwart (no meaning for Bulwark today; A2 will give Bulwark its own
+ * restore path that consumes the same annotations).
  */
 export async function applyDeploymentAffinity(
   apps: AppsV1Api,
   targetNode: string,
   allowRestore: boolean,
+  restoreSnapshotId: string | null = null,
 ): Promise<void> {
   for (const name of MAIL_STACK_DEPLOYMENTS) {
-    const stamp = allowRestore && name === DEPLOYMENT_NAME;
-    await applyDeploymentAffinityOne(apps, name, targetNode, stamp);
+    const stampAllow = allowRestore && name === DEPLOYMENT_NAME;
+    const stampId = name === DEPLOYMENT_NAME ? restoreSnapshotId : null;
+    await applyDeploymentAffinityOne(apps, name, targetNode, stampAllow, stampId);
   }
 }
 
@@ -1391,11 +1425,12 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
 }
 
 /**
- * Remove the `mail.platform/allow-restore` annotation after a
- * successful migration so subsequent pod restarts don't trigger the
- * restore-state initContainer's restic path.
+ * Remove the `mail.platform/allow-restore` AND
+ * `mail.platform/restore-snapshot-id` annotations after a successful
+ * migration so subsequent pod restarts don't trigger the restore-state
+ * initContainer's restic path with stale parameters.
  *
- * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
+ * Uses merge-patch with `null` to delete the keys (RFC 7396 semantics).
  * Stalwart-only — Bulwark has no restore-state init container today.
  */
 async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
@@ -1404,18 +1439,22 @@ async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
   // writes to. Belt-and-braces: also clear from metadata.annotations
   // (Deployment) so legacy clusters that have the pre-fix annotation
   // sitting there get cleaned up too.
+  const nullAnnotations = {
+    [ALLOW_RESTORE_ANNOTATION]: null,
+    [RESTORE_SNAPSHOT_ID_ANNOTATION]: null,
+  };
   await apps.patchNamespacedDeployment(
     {
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
       body: {
         metadata: {
-          annotations: { [ALLOW_RESTORE_ANNOTATION]: null },
+          annotations: nullAnnotations,
         },
         spec: {
           template: {
             metadata: {
-              annotations: { [ALLOW_RESTORE_ANNOTATION]: null },
+              annotations: nullAnnotations,
             },
           },
         },
