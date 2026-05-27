@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi } from 'vitest';
-import TlsSettings from '../pages/TlsSettings';
+import IngressTlsPage from '../pages/cluster/IngressTlsPage';
 
 const mockTlsData = {
   data: { clusterIssuerName: 'letsencrypt-production', autoTlsEnabled: true },
@@ -40,31 +40,31 @@ function createWrapper() {
   };
 }
 
-describe('TLS Settings page', () => {
+describe('IngressTlsPage', () => {
   it('renders heading', () => {
-    render(<TlsSettings />, { wrapper: createWrapper() });
+    render(<IngressTlsPage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tls-settings-heading')).toBeInTheDocument();
-    expect(screen.getByText('Ingress & TLS Settings')).toBeInTheDocument();
+    expect(screen.getByText('Ingress & TLS')).toBeInTheDocument();
   });
 
   it('shows cluster issuer name field', () => {
-    render(<TlsSettings />, { wrapper: createWrapper() });
+    render(<IngressTlsPage />, { wrapper: createWrapper() });
     const input = screen.getByDisplayValue('letsencrypt-production');
     expect(input).toBeInTheDocument();
   });
 
   it('shows auto TLS toggle', () => {
-    render(<TlsSettings />, { wrapper: createWrapper() });
+    render(<IngressTlsPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Automatic TLS')).toBeInTheDocument();
   });
 
   it('shows save button', () => {
-    render(<TlsSettings />, { wrapper: createWrapper() });
+    render(<IngressTlsPage />, { wrapper: createWrapper() });
     expect(screen.getAllByText('Save Settings').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows ingress settings section', () => {
-    render(<TlsSettings />, { wrapper: createWrapper() });
+    render(<IngressTlsPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Ingress Routing')).toBeInTheDocument();
   });
 });

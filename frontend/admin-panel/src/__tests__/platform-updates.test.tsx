@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UpdateBanner from '../components/UpdateBanner';
-import Settings from '../pages/Settings';
+import UpdatesPage from '../pages/platform/UpdatesPage';
 
 const mockMutate = vi.fn();
 const mockUpdateSettingsMutate = vi.fn();
@@ -131,26 +131,26 @@ describe('UpdateBanner', () => {
   });
 });
 
-describe('Settings page - Platform Updates section', () => {
+describe('UpdatesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('shows Platform Updates section', () => {
-    renderWithProviders(<Settings />);
+    renderWithProviders(<UpdatesPage />);
     expect(screen.getByTestId('platform-updates-section')).toBeInTheDocument();
     expect(screen.getByText('Platform Updates')).toBeInTheDocument();
   });
 
   it('shows version information', () => {
-    renderWithProviders(<Settings />);
+    renderWithProviders(<UpdatesPage />);
     expect(screen.getByTestId('current-version')).toHaveTextContent('0.1.0');
     expect(screen.getByTestId('latest-version')).toHaveTextContent('0.2.0');
     expect(screen.getByTestId('environment')).toHaveTextContent('production');
   });
 
   it('auto-update toggle calls updateSettings mutation', () => {
-    renderWithProviders(<Settings />);
+    renderWithProviders(<UpdatesPage />);
     const toggle = screen.getByTestId('auto-update-toggle');
     fireEvent.click(toggle);
     expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(true);

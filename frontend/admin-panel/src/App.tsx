@@ -15,14 +15,9 @@ import EmailAccountsTab from '@/pages/tenants/EmailAccountsTab';
 import CronJobsTab from '@/pages/tenants/CronJobsTab';
 import TenantDetail from '@/pages/TenantDetail';
 import Monitoring from '@/pages/Monitoring';
-import Settings from '@/pages/Settings';
 import Applications from '@/pages/Applications';
 import UserSettings from '@/pages/UserSettings';
-import RedirectWithQuery from '@/components/RedirectWithQuery';
 import DomainDetail from '@/pages/DomainDetail';
-import OidcSettings from '@/pages/OidcSettings';
-import DnsServers from '@/pages/DnsServers';
-import PlanManagement from '@/pages/PlanManagement';
 import RestoreCartPage from '@/pages/RestoreCart';
 import BackupsDashboard from '@/pages/backups/BackupsDashboard';
 import SystemBackupsPage from '@/pages/backups/SystemBackupsPage';
@@ -30,24 +25,35 @@ import TenantsBackupsPage from '@/pages/backups/TenantsBackupsPage';
 import MailBackupsPage from '@/pages/backups/MailBackupsPage';
 import RemoteStorageTargetsPage from '@/pages/backups/RemoteStorageTargetsPage';
 import DisasterRecoveryPage from '@/pages/backups/DisasterRecoveryPage';
-import AdminUsers from '@/pages/AdminUsers';
-import ExportImport from '@/pages/ExportImport';
 import EmailDomainsPage from '@/pages/email/EmailDomainsPage';
 import EmailSettingsPage from '@/pages/email/EmailSettingsPage';
 import EmailOperationsPage from '@/pages/email/EmailOperationsPage';
-import TlsSettings from '@/pages/TlsSettings';
-import SystemSettingsPage from '@/pages/SystemSettings';
 import AuditLogs from '@/pages/AuditLogs';
-import AiSettings from '@/pages/AiSettings';
 import Placeholder from '@/pages/Placeholder';
-import NodesAndStorage from '@/pages/NodesAndStorage';
-import LoadBalancerSettings from '@/pages/LoadBalancerSettings';
-import LifecycleHooksSettings from '@/pages/LifecycleHooksSettings';
-import PrivateWorkerTunnelSettings from '@/pages/PrivateWorkerTunnelSettings';
+// Cluster group (operations / infrastructure)
+import NodesPage from '@/pages/cluster/NodesPage';
+import StoragePage from '@/pages/cluster/StoragePage';
+import ClusterPoliciesPage from '@/pages/cluster/ClusterPoliciesPage';
+import NetworkingPage from '@/pages/cluster/NetworkingPage';
+import IngressTlsPage from '@/pages/cluster/IngressTlsPage';
+import LoadBalancerPage from '@/pages/cluster/LoadBalancerPage';
+import TunnelsPage from '@/pages/cluster/TunnelsPage';
+// Platform Settings group (product configuration)
+import UpdatesPage from '@/pages/platform/UpdatesPage';
+import IdentityPage from '@/pages/platform/IdentityPage';
+import LimitsPage from '@/pages/platform/LimitsPage';
+import IntegrationsPage from '@/pages/platform/IntegrationsPage';
+import DnsProvidersPage from '@/pages/platform/DnsProvidersPage';
+import PlansPage from '@/pages/platform/PlansPage';
+import AiPage from '@/pages/platform/AiPage';
+import LifecycleHooksPage from '@/pages/platform/LifecycleHooksPage';
+import ExportImportPage from '@/pages/platform/ExportImportPage';
+// Security group
 import IdentityAndSessionsPage from '@/pages/IdentityAndSessionsPage';
 import NetworkTrustPage from '@/pages/NetworkTrustPage';
 import PosturePage from '@/pages/PosturePage';
 import WebDefensePage from '@/pages/WebDefensePage';
+import OidcPage from '@/pages/security/OidcPage';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 // MutationCache subscriber: refresh the Task Center chip after every
@@ -115,71 +121,55 @@ export default function App() {
             <Route path="backups/mail" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><MailBackupsPage /></ProtectedRoute>} />
             <Route path="backups/targets" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RemoteStorageTargetsPage /></ProtectedRoute>} />
             <Route path="backups/disaster-recovery" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DisasterRecoveryPage /></ProtectedRoute>} />
-            {/* Security Hub (2026-05-21): /security top-level retired —
-                the legacy mock page (hardcoded NETWORK_POLICIES array)
-                is replaced by the new posture/network-trust/identity/
-                web-defense sub-pages. Bare /security redirects to Posture. */}
+            {/* Security Hub */}
             <Route path="security" element={<Navigate to="/security/posture" replace />} />
-            <Route path="monitoring" element={<Monitoring />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="settings/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemSettingsPage /></ProtectedRoute>} />
-            <Route path="settings/oidc" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><OidcSettings /></ProtectedRoute>} />
-            <Route path="settings/dns" element={<DnsServers />} />
-            <Route path="settings/plans" element={<PlanManagement />} />
-            <Route path="settings/tls" element={<TlsSettings />} />
-            {/* Tenant-bundle restore cart — reachable from the Restoration
-                Wizard modal when the artifact is a tenant bundle. No
-                sidebar entry (Phase 1 IA removed it); the Wizard supplies
-                the entry point in Phase 6. */}
-            <Route path="backups/restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
-            <Route path="nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
-            {/* Legacy direct-link compatibility: redirect to the new top-level page with the matching tab pre-selected. */}
-            <Route path="settings/nodes-and-storage" element={<Navigate to="/nodes-and-storage" replace />} />
-            <Route path="settings/storage" element={<Navigate to="/nodes-and-storage?tab=storage" replace />} />
-            <Route path="settings/nodes" element={<Navigate to="/nodes-and-storage?tab=nodes" replace />} />
-            {/* Security Hub redirect (2026-05-21): admin users moved
-                to /security/identity. */}
-            <Route path="settings/users" element={<Navigate to="/security/identity" replace />} />
-            <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
-            <Route path="settings/load-balancer" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LoadBalancerSettings /></ProtectedRoute>} />
-            {/* 2026-05-21 Wave 2: HealthDashboard merged into the
-                Monitoring page as a "Health" tab — real metrics
-                replace the placeholder CPU/Mem/Disk tiles. */}
-            <Route path="monitoring/health" element={<Navigate to="/monitoring?tab=health" replace />} />
-            <Route path="monitoring/audit-logs" element={<AuditLogs />} />
-            {/* Email moved out of /settings/email into its own sidebar
-                group on 2026-05-26 (3 child pages: domains/settings/
-                operations, each rendering the shared header + tiles +
-                MailHealthBanner). Legacy URL redirects to the daily-
-                driver Domains & Relays page. */}
-            <Route path="settings/email" element={<Navigate to="/email/domains" replace />} />
-            <Route path="email" element={<Navigate to="/email/domains" replace />} />
-            <Route path="email/domains" element={<EmailDomainsPage />} />
-            <Route path="email/settings" element={<EmailSettingsPage />} />
-            <Route path="email/operations" element={<EmailOperationsPage />} />
-            <Route path="settings/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiSettings /></ProtectedRoute>} />
-            <Route path="settings/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksSettings /></ProtectedRoute>} />
-            {/* 2026-05-21 Wave 1: route renamed for path-prefix
-                consistency — everything settings-y now lives under
-                /settings/*. Old /system/private-worker-tunnels
-                redirects below. */}
-            <Route path="settings/private-worker-tunnels" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PrivateWorkerTunnelSettings /></ProtectedRoute>} />
-            <Route path="system/private-worker-tunnels" element={<Navigate to="/settings/private-worker-tunnels" replace />} />
-            {/* Security Hub redirects (2026-05-21): the legacy
-                /settings/{cluster-network,security-hardening} URLs
-                forward to the new canonical Hub paths, preserving
-                ?tab=X via RedirectWithQuery for bookmarked sub-tabs.
-                The WAF/Bans/Exclusions tabs moved off the legacy
-                Security Hardening page onto /security/web-defense
-                — for those three the query string semantics still
-                match (same `tab` keys). */}
-            <Route path="settings/cluster-network" element={<RedirectWithQuery to="/security/network-trust" />} />
-            <Route path="settings/security-hardening" element={<RedirectWithQuery to="/security/posture" />} />
-            {/* Canonical Security Hub routes. */}
             <Route path="security/posture" element={<ProtectedRoute allowedRoles={['super_admin']}><PosturePage /></ProtectedRoute>} />
             <Route path="security/network-trust" element={<ProtectedRoute allowedRoles={['super_admin']}><NetworkTrustPage /></ProtectedRoute>} />
             <Route path="security/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityAndSessionsPage /></ProtectedRoute>} />
             <Route path="security/web-defense" element={<ProtectedRoute allowedRoles={['super_admin']}><WebDefensePage /></ProtectedRoute>} />
+            <Route path="security/oidc" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><OidcPage /></ProtectedRoute>} />
+
+            {/* Monitoring */}
+            <Route path="monitoring" element={<Monitoring />} />
+            <Route path="monitoring/audit-logs" element={<AuditLogs />} />
+
+            {/* Email */}
+            <Route path="email" element={<Navigate to="/email/domains" replace />} />
+            <Route path="email/domains" element={<EmailDomainsPage />} />
+            <Route path="email/settings" element={<EmailSettingsPage />} />
+            <Route path="email/operations" element={<EmailOperationsPage />} />
+
+            {/* Cluster — operations / infrastructure (replaces standalone
+                Nodes & Storage + the cluster-relevant slices of the
+                retired /settings/* tree). */}
+            <Route path="cluster" element={<Navigate to="/cluster/nodes" replace />} />
+            <Route path="cluster/nodes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesPage /></ProtectedRoute>} />
+            <Route path="cluster/storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><StoragePage /></ProtectedRoute>} />
+            <Route path="cluster/cluster-policies" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><ClusterPoliciesPage /></ProtectedRoute>} />
+            <Route path="cluster/networking" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NetworkingPage /></ProtectedRoute>} />
+            <Route path="cluster/ingress-tls" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IngressTlsPage /></ProtectedRoute>} />
+            <Route path="cluster/load-balancer" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LoadBalancerPage /></ProtectedRoute>} />
+            <Route path="cluster/tunnels" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TunnelsPage /></ProtectedRoute>} />
+
+            {/* Platform Settings — product configuration (replaces the
+                retired /settings catch-all + standalone /settings/*
+                child routes). */}
+            <Route path="platform" element={<Navigate to="/platform/updates" replace />} />
+            <Route path="platform/updates" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><UpdatesPage /></ProtectedRoute>} />
+            <Route path="platform/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityPage /></ProtectedRoute>} />
+            <Route path="platform/plans" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PlansPage /></ProtectedRoute>} />
+            <Route path="platform/limits" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LimitsPage /></ProtectedRoute>} />
+            <Route path="platform/dns" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DnsProvidersPage /></ProtectedRoute>} />
+            <Route path="platform/integrations" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IntegrationsPage /></ProtectedRoute>} />
+            <Route path="platform/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiPage /></ProtectedRoute>} />
+            <Route path="platform/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksPage /></ProtectedRoute>} />
+            <Route path="platform/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImportPage /></ProtectedRoute>} />
+
+            {/* Tenant-bundle restore cart — reachable from the Restoration
+                Wizard modal when the artifact is a tenant bundle. No
+                sidebar entry; the Wizard supplies the entry point. */}
+            <Route path="backups/restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
+
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
