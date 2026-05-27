@@ -259,7 +259,22 @@ spec:
                 echo "$$(date -Iseconds) reason=allow-restore-not-set" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
-              echo "restore-state: empty DataStore + repo configured + (allow-restore=true OR failover-fallthrough) — restoring latest snapshot"
+              # Per-snapshot restore (2026-05-27): if the operator triggered
+              # a point-in-time restore from /backups/mail, the annotation
+              # mail.platform/restore-snapshot-id holds the chosen restic
+              # short id. Otherwise use `latest` (the default failover path).
+              RESTORE_ID=$$(cat /podinfo/restore-snapshot-id 2>/dev/null || echo "")
+              # Whitelist the short id to defang command injection — restic
+              # short ids are 8 lowercase hex chars; anything else falls back
+              # to `latest` rather than passing untrusted input to restic.
+              case "$$RESTORE_ID" in
+                ''|*[!0-9a-f]*) RESTORE_ID=latest ;;
+                *)
+                  ID_LEN=$$(printf %s "$$RESTORE_ID" | wc -c)
+                  if [ "$$ID_LEN" -ne 8 ]; then RESTORE_ID=latest; fi
+                  ;;
+              esac
+              echo "restore-state: empty DataStore + repo configured + (allow-restore=true OR failover-fallthrough) — restoring snapshot '$$RESTORE_ID'"
               mkdir -p /var/lib/stalwart/data /restore-tmp
 
               # Preflight: verify the backup target is reachable BEFORE
@@ -287,8 +302,8 @@ spec:
               RESTORE_OK=false
               while [ "$$RESTORE_ATTEMPT" -lt 3 ]; do
                 RESTORE_ATTEMPT=$$((RESTORE_ATTEMPT + 1))
-                echo "restore-state: restic restore attempt $${RESTORE_ATTEMPT}/3..."
-                if restic restore latest --target /restore-tmp 2>&1; then
+                echo "restore-state: restic restore attempt $${RESTORE_ATTEMPT}/3 (id=$$RESTORE_ID)..."
+                if restic restore "$$RESTORE_ID" --target /restore-tmp 2>&1; then
                   RESTORE_OK=true
                   break
                 fi
@@ -565,3 +580,12 @@ spec:
               - path: allow-restore
                 fieldRef:
                   fieldPath: metadata.annotations['mail.platform/allow-restore']
+              # Per-snapshot restore (2026-05-27): when set by the
+              # /backups/mail per-snapshot restore flow, the restore-state
+              # init container reads this and runs `restic restore <id>`
+              # instead of the default `restic restore latest`. Stamped
+              # by migration.ts:applyDeploymentAffinity, cleared by
+              # clearAllowRestoreAnnotation on success.
+              - path: restore-snapshot-id
+                fieldRef:
+                  fieldPath: metadata.annotations['mail.platform/restore-snapshot-id']
