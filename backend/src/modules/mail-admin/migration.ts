@@ -857,6 +857,8 @@ async function runMigrationStateMachine(
   try {
     await createMailPvc(core, targetNode, pvcSizeGiB);
   } catch (err) {
+    // Resume snapshot CronJob before bailing — was suspended at step 4a.
+    await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to recreate PVC on target node: ${(err as Error).message}`, taskId);
     return;
   }
@@ -864,6 +866,7 @@ async function runMigrationStateMachine(
   try {
     await applyDeploymentAffinity(apps, targetNode, /* allowRestore */ true);
   } catch (err) {
+    await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to apply target-node affinity: ${(err as Error).message}`, taskId);
     return;
   }
@@ -906,7 +909,24 @@ async function runMigrationStateMachine(
   await setStep(db, runId, 'verifying', 'running', taskId);
   const podName = await findStalwartPod(core);
   if (podName) {
-    const verify = await verifyRestoreContent(db, podName, kubeconfigPath, log);
+    // Recovery mode: ONLY check that a real restore ran (no
+    // .fresh-started-at sentinel). Don't check tenant Domain count
+    // or principal count — those reflect the pre-existing drift the
+    // operator is recovering FROM, not damage caused by the recovery.
+    // Drift is independently surfaced via /email/drift and the
+    // mail-drift module's notifications.
+    //
+    // Caught 2026-05-27 E2E on staging: the recovery migration
+    // successfully restored Stalwart data, but the verifier flagged
+    // 3 pre-existing missing tenant Domains as "restore was
+    // incomplete — tenant mail data lost." That's misleading — the
+    // Domains were already gone before recovery (the WHOLE REASON
+    // we're recovering). Strict-verify in recover mode also blocked
+    // the resumeSnapshotCronJob cleanup at step 7b, leaving the
+    // snapshot pipeline suspended for hours.
+    const verify = opts.recoverFromBrokenState
+      ? await verifyRecoveryMinimal(podName, kubeconfigPath, log)
+      : await verifyRestoreContent(db, podName, kubeconfigPath, log);
     if (!verify.ok) {
       // Mark mailDrState=degraded so the operator UI surfaces the
       // problem; the migration's 'failed' state alone is too easy to
@@ -915,6 +935,10 @@ async function runMigrationStateMachine(
         .set({ mailDrState: 'degraded' })
         .where(eq(systemSettings.id, SETTINGS_ID))
         .catch(() => { /* best-effort — failRun below is the source of truth */ });
+      // Resume the snapshot CronJob BEFORE failing so the operator
+      // doesn't end up with both a failed migration AND a stuck
+      // snapshot pipeline. Caught 2026-05-27 — see verify comment.
+      try { await resumeSnapshotCronJob(deps); } catch { /* best-effort */ }
       await failRun(
         db, runId,
         `restore content verification failed: ${verify.reason}`,
@@ -1497,6 +1521,36 @@ async function findStalwartPod(core: CoreV1Api): Promise<string | null> {
  * surfaced verbatim in the mail_migration_runs.error_message column
  * and the admin task-center, so write it operator-friendly.
  */
+/**
+ * Recovery-mode verifier — minimum viable check. Only confirms a real
+ * restore ran (no .fresh-started-at sentinel). Does NOT cross-check
+ * tenant Domain or principal counts against the platform DB because
+ * recovery is operator-acknowledged restore from a broken state — the
+ * platform DB likely references entities Stalwart lost before recovery
+ * even started. That drift is independently surfaced via /email/drift,
+ * not double-flagged here.
+ */
+async function verifyRecoveryMinimal(
+  podName: string,
+  kubeconfigPath: string | undefined,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const freshStarted = await podHasFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
+    if (freshStarted) {
+      const reason = await readPodFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
+      return {
+        ok: false,
+        reason: `Stalwart fresh-started instead of restoring (.fresh-started-at sentinel found: ${reason.trim().slice(0, 160) || 'reason unrecorded'}). Restic restore or FAST PATH copy silently failed — no data was restored. Investigate init container logs + backup-rclone-shim reachability from the target node.`,
+      };
+    }
+    log.info('[recovery] verify minimal: .fresh-started-at absent → restore ran. Drift checks skipped in recovery mode (see /email/drift).');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: `failed to probe Stalwart pod for fresh-start sentinel: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 async function verifyRestoreContent(
   db: Database,
   podName: string,
