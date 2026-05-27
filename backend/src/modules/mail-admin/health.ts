@@ -663,16 +663,28 @@ async function defaultCertExec(
   else kc.loadFromCluster();
   const exec = new k8s.Exec(kc);
 
-  // `echo | openssl s_tenant -connect 127.0.0.1:PORT -servername SNI 2>/dev/null | openssl x509 -noout -subject -issuer -dates`
+  // `echo | openssl s_client -connect 127.0.0.1:PORT -servername SNI 2>/dev/null | openssl x509 -noout -subject -issuer -dates`
   // We use sh -c so the pipe + redirect work. Output looks like:
   //   subject=CN=mail.example.com
   //   issuer=C=US, O=Let's Encrypt, CN=E8
   //   notBefore=May 15 16:10:14 2026 GMT
   //   notAfter=Aug 13 16:10:13 2026 GMT
+  //
+  // 2026-05-27 fix: was `openssl s_tenant` (typo) — openssl silently
+  // errored, 2>/dev/null swallowed it, the probe saw no `subject=` and
+  // reported "openssl returned no cert" indefinitely. Health card cert
+  // status stuck at "fail" since at least the tenant-namespace audit
+  // refactor that introduced the typo. `s_client` is the only valid
+  // subcommand here.
+  //
+  // ALSO: pipe needs `openssl x509` to receive PEM, not the full
+  // handshake transcript. Use `sed -n /BEGIN.CERT/,/END.CERT/p` to
+  // extract the leaf cert before piping into x509.
   const cmd = [
     'sh', '-c',
-    `echo | timeout ${Math.floor(PROBE_TIMEOUT_MS / 1000)} openssl s_tenant `
+    `echo | timeout ${Math.floor(PROBE_TIMEOUT_MS / 1000)} openssl s_client `
     + `-connect 127.0.0.1:${port} -servername ${sni} 2>/dev/null `
+    + `| sed -n '/BEGIN CERT/,/END CERT/p' `
     + `| openssl x509 -noout -subject -issuer -dates 2>&1 || echo "ERROR: cert probe failed"`,
   ];
 
