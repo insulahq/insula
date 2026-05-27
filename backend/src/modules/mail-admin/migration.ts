@@ -1432,12 +1432,24 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
 }
 
 /**
- * Remove the `mail.platform/allow-restore` AND
- * `mail.platform/restore-snapshot-id` annotations after a successful
+ * Remove the `mail.platform/allow-restore` annotation after a successful
  * migration so subsequent pod restarts don't trigger the restore-state
  * initContainer's restic path with stale parameters.
  *
- * Uses merge-patch with `null` to delete the keys (RFC 7396 semantics).
+ * NOTE (2026-05-27): we DELIBERATELY do NOT clear
+ * `mail.platform/restore-snapshot-id`. Clearing it triggers a pod-template
+ * change → controller spins a new RS → old pod (the one that actually ran
+ * the restore) gets killed → new pod starts on the rolled-back PVC. That
+ * churn was bad enough on its own, but it also masked the init container's
+ * actual restore-path logs and made the per-snapshot E2E unverifiable.
+ *
+ * Idempotency comes from the init container's `.restore-applied-at`
+ * sentinel file: when the same annotation value is observed across restarts
+ * AND a matching marker exists in the data dir, the wipe+restic is a no-op.
+ * If the operator triggers a NEW per-snapshot restore later, the new id
+ * will mismatch the sentinel and the script re-runs.
+ *
+ * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
  * Stalwart-only — Bulwark has no restore-state init container today.
  */
 async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
@@ -1448,7 +1460,6 @@ async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
   // sitting there get cleaned up too.
   const nullAnnotations = {
     [ALLOW_RESTORE_ANNOTATION]: null,
-    [RESTORE_SNAPSHOT_ID_ANNOTATION]: null,
   };
   await apps.patchNamespacedDeployment(
     {
