@@ -672,19 +672,20 @@ async function defaultCertExec(
   //
   // 2026-05-27 fix: was `openssl s_tenant` (typo) — openssl silently
   // errored, 2>/dev/null swallowed it, the probe saw no `subject=` and
-  // reported "openssl returned no cert" indefinitely. Health card cert
-  // status stuck at "fail" since at least the tenant-namespace audit
-  // refactor that introduced the typo. `s_client` is the only valid
-  // subcommand here.
+  // reported "openssl returned no cert" indefinitely. `s_client` is
+  // the correct subcommand.
   //
-  // ALSO: pipe needs `openssl x509` to receive PEM, not the full
-  // handshake transcript. Use `sed -n /BEGIN.CERT/,/END.CERT/p` to
-  // extract the leaf cert before piping into x509.
+  // No sed filter needed: `openssl x509 -noout` reads PEM from stdin
+  // and silently skips non-PEM noise (the TLS handshake transcript).
+  // Adding a sed BEGIN/END filter (earlier attempt) bloated the
+  // kubectl-exec URL past what the apiserver accepts — each shell
+  // arg is a separate URL ?command=... and the URL-encoded sed
+  // pattern with single quotes broke parsing. Kept the pipeline
+  // minimal.
   const cmd = [
     'sh', '-c',
     `echo | timeout ${Math.floor(PROBE_TIMEOUT_MS / 1000)} openssl s_client `
     + `-connect 127.0.0.1:${port} -servername ${sni} 2>/dev/null `
-    + `| sed -n '/BEGIN CERT/,/END CERT/p' `
     + `| openssl x509 -noout -subject -issuer -dates 2>&1 || echo "ERROR: cert probe failed"`,
   ];
 
