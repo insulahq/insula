@@ -97,7 +97,17 @@ export interface DeliverabilityDeps {
   /** Override for tests: PTR (reverse) DNS resolver. */
   readonly resolvePtr?: (ip: string) => Promise<string[]>;
   /** Override for tests: DNSBL lookup. */
-  readonly resolveBlocklist?: (zone: string, queryName: string) => Promise<{ listed: boolean; reasonTxt: string | null }>;
+  readonly resolveBlocklist?: (zone: string, queryName: string) => Promise<{
+    listed: boolean;
+    reasonTxt: string | null;
+    /**
+     * When set, the resolver got an answer that the DNSBL uses to signal a
+     * non-listing condition (open resolver, rate limited, typo, paid-only).
+     * Probe handler downgrades severity to `skipped` and surfaces a
+     * resolver-config remediation instead of a delisting one.
+     */
+    error?: 'open_resolver' | 'rate_limited' | 'typo' | 'paid_only' | 'other';
+  }>;
   /** Override for tests: TLS connector for cert SAN probe. */
   readonly tlsConnect?: (host: string, port: number, sni: string, timeoutMs: number) => Promise<{ peerCertificate: tls.PeerCertificate | null; error: string | null }>;
   /** Override for tests: SMTP banner / EHLO exchange. */
@@ -430,11 +440,48 @@ async function probeBlocklistOne(
   const queryName = blocklistQueryName(ip, bl.zone);
   const resolveBl = deps.resolveBlocklist ?? defaultResolveBlocklist;
   try {
-    const { listed, reasonTxt } = await withTimeout(
+    const { listed, reasonTxt, error } = await withTimeout(
       resolveBl(bl.zone, queryName),
       DNSBL_TIMEOUT_MS,
       `${bl.name} lookup timed out`,
     );
+    // DNSBL return-code response (127.255.255.X family) — not a real
+    // listing. Spamhaus + friends refuse queries from public/open
+    // recursive resolvers; the right fix is to point platform-api at a
+    // local recursive resolver via MAIL_HEALTH_EXTERNAL_DNS. Surface
+    // as `skipped` so this config issue doesn't red-light delivery.
+    if (error) {
+      const explain: Record<string, string> = {
+        open_resolver:
+          `${bl.name} refused the query because it came from a public recursive resolver. ` +
+          `Set MAIL_HEALTH_EXTERNAL_DNS=<your-local-resolver-ip> in the platform-api Deployment env ` +
+          `(point at a local Unbound/BIND instance — not 1.1.1.1 or 8.8.8.8). This is NOT a listing; ` +
+          `actual mail delivery is unaffected.`,
+        rate_limited:
+          `${bl.name} rate-limited the platform-api's resolver. Lower probe frequency or move to a ` +
+          `dedicated recursive resolver via MAIL_HEALTH_EXTERNAL_DNS.`,
+        typo:
+          `${bl.name} reports the zone is misspelled (operator should update BLOCKLISTS in code).`,
+        paid_only:
+          `${bl.name} requires a paid Data Query Service subscription. Free DNSBL queries refused.`,
+        other:
+          `${bl.name} returned a non-listing return code in the 127.255.255.0/24 reserved range — ` +
+          `see ${bl.lookupUrl} for the operator's interpretation table.`,
+      };
+      return {
+        severity: 'skipped',
+        assertion: `${ip} not listed on ${bl.name}`,
+        actual: `lookup refused (${error})${reasonTxt ? `: ${reasonTxt}` : ''}`,
+        expected: 'not listed',
+        remediation: explain[error] ?? explain.other,
+        ip,
+        list: bl.name,
+        zone: bl.zone,
+        listed: false,
+        reasonTxt,
+        lookupUrl: bl.lookupUrl,
+      };
+    }
     if (!listed) {
       return {
         severity: 'ok',
@@ -783,10 +830,21 @@ async function defaultResolvePtr(ip: string): Promise<string[]> {
   return r.reverse(ip);
 }
 
-async function defaultResolveBlocklist(zone: string, queryName: string): Promise<{ listed: boolean; reasonTxt: string | null }> {
+async function defaultResolveBlocklist(zone: string, queryName: string): Promise<{
+  listed: boolean;
+  reasonTxt: string | null;
+  error?: 'open_resolver' | 'rate_limited' | 'typo' | 'paid_only' | 'other';
+}> {
   const r = externalResolver();
-  // Listed iff the A record exists. The convention is `127.0.0.X` codes
-  // but presence alone is enough for our reporting.
+  // Listed iff the A record exists. RFC 5782 § 2.2 reserves 127.255.255.0/24
+  // for DNSBL operator return codes — Spamhaus + others use:
+  //   127.255.255.252 = typo (zone misspelled)
+  //   127.255.255.253 = anonymous query (paid-only / DQS)
+  //   127.255.255.254 = public/open recursive resolver refused
+  //   127.255.255.255 = rate limit exceeded
+  // These are NOT real listings; they signal "we won't answer your queries
+  // via this resolver, fix your DNS setup". The probe handler downgrades
+  // these to severity=skipped so a config issue doesn't red-light delivery.
   try {
     const records = await r.resolve4(queryName);
     if (records.length === 0) return { listed: false, reasonTxt: null };
@@ -796,6 +854,10 @@ async function defaultResolveBlocklist(zone: string, queryName: string): Promise
       reasonTxt = txts.flat().join(' ').slice(0, 200) || null;
     } catch {
       // TXT not present — that's fine, we still know it's listed.
+    }
+    const errorClass = classifyDnsblReturnCode(records, reasonTxt);
+    if (errorClass) {
+      return { listed: false, reasonTxt, error: errorClass };
     }
     return { listed: true, reasonTxt };
   } catch (err) {
@@ -814,6 +876,38 @@ async function defaultResolveBlocklist(zone: string, queryName: string): Promise
     // resolver) rather than silently green-lighting.
     throw err; // SERVFAIL / REFUSED / timeout / ENODATA → bubble up
   }
+}
+
+/**
+ * Spamhaus / Backscatterer / etc. return 127.255.255.X return codes when
+ * they refuse to answer a query (not when listing an IP). The TXT record
+ * usually carries a human-readable reason. Return the error class so the
+ * probe can present a resolver-config remediation instead of an
+ * IP-delisting one.
+ */
+function classifyDnsblReturnCode(
+  records: ReadonlyArray<string>,
+  reasonTxt: string | null,
+): 'open_resolver' | 'rate_limited' | 'typo' | 'paid_only' | 'other' | null {
+  // 127.255.255.X return-code family — RFC 5782.
+  const errorCodeRecord = records.find((r) => /^127\.255\.255\.\d+$/.test(r));
+  if (errorCodeRecord) {
+    if (errorCodeRecord === '127.255.255.254') return 'open_resolver';
+    if (errorCodeRecord === '127.255.255.255') return 'rate_limited';
+    if (errorCodeRecord === '127.255.255.252') return 'typo';
+    if (errorCodeRecord === '127.255.255.253') return 'paid_only';
+    return 'other';
+  }
+  // Some DNSBLs return 127.0.0.X but still encode "open resolver" via TXT.
+  // Spamhaus's TXT for the open-resolver case contains 'open resolver' or
+  // the "returnc/pub/" URL.
+  if (reasonTxt) {
+    const lower = reasonTxt.toLowerCase();
+    if (lower.includes('open resolver') || lower.includes('returnc/pub')) return 'open_resolver';
+    if (lower.includes('rate limit') || lower.includes('excessive')) return 'rate_limited';
+    if (lower.includes('paid') || lower.includes('subscription')) return 'paid_only';
+  }
+  return null;
 }
 
 function defaultTlsConnect(
