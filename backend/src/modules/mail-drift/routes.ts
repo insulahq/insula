@@ -15,7 +15,7 @@ import {
   type MailDriftDismissResponse,
   type MailDriftRecreateResponse,
 } from '@k8s-hosting/api-contracts';
-import { requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {
@@ -27,6 +27,11 @@ import {
 const idParamSchema = z.object({ id: z.string().uuid() });
 
 export async function registerMailDriftRoutes(app: FastifyInstance): Promise<void> {
+  // Plugin-wide auth hooks (mirror mail-admin/routes.ts:122-123). Without
+  // `authenticate` running first, `req.user` is undefined and per-route
+  // `requireRole` rejects with "Insufficient permissions" — what the
+  // operator saw on the first deploy of this page.
+  app.addHook('onRequest', authenticate);
   // GET /admin/mail/drift — list all drift items (active + recent history).
   app.get(
     '/admin/mail/drift',
