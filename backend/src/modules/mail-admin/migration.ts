@@ -36,15 +36,16 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { eq, sql, isNotNull, count } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
-import { systemSettings } from '../../db/schema.js';
+import { systemSettings, emailDomains, mailboxes } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerMailSnapshot } from './snapshot.js';
 import { parseQuantity } from './mail-pvc.js';
+import { readStalwartCredentials } from './credentials.js';
 
 const MAIL_NAMESPACE = 'mail';
 const SETTINGS_ID = 'system';
@@ -610,15 +611,47 @@ async function runMigrationStateMachine(
   await patchDeploymentReplicas(apps, 1);
   await waitForReplicaCount(apps, 1, 600);
 
-  // Step 6: Verify the CURRENT sentinel (RocksDB MANIFEST file) exists
-  // in the new PVC. Its presence proves the restore completed AND
-  // Stalwart successfully opened the DataStore.
+  // Step 6: Verify the restore actually RESTORED tenant data — not just
+  // that Stalwart opened a (possibly empty) DataStore.
+  //
+  // PRE-FIX (silent data-loss bug, root-caused 2026-05-27): we only
+  // checked /var/lib/stalwart/data/CURRENT — the RocksDB MANIFEST file
+  // RocksDB creates on first open of ANY data dir, including an empty
+  // one. An init-container fresh-start (restic failed → silent
+  // exit 0) passed this check. The 2026-05-25 19:23 staging E2E lost
+  // 2 tenant Domains + their mailboxes via this exact path; migration
+  // state machine happily marked state=done.
+  //
+  // POST-FIX content verification (3 layers):
+  //   a. .fresh-started-at sentinel MUST NOT exist (proves a real
+  //      restore ran, not the fresh-start fallback).
+  //   b. Every email_domains.stalwart_domain_id in the DB MUST resolve
+  //      to a Stalwart Domain entry via x:Domain/get. A missing id
+  //      means Stalwart lost the tenant Domain.
+  //   c. Stalwart's individual-principal count MUST be >= the DB
+  //      mailbox count. Less = mailboxes lost.
+  //
+  // On any failure: failRun with a specific diagnostic AND set
+  // mailDrState='degraded' (not 'healthy') so the operator sees the
+  // problem in the admin UI rather than mistakenly trusting the
+  // migration succeeded.
   await setStep(db, runId, 'verifying', 'running', taskId);
   const podName = await findStalwartPod(core);
   if (podName) {
-    const verified = await verifySentinelExists(podName);
-    if (!verified) {
-      await failRun(db, runId, 'DataStore CURRENT sentinel not found after migration — restore may have failed', taskId);
+    const verify = await verifyRestoreContent(db, podName, kubeconfigPath, log);
+    if (!verify.ok) {
+      // Mark mailDrState=degraded so the operator UI surfaces the
+      // problem; the migration's 'failed' state alone is too easy to
+      // miss.
+      await db.update(systemSettings)
+        .set({ mailDrState: 'degraded' })
+        .where(eq(systemSettings.id, SETTINGS_ID))
+        .catch(() => { /* best-effort — failRun below is the source of truth */ });
+      await failRun(
+        db, runId,
+        `restore content verification failed: ${verify.reason}`,
+        taskId,
+      );
       return;
     }
   }
@@ -1138,34 +1171,223 @@ async function findStalwartPod(core: CoreV1Api): Promise<string | null> {
   }
 }
 
-async function verifySentinelExists(podName: string): Promise<boolean> {
+/**
+ * Content-based post-restore verification. Replaces the legacy
+ * verifySentinelExists which only checked that RocksDB's CURRENT file
+ * was on-disk (true for ANY data dir, including a fresh-started one).
+ *
+ * Returns ok:true only when all three checks pass — see migration step
+ * 6 header for the full reasoning. The returned `reason` text is
+ * surfaced verbatim in the mail_migration_runs.error_message column
+ * and the admin task-center, so write it operator-friendly.
+ */
+async function verifyRestoreContent(
+  db: Database,
+  podName: string,
+  kubeconfigPath: string | undefined,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // (a) Reject if the init container's fresh-start sentinel exists —
+  // proves restic restore (or FAST PATH copy) failed silently.
+  try {
+    const freshStarted = await podHasFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
+    if (freshStarted) {
+      const reason = await readPodFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
+      return {
+        ok: false,
+        reason: `Stalwart fresh-started instead of restoring (.fresh-started-at sentinel found: ${reason.trim().slice(0, 160) || 'reason unrecorded'}). Restic restore or FAST PATH copy silently failed — tenant Domains and mailboxes are GONE. Do NOT mark this migration done. Investigate the init container logs and the backup target reachability.`,
+      };
+    }
+  } catch (err) {
+    // Exec timeout / pod gone — treat as verification failure (safer
+    // than silently succeeding on an unverifiable pod).
+    return { ok: false, reason: `failed to probe Stalwart pod for fresh-start sentinel: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // (b) + (c): live JMAP checks. Read the admin creds + post via exec.
+  let auth: string;
+  try {
+    const { username, password } = readStalwartCredentials(process.env);
+    auth = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+  } catch (err) {
+    log.warn('[migration] verifyRestoreContent: Stalwart creds unavailable, skipping JMAP checks:', err);
+    return { ok: false, reason: `Stalwart admin credentials unavailable; cannot verify restore content. ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // (b) Every DB-tracked stalwart_domain_id must resolve in Stalwart.
+  const expected = await db
+    .select({ id: emailDomains.stalwartDomainId })
+    .from(emailDomains)
+    .where(isNotNull(emailDomains.stalwartDomainId));
+  const expectedIds = expected.map((r) => r.id).filter((x): x is string => typeof x === 'string' && x.length > 0);
+  if (expectedIds.length > 0) {
+    const present = await jmapDomainsExist(podName, auth, expectedIds, kubeconfigPath);
+    if (present.kind === 'error') {
+      return { ok: false, reason: `JMAP Domain check failed: ${present.message}` };
+    }
+    const missing = expectedIds.filter((id) => !present.foundIds.has(id));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: `${missing.length} tenant Stalwart Domain(s) missing post-restore (ids: ${missing.slice(0, 5).join(',')}${missing.length > 5 ? '…' : ''}). Restic restore was incomplete — tenant mail data lost. Do NOT cut over.`,
+      };
+    }
+  }
+
+  // (c) Stalwart's individual-principal count must be >= DB mailbox count.
+  // Allow slack: just-deleted mailboxes can still have lingering Stalwart
+  // principals (cleanup is best-effort). Strict-less-than is the bug case.
+  const [dbCount] = await db.select({ c: count() }).from(mailboxes);
+  const expectedMailboxes = Number(dbCount?.c ?? 0);
+  if (expectedMailboxes > 0) {
+    const stalwartCount = await jmapCountIndividualPrincipals(podName, auth, kubeconfigPath);
+    if (stalwartCount.kind === 'error') {
+      return { ok: false, reason: `JMAP principal count failed: ${stalwartCount.message}` };
+    }
+    if (stalwartCount.count < expectedMailboxes) {
+      return {
+        ok: false,
+        reason: `Stalwart has ${stalwartCount.count} individual principals; DB expects >= ${expectedMailboxes}. ${expectedMailboxes - stalwartCount.count} mailbox(es) missing post-restore. Do NOT cut over.`,
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+/** True iff `path` exists on the Stalwart container. Throws on exec timeout. */
+async function podHasFile(podName: string, path: string, kubeconfigPath?: string): Promise<boolean> {
+  const { Exec, KubeConfig } = await import('@kubernetes/client-node');
+  const kc = new KubeConfig();
+  if (kubeconfigPath) kc.loadFromFile(kubeconfigPath); else kc.loadFromCluster();
+  const exec = new Exec(kc);
+  const { Writable } = await import('node:stream');
+  const sink = new Writable({ write(_c, _e, cb) { cb(); } });
+  return await new Promise<boolean>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('podHasFile timed out')), 10_000);
+    exec.exec(
+      MAIL_NAMESPACE, podName, 'stalwart',
+      ['test', '-f', path],
+      sink, sink, null, false,
+      (status) => {
+        clearTimeout(timer);
+        // `test -f` exits 0 if file exists, 1 if not — exec callback
+        // surfaces non-zero as status.status='Failure'.
+        resolve(status.status !== 'Failure');
+      },
+    ).catch(reject);
+  });
+}
+
+/** Read up to 4 KB of `path` from the Stalwart container. Returns empty on error. */
+async function readPodFile(podName: string, path: string, kubeconfigPath?: string): Promise<string> {
   try {
     const { Exec, KubeConfig } = await import('@kubernetes/client-node');
     const kc = new KubeConfig();
-    kc.loadFromCluster();
+    if (kubeconfigPath) kc.loadFromFile(kubeconfigPath); else kc.loadFromCluster();
     const exec = new Exec(kc);
+    const { Writable } = await import('node:stream');
+    let stdout = '';
+    const stdoutSink = new Writable({ write(c, _e, cb) { stdout += c.toString('utf8'); cb(); } });
+    const errSink = new Writable({ write(_c, _e, cb) { cb(); } });
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('verify timed out')), 10_000);
-      void import('node:stream').then(({ Writable }) => {
-        const sink = new Writable({ write(_c, _e, cb) { cb(); } });
-        exec.exec(
-          MAIL_NAMESPACE, podName, 'stalwart',
-          ['test', '-f', '/var/lib/stalwart/data/CURRENT'],
-          sink, sink, null, false,
-          (status) => {
-            clearTimeout(timer);
-            if (status.status === 'Failure') {
-              reject(new Error(`CURRENT sentinel missing: ${status.message ?? ''}`));
-            } else {
-              resolve();
-            }
-          },
-        ).catch(reject);
-      });
+      const timer = setTimeout(() => reject(new Error('readPodFile timed out')), 5_000);
+      exec.exec(
+        MAIL_NAMESPACE, podName, 'stalwart',
+        ['head', '-c', '4096', path],
+        stdoutSink, errSink, null, false,
+        () => { clearTimeout(timer); resolve(); },
+      ).catch(reject);
     });
-    return true;
+    return stdout;
   } catch {
-    return false;
+    return '';
+  }
+}
+
+/** x:Domain/get for a set of IDs. Returns the set of IDs Stalwart confirmed exist. */
+async function jmapDomainsExist(
+  podName: string,
+  auth: string,
+  ids: ReadonlyArray<string>,
+  kubeconfigPath?: string,
+): Promise<{ kind: 'ok'; foundIds: Set<string> } | { kind: 'error'; message: string }> {
+  const body = {
+    using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
+    methodCalls: [['x:Domain/get', { accountId: 'singleton', ids, properties: ['id'] }, 'c0']],
+  };
+  const res = await execJmap(podName, auth, body, kubeconfigPath);
+  if (res.kind === 'error') return res;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const args = (res.body as any)?.methodResponses?.[0]?.[1] as { list?: ReadonlyArray<{ id?: string }> } | undefined;
+  const list = args?.list ?? [];
+  const foundIds = new Set(list.map((d) => d.id).filter((x): x is string => typeof x === 'string'));
+  return { kind: 'ok', foundIds };
+}
+
+/** Count individual principals in Stalwart (mailbox accounts). */
+async function jmapCountIndividualPrincipals(
+  podName: string,
+  auth: string,
+  kubeconfigPath?: string,
+): Promise<{ kind: 'ok'; count: number } | { kind: 'error'; message: string }> {
+  const body = {
+    using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:principals'],
+    methodCalls: [['Principal/query', { accountId: 'singleton', filter: { type: 'individual' } }, 'c0']],
+  };
+  const res = await execJmap(podName, auth, body, kubeconfigPath);
+  if (res.kind === 'error') return res;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const args = (res.body as any)?.methodResponses?.[0]?.[1] as { ids?: ReadonlyArray<unknown>; total?: number } | undefined;
+  if (typeof args?.total === 'number') return { kind: 'ok', count: args.total };
+  return { kind: 'ok', count: Array.isArray(args?.ids) ? args.ids.length : 0 };
+}
+
+async function execJmap(
+  podName: string,
+  auth: string,
+  body: unknown,
+  kubeconfigPath?: string,
+): Promise<{ kind: 'ok'; body: unknown } | { kind: 'error'; message: string }> {
+  try {
+    const { Exec, KubeConfig } = await import('@kubernetes/client-node');
+    const kc = new KubeConfig();
+    if (kubeconfigPath) kc.loadFromFile(kubeconfigPath); else kc.loadFromCluster();
+    const exec = new Exec(kc);
+    const { Writable } = await import('node:stream');
+    const payload = JSON.stringify(body);
+    const escaped = payload.replace(/'/g, `'\\''`);
+    const cmd = [
+      'sh', '-c',
+      `curl -sS -m 10 -H 'Authorization: ${auth}' -H 'Content-Type: application/json' -d '${escaped}' 'http://127.0.0.1:8080/jmap/'`,
+    ];
+    let stdout = '';
+    let stderr = '';
+    const stdoutSink = new Writable({ write(c, _e, cb) { stdout += c.toString('utf8'); cb(); } });
+    const stderrSink = new Writable({ write(c, _e, cb) { stderr += c.toString('utf8'); cb(); } });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('execJmap timed out')), 15_000);
+      exec.exec(
+        MAIL_NAMESPACE, podName, 'stalwart',
+        cmd, stdoutSink, stderrSink, null, false,
+        (status) => {
+          clearTimeout(timer);
+          if (status.status === 'Failure') {
+            reject(new Error(`exec failure: ${status.message ?? 'unknown'} stderr=${stderr.slice(0, 200)}`));
+          } else {
+            resolve();
+          }
+        },
+      ).catch(reject);
+    });
+    if (!stdout.trim()) return { kind: 'error', message: `empty JMAP response (stderr=${stderr.slice(0, 200)})` };
+    try {
+      return { kind: 'ok', body: JSON.parse(stdout) };
+    } catch (parseErr) {
+      return { kind: 'error', message: `JMAP response parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)} (body=${stdout.slice(0, 200)})` };
+    }
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
   }
 }
 
