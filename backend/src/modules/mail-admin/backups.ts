@@ -39,7 +39,12 @@ import type {
 const MAIL_NAMESPACE = 'mail';
 const LIST_JOB_PREFIX = 'mail-backup-list-';
 const LIST_JOB_TTL_SECONDS = 60;
-const LIST_TIMEOUT_MS = 20_000;
+// CIFS-backed restic repos can take 60-330s to LIST when the upstream
+// is under load (caught 2026-05-27 on staging — a single list went
+// from 20s to 5+ min with `unexpected EOF` retries between runs).
+// 180s covers the typical slow case; a truly broken target fails much
+// faster (DNS resolution / TCP reject inside <5s).
+const LIST_TIMEOUT_MS = 180_000;
 
 // ─────────────────────────────────────────────────────────────────────
 // List
@@ -106,13 +111,20 @@ export async function listMailBackups(deps: {
       targetName,
     };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const timedOut = msg.includes('did not complete within');
+    const reason = timedOut
+      ? `Restic list timed out after ${LIST_TIMEOUT_MS / 1000}s — usually means the off-site target ` +
+        `is reachable but slow (CIFS/SMB backends in particular can stall under load). The snapshot ` +
+        `CronJob may still be writing successfully. Retry in a minute; if it persists, check the ` +
+        `upstream filesystem health or rotate via /backups/mail → Restic password if you suspect drift.`
+      : `Restic list failed: ${msg}. Verify the mail BackupTarget is reachable + the ` +
+        `stalwart-snapshot-restic-repo Secret is current (rotate via /backups/mail → Restic password ` +
+        `if you suspect drift).`;
     return {
       snapshots: [],
       repoReachable: false,
-      reason:
-        `Restic list failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Verify the mail BackupTarget is reachable + the stalwart-snapshot-restic-repo Secret is current ` +
-        `(rotate via /backups/mail → Restic password if you suspect drift).`,
+      reason,
       targetName,
     };
   } finally {
