@@ -346,76 +346,75 @@ export async function applyMailSnapshotRetention(
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'mail'));
 
-  // No backup_schedules row → use safe legacy defaults (matches manifest).
+  // No backup_schedules row → use safe legacy defaults (matches
+  // snapshot-upload.sh fallback when ConfigMap is missing).
   const retentionDays = row?.retentionDays ?? 0;
   const retentionCount = row?.retentionCount ?? 48;
 
-  const { batch } = await loadK8sTenants(opts.kubeconfigPath);
+  const { core } = await loadK8sTenants(opts.kubeconfigPath);
 
-  // Patch ALL three env-bearing locations in the CronJob template. We
-  // replace the entire env array because patchStrategy on env is tricky:
-  // strategic-merge with `patchMergeKey: name` would merge by name, but
-  // some k8s versions don't preserve order, and we need stable ordering
-  // for the SecretRef-bearing entries.
+  // Write/update the mail-snapshot-retention ConfigMap.
   //
-  // The patch builds the full env list mirroring the manifest +
-  // overriding RETENTION_*. Other entries (PLATFORM_API_URL,
-  // PLATFORM_API_TOKEN) are preserved verbatim.
-  const newEnv = [
-    { name: 'RETENTION_DAYS', value: String(retentionDays) },
-    { name: 'RETENTION_COUNT', value: String(retentionCount) },
-    { name: 'PLATFORM_API_URL', value: 'http://platform-api.platform.svc.cluster.local:3000' },
-    {
-      name: 'PLATFORM_API_TOKEN',
-      valueFrom: {
-        secretKeyRef: {
-          name: 'platform-api-sa-token',
-          key: 'token',
-          optional: true,
-        },
+  // We OWN this ConfigMap exclusively. Flux's kustomize-controller is
+  // NOT given a manifest for it — deliberate (caught 2026-05-27: when
+  // the retention env was on the CronJob spec, Flux's kustomize Apply
+  // reverted operator-set values on its 5-10 min reconcile cycle).
+  // The CronJob template uses `envFrom: configMapRef` with optional:true
+  // so an absent ConfigMap falls back to snapshot-upload.sh's
+  // --keep-last 48 default.
+  const desiredBody = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: RETENTION_CONFIGMAP_NAME,
+      namespace: MAIL_NAMESPACE,
+      labels: {
+        'app.kubernetes.io/component': 'mail-snapshot-retention',
+        'app.kubernetes.io/part-of': 'hosting-platform',
+        'app.kubernetes.io/managed-by': 'platform-api',
       },
     },
-  ];
+    data: {
+      RETENTION_DAYS: String(retentionDays),
+      RETENTION_COUNT: String(retentionCount),
+    },
+  };
 
   try {
-    await batch.patchNamespacedCronJob(
-      {
-        namespace: MAIL_NAMESPACE,
-        name: SNAPSHOT_CRONJOB_NAME,
-        body: {
-          spec: {
-            jobTemplate: {
-              spec: {
-                template: {
-                  spec: {
-                    containers: [
-                      {
-                        name: 'upload',
-                        env: newEnv,
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        },
-      } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
-      STRATEGIC_MERGE_PATCH,
-    );
-    return { retentionDays, retentionCount, patched: true };
+    await core.readNamespacedConfigMap({
+      name: RETENTION_CONFIGMAP_NAME,
+      namespace: MAIL_NAMESPACE,
+    });
+    // Exists — replace.
+    await core.replaceNamespacedConfigMap({
+      name: RETENTION_CONFIGMAP_NAME,
+      namespace: MAIL_NAMESPACE,
+      body: desiredBody as unknown as object,
+    });
   } catch (err) {
     if (isNotFound(err)) {
-      // CronJob doesn't exist yet (fresh install / mail stack still
-      // bringing up). Not fatal — the manifest defaults will apply
-      // once the CronJob is created, and the next reconcile tick will
-      // override them with the real values.
-      return { retentionDays, retentionCount, patched: false };
+      try {
+        await core.createNamespacedConfigMap({
+          namespace: MAIL_NAMESPACE,
+          body: desiredBody as unknown as object,
+        });
+      } catch (createErr) {
+        throw new ApiError(
+          'SNAPSHOT_RETENTION_CONFIGMAP_CREATE_FAILED',
+          `Failed to create ${RETENTION_CONFIGMAP_NAME} ConfigMap: ${(createErr as Error).message ?? String(createErr)}`,
+          500,
+        );
+      }
+    } else {
+      throw new ApiError(
+        'SNAPSHOT_RETENTION_CONFIGMAP_UPDATE_FAILED',
+        `Failed to update ${RETENTION_CONFIGMAP_NAME} ConfigMap: ${(err as Error).message ?? String(err)}`,
+        500,
+      );
     }
-    throw new ApiError(
-      'SNAPSHOT_RETENTION_PATCH_FAILED',
-      `Failed to patch CronJob retention env: ${(err as Error).message ?? String(err)}`,
-      500,
-    );
   }
+
+  return { retentionDays, retentionCount, patched: true };
 }
+
+const RETENTION_CONFIGMAP_NAME = 'mail-snapshot-retention';
