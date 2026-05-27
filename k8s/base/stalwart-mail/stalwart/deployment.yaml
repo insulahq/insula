@@ -220,6 +220,18 @@ spec:
               # BusyBox and GNU coreutils — no `date -d` parsing.
               STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
               standby_age_ok=true
+              # Per-snapshot restore (2026-05-27): if the operator chose
+              # a specific snapshot via /backups/mail, FAST PATH MUST be
+              # skipped — standby data is the LIVE state, which is the
+              # opposite of what the operator asked for. Detect the
+              # annotation early and disable FAST PATH if present. The
+              # downstream restic step honours the annotation.
+              FAST_PATH_DISABLED_REASON=""
+              PRE_RESTORE_ID=$$(cat /podinfo/restore-snapshot-id 2>/dev/null || echo "")
+              if [ -n "$$PRE_RESTORE_ID" ]; then
+                FAST_PATH_DISABLED_REASON="per-snapshot restore requested (id='$$PRE_RESTORE_ID') — FAST PATH would copy live data instead of chosen snapshot"
+                standby_age_ok=false
+              fi
               if [ -f "$$STANDBY_COMPLETE" ]; then
                 sentinel_epoch=$$(cat "$$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
                 : $${sentinel_epoch:=0}
@@ -229,6 +241,9 @@ spec:
                   echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, falling through to restic"
                   standby_age_ok=false
                 fi
+              fi
+              if [ -n "$$FAST_PATH_DISABLED_REASON" ]; then
+                echo "restore-state: $$FAST_PATH_DISABLED_REASON"
               fi
               if [ "$$standby_age_ok" = "true" ] && [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY_STALWART" ] && [ -f "$$STANDBY_STALWART/CURRENT" ]; then
                 echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY_STALWART (complete marker present, age within limit)"
