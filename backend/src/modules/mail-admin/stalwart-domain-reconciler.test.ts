@@ -181,13 +181,15 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     expect(upd.defaultHostname).toBe('mail.example.net');
     expect(upd.defaultDomainId).toBe('d1');
 
-    // Domain/set body MUST NOT include subjectAlternativeNames.
+    // Domain/set body MUST include explicit subjectAlternativeNames
+    // with exactly {matched-domain-name: true} — see reconciler header
+    // for why (autoconfig SAN auto-derivation is operationally toxic).
     const dSet = calls.find((c) => c.method === 'x:Domain/set')!;
     const cm = ((dSet.args.update as Record<string, Record<string, unknown>>).d1
       .certificateManagement as Record<string, unknown>);
     expect(cm['@type']).toBe('Automatic');
     expect(cm.acmeProviderId).toBe('ap-new');
-    expect(cm).not.toHaveProperty('subjectAlternativeNames');
+    expect(cm.subjectAlternativeNames).toEqual({ 'mail.example.net': true });
   });
 
   it('fully-configured: reads only + AcmeRenewal fire', async () => {
@@ -195,7 +197,11 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       domains: [{
         id: 'd1',
         name: 'mail.example.net',
-        certificateManagement: { '@type': 'Automatic', acmeProviderId: 'ap1' },
+        certificateManagement: {
+          '@type': 'Automatic',
+          acmeProviderId: 'ap1',
+          subjectAlternativeNames: { 'mail.example.net': true },
+        },
       }],
       acmeProviders: [{ id: 'ap1' }],
       listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
@@ -220,7 +226,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     expect(setCalls.map((c) => c.method)).toEqual(['x:Task/set']);
   });
 
-  it('partial: Manual certMgmt → patches to Automatic without SAN map', async () => {
+  it('partial: Manual certMgmt → patches to Automatic with explicit SAN map', async () => {
     const { transport, calls } = buildJmapMock({
       domains: [{
         id: 'd1',
@@ -244,7 +250,41 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     const dSet = calls.find((c) => c.method === 'x:Domain/set')!;
     const cm = ((dSet.args.update as Record<string, Record<string, unknown>>).d1
       .certificateManagement as Record<string, unknown>);
-    expect(cm).not.toHaveProperty('subjectAlternativeNames');
+    expect(cm.subjectAlternativeNames).toEqual({ 'mail.example.net': true });
+  });
+
+  it('drift: Automatic + correct acmeProvider but EMPTY SAN map → re-patches with explicit SAN', async () => {
+    // Catches the legacy bootstrap output (subjectAlternativeNames:{})
+    // which silently enrols autoconfig./autodiscover./mta-sts. SANs in
+    // the next ACME order. The reconciler now treats empty SAN as drift.
+    const { transport, calls } = buildJmapMock({
+      domains: [{
+        id: 'd1',
+        name: 'mail.example.net',
+        certificateManagement: {
+          '@type': 'Automatic',
+          acmeProviderId: 'ap1',
+          subjectAlternativeNames: {},
+        },
+      }],
+      acmeProviders: [{ id: 'ap1' }],
+      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      defaultHostname: 'mail.example.net',
+      defaultDomainId: 'd1',
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.certManagementUpdated).toBe(true);
+    const dSet = calls.find((c) => c.method === 'x:Domain/set')!;
+    const cm = ((dSet.args.update as Record<string, Record<string, unknown>>).d1
+      .certificateManagement as Record<string, unknown>);
+    expect(cm.subjectAlternativeNames).toEqual({ 'mail.example.net': true });
   });
 
   it('partial: only missing listeners → creates only those', async () => {
