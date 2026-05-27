@@ -36,6 +36,21 @@
 #   route, returns the Traefik 404, or falls through to other listeners.
 #   We're not making the mail hostname into a general HTTP reverse proxy.
 #
+# Why only mail.${DOMAIN} (no autoconfig./autodiscover./mta-sts. SAN routes):
+#   Stalwart 0.16 by default would request a multi-SAN cert covering
+#   autoconfig./autodiscover./mta-sts./ua-auto-config.mail.${DOMAIN}
+#   — but LE validates EVERY SAN, and per-tenant SAN routes don't scale
+#   (one tenant domain = N tenant subdomains needing routes; mail
+#   server portability is also broken because moving the mail node IP
+#   requires re-pointing every subdomain in DNS before the next renewal
+#   or the cert silently fails). Instead the bootstrap pins
+#   Domain.certificateManagement.subjectAlternativeNames = {mail.<apex>}
+#   so the cert order contains only the primary hostname. Mail-client
+#   auto-config is provided by RFC 6186 SRV records (_imaps._tcp.,
+#   _submissions._tcp.) which Stalwart already publishes in the zone
+#   file Stalwart computes — same UX for Thunderbird/Apple Mail/iOS,
+#   no per-subdomain HTTPS endpoint needed.
+#
 # Why mail.${DOMAIN} hardcoded (and not a variable):
 #   The default mail-server hostname is mail.${DOMAIN}. The platform-
 #   cluster-config ConfigMap exposes ${DOMAIN} only; adding
