@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import DnsServers from '../pages/DnsServers';
+import DnsProvidersPage from '../pages/platform/DnsProvidersPage';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
@@ -39,26 +39,26 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('DnsServers page', () => {
+describe('DnsProvidersPage', () => {
   it('shows loading state while fetching', () => {
     mockApiFetch.mockReturnValue(new Promise(() => {}));
-    render(<DnsServers />, { wrapper: createWrapper() });
+    render(<DnsProvidersPage />, { wrapper: createWrapper() });
     const spinner = document.querySelector('.animate-spin');
     expect(spinner).toBeInTheDocument();
   });
 
   it('renders page heading and description', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<DnsServers />, { wrapper: createWrapper() });
+    render(<DnsProvidersPage />, { wrapper: createWrapper() });
     await waitFor(() => {
-      expect(screen.getByText('DNS Servers')).toBeInTheDocument();
+      expect(screen.getByText('DNS Providers')).toBeInTheDocument();
     });
     expect(screen.getByText('Manage DNS provider groups and servers for domain provisioning.')).toBeInTheDocument();
   });
 
   it('shows empty state when no servers exist', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<DnsServers />, { wrapper: createWrapper() });
+    render(<DnsProvidersPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByText('No DNS servers configured.')).toBeInTheDocument();
     });
@@ -66,7 +66,7 @@ describe('DnsServers page', () => {
 
   it('shows add server button', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<DnsServers />, { wrapper: createWrapper() });
+    render(<DnsProvidersPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-dns-server-button')).toBeInTheDocument();
     });
@@ -75,7 +75,7 @@ describe('DnsServers page', () => {
 
   it('shows add form when button is clicked', async () => {
     mockApiFetch.mockResolvedValue({ data: [] });
-    render(<DnsServers />, { wrapper: createWrapper() });
+    render(<DnsProvidersPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('add-dns-server-button')).toBeInTheDocument();
     });
@@ -104,7 +104,7 @@ describe('DnsServers page', () => {
         },
       ],
     });
-    render(<DnsServers />, { wrapper: createWrapper() });
+    render(<DnsProvidersPage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect(screen.getByTestId('dns-server-dns-1')).toBeInTheDocument();
     });
