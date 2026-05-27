@@ -1,0 +1,32 @@
+-- mail_migration_runs.cancel_requested — operator-initiated abort flag.
+--
+-- 2026-05-27: caught when an operator triggered a mail migration to a node
+-- that lacked the mail-standby label (no FAST PATH data staged) AND was
+-- unreachable from backup-rclone-shim (NetworkPolicy gate). The state
+-- machine's restic-restore fallback timed out per-deployment for 10min,
+-- with a 20-min total wait budget (2 deployments × 600s) and NO cancel
+-- path. Operator was stuck watching a 'running' DB row with zero ability
+-- to intervene.
+--
+-- This column lets a POST /admin/mail/migrate/:runId/cancel mark the run
+-- for abort. The state machine polls between each step (cheap — no extra
+-- queries during in-flight K8s waits, but the next step's `setStep` call
+-- already touches the row anyway, so we piggyback the check).
+--
+-- Semantics:
+--   cancel_requested=true + state='running'    → state machine SHOULD bail
+--                                                 at next checkpoint;
+--                                                 transitions state to
+--                                                 'failed' with
+--                                                 error_message='operator
+--                                                 cancelled at step X'.
+--   cancel_requested=true + state='failed'     → already aborted; the
+--                                                 operator's request was
+--                                                 fulfilled.
+--   cancel_requested=true + state='done'       → race: the run completed
+--                                                 the same instant cancel
+--                                                 was requested. UI shows
+--                                                 'done' (the cancel
+--                                                 didn't take effect).
+ALTER TABLE mail_migration_runs
+  ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NULL DEFAULT false;

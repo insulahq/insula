@@ -43,3 +43,32 @@ export function useStartMailMigration() {
     },
   });
 }
+
+interface CancelEnvelope {
+  readonly data: {
+    readonly runId: string;
+    readonly alreadyCancelled: boolean;
+    readonly terminalState: string | null;
+  };
+}
+
+/**
+ * Operator-triggered cancel. Marks the cancel_requested flag server-side;
+ * the state machine bails at the next checkpoint. For in-flight K8s waits
+ * (e.g. waitForReplicaCount, 10 min/deployment) the cancel takes effect
+ * when the wait completes/times out. UI should keep polling the status
+ * endpoint after triggering cancel — the run flips to state='failed' with
+ * error_message='cancelled by operator at step X' on success.
+ */
+export function useCancelMailMigration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) =>
+      apiFetch<CancelEnvelope>(`/api/v1/admin/mail/migrate/${runId}/cancel`, {
+        method: 'POST',
+      }),
+    onSuccess: (_, runId) => {
+      void qc.invalidateQueries({ queryKey: ['mail', 'migration', runId] });
+    },
+  });
+}

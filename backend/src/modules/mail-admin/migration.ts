@@ -256,7 +256,10 @@ export async function startMailMigration(
 
   // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId
   void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, undefined, taskId).catch(async (err) => {
-    const errMsg = err instanceof Error ? err.message : String(err);
+    const isCancelled = err instanceof MigrationCancelledError;
+    const errMsg = isCancelled
+      ? `cancelled by operator at step '${err.cancelledAtStep}'`
+      : (err instanceof Error ? err.message : String(err));
     await db.execute(sql`
       UPDATE mail_migration_runs
       SET state = 'failed', error_message = ${errMsg}, finished_at = now()
@@ -265,12 +268,66 @@ export async function startMailMigration(
     if (taskId) {
       try {
         const { finish: finishTask } = await import('../tasks/service.js');
-        await finishTask(db, taskId, { status: 'failed', error: errMsg });
+        await finishTask(db, taskId, {
+          status: isCancelled ? 'cancelled' : 'failed',
+          error: errMsg,
+        });
       } catch { /* best-effort */ }
     }
   });
 
   return { runId, taskId };
+}
+
+/**
+ * Operator-triggered cancellation. Marks the run's cancel_requested
+ * flag; the running state machine sees the flag at the next setStep
+ * call and exits with MigrationCancelledError → the top-level catch
+ * stamps the DB as 'failed' with an operator-friendly reason.
+ *
+ * Limitations (2026-05-27 baseline):
+ *   - Cancel does NOT interrupt in-flight K8s waits. If the state
+ *     machine is sitting in a 10-min waitForReplicaCount, the cancel
+ *     takes effect only after that wait completes/times out. Future
+ *     work: AbortSignal plumbing into the wait helpers so cancel is
+ *     immediate even during waits.
+ *   - Cancel does NOT roll back already-completed steps (PVC swap,
+ *     scale-down). Operator must run a follow-up migration to restore
+ *     placement if needed.
+ *   - Cancel is idempotent: a 2nd cancel on the same run is a no-op.
+ */
+export async function cancelMailMigration(
+  runId: string,
+  deps: { db: Database; logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void } },
+): Promise<{ runId: string; alreadyCancelled: boolean; terminalState: string | null }> {
+  const { db } = deps;
+  const log = deps.logger ?? { warn: console.warn, info: console.info };
+
+  const before = await db.execute<{ state: string; cancel_requested: boolean }>(sql`
+    SELECT state, cancel_requested FROM mail_migration_runs WHERE id = ${runId}
+  `);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const beforeRows = (before as any).rows ?? (before as unknown as ReadonlyArray<{ state: string; cancel_requested: boolean }>);
+  const beforeRow = beforeRows?.[0];
+  if (!beforeRow) {
+    throw new ApiError('MAIL_MIGRATION_NOT_FOUND', `No migration run with id ${runId}`, 404);
+  }
+
+  // Already terminal — nothing to cancel.
+  if (beforeRow.state === 'done' || beforeRow.state === 'failed') {
+    return { runId, alreadyCancelled: false, terminalState: beforeRow.state };
+  }
+
+  if (beforeRow.cancel_requested) {
+    log.info(`[migration ${runId}] cancel already requested — no-op`);
+    return { runId, alreadyCancelled: true, terminalState: null };
+  }
+
+  await db.execute(sql`
+    UPDATE mail_migration_runs SET cancel_requested = true WHERE id = ${runId}
+  `);
+  log.warn(`[migration ${runId}] cancel requested — state machine will bail at next checkpoint`);
+  return { runId, alreadyCancelled: false, terminalState: null };
 }
 
 interface PlacementRow {
@@ -452,6 +509,37 @@ const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
   done: { label: 'Migration complete', pct: 100 },
 };
 
+/**
+ * Sentinel thrown by setStep when the operator has POSTed
+ * /admin/mail/migrate/:runId/cancel. State machine top-level catch
+ * recognises this class and marks the run failed with the cancel reason
+ * instead of treating it as a state-machine bug.
+ */
+export class MigrationCancelledError extends Error {
+  readonly cancelledAtStep: string;
+  constructor(step: string) {
+    super(`operator cancelled migration at step '${step}'`);
+    this.name = 'MigrationCancelledError';
+    this.cancelledAtStep = step;
+  }
+}
+
+/** Read the cancel_requested flag for a run. Returns false on read error. */
+async function isCancelRequested(db: Database, runId: string): Promise<boolean> {
+  try {
+    const res = await db.execute<{ cancel_requested: boolean }>(sql`
+      SELECT cancel_requested FROM mail_migration_runs WHERE id = ${runId}
+    `);
+    // drizzle's execute() shape varies by driver; tolerate both.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = (res as any).rows ?? (res as unknown as ReadonlyArray<{ cancel_requested: boolean }>);
+    const first = rows?.[0];
+    return first?.cancel_requested === true;
+  } catch {
+    return false;
+  }
+}
+
 async function setStep(
   db: Database,
   runId: string,
@@ -459,6 +547,13 @@ async function setStep(
   state = 'running',
   taskId?: string | null,
 ): Promise<void> {
+  // Cancel checkpoint — every step transition is a natural place to bail.
+  // The state machine never moves past a setStep call without checking,
+  // so an operator's cancel takes effect within ~1 step (not 10-20 min).
+  if (await isCancelRequested(db, runId)) {
+    throw new MigrationCancelledError(step);
+  }
+
   await db.execute(sql`
     UPDATE mail_migration_runs
     SET current_step = ${step}, state = ${state}
@@ -518,14 +613,48 @@ async function runMigrationStateMachine(
   const log = deps.logger ?? { warn: console.warn, info: console.info };
 
   // Step 1: Preflight — validate target node is schedulable + has disk
+  //         AND has a viable restore path BEFORE we delete the source PVC.
   await setStep(db, runId, 'preflight', 'running', taskId);
   const usedBytes = await getMailPvcRequestedBytes(core);
   const requiredBytes = Math.ceil(usedBytes * DISK_HEADROOM_RATIO);
-  // Real free-disk probe would spawn a Job on targetNode. For now we
-  // use the PVC's requested size as a conservative upper bound; if the
-  // target node lacks the disk, the local-path provisioner will fail
-  // PV creation and the migration aborts at the "swapping-pvc" step.
   log.info(`[migration ${runId}] preflight: PVC requested=${usedBytes} bytes, target headroom=${requiredBytes}`);
+
+  // CRITICAL preflight (2026-05-27): before the destructive PVC swap,
+  // verify the target node has a viable RESTORE PATH. Without this
+  // check, an operator can move mail to a node that has neither FAST
+  // PATH standby data NOR working restic reachability — Stalwart's
+  // restore-state init container then loops on restic retries until
+  // the per-deployment 10-min waitForReplicaCount timeout fires (×2
+  // deployments = 20 min). Operator sees 20 min of 'running' with no
+  // diagnostic and no cancel.
+  //
+  // We accept the migration only if AT LEAST ONE of these holds:
+  //   (a) target node is labelled platform.phoenix-host.net/mail-standby=true
+  //       AND has a fresh .standby-complete sentinel (FAST PATH ready)
+  //   (b) backup-rclone-shim Service has ≥1 Endpoint reachable from
+  //       the target node (restic fallback will work)
+  //
+  // (a) is checked via node labels + DaemonSet readiness — if the
+  // standby DaemonSet pod on target is Ready, the standby data has
+  // been staged (or is being staged on first run).
+  // (b) is checked via Endpoint existence — we don't run a Pod on
+  // target to TCP-probe the shim (would add ~30s to every migration),
+  // but Endpoint count is the operator's leading indicator.
+  try {
+    const preflight = await validateTargetRestoreReadiness(core, targetNode, log);
+    if (!preflight.ok) {
+      await failRun(db, runId, preflight.reason, taskId);
+      return;
+    }
+    log.info(`[migration ${runId}] preflight passed: ${preflight.path}`);
+  } catch (err) {
+    await failRun(
+      db, runId,
+      `preflight check failed unexpectedly — aborting before destructive PVC swap: ${err instanceof Error ? err.message : String(err)}`,
+      taskId,
+    );
+    return;
+  }
 
   // Step 2: Trigger a fresh snapshot (skip for DR — source is dead)
   if (!opts.skipFreshSnapshot) {
@@ -1393,4 +1522,108 @@ async function execJmap(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preflight: validate the target node has a viable RESTORE PATH before the
+// destructive PVC swap. See migration.ts:state-machine step 1 header for
+// the operational reasoning.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MAIL_STANDBY_LABEL = 'platform.phoenix-host.net/mail-standby';
+const RCLONE_SHIM_NAMESPACE = 'platform';
+const RCLONE_SHIM_SERVICE = 'backup-rclone-shim';
+
+interface TargetReadinessResult {
+  readonly ok: boolean;
+  /** Which restore path was selected. */
+  readonly path?: 'fast_path_standby' | 'restic_shim';
+  /** Operator-actionable reason on failure. */
+  readonly reason: string;
+}
+
+async function validateTargetRestoreReadiness(
+  core: CoreV1Api,
+  targetNode: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<TargetReadinessResult> {
+  // Check (a): is the target node labelled for standby data staging?
+  // If yes, the standby DaemonSet should be running on it and FAST PATH
+  // data will be present (or will be soon — the first pull after a
+  // label flip takes one cadence interval = ~5 min).
+  let nodeLabelled = false;
+  try {
+    const node = await core.readNode({ name: targetNode }) as {
+      metadata?: { labels?: Record<string, string> };
+    };
+    nodeLabelled = node.metadata?.labels?.[MAIL_STANDBY_LABEL] === 'true';
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        `Could not read target node '${targetNode}' for label check: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Verify the node exists and is reachable via the cluster API before retrying.`,
+    };
+  }
+
+  if (nodeLabelled) {
+    // Standby-labelled target → FAST PATH ready (or imminent). Accept.
+    // We DON'T verify the .standby-complete sentinel here because we
+    // don't run a Pod on the target to inspect its hostPath — but the
+    // init container will fall through to restic if the sentinel is
+    // missing/stale, so a labelled-but-data-missing target is recoverable.
+    log.info(`[preflight] target node ${targetNode} is labelled ${MAIL_STANDBY_LABEL}=true → FAST PATH ready`);
+    return {
+      ok: true,
+      path: 'fast_path_standby',
+      reason: '',
+    };
+  }
+
+  // Check (b): backup-rclone-shim Service has ≥1 Endpoint? (restic fallback path)
+  let shimEndpointCount = 0;
+  try {
+    const ep = await core.readNamespacedEndpoints({
+      name: RCLONE_SHIM_SERVICE,
+      namespace: RCLONE_SHIM_NAMESPACE,
+    }) as { subsets?: ReadonlyArray<{ addresses?: ReadonlyArray<unknown> }> };
+    shimEndpointCount = (ep.subsets ?? []).reduce(
+      (sum, s) => sum + (s.addresses?.length ?? 0),
+      0,
+    );
+  } catch (err) {
+    log.warn(
+      `[preflight] reading backup-rclone-shim endpoints failed (treating as 0): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (shimEndpointCount === 0) {
+    return {
+      ok: false,
+      reason:
+        `Target node '${targetNode}' is NOT labelled '${MAIL_STANDBY_LABEL}=true' (no FAST PATH standby data staged) ` +
+        `AND backup-rclone-shim has no Endpoints (restic fallback unreachable). Either ` +
+        `(a) label the target node 'kubectl label node ${targetNode} ${MAIL_STANDBY_LABEL}=true' AND wait ~5 min ` +
+        `for the standby DaemonSet to stage data, OR ` +
+        `(b) fix the backup-rclone-shim Deployment in the platform namespace so it has Ready pods. ` +
+        `Migration refused to avoid silent data loss during destructive PVC swap.`,
+    };
+  }
+
+  // Restic shim has endpoints, but reachability from the SPECIFIC target
+  // node depends on CNI/NetworkPolicy state — a server-role node usually
+  // reaches the shim fine, a worker-role node with ingress-mode=local may
+  // be blocked by NetworkPolicy. Warn the operator but don't block —
+  // a savvy operator may have already verified reachability out-of-band.
+  log.info(
+    `[preflight] target node ${targetNode} is NOT mail-standby-labelled; ` +
+    `restic fallback path will be used (shim has ${shimEndpointCount} endpoints). ` +
+    `If target is a worker-role node, verify NetworkPolicy allows egress to ${RCLONE_SHIM_SERVICE}.${RCLONE_SHIM_NAMESPACE} ` +
+    `before relying on this migration.`,
+  );
+  return {
+    ok: true,
+    path: 'restic_shim',
+    reason: '',
+  };
 }
