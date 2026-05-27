@@ -145,7 +145,11 @@ beforeEach(() => {
 });
 
 describe('mail-admin stalwart-domain-reconciler', () => {
-  it('no-ops when mail_server_hostname is unset', async () => {
+  it('no-ops when BOTH mail_server_hostname AND ingress_base_domain are unset', async () => {
+    // Pre-2026-05-27: this test only checked mail_server_hostname.
+    // The fix made the reconciler use the same resolution chain as the
+    // admin UI (mail.<ingress_base_domain> fallback) — so the no-op
+    // path now only fires when neither source is available.
     const { transport, calls } = buildJmapMock({});
     const result = await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -157,7 +161,42 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     });
     expect(calls).toEqual([]);
     expect(result.noOp).toBe(true);
-    expect(result.notes[0]).toMatch(/mail_server_hostname is not set/);
+    expect(result.notes[0]).toMatch(/Mail hostname could not be resolved/);
+  });
+
+  it('uses mail.<ingress_base_domain> when mail_server_hostname row is unset (matches admin UI fallback)', async () => {
+    // Bootstrap.sh wires Stalwart's STALWART_HOSTNAME via the configure
+    // pod's Secret but does NOT write platform_settings.mail_server_hostname.
+    // Pre-fix the reconciler refused to act in this state — the operator
+    // saw "mail hostname not set" while the admin UI happily showed
+    // mail.<apex>. Post-fix the reconciler resolves the same value.
+    const { transport, calls } = buildJmapMock({
+      domains: [{
+        id: 'd-host',
+        name: 'mail.example.net',
+        certificateManagement: {
+          '@type': 'Automatic',
+          acmeProviderId: 'ap1',
+          subjectAlternativeNames: { 'mail.example.net': true },
+        },
+      }],
+      acmeProviders: [{ id: 'ap1' }],
+      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      defaultHostname: 'mail.example.net',
+      defaultDomainId: 'd-host',
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub({ mailHostname: null, ingressBaseDomain: 'example.net' }) as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.mailHostname).toBe('mail.example.net');
+    expect(result.matchedDomain?.id).toBe('d-host');
+    expect(result.noOp).toBe(true); // fully configured → only AcmeRenewal fires
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it('AUTO-CREATES the cert-anchor Domain when missing (self-heals lost mail-hostname Domain)', async () => {
