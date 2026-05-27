@@ -86,15 +86,17 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
           {!result && (
             <>
               <p className="text-sm text-gray-700 dark:text-gray-300">
-                Mirrors bootstrap&apos;s mail bring-up: finds the
+                Mirrors bootstrap&apos;s mail bring-up: ensures the
                 Stalwart Domain whose name EXACTLY equals the mail
-                hostname (operator adds it via Email → Domains &
-                Relays — mailboxes optional), syncs{' '}
+                hostname exists (auto-creates it if missing — this is
+                platform-owned cert-anchor infra, not a tenant
+                decision), syncs{' '}
                 <code className="font-mono">SystemSettings.defaultHostname</code>{' '}
                 + <code className="font-mono">defaultDomainId</code>,
                 ensures the Let&apos;s Encrypt AcmeProvider, sets
-                that Domain&apos;s certificateManagement to Automatic,
-                ensures listeners (<code className="font-mono">http-acme/80</code>,{' '}
+                that Domain&apos;s certificateManagement to Automatic
+                with the SAN pinned to the mail hostname, ensures
+                listeners (<code className="font-mono">http-acme/80</code>,{' '}
                 <code className="font-mono">submission/587</code>,{' '}
                 <code className="font-mono">imap/143</code>), and
                 fires an ACME renewal task. Stalwart&apos;s built-in
@@ -131,8 +133,8 @@ export default function StalwartReprovisionModal({ onClose }: Props) {
                 <ul className="space-y-0.5 ml-4 list-disc text-gray-600 dark:text-gray-400">
                   <li>Restart the Stalwart pod or interrupt running connections</li>
                   <li>Publish or modify any DNS records (MX/SPF/DKIM/DMARC)</li>
-                  <li>CREATE any Stalwart Domain entry — operator must add the mail hostname via Email → Domains & Relays first (mailboxes optional)</li>
-                  <li>Touch other Stalwart Domains, AcmeProviders, or listeners</li>
+                  <li>Touch tenant email domains, their cert/DKIM management, or any operator-customised listeners</li>
+                  <li>Touch other AcmeProviders</li>
                 </ul>
               </div>
 
@@ -195,11 +197,13 @@ function ReprovisionResultView({
         : '—',
     },
     {
-      label: 'Matched Stalwart Domain',
-      done: false,
+      label: 'Cert-anchor Stalwart Domain',
+      done: result.certAnchorDomainCreated,
       value: result.matchedDomain
-        ? `${result.matchedDomain.name} (id=${result.matchedDomain.id})`
-        : '— not found, add via Email → Domains & Relays',
+        ? (result.certAnchorDomainCreated
+            ? `Auto-created → ${result.matchedDomain.name} (id=${result.matchedDomain.id})`
+            : `Already present → ${result.matchedDomain.name} (id=${result.matchedDomain.id})`)
+        : '— could not create (see notes)',
     },
     {
       label: 'ACME provider',
