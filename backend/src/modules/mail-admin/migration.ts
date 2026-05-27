@@ -146,6 +146,7 @@ const INTENT_TRIGGERED_BY: Record<MigrationIntent['kind'], string> = {
 export async function startMailMigration(
   intent: MigrationIntent,
   deps: MigrationDeps,
+  opts: MigrationOptions = {},
 ): Promise<{ runId: string; taskId: string | null }> {
   const { db, core } = deps;
 
@@ -255,7 +256,7 @@ export async function startMailMigration(
   }
 
   // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId
-  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, undefined, taskId).catch(async (err) => {
+  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, opts, taskId).catch(async (err) => {
     const isCancelled = err instanceof MigrationCancelledError;
     const errMsg = isCancelled
       ? `cancelled by operator at step '${err.cancelledAtStep}'`
@@ -491,7 +492,13 @@ export async function triggerRestoreBasedFailover(
 
 // ── State machine internals ───────────────────────────────────────────────────
 
-interface MigrationOptions {
+export interface MigrationOptions {
+  /**
+   * Skip step 2 (pre-migration restic backup). Used by:
+   *   - DR caller — source is dead, can't snapshot anyway.
+   *   - Mail backup-restore flow — pointless to backup data we're
+   *     about to overwrite with an older snapshot.
+   */
   readonly skipFreshSnapshot?: boolean;
 }
 
@@ -501,7 +508,12 @@ interface MigrationOptions {
  */
 const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
   preflight: { label: 'Preflight checks', pct: 5 },
-  snapshotting: { label: 'Triggering fresh snapshot', pct: 15 },
+  // 2026-05-27: relabelled 'Triggering fresh snapshot' → 'Taking pre-
+  // migration mail backup'. This step writes a fresh restic backup to
+  // the offsite mail BackupTarget — a safety net for the operator,
+  // NOT a prerequisite (the actual restore path is rsync from a
+  // standby node). SKIPPED when no mail BackupTarget is configured.
+  snapshotting: { label: 'Taking pre-migration mail backup (offsite)', pct: 15 },
   'scaling-down': { label: 'Scaling Stalwart to 0', pct: 30 },
   'swapping-pvc': { label: 'Swapping PVC to target node', pct: 50 },
   'scaling-up': { label: 'Restoring DataStore on target node', pct: 80 },
@@ -656,17 +668,41 @@ async function runMigrationStateMachine(
     return;
   }
 
-  // Step 2: Trigger a fresh snapshot (skip for DR — source is dead)
+  // Step 2: Take pre-migration mail backup (offsite restic backup).
+  //
+  // SAFETY NET, NOT A PREREQUISITE. The actual migration restore path
+  // is rsync from a standby-labelled node — restic is only the
+  // cold-DR fallback. This step writes a fresh restic snapshot so the
+  // operator has a known-good restore point if the migration corrupts
+  // data. We SKIP it when:
+  //   (a) opts.skipFreshSnapshot=true (DR caller — source is dead, can't
+  //       snapshot anyway).
+  //   (b) No mail BackupTarget is configured — running the snapshot Job
+  //       would just fail with missing RESTIC_REPOSITORY. Pre-fix this
+  //       was happening silently for ~5 min until the wait timed out.
+  //
+  // The snapshot Pod inherits node affinity from the CronJob template
+  // (preferred-during-scheduling pod-affinity to stalwart-mail), so it
+  // runs on the ACTIVE node where the data actually lives.
   if (!opts.skipFreshSnapshot) {
-    await setStep(db, runId, 'snapshotting', 'running', taskId);
-    try {
-      await triggerMailSnapshot({ kubeconfigPath });
-      // Wait until the snapshot completes. The snapshot CronJob runs
-      // every 2 minutes; an on-demand trigger usually completes in
-      // 20-60s for small DataStores. We poll for up to 5 min.
-      await waitForFreshSnapshot(deps, 300);
-    } catch (snapErr) {
-      log.warn('[migration] fresh snapshot failed; will fall back to latest CronJob snapshot:', snapErr);
+    const hasMailBackupTarget = await checkMailBackupTargetConfigured(db);
+    if (!hasMailBackupTarget) {
+      log.info(
+        `[migration ${runId}] no mail BackupTarget configured — skipping pre-migration backup. ` +
+        `Migration restore path (rsync from standby) does not need restic; configure a mail ` +
+        `BackupTarget at /backups/mail if you want a pre-migration safety net.`,
+      );
+    } else {
+      await setStep(db, runId, 'snapshotting', 'running', taskId);
+      try {
+        await triggerMailSnapshot({ kubeconfigPath, db });
+        // Wait until the snapshot completes. The snapshot CronJob runs
+        // every 2 minutes; an on-demand trigger usually completes in
+        // 20-60s for small DataStores. We poll for up to 5 min.
+        await waitForFreshSnapshot(deps, 300);
+      } catch (snapErr) {
+        log.warn('[migration] fresh snapshot failed; will proceed with the latest CronJob snapshot:', snapErr);
+      }
     }
   }
 
@@ -1626,4 +1662,28 @@ async function validateTargetRestoreReadiness(
     path: 'restic_shim',
     reason: '',
   };
+}
+
+/**
+ * True iff the operator has configured a mail BackupTarget via
+ * /backups/mail → Targets. When false, the pre-migration restic backup
+ * step (state-machine step 2) is skipped — running it would just fail
+ * with missing RESTIC_REPOSITORY and waste 5 min on the wait.
+ */
+async function checkMailBackupTargetConfigured(db: Database): Promise<boolean> {
+  try {
+    const { backupTargetAssignments } = await import('../../db/schema.js');
+    const { eq } = await import('drizzle-orm');
+    const rows = await db
+      .select({ targetId: backupTargetAssignments.targetId })
+      .from(backupTargetAssignments)
+      .where(eq(backupTargetAssignments.backupClass, 'mail'))
+      .limit(1);
+    return rows.length > 0;
+  } catch {
+    // On DB error, assume target IS configured — better to attempt the
+    // backup and let the snapshot Pod surface the real failure than to
+    // silently skip a step the operator may need.
+    return true;
+  }
 }

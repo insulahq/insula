@@ -1547,6 +1547,84 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ─── Mail offsite backups (restic snapshots) ──────────────────────
+  // GET  /admin/mail/backups                  — list snapshots from restic
+  // POST /admin/mail/backups/:id/restore      — restore selected snapshot
+  app.get(
+    '/admin/mail/backups',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const { listMailBackups } = await import('./backups.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const cfg = app.config as Record<string, unknown>;
+      const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      try {
+        const result = await listMailBackups({
+          db: app.db,
+          core: k8s.core,
+          batch: k8s.batch,
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: backup list failed');
+        throw new ApiError('MAIL_BACKUP_LIST_FAILED', 'Could not list mail backups — see server logs', 500);
+      }
+    },
+  );
+
+  app.post(
+    '/admin/mail/backups/:shortId/restore',
+    { preHandler: requireRole('super_admin') },
+    async (req: { params: unknown; body: unknown; user?: { sub?: string } }) => {
+      const { mailBackupRestoreRequestSchema } = await import('@k8s-hosting/api-contracts');
+      const params = req.params as { shortId?: string };
+      const shortId = params.shortId ?? '';
+      if (!/^[0-9a-f]{8,64}$/.test(shortId)) {
+        throw new ApiError('VALIDATION_ERROR', 'shortId must be 8-64 hex chars', 400);
+      }
+      const parsed = mailBackupRestoreRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'invalid restore body', 400);
+      }
+      if (parsed.data.confirmShortId !== shortId) {
+        throw new ApiError(
+          'CONFIRM_MISMATCH',
+          `confirmShortId must match the snapshot's shortId (${shortId})`,
+          400,
+        );
+      }
+      const userId = req.user?.sub ?? 'unknown';
+      app.log.warn(
+        { userId, shortId, targetNode: parsed.data.targetNode },
+        'mail-admin: operator-triggered backup restore (destructive)',
+      );
+
+      const { startMailBackupRestore } = await import('./backups.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const cfg = app.config as Record<string, unknown>;
+      const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      try {
+        const result = await startMailBackupRestore({
+          db: app.db,
+          core: k8s.core,
+          batch: k8s.batch,
+          apps: k8s.apps,
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+          shortId,
+          targetNode: parsed.data.targetNode,
+          userId: req.user?.sub ?? null,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId, shortId }, 'mail-admin: backup restore start failed');
+        throw new ApiError('MAIL_BACKUP_RESTORE_FAILED', 'Could not start backup restore — see server logs', 500);
+      }
+    },
+  );
+
   // ─── Mail port exposure mode ──────────────────────────────────────
   // GET reads current mode + haproxy DaemonSet status.
   // PATCH toggles between thisNodeOnly and allServerNodes.

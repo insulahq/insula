@@ -9,11 +9,15 @@ import type { MailMigrationStatusResponse } from '@k8s-hosting/api-contracts';
 // 'scaling-up' — the data path is now snapshot+restore on a stable PVC name.
 const STEP_LABELS: Record<string, string> = {
   preflight: 'Preflight checks',
-  snapshotting: 'Triggering fresh snapshot',
+  // 'Mail backup' (offsite restic) — the user-facing vocab. Internal
+  // step name 'snapshotting' kept for DB/API stability. Skipped when
+  // no mail BackupTarget is configured; visible step jumps preflight
+  // → scaling-down in that case.
+  snapshotting: 'Taking pre-migration mail backup',
   'scaling-down': 'Scaling Stalwart to 0',
   'swapping-pvc': 'Swapping PVC to target node',
-  'scaling-up': 'Scaling Stalwart up (restoring data)',
-  verifying: 'Verifying RocksDB sentinel',
+  'scaling-up': 'Scaling Stalwart up (restoring data via rsync FAST PATH)',
+  verifying: 'Verifying restore content',
   done: 'Complete',
   failed: 'Failed',
   'rolled-back': 'Rolled back',
