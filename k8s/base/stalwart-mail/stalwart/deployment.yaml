@@ -176,7 +176,22 @@ spec:
               set -e
               SENTINEL=/var/lib/stalwart/data/CURRENT
               ALLOW_RESTORE=$$(cat /podinfo/allow-restore 2>/dev/null || echo "false")
-              if [ -f "$$SENTINEL" ]; then
+              # Per-snapshot restore (2026-05-27): read annotation FIRST so we
+              # can override both the SENTINEL skip AND the FAST PATH branch.
+              # If set, the operator typed-to-confirm a destructive rollback —
+              # we must wipe any pre-existing data and force the restic path
+              # with the chosen id. The annotation has been observed to leak
+              # data into the PVC via kubelet subPath auto-create + Bulwark's
+              # init-container side-effects on a shared PVC, so the SENTINEL
+              # check would otherwise silently bypass per-snapshot restore.
+              PRE_RESTORE_ID=$$(cat /podinfo/restore-snapshot-id 2>/dev/null || echo "")
+              if [ -n "$$PRE_RESTORE_ID" ]; then
+                echo "restore-state: per-snapshot restore requested (id='$$PRE_RESTORE_ID') — wiping any existing DataStore before restic"
+                # Remove every file + hidden file under the mount, but NOT
+                # the mount itself (rm -rf /var/lib/stalwart/data would fail
+                # on the mount point).
+                find /var/lib/stalwart/data -mindepth 1 -delete 2>&1 || true
+              elif [ -f "$$SENTINEL" ]; then
                 echo "restore-state: DataStore exists — skipping restore"
                 exit 0
               fi
