@@ -50,23 +50,57 @@ import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
 /**
- * Read `mail_server_hostname` DIRECTLY from platform_settings — NOT
- * via webmail-settings.getMailServerHostname which has a fallback
- * chain (env STALWART_HOSTNAME → mail.<ingress_base_domain> →
- * mail.example.com). Reconciler intent is "only act when the
- * operator has explicitly chosen a mail hostname", because the
- * fallback paths can derive the wrong apex on clusters whose
- * platform-apex isn't intended to be a mail-serving domain
- * (e.g. an infrastructure-only apex with tenant-domain mail
- * served separately).
+ * Resolve the mail hostname the reconciler should operate on, matching
+ * EXACTLY what the admin UI (`getWebmailSettings`) displays — so an
+ * operator who sees `mail.<apex>` in Settings → Email → Server and
+ * clicks "Re-provision Stalwart" gets the reconciler acting on that
+ * same value, not a "hostname not set" no-op.
+ *
+ * Resolution order (mirrors webmail-settings/service.ts:defaultMailHostname):
+ *   1. platform_settings.mail_server_hostname (operator explicit value)
+ *   2. env STALWART_HOSTNAME
+ *   3. env MAIL_SERVER_HOSTNAME
+ *   4. mail.<ingress_base_domain> (the documented default for a
+ *      platform-as-mail-server install — what every Plesk-style
+ *      deployment uses)
+ *
+ * The pre-2026-05-27 implementation read ONLY platform_settings and
+ * returned null when unset. That misfired: bootstrap.sh's
+ * configure_stalwart_full hard-codes STALWART_HOSTNAME in the
+ * configure-pod Secret but does NOT write the platform_settings row,
+ * so a freshly bootstrapped cluster had a working Stalwart but a
+ * reconciler stuck at "mail_server_hostname is not set". The admin
+ * UI hid the bug by always rendering the computed default.
+ *
+ * Guard against the last-resort fallback (`mail.example.com`): if
+ * `ingress_base_domain` is also unset, the platform isn't fully
+ * bootstrapped and the reconciler MUST refuse to act — otherwise it
+ * would try to provision Stalwart for the literal example.com.
  */
 async function getExplicitMailHostname(db: Database): Promise<string | null> {
+  // 1. Operator-explicit value (admin UI write).
   const [row] = await db
     .select()
     .from(platformSettings)
     .where(eq(platformSettings.key, 'mail_server_hostname'));
-  const v = row?.value?.trim();
-  return v && v.length > 0 ? v : null;
+  const stored = row?.value?.trim();
+  if (stored && stored.length > 0) return stored;
+
+  // 2 + 3. Env overrides.
+  const envStalwart = process.env.STALWART_HOSTNAME?.trim();
+  if (envStalwart && envStalwart.length > 0) return envStalwart;
+  const envMail = process.env.MAIL_SERVER_HOSTNAME?.trim();
+  if (envMail && envMail.length > 0) return envMail;
+
+  // 4. Default: mail.<ingress_base_domain>. Guards: refuse to act when
+  //    apex is unset (would yield bogus mail.example.com fallback).
+  const [apexRow] = await db
+    .select()
+    .from(platformSettings)
+    .where(eq(platformSettings.key, 'ingress_base_domain'));
+  const apex = apexRow?.value?.trim().replace(/\.+$/, '').toLowerCase();
+  if (!apex || apex.length === 0) return null;
+  return `mail.${apex}`;
 }
 
 /**
@@ -255,7 +289,7 @@ export async function runStalwartDomainReconcilerTick(
   // 1. Operator-set mail hostname (no fallback chain).
   const mailHostname = await getExplicitMailHostname(deps.db);
   if (!mailHostname) {
-    return empty({}, 'mail_server_hostname is not set — choose it via Admin UI → Email → Settings → Server (SMTP/IMAP hostname)');
+    return empty({}, 'Mail hostname could not be resolved — both platform_settings.mail_server_hostname and platform_settings.ingress_base_domain are unset. Set the apex via Admin UI → Settings → Platform URLs (Ingress Base Domain), or override the mail hostname directly via Admin UI → Email → Settings → Server.');
   }
   const trimmedHost = mailHostname.toLowerCase();
 
