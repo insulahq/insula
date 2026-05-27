@@ -81,11 +81,15 @@ function RestoreDialog({
   const [targetNode, setTargetNode] = useState(
     defaultTargetNode ?? availableNodes[0] ?? '',
   );
-  const [confirmShortId, setConfirmShortId] = useState('');
+  // Operator types the readable 8-char short id (`snapshot.id`); the
+  // backend's mailBackupRestoreRequestSchema requires confirmShortId to
+  // equal the full 64-char id (`snapshot.shortId`), so we re-expand at
+  // submit time. Restic accepts either form on the restore command line.
+  const [typedShortId, setTypedShortId] = useState('');
   const restore = useRestoreMailBackup();
   const canSubmit =
     targetNode.length > 0 &&
-    confirmShortId === snapshot.shortId &&
+    typedShortId === snapshot.id &&
     !restore.isPending;
 
   const submit = async () => {
@@ -93,7 +97,7 @@ function RestoreDialog({
       const res = await restore.mutateAsync({
         shortId: snapshot.shortId,
         targetNode,
-        confirmShortId,
+        confirmShortId: snapshot.shortId,
       });
       onStarted(res.data.runId);
     } catch {
@@ -123,8 +127,11 @@ function RestoreDialog({
           <dt className="font-medium text-gray-600 dark:text-gray-400">
             Snapshot
           </dt>
-          <dd className="font-mono text-gray-900 dark:text-gray-100">
-            {snapshot.shortId}
+          <dd
+            className="font-mono text-gray-900 dark:text-gray-100"
+            title={snapshot.shortId}
+          >
+            {snapshot.id}
           </dd>
           <dt className="font-medium text-gray-600 dark:text-gray-400">
             Taken
@@ -161,19 +168,19 @@ function RestoreDialog({
 
         <label className="mt-4 block text-sm">
           <span className="font-medium text-gray-700 dark:text-gray-300">
-            Type the snapshot id{' '}
+            Type the snapshot short id{' '}
             <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-gray-700">
-              {snapshot.shortId}
+              {snapshot.id}
             </code>{' '}
             to confirm
           </span>
           <input
             type="text"
             className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-gray-600 dark:bg-gray-900"
-            value={confirmShortId}
-            onChange={(e) => setConfirmShortId(e.target.value)}
+            value={typedShortId}
+            onChange={(e) => setTypedShortId(e.target.value)}
             disabled={restore.isPending}
-            placeholder={snapshot.shortId}
+            placeholder={snapshot.id}
             autoComplete="off"
           />
         </label>
@@ -319,8 +326,11 @@ export default function MailBackupsPage() {
                     <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                       {snapshots.map((s) => (
                         <tr key={s.shortId}>
-                          <td className="py-2 pr-3 font-mono text-xs text-gray-900 dark:text-gray-100">
-                            {s.shortId}
+                          <td
+                            className="py-2 pr-3 font-mono text-xs text-gray-900 dark:text-gray-100"
+                            title={s.shortId}
+                          >
+                            {s.id}
                           </td>
                           <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">
                             <time
