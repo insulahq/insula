@@ -328,8 +328,20 @@ export async function ensureMailPortExposureApplied(
     // pod's previous incarnation). Refuse to apply — operator intent
     // wins. The orphan-task cleanup outside this module is responsible
     // for marking stale `running` rows failed.
+    //
+    // Operator escape hatch when the worst-case 24h orphan reaper
+    // window blocks startup reconciliation:
+    //   UPDATE tasks SET status='failed'
+    //    WHERE kind='mail.port-exposure' AND status='running';
+    // then restart platform-api (or wait for the next pod cycle).
     return;
   }
+  // Note on the cross-pod safe-by-SSA invariant: two pods starting at
+  // the same time both pass the guard (no in-flight task yet) and both
+  // call applyModeToCluster. The Deployment + Service SSA-applies use
+  // `force: true` with a stable fieldManager — the apiserver
+  // atomically dedupes the second apply, so we don't get divergent
+  // state. This is by SSA semantics, not by a guard in this code.
   const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
