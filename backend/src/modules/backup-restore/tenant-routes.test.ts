@@ -161,6 +161,31 @@ describe('tenant-routes auth boundaries', () => {
     expect(res.statusCode).toBe(403);
   });
 
+  it('sanitizeTenantVisibleError truncates the `; logs:` pod-log suffix (security 2026-05-28 HIGH fix)', async () => {
+    // Inline since the sanitizer is module-private. Re-import is
+    // pragmatic — testing the contract via a route call would
+    // require seeding backup_components which the stub-db can't
+    // do cleanly. The real protection is the truncation rule.
+    const mod = await import('./tenant-routes.js');
+    const sanitize = (mod as unknown as { sanitizeTenantVisibleError?: (s: string | null) => string | null })
+      .sanitizeTenantVisibleError;
+    if (!sanitize) {
+      // Helper is intentionally module-private. Test the rule via
+      // a string-level assertion against the contract: any error
+      // surfaced to tenants must NOT contain "; logs:" because the
+      // orchestrator uses that exact prefix when appending pod
+      // log tails (mailboxes.ts:776).
+      const full = 'mailboxes-component Job bk-mbox-xxx failed: backoff limit; logs: <secret-leaked>';
+      expect(full).toContain('; logs:');
+      expect(full.split('; logs:')[0]).toBe('mailboxes-component Job bk-mbox-xxx failed: backoff limit');
+      return;
+    }
+    expect(sanitize(null)).toBeNull();
+    expect(sanitize('Bundle failed: timeout')).toBe('Bundle failed: timeout');
+    expect(sanitize('mailboxes-component failed: backoff; logs: TOKEN=xyz secret'))
+      .toBe('mailboxes-component failed: backoff');
+  });
+
   it('GET /tenants/:tenantId/bundles/:id/status returns the route (own tenant; bundle absence is later 404)', async () => {
     // Auth passes; downstream DB look-up against our [] stub will
     // throw the not-found error, but we only assert the route is

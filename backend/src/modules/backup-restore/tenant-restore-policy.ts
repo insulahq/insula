@@ -82,28 +82,46 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
   ]),
   deniedColumnsByTable: new Map<string, ReadonlySet<string>>([
     ['tenants', new Set<string>([
-      // billing / plan
+      // ── billing / plan ──────────────────────────────────────
       'plan_id',
       'monthly_price_override',
       'subscription_expires_at',
-      // operator-set quotas / limits
+      // ── operator-set quotas / limits ────────────────────────
       'storage_limit_override',
       'cpu_limit_override',
       'memory_limit_override',
-      'max_subusers_override',
+      // Note: schema column is `max_sub_users_override` (the underscore
+      // is between sub_users, not subusers). The CI guard
+      // scripts/ci-tenant-restore-policy-check.sh catches typos.
+      'max_sub_users_override',
       'max_mailboxes_override',
       'email_send_rate_limit',
       'storage_tier',
-      // cluster placement (operator decision)
+      // ── cluster placement (operator decision) ───────────────
       'region_id',
       'node_name',
-      // privilege flag — must never be restored to TRUE
+      // Tenant-namespace allocation is operator-controlled; restoring
+      // an old namespace value could break PVC mounts + ingress.
+      'kubernetes_namespace',
+      // ── credentials / privilege flags ───────────────────────
+      // is_system must never be restored to TRUE by a tenant cart.
       'is_system',
-      // include flag (operator scheduler control)
-      'include_in_scheduled_bundles_override',
+      // Private-worker auth secret — restoring an old value would
+      // re-enable revoked workers.
+      'private_worker_shared_secret',
+      // ── scheduler control ───────────────────────────────────
+      // DB column name (no `_override` suffix on the actual column —
+      // Drizzle's TS field is `includeInScheduledBundlesOverride`
+      // but the SQL column is bare `include_in_scheduled_bundles`).
       'include_in_scheduled_bundles',
-      // audit-only timestamps
+      // ── lifecycle / internal state ──────────────────────────
+      'provisioning_status',
+      'storage_lifecycle_state',
+      'active_storage_op_id',
+      // ── audit fields ────────────────────────────────────────
+      'created_by',
       'created_at',
+      'updated_at',
       'archived_at',
       'suspended_at',
     ])],

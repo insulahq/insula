@@ -109,6 +109,48 @@ describe('redactRowForTenant', () => {
     expect(redacted).not.toHaveProperty('is_system');
   });
 
+  it('strips kubernetes_namespace (cluster placement)', () => {
+    const row = { id: 'abc', name: 'X', kubernetes_namespace: 'tenant-evil' };
+    const redacted = redactRowForTenant('tenants', row, DEFAULT_TENANT_RESTORE_POLICY);
+    expect(redacted).not.toHaveProperty('kubernetes_namespace');
+  });
+
+  it('strips private_worker_shared_secret (would re-enable revoked workers)', () => {
+    const row = { id: 'abc', name: 'X', private_worker_shared_secret: 'old-secret-xyz' };
+    const redacted = redactRowForTenant('tenants', row, DEFAULT_TENANT_RESTORE_POLICY);
+    expect(redacted).not.toHaveProperty('private_worker_shared_secret');
+  });
+
+  it('strips lifecycle internals (provisioning_status, storage_lifecycle_state, active_storage_op_id)', () => {
+    const row = {
+      id: 'abc', name: 'X',
+      provisioning_status: 'provisioned',
+      storage_lifecycle_state: 'archiving',
+      active_storage_op_id: 'op-123',
+    };
+    const redacted = redactRowForTenant('tenants', row, DEFAULT_TENANT_RESTORE_POLICY);
+    expect(redacted).not.toHaveProperty('provisioning_status');
+    expect(redacted).not.toHaveProperty('storage_lifecycle_state');
+    expect(redacted).not.toHaveProperty('active_storage_op_id');
+  });
+
+  it('strips audit fields (created_by, updated_at)', () => {
+    const row = {
+      id: 'abc', name: 'X',
+      created_by: 'someone-else',
+      updated_at: '2020-01-01',
+    };
+    const redacted = redactRowForTenant('tenants', row, DEFAULT_TENANT_RESTORE_POLICY);
+    expect(redacted).not.toHaveProperty('created_by');
+    expect(redacted).not.toHaveProperty('updated_at');
+  });
+
+  it('strips max_sub_users_override (correct snake_case name; CI guard catches the typo case)', () => {
+    const row = { id: 'abc', name: 'X', max_sub_users_override: 999 };
+    const redacted = redactRowForTenant('tenants', row, DEFAULT_TENANT_RESTORE_POLICY);
+    expect(redacted).not.toHaveProperty('max_sub_users_override');
+  });
+
   it('does not modify rows of tables with no column policy', () => {
     const row = { id: 'd1', name: 'mydomain.com', tenant_id: 'abc' };
     const redacted = redactRowForTenant('domains', row, DEFAULT_TENANT_RESTORE_POLICY);

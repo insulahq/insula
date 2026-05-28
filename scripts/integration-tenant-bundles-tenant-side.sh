@@ -256,6 +256,69 @@ else
   fail "run-now: expected 202 got $STATUS body=$BODY"
 fi
 
+# ── §4.5: E2E execute the cart (TDD finishes the loop) ───────────────
+# Adds a benign config-tables item (email_aliases — usually empty for
+# fresh tenants, so the restore is effectively a no-op against
+# whatever the bundle captured), executes the cart, polls until
+# terminal, and asserts cart.status='done' AND items[0].status='done'.
+# This proves the orchestrator → executor → policy-redaction chain
+# actually runs in real conditions, not just in unit tests.
+log "§4.5 cart execute E2E"
+if [[ -n "$BUNDLE_ID" && -n "$CART_ID" ]]; then
+  # Find a freshly-completed bundle (the run-now one may still be
+  # initializing). Re-query for any completed/partial bundle.
+  RAW=$(api "$ADMIN_HOST" GET "/tenants/$TENANT_ID/bundles" "" "$TENANT_TOKEN")
+  parse "$RAW"
+  E2E_BUNDLE=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="completed" or .status=="partial") | .id' | head -1)
+  if [[ -n "$E2E_BUNDLE" ]]; then
+    # Fresh cart for the E2E to avoid mixing with the failed-item
+    # cart from §3.
+    RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/restore-carts" \
+      "{\"tenantId\":\"$TENANT_ID\",\"description\":\"e2e-execute\"}" "$TENANT_TOKEN")
+    parse "$RAW"
+    E2E_CART=$(printf '%s' "$BODY" | jq -r '.data.id')
+    [[ "$STATUS" == "201" && -n "$E2E_CART" ]] && ok "e2e cart created: $E2E_CART" || fail "e2e cart create $STATUS body=$BODY"
+
+    # Add a benign item — email_aliases is in the restore allow-list
+    # and rarely populated for test tenants. Restoring an empty array
+    # over an empty live table is a no-op success.
+    RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/restore-carts/$E2E_CART/items" \
+      "{\"bundleId\":\"$E2E_BUNDLE\",\"type\":\"config-tables\",\"selector\":{\"kind\":\"tables\",\"tables\":[\"emailAliases\"]}}" \
+      "$TENANT_TOKEN")
+    parse "$RAW"
+    [[ "$STATUS" == "201" ]] && ok "e2e item added (emailAliases)" || fail "e2e item add $STATUS body=$BODY"
+
+    # Execute. With config-tables-only items, no PVC snapshot is taken
+    # so we expect a fast terminal state (no Job spawn).
+    RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/restore-carts/$E2E_CART/execute" "{}" "$TENANT_TOKEN")
+    parse "$RAW"
+    [[ "$STATUS" == "200" ]] && ok "e2e execute returned 200" || fail "e2e execute $STATUS body=$BODY"
+
+    # Poll cart status until terminal. 30s budget — config-tables
+    # restore is purely a DB upsert; should finish in under 5s.
+    TERMINAL=""
+    for i in $(seq 1 15); do
+      RAW=$(api "$ADMIN_HOST" GET "/tenants/$TENANT_ID/restore-carts/$E2E_CART" "" "$TENANT_TOKEN")
+      parse "$RAW"
+      CART_STATUS=$(printf '%s' "$BODY" | jq -r '.data.status // empty')
+      if [[ "$CART_STATUS" == "done" || "$CART_STATUS" == "failed" ]]; then
+        TERMINAL="$CART_STATUS"
+        break
+      fi
+      sleep 2
+    done
+    if [[ "$TERMINAL" == "done" ]]; then
+      ok "e2e cart reached terminal=done"
+      ITEM_STATUS=$(printf '%s' "$BODY" | jq -r '.data.items[0].status // empty')
+      [[ "$ITEM_STATUS" == "done" ]] && ok "e2e item terminal=done" || fail "e2e item terminal: expected done got $ITEM_STATUS"
+    else
+      fail "e2e cart did not reach 'done' (last=$CART_STATUS, body=$BODY)"
+    fi
+  else
+    log "no completed bundle yet; skipping e2e execute"
+  fi
+fi
+
 # ── §5: schedule routes removed ───────────────────────────────────────
 log "§5 schedule routes removed"
 RAW=$(api "$ADMIN_HOST" GET "/tenant/backups/schedule" "" "$TENANT_TOKEN")
