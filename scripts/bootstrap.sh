@@ -4624,23 +4624,6 @@ RCEOF
     bw_session="$(openssl rand -base64 32 | tr -d '\n')"
     # Independent HMAC secret — NOT the same as Roundcube's.
     bw_jwt="$(openssl rand -hex 32)"
-<<<<<<< Updated upstream
-    # Master password: reuse Roundcube's if available so the Stalwart
-    # master account can authenticate from both engines; generate a
-    # fresh one otherwise. Operator-installed Stalwart later updates
-    # the master account's password to match.
-    bw_master_pw="$(kctl get secret -n mail mail-secrets \
-      -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
-    if [[ -z "$bw_master_pw" ]]; then
-      bw_master_pw="$(openssl rand -base64 32 | tr -d '\n')"
-      log "mail-secrets not found — generated fresh Stalwart master password for Bulwark-only deployment."
-    fi
-    bw_master_user="${BULWARK_MASTER_USER:-master@mail.${PLATFORM_DOMAIN}}"
-    # Pipe stringData via stdin to avoid placing the HMAC secret in the
-    # process command-line (visible in /proc/<pid>/cmdline for the
-    # duration of kubectl create — review fix H2).
-=======
->>>>>>> Stashed changes
     kctl create secret generic bulwark-secrets --namespace=mail \
       --from-literal=ADMIN_PASSWORD="$bw_admin_pw" \
       --from-literal=SESSION_SECRET="$bw_session" \
@@ -4658,7 +4641,7 @@ RCEOF
 # ADR-039 — Bulwark webmail admin (Bulwark's own admin dashboard at /admin/)
 BULWARK_ADMIN_PASSWORD=${bw_admin_pw}
 BWEOF
-    unset bw_admin_pw bw_session bw_jwt bw_master_pw
+    unset bw_admin_pw bw_session bw_jwt
   fi
 
   # Idempotent migration: a cluster bootstrapped before the upstream
@@ -4673,23 +4656,10 @@ BWEOF
       log "Migrating bulwark-secrets: adding BULWARK_JWT_AUTH_SECRET (upstream impersonation route)."
       local mig_jwt
       mig_jwt="$(openssl rand -hex 32)"
-<<<<<<< Updated upstream
-      mig_master_pw="$(kctl get secret -n mail mail-secrets \
-        -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
-      if [[ -z "$mig_master_pw" ]]; then
-        warn "mail-secrets missing STALWART_MASTER_PASSWORD — skipping bulwark-secrets migration."
-        warn "Provision STALWART_MASTER_PASSWORD on mail-secrets OR provide BULWARK_STALWART_MASTER_PASSWORD env to bootstrap.sh, then re-run."
-      else
-        mig_master_user="${BULWARK_MASTER_USER:-master@mail.${PLATFORM_DOMAIN}}"
-        # Stream the new keys via stdin (avoid leaking the HMAC in `ps`).
-        local mig_patch
-        mig_patch=$(cat <<PATCH
-=======
       # 2026-05-28: STALWART_MASTER_USER/PASSWORD are NO LONGER mirrored
       # here. Deployment env reads them directly from mail-secrets.
       local mig_patch
       mig_patch=$(cat <<PATCH
->>>>>>> Stashed changes
 stringData:
   BULWARK_JWT_AUTH_SECRET: "${mig_jwt}"
 PATCH
@@ -4710,8 +4680,12 @@ PATCH
   # 2026-05-28: dead-key cleanup on existing clusters. Remove the
   # legacy BULWARK_STALWART_MASTER_USER/PASSWORD keys from
   # bulwark-secrets so the drift surface is gone (Bulwark now reads
-  # those values from mail-secrets directly). Idempotent: kubectl
-  # patch with op:remove no-ops if the key is already absent.
+  # those values from mail-secrets directly).
+  #
+  # Use `get -o json | jq 'del(...)' | apply` so the operation is
+  # idempotent regardless of which keys are present (a per-key
+  # JSON-Patch chain hit 422 when either key was already absent and
+  # the fallback chain was fragile in the mixed-absent case).
   if kctl get secret -n mail bulwark-secrets &>/dev/null 2>&1; then
     local has_legacy_user has_legacy_pw
     has_legacy_user="$(kctl get secret -n mail bulwark-secrets \
@@ -4720,19 +4694,9 @@ PATCH
       -o jsonpath='{.data.BULWARK_STALWART_MASTER_PASSWORD}' 2>/dev/null || true)"
     if [[ -n "$has_legacy_user" ]] || [[ -n "$has_legacy_pw" ]]; then
       log "Cleaning up legacy mirror keys from bulwark-secrets (Bulwark now reads from mail-secrets directly)."
-      # JSON-Patch op:remove on each. Absent keys return 422 which we
-      # tolerate (kubectl exits non-zero, but `|| true` keeps bootstrap
-      # going).
-      kctl patch secret -n mail bulwark-secrets --type=json -p '[
-        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_USER"},
-        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_PASSWORD"}
-      ]' 2>/dev/null || \
-      kctl patch secret -n mail bulwark-secrets --type=json -p '[
-        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_USER"}
-      ]' 2>/dev/null || true
-      kctl patch secret -n mail bulwark-secrets --type=json -p '[
-        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_PASSWORD"}
-      ]' 2>/dev/null || true
+      kctl get secret -n mail bulwark-secrets -o json \
+        | jq 'del(.data.BULWARK_STALWART_MASTER_USER, .data.BULWARK_STALWART_MASTER_PASSWORD)' \
+        | kctl apply -f - >/dev/null
     fi
   fi
 
