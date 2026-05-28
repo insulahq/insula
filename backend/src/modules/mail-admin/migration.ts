@@ -1340,13 +1340,23 @@ async function applyDeploymentAffinityOne(
   //
   // restore-snapshot-id (2026-05-27) follows the same rule for the
   // same reason — pod-template annotations only.
-  const annotations: Record<string, string> = {};
-  if (allowRestore) annotations[ALLOW_RESTORE_ANNOTATION] = 'true';
-  if (restoreSnapshotId) annotations[RESTORE_SNAPSHOT_ID_ANNOTATION] = restoreSnapshotId;
+  //
+  // IMPORTANT: strategic-merge-patch on metadata.annotations MERGES
+  // additively. Not setting a key doesn't remove the existing value.
+  // A DR failover that doesn't pass restoreSnapshotId would otherwise
+  // inherit a stale per-snapshot-restore annotation from a prior
+  // operator action, and try to restore a snapshot id that retention
+  // may have already forgotten. Catch caught 2026-05-28 by Phase H of
+  // the mobility E2E. Fix: ALWAYS set both annotation keys (null when
+  // absent — strategic-merge interprets null as delete).
+  const annotations: Record<string, string | null> = {
+    [ALLOW_RESTORE_ANNOTATION]: allowRestore ? 'true' : null,
+    [RESTORE_SNAPSHOT_ID_ANNOTATION]: restoreSnapshotId ?? null,
+  };
   const body = {
     spec: {
       template: {
-        metadata: Object.keys(annotations).length > 0 ? { annotations } : undefined,
+        metadata: { annotations },
         spec: {
           nodeSelector: {
             'kubernetes.io/hostname': targetNode,
