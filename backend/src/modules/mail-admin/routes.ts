@@ -1843,31 +1843,31 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       })();
 
       // Step keys + labels per mode. Sequence matches applyModeToCluster
-      // (post-2026-05-28 hairpin fix). Stalwart hostPort is ALWAYS set
-      // first — the active node serves via CNI portmap regardless of mode
-      // because the kube-proxy externalIP→ClusterIP→pod path hairpins on
-      // the active node. haproxy modes additionally label + create the DS
-      // on non-active data-plane nodes.
+      // (post-2026-05-28 hairpin fix). Haproxy DS lifecycle runs FIRST
+      // to free port 25 on the active node before Stalwart's new pod
+      // (with hostPort=25) tries to schedule there. Without this
+      // ordering the scheduler hits FailedScheduling("didn't have free
+      // ports") and waitForStalwartRollout deadlocks at 90s.
       const stepDef: Record<string, ReadonlyArray<{ key: string; label: string }>> = {
         activeNodeOnly: [
+          { key: 'delete-haproxy-ds',            label: 'Delete haproxy DaemonSet (frees port 25 cluster-wide)' },
           { key: 'add-hostports',                label: 'Ensure Stalwart hostPorts on active node' },
           { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
-          { key: 'delete-haproxy-ds',            label: 'Delete haproxy DaemonSet' },
           { key: 'reconcile-service-externalips',label: 'Clear externalIPs (Stalwart hostPort is the only listener)' },
           { key: 'db-persist',                   label: 'Persist mode to database' },
         ],
         assignedMailNodes: [
+          { key: 'reconcile-haproxy-labels',     label: 'Label assigned nodes (active excluded — frees port 25 on active for Stalwart hostPort)' },
           { key: 'add-hostports',                label: 'Ensure Stalwart hostPorts on active node' },
           { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
-          { key: 'reconcile-haproxy-labels',     label: 'Label assigned nodes (active excluded — served via Stalwart hostPort)' },
           { key: 'create-haproxy-ds',            label: 'Ensure haproxy DaemonSet exists' },
           { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to haproxy nodes (active excluded — hairpin avoidance)' },
           { key: 'db-persist',                   label: 'Persist mode to database' },
         ],
         allServerNodes: [
+          { key: 'reconcile-haproxy-labels',     label: 'Label server-role nodes (active excluded — frees port 25 on active for Stalwart hostPort)' },
           { key: 'add-hostports',                label: 'Ensure Stalwart hostPorts on active node' },
           { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
-          { key: 'reconcile-haproxy-labels',     label: 'Label server-role nodes (active excluded — served via Stalwart hostPort)' },
           { key: 'create-haproxy-ds',            label: 'Ensure haproxy DaemonSet exists' },
           { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to haproxy nodes (active excluded — hairpin avoidance)' },
           { key: 'db-persist',                   label: 'Persist mode to database' },
