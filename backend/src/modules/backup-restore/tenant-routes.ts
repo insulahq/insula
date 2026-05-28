@@ -251,8 +251,19 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       const chunks: Buffer[] = [];
       for await (const c of stream) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
       tree = gunzipSync(Buffer.concat(chunks));
-    } catch (err) {
-      throw new ApiError('NOT_FOUND', `tree.jsonl.gz not found in bundle: ${(err as Error).message}`, 404);
+    } catch {
+      // tree.jsonl.gz sidecar was dropped in favour of restic ls
+      // (see files.ts:32). Return graceful empty for bundles created
+      // after that change so the UI can render an explanation instead
+      // of a hard 404. Restore the full files snapshot from the cart.
+      return success({
+        bundleId,
+        totalCount: 0,
+        entries: [],
+        nextCursor: null,
+        migrated: true,
+        message: 'File browsing migrated to restic listing — not yet wired here. Restore the full files snapshot via the cart.',
+      });
     }
     const lines = tree.toString('utf8').split('\n').filter(Boolean);
     const allEntries: Array<{ path: string; size: number; mode: number; mtime: string }> = [];
