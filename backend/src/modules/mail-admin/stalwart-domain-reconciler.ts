@@ -77,7 +77,7 @@ import type { Database } from '../../db/index.js';
  * bootstrapped and the reconciler MUST refuse to act — otherwise it
  * would try to provision Stalwart for the literal example.com.
  */
-async function getExplicitMailHostname(db: Database): Promise<string | null> {
+export async function getExplicitMailHostname(db: Database): Promise<string | null> {
   // 1. Operator-explicit value (admin UI write).
   const [row] = await db
     .select()
