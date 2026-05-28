@@ -16,7 +16,14 @@
  */
 
 import { sendNotificationEmail } from '../email-sender.js';
+import { getActiveTemplate } from '../templates/service.js';
+import { renderTemplateAsync } from '../templates/renderer.js';
 import type { NotificationChannel, DeliveryContext, DeliveryResult } from './types.js';
+
+interface NotificationRowWithCategory {
+  readonly categoryId?: string | null;
+  readonly locale?: string | null;
+}
 
 export const emailChannel: NotificationChannel = {
   id: 'email',
@@ -41,10 +48,32 @@ export const emailChannel: NotificationChannel = {
       return { status: 'skipped', reason: 'PLATFORM_ENCRYPTION_KEY not set' };
     }
     try {
+      // Category-driven rendering: if the notification row carries a
+      // category id, look up the active template and render it. Falls
+      // back to the legacy inline-HTML path when no category is set
+      // (existing notifyUser/notifyUsers call-sites).
+      const cat = (ctx.notification as unknown as NotificationRowWithCategory).categoryId;
+      const locale = (ctx.notification as unknown as NotificationRowWithCategory).locale ?? 'en';
+      let prerendered: { subject: string; html: string } | undefined;
+      if (cat) {
+        const tpl = await getActiveTemplate(ctx.db, cat, 'email', locale);
+        if (tpl) {
+          const rendered = await renderTemplateAsync(tpl, {
+            userName: ctx.notification.userId,
+            title: ctx.notification.title,
+            message: ctx.notification.message,
+            platformName: 'Hosting Platform',
+          });
+          prerendered = {
+            subject: rendered.subject ?? ctx.notification.title,
+            html: rendered.body,
+          };
+        }
+      }
       // sendNotificationEmail itself already silently catches and logs;
       // we wrap it again so any rejection path becomes a typed result
       // rather than an unhandled rejection at the registry level.
-      await sendNotificationEmail(ctx.db, ctx.notification, key);
+      await sendNotificationEmail(ctx.db, ctx.notification, key, prerendered);
       return { status: 'delivered' };
     } catch (err) {
       return {

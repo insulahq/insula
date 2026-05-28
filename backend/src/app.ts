@@ -90,6 +90,12 @@ import { backupRcloneShimRoutes } from './modules/backup-rclone-shim/routes.js';
 import { backupSchedulesRoutes } from './modules/backup-schedules/routes.js';
 import { backupsOverviewRoutes } from './modules/backups-overview/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
+import { notificationAdminRoutes } from './modules/notifications/routes-admin.js';
+import { notificationUserRoutes } from './modules/notifications/routes-tenant.js';
+import { seedCategoriesIfMissing } from './modules/notifications/categories/service.js';
+import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
+import { purgeOldDeliveriesSafe } from './modules/notifications/retention/purge.js';
+import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
@@ -171,6 +177,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // the registration calls themselves are idempotent — re-importing
   // this module under hot-reload is safe.
   registerAllLifecycleHooks();
+
+  // Notification system Phase 1: seed categories + templates at boot.
+  // Both are idempotent (INSERT ... ON CONFLICT DO NOTHING) so the
+  // common path is ~10ms after the first install. Failures here must
+  // not block the rest of buildApp — log and continue.
+  try {
+    await seedCategoriesIfMissing(deps.db);
+    await seedTemplatesIfMissing(deps.db);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[notifications] seed failed at boot:', err instanceof Error ? err.message : err);
+  }
 
   const app = Fastify({
     logger: deps.config.NODE_ENV !== 'test' && {
@@ -486,6 +504,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(buildClusterTrustedProxiesRoutes({ db: deps.db }), { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
+  await app.register(notificationAdminRoutes, { prefix: '/api/v1' });
+  await app.register(notificationUserRoutes, { prefix: '/api/v1' });
   await app.register(taskCenterRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2Routes, { prefix: '/api/v1' });
@@ -667,6 +687,25 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // Task tracker retention — reap orphans + delete old terminal rows.
       const taskRetentionTimer = startTaskRetention(app.db);
       app.addHook('onClose', () => clearInterval(taskRetentionTimer));
+
+      // Notification system Phase 1: daily retention pass.
+      //  - notification_deliveries: rows older than 30 days are dropped
+      //    (audit-log retention; tenant-visible notifications stay).
+      //  - notification_rate_limit_buckets: rows whose window has ended
+      //    are removed so the bucket table doesn't grow unboundedly.
+      // Both are best-effort; failures log but don't crash.
+      const NOTIFICATION_RETENTION_INTERVAL = 24 * 60 * 60 * 1000;
+      const notificationRetentionTimer = setInterval(async () => {
+        try {
+          await purgeOldDeliveriesSafe(app.db);
+          await purgeStaleBuckets(app.db);
+        } catch (err) {
+          app.log.warn({ err }, '[notifications] retention pass failed');
+        }
+      }, NOTIFICATION_RETENTION_INTERVAL);
+      // unref so the timer doesn't keep the event loop alive after close.
+      notificationRetentionTimer.unref?.();
+      app.addHook('onClose', () => clearInterval(notificationRetentionTimer));
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 

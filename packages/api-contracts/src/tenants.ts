@@ -111,6 +111,12 @@ export const updateTenantSchema = z.object({
   // `storage.retention.pre_archive_days` (default 90) when omitted.
   // Ignored on every status that isn't 'archived'.
   archive_retention_days: z.number().int().min(1).max(365).optional(),
+  // Notification-system Phase 1: when true, the lifecycle hook
+  // `notify-tenant-on-transition` skips the tenant-facing notification
+  // for this transition. Admin toolbar checkbox "Notify tenant" inverts
+  // this — default UI state is to notify. Has no effect for status
+  // values that don't trigger a notification (e.g. 'pending').
+  suppressTenantNotification: z.boolean().optional(),
   // Destructive shrink consent. Reducing storage_limit_override or
   // switching to a smaller-storage plan_id requires snapshot →
   // recreate-PVC → restore (filesystems can't shrink in place safely).

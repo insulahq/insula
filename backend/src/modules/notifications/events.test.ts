@@ -47,11 +47,26 @@ vi.mock('./recipients.js', () => ({
   getTenantNotificationRecipients: recipientsMock,
 }));
 
+// Phase 1 dispatcher mock — every new helper goes through emitEvent.
+const emitEventMock = vi.fn().mockResolvedValue({ eventId: 'e1', deliveryCount: 0, perChannelStatuses: [] });
+vi.mock('./dispatcher/dispatch.js', () => ({ emitEvent: emitEventMock }));
+
 const {
   notifyTenantMailboxLimitReached,
   notifyTenantDkimRotated,
   notifyTenantImapsyncTerminal,
   notifyTenantEmailBootstrapped,
+  notifyTenantSubscriptionChanged,
+  notifyTenantSubscriptionExpiry,
+  notifyTenantSubAccountAdded,
+  notifyTenantPasswordChanged,
+  notifyTenantSuspiciousActivity,
+  notifyAdminCertExpiring,
+  notifyAdminCertRenewalFailed,
+  notifyAdminBackupFailed,
+  notifyAdminBackupTargetUnreachable,
+  notifyAdminNodeDown,
+  notifyAdminSecurityHardeningDrift,
 } = await import('./events.js');
 
 describe('notification events', () => {
@@ -155,6 +170,81 @@ describe('notification events', () => {
       expect(call.message).toContain('example.com');
       expect(call.resourceType).toBe('email_domain');
       expect(call.resourceId).toBe('ed1');
+    });
+  });
+
+  // ─── Phase 1 categorised dispatchers ─────────────────────────────────────
+
+  describe('Phase 1 categorised event helpers', () => {
+    beforeEach(() => emitEventMock.mockClear());
+
+    it('notifyTenantSubscriptionChanged emits subscription.changed', async () => {
+      await notifyTenantSubscriptionChanged({} as never, 't1', { tenantName: 'X' });
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'subscription.changed',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        tenantId: 't1',
+      }));
+    });
+
+    it('notifyTenantSubscriptionExpiry emits subscription.expiry_warning', async () => {
+      await notifyTenantSubscriptionExpiry({} as never, 't1', { expiresAt: '2026-12-31' });
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'subscription.expiry_warning',
+      }));
+    });
+
+    it('notifyTenantSubAccountAdded emits account.sub_account_added', async () => {
+      await notifyTenantSubAccountAdded({} as never, 't1', { subAccountEmail: 'x@y.com' });
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'account.sub_account_added',
+      }));
+    });
+
+    it('notifyTenantPasswordChanged emits security.password_changed at user scope', async () => {
+      await notifyTenantPasswordChanged({} as never, 'u1');
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'security.password_changed',
+        scope: { kind: 'user', userId: 'u1' },
+      }));
+    });
+
+    it('notifyTenantSuspiciousActivity emits security.suspicious_activity', async () => {
+      await notifyTenantSuspiciousActivity({} as never, 'u1', { newIp: '203.0.113.7' });
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'security.suspicious_activity',
+      }));
+    });
+
+    it('notifyAdminCertExpiring emits admin.cert_expiring', async () => {
+      await notifyAdminCertExpiring({} as never, { certSubject: 'CN=foo', expiresAt: '2027-01-01' });
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'admin.cert_expiring',
+        scope: { kind: 'admin' },
+      }));
+    });
+
+    it('admin helpers emit their respective categories', async () => {
+      await notifyAdminCertRenewalFailed({} as never, { certSubject: 'CN=x' });
+      await notifyAdminBackupFailed({} as never, { backupName: 'b1' });
+      await notifyAdminBackupTargetUnreachable({} as never, { targetName: 'ovh' });
+      await notifyAdminNodeDown({} as never, { nodeName: 'staging1' });
+      await notifyAdminSecurityHardeningDrift({} as never, { nodeName: 'staging1' });
+      const cats = emitEventMock.mock.calls.map((c) => (c[1] as { categoryId: string }).categoryId);
+      expect(cats).toEqual([
+        'admin.cert_renewal_failed',
+        'admin.backup_failed',
+        'admin.backup_target_unreachable',
+        'admin.node_down',
+        'admin.security_hardening_drift',
+      ]);
+    });
+
+    it('swallows dispatcher errors (legacy contract: never throw)', async () => {
+      emitEventMock.mockRejectedValueOnce(new Error('boom'));
+      await expect(
+        notifyAdminNodeDown({} as never, { nodeName: 'staging1' }),
+      ).resolves.toBeUndefined();
     });
   });
 });

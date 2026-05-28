@@ -109,6 +109,15 @@ export async function bootstrapSystemTenant(
     ? await enqueueSystemNamespaceProvision(db, options.k8s, log)
     : null;
 
+  // Notification SMTP relay is NOT auto-provisioned. Stalwart enforces
+  // sender = authenticated account at both the SMTP (501 5.5.4) and
+  // JMAP (Identity/set "E-mail address not configured for this account")
+  // layers — there is no admin-impersonate escape hatch on the
+  // submission path. An operator must manually create the sender
+  // mailbox on Stalwart, then register the credentials via the
+  // existing SMTP relay admin UI. Verified on staging
+  // 2026-05-28 (spike).
+
   return {
     ...ensureResult,
     baseDomain,
