@@ -128,10 +128,19 @@ export default function MailDrCard() {
   const [primaryChangeModal, setPrimaryChangeModal] = useState<
     null | { newPrimary: string; oldPrimary: string | null }
   >(null);
+  // Local in-flight guard for the modal's "Move now"/"Move later"
+  // buttons. Closes a race where the operator clicks Move Now, the
+  // modal closes immediately, then they click the drift-banner CTA
+  // before `update.mutateAsync` resolves — `movePending` is still
+  // false at that point because handleMove hasn't fired yet. Caught
+  // 2026-05-28 code review HIGH-2.
+  const [persistingPlacement, setPersistingPlacement] = useState(false);
 
   async function persistPlacement(
     extra: { triggerMigration?: boolean } = {},
   ): Promise<void> {
+    if (persistingPlacement) return;
+    setPersistingPlacement(true);
     try {
       await update.mutateAsync({
         primaryNode: d.primaryNode!,
@@ -151,6 +160,8 @@ export default function MailDrCard() {
       }
     } catch {
       setDraft(null);
+    } finally {
+      setPersistingPlacement(false);
     }
   }
 
@@ -315,11 +326,11 @@ export default function MailDrCard() {
               <button
                 type="button"
                 onClick={() => handleMove(current.drift!.primaryNode)}
-                disabled={movePending}
+                disabled={movePending || persistingPlacement}
                 className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 text-xs font-medium text-white"
                 data-testid="mail-dr-drift-migrate-now"
               >
-                {movePending
+                {(movePending || persistingPlacement)
                   ? <Loader2 size={12} className="animate-spin" />
                   : <ArrowRight size={12} />} Migrate now to {current.drift.primaryNode}
               </button>
@@ -663,7 +674,7 @@ export default function MailDrCard() {
                       setPrimaryChangeModal(null);
                       void persistPlacement({ triggerMigration: true });
                     }}
-                    disabled={update.isPending || movePending}
+                    disabled={update.isPending || movePending || persistingPlacement}
                     className="w-full rounded-md border border-brand-600 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 text-sm font-medium text-white text-left"
                   >
                     <div className="font-semibold">Move now</div>
@@ -679,7 +690,7 @@ export default function MailDrCard() {
                       setPrimaryChangeModal(null);
                       void persistPlacement({ triggerMigration: false });
                     }}
-                    disabled={update.isPending}
+                    disabled={update.isPending || persistingPlacement}
                     className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 text-sm text-gray-900 dark:text-gray-100 text-left"
                   >
                     <div className="font-semibold">Move later</div>
