@@ -1710,6 +1710,10 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   sentAt: timestamp('sent_at', { withTimezone: true }),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   failedAt: timestamp('failed_at', { withTimezone: true }),
+  // Phase 2 (migration 0042): Handlebars variables for re-render at
+  // worker dequeue. Domain data only (e.g. tenantName, subscriptionPlan)
+  // — no recipient PII. NULLed by a 7-day cleanup pass.
+  eventVariables: jsonb('event_variables').$type<Record<string, unknown> | null>(),
 }, (table) => [
   index('notification_deliveries_event_idx').on(table.eventId),
   // Per-user/tenant list views are newest-first; DESC matches the SQL

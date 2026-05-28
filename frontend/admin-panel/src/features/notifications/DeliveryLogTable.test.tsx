@@ -14,8 +14,15 @@ import DeliveryLogTable from './DeliveryLogTable';
 
 const listMock = vi.fn();
 
+const retryMutateAsync = vi.fn().mockResolvedValue({ data: { id: 'd-1', status: 'queued' } });
+
 vi.mock('@/hooks/use-notification-deliveries', () => ({
   useNotificationDeliveries: (input: unknown) => listMock(input),
+  useRetryNotificationDelivery: () => ({
+    mutateAsync: retryMutateAsync,
+    isPending: false,
+    error: null,
+  }),
 }));
 
 const SEED_DELIVERIES = [
@@ -158,5 +165,37 @@ describe('DeliveryLogTable', () => {
     render(<DeliveryLogTable />, { wrapper: createWrapper() });
     expect(screen.getByTestId('pagination-next')).toBeDisabled();
     expect(screen.getByTestId('pagination-prev')).toBeDisabled();
+  });
+
+  it('retry button: only present for email failed/dlq rows', () => {
+    listMock.mockReturnValue({
+      data: { data: [
+        { ...SEED_DELIVERIES[0], id: 'd-sent', status: 'sent' as const, channel: 'email' as const },
+        { ...SEED_DELIVERIES[0], id: 'd-failed', status: 'failed' as const, channel: 'email' as const },
+        { ...SEED_DELIVERIES[0], id: 'd-dlq', status: 'dlq' as const, channel: 'email' as const },
+        { ...SEED_DELIVERIES[0], id: 'd-in-app-failed', status: 'failed' as const, channel: 'in_app' as const },
+      ], pagination: { nextCursor: null, limit: 50 } },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    });
+    render(<DeliveryLogTable />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('retry-d-sent')).not.toBeInTheDocument();
+    expect(screen.getByTestId('retry-d-failed')).toBeInTheDocument();
+    expect(screen.getByTestId('retry-d-dlq')).toBeInTheDocument();
+    expect(screen.queryByTestId('retry-d-in-app-failed')).not.toBeInTheDocument();
+  });
+
+  it('retry button: clicking calls the mutation with the delivery id', async () => {
+    const user = userEvent.setup();
+    listMock.mockReturnValue({
+      data: { data: [{ ...SEED_DELIVERIES[0], id: 'd-fail', status: 'failed' as const, channel: 'email' as const }], pagination: { nextCursor: null, limit: 50 } },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    });
+    render(<DeliveryLogTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('retry-d-fail'));
+    expect(retryMutateAsync).toHaveBeenCalledWith('d-fail');
   });
 });
