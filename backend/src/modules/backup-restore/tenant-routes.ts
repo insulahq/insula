@@ -31,6 +31,7 @@ import {
   restoreJobs,
   restoreItems,
   backupJobs,
+  backupComponents,
   tenants,
   auditLogs,
   type NewRestoreJob,
@@ -115,6 +116,46 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       createdAt: b.createdAt.toISOString(),
       lastError: b.lastError,
     })));
+  });
+
+  // ── GET /api/v1/tenants/:tenantId/bundles/:bundleId/status ─────────
+  // Per-component bundle progress. Polled by BundleProgressModal in
+  // the tenant panel during a run-now or to watch a scheduled bundle
+  // land. Returns the bundle's status + each component's status,
+  // bytes, start/finish timestamps, and last error. No artefact
+  // streaming — Phase 4-light: enough to render a step list.
+  app.get('/tenants/:tenantId/bundles/:bundleId/status', {
+    schema: { tags: ['Tenant Restore'], summary: 'Bundle progress (per-component)', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId, bundleId } = request.params as { tenantId: string; bundleId: string };
+    const bundle = await loadBundle(app, bundleId);
+    assertOwnership(bundle.tenantId, tenantId, 'Bundle');
+
+    const components = await app.db.select().from(backupComponents)
+      .where(eq(backupComponents.backupJobId, bundleId))
+      .orderBy(asc(backupComponents.component));
+
+    return success({
+      bundle: {
+        id: bundle.id,
+        tenantId: bundle.tenantId,
+        status: bundle.status,
+        sizeBytes: Number(bundle.sizeBytes),
+        startedAt: bundle.startedAt ? bundle.startedAt.toISOString() : null,
+        finishedAt: bundle.finishedAt ? bundle.finishedAt.toISOString() : null,
+        lastError: bundle.lastError,
+      },
+      components: components.map((c) => ({
+        id: c.id,
+        component: c.component,
+        artifactName: c.artifactName,
+        status: c.status,
+        sizeBytes: Number(c.sizeBytes),
+        startedAt: c.startedAt ? c.startedAt.toISOString() : null,
+        finishedAt: c.finishedAt ? c.finishedAt.toISOString() : null,
+        lastError: c.lastError,
+      })),
+    });
   });
 
   // ── GET /api/v1/tenants/:tenantId/bundles/:bundleId/browse/* ───────

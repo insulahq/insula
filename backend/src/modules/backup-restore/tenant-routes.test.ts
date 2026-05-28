@@ -133,4 +133,45 @@ describe('tenant-routes auth boundaries', () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  // ─── Bundle status endpoint (Phase 4 progress UX) ─────────────────────
+  it('GET /tenants/:tenantId/bundles/:bundleId/status requires authentication', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/${TENANT_A}/bundles/bkp-test/status`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('GET /tenants/B/bundles/:id/status with tenant A token → 403', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/${TENANT_B}/bundles/bkp-test/status`,
+      headers: { authorization: `Bearer ${tenantAToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('GET /tenants/:tenantId/bundles/:id/status rejects admin-panel token', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/${TENANT_A}/bundles/bkp-test/status`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('GET /tenants/:tenantId/bundles/:id/status returns the route (own tenant; bundle absence is later 404)', async () => {
+    // Auth passes; downstream DB look-up against our [] stub will
+    // throw the not-found error, but we only assert the route is
+    // reachable here.
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/${TENANT_A}/bundles/bkp-test/status`,
+      headers: { authorization: `Bearer ${tenantAToken}` },
+    });
+    // Empty-DB stub causes the handler to throw NOT_FOUND. We accept
+    // any non-401/403 status — the auth-boundary check has passed.
+    expect([200, 404]).toContain(res.statusCode);
+  });
 });
