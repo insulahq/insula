@@ -3,6 +3,7 @@ import { Archive, Download, Lock, Loader2, AlertCircle, Play, RotateCcw } from '
 import { Link } from 'react-router-dom';
 import {
   useTenantBundles,
+  useTenantRestoreCarts,
   useRunBundleNow,
   downloadTenantDataExport,
 } from '@/hooks/use-tenant-backups';
@@ -31,8 +32,10 @@ function StatusBadge({ status }: { readonly status: string }) {
 
 export default function Backups() {
   const bundlesQ = useTenantBundles();
+  const cartsQ = useTenantRestoreCarts();
   const runNow = useRunBundleNow();
   const bundles = bundlesQ.data?.data ?? [];
+  const carts = cartsQ.data?.data ?? [];
   // Track the in-flight bundle id from the most recent run-now click
   // so we can open BundleProgressModal. Cleared via modal onClose.
   const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
@@ -73,6 +76,47 @@ export default function Backups() {
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-700 dark:bg-red-900/40 dark:text-red-200">
           <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
           <span>{(runNow.error as Error).message}</span>
+        </div>
+      )}
+
+      {carts.length > 0 && (
+        <div
+          className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800"
+          data-testid="tenant-cart-history"
+        >
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+            <RotateCcw className="h-4 w-4" /> Recent restore carts
+          </h2>
+          <ul className="space-y-1.5">
+            {carts.slice(0, 5).map((c) => (
+              <li
+                key={c.id}
+                className="flex items-center justify-between rounded-md border border-gray-100 px-3 py-1.5 text-xs dark:border-gray-700"
+                data-testid={`cart-history-row-${c.id}`}
+              >
+                <div className="flex-1">
+                  <p className="font-mono text-gray-900 dark:text-gray-100">{c.id.slice(0, 16)}…</p>
+                  <p className="text-gray-500 dark:text-gray-400">
+                    {c.description ?? 'no description'} · created {new Date(c.createdAt).toLocaleString()}
+                  </p>
+                </div>
+                <span
+                  className={
+                    'rounded-full px-2 py-0.5 text-xs font-medium ' +
+                    (c.status === 'done'
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                      : c.status === 'failed'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                      : c.status === 'executing'
+                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                      : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300')
+                  }
+                >
+                  {c.status}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

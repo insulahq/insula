@@ -764,7 +764,17 @@ async function waitForJob(
     const failed = (status.conditions ?? []).find((c) => c.type === 'Failed' && c.status === 'True');
     if (completed || (status.succeeded ?? 0) > 0) return;
     if (failed || (status.failed ?? 0) > 0) {
-      throw new Error(`mailboxes-component Job ${jobName} failed: ${failed?.message ?? 'unknown'}`);
+      // Tail the pod logs so the eventual lastError surfaces the
+      // real reason (e.g. Stalwart "no such user" drift) instead
+      // of the opaque "backoff limit reached" the Job condition
+      // reports. Best-effort — log fetch failure must not mask
+      // the underlying Job failure.
+      let logTail = '';
+      try {
+        const tail = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 400 });
+        if (tail) logTail = `; logs: ${tail.slice(-1200)}`;
+      } catch { /* ignore */ }
+      throw new Error(`mailboxes-component Job ${jobName} failed: ${failed?.message ?? 'unknown'}${logTail}`);
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(`mailboxes-component Job ${jobName} timed out after ${Math.round(timeoutMs / 1000)}s`);

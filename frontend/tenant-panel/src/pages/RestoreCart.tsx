@@ -210,29 +210,29 @@ export default function TenantRestoreCart() {
                 Mailboxes ({addresses.length})
               </summary>
               {mailboxesQ.isLoading && <p className="mt-2 text-xs text-gray-500">Loading…</p>}
+              <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                <strong>Merge</strong> appends only new messages (safe). <strong>Replace</strong> wipes the current
+                folder before restoring — requires confirmation.
+              </p>
               <ul className="mt-2 space-y-1 text-xs">
                 {addresses.map((addr) => (
-                  <li key={addr} className="flex items-center justify-between">
-                    <span className="text-gray-700 dark:text-gray-300">{addr}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        addItem.mutate({
-                          type: 'mailboxes-by-address',
-                          selector: {
-                            kind: 'addresses',
-                            addresses: [addr],
-                            mode: 'merge-skip-duplicates',
-                          },
-                          label: `Restore mailbox ${addr}`,
-                        })
-                      }
-                      disabled={cart?.status !== 'draft' || addItem.isPending}
-                      className="rounded-md border border-blue-300 px-1.5 py-0.5 text-xs text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950 disabled:opacity-50"
-                    >
-                      <Mail size={10} className="inline" /> add
-                    </button>
-                  </li>
+                  <MailboxRow
+                    key={addr}
+                    address={addr}
+                    disabled={cart?.status !== 'draft' || addItem.isPending}
+                    onAdd={(mode, confirmDestructive) =>
+                      addItem.mutate({
+                        type: 'mailboxes-by-address',
+                        selector: {
+                          kind: 'addresses',
+                          addresses: [addr],
+                          mode,
+                          confirmDestructive,
+                        },
+                        label: `Restore mailbox ${addr} (${mode})`,
+                      })
+                    }
+                  />
                 ))}
               </ul>
             </details>
@@ -329,5 +329,70 @@ export default function TenantRestoreCart() {
         </div>
       )}
     </div>
+  );
+}
+
+type MailboxRestoreMode = 'merge-skip-duplicates' | 'merge-overwrite' | 'replace';
+
+interface MailboxRowProps {
+  readonly address: string;
+  readonly disabled: boolean;
+  readonly onAdd: (mode: MailboxRestoreMode, confirmDestructive?: boolean) => void;
+}
+
+/**
+ * One row in the mailbox picker. Dropdown lets the tenant choose
+ * the merge mode; `replace` is destructive and triggers a
+ * confirm() prompt before submitting (server also rejects if the
+ * confirmDestructive flag is missing, but the UI gate prevents
+ * the round-trip).
+ */
+function MailboxRow({ address, disabled, onAdd }: MailboxRowProps) {
+  const [mode, setMode] = useState<MailboxRestoreMode>('merge-skip-duplicates');
+  const isDestructive = mode === 'replace';
+
+  const handleAdd = () => {
+    if (isDestructive) {
+      // Browser confirm — simpler than a full modal for a per-row
+      // destructive gate. Mirrors the platform's
+      // `confirm_destructive_shrink` typed-confirmation pattern.
+      const ok = window.confirm(
+        `WIPE the live "${address}" mailbox and replace its contents from the bundle?\n\n` +
+        `Current messages will be DELETED. This cannot be undone via the cart rollback (PVC snapshot rollback only restores files, not mail).`,
+      );
+      if (!ok) return;
+    }
+    onAdd(mode, isDestructive ? true : undefined);
+  };
+
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <span className="flex-1 text-gray-700 dark:text-gray-300">{address}</span>
+      <select
+        value={mode}
+        onChange={(e) => setMode(e.target.value as MailboxRestoreMode)}
+        disabled={disabled}
+        className="rounded-md border border-gray-300 bg-white px-1.5 py-0.5 text-[11px] dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 disabled:opacity-50"
+        data-testid={`mailbox-mode-${address}`}
+      >
+        <option value="merge-skip-duplicates">Merge (skip dupes)</option>
+        <option value="merge-overwrite">Merge (overwrite)</option>
+        <option value="replace">Replace (wipe)</option>
+      </select>
+      <button
+        type="button"
+        onClick={handleAdd}
+        disabled={disabled}
+        className={
+          'rounded-md border px-1.5 py-0.5 text-xs disabled:opacity-50 ' +
+          (isDestructive
+            ? 'border-red-300 text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950'
+            : 'border-blue-300 text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950')
+        }
+        data-testid={`mailbox-add-${address}`}
+      >
+        <Mail size={10} className="inline" /> add
+      </button>
+    </li>
   );
 }
