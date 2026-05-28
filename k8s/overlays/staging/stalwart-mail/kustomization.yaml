@@ -51,23 +51,24 @@ patches:
   # ensureMailPortExposureApplied populates externalIPs on every
   # platform-api boot, so there's only a brief externalIPs-empty window
   # at very first bootstrap before platform-api ever starts.
-  # 2026-05-28 hairpin fix follow-up: externalTrafficPolicy: Cluster
-  # was previously hardcoded here. K8s apiserver rejects a Service with
-  # externalTrafficPolicy set BUT no LoadBalancer / NodePort / externalIPs
-  # — and the new orchestration sets externalIPs=[] in activeNodeOnly
-  # mode (active node served via Stalwart hostPort/CNI portmap, no
-  # need for kube-proxy DNAT). Dropping externalTrafficPolicy from the
-  # patch fixes the validation: when externalIPs IS set, the field
-  # defaults to "Cluster" implicitly; when empty, the field stays unset
-  # and the Service is still valid (pure ClusterIP).
+  # 2026-05-28 hairpin fix follow-up: the base Service hardcodes
+  # `externalTrafficPolicy: Local` (was sensible for the original
+  # LoadBalancer type). On staging we patch type → ClusterIP AND we
+  # need to REMOVE externalTrafficPolicy entirely — K8s apiserver
+  # rejects a Service with externalTrafficPolicy set BUT no LoadBalancer
+  # / NodePort / externalIPs to make it externally accessible, and the
+  # new orchestration sets externalIPs=[] in activeNodeOnly mode (active
+  # node served via Stalwart hostPort / CNI portmap, no kube-proxy DNAT).
+  # JSON-patch with `op: remove` is the only way to delete a field via
+  # kustomize patches (strategic merge can't remove fields). When
+  # externalIPs IS set in haproxy modes, externalTrafficPolicy defaults
+  # to "Cluster" implicitly — same effective behaviour as before.
   - patch: |
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: stalwart-mail
-        namespace: mail
-      spec:
-        type: ClusterIP
+      - op: replace
+        path: /spec/type
+        value: ClusterIP
+      - op: remove
+        path: /spec/externalTrafficPolicy
     target:
       kind: Service
       name: stalwart-mail
