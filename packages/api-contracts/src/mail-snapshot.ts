@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cronExpressionSchema } from './cron-expression.js';
 
 /**
  * Mail server snapshot infrastructure — Stalwart state export/import
@@ -49,8 +50,9 @@ export type MailSnapshotScheduleResponse = z.infer<typeof mailSnapshotScheduleRe
 
 /** PATCH /admin/mail/snapshot-schedule request. */
 export const mailSnapshotScheduleUpdateSchema = z.object({
-  // Standard 5-part cron expression, e.g. "star/2 * * * *" (every 2 min).
-  scheduleExpression: z.string().min(1).max(100),
+  // Strictly-validated 5-field cron expression — rejects freeform text,
+  // out-of-range fields, missing/extra spaces, and impossible steps.
+  scheduleExpression: cronExpressionSchema,
 });
 export type MailSnapshotScheduleUpdate = z.infer<typeof mailSnapshotScheduleUpdateSchema>;
 
