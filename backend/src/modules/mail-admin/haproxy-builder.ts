@@ -26,10 +26,16 @@
  * documentation co-located with the code that emits the YAML.
  */
 
+// Single-source-of-truth import — DO NOT redeclare these constants
+// here. Reviewer caught the prior duplication: two independent `const`
+// declarations would silently diverge if one was edited, causing the
+// DS nodeSelector and the label reconciler to mismatch (DS schedules
+// to zero nodes).
+import { MAIL_HAPROXY_LABEL_KEY } from './port-exposure-modes.js';
+
 const NAMESPACE = 'mail';
 const NAME = 'stalwart-haproxy';
-const SERVER_ROLE_LABEL_KEY = 'platform.example.test/node-role';
-const SERVER_ROLE_LABEL_VALUE = 'server';
+const MAIL_HAPROXY_LABEL_VALUE = 'true';
 
 /**
  * The six mail ports haproxy forwards. Same set as the Stalwart
@@ -86,7 +92,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
           hostNetwork: true,
           dnsPolicy: 'ClusterFirstWithHostNet',
           priorityClassName: 'system-node-critical',
-          nodeSelector: { [SERVER_ROLE_LABEL_KEY]: SERVER_ROLE_LABEL_VALUE },
+          nodeSelector: { [MAIL_HAPROXY_LABEL_KEY]: MAIL_HAPROXY_LABEL_VALUE },
           tolerations: [
             {
               key: 'platform.example.test/server-only',

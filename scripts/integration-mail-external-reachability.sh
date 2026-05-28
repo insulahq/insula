@@ -13,9 +13,15 @@
 #   1. Read current mode + active mail node + every cluster node's IP.
 #   2. allServerNodes mode → all server-role node IPs should answer
 #      mail ports. Worker IP should NOT answer (no haproxy on worker).
-#   3. Switch to thisNodeOnly mode → only the active node's IP should
+#   3. Switch to activeNodeOnly mode → only the active node's IP should
 #      answer. Server-role IPs that aren't active should NOT answer.
-#   4. Switch back to allServerNodes to restore prior state.
+#   4. (NEW 2026-05-28) Switch to assignedMailNodes mode. Two paths:
+#      a) REFUSAL: when active∉{primary,secondary,tertiary}, the PATCH
+#         must return MAIL_PORT_EXPOSURE_MODE_REFUSED (HTTP 400) BEFORE
+#         any cluster mutation.
+#      b) SUCCESS: when active IS in the assigned set, only the assigned
+#         nodes answer mail ports.
+#   5. Restore prior state.
 #
 # Each probe: bash /dev/tcp + SMTP-banner read with a 5s timeout.
 set -u
@@ -227,9 +233,9 @@ else
   red "PHASE 1 FAIL — $fail_count nodes had unexpected reachability"
 fi
 
-# ── PHASE 2: thisNodeOnly mode — only active node's IP should answer ────
-hdr "PHASE 2: thisNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"
-api_patch '{"mode":"thisNodeOnly"}' >/dev/null
+# ── PHASE 2: activeNodeOnly mode — only active node's IP should answer ────
+hdr "PHASE 2: activeNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"
+api_patch '{"mode":"activeNodeOnly"}' >/dev/null
 amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind + externalIPs to converge…"
 wait_for_haproxy_ds absent || { red "  haproxy DS didn't delete in 120s"; }
 wait_for_stalwart_settled yes || { red "  Stalwart didn't acquire hostPorts in 300s"; }
@@ -250,6 +256,79 @@ if [ $fail2_count -eq 0 ]; then
 else
   red "PHASE 2 FAIL — $fail2_count nodes had unexpected reachability"
 fi
+
+# ── PHASE 3: assignedMailNodes — refusal path + (if possible) success path ──
+hdr "PHASE 3a: assignedMailNodes mode — REFUSAL when active∉{primary,secondary,tertiary}"
+# Capture current placement so we can restore later
+PLACEMENT_BEFORE=$(ssh_kubectl 'kubectl exec -n platform $(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath="{.items[0].metadata.name}") -- psql -U postgres -d hosting_platform -tA -c "SELECT mail_primary_node || \"|\" || mail_secondary_node || \"|\" || mail_tertiary_node FROM system_settings;" 2>/dev/null' | head -1)
+IFS='|' read -r PRE_PRIMARY PRE_SECONDARY PRE_TERTIARY <<<"$PLACEMENT_BEFORE"
+echo "  placement before: primary=$PRE_PRIMARY secondary=$PRE_SECONDARY tertiary=$PRE_TERTIARY"
+echo "  active=$ACTIVE → is in assigned set? $([ "$ACTIVE" = "$PRE_PRIMARY" ] || [ "$ACTIVE" = "$PRE_SECONDARY" ] || [ "$ACTIVE" = "$PRE_TERTIARY" ] && echo yes || echo no)"
+
+# Force a placement where ACTIVE is NOT in the assigned set, then PATCH
+# the mode and expect HTTP 400 + MAIL_PORT_EXPOSURE_MODE_REFUSED.
+# Pick three other nodes for the assigned set.
+OTHER_NODES=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1!=a && $2=="server"{print $1}' | head -3)
+mapfile -t OTHER_ARR <<<"$OTHER_NODES"
+if [ ${#OTHER_ARR[@]} -lt 1 ]; then
+  amber "  SKIP PHASE 3a: no non-active server nodes available"
+else
+  # Set placement to other-nodes only (active is excluded)
+  ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node='${OTHER_ARR[0]}', mail_secondary_node='${OTHER_ARR[1]:-NULL}', mail_tertiary_node='${OTHER_ARR[2]:-NULL}';\"" >/dev/null 2>&1
+  REFUSAL_RESP=$(api_patch '{"mode":"assignedMailNodes"}')
+  CODE=$(echo "$REFUSAL_RESP" | jq -r '.error.code // ""')
+  MSG=$(echo "$REFUSAL_RESP" | jq -r '.error.message // ""')
+  if [ "$CODE" = "MAIL_PORT_EXPOSURE_MODE_REFUSED" ]; then
+    green "  REFUSAL ✓ — backend returned MAIL_PORT_EXPOSURE_MODE_REFUSED"
+    echo "    reason: $MSG"
+  else
+    red "  REFUSAL ✗ — expected MAIL_PORT_EXPOSURE_MODE_REFUSED, got '$CODE': $MSG"
+    fail2_count=$((fail2_count+1))
+  fi
+fi
+
+hdr "PHASE 3b: assignedMailNodes mode — SUCCESS when active IS in assigned set"
+# Reset placement so active IS in the set (use active + two others)
+ASSIGNED_NEW=("$ACTIVE")
+for n in $OTHER_NODES; do
+  [ ${#ASSIGNED_NEW[@]} -lt 3 ] && ASSIGNED_NEW+=("$n")
+done
+ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node='${ASSIGNED_NEW[0]}', mail_secondary_node='${ASSIGNED_NEW[1]:-NULL}', mail_tertiary_node='${ASSIGNED_NEW[2]:-NULL}';\"" >/dev/null 2>&1
+echo "  placement re-set: ${ASSIGNED_NEW[*]}"
+
+ASSIGNED_IPS=""
+for n in "${ASSIGNED_NEW[@]}"; do
+  ip=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v t="$n" '$1==t{print $3; exit}')
+  [ -n "$ip" ] && ASSIGNED_IPS="$ASSIGNED_IPS $ip"
+done
+ASSIGNED_IPS=$(echo "$ASSIGNED_IPS" | xargs -n1 | sort -u | xargs)
+echo "  expected externalIPs: $ASSIGNED_IPS"
+
+api_patch '{"mode":"assignedMailNodes"}' >/dev/null
+amber "  waiting for haproxy DS + label reconcile + externalIPs convergence…"
+wait_for_haproxy_ds present || red "  haproxy DS didn't come up in 120s"
+wait_for_stalwart_settled no || true
+wait_for_externalips "$ASSIGNED_IPS" || red "  externalIPs didn't converge to assigned set in 180s"
+sleep 15
+fail3_count=0
+for L in "${NODE_LINES[@]}"; do
+  IFS=$'\t' read -r name role ip <<<"$L"
+  [ -z "$ip" ] && continue
+  if [[ " ${ASSIGNED_NEW[*]} " == *" $name "* ]]; then
+    probe_node_ports "$name" "$ip" yes || fail3_count=$((fail3_count+1))
+  else
+    probe_node_ports "$name" "$ip" no || fail3_count=$((fail3_count+1))
+  fi
+done
+if [ $fail3_count -eq 0 ]; then
+  green "PHASE 3b PASS — only the assigned set (${ASSIGNED_NEW[*]}) serves mail"
+else
+  red "PHASE 3b FAIL — $fail3_count nodes had unexpected reachability"
+fi
+
+# ── Restore original placement BEFORE switching back ────────────────────
+hdr "Restoring original placement"
+ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node='${PRE_PRIMARY:-NULL}', mail_secondary_node='${PRE_SECONDARY:-NULL}', mail_tertiary_node='${PRE_TERTIARY:-NULL}';\"" >/dev/null 2>&1
 
 # ── Restore prior mode ──────────────────────────────────────────────────
 hdr "Restoring mode to $PRE_MODE"
@@ -283,10 +362,11 @@ SSH
 )
 echo "$HEALTH" | jq '.data.components.deliverability | {status, summary, subProbeCount: (.subProbes // [] | length)}'
 
-if [ $fail_count -eq 0 ] && [ $fail2_count -eq 0 ]; then
-  green "OVERALL: external reachability matches expected topology in BOTH modes"
+TOTAL_FAILS=$((fail_count + fail2_count + ${fail3_count:-0}))
+if [ $TOTAL_FAILS -eq 0 ]; then
+  green "OVERALL: external reachability matches expected topology in ALL THREE MODES"
   exit 0
 else
-  red "OVERALL: external reachability has $((fail_count + fail2_count)) gap(s)"
+  red "OVERALL: external reachability has $TOTAL_FAILS gap(s)"
   exit 1
 fi

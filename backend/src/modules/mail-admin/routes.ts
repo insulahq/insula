@@ -1790,6 +1790,21 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       }
       app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode change requested');
 
+      // Pre-flight validation (2026-05-28): refuse the switch BEFORE any
+      // cluster mutation when the target mode would be incoherent with
+      // current placement (e.g. assignedMailNodes target but active node
+      // not in the assigned set). Returns a clean 400 instead of a
+      // half-applied state + the operator finding out via outage.
+      const { validateModeSwitchAgainstDb } = await import('./port-exposure.js');
+      const validationError = await validateModeSwitchAgainstDb(
+        parsed.data.mode,
+        app.db,
+        cfg.KUBECONFIG_PATH as string | undefined,
+      );
+      if (validationError) {
+        throw new ApiError('MAIL_PORT_EXPOSURE_MODE_REFUSED', validationError, 400);
+      }
+
       // Task-center wiring (2026-05-16): port-exposure flip takes 30-60s
       // (Stalwart Deployment roll + haproxy DS create/delete + rollout
       // wait). Run the work in the background while we return an
@@ -1819,10 +1834,45 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const targetLabel =
-        parsed.data.mode === 'allServerNodes'
-          ? 'Switch mail port exposure → all server nodes (haproxy DS)'
-          : 'Switch mail port exposure → this node only (hostPort)';
+      const targetLabel = (() => {
+        switch (parsed.data.mode) {
+          case 'activeNodeOnly':    return 'Switch mail port exposure → active node only (Stalwart hostPort)';
+          case 'assignedMailNodes': return 'Switch mail port exposure → assigned mail nodes (haproxy DS on primary/secondary/tertiary)';
+          case 'allServerNodes':    return 'Switch mail port exposure → all server nodes + active worker (haproxy DS)';
+        }
+      })();
+
+      // Step keys + labels per mode. Sequence matches applyModeToCluster.
+      // activeNodeOnly: delete haproxy, add hostPorts, rollout, externalIPs.
+      // assignedMailNodes / allServerNodes: remove hostPorts, rollout, label nodes, create haproxy, externalIPs.
+      const stepDef: Record<string, ReadonlyArray<{ key: string; label: string }>> = {
+        activeNodeOnly: [
+          { key: 'delete-haproxy-ds',           label: 'Delete haproxy DaemonSet' },
+          { key: 'add-hostports',                label: 'Add host ports to Stalwart Deployment' },
+          { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
+          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to active node' },
+          { key: 'db-persist',                   label: 'Persist mode to database' },
+        ],
+        assignedMailNodes: [
+          { key: 'remove-hostports',             label: 'Remove host ports from Stalwart Deployment' },
+          { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
+          { key: 'reconcile-haproxy-labels',     label: 'Label assigned nodes (primary/secondary/tertiary)' },
+          { key: 'create-haproxy-ds',            label: 'Ensure haproxy DaemonSet exists' },
+          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to assigned set' },
+          { key: 'db-persist',                   label: 'Persist mode to database' },
+        ],
+        allServerNodes: [
+          { key: 'remove-hostports',             label: 'Remove host ports from Stalwart Deployment' },
+          { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
+          { key: 'reconcile-haproxy-labels',     label: 'Label server-role nodes (+ active worker if applicable)' },
+          { key: 'create-haproxy-ds',            label: 'Ensure haproxy DaemonSet exists' },
+          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to data plane' },
+          { key: 'db-persist',                   label: 'Persist mode to database' },
+        ],
+      };
+      const steps = stepDef[parsed.data.mode]!;
+      const stepIndex: Record<string, number> = Object.fromEntries(steps.map((s, i) => [s.key, i]));
+      const stepLabels: Record<string, string> = Object.fromEntries(steps.map((s) => [s.key, s.label]));
 
       const started = await startTask(app.db, {
         kind: 'mail.port-exposure',
@@ -1830,8 +1880,6 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         userId: req.user.sub,
         label: toSafeText(targetLabel),
         target: {
-          // TaskCenterChip's dispatcher merges `taskId` into modalProps
-          // automatically — MailTaskProgressModal reads it from there.
           type: 'modal',
           modal: 'mail-operation',
           modalProps: {},
@@ -1840,47 +1888,16 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         progressText: toSafeText('Starting port-exposure flip'),
         details: {
           mode: parsed.data.mode,
-          steps: [
-            { name: 'Removing host ports from Stalwart Deployment', state: parsed.data.mode === 'allServerNodes' ? 'pending' : 'pending' },
-            { name: 'Stalwart rollout', state: 'pending' },
-            { name: parsed.data.mode === 'allServerNodes' ? 'Creating haproxy DaemonSet' : 'Deleting haproxy DaemonSet', state: 'pending' },
-            { name: 'Persisting mode to database', state: 'pending' },
-          ],
+          steps: steps.map((s) => ({ name: s.label, state: 'pending' })),
         },
       });
       const taskId = started.id;
-
-      // Step → checklist-index mapping for the details.steps update.
-      // For allServerNodes: remove-hostports → 0, wait-rollout → 1, create-ds → 2, db-persist → 3
-      // For thisNodeOnly:    delete-ds → 2, add-hostports → 0, wait-rollout → 1, db-persist → 3
-      const stepIndex: Record<string, number> = parsed.data.mode === 'allServerNodes'
-        ? { 'remove-hostports': 0, 'wait-stalwart-rollout': 1, 'create-haproxy-ds': 2, 'db-persist': 3 }
-        : { 'add-hostports': 0, 'wait-stalwart-rollout': 1, 'delete-haproxy-ds': 2, 'db-persist': 3 };
-
-      const stepLabels: Record<string, string> = parsed.data.mode === 'allServerNodes'
-        ? {
-            'remove-hostports': 'Remove host ports from Stalwart Deployment',
-            'wait-stalwart-rollout': 'Wait for Stalwart rollout',
-            'create-haproxy-ds': 'Create haproxy DaemonSet on server-role nodes',
-            'db-persist': 'Persist mode to database',
-          }
-        : {
-            'delete-haproxy-ds': 'Delete haproxy DaemonSet',
-            'add-hostports': 'Add host ports back to Stalwart Deployment',
-            'wait-stalwart-rollout': 'Wait for Stalwart rollout',
-            'db-persist': 'Persist mode to database',
-          };
 
       // Background execution: the response below returns immediately
       // with the taskId; this promise runs to completion (or failure)
       // independently and updates the task row as it goes.
       void (async () => {
-        // Rebuild the steps checklist from scratch on every progress
-        // tick so the modal can render a stable order regardless of
-        // which step fires next.
-        const stepNames = parsed.data.mode === 'allServerNodes'
-          ? ['remove-hostports', 'wait-stalwart-rollout', 'create-haproxy-ds', 'db-persist']
-          : ['delete-haproxy-ds', 'add-hostports', 'wait-stalwart-rollout', 'db-persist'];
+        const stepNames = steps.map((s) => s.key);
         const stepStates: Record<string, 'pending' | 'running' | 'done' | 'failed'> = {};
         for (const k of stepNames) stepStates[k] = 'pending';
 

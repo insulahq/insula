@@ -48,7 +48,7 @@ function buildDb(storedActiveNode: string | null = null) {
             mailAutoFailoverEnabled: false,
             mailFailoverThresholdSeconds: 300,
             mailLastFailoverAt: null,
-            mailPortExposureMode: 'thisNodeOnly',
+            mailPortExposureMode: 'activeNodeOnly',
           }]),
         })),
       })),
