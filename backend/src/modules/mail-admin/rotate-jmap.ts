@@ -28,6 +28,8 @@ import {
   getJmapSession,
   accountGet,
   accountSet,
+  domainGet,
+  domainSet,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
 import { rotateStalwartPasswordResponseSchema, type RotateStalwartPasswordResponse } from '@k8s-hosting/api-contracts';
@@ -70,6 +72,35 @@ export interface RotateJmapOptions {
    */
   readonly principalLookupName?: string;
   /**
+   * Domain name to scope the principal lookup to (2026-05-28 security
+   * fix). Without this, `findAdminPrincipalId` matches by `name` alone
+   * across all Domains in Stalwart — a tenant who provisions a mailbox
+   * `master@<their-tenant-domain>` could be silently rotated by this
+   * admin flow. When supplied, the lookup MUST also match
+   * `domainId === <domain id of principalDomain>`. The webmail-master
+   * rotation passes `mail.<PLATFORM_DOMAIN>`; the recovery-admin
+   * rotation omits this (admin lives outside any Domain).
+   */
+  readonly principalDomain?: string;
+  /**
+   * Self-heal: when the principal lookup returns null AND this flag is
+   * true, the rotation creates the principal in `principalDomain`
+   * instead of silently falling through to a Secret-only patch. The
+   * pre-fix behaviour was "principal missing → patch Secret only" which
+   * caused staging to drift into "Secret has password A, Stalwart has
+   * (no) password B" → AUTHENTICATIONFAILED on every backup Job.
+   * Requires `principalDomain` to be set (throws otherwise — refuse to
+   * guess where the principal should live).
+   */
+  readonly autoReseed?: boolean;
+  /**
+   * Description set on the principal when auto-reseed fires. Defaults
+   * to a generic marker; the webmail-master rotation passes the
+   * DO-NOT-DELETE warning from bootstrap.sh so the reseeded account
+   * carries the same operator hint.
+   */
+  readonly principalDescription?: string;
+  /**
    * Skip the post-rotation verifyNewPassword(jmap-session) check. Used
    * for the webmail master account, which is NOT a JMAP-admin principal
    * — `/jmap/session` would 401 with master credentials regardless of
@@ -110,8 +141,39 @@ export async function rotateAdminPasswordViaJmap(
 export interface RotateJmapDeps {
   generatePassword(): string;
   getJmapAccountId(env?: NodeJS.ProcessEnv): Promise<JmapAccountId>;
-  findAdminPrincipalId(accountId: JmapAccountId, username: string): Promise<string | null>;
+  /**
+   * Locate the principal by (name, optionally domainName). The
+   * default impl resolves domainName → domainId first then filters
+   * accounts by (name === target AND domainId === resolved). Pass
+   * `domainName=undefined` to keep the legacy name-only lookup
+   * (used by the recovery-admin rotation where no Domain exists).
+   */
+  findAdminPrincipalId(
+    accountId: JmapAccountId,
+    username: string,
+    domainName?: string,
+  ): Promise<string | null>;
   updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void>;
+  /**
+   * Resolve a Stalwart Domain by name; create it if missing. Returns
+   * the Domain id. Used by the auto-reseed path so a missing master
+   * Domain on a wiped-Stalwart cluster doesn't block rotation.
+   */
+  resolveOrCreateDomain(accountId: JmapAccountId, domainName: string): Promise<string>;
+  /**
+   * Create a User principal with the given name + password under the
+   * given Domain. Used by the auto-reseed path. The password is
+   * embedded in the create call rather than set via a follow-up
+   * update — one round-trip, no race window where the principal
+   * exists without credentials.
+   */
+  createPrincipal(args: {
+    accountId: JmapAccountId;
+    domainId: string;
+    name: string;
+    password: string;
+    description?: string;
+  }): Promise<string>;
   patchK8sSecret(req: { namespace: string; name: string; stringData: Record<string, string> }): Promise<void>;
   verifyNewPassword(password: string): Promise<boolean>;
   /**
@@ -154,13 +216,48 @@ export async function rotateAdminPasswordViaJmapImpl(
   // click hit 401 because we couldn't even AUTHENTICATE to do the
   // rotation, even though patching the Secret directly would unstick
   // it.
+  // Pre-validate auto-reseed config: refuse to guess where to create
+  // the principal. Throwing here (vs at use site) means the operator
+  // sees an immediate clear error instead of a partial rotation.
+  if (opts.autoReseed && !opts.principalDomain) {
+    throw new Error(
+      'rotateAdminPasswordViaJmap: autoReseed=true requires principalDomain — refusing to guess which Stalwart Domain to create the principal in',
+    );
+  }
+
   let jmapPathSucceeded = false;
   try {
     const accountId = await deps.getJmapAccountId();
-    const principalId = await deps.findAdminPrincipalId(accountId, opts.username);
+    const principalId = await deps.findAdminPrincipalId(
+      accountId, opts.username, opts.principalDomain,
+    );
     if (principalId) {
       await deps.updateAdminPassword(accountId, principalId, plain);
       jmapPathSucceeded = true;
+    } else if (opts.autoReseed && opts.principalDomain) {
+      // Self-heal: principal not found (likely a wiped Stalwart
+      // RocksDB without a re-bootstrap). Create the Domain (if
+      // missing) + the principal with the new password embedded in
+      // the create call. The Secret patch in step 4 then aligns the
+      // platform's view.
+      //
+      // Failure here MUST propagate — silently falling through to a
+      // Secret-only patch is the bug that caused staging to drift
+      // into "Secret says X, Stalwart says (nothing)" → every backup
+      // Job fails with AUTHENTICATIONFAILED.
+      const domainId = await deps.resolveOrCreateDomain(accountId, opts.principalDomain);
+      await deps.createPrincipal({
+        accountId,
+        domainId,
+        name: opts.username,
+        password: plain,
+        description: opts.principalDescription,
+      });
+      jmapPathSucceeded = true;
+      log.info(
+        { username: opts.username, domain: opts.principalDomain },
+        'master principal reseeded via auto-reseed path (was missing in Stalwart)',
+      );
     } else {
       log.info({
         username: opts.username,
@@ -381,25 +478,152 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       return id;
     },
 
-    async findAdminPrincipalId(accountId: JmapAccountId, username: string): Promise<string | null> {
+    async findAdminPrincipalId(
+      accountId: JmapAccountId,
+      username: string,
+      domainName?: string,
+    ): Promise<string | null> {
+      // 2026-05-28 security tightening: when `domainName` is set, the
+      // lookup MUST also constrain on `domainId`. Without this filter, a
+      // tenant who provisions `master@<their-tenant-domain>` is silently
+      // matched by name alone and the admin rotation flow would clobber
+      // their credentials. With it, we resolve `domainName → domainId`
+      // first (returning null if Stalwart doesn't know that Domain) and
+      // then accept only candidates whose `domainId` matches.
+      let constrainedDomainId: string | null = null;
+      if (domainName) {
+        const domains = await domainGet({
+          accountId,
+          ids: null,
+          properties: ['id', 'name'],
+          baseUrl,
+        });
+        const targetDomain = domainName.toLowerCase();
+        const found = domains.list.find((d) => {
+          const name = typeof d.name === 'string' ? d.name.toLowerCase() : '';
+          return name === targetDomain;
+        });
+        if (!found) {
+          // Stalwart doesn't have this Domain at all — caller (with
+          // autoReseed=true) will create it. Returning null here is
+          // the explicit "principal cannot exist" signal.
+          return null;
+        }
+        constrainedDomainId = (found.id as string | undefined) ?? null;
+      }
+
       // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
       // does NOT honour `{ name }` (or any tested filter) — silently
       // returns ids: []. We list-and-filter via x:Account/get + tenant-
       // side match until a working filter shape is documented. The
       // expected user count for the admin namespace is tiny (1–10),
       // so the full list is cheap.
+      const properties = constrainedDomainId
+        ? ['id', 'name', 'domainId']
+        : ['id', 'name'];
       const result = await accountGet({
         accountId,
         ids: null,
-        properties: ['id', 'name'],
+        properties,
         baseUrl,
       });
       const target = username.toLowerCase();
       const match = result.list.find((r) => {
         const name = typeof r.name === 'string' ? r.name.toLowerCase() : '';
-        return name === target;
+        if (name !== target) return false;
+        if (constrainedDomainId) {
+          const did = typeof r.domainId === 'string' ? r.domainId : null;
+          if (did !== constrainedDomainId) return false;
+        }
+        return true;
       });
       return (match?.id as string | undefined) ?? null;
+    },
+
+    async resolveOrCreateDomain(accountId: JmapAccountId, domainName: string): Promise<string> {
+      // Look up first — bootstrap may have already created it. Match
+      // case-insensitively so `MAIL.example.com` and `mail.example.com`
+      // collapse to one Domain.
+      const target = domainName.toLowerCase();
+      const existing = await domainGet({
+        accountId,
+        ids: null,
+        properties: ['id', 'name'],
+        baseUrl,
+      });
+      const found = existing.list.find((d) => {
+        const name = typeof d.name === 'string' ? d.name.toLowerCase() : '';
+        return name === target;
+      });
+      if (found?.id && typeof found.id === 'string') return found.id;
+
+      // Not present — create it. Stalwart's `x:Domain/set` create
+      // shape is the minimal `{ name }` payload; the server fills in
+      // defaults (DNS zone, signing keys lazily on first email).
+      const created = await domainSet({
+        accountId,
+        request: { create: { 'new-domain': { name: domainName } } },
+        baseUrl,
+      });
+      const newDomain = created.created?.['new-domain'];
+      const notCreated = created.notCreated?.['new-domain'];
+      if (notCreated) {
+        throw new Error(
+          `JMAP x:Domain/set create failed for '${domainName}': `
+          + `${notCreated.description ?? notCreated.type}`,
+        );
+      }
+      const newId = (newDomain as { id?: unknown } | undefined)?.id;
+      if (typeof newId !== 'string' || newId.length === 0) {
+        throw new Error(
+          `JMAP x:Domain/set create returned no id for '${domainName}'`,
+        );
+      }
+      return newId;
+    },
+
+    async createPrincipal(args): Promise<string> {
+      // Stalwart's `x:Account/set` create shape for a User principal
+      // with embedded password — same shape `mailboxes/service.ts` uses
+      // for ordinary user provisioning. `allowedIps: {}` + `expiresAt:
+      // null` are required by Stalwart's Password credential schema;
+      // omitting them caused `invalidProperties` rejections in earlier
+      // experiments.
+      const credentials: Record<string, unknown> = {
+        '0': {
+          '@type': 'Password',
+          secret: args.password,
+          allowedIps: {},
+          expiresAt: null,
+        },
+      };
+      const createPayload: Record<string, unknown> = {
+        '@type': 'User',
+        name: args.name,
+        domainId: args.domainId,
+        credentials,
+        ...(args.description ? { description: args.description } : {}),
+      };
+      const result = await accountSet({
+        accountId: args.accountId,
+        request: { create: { 'new-principal': createPayload } },
+        baseUrl,
+      });
+      const created = result.created?.['new-principal'];
+      const notCreated = result.notCreated?.['new-principal'];
+      if (notCreated) {
+        throw new Error(
+          `JMAP x:Account/set create failed for principal '${args.name}': `
+          + `${notCreated.description ?? notCreated.type}`,
+        );
+      }
+      const newId = (created as { id?: unknown } | undefined)?.id;
+      if (typeof newId !== 'string' || newId.length === 0) {
+        throw new Error(
+          `JMAP x:Account/set create returned no id for principal '${args.name}'`,
+        );
+      }
+      return newId;
     },
 
     async updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void> {

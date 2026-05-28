@@ -49,6 +49,22 @@ export interface RotateWebmailMasterOptions {
   readonly masterUsername?: string;
   /** Defaults to `roundcube`. The Deployment to roll after rotation. */
   readonly roundcubeDeployment?: string;
+  /**
+   * Stalwart Domain that holds the master principal. As of 2026-05-26
+   * the bootstrap creates it in `mail.<PLATFORM_DOMAIN>`. Required —
+   * caller MUST resolve from runtime config (e.g. `mail.${PLATFORM_DOMAIN}`)
+   * so dev/staging/production stay in sync without hard-coding.
+   *
+   * The rotation flow uses this for TWO purposes:
+   *   1. Scoped principal lookup — `findAdminPrincipalId` filters
+   *      candidates by `domainId === <id of principalDomain>` so a
+   *      tenant who provisions `master@<tenant.com>` cannot collide.
+   *   2. Auto-reseed target — if the principal is missing (wiped
+   *      Stalwart, half-migrated install), the rotation creates it
+   *      under this Domain with the new password embedded. No extra
+   *      endpoint, no operator click — drift heals automatically.
+   */
+  readonly principalDomain: string;
 }
 
 export async function rotateWebmailMasterPassword(
@@ -66,6 +82,13 @@ export async function rotateWebmailMasterPassword(
     username: masterUsername,
     secretKeys: ['STALWART_MASTER_PASSWORD'],
     skipJmapSessionVerify: true,
+    principalDomain: opts.principalDomain,
+    autoReseed: true,
+    // Mirrors the DO-NOT-DELETE warning bootstrap.sh stamps on the
+    // initial provisioning so a manual `Stalwart cli` user delete still
+    // sees the operator hint after auto-reseed.
+    principalDescription:
+      'Webmail master account (Roundcube + Bulwark JWT impersonation). DO NOT DELETE — recreate via /admin/mail/rotate-webmail-master.',
     // No cross-NS mirror — Roundcube and the master Account share the
     // mail namespace.
   });

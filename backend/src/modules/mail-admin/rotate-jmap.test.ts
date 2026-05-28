@@ -48,6 +48,11 @@ function makeDeps(overrides: Partial<RotateJmapDeps> = {}): RotateJmapDeps {
     getJmapAccountId: vi.fn().mockResolvedValue('account-123'),
     findAdminPrincipalId: vi.fn().mockResolvedValue('principal-admin-1'),
     updateAdminPassword: vi.fn().mockResolvedValue(undefined),
+    // Defaults for the auto-reseed deps (FIX 3, 2026-05-28). Tests
+    // that exercise the reseed path override these; existing tests
+    // never reach them because findAdminPrincipalId returns a real id.
+    resolveOrCreateDomain: vi.fn().mockResolvedValue('domain-default'),
+    createPrincipal: vi.fn().mockResolvedValue('principal-default'),
     patchK8sSecret: vi.fn().mockResolvedValue(undefined),
     verifyNewPassword: vi.fn().mockResolvedValue(true),
     recyclePods: vi.fn().mockResolvedValue({ deletedCount: 0 }),
@@ -302,5 +307,118 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     // The new cleartext is returned so the operator can copy + paste
     // even when verify timed out — Stalwart will pick it up shortly.
     expect(deps.patchK8sSecret).toHaveBeenCalled();
+  });
+});
+
+describe('rotateAdminPasswordViaJmapImpl — domain-scoped lookup (FIX 2, 2026-05-28)', () => {
+  it('passes principalDomain through to findAdminPrincipalId so the rotation cannot match a same-named account in a different Domain', async () => {
+    const findSpy = vi.fn().mockResolvedValue('principal-master-1');
+    const deps = makeDeps({ findAdminPrincipalId: findSpy });
+
+    await rotateAdminPasswordViaJmapImpl(
+      { ...BASE_OPTS, username: 'master', principalDomain: 'mail.staging.phoenix-host.net' },
+      deps,
+    );
+
+    // Lookup MUST receive the domain so it can filter by domainId.
+    // Without this filter, a tenant who creates a mailbox
+    // `master@<their-tenant-domain>` could have their account
+    // silently rotated by this admin flow.
+    expect(findSpy).toHaveBeenCalledWith('account-123', 'master', 'mail.staging.phoenix-host.net');
+  });
+});
+
+describe('rotateAdminPasswordViaJmapImpl — auto-reseed (FIX 3, 2026-05-28)', () => {
+  it('when principal missing AND autoReseed=true → resolveOrCreateDomain + createPrincipal fire and JMAP succeeds', async () => {
+    const resolveDomain = vi.fn().mockResolvedValue('domain-id-mail-apex');
+    const createPrincipal = vi.fn().mockResolvedValue('principal-new-master');
+    const updateSpy = vi.fn();
+
+    const deps = makeDeps({
+      findAdminPrincipalId: vi.fn().mockResolvedValue(null),
+      resolveOrCreateDomain: resolveDomain,
+      createPrincipal,
+      updateAdminPassword: updateSpy,
+    });
+
+    const result = await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        username: 'master',
+        principalDomain: 'mail.staging.phoenix-host.net',
+        autoReseed: true,
+        principalDescription: 'Platform master user — DO NOT DELETE',
+        skipJmapSessionVerify: true,
+      },
+      deps,
+    );
+
+    expect(resolveDomain).toHaveBeenCalledWith('account-123', 'mail.staging.phoenix-host.net');
+    expect(createPrincipal).toHaveBeenCalledWith({
+      accountId: 'account-123',
+      domainId: 'domain-id-mail-apex',
+      name: 'master',
+      password: 'new-secret-password',
+      description: 'Platform master user — DO NOT DELETE',
+    });
+    // updateAdminPassword should NOT be called — we just created the
+    // principal with the password embedded.
+    expect(updateSpy).not.toHaveBeenCalled();
+    // Secret still gets patched.
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+    expect(result.password).toBe('new-secret-password');
+  });
+
+  it('when principal missing AND autoReseed=false → falls through to Secret-only (existing recovery-admin path stays intact)', async () => {
+    const resolveDomain = vi.fn();
+    const createPrincipal = vi.fn();
+    const deps = makeDeps({
+      findAdminPrincipalId: vi.fn().mockResolvedValue(null),
+      resolveOrCreateDomain: resolveDomain,
+      createPrincipal,
+    });
+
+    const result = await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+
+    // Reseed deps MUST NOT fire when autoReseed is off — preserves
+    // the recovery-admin behaviour where no Account exists by design.
+    expect(resolveDomain).not.toHaveBeenCalled();
+    expect(createPrincipal).not.toHaveBeenCalled();
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+    expect(result.password).toBe('new-secret-password');
+  });
+
+  it('when autoReseed=true but principalDomain missing → throws (refuses to guess where to create the principal)', async () => {
+    const deps = makeDeps({ findAdminPrincipalId: vi.fn().mockResolvedValue(null) });
+
+    await expect(
+      rotateAdminPasswordViaJmapImpl(
+        { ...BASE_OPTS, username: 'master', autoReseed: true /* no principalDomain */ },
+        deps,
+      ),
+    ).rejects.toThrow(/principalDomain/);
+    // No partial-state writes: Secret patched anyway? Allow the existing
+    // path — admin can re-run. Assertion focuses on the throw.
+  });
+
+  it('when reseed createPrincipal fails → error propagates (NOT silently swallowed)', async () => {
+    const deps = makeDeps({
+      findAdminPrincipalId: vi.fn().mockResolvedValue(null),
+      resolveOrCreateDomain: vi.fn().mockResolvedValue('domain-id'),
+      createPrincipal: vi.fn().mockRejectedValue(new Error('JMAP create rejected: domainId invalid')),
+    });
+
+    await expect(
+      rotateAdminPasswordViaJmapImpl(
+        {
+          ...BASE_OPTS,
+          username: 'master',
+          principalDomain: 'mail.staging.phoenix-host.net',
+          autoReseed: true,
+          skipJmapSessionVerify: true,
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/JMAP create rejected/);
   });
 });
