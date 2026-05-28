@@ -20,13 +20,19 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
   annotations:
-    # Roll on bulwark-secrets change. The secret carries:
-    #   - ADMIN_PASSWORD              admin dashboard login
-    #   - SESSION_SECRET              encrypts session cookies
-    #   - BULWARK_JWT_AUTH_SECRET     verifies platform-api's impersonation JWTs
-    #   - BULWARK_STALWART_MASTER_USER
-    #   - BULWARK_STALWART_MASTER_PASSWORD
-    secret.reloader.stakater.com/reload: bulwark-secrets
+    # Roll on bulwark-secrets OR mail-secrets change.
+    #   bulwark-secrets carries Bulwark-specific credentials:
+    #     - ADMIN_PASSWORD              admin dashboard login
+    #     - SESSION_SECRET              encrypts session cookies
+    #     - BULWARK_JWT_AUTH_SECRET     verifies platform-api's impersonation JWTs
+    #   mail-secrets carries Stalwart master credentials shared with
+    #   Roundcube + tenant-bundle Jobs:
+    #     - STALWART_MASTER_USER
+    #     - STALWART_MASTER_PASSWORD
+    #   When rotateWebmailMasterPassword updates mail-secrets, Reloader
+    #   rolls Bulwark automatically (2026-05-28: replaced the
+    #   bulwark-secrets mirror that drifted on every rotation).
+    secret.reloader.stakater.com/reload: "bulwark-secrets,mail-secrets"
     # Flux SSA: Merge so platform-api's webmail-router reconciler can
     # patch container env (e.g. on engine flip) without Flux reverting.
     kustomize.toolkit.fluxcd.io/ssa: Merge
@@ -325,16 +331,23 @@ spec:
                 secretKeyRef:
                   name: bulwark-secrets
                   key: BULWARK_JWT_AUTH_SECRET
+            # 2026-05-28: read Stalwart master credentials DIRECTLY
+            # from mail-secrets — same Secret that Roundcube and the
+            # tenant-bundle Jobs use. Previously these two keys were
+            # mirrored into bulwark-secrets at bootstrap and the mirror
+            # could drift on every rotation (rotateWebmailMasterPassword
+            # only patches mail-secrets). With a direct reference the
+            # mirror disappears entirely.
             - name: BULWARK_STALWART_MASTER_USER
               valueFrom:
                 secretKeyRef:
-                  name: bulwark-secrets
-                  key: BULWARK_STALWART_MASTER_USER
+                  name: mail-secrets
+                  key: STALWART_MASTER_USER
             - name: BULWARK_STALWART_MASTER_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: bulwark-secrets
-                  key: BULWARK_STALWART_MASTER_PASSWORD
+                  name: mail-secrets
+                  key: STALWART_MASTER_PASSWORD
             # Issuer claim Bulwark checks against (defaults to
             # "platform-api/webmail" in the route handler — set
             # explicitly so the contract is self-documenting on

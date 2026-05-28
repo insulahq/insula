@@ -7,8 +7,10 @@
 # Secrets (operator-bootstrapped by scripts/bootstrap.sh):
 #   bulwark-secrets  — ADMIN_PASSWORD + SESSION_SECRET +
 #                      BULWARK_JWT_AUTH_SECRET (mirrors platform-api
-#                      WEBMAIL_JWT_SECRET) + BULWARK_STALWART_MASTER_USER
-#                      + BULWARK_STALWART_MASTER_PASSWORD
+#                      WEBMAIL_JWT_SECRET).
+#                      2026-05-28: STALWART_MASTER_USER/PASSWORD removed
+#                      — Bulwark reads them from mail-secrets directly
+#                      so rotation propagates without a mirror.
 #
 # Production wiring differences from dev/bulwark:
 #   - Real Let's Encrypt cert via cert-manager (no local-ca)
