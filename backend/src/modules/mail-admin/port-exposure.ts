@@ -36,12 +36,12 @@
  * PATCH /admin/mail/port-exposure → 204
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { applyPatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartRollout } from './rollout-wait.js';
-import { systemSettings } from '../../db/schema.js';
+import { systemSettings, tasks } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
   type MailPortExposureResponse,
@@ -294,11 +294,32 @@ export async function updateMailPortExposure(
  * created with the default `allServerNodes`) actually have the haproxy
  * DaemonSet present without the operator needing to PATCH the endpoint.
  * Idempotent — if the cluster already matches, the calls are no-ops.
+ *
+ * Skip-if-task-running: when a `mail.port-exposure` task is `running`,
+ * an operator-initiated mode switch is in flight on some pod. Running
+ * the startup reconciler concurrently would race over the same
+ * Deployment patch / DS lifecycle / node labels (caught 2026-05-28:
+ * CI deploys restart platform-api mid-PATCH; new pod's startup
+ * reconciler raced the old pod's still-live orchestration of the
+ * operator's PATCH and deadlocked the Deployment's SSA owners). Skip
+ * here and let the operator's task either finish or fail; subsequent
+ * operator action or the next platform-api restart re-reconciles.
  */
 export async function ensureMailPortExposureApplied(
   db: Database,
   opts: PortExposureOptions,
 ): Promise<void> {
+  const running = await db.select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.kind, 'mail.port-exposure'), eq(tasks.status, 'running')))
+    .limit(1);
+  if (running.length > 0) {
+    // An operator PATCH is in flight (possibly on another pod or this
+    // pod's previous incarnation). Refuse to apply — operator intent
+    // wins. The orphan-task cleanup outside this module is responsible
+    // for marking stale `running` rows failed.
+    return;
+  }
   const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
@@ -307,11 +328,45 @@ export async function ensureMailPortExposureApplied(
 }
 
 /**
+ * Process-local mutex serialising applyModeToCluster invocations within
+ * a single platform-api pod. Two callers can reach this function
+ * concurrently — the route handler's PATCH-spawned background task and
+ * the startup reconciler's fire-and-forget call (app.ts:1246). The
+ * DB-level `running`-task guard in ensureMailPortExposureApplied
+ * blocks the startup-vs-operator race, but a second operator PATCH
+ * landing on the same pod while the first is still inside
+ * applyModeToCluster would still race over Deployment/Service patches.
+ * This chain-promise mutex serialises both cases without blocking the
+ * event loop: callers join the tail of the existing promise chain.
+ */
+let applyModeMutex: Promise<void> = Promise.resolve();
+
+/**
  * Two-step cluster mutation for the given mode. Extracted from
  * `updateMailPortExposure` so the startup reconciler can reuse it
  * without writing back to the DB (the DB value is the source of truth).
  */
 async function applyModeToCluster(
+  mode: MailPortExposureMode,
+  opts: PortExposureOptions,
+  onProgress?: PortExposureProgressCallback,
+  db?: Database,
+): Promise<void> {
+  // Chain onto the existing mutex tail. Errors don't poison the chain
+  // — we catch the prior result so a failed prior call doesn't prevent
+  // subsequent calls from proceeding.
+  const prior = applyModeMutex.catch(() => undefined);
+  let release: () => void;
+  applyModeMutex = new Promise<void>((resolve) => { release = resolve; });
+  await prior;
+  try {
+    await applyModeToClusterUnlocked(mode, opts, onProgress, db);
+  } finally {
+    release!();
+  }
+}
+
+async function applyModeToClusterUnlocked(
   mode: MailPortExposureMode,
   opts: PortExposureOptions,
   onProgress?: PortExposureProgressCallback,
