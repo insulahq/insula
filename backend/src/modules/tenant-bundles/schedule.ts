@@ -10,7 +10,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { backupConfigurations } from '../../db/schema.js';
+import { backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
@@ -19,8 +19,26 @@ import type { BackupStore } from './bundle-store.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function runOneScheduledBundle(app: FastifyInstance, tenantId: string, retentionDays: number): Promise<void> {
-  const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.active, true)).limit(1);
-  if (!cfg) throw new Error('no active backup target — schedule cannot fire');
+  // Prefer the new `backup_target_assignments` model (2026-05-28).
+  // Falls back to the legacy `active=true` lookup so a cluster that
+  // hasn't migrated assignments yet still fires bundles.
+  let cfg: typeof backupConfigurations.$inferSelect | undefined;
+  const [assigned] = await app.db.select({ targetId: backupTargetAssignments.targetId })
+    .from(backupTargetAssignments)
+    .where(eq(backupTargetAssignments.backupClass, 'tenant'))
+    .orderBy(backupTargetAssignments.priority)
+    .limit(1);
+  if (assigned) {
+    const [byId] = await app.db.select().from(backupConfigurations)
+      .where(eq(backupConfigurations.id, assigned.targetId)).limit(1);
+    cfg = byId;
+  }
+  if (!cfg) {
+    const [legacy] = await app.db.select().from(backupConfigurations)
+      .where(eq(backupConfigurations.active, true)).limit(1);
+    cfg = legacy;
+  }
+  if (!cfg) throw new Error('no backup target assigned to class=tenant (and no active=true row) — schedule cannot fire');
 
   const platformVersion = (app.config as Record<string, unknown>).PLATFORM_VERSION as string | undefined ?? '0.0.0';
   const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
