@@ -22,7 +22,10 @@ IngressRoute now targets the `bulwark` Service directly.
   route)
 - 3 new envs on the `bulwark` container: `BULWARK_JWT_AUTH_SECRET`
   (= platform-api's `WEBMAIL_JWT_SECRET`, one shared HMAC key),
-  `BULWARK_STALWART_MASTER_USER`, `BULWARK_STALWART_MASTER_PASSWORD`
+  `STALWART_MASTER_USER`, `STALWART_MASTER_PASSWORD` (sourced from
+  `mail-secrets`; 2026-05-28 renamed from the wrapper-prefixed
+  `BULWARK_STALWART_*` to match Bulwark upstream's actual env names —
+  the prefixed form was invisible to upstream code)
 - `webmailUrl` returned by `POST /api/v1/email/webmail-token` is
   now `…/api/auth/impersonate?token=<jwt>` (was `…/_impersonate?token=<jwt>`)
 - `serviceNameForEngine('bulwark')` returns `'bulwark'` (was `'bulwark-impersonator'`)
@@ -91,7 +94,7 @@ IngressRoute now targets the `bulwark` Service directly.
 | `bulwark` Deployment | `mail/bulwark` | The Bulwark Next.js SPA. Native `/api/auth/impersonate` route handles JWT-signed master-user handoff |
 | `stalwart-url-rewriter` Deployment | `mail/stalwart-url-rewriter` (**dev DinD only**) | Rewrites Stalwart self-reported URLs (port injection, JSON unzip, credentialed CORS) |
 | `platform_settings.default_webmail_engine` | `system-db` | `'roundcube'` or `'bulwark'`. Set via webmail-settings update endpoint |
-| `bulwark-secrets` | `mail` ns | `ADMIN_PASSWORD` + `SESSION_SECRET` + `BULWARK_JWT_AUTH_SECRET` (= platform-api's `WEBMAIL_JWT_SECRET`) + `BULWARK_STALWART_MASTER_USER` + `BULWARK_STALWART_MASTER_PASSWORD` |
+| `bulwark-secrets` | `mail` ns | `ADMIN_PASSWORD` + `SESSION_SECRET` + `BULWARK_JWT_AUTH_SECRET` (= platform-api's `WEBMAIL_JWT_SECRET`). 2026-05-28: STALWART_MASTER_USER/PASSWORD removed — Bulwark Deployment env reads them directly from `mail-secrets` (same Secret Roundcube reads). |
 
 ## Stalwart prerequisites
 
@@ -109,8 +112,9 @@ Bulwark depends on three pieces of Stalwart 0.16 configuration that
    `/.well-known/jmap` fetch the SPA makes after login.
 3. **`master@<apex>`** Account with the `System Administrator`
    role (or any role that has the `impersonate` permission). Cleartext
-   password lives in `stalwart-admin-creds.adminMasterPassword`
-   (matching `bulwark-secrets.BULWARK_STALWART_MASTER_PASSWORD`).
+   password lives in `mail-secrets.STALWART_MASTER_PASSWORD` (shared
+   with Roundcube + tenant-bundle Jobs; Bulwark reads it directly via
+   `secretKeyRef`).
    Note: Stalwart 0.16 rejects `.local` TLD on auth — anchor master
    under the platform's apex (e.g. `master@example.test`).
 
