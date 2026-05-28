@@ -294,6 +294,135 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
   });
 });
 
+describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * Build a DB that responds differently to the two select chains used
+   * by ensureMailPortExposureApplied:
+   *   1. select tasks where kind=mail.port-exposure AND status=running LIMIT 1
+   *   2. select systemSettings.mailPortExposureMode where id='system'
+   *
+   * `runningTasks` controls chain #1 — set to [] for "no running task"
+   * or [{ id: '...' }] to simulate an in-flight operator PATCH.
+   */
+  function buildRaceDb(opts: {
+    runningTasks: Array<{ id: string }>;
+    mode: string | null;
+  }) {
+    return {
+      select: vi.fn(() => ({
+        from: vi.fn((_table: unknown) => ({
+          // Tasks-query chain has .limit(); systemSettings chain ends
+          // at .where(). Both branches return Thenable arrays.
+          where: vi.fn(() => {
+            const result = opts.runningTasks; // tasks-query branch
+            // Return an object that BOTH (a) is awaitable resolving
+            // to the systemSettings row AND (b) has .limit() for the
+            // tasks-query branch.
+            const arr = result.length ? result : null;
+            return Object.assign(
+              Promise.resolve(arr ? [] : [{ v: opts.mode }]),
+              { limit: vi.fn().mockResolvedValue(opts.runningTasks) },
+            );
+          }),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
+    } as unknown as import('../../db/index.js').Database;
+  }
+
+  it('SKIPS reconciliation when a mail.port-exposure task is running', async () => {
+    const db = buildRaceDb({
+      runningTasks: [{ id: 'task-in-flight' }],
+      mode: 'allServerNodes',
+    });
+    const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined });
+    // applyModeToCluster shouldn't have touched the cluster — no DS reads,
+    // no Deployment patches.
+    expect(mockReadDs).not.toHaveBeenCalled();
+    expect(mockCreateDs).not.toHaveBeenCalled();
+    expect(mockDeleteDs).not.toHaveBeenCalled();
+    expect(mockPatchDeployment).not.toHaveBeenCalled();
+  });
+
+  it('PROCEEDS with reconciliation when no port-exposure task is running', async () => {
+    mockReadDs.mockResolvedValue({ status: {} }); // DS exists — no create needed
+    mockPatchDeployment.mockResolvedValue(undefined);
+    mockReadDeployment.mockResolvedValue({
+      metadata: { generation: 1 },
+      spec: { replicas: 1 },
+      status: { observedGeneration: 1, replicas: 1, readyReplicas: 1, updatedReplicas: 1, unavailableReplicas: 0 },
+    });
+    const db = buildRaceDb({
+      runningTasks: [],
+      mode: 'allServerNodes',
+    });
+    const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined });
+    // Should have at minimum called patchDeployment (the SSA-apply
+    // removing hostPorts in allServerNodes mode).
+    expect(mockPatchDeployment).toHaveBeenCalled();
+  });
+});
+
+describe('mail-admin/port-exposure — in-process mutex on applyModeToCluster', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * Two concurrent updateMailPortExposure invocations must serialise:
+   * the second must wait until the first's Deployment patches +
+   * rollout wait return. Without the mutex, both would race on the
+   * same SSA-apply field manager and the second's wait-for-rollout
+   * could observe stale generation/observedGeneration mid-roll. We
+   * detect serialisation by counting concurrent in-flight patches
+   * via a barrier.
+   */
+  it('serialises concurrent updateMailPortExposure calls', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    // Track concurrency across both readNamespacedDeployment AND
+    // patchNamespacedDeployment — both are inside the critical section.
+    mockPatchDeployment.mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // 50ms holds the critical section long enough for the second
+      // call to RACE in without the mutex; with the mutex it must wait.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      inFlight--;
+      return undefined;
+    });
+    mockReadDeployment.mockResolvedValue({
+      metadata: { generation: 1 },
+      spec: { replicas: 1 },
+      status: { observedGeneration: 1, replicas: 1, readyReplicas: 1, updatedReplicas: 1, unavailableReplicas: 0 },
+    });
+    // DS lifecycle: present so the create-DS branch becomes a no-op
+    mockReadDs.mockResolvedValue({ status: {} });
+
+    const db = buildDb();
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await Promise.all([
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+    ]);
+    // With the mutex, max-in-flight should be 1 — the second call's
+    // patchDeployment never overlaps with the first's.
+    expect(maxInFlight).toBe(1);
+    // Both calls should have actually executed patches (not skipped).
+    expect(mockPatchDeployment.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('mail-admin/port-exposure.getMailPortExposure', () => {
   beforeEach(() => {
     vi.clearAllMocks();
