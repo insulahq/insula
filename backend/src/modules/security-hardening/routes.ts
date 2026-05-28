@@ -35,6 +35,7 @@ import {
   getStatus as getCrowdsecStatus,
   listDecisions,
   pruneStaleBouncers,
+  STATIC_BAN_DURATION,
 } from './crowdsec.js';
 import {
   addAllowlistEntry,
@@ -447,7 +448,10 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: result.message,
             value: parsed.data.value,
             scope: parsed.data.scope,
-            duration: '8760h',
+            // Source of truth from crowdsec.ts so a future bump keeps
+            // the response and the actual cscli call in sync (was a
+            // hardcoded '8760h' that lied after the 1y → 100y change).
+            duration: STATIC_BAN_DURATION,
             reason: parsed.data.reason,
           });
         } catch (err) {
