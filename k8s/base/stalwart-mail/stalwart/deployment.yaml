@@ -130,6 +130,91 @@ spec:
       securityContext:
         runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
       initContainers:
+        # protect-from-silent-data-loss (2026-05-28): refuse to start
+        # Stalwart with an empty PVC when the platform DB still
+        # references Stalwart-side principal IDs. Without this guard,
+        # a fresh-PVC + allow-restore=false combination silently boots
+        # Stalwart with NO accounts → tenant Domains, mailboxes, DKIM
+        # keys all orphaned with no warning. This has happened TWICE in
+        # dev (2026-05-25 + 2026-05-28).
+        #
+        # The guard queries platform-api's
+        # /internal/mail/stalwart-data-expectation endpoint (anonymous
+        # — no sensitive data, network-policy-gated) and compares
+        # `expectedPrincipals` to the PVC inventory. If DB says we have
+        # mailboxes but PVC is empty, refuse with a clear operator
+        # message + remediation instructions.
+        #
+        # Fail-OPEN on platform-api unreachable: better to allow a
+        # legitimate fresh-start than to brick the cluster on a
+        # transient backend outage. The case we're catching here is
+        # the DELIBERATE-looking-but-actually-accidental wipe.
+        - name: protect-from-silent-data-loss
+          image: curlimages/curl:8.10.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              ALLOW_RESTORE=$$(cat /podinfo/allow-restore 2>/dev/null || echo "false")
+              ALLOW_FRESH_START=$$(cat /podinfo/allow-fresh-start 2>/dev/null || echo "false")
+              if [ "$$ALLOW_RESTORE" = "true" ] || [ "$$ALLOW_FRESH_START" = "true" ]; then
+                echo "protect-from-silent-data-loss: override annotation set — bypassing guard"
+                exit 0
+              fi
+              DATA_FILES=$$(ls /var/lib/stalwart/data 2>/dev/null | wc -l)
+              if [ "$$DATA_FILES" -gt 2 ]; then
+                echo "protect-from-silent-data-loss: PVC has $$DATA_FILES entries — not empty, skip check"
+                exit 0
+              fi
+              # PVC empty + no override. Check if DB has expected data.
+              # Fail-open on backend unreachable (10s timeout) — bricking
+              # the cluster on platform-api outage is worse than allowing
+              # the accidental wipe we're guarding against.
+              URL="http://platform-api.platform.svc.cluster.local:3000/api/v1/internal/mail/stalwart-data-expectation"
+              echo "protect-from-silent-data-loss: empty PVC + no override — querying $$URL"
+              RESP=$$(curl -sS --max-time 10 "$$URL" 2>/dev/null || echo "")
+              if [ -z "$$RESP" ]; then
+                echo "protect-from-silent-data-loss: WARNING — platform-api unreachable; allowing fresh-start (fail-open). Drift will be detected later by stalwart-principals-sync."
+                exit 0
+              fi
+              # JSON parsing without jq: grep + sed. Response shape:
+              # {"data":{"expectedPrincipals":N,"expectedDomains":M}}
+              EXPECTED=$$(echo "$$RESP" | sed -n 's/.*"expectedPrincipals":[[:space:]]*\([0-9]*\).*/\1/p')
+              EXPECTED=$${EXPECTED:-0}
+              if [ "$$EXPECTED" -le 0 ]; then
+                echo "protect-from-silent-data-loss: DB has 0 Stalwart-linked mailboxes — fresh-start safe"
+                exit 0
+              fi
+              echo ""
+              echo "═════════════════════════════════════════════════════════════════════════"
+              echo "  REFUSING TO FRESH-START — TENANT ACCOUNTS WOULD BE LOST"
+              echo ""
+              echo "  Platform DB references $$EXPECTED mailbox principal(s), but the"
+              echo "  Stalwart PVC at /var/lib/stalwart/data is empty."
+              echo ""
+              echo "  A fresh start here would PERMANENTLY orphan every mailbox + tenant"
+              echo "  Domain. This guard exists because the same silent-loss event has"
+              echo "  happened TWICE in dev (2026-05-25 + 2026-05-28)."
+              echo ""
+              echo "  TO RESTORE FROM RESTIC (recommended):"
+              echo "    kubectl patch deploy -n mail stalwart-mail --type=merge -p \\\\"
+              echo '      '"'"'{"spec":{"template":{"metadata":{"annotations":{"mail.platform/allow-restore":"true"}}}}}'"'"
+              echo ""
+              echo "  TO DELIBERATELY ACCEPT THE LOSS (e.g., greenfield install):"
+              echo "    kubectl patch deploy -n mail stalwart-mail --type=merge -p \\\\"
+              echo '      '"'"'{"spec":{"template":{"metadata":{"annotations":{"mail.platform/allow-fresh-start":"true"}}}}}'"'"
+              echo ""
+              echo "  Then scale the Deployment back up."
+              echo "═════════════════════════════════════════════════════════════════════════"
+              echo ""
+              exit 1
+          volumeMounts:
+            - name: stalwart-data
+              mountPath: /var/lib/stalwart/data
+            - name: pod-annotations
+              mountPath: /podinfo
         # restore-state: download + import the latest Stalwart DataStore
         # snapshot when the RocksDB data directory is empty AND the
         # stalwart-snapshot-restic-repo Secret is configured.

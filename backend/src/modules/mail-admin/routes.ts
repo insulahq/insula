@@ -2116,4 +2116,39 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       return success(await setMailboxBackupSettings(app.db, parsed.data));
     },
   );
+
+  // ── Stalwart silent-data-loss guard endpoint ────────────────────────
+  //
+  // 2026-05-28: read by the Stalwart Deployment's protect-from-silent-
+  // data-loss init container BEFORE the restore-state container runs.
+  // Returns counts of platform-DB rows that reference Stalwart-side IDs.
+  // If counts > 0 AND the PVC is empty AND no operator override
+  // annotation is set, the init container refuses to fresh-start
+  // (CrashLoopBackOff) — preventing the silent-loss class the
+  // 2026-05-25 + 2026-05-28 dev incidents both hit.
+  //
+  // Anonymous (no bearer token) — the response carries no sensitive
+  // data (just integer counts) and the endpoint is reachable only
+  // from inside the cluster (platform-api Service is ClusterIP +
+  // not exposed via Ingress). A future hardening pass could move
+  // this behind an mTLS service mesh, but the network boundary is
+  // sufficient for the threat model (operator-action-only failures).
+  app.get(
+    '/internal/mail/stalwart-data-expectation',
+    { config: { skipAuth: true } },
+    async () => {
+      const { mailboxes, emailDomains } = await import('../../db/schema.js');
+      const { sql, isNotNull } = await import('drizzle-orm');
+      const [m] = await app.db.execute(sql`
+        SELECT COUNT(*)::int AS c FROM ${mailboxes} WHERE ${isNotNull(mailboxes.stalwartPrincipalId)}
+      `) as unknown as Array<{ c: number }>;
+      const [d] = await app.db.execute(sql`
+        SELECT COUNT(*)::int AS c FROM ${emailDomains} WHERE ${isNotNull(emailDomains.stalwartDomainId)}
+      `) as unknown as Array<{ c: number }>;
+      return {
+        expectedPrincipals: Number(m?.c ?? 0),
+        expectedDomains: Number(d?.c ?? 0),
+      };
+    },
+  );
 }
