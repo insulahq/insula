@@ -210,25 +210,39 @@ SERVER_IPS=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' '$2=="server"{pr
 ACTIVE_IP=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1==a{print $3; exit}')
 
 # ── PHASE 1: allServerNodes mode ────────────────────────────────────────
-hdr "PHASE 1: allServerNodes mode — every server-role IP should answer mail ports; worker IP should NOT"
+# Semantics (2026-05-28 redesign): allServerNodes data plane =
+# server-role nodes ∪ {active node if active is worker-role}.
+# So when active=worker, the worker IS in the public-facing set
+# (best fail-tolerance: mail survives a server-tier outage as long as
+# the active node is up). When active=server, only the server nodes
+# answer (worker has no data-plane role).
+hdr "PHASE 1: allServerNodes mode — server-role nodes serve mail; worker too IF it's the active node"
 api_patch '{"mode":"allServerNodes"}' >/dev/null
 amber "  waiting for haproxy DS to come up + Stalwart hostPorts to clear + externalIPs to converge…"
 wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
 wait_for_stalwart_settled no || amber "  Stalwart hostPorts didn't clear in 300s (continuing — may not affect external reachability)"
-wait_for_externalips "$SERVER_IPS" || red "  externalIPs didn't converge to server set in 180s"
+# Compute expected IPs for allServerNodes: server IPs always, + active IP if active is worker-role.
+ACTIVE_ROLE=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1==a{print $2; exit}')
+if [ "$ACTIVE_ROLE" = "server" ]; then
+  EXPECTED_PHASE1_IPS="$SERVER_IPS"
+else
+  EXPECTED_PHASE1_IPS=$(echo "$SERVER_IPS $ACTIVE_IP" | xargs -n1 | sort -u | xargs)
+fi
+wait_for_externalips "$EXPECTED_PHASE1_IPS" || red "  externalIPs didn't converge to expected set in 180s"
 sleep 10   # extra grace for haproxy hostPort bind + DNS
 fail_count=0
 for L in "${NODE_LINES[@]}"; do
   IFS=$'\t' read -r name role ip <<<"$L"
   [ -z "$ip" ] && continue
-  if [ "$role" = "server" ]; then
+  # Expected to answer when: server-role OR (worker AND this is the active mail node)
+  if [ "$role" = "server" ] || [ "$name" = "$ACTIVE" ]; then
     probe_node_ports "$name" "$ip" yes || fail_count=$((fail_count+1))
   else
     probe_node_ports "$name" "$ip" no || fail_count=$((fail_count+1))
   fi
 done
 if [ $fail_count -eq 0 ]; then
-  green "PHASE 1 PASS — all server-role nodes serve mail; worker(s) do NOT"
+  green "PHASE 1 PASS — server-role nodes serve mail; worker(s) serve mail only if active"
 else
   red "PHASE 1 FAIL — $fail_count nodes had unexpected reachability"
 fi
