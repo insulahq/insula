@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": [
     "packages/api-contracts",
+    "packages/ui-restore-cart",
     "backend",
     "frontend/admin-panel",
     "frontend/tenant-panel"
