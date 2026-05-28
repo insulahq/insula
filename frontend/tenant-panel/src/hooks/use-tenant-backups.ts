@@ -10,7 +10,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
-import type { BundleSummary } from '@k8s-hosting/api-contracts';
+import type { BundleSummary, RestoreJobSummary } from '@k8s-hosting/api-contracts';
 
 interface BundlesResponse { readonly data: readonly BundleSummary[] }
 interface RunNowResponse {
@@ -25,6 +25,25 @@ export function useTenantBundles() {
   return useQuery({
     queryKey: ['tenant-backups', 'bundles'],
     queryFn: () => apiFetch<BundlesResponse>('/api/v1/tenant/backups/bundles'),
+  });
+}
+
+/**
+ * List recent restore carts for the authenticated tenant. Used by
+ * the Backups page to surface in-flight + recently-completed
+ * restores so the tenant can resume a paused cart or audit history.
+ */
+export function useTenantRestoreCarts() {
+  const tenantId = useAuth((s) => s.user?.tenantId);
+  return useQuery({
+    queryKey: ['tenant-restore-carts', tenantId],
+    queryFn: () => {
+      if (!tenantId) throw new Error('No tenant id on session');
+      return apiFetch<{ data: readonly RestoreJobSummary[] }>(
+        `/api/v1/tenants/${tenantId}/restore-carts`,
+      );
+    },
+    enabled: Boolean(tenantId),
   });
 }
 

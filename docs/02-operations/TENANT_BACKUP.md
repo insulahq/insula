@@ -48,14 +48,47 @@ to.
 
 | Initiator | When | Code path |
 |---|---|---|
-| `admin` | Operator clicks "Create bundle" in Backup Settings | `POST /admin/backups/bundles` |
-| `client` | Tenant requests GDPR data export from tenant panel | same route, `initiator='client'`, `exportMode='data_export'` |
-| `system` | Tier-1 scheduler tick fires per `client_backup_schedules` row | `runScheduleTick()` in `tenant-bundles/schedule.ts` |
+| `admin` | Operator clicks "Create bundle" in Backup Settings | `POST /admin/tenant-bundles` |
+| `tenant` | Tenant_admin clicks "Run backup now" on the tenant panel Backups page | `POST /api/v1/tenants/:tenantId/bundles/run-now` |
+| `tenant` | Tenant requests GDPR data export | `POST /admin/tenant-bundles` with `exportMode='data_export'` |
+| `system` | Platform-global scheduler tick fires on the daily cron | `runGlobalBundleTick()` in `tenant-bundles/global-scheduler.ts` |
 
-The Tier-1 scheduler runs every 5 min on every platform-api replica
-with a cross-replica CAS (`UPDATE ... WHERE last_run_at = $previous`)
-so only one replica runs each due client. Frequencies: `daily`,
-`weekly`, `monthly` (with 1-h slack to absorb tick-interval drift).
+**Schedule model (2026-05-28):** a single platform-global cron drives
+**every** scheduled tenant bundle, configured via a single row in
+`backup_schedules` where `subsystem='tenant_bundle'` (admin UI:
+Settings → Backups → Schedules → `tenant_bundle`). The per-tenant
+schedule table `tenant_backup_schedules` was retired in
+migration 0034. Tenant inclusion is controlled by:
+
+- `hosting_plans.include_in_scheduled_bundles` (default for all
+  tenants on the plan)
+- `tenants.include_in_scheduled_bundles` (per-tenant override; NULL
+  → inherit from plan)
+
+The global scheduler runs every 5 min on every platform-api replica.
+Fire window is ±5 min around the cron's HH:MM. `last_fired_at` on
+the schedule row is the dedup marker (single fire per cron-window).
+Parser supports literal (`0 2 * * *`), step (`*/10 * * * *`), and
+list (`0,30 * * * *`) syntax. Range (`A-B`) not yet supported.
+
+### Run-now (tenant on-demand)
+
+The tenant_admin can fire a one-off bundle from the tenant panel's
+Backups page. Backend:
+
+1. Reject if tenant.status='archived'.
+2. Reject if another bundle is already `running` for this tenant
+   (409 CONFLICT — prevents spam-click corruption).
+3. Resolve target via `backup_target_assignments` for class='tenant'
+   (falls back to legacy `backup_configurations.active=true`).
+4. Plan-cap retention applies (tenant cannot bypass).
+5. Call `runBundle()` with `initiator='tenant'`,
+   `triggeredByUserId=<jwt.sub>`.
+
+Returns 202 with the new bundleId immediately; the orchestrator
+runs async. The tenant panel's `BundleProgressModal` polls
+`GET /tenants/:tenantId/bundles/:id/status` every 2 s and renders
+per-component progress.
 
 ## Retention
 
@@ -103,11 +136,37 @@ restores have no rollback today (no PVC to revert).
 
 | Surface | Purpose | Route |
 |---|---|---|
-| Settings → Backups | List bundles, create, verify, delete, GDPR export download | `/settings/backups` |
+| Settings → Backups → Schedules | Edit the platform-global `tenant_bundle` cron + per-class retention; gate-enabled when a target is assigned to class='tenant' | `/settings/backups` (Schedules tab) |
+| Settings → Backups → Tenants tab | List bundles per tenant; "Bundle all eligible" button; expandable "Scheduled inclusion" summary (which tenants are in/out of the daily cron) | `/settings/backups` (Tenants tab) |
 | Bundle row → Restore | Open restore cart picker for one bundle | `/restore?bundleId=…&tenantId=…` |
 | `/restores` | Recent-carts list with status filter + Resume button on failed/paused | `/restores` |
-| Client → Backups tab | Per-client schedule editor (daily/weekly/monthly + retention) | `/tenants/:id` (Backups tab) |
-| Tenant panel → Backups | Customer self-service: bundles list, schedule editor, GDPR export download | `/backups` (tenant panel) |
+| Client → Backups tab | List per-tenant bundles (per-tenant schedule editor REMOVED 2026-05-28) | `/tenants/:id` (Backups tab) |
+
+### Tenant-side surfaces (2026-05-28)
+
+| Surface | Purpose | Route |
+|---|---|---|
+| Tenant panel → Backups | List own bundles, "Run backup now" button, GDPR data export, recent restore carts | `/backups` (tenant panel) |
+| Tenant panel → Restore | Plesk-style cart against one of own bundles; tables/columns filtered by `tenant-restore-policy.ts` | `/backups/restore/:bundleId` |
+
+Tenant carts use the **same** backend cart machinery as admin carts
+(see `backend/src/modules/backup-restore/`) but applied through the
+tenant policy: denied tables (`hosting_plans`, billing,
+`platform_settings`, infra) are hidden at browse time AND rejected
+at add/execute time; denied columns on the `tenants` table
+(`plan_id`, `is_system`, `*_override`, `region_id`,
+`private_worker_shared_secret`, etc.) are redacted from the row
+before upsert. CI guard `scripts/ci-tenant-restore-policy-check.sh`
+fails the build if a sensitive-looking column is added to the
+`tenants` schema without being added to the deny list.
+
+### Mailbox restore modes
+
+| Mode | Behavior | Notes |
+|---|---|---|
+| `merge-skip-duplicates` (default) | APPEND only messages with new Message-ID | Idempotent; safe to re-run |
+| `merge-overwrite` | APPEND every message; server keeps duplicates | Use to recover lost messages where dedup might miss them |
+| `replace` | Atomic IMAP RENAME staging + APPEND + DELETE staging on success | **DESTRUCTIVE**; requires `confirmDestructive: true` in the payload. Tenant UI gates with a browser confirm() prompt. |
 
 ## GDPR data export
 
