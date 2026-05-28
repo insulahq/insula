@@ -118,7 +118,24 @@ export const billingStatusEnum = pgEnum('billing_status', ['draft', 'invoiced', 
 export const mailboxStatusEnum = pgEnum('mailbox_status', ['active', 'disabled']);
 export const mailboxTypeEnum = pgEnum('mailbox_type', ['mailbox', 'forward_only']);
 export const accessLevelEnum = pgEnum('access_level', ['full', 'read_only']);
-export const smtpProviderTypeEnum = pgEnum('smtp_provider_type', ['direct', 'mailgun', 'postmark']);
+export const smtpProviderTypeEnum = pgEnum('smtp_provider_type', ['direct', 'mailgun', 'postmark', 'stalwart-internal']);
+
+// ─── Notification system (Phase 1, migrations 0035-0041) ───
+// Severity is a separate axis from the legacy `notification_type` enum.
+// The latter stays for UI back-compat (info/warning/error/success badges);
+// the former (info/warning/error/critical) drives quiet-hours bypass
+// and operator-paging escalation.
+export const notificationSeverityEnum = pgEnum('notification_severity_enum', [
+  'info', 'warning', 'error', 'critical',
+]);
+// Channel ids are intentionally narrow in Phase 1 — in_app + email only.
+// SMS/Slack/Telegram/webhook are deferred (separate phase, separate
+// migration). Adding a value here MUST coordinate with channels/registry.ts.
+export const channelIdEnum = pgEnum('channel_id_enum', ['in_app', 'email']);
+// GDPR legal basis per category — controls whether opt-out is enforceable.
+export const notificationGdprBasisEnum = pgEnum('notification_gdpr_basis_enum', [
+  'contract', 'legitimate_interest', 'consent',
+]);
 export const upgradeStatusEnum = pgEnum('upgrade_status', [
   'pending', 'backing_up', 'pre_check', 'upgrading', 'health_check',
   'rolling_back', 'completed', 'failed', 'rolled_back',
@@ -716,10 +733,20 @@ export const notifications = pgTable('notifications', {
   isRead: integer('is_read').notNull().default(0),
   readAt: timestamp('read_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
+  // Migration 0037 — notification-system Phase 1 extension. Nullable
+  // until every legacy caller threads a category through events.ts.
+  categoryId: varchar('category_id', { length: 64 }),
+  severity: notificationSeverityEnum('severity').notNull().default('info'),
+  eventId: varchar('event_id', { length: 36 }),
+  dedupeKey: varchar('dedupe_key', { length: 128 }),
+  locale: varchar('locale', { length: 8 }).notNull().default('en'),
+  tenantId: varchar('tenant_id', { length: 36 }),
 }, (table) => [
   index('notifications_user_idx').on(table.userId),
   index('notifications_read_idx').on(table.isRead),
   index('notifications_created_idx').on(table.createdAt),
+  index('notifications_category_idx').on(table.categoryId),
+  index('notifications_event_idx').on(table.eventId),
 ]);
 
 // ─── Backup Configurations ───
@@ -1578,9 +1605,158 @@ export const smtpRelayConfigs = pgTable('smtp_relay_configs', {
   region: varchar('region', { length: 50 }),
   lastTestedAt: timestamp('last_tested_at'),
   lastTestStatus: varchar('last_test_status', { length: 50 }),
+  // Migration 0040 — explicit From: (notification-system Phase 1).
+  // For 'stalwart-internal' this is the virtual sender, e.g.
+  // notifications@<apex>. Falls back to authUsername when NULL.
+  fromAddress: varchar('from_address', { length: 255 }),
+  // Lets future installs add a separate tenant-mail relay without
+  // notifications using it. Default 'transactional'.
+  purpose: varchar('purpose', { length: 32 }).notNull().default('transactional'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
+
+// ─── Notification system (Phase 1) ───
+// See migrations 0035-0041. Tables seeded by categories/seed.ts and
+// templates/seed-loader.ts at boot.
+
+export const notificationCategories = pgTable('notification_categories', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  displayName: varchar('display_name', { length: 255 }).notNull(),
+  description: text('description'),
+  audience: varchar('audience', { length: 16 }).notNull(),
+  defaultSeverity: notificationSeverityEnum('default_severity').notNull().default('info'),
+  defaultChannels: text('default_channels').array().notNull().default(sql`ARRAY['in_app', 'email']::text[]`),
+  isMandatory: boolean('is_mandatory').notNull().default(false),
+  gdprBasis: notificationGdprBasisEnum('gdpr_basis').notNull().default('legitimate_interest'),
+  rateLimitWindowS: integer('rate_limit_window_s'),
+  rateLimitMax: integer('rate_limit_max'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  // Mirrors `WHERE is_active = TRUE` predicate in migration 0035.
+  index('notification_categories_audience_idx').on(table.audience).where(sql`is_active = TRUE`),
+]);
+
+export const notificationTemplates = pgTable('notification_templates', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  categoryId: varchar('category_id', { length: 64 }).notNull().references(() => notificationCategories.id, { onDelete: 'cascade' }),
+  channel: channelIdEnum('channel').notNull(),
+  locale: varchar('locale', { length: 8 }).notNull().default('en'),
+  subjectTemplate: text('subject_template'),
+  bodyTemplate: text('body_template').notNull(),
+  bodyFormat: varchar('body_format', { length: 16 }).notNull(),
+  variablesSchema: jsonb('variables_schema').$type<readonly { name: string; type: string; required?: boolean }[] | null>(),
+  isActive: boolean('is_active').notNull().default(true),
+  isSeed: boolean('is_seed').notNull().default(false),
+  version: integer('version').notNull().default(1),
+  editedByUserId: varchar('edited_by_user_id', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('notification_templates_category_idx').on(table.categoryId),
+  // Mirrors UNIQUE partial index in migration 0036 — at most one
+  // active template per (category, channel, locale). Critical for
+  // `getActiveTemplate` correctness; without it db:generate would
+  // drop the SQL-defined constraint.
+  uniqueIndex('notification_templates_unique_active_idx')
+    .on(table.categoryId, table.channel, table.locale)
+    .where(sql`is_active = TRUE`),
+]);
+
+export const notificationTemplateVersions = pgTable('notification_template_versions', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  templateId: varchar('template_id', { length: 36 }).notNull().references(() => notificationTemplates.id, { onDelete: 'cascade' }),
+  categoryId: varchar('category_id', { length: 64 }).notNull(),
+  channel: channelIdEnum('channel').notNull(),
+  locale: varchar('locale', { length: 8 }).notNull(),
+  subjectTemplate: text('subject_template'),
+  bodyTemplate: text('body_template').notNull(),
+  bodyFormat: varchar('body_format', { length: 16 }).notNull(),
+  variablesSchema: jsonb('variables_schema').$type<readonly { name: string; type: string; required?: boolean }[] | null>(),
+  version: integer('version').notNull(),
+  editedByUserId: varchar('edited_by_user_id', { length: 36 }),
+  archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('notification_template_versions_template_idx').on(table.templateId, table.version),
+]);
+
+export const notificationDeliveries = pgTable('notification_deliveries', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  notificationId: varchar('notification_id', { length: 36 }),
+  eventId: varchar('event_id', { length: 36 }).notNull(),
+  // ON DELETE SET NULL keeps the audit row (for billing + aggregate
+  // reporting) but removes the link to the deleted user/tenant —
+  // satisfies GDPR right-to-erasure when the higher-level erasure
+  // path (eraseUserNotifications) hasn't fired yet.
+  userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
+  tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'set null' }),
+  categoryId: varchar('category_id', { length: 64 }).notNull().references(() => notificationCategories.id, { onDelete: 'restrict' }),
+  channel: channelIdEnum('channel').notNull(),
+  providerId: varchar('provider_id', { length: 64 }),
+  recipientHash: varchar('recipient_hash', { length: 64 }),
+  contentHash: varchar('content_hash', { length: 64 }).notNull(),
+  templateId: varchar('template_id', { length: 36 }),
+  templateVersion: integer('template_version').notNull(),
+  locale: varchar('locale', { length: 8 }).notNull().default('en'),
+  status: varchar('status', { length: 16 }).notNull().default('queued'),
+  attempt: integer('attempt').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(6),
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  providerMessageId: varchar('provider_message_id', { length: 255 }),
+  queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+}, (table) => [
+  index('notification_deliveries_event_idx').on(table.eventId),
+  // Per-user/tenant list views are newest-first; DESC matches the SQL
+  // index definition in migration 0038 so the planner doesn't have to
+  // reverse-scan an ASC index page.
+  index('notification_deliveries_user_idx').on(table.userId, table.queuedAt.desc()),
+  index('notification_deliveries_tenant_idx').on(table.tenantId, table.queuedAt.desc()),
+  index('notification_deliveries_category_idx').on(table.categoryId, table.queuedAt.desc()),
+  index('notification_deliveries_purge_idx').on(table.queuedAt),
+  // Hot path for the Phase 2 queue worker: find the next batch of
+  // queued/failed deliveries by next_attempt_at. Partial predicate
+  // keeps the index small even when the table grows to millions of
+  // sent rows.
+  index('notification_deliveries_queue_idx')
+    .on(table.status, table.nextAttemptAt)
+    .where(sql`status IN ('queued', 'failed')`),
+]);
+
+export const userNotificationPreferences = pgTable('user_notification_preferences', {
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  categoryId: varchar('category_id', { length: 64 }).notNull(),
+  channel: channelIdEnum('channel').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.categoryId, table.channel] }),
+]);
+
+export const userNotificationSettings = pgTable('user_notification_settings', {
+  userId: varchar('user_id', { length: 36 }).primaryKey(),
+  quietHoursStart: varchar('quiet_hours_start', { length: 8 }),
+  quietHoursEnd: varchar('quiet_hours_end', { length: 8 }),
+  timezone: varchar('timezone', { length: 50 }),
+  digestMode: varchar('digest_mode', { length: 16 }).notNull().default('immediate'),
+  locale: varchar('locale', { length: 8 }).notNull().default('en'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const notificationRateLimitBuckets = pgTable('notification_rate_limit_buckets', {
+  bucketKey: varchar('bucket_key', { length: 255 }).primaryKey(),
+  count: integer('count').notNull().default(0),
+  windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
+  windowEnd: timestamp('window_end', { withTimezone: true }).notNull(),
+}, (table) => [
+  index('notification_rate_limit_buckets_purge_idx').on(table.windowEnd),
+]);
 
 // ─── Deployment Upgrades ───
 

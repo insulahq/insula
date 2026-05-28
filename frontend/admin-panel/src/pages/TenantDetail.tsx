@@ -66,6 +66,18 @@ export default function TenantDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('domains');
+  // notifications-system Phase 1: per-action toggle that lets the
+  // operator suppress the tenant-facing notification dispatched by the
+  // lifecycle hook registry. Default ON — operator must opt out
+  // explicitly. The flag is forwarded to the backend as
+  // `suppressTenantNotification` on every lifecycle action body
+  // (suspend / archive / restore / delete).
+  //
+  // TODO: extend `UpdateTenantInput` + the DELETE /tenants/:id body in
+  // packages/api-contracts/src/tenants.ts to include
+  // `suppressTenantNotification?: boolean`; the cast below should be
+  // dropped once the contract change lands.
+  const [notifyTenant, setNotifyTenant] = useState(true);
 
   const domainsQuery = useDomains(id);
   const deploymentsQuery = useDeployments(id);
@@ -105,7 +117,16 @@ export default function TenantDetail() {
       // Open the modal optimistically so the operator sees a
       // "Dispatching deleted transition…" placeholder immediately.
       setTxModal({ kind: 'deleted', since: Date.now() });
-      const res = await deleteTenant.mutateAsync(id);
+      // notifications-system: when `notifyTenant` is false, the URL
+      // query parameter ?suppressTenantNotification=true tells the
+      // backend lifecycle hook registry to skip the tenant-facing
+      // notification dispatch for this transition. Encoded in the id
+      // arg because `useDeleteTenant` is a shared hook whose
+      // signature can't grow a body field without breaking other
+      // call sites. Backend should accept either query or body until
+      // the hook signature is extended.
+      const idWithQuery = notifyTenant ? id : `${id}?suppressTenantNotification=true`;
+      const res = await deleteTenant.mutateAsync(idWithQuery);
       // Latch onto the exact transition id the backend dispatched so
       // the modal can stop guessing and show hook_runs sub-second.
       const transitionId = res?.data?.transitionId ?? null;
@@ -122,7 +143,13 @@ export default function TenantDetail() {
     if (!id) return;
     try {
       setTxModal({ kind: 'suspended', since: Date.now() });
-      const res = await updateTenant.mutateAsync({ status: 'suspended' });
+      // notifications-system: cast through Record<string, unknown> so
+      // the extra `suppressTenantNotification` field rides along on
+      // the PATCH body until `UpdateTenantInput` in api-contracts is
+      // extended. Backend reads the field on every lifecycle PATCH.
+      const res = await updateTenant.mutateAsync(
+        { status: 'suspended', suppressTenantNotification: !notifyTenant } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput,
+      );
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
         ?? null;
@@ -145,10 +172,13 @@ export default function TenantDetail() {
     if (!ok) return;
     try {
       setTxModal({ kind: 'archived', since: Date.now() });
-      const res = await updateTenant.mutateAsync({
-        status: 'archived',
-        archive_retention_days: retentionDays,
-      });
+      const res = await updateTenant.mutateAsync(
+        {
+          status: 'archived',
+          archive_retention_days: retentionDays,
+          suppressTenantNotification: !notifyTenant,
+        } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput,
+      );
       const opId = res?.data?.storageArchiveOperationId ?? null;
       if (opId) setStatusOpId(opId);
     } catch {
@@ -178,7 +208,9 @@ export default function TenantDetail() {
         kind: tenant?.status === 'archived' ? 'restored' : 'active',
         since: Date.now(),
       });
-      const res = await updateTenant.mutateAsync({ status: 'active' });
+      const res = await updateTenant.mutateAsync(
+        { status: 'active', suppressTenantNotification: !notifyTenant } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput,
+      );
       const opId = res?.data?.storageRestoreOperationId
         ?? res?.data?.storageArchiveOperationId
         ?? null;
@@ -350,6 +382,27 @@ export default function TenantDetail() {
               backend service-layer + lifecycle hook would reject anyway
               but the UI affordance prevents the operator from going
               down a dead-end path. */}
+          {/* notifications-system Phase 1: per-action toggle that
+              suppresses the tenant-facing notification dispatched by
+              the lifecycle hook registry. Default ON; operator opts
+              out by unchecking. SYSTEM tenant doesn't get destructive
+              actions so the checkbox is hidden there. */}
+          {!tenant.isSystem && (
+            <label
+              className="ml-2 flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+              title="Send the tenant an in-app + email notification about this lifecycle action"
+              data-testid="notify-tenant-toggle"
+            >
+              <input
+                type="checkbox"
+                checked={notifyTenant}
+                onChange={(e) => setNotifyTenant(e.target.checked)}
+                className="rounded"
+                data-testid="notify-tenant-checkbox"
+              />
+              Notify tenant
+            </label>
+          )}
           {tenant.status === 'active' && !tenant.isSystem && (
             <button
               onClick={handleSuspend}
@@ -441,6 +494,7 @@ export default function TenantDetail() {
                   tenantId={id!}
                   onOpStarted={(opId) => setStatusOpId(opId)}
                   onTransitionStarted={(kind) => setTxModal({ kind, since: Date.now() })}
+                  notifyTenant={notifyTenant}
                 />
               </dd>
             </div>
@@ -625,11 +679,16 @@ function LifecycleStatusControl({
   tenantId,
   onOpStarted,
   onTransitionStarted,
+  notifyTenant = true,
 }: {
   readonly tenant: import('@/types/api').Tenant;
   readonly tenantId: string;
   readonly onOpStarted: (opId: string) => void;
   readonly onTransitionStarted?: (kind: 'active' | 'suspended' | 'archived' | 'restored') => void;
+  /** notifications-system: when false, asks the backend to suppress
+   *  the tenant-facing notification for this status transition. The
+   *  parent TenantDetail owns the operator toggle. */
+  readonly notifyTenant?: boolean;
 }) {
   const updateTenant = useUpdateTenant(tenantId);
   const [editing, setEditing] = useState(false);
@@ -693,7 +752,15 @@ function LifecycleStatusControl({
           pending === 'active' && tenant.status === 'archived' ? 'restored' : pending;
         onTransitionStarted(kind);
       }
-      const res = await updateTenant.mutateAsync(payload);
+      // notifications-system: forward `suppressTenantNotification`
+      // when the operator opted out via the parent toolbar checkbox.
+      // Cast through Record so the extra field can ride along until
+      // UpdateTenantInput is extended in api-contracts.
+      const payloadWithFlag = {
+        ...payload,
+        suppressTenantNotification: !notifyTenant,
+      } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput;
+      const res = await updateTenant.mutateAsync(payloadWithFlag);
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
         ?? null;

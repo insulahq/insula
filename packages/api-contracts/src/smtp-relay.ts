@@ -26,10 +26,29 @@ const directConfigSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+// 'stalwart-internal' authenticates with the platform's own Stalwart
+// master account (System Administrator role) and sends with arbitrary
+// From: addresses without provisioning a mailbox. The master credential
+// is read from the stalwart-admin-creds K8s Secret at runtime; the
+// `auth_password` here is the SAME plaintext stored in that Secret —
+// stored encrypted in smtp_relay_configs.auth_password_encrypted so
+// admin UI never has to round-trip through the secret manager.
+const stalwartInternalConfigSchema = z.object({
+  provider_type: z.literal('stalwart-internal'),
+  name: z.string().min(1).max(255),
+  smtp_host: z.string().default('stalwart-submission.mail.svc.cluster.local'),
+  smtp_port: z.number().int().default(587),
+  auth_username: z.string().min(1),
+  auth_password: z.string().min(1),
+  from_address: z.string().email(),
+  enabled: z.boolean().default(true),
+});
+
 export const createSmtpRelaySchema = z.discriminatedUnion('provider_type', [
   mailgunConfigSchema,
   postmarkConfigSchema,
   directConfigSchema,
+  stalwartInternalConfigSchema,
 ]);
 
 export type CreateSmtpRelayInput = z.infer<typeof createSmtpRelaySchema>;
@@ -58,6 +77,8 @@ export const smtpRelayResponseSchema = z.object({
   smtpPort: z.number().nullable(),
   authUsername: z.string().nullable(),
   region: z.string().nullable(),
+  fromAddress: z.string().nullable(),
+  purpose: z.string(),
   lastTestedAt: z.string().nullable(),
   lastTestStatus: z.string().nullable(),
   createdAt: z.string(),

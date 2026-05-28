@@ -1,5 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import type {
+  UserNotificationPreferencesResponse,
+  UpdateUserNotificationPreferencesInput,
+  UserNotificationSettingsResponse,
+  UpdateUserNotificationSettingsInput,
+} from '@k8s-hosting/api-contracts';
 
 export interface NotificationEntry {
   readonly id: string;
@@ -87,6 +93,58 @@ export function useDeleteNotification() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['notifications'] });
       qc.invalidateQueries({ queryKey: ['notifications-unread-count'] });
+    },
+  });
+}
+
+// ─── Per-user notification preferences (Phase 1) ───
+// Backend: GET/PATCH /api/v1/notifications/preferences|settings.
+
+export const NOTIFICATION_PREFERENCES_KEY = ['notifications', 'preferences'] as const;
+export const NOTIFICATION_SETTINGS_KEY = ['notifications', 'settings'] as const;
+
+export function useNotificationPreferences() {
+  return useQuery({
+    queryKey: NOTIFICATION_PREFERENCES_KEY,
+    queryFn: () => apiFetch<{ data: UserNotificationPreferencesResponse }>(
+      '/api/v1/notifications/preferences',
+    ),
+  });
+}
+
+export function useUpdateNotificationPreferences() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateUserNotificationPreferencesInput) =>
+      apiFetch<{ data: UserNotificationPreferencesResponse }>(
+        '/api/v1/notifications/preferences',
+        { method: 'PATCH', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: NOTIFICATION_PREFERENCES_KEY });
+    },
+  });
+}
+
+export function useNotificationSettings() {
+  return useQuery({
+    queryKey: NOTIFICATION_SETTINGS_KEY,
+    queryFn: () => apiFetch<{ data: UserNotificationSettingsResponse }>(
+      '/api/v1/notifications/settings',
+    ),
+  });
+}
+
+export function useUpdateNotificationSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateUserNotificationSettingsInput) =>
+      apiFetch<{ data: UserNotificationSettingsResponse }>(
+        '/api/v1/notifications/settings',
+        { method: 'PATCH', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: NOTIFICATION_SETTINGS_KEY });
     },
   });
 }
