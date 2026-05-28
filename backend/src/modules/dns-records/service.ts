@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { dnsRecords, domains } from '../../db/schema.js';
+import { dnsRecords, domains, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
@@ -123,6 +123,7 @@ export async function listDnsRecords(db: Database, tenantId: string, domainId: s
 async function assertNotReservedHostname(
   db: Database,
   domainId: string,
+  tenantId: string,
   input: CreateDnsRecordInput,
 ): Promise<void> {
   // .where() (no .limit()) — domains.id is unique, so at most one row.
@@ -131,6 +132,14 @@ async function assertNotReservedHostname(
   const [parent] = await db.select({ domainName: domains.domainName })
     .from(domains).where(eq(domains.id, domainId));
   if (!parent) return; // verifyDomainOwnership already threw; defensive
+
+  // SYSTEM tenant owns platform-managed hostnames — let it create
+  // DNS records under them (mail.<apex>, webmail.<apex>, etc.). The
+  // reserved-hostname guard exists to prevent NON-system tenants from
+  // hijacking platform UIs via tenant-controlled DNS zones.
+  const [tenantRow] = await db.select({ isSystem: tenants.isSystem })
+    .from(tenants).where(eq(tenants.id, tenantId));
+  if (tenantRow?.isSystem) return;
 
   const reserved = await getReservedPlatformHostnames(db);
   const lower = (s: string) => s.trim().replace(/\.+$/, '').toLowerCase();
@@ -197,7 +206,7 @@ export async function createDnsRecord(
   // For CNAME/A/AAAA we also check whether the record_value (target)
   // matches a reserved hostname — refusing those prevents a tenant
   // from creating a CNAME on their own apex pointing at an admin UI.
-  await assertNotReservedHostname(db, domainId, input);
+  await assertNotReservedHostname(db, domainId, tenantId, input);
 
   const id = crypto.randomUUID();
 
@@ -254,7 +263,7 @@ export async function updateDnsRecord(
   // create-time check. Re-use the same helper as createDnsRecord by
   // synthesizing the input shape with the updated value.
   if (input.record_value !== undefined) {
-    await assertNotReservedHostname(db, domainId, {
+    await assertNotReservedHostname(db, domainId, tenantId, {
       record_type: record.recordType,
       record_name: record.recordName,
       record_value: input.record_value,

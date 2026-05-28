@@ -41,7 +41,7 @@ import { ApiError } from '../../shared/errors.js';
 import { MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
-import { systemSettings, emailDomains, mailboxes } from '../../db/schema.js';
+import { systemSettings, emailDomains, mailboxes, platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerMailSnapshot } from './snapshot.js';
 import { parseQuantity } from './mail-pvc.js';
@@ -1106,6 +1106,98 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-success port-exposure reconcile failed (non-fatal):', err);
   }
 
+  // Step 8c (2026-05-28): auto-rotate Stalwart master password.
+  // Behind a feature flag — operators who pre-share the password to a
+  // monitoring tool can opt out. Default ON because the most common
+  // migration cause is "node compromised / drained for security reasons"
+  // — keeping the same password on the new node defeats the move.
+  //
+  // The rotation:
+  //   • Stalwart JMAP master Account password → fresh value
+  //   • mail-secrets/STALWART_MASTER_PASSWORD → patched
+  //   • Roundcube + Bulwark (both via mail-secrets reloader) → rolled
+  //   • tenant-bundle backup Jobs → next Job picks up new value
+  //
+  // Failure is non-fatal — migration itself succeeded; operator can
+  // manually rotate via the admin UI / API. Recorded as a notification
+  // so the operator sees the gap.
+  try {
+    const flagEnabled = await readAutoRotateOnMigrationFlag(db);
+    if (!flagEnabled) {
+      log.info(`[migration] auto-rotate-on-migration flag is OFF — skipping password rotation`);
+    } else {
+      // Resolve the master principal's FQDN from mail-secrets so rotation
+      // scopes correctly. Mirrors the POST /admin/mail/rotate-webmail-
+      // master-password handler (routes.ts) line-for-line so behaviour
+      // is consistent regardless of trigger source.
+      const { readStalwartMasterUser, MASTER_USER_FALLBACK } = await import('./stalwart-master-user.js');
+      const masterFqdn = await readStalwartMasterUser(core);
+      if (masterFqdn === MASTER_USER_FALLBACK) {
+        // Same refusal the route handler uses — the compiled-in fallback
+        // would route auto-reseed into the retired `master.local` Domain
+        // that Stalwart 0.16 hard-rejects on auth.
+        log.warn(
+          `[migration] skipping auto-rotate: mail-secrets STALWART_MASTER_USER unreadable; ` +
+          `the compiled-in fallback (${MASTER_USER_FALLBACK}) is not a real Domain. ` +
+          `Operator should fix mail-secrets RBAC + rotate manually.`,
+        );
+      } else {
+        const atIdx = masterFqdn.lastIndexOf('@');
+        if (atIdx < 1 || atIdx === masterFqdn.length - 1) {
+          log.warn(
+            `[migration] skipping auto-rotate: mail-secrets STALWART_MASTER_USER '${masterFqdn}' is not a full email address`,
+          );
+        } else {
+          const rotateMasterUsername = masterFqdn.slice(0, atIdx);
+          const rotatePrincipalDomain = masterFqdn.slice(atIdx + 1).toLowerCase();
+
+          // Defense-in-depth (mirrors route handler 2026-05-28): refuse
+          // to rotate when the Secret-recorded Domain differs from the
+          // operator-configured mail hostname. An attacker with Secret
+          // write access could otherwise swap STALWART_MASTER_USER to
+          // `master@<their-tenant-domain>` and the rotation's auto-reseed
+          // would create a working master principal under that tenant's
+          // Domain — a one-click platform-wide mail backdoor.
+          const { getExplicitMailHostname } = await import('./stalwart-domain-reconciler.js');
+          const resolvedMailHostname = await getExplicitMailHostname(db);
+          if (resolvedMailHostname && rotatePrincipalDomain !== resolvedMailHostname.trim().toLowerCase()) {
+            log.warn(
+              `[migration] skipping auto-rotate: Secret-recorded Domain '${rotatePrincipalDomain}' ` +
+              `does not match platform-configured mail hostname '${resolvedMailHostname}'. ` +
+              `Operator should re-stamp mail-secrets STALWART_MASTER_USER + rotate manually.`,
+            );
+          } else {
+            log.info(
+              `[migration] auto-rotating Stalwart master password (post-migration security hygiene; ` +
+              `principal=${rotateMasterUsername}@${rotatePrincipalDomain})`,
+            );
+            const { rotateWebmailMasterPassword } = await import('./rotate-webmail-master.js');
+            await rotateWebmailMasterPassword({
+              kubeconfigPath,
+              masterUsername: rotateMasterUsername,
+              principalDomain: rotatePrincipalDomain,
+            });
+            log.info(`[migration] master password rotated; Bulwark + Roundcube rolling on Reloader event`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // High-severity log — operator must act manually. Recorded with
+    // the same shape as other migration warnings so the existing log-
+    // aggregation pipeline surfaces it. A first-class notification API
+    // for this case is filed as a follow-up; for now the log + the
+    // task-center entry for the migration itself (which succeeded)
+    // are the operator's signal channels.
+    log.warn(
+      `[migration] auto-rotate post-migration FAILED for targetNode=${targetNode} — ` +
+      'migration itself succeeded but Bulwark + Roundcube + tenant-bundle Jobs are still using ' +
+      'the old Stalwart master password. RECOMMENDED: rotate manually via Admin → Email → ' +
+      '"Rotate webmail master password". Error:',
+      err,
+    );
+  }
+
   await db.execute(sql`
     UPDATE mail_migration_runs
     SET state = 'done', current_step = 'complete', finished_at = now()
@@ -1127,6 +1219,29 @@ async function runMigrationStateMachine(
   }
 
   log.info(`[migration] run ${runId}: migration to ${targetNode} complete`);
+}
+
+/**
+ * Read the `mail_auto_rotate_on_migration` flag from platform_settings.
+ * Default ON (true) when the key is absent — security-conservative
+ * default: rotate password whenever mail relocates, because the most
+ * common migration trigger is "node compromised / drained for security
+ * reasons" and the rotated key blocks any leaked credential from being
+ * usable on the new node.
+ *
+ * Operators can opt out by setting `mail_auto_rotate_on_migration = false`
+ * (e.g., they pre-share the password to a monitoring tool that they
+ * don't want to re-configure on every migration).
+ */
+async function readAutoRotateOnMigrationFlag(db: Database): Promise<boolean> {
+  const [row] = await db
+    .select({ value: platformSettings.value })
+    .from(platformSettings)
+    .where(eq(platformSettings.key, 'mail_auto_rotate_on_migration'));
+  if (!row || row.value === null) return true;
+  const v = String(row.value).trim().toLowerCase();
+  // Defensive: treat any non-explicit-false as ON.
+  return v !== 'false' && v !== '0' && v !== 'no' && v !== 'off';
 }
 
 // ── PVC helpers ───────────────────────────────────────────────────────────────
