@@ -51,6 +51,15 @@ patches:
   # ensureMailPortExposureApplied populates externalIPs on every
   # platform-api boot, so there's only a brief externalIPs-empty window
   # at very first bootstrap before platform-api ever starts.
+  # 2026-05-28 hairpin fix follow-up: externalTrafficPolicy: Cluster
+  # was previously hardcoded here. K8s apiserver rejects a Service with
+  # externalTrafficPolicy set BUT no LoadBalancer / NodePort / externalIPs
+  # — and the new orchestration sets externalIPs=[] in activeNodeOnly
+  # mode (active node served via Stalwart hostPort/CNI portmap, no
+  # need for kube-proxy DNAT). Dropping externalTrafficPolicy from the
+  # patch fixes the validation: when externalIPs IS set, the field
+  # defaults to "Cluster" implicitly; when empty, the field stays unset
+  # and the Service is still valid (pure ClusterIP).
   - patch: |
       apiVersion: v1
       kind: Service
@@ -59,7 +68,6 @@ patches:
         namespace: mail
       spec:
         type: ClusterIP
-        externalTrafficPolicy: Cluster
     target:
       kind: Service
       name: stalwart-mail
