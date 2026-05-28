@@ -558,15 +558,14 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // here usually means either a misconfigured bootstrap, a
       // migration in flight, OR Secret tampering, and an automated
       // "fix" would mask all three.
-      const expectedPlatformDomain = (cfg.PLATFORM_DOMAIN as string | undefined)?.trim().toLowerCase();
-      if (!expectedPlatformDomain) {
-        throw new ApiError(
-          'WEBMAIL_MASTER_PLATFORM_DOMAIN_UNRESOLVED',
-          'platform-api configuration is missing PLATFORM_DOMAIN — cannot validate the rotation target Domain.',
-          500,
-        );
-      }
-      const expectedPrincipalDomain = `mail.${expectedPlatformDomain}`;
+      // Use the same `mailHost(cfg)` helper every other module uses to
+      // derive the mail apex — single source of truth keyed off
+      // `PLATFORM_BASE_DOMAIN` (canonical) with `INGRESS_BASE_DOMAIN`
+      // legacy-fallback. Hard-coding `PLATFORM_DOMAIN` here would only
+      // work on legacy installs that happen to expose it under that
+      // exact env name; staging/prod use the canonical names.
+      const { mailHost } = await import('../../config/domains.js');
+      const expectedPrincipalDomain = mailHost(cfg as { PLATFORM_BASE_DOMAIN?: string; INGRESS_BASE_DOMAIN?: string }).toLowerCase();
       if (principalDomain !== expectedPrincipalDomain) {
         app.log.error({
           userId,
