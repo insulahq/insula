@@ -216,11 +216,19 @@ export default function Settings() {
             Notification Preferences
           </h2>
         </div>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          All notifications currently land in the bell menu in the top right of the
-          tenant panel. Per-category email delivery opt-outs will be added in a
-          future release.
+        <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+          Choose which event categories notify you, and through which channels (in-app,
+          email). Mandatory security and account-state notifications are always
+          delivered. Set quiet hours to silence non-critical notifications during the
+          night.
         </p>
+        <Link
+          to="/notification-preferences"
+          className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+          data-testid="notification-prefs-link"
+        >
+          Manage preferences <ChevronRight size={14} />
+        </Link>
       </div>
     </div>
   );

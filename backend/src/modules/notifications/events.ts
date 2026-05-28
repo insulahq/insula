@@ -16,8 +16,38 @@
 
 import { notifyUsers } from './service.js';
 import { getTenantNotificationRecipients } from './recipients.js';
+import { emitEvent } from './dispatcher/dispatch.js';
 import type { Database } from '../../db/index.js';
 import type { MailboxLimitSource } from '../mailboxes/limit.js';
+
+/**
+ * Phase 1 of the notification-system rewrite: every legacy event
+ * helper ALSO calls the categorised dispatcher so the new
+ * notification_deliveries audit log accumulates rows. The legacy
+ * notifyUsers path is preserved so behaviour doesn't regress on
+ * call-sites that read the `notifications` table directly.
+ *
+ * Failures from emitEvent are swallowed — the existing helpers were
+ * fire-and-forget and we don't want to change that contract.
+ */
+async function dispatchSafe(
+  db: Database,
+  categoryId: string,
+  scope: Parameters<typeof emitEvent>[1]['scope'],
+  variables: object,
+  tenantId?: string,
+): Promise<void> {
+  try {
+    await emitEvent(db, {
+      categoryId,
+      scope,
+      variables: { ...variables } as Record<string, unknown>,
+      tenantId,
+    });
+  } catch {
+    // Legacy contract: never throw from an event helper.
+  }
+}
 
 // ──────────────────────────────────────────────────────────────────
 // Mailbox limit reached
@@ -222,3 +252,130 @@ export async function notifyTenantEmailBootstrapped(
 // in a way the user must manually fix" path, re-add the helper
 // here and call it from the corresponding error branch in
 // ensureWebmailIngress.
+
+// ──────────────────────────────────────────────────────────────────
+// Phase 1 categorised event helpers
+// ──────────────────────────────────────────────────────────────────
+//
+// Thin wrappers around emitEvent that bake in the category id +
+// recipient scope so call-sites pass only their domain payload.
+
+export interface SubscriptionChangedPayload {
+  readonly tenantName?: string;
+  readonly newPlanName?: string;
+}
+export async function notifyTenantSubscriptionChanged(
+  db: Database,
+  tenantId: string,
+  payload: SubscriptionChangedPayload = {},
+): Promise<void> {
+  await dispatchSafe(db, 'subscription.changed', { kind: 'tenant', tenantId }, payload, tenantId);
+}
+
+export interface SubscriptionExpiryPayload {
+  readonly tenantName?: string;
+  readonly expiresAt: string;
+}
+export async function notifyTenantSubscriptionExpiry(
+  db: Database,
+  tenantId: string,
+  payload: SubscriptionExpiryPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'subscription.expiry_warning', { kind: 'tenant', tenantId }, payload, tenantId);
+}
+
+export interface SubAccountAddedPayload {
+  readonly tenantName?: string;
+  readonly subAccountEmail: string;
+}
+export async function notifyTenantSubAccountAdded(
+  db: Database,
+  tenantId: string,
+  payload: SubAccountAddedPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'account.sub_account_added', { kind: 'tenant', tenantId }, payload, tenantId);
+}
+
+export async function notifyTenantPasswordChanged(
+  db: Database,
+  userId: string,
+): Promise<void> {
+  await dispatchSafe(db, 'security.password_changed', { kind: 'user', userId }, { userName: userId });
+}
+
+export interface SuspiciousActivityPayload {
+  readonly newIp: string;
+  readonly userAgent?: string;
+}
+export async function notifyTenantSuspiciousActivity(
+  db: Database,
+  userId: string,
+  payload: SuspiciousActivityPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'security.suspicious_activity', { kind: 'user', userId }, payload);
+}
+
+export interface AdminCertExpiringPayload {
+  readonly certSubject: string;
+  readonly expiresAt: string;
+}
+export async function notifyAdminCertExpiring(
+  db: Database,
+  payload: AdminCertExpiringPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_expiring', { kind: 'admin' }, payload);
+}
+
+export interface AdminCertRenewalFailedPayload {
+  readonly certSubject: string;
+  readonly errorMessage?: string;
+}
+export async function notifyAdminCertRenewalFailed(
+  db: Database,
+  payload: AdminCertRenewalFailedPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_renewal_failed', { kind: 'admin' }, payload);
+}
+
+export interface AdminBackupFailedPayload {
+  readonly backupName: string;
+  readonly errorMessage?: string;
+}
+export async function notifyAdminBackupFailed(
+  db: Database,
+  payload: AdminBackupFailedPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, payload);
+}
+
+export interface AdminBackupTargetUnreachablePayload {
+  readonly targetName: string;
+  readonly errorMessage?: string;
+}
+export async function notifyAdminBackupTargetUnreachable(
+  db: Database,
+  payload: AdminBackupTargetUnreachablePayload,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.backup_target_unreachable', { kind: 'admin' }, payload);
+}
+
+export interface AdminNodeDownPayload {
+  readonly nodeName: string;
+}
+export async function notifyAdminNodeDown(
+  db: Database,
+  payload: AdminNodeDownPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload);
+}
+
+export interface AdminSecurityHardeningDriftPayload {
+  readonly nodeName: string;
+  readonly driftSummary?: string;
+}
+export async function notifyAdminSecurityHardeningDrift(
+  db: Database,
+  payload: AdminSecurityHardeningDriftPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.security_hardening_drift', { kind: 'admin' }, payload);
+}

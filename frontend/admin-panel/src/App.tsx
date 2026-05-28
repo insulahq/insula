@@ -48,6 +48,7 @@ import DnsProvidersPage from '@/pages/platform/DnsProvidersPage';
 import PlansPage from '@/pages/platform/PlansPage';
 import AiPage from '@/pages/platform/AiPage';
 import LifecycleHooksPage from '@/pages/platform/LifecycleHooksPage';
+import NotificationsPage from '@/pages/platform/NotificationsPage';
 import ExportImportPage from '@/pages/platform/ExportImportPage';
 // Security group
 import IdentityAndSessionsPage from '@/pages/IdentityAndSessionsPage';
@@ -165,6 +166,7 @@ export default function App() {
             <Route path="platform/integrations" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IntegrationsPage /></ProtectedRoute>} />
             <Route path="platform/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiPage /></ProtectedRoute>} />
             <Route path="platform/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksPage /></ProtectedRoute>} />
+            <Route path="platform/notifications" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NotificationsPage /></ProtectedRoute>} />
             <Route path="platform/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImportPage /></ProtectedRoute>} />
 
             {/* Tenant-bundle restore cart — reachable from the Restoration
