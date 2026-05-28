@@ -978,10 +978,13 @@ async function runMigrationStateMachine(
       } as unknown as Parameters<typeof core.patchNode>[0],
       JSON_PATCH,
     ).catch((err: unknown) => {
-      // 404-on-remove (label already absent) is fine; surface other errors.
+      // 404-on-remove (label already absent on this node, or node
+      // unknown) is fine; surface other errors. Don't suppress 422 —
+      // that would silently eat malformed-patch bugs (path escape
+      // typo, etc.) which a future code change could introduce.
       const code = (err as { code?: number; statusCode?: number })?.code
         ?? (err as { code?: number; statusCode?: number })?.statusCode;
-      if (code !== 404 && code !== 422) throw err;
+      if (code !== 404) throw err;
     });
     // Brief settle window so kubelet evicts the haproxy pod + releases
     // hostPort 25 before the new Stalwart pod schedules. Same 5s as

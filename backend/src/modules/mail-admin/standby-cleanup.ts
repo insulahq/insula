@@ -146,10 +146,21 @@ export async function spawnStandbyDeelectionCleanupJob(
                 // not existing (this node never actually served as
                 // standby — e.g., DaemonSet pod was evicted before any
                 // data replicated).
+                //
+                // `touch` after `mv` resets the mtime of the renamed
+                // directory to NOW. Without this, `mv` preserves the
+                // mtime of the source dir (which is whenever the last
+                // standby-replicate sync ran, NOT the de-election
+                // time). The janitor DaemonSet uses `find -mtime +2`
+                // to find dirs older than 48h; without the touch, an
+                // already-stale standby dir would be reaped earlier
+                // than the promised 48h recovery window. Caught
+                // 2026-05-28 code review.
                 `set -eu; ` +
                   `mv /host/${STANDBY_DIR_NAME} /host/${renameTarget} 2>/dev/null || ` +
                   `{ echo "no /host/${STANDBY_DIR_NAME} to rename (node never served as standby?)"; exit 0; }; ` +
-                  `echo "renamed /var/lib/${STANDBY_DIR_NAME} -> /var/lib/${renameTarget}"`,
+                  `touch /host/${renameTarget}; ` +
+                  `echo "renamed /var/lib/${STANDBY_DIR_NAME} -> /var/lib/${renameTarget} (mtime reset to de-election time)"`,
               ],
               securityContext: {
                 runAsUser: 0,

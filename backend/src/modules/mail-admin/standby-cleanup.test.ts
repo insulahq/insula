@@ -65,6 +65,23 @@ describe('spawnStandbyDeelectionCleanupJob', () => {
     expect(text).toMatch(/mv\s+\/host\/mail-stack-standby\s+\/host\/mail-stack-standby\.deelected-/);
   });
 
+  it('touches the renamed dir AFTER mv so the janitor 48h window starts from de-election time, not last-sync time', async () => {
+    mockCreateNamespacedJob.mockResolvedValue({});
+    await spawnStandbyDeelectionCleanupJob(makeBatch(), 'staging1');
+    const arg = mockCreateNamespacedJob.mock.calls[0][0] as { body: {
+      spec: { template: { spec: { containers: Array<{ command?: string[]; args?: string[] }> } } };
+    } };
+    const cmd = arg.body.spec.template.spec.containers[0];
+    const text = (cmd.command ?? []).concat(cmd.args ?? []).join(' ');
+    // mv MUST precede touch — the janitor uses mtime, and we want the
+    // touch to reset the renamed dir's mtime to NOW (regardless of how
+    // stale the standby data was at the time of de-election).
+    const mvIdx = text.indexOf('mv /host/mail-stack-standby');
+    const touchIdx = text.indexOf('touch /host/mail-stack-standby.deelected-');
+    expect(mvIdx).toBeGreaterThanOrEqual(0);
+    expect(touchIdx).toBeGreaterThan(mvIdx);
+  });
+
   it('sets activeDeadlineSeconds and ttlSecondsAfterFinished so the Job self-cleans', async () => {
     mockCreateNamespacedJob.mockResolvedValue({});
     await spawnStandbyDeelectionCleanupJob(makeBatch(), 'staging1');
