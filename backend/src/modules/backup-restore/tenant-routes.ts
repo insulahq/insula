@@ -32,6 +32,7 @@ import {
   restoreItems,
   backupJobs,
   tenants,
+  auditLogs,
   type NewRestoreJob,
   type NewRestoreItem,
 } from '../../db/schema.js';
@@ -53,7 +54,6 @@ import {
 import {
   DEFAULT_TENANT_RESTORE_POLICY,
   filterConfigTableNames,
-  redactRowForTenant,
   validateRestoreItemForTenant,
 } from './tenant-restore-policy.js';
 import { snapshotTenant, rollbackToSnapshot } from '../storage-lifecycle/service.js';
@@ -383,6 +383,19 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(restoreItems.restoreJobId, cartId))
       .orderBy(asc(restoreItems.seq));
 
+    if (items.length === 0) {
+      // Free the cart back to draft so the tenant can add items
+      // without first deleting + recreating it.
+      await app.db.update(restoreJobs)
+        .set({ status: 'draft', startedAt: null, updatedAt: new Date() })
+        .where(eq(restoreJobs.id, cartId));
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        'Cart has no items — add at least one item before executing',
+        400,
+      );
+    }
+
     // Snapshot pre-restore (per-tenant rollback point). Only needed
     // when a destructive item is in the cart (files-paths can clobber
     // tenant data). Mailbox + config-tables + domains are individually
@@ -437,7 +450,11 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(restoreItems.id, item.id));
       try {
         const store = await resolveStoreForBundle(app, item.bundleId);
-        await dispatchExecutor(app, item, store);
+        // CRITICAL safety: pass the tenant policy so config-tables
+        // executor redacts denied columns per-row. Without this,
+        // a tenant cart restoring the `tenants` table would overwrite
+        // plan_id / is_system / *_override quotas from the bundle.
+        await dispatchExecutor(app, item, store, DEFAULT_TENANT_RESTORE_POLICY);
         await app.db.update(restoreItems)
           .set({ status: 'done', finishedAt: new Date() })
           .where(eq(restoreItems.id, item.id));
@@ -460,6 +477,35 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
         updatedAt: new Date(),
       })
       .where(eq(restoreJobs.id, cartId));
+
+    // Audit-log the tenant-initiated restore execute so compliance
+    // queries can reconstruct who did what. The generic audit hook
+    // only captures URL + method, not the per-item application.
+    try {
+      const actorId = request.user?.sub;
+      if (actorId) {
+        await app.db.insert(auditLogs).values({
+          id: randomUUID(),
+          tenantId,
+          actionType: 'tenant_restore_execute',
+          resourceType: 'restore-cart',
+          resourceId: cartId,
+          actorId,
+          actorType: 'user',
+          httpMethod: 'POST',
+          httpPath: `/api/v1/tenants/${tenantId}/restore-carts/${cartId}/execute`,
+          httpStatus: 200,
+          changes: {
+            itemCount: items.length,
+            status: allOk ? 'done' : 'failed',
+            lastError,
+          },
+          ipAddress: request.ip,
+        });
+      }
+    } catch (auditErr) {
+      app.log.warn({ err: auditErr, cartId, tenantId }, 'tenant-restore execute: audit log insert failed');
+    }
 
     return success({ cartId, status: allOk ? 'done' : 'failed', lastError });
   });
@@ -521,6 +567,17 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
+    // Reject spam-click: refuse if a bundle is already running for
+    // this tenant. Otherwise N concurrent clicks → N concurrent k8s
+    // Jobs writing to the same restic repo (corruption + quota burn).
+    const [inFlight] = await app.db.select({ id: backupJobs.id })
+      .from(backupJobs)
+      .where(and(eq(backupJobs.tenantId, tenantId), eq(backupJobs.status, 'running')))
+      .limit(1);
+    if (inFlight) {
+      throw new ApiError('CONFLICT', 'A bundle is already running for this tenant. Wait for it to complete.', 409);
+    }
+
     // Plan-bound retention (tenant cannot bypass).
     const [plan] = await app.db.select({
       defaultDays: hostingPlans.defaultBackupRetentionDays,
@@ -579,11 +636,10 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       },
       {
         tenantId,
-        initiator: 'admin', // 'tenant' is not in the backup_initiator enum;
-                            // 'admin' is the closest match meaning
-                            // "interactive user-initiated" (vs 'system' for
-                            // scheduler-driven). Audit log captures the
-                            // tenant_admin user id via triggeredByUserId.
+        initiator: 'tenant', // backup_initiator enum has 'tenant';
+                             // ensures audit/task-tracker chips
+                             // surface under the tenant's session
+                             // not the admin pane.
         systemTrigger: null,
         label: 'tenant-run-now',
         description: null,
@@ -602,8 +658,4 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     }));
   });
 
-  // ── Helper exports for tests (not used in routing) ────────────────
-  // Note: redactRowForTenant is re-exported only for the integration
-  // harness so it can directly assert the policy is applied.
-  void redactRowForTenant;
 }

@@ -36,6 +36,7 @@ import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
 import { execDomainsByIdItem } from './executors/domains-by-id.js';
 import { execFilesPathsItem } from './executors/files-paths.js';
 import { execMailboxesByAddressItem } from './executors/mailboxes-by-address.js';
+import type { TenantRestorePolicy } from './tenant-restore-policy.js';
 
 export function toJobSummary(j: RestoreJob): RestoreJobSummary {
   return {
@@ -161,11 +162,23 @@ export async function readConfigDump(app: FastifyInstance, bundleId: string): Pr
   return { tables: dump.tables ?? {} };
 }
 
-/** Dispatch one item to its type-specific executor. */
-export async function dispatchExecutor(app: FastifyInstance, item: RestoreItem, store: BackupStore): Promise<void> {
+/**
+ * Dispatch one item to its type-specific executor.
+ *
+ * `tenantPolicy` — when set (tenant-cart path), executors that can
+ * mutate operator-only fields (currently just `config-tables`) apply
+ * per-row column redaction before upsert. Admin path passes
+ * `undefined` so admin restores remain unmodified.
+ */
+export async function dispatchExecutor(
+  app: FastifyInstance,
+  item: RestoreItem,
+  store: BackupStore,
+  tenantPolicy?: TenantRestorePolicy,
+): Promise<void> {
   switch (item.type) {
     case 'config-tables':
-      await execConfigTablesItem({ app, item, store });
+      await execConfigTablesItem({ app, item, store, tenantPolicy });
       return;
     case 'deployments-by-id':
       await execDeploymentsByIdItem({ app, item, store });
