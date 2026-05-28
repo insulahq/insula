@@ -149,7 +149,20 @@ export async function waitForStalwartRollout(
 export async function waitForStalwartReplicaCount(
   apps: AppsV1Api,
   target: number,
-  opts: { timeoutSeconds?: number; pollIntervalMs?: number; deploymentName?: string } = {},
+  opts: {
+    timeoutSeconds?: number;
+    pollIntervalMs?: number;
+    deploymentName?: string;
+    /**
+     * Optional cancel predicate. Polled between API reads — if it
+     * returns true, the wait throws a generic ApiError tagged with
+     * MAIL_MIGRATION_CANCELLED so the orchestrator can detect cancel
+     * and bail without burning the full timeout. Wired up 2026-05-28
+     * after Phase E of the mobility E2E found that an operator's
+     * cancel during scale-up was ignored for the full 10-min budget.
+     */
+    cancelCheck?: () => Promise<boolean>;
+  } = {},
 ): Promise<void> {
   const timeoutSeconds = opts.timeoutSeconds ?? 90;
   const pollIntervalMs = opts.pollIntervalMs ?? 3_000;
@@ -160,6 +173,13 @@ export async function waitForStalwartReplicaCount(
   const deploymentName = opts.deploymentName ?? DEPLOYMENT_NAME;
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
+    if (opts.cancelCheck && await opts.cancelCheck()) {
+      throw new ApiError(
+        'MAIL_MIGRATION_CANCELLED',
+        `Operator cancelled migration during scale-${target === 0 ? 'down' : 'up'} of ${deploymentName}`,
+        409,
+      );
+    }
     let dep: DeploymentRolloutShape;
     try {
       dep = await apps.readNamespacedDeployment({
