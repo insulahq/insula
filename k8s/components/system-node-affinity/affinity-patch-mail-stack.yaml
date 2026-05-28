@@ -1,9 +1,15 @@
-# Stalwart-specific affinity patch.
+# Mail-stack affinity patch (applies to BOTH stalwart-mail and bulwark).
 #
-# Stalwart is unique among system workloads: operators may legitimately
-# want to pin the mail pod to a worker node — e.g. when a tenant
-# customer's CIFS Storage Box is mounted on a specific worker, or when
-# a worker has more local SSD for the RocksDB DataStore.
+# Stalwart and Bulwark share the same local-path PVC (`mail-stack-data`)
+# via different subPaths, so they MUST co-locate on the same node.
+# Operators may legitimately want to pin the mail stack to a worker
+# node — e.g. when a tenant customer's CIFS Storage Box is mounted on
+# a specific worker, or when a worker has more local SSD for the
+# RocksDB DataStore. If we restricted Bulwark to server-role (as the
+# shared affinity-patch.yaml does) but allowed Stalwart on workers,
+# a worker migration would leave Bulwark stuck in Pending forever and
+# the migration state machine stuck in scaling-up (caught 2026-05-28
+# by Phase C of the mobility E2E).
 #
 # Allowing both `server` and `worker` roles in the affinity means
 # the placement API (backend/src/modules/mail-admin/placement.ts) can
