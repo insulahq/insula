@@ -608,11 +608,16 @@ else
   fail "allowlist remove failed: $(echo "$rm_resp" | head -c 200)"
 fi
 
-# Static blocklist — add (1y duration)
+# Static blocklist — add (effectively permanent: 100y duration).
+# Was '8760h' (1 year) until 2026-05-26 when STATIC_BAN_DURATION
+# bumped to '876000h' so operators don't have to re-add known-bad
+# IPs annually. Asserting on the new value here AND on the success
+# message so we don't silently regress to the old duration.
 static_add_resp=$(api_internal POST /admin/security/crowdsec/static-blocklist \
   "{\"value\":\"$F2_STATIC_VALUE\",\"scope\":\"Ip\",\"reason\":\"harness static ban test\"}")
-if echo "$static_add_resp" | grep -q '"duration":"8760h"'; then
-  ok "static ban added with 1y duration"
+if echo "$static_add_resp" | grep -q '"duration":"876000h"' \
+   && echo "$static_add_resp" | grep -q 'Decision successfully added'; then
+  ok "static ban added with 100y (effectively permanent) duration"
 else
   fail "static ban add failed: $(echo "$static_add_resp" | head -c 200)"
 fi
@@ -1117,8 +1122,18 @@ else
 fi
 
 # H4: DS env reflects the new value within ~5s (apiserver cache).
-sleep 3
-i_after=$(api_internal GET /admin/security/crowdsec/l4-enforcement)
+# Retry up to ~15s — api_internal sometimes drops the response body
+# when the ephemeral curl pod gets scheduling pressure (each call is
+# a fresh `kubectl run --rm` pod). The 3s single-check version
+# false-failed on transient empty captures.
+i_after=""
+for _i in 1 2 3 4 5 6 7; do
+  sleep 2
+  i_after=$(api_internal GET /admin/security/crowdsec/l4-enforcement)
+  if echo "$i_after" | grep -q '"mode":"dryrun"'; then
+    break
+  fi
+done
 if echo "$i_after" | grep -q '"mode":"dryrun"'; then
   ok "L4: status now reads as dryrun"
 else
@@ -1147,7 +1162,17 @@ phase "Phase J — L4 operator-IP-trust guard"
 # platform-api.platform.svc directly with X-Real-IP not set. To
 # simulate an "untrusted operator IP" we explicitly set X-Real-IP to
 # 198.51.100.7 (TEST-NET-2, never routable, never in trusted_ranges).
-untrusted_rc=$(kubectl_run "run waf-cs-j-untrusted-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.7' -d '{\"mode\":\"enforce\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1 | tail -1)
+# Retry up to 3 attempts: a fresh `kubectl run --rm` per call
+# occasionally produces empty stdout under cluster scheduling pressure,
+# and `tail -1` on empty input is empty (the harness then reports
+# "got HTTP " with no code). The PATCH itself is idempotent so a
+# repeat doesn't muddy state.
+untrusted_rc=""
+for _i in 1 2 3; do
+  untrusted_rc=$(kubectl_run "run waf-cs-j-untrusted-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.7' -d '{\"mode\":\"enforce\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1 | tail -1)
+  if [[ -n "$untrusted_rc" && "$untrusted_rc" =~ ^[0-9]{3}$ ]]; then break; fi
+  sleep 2
+done
 if [[ "$untrusted_rc" == "403" ]]; then
   ok "L4: untrusted-IP PATCH to enforce rejected (403)"
 else
