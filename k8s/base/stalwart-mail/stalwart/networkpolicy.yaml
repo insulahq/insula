@@ -140,3 +140,20 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+
+    # 2026-05-28: the protect-from-silent-data-loss init container
+    # queries platform-api's /internal/mail/stalwart-data-expectation
+    # endpoint to decide whether refusing-to-fresh-start is the right
+    # call. Without this egress rule, the init container's curl would
+    # time out, the guard would fail-open, and the silent-loss this
+    # guard exists to prevent would be unprotected.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app: platform-api
+      ports:
+        - protocol: TCP
+          port: 3000
