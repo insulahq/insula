@@ -841,7 +841,7 @@ async function runMigrationStateMachine(
         // Wait until the snapshot completes. The snapshot CronJob runs
         // every 2 minutes; an on-demand trigger usually completes in
         // 20-60s for small DataStores. We poll for up to 5 min.
-        await waitForFreshSnapshot(deps, 300);
+        await waitForFreshSnapshot(deps, 300, runId);
       } catch (snapErr) {
         log.warn('[migration] fresh snapshot failed; will proceed with the latest CronJob snapshot:', snapErr);
       }
@@ -870,7 +870,7 @@ async function runMigrationStateMachine(
       log.warn(`[migration ${runId}] recovery: force-delete pass failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  await waitForReplicaCount(apps, 0, 90);
+  await waitForReplicaCount(apps, 0, 90, () => isCancelRequested(db, runId));
 
   // Step 4: Swap the PVC binding to the target node + signal restore-on-start.
   //
@@ -943,7 +943,7 @@ async function runMigrationStateMachine(
   // depending on DataStore size and BackupStore latency.
   await setStep(db, runId, 'scaling-up', 'running', taskId);
   await patchDeploymentReplicas(apps, 1);
-  await waitForReplicaCount(apps, 1, 600);
+  await waitForReplicaCount(apps, 1, 600, () => isCancelRequested(db, runId));
 
   // Step 6: Verify the restore actually RESTORED tenant data — not just
   // that Stalwart opened a (possibly empty) DataStore.
@@ -1543,12 +1543,29 @@ async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promi
   }
 }
 
-async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSeconds: number): Promise<void> {
+async function waitForReplicaCount(
+  apps: AppsV1Api,
+  target: number,
+  timeoutSeconds: number,
+  cancelCheck?: () => Promise<boolean>,
+): Promise<void> {
   // Wait for EACH mail-stack Deployment to reach `target` ready replicas.
   // Sequential because the rollout-wait helper polls each in turn — total
   // wait time is bounded by `timeoutSeconds` per Deployment.
   for (const name of MAIL_STACK_DEPLOYMENTS) {
-    await waitForStalwartReplicaCount(apps, target, { timeoutSeconds, deploymentName: name });
+    try {
+      await waitForStalwartReplicaCount(apps, target, { timeoutSeconds, deploymentName: name, cancelCheck });
+    } catch (err) {
+      // Promote rollout-wait's MAIL_MIGRATION_CANCELLED to the
+      // orchestrator's MigrationCancelledError so the top-level catch
+      // treats it as a real cancel (task-center status 'cancelled')
+      // rather than a generic failure.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'MAIL_MIGRATION_CANCELLED') {
+        throw new MigrationCancelledError(target === 0 ? 'scaling-down' : 'scaling-up');
+      }
+      throw err;
+    }
   }
 }
 
@@ -1560,14 +1577,33 @@ async function waitForReplicaCount(apps: AppsV1Api, target: number, timeoutSecon
  * a fresh snapshot. Falls through silently after `timeoutSeconds` — the
  * migration will still proceed using the latest available snapshot.
  */
-async function waitForFreshSnapshot(deps: MigrationDeps, timeoutSeconds: number): Promise<void> {
-  const { batch } = deps;
+async function waitForFreshSnapshot(
+  deps: MigrationDeps,
+  timeoutSeconds: number,
+  runId?: string,
+): Promise<void> {
+  const { batch, db } = deps;
   const startTs = Date.now();
   const deadline = startTs + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
+    // Honor cancel — without this the wait runs the full timeout
+    // even after the operator clicked Cancel. Discovered 2026-05-28
+    // during Phase E of the mobility E2E (the wait was also hitting
+    // a wrong-CronJob-name 404 bug, so it always burned the full 5min).
+    if (runId && (await isCancelRequested(db, runId))) {
+      throw new MigrationCancelledError('snapshotting');
+    }
     try {
       const cron = await batch.readNamespacedCronJob({
-        name: 'stalwart-mail-snapshot',
+        // Real CronJob name is `stalwart-snapshot` (see
+        // k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml).
+        // Pre-2026-05-28 code looked for `stalwart-mail-snapshot`,
+        // a name that has never existed — the readNamespacedCronJob
+        // 404 was swallowed by the catch and the loop burned the
+        // full timeout on every migration. Migration would still
+        // succeed (the wait is best-effort) but added 5 minutes to
+        // every run + made cancel impossible during snapshotting.
+        name: 'stalwart-snapshot',
         namespace: MAIL_NAMESPACE,
       }) as { status?: { lastSuccessfulTime?: string } };
       const lastStr = cron.status?.lastSuccessfulTime;
