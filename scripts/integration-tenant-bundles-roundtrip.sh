@@ -198,12 +198,20 @@ else
   exit 1
 fi
 
-# Step 3: wait for terminal (partial is acceptable on staging due to mail drift)
+# Step 3: wait for terminal — `partial` is a TEST FAILURE (any component
+# failed means the bundle is incomplete; if a harness lets it slide, the
+# real regression hides under PASS). Override only via EXPECT_PARTIAL=1.
 wait_bundle "$BUNDLE_ID" "$TENANT_ID" "$TENANT_TOKEN" 120
-if [[ "$BUNDLE_STATUS" == "completed" || "$BUNDLE_STATUS" == "partial" ]]; then
+if [[ "$BUNDLE_STATUS" == "completed" ]]; then
   ok "bundle terminal: $BUNDLE_STATUS"
+elif [[ "$BUNDLE_STATUS" == "partial" && "${EXPECT_PARTIAL:-0}" == "1" ]]; then
+  ok "bundle terminal: $BUNDLE_STATUS (EXPECT_PARTIAL=1)"
 else
-  fail "bundle terminal: got $BUNDLE_STATUS"
+  fail "bundle terminal: got $BUNDLE_STATUS (expected 'completed' — set EXPECT_PARTIAL=1 to allow partial in this run)"
+  # Surface per-component lastError to make the regression obvious.
+  api "$ADMIN_HOST" GET "/admin/tenant-bundles/$BUNDLE_ID" "" "$ADMIN_TOKEN" \
+    | jq -r '.data.components[]? | select(.status!="completed") | "  comp=\(.component) status=\(.status) err=\(.lastError // "")"' \
+    || true
   exit 1
 fi
 
@@ -281,10 +289,15 @@ else
 fi
 
 wait_bundle "$BUNDLE_ID2" "$TENANT_ID" "$TENANT_TOKEN" 120
-if [[ "$BUNDLE_STATUS" == "completed" || "$BUNDLE_STATUS" == "partial" ]]; then
+if [[ "$BUNDLE_STATUS" == "completed" ]]; then
   ok "bundle terminal: $BUNDLE_STATUS"
+elif [[ "$BUNDLE_STATUS" == "partial" && "${EXPECT_PARTIAL:-0}" == "1" ]]; then
+  ok "bundle terminal: $BUNDLE_STATUS (EXPECT_PARTIAL=1)"
 else
-  fail "bundle terminal: got $BUNDLE_STATUS"
+  fail "bundle terminal: got $BUNDLE_STATUS (expected 'completed' — set EXPECT_PARTIAL=1 to allow partial)"
+  api "$ADMIN_HOST" GET "/admin/tenant-bundles/$BUNDLE_ID2" "" "$ADMIN_TOKEN" \
+    | jq -r '.data.components[]? | select(.status!="completed") | "  comp=\(.component) status=\(.status) err=\(.lastError // "")"' \
+    || true
   psql_cmd "UPDATE tenants SET plan_id='$ORIGINAL_PLAN' WHERE id='$TENANT_ID'" >/dev/null
   exit 1
 fi
