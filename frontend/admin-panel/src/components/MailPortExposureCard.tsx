@@ -2,18 +2,63 @@ import { useState } from 'react';
 import { Network, AlertTriangle, Loader2, Check, Info } from 'lucide-react';
 import { useMailPortExposure, useUpdateMailPortExposure } from '@/hooks/use-mail-port-exposure';
 import MailTaskProgressModal from '@/components/MailTaskProgressModal';
+import type { MailPortExposureMode } from '@k8s-hosting/api-contracts';
+
+// Mode catalogue. The descriptions are the ONLY place an operator
+// reads how each mode actually exposes traffic — keep them concrete
+// (which nodes, which mechanism, where the cert/TLS sits).
+const MODE_OPTIONS: ReadonlyArray<{
+  readonly mode: MailPortExposureMode;
+  readonly title: string;
+  readonly description: string;
+  readonly switchWarning: string;
+}> = [
+  {
+    mode: 'activeNodeOnly',
+    title: 'Active node only',
+    description:
+      "hostPort binding on the Stalwart pod's node. Simple setup; mail traffic " +
+      'enters only via the active mail node. No haproxy in the data path. Minimal ' +
+      'attack surface; best for single-VPS or debugging.',
+    switchWarning:
+      'Switching to active node only disables the haproxy DaemonSet first, then ' +
+      'adds hostPort bindings to Stalwart. Expect ~30s interruption.',
+  },
+  {
+    mode: 'assignedMailNodes',
+    title: 'All assigned mail nodes',
+    description:
+      'haproxy DaemonSet runs on every node in the {primary, secondary, tertiary} ' +
+      'mail placement set. Switch is refused unless the active mail node is in ' +
+      'that set (configure placement first). Operator-controlled exposure — useful ' +
+      'when you want DNS rotation to match a specific set of nodes (e.g. nodes ' +
+      'with reverse-DNS already set).',
+    switchWarning:
+      'Switching to assigned mail nodes will label {primary, secondary, tertiary}, ' +
+      'roll Stalwart to drop hostPorts, then create the haproxy DaemonSet. ' +
+      'Expect ~30s interruption.',
+  },
+  {
+    mode: 'allServerNodes',
+    title: 'All server nodes (haproxy + PROXY Protocol v2)',
+    description:
+      'haproxy DaemonSet runs on every server-role node AND the active node if ' +
+      "it's a worker (so mail survives a server-tier outage as long as the active " +
+      'node is up). DNS round-robins all data-plane IPs; any node accepts ' +
+      "connections and forwards to Stalwart's ClusterIP with PROXY Protocol v2.",
+    switchWarning:
+      'Switching to all server nodes will roll Stalwart to drop hostPorts, label ' +
+      'every server-role node (+ active if worker), then create the haproxy ' +
+      'DaemonSet. Expect ~30s interruption.',
+  },
+];
 
 export default function MailPortExposureCard() {
   const query = useMailPortExposure();
   const update = useUpdateMailPortExposure();
-  const [draft, setDraft] = useState<'thisNodeOnly' | 'allServerNodes' | null>(null);
+  const [draft, setDraft] = useState<MailPortExposureMode | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  // taskId returned by the PATCH response (null for service-account
-  // calls, which run synchronously). When set, MailTaskProgressModal
-  // mounts and streams progress from the task-center polling hook.
-  // Closing the modal only dismisses the UI — the chip continues to
-  // track the task in the top bar until it terminates.
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   if (query.isLoading) {
@@ -43,16 +88,13 @@ export default function MailPortExposureCard() {
   const current = query.data.data;
   const selected = draft ?? current.mode;
   const hasChange = selected !== current.mode;
+  const selectedOption = MODE_OPTIONS.find((o) => o.mode === selected)!;
 
   async function applyChange() {
     try {
       const resp = await update.mutateAsync({ mode: selected });
       setDraft(null);
       setConfirmOpen(false);
-      // Service-account path returns taskId=null (synchronous backend
-      // path). User-initiated calls always have a taskId — open the
-      // progress modal so the operator sees the 30–60s flip live
-      // instead of a stale "Applying…" spinner.
       if (resp.data.taskId) {
         setActiveTaskId(resp.data.taskId);
       } else {
@@ -60,11 +102,8 @@ export default function MailPortExposureCard() {
         setTimeout(() => setSaveSuccess(false), 6_000);
       }
     } catch {
-      // Failed mutation: surfaced via update.isError below, but ALSO
-      // clear the draft + close the confirm dialog so the operator
-      // can choose a different mode or retry without the previous
-      // selection stuck in the "you have unsaved changes" UI state.
-      setDraft(null);
+      // Surfaced via update.isError below. Keep draft so operator can
+      // retry; close the confirm so they're not stuck behind a modal.
       setConfirmOpen(false);
     }
   }
@@ -80,72 +119,48 @@ export default function MailPortExposureCard() {
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Controls how SMTP/IMAP/Sieve ports (25, 465, 587, 993, 143, 4190) are exposed
-        to the internet.
+        externally. Three modes; each maps to a different data plane.
       </p>
 
       <div className="space-y-2">
-        <label className="flex items-start gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800">
-          <input
-            type="radio"
-            name="mail-port-exposure-mode"
-            value="thisNodeOnly"
-            checked={selected === 'thisNodeOnly'}
-            onChange={() => setDraft('thisNodeOnly')}
-            data-testid="mail-port-exposure-this-node"
-            className="mt-1"
-          />
-          <div className="flex-1">
-            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-              This node only
+        {MODE_OPTIONS.map((opt) => (
+          <label
+            key={opt.mode}
+            className={`flex items-start gap-3 rounded-lg border px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 ${
+              selected === opt.mode
+                ? 'border-brand-400 dark:border-brand-600 bg-brand-50/40 dark:bg-brand-900/10'
+                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
+            }`}
+          >
+            <input
+              type="radio"
+              name="mail-port-exposure-mode"
+              value={opt.mode}
+              checked={selected === opt.mode}
+              onChange={() => setDraft(opt.mode)}
+              data-testid={`mail-port-exposure-${opt.mode}`}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                {opt.title}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {opt.description}
+              </div>
             </div>
-            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              hostPort binding on the Stalwart pod's node. Simple setup; mail traffic
-              enters only via the node where Stalwart is currently running. Source IP
-              is preserved via the node's external IP.
-            </div>
-          </div>
-        </label>
-
-        <label className="flex items-start gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800">
-          <input
-            type="radio"
-            name="mail-port-exposure-mode"
-            value="allServerNodes"
-            checked={selected === 'allServerNodes'}
-            onChange={() => setDraft('allServerNodes')}
-            data-testid="mail-port-exposure-all-nodes"
-            className="mt-1"
-          />
-          <div className="flex-1">
-            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-              All server nodes (haproxy + PROXY Protocol v2)
-            </div>
-            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              haproxy DaemonSet on every server-role node. DNS round-robins all node IPs;
-              any node accepts connections and forwards to Stalwart's ClusterIP with
-              PROXY Protocol v2 — original sender IP preserved in Stalwart's access logs.
-              Adds ~1 ms haproxy latency.
-            </div>
-          </div>
-        </label>
+          </label>
+        ))}
       </div>
 
-      {current.mode === 'allServerNodes' && current.daemonSetStatus && (() => {
+      {current.daemonSetStatus !== null && (() => {
         const ready = current.daemonSetStatus.ready;
         const desired = current.daemonSetStatus.desired;
-        // Health logic:
-        //   desired === 0 in allServerNodes mode = misconfiguration —
-        //     the DS exists but its nodeSelector matches no nodes (e.g.
-        //     the activate-haproxy patch didn't take effect, or no
-        //     node carries the server-role label). Red.
-        //   ready === desired > 0 = healthy. Green.
-        //   0 < ready < desired = rolling. Amber.
-        //   ready === 0 < desired = pods stuck pending / failing. Red.
         let dotColor: string;
         let detail: string;
         if (desired === 0) {
           dotColor = 'bg-red-500';
-          detail = 'no nodes match — activation did not take effect (DS nodeSelector mismatch)';
+          detail = 'no nodes match the haproxy nodeSelector (mail-haproxy label missing on all nodes)';
         } else if (ready === desired) {
           dotColor = 'bg-green-500';
           detail = 'all pods ready';
@@ -175,24 +190,10 @@ export default function MailPortExposureCard() {
         );
       })()}
 
-      {hasChange && selected === 'allServerNodes' && (
+      {hasChange && (
         <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">
           <Info size={14} className="mt-0.5 shrink-0" />
-          <span>
-            Switching to <strong>all server nodes</strong> will trigger a Stalwart rolling
-            restart to remove hostPort bindings before the haproxy DaemonSet is enabled.
-            Expect ~30s interruption.
-          </span>
-        </div>
-      )}
-
-      {hasChange && selected === 'thisNodeOnly' && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">
-          <Info size={14} className="mt-0.5 shrink-0" />
-          <span>
-            Switching back to <strong>this node only</strong> disables the haproxy DaemonSet
-            first, then adds hostPort bindings to Stalwart. Expect ~30s interruption.
-          </span>
+          <span>{selectedOption.switchWarning}</span>
         </div>
       )}
 
@@ -255,13 +256,10 @@ export default function MailPortExposureCard() {
               id="mail-port-exposure-confirm-title"
               className="text-lg font-semibold text-gray-900 dark:text-gray-100"
             >
-              Switch to{' '}
-              {selected === 'allServerNodes' ? 'All server nodes' : 'This node only'}?
+              Switch to {selectedOption.title}?
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              {selected === 'allServerNodes'
-                ? 'Stalwart will restart to remove hostPort bindings. haproxy DaemonSet will be activated. Expect ~30s interruption.'
-                : 'haproxy DaemonSet will be deactivated. Stalwart will restart with hostPort bindings. Expect ~30s interruption.'}
+              {selectedOption.switchWarning}
             </p>
             <div className="flex justify-end gap-2">
               <button
