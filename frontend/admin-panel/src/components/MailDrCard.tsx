@@ -122,8 +122,70 @@ export default function MailDrCard() {
   const selectedNodes = [d.primaryNode, d.secondaryNode, d.tertiaryNode].filter(Boolean) as string[];
   const hasDuplicates = new Set(selectedNodes).size < selectedNodes.length;
 
+  // Primary-change modal state (2026-05-28). If the operator changes
+  // primary AND there's already an active node, ask whether to migrate
+  // immediately, defer until later, or cancel the placement change.
+  const [primaryChangeModal, setPrimaryChangeModal] = useState<
+    null | { newPrimary: string; oldPrimary: string | null }
+  >(null);
+  // Local in-flight guard for the modal's "Move now"/"Move later"
+  // buttons. Closes a race where the operator clicks Move Now, the
+  // modal closes immediately, then they click the drift-banner CTA
+  // before `update.mutateAsync` resolves — `movePending` is still
+  // false at that point because handleMove hasn't fired yet. Caught
+  // 2026-05-28 code review HIGH-2.
+  const [persistingPlacement, setPersistingPlacement] = useState(false);
+
+  async function persistPlacement(
+    extra: { triggerMigration?: boolean } = {},
+  ): Promise<void> {
+    if (persistingPlacement) return;
+    setPersistingPlacement(true);
+    try {
+      await update.mutateAsync({
+        primaryNode: d.primaryNode!,
+        secondaryNode: d.secondaryNode,
+        tertiaryNode: d.tertiaryNode,
+        autoFailoverEnabled: d.autoFailoverEnabled,
+        failoverThresholdSeconds: d.failoverThresholdSeconds,
+      });
+      setDraft(null);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 5_000);
+      // If the operator chose "Move now", kick off the migration AFTER
+      // the placement save lands so the dr-watcher + drift banner see
+      // the new primary while the migration runs.
+      if (extra.triggerMigration && d.primaryNode) {
+        void handleMove(d.primaryNode);
+      }
+    } catch {
+      setDraft(null);
+    } finally {
+      setPersistingPlacement(false);
+    }
+  }
+
   async function handleSave() {
     if (hasDuplicates) return;
+    // Post-2026-05-28: primaryNode is required. Frontend dropdown
+    // should no longer offer "Not selected" for primary; this is a
+    // runtime guard for any stale UI state (e.g. fresh-bootstrap row
+    // where mail_primary_node hasn't backfilled yet).
+    if (!d.primaryNode) return;
+    // If primary is changing AND mail is currently active on a
+    // different node, open the 3-choice modal. The cancel branch
+    // returns without saving (operator can re-edit the draft).
+    const primaryChanging = d.primaryNode !== current.primaryNode;
+    if (
+      primaryChanging
+      && current.activeNode
+      && current.activeNode !== d.primaryNode
+    ) {
+      setPrimaryChangeModal({ newPrimary: d.primaryNode, oldPrimary: current.primaryNode ?? null });
+      return;
+    }
+    // No primary change OR primary change but activeNode already
+    // matches (no migration needed) → save immediately.
     try {
       await update.mutateAsync({
         primaryNode: d.primaryNode,
@@ -157,24 +219,25 @@ export default function MailDrCard() {
   //   - any other candidate                     → useStartMailMigration
   //
   // Selection of activeNode itself is impossible (option disabled).
-  async function handleMove() {
-    if (!moveTarget || moveTarget === current.activeNode) return;
+  async function handleMove(explicitTarget?: string) {
+    const target = explicitTarget ?? moveTarget;
+    if (!target || target === current.activeNode) return;
     try {
       let result;
       if (
         current.activeNode
         && current.primaryNode
         && current.activeNode !== current.primaryNode
-        && moveTarget === current.primaryNode
+        && target === current.primaryNode
       ) {
         result = await failback.mutateAsync({ confirm: true });
       } else if (
-        moveTarget === current.secondaryNode
-        || moveTarget === current.tertiaryNode
+        target === current.secondaryNode
+        || target === current.tertiaryNode
       ) {
-        result = await failover.mutateAsync({ targetNode: moveTarget, confirm: true });
+        result = await failover.mutateAsync({ targetNode: target, confirm: true });
       } else {
-        result = await migrate.mutateAsync({ targetNode: moveTarget, confirm: true });
+        result = await migrate.mutateAsync({ targetNode: target, confirm: true });
       }
       setMigrationRunId(result.data.runId);
       setMoveTarget('');
@@ -241,6 +304,73 @@ export default function MailDrCard() {
         <span data-testid="mail-dr-active-node" className="sr-only">{current.activeNode}</span>
       )}
 
+      {/* Drift banner (2026-05-28): operator changed primary but
+          didn't run the migration. Stalwart pod is still on the old
+          node. Yellow banner with a "Migrate now" CTA. */}
+      {current.drift && (
+        <div
+          data-testid="mail-dr-drift-banner"
+          className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="text-amber-700 dark:text-amber-300 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-medium text-amber-900 dark:text-amber-100">
+                Primary changed — mail still on old node
+              </div>
+              <div className="mt-0.5 text-xs text-amber-800 dark:text-amber-200">
+                Configured primary is <code className="font-mono">{current.drift.primaryNode}</code>{' '}
+                but Stalwart is still running on <code className="font-mono">{current.drift.activeNode}</code>.
+                Click below to migrate now, or use the "Move mail to…" control to schedule it.
+              </div>
+              <button
+                type="button"
+                onClick={() => handleMove(current.drift!.primaryNode)}
+                disabled={movePending || persistingPlacement}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 text-xs font-medium text-white"
+                data-testid="mail-dr-drift-migrate-now"
+              >
+                {(movePending || persistingPlacement)
+                  ? <Loader2 size={12} className="animate-spin" />
+                  : <ArrowRight size={12} />} Migrate now to {current.drift.primaryNode}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recovery banner (2026-05-28): the most recent migration
+          attempt targeting the current primary failed. Preserve the
+          operator's declared intent and let them retry without
+          re-typing. */}
+      {current.lastFailedMigration && (
+        <div
+          data-testid="mail-dr-recovery-banner"
+          className="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm"
+        >
+          <div className="flex items-start gap-2">
+            <ShieldAlert size={16} className="text-red-700 dark:text-red-300 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-medium text-red-900 dark:text-red-100">
+                Migration to {current.lastFailedMigration.targetNode} failed
+              </div>
+              <div className="mt-0.5 text-xs text-red-800 dark:text-red-200">
+                <div>
+                  Attempted at {new Date(current.lastFailedMigration.failedAt).toLocaleString()}:
+                </div>
+                <code className="mt-1 block font-mono text-[11px] break-words">
+                  {current.lastFailedMigration.errorMessage}
+                </code>
+                <div className="mt-1">
+                  Your declared primary is still <code className="font-mono">{current.lastFailedMigration.targetNode}</code>.
+                  Resolve the underlying issue and retry the migration below.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Node assignments */}
       <div className="space-y-3">
         <div className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -249,16 +379,17 @@ export default function MailDrCard() {
 
         <NodeDropdown
           label="Primary"
-          description="Default node for Stalwart. DR will try to keep mail here."
+          description="Where Stalwart actually runs and mail data lives. Required — every cluster must have one designated primary."
           value={d.primaryNode}
           candidates={candidates}
           disabledValues={[d.secondaryNode, d.tertiaryNode]}
           onChange={(v) => setDraft({ ...d, primaryNode: v })}
           testId="mail-dr-primary-node"
+          required
         />
         <NodeDropdown
           label="Secondary"
-          description="First failover target when primary is unavailable."
+          description="Warm Standby Mail Server — mail data is continuously replicated here. Becomes the immediate failover target if primary goes down. Leave Not selected to disable HA on this slot."
           value={d.secondaryNode}
           candidates={candidates}
           disabledValues={[d.primaryNode, d.tertiaryNode]}
@@ -267,7 +398,7 @@ export default function MailDrCard() {
         />
         <NodeDropdown
           label="Tertiary"
-          description="Second failover target (optional)."
+          description="Warm Standby Mail Server — second replica + secondary failover target if both primary AND secondary are down. Leave Not selected for two-replica HA only."
           value={d.tertiaryNode}
           candidates={candidates}
           disabledValues={[d.primaryNode, d.secondaryNode]}
@@ -415,7 +546,7 @@ export default function MailDrCard() {
             </div>
             <button
               type="button"
-              onClick={handleMove}
+              onClick={() => void handleMove()}
               disabled={!moveTarget || moveTarget === current.activeNode || movePending}
               data-testid="mail-dr-move-button"
               className="inline-flex items-center gap-2 rounded-lg border border-amber-500 bg-amber-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
@@ -500,6 +631,91 @@ export default function MailDrCard() {
       {showReprovision && (
         <StalwartReprovisionModal onClose={() => setShowReprovision(false)} />
       )}
+
+      {/* Primary-change modal (2026-05-28). Opens when the operator
+          changes primary AND mail is currently active on a different
+          node. Three choices: Move now (save + migrate), Move later
+          (save only — drift banner appears next render), Cancel
+          (drop the placement change). */}
+      {primaryChangeModal && (
+        <div
+          data-testid="mail-dr-primary-change-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setPrimaryChangeModal(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-800 p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <ArrowRight size={20} className="text-brand-600 dark:text-brand-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  Change primary mail node?
+                </h3>
+                <div className="mt-2 space-y-2 text-sm text-gray-700 dark:text-gray-300">
+                  <p>
+                    Mail is currently running on{' '}
+                    <code className="font-mono font-medium">{current.activeNode}</code>.
+                    Primary is changing from{' '}
+                    <code className="font-mono font-medium">{primaryChangeModal.oldPrimary ?? '(unset)'}</code>{' '}
+                    to{' '}
+                    <code className="font-mono font-medium">{primaryChangeModal.newPrimary}</code>.
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Pick how to handle the mail data + Stalwart pod move:
+                  </p>
+                </div>
+                <div className="mt-4 space-y-2">
+                  <button
+                    type="button"
+                    data-testid="mail-dr-primary-modal-move-now"
+                    onClick={() => {
+                      setPrimaryChangeModal(null);
+                      void persistPlacement({ triggerMigration: true });
+                    }}
+                    disabled={update.isPending || movePending || persistingPlacement}
+                    className="w-full rounded-md border border-brand-600 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 text-sm font-medium text-white text-left"
+                  >
+                    <div className="font-semibold">Move now</div>
+                    <div className="text-xs opacity-90 mt-0.5">
+                      Save placement AND immediately migrate Stalwart + mail data to {primaryChangeModal.newPrimary}.
+                      Mail downtime ~5-15 min while data syncs.
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="mail-dr-primary-modal-move-later"
+                    onClick={() => {
+                      setPrimaryChangeModal(null);
+                      void persistPlacement({ triggerMigration: false });
+                    }}
+                    disabled={update.isPending || persistingPlacement}
+                    className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 text-sm text-gray-900 dark:text-gray-100 text-left"
+                  >
+                    <div className="font-semibold">Move later</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Save the new primary now; a yellow banner will remind you to migrate when convenient.
+                      Stalwart stays on {current.activeNode} until you click "Migrate now".
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="mail-dr-primary-modal-cancel"
+                    onClick={() => setPrimaryChangeModal(null)}
+                    className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-transparent hover:bg-gray-50 dark:hover:bg-gray-700 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 text-left"
+                  >
+                    <div className="font-semibold">Cancel</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Don't change primary. Re-edit your selection.
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -512,12 +728,22 @@ interface NodeDropdownProps {
   readonly disabledValues: (string | null)[];
   readonly onChange: (v: string | null) => void;
   readonly testId: string;
+  /**
+   * 2026-05-28: when true, omit the "Not selected" option (used for
+   * primary — the system must always have a designated primary).
+   * Default false so secondary/tertiary keep the "Not selected"
+   * affordance.
+   */
+  readonly required?: boolean;
 }
-function NodeDropdown({ label, description, value, candidates, disabledValues, onChange, testId }: NodeDropdownProps) {
+function NodeDropdown({ label, description, value, candidates, disabledValues, onChange, testId, required = false }: NodeDropdownProps) {
   return (
     <div className="flex items-start gap-3">
       <div className="w-20 shrink-0">
-        <div className="text-xs font-semibold text-gray-700 dark:text-gray-300 pt-2">{label}</div>
+        <div className="text-xs font-semibold text-gray-700 dark:text-gray-300 pt-2">
+          {label}
+          {required && <span className="ml-0.5 text-red-600 dark:text-red-400" title="Required">*</span>}
+        </div>
       </div>
       <div className="flex-1">
         <select
@@ -526,7 +752,8 @@ function NodeDropdown({ label, description, value, candidates, disabledValues, o
           data-testid={testId}
           className="w-full max-w-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
         >
-          <option value="">Any node</option>
+          {!required && <option value="">Not selected</option>}
+          {required && !value && <option value="" disabled>Choose a node…</option>}
           {candidates.map((c) => (
             <option
               key={c.hostname}
