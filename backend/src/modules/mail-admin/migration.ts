@@ -953,6 +953,47 @@ async function runMigrationStateMachine(
     return;
   }
 
+  // Step 4d (2026-05-28 hairpin-fix follow-up): strip mail-haproxy=true
+  // label from the TARGET node so the haproxy DS evicts its pod there,
+  // freeing hostPort 25 for the new Stalwart pod. Without this step the
+  // scaling-up below times out at 600s with FailedScheduling:
+  // "didn't have free ports for the requested pod ports" — exact bug
+  // surfaced on staging 2026-05-28 19:31 (run 9d6c39ec failback to
+  // staging1 stuck for 10min then failed).
+  //
+  // Why the regular reconcileMailStandbyLabel doesn't handle this:
+  // that reconciler keys off mail_secondary/tertiary_node placement,
+  // not migration intent — and mail_active_node is only flipped to
+  // the target AFTER the migration succeeds (the post-success row at
+  // ~line 1080), so the label reconciler sees the OLD active and
+  // keeps haproxy on the target.
+  try {
+    const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
+    const STANDBY_LABEL = 'platform.phoenix-host.net/mail-haproxy';
+    const escaped = STANDBY_LABEL.replace(/~/g, '~0').replace(/\//g, '~1');
+    await core.patchNode(
+      {
+        name: targetNode,
+        body: [{ op: 'remove', path: `/metadata/labels/${escaped}` }],
+      } as unknown as Parameters<typeof core.patchNode>[0],
+      JSON_PATCH,
+    ).catch((err: unknown) => {
+      // 404-on-remove (label already absent on this node, or node
+      // unknown) is fine; surface other errors. Don't suppress 422 —
+      // that would silently eat malformed-patch bugs (path escape
+      // typo, etc.) which a future code change could introduce.
+      const code = (err as { code?: number; statusCode?: number })?.code
+        ?? (err as { code?: number; statusCode?: number })?.statusCode;
+      if (code !== 404) throw err;
+    });
+    // Brief settle window so kubelet evicts the haproxy pod + releases
+    // hostPort 25 before the new Stalwart pod schedules. Same 5s as
+    // the port-exposure orchestrator's analogous reconcile.
+    await new Promise((r) => setTimeout(r, 5_000));
+  } catch (err) {
+    log.warn(`[migration] failed to strip mail-haproxy label from target ${targetNode} (non-fatal — scale-up may still succeed if haproxy isn't actually there):`, err);
+  }
+
   // Step 5: Scale Stalwart back to 1 — pod schedules on target node,
   // binds the new PVC, the restore-state initContainer notices the
   // empty DataStore + allow-restore annotation + restic repo and

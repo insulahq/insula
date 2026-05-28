@@ -101,13 +101,47 @@ export const mailPlacementResponseSchema = z.object({
   lastFailoverAt: z.string().nullable(),
   portExposureMode: mailPortExposureModeEnum,
   candidateNodes: z.array(nodeCandidateSchema),
+  // Drift state: when operator changes mail_primary_node but doesn't
+  // run a migration, primary ≠ active. The frontend surfaces a yellow
+  // banner inviting the operator to migrate now; without this surface
+  // the cluster silently drifts until the next reboot/migration.
+  // Both populated → drift; either null → no drift to report.
+  drift: z.object({
+    primaryNode: z.string(),
+    activeNode: z.string(),
+  }).nullable(),
+  // Migration-failure recovery banner: when a "Move now" migration
+  // fails halfway, we preserve the operator's declared intent
+  // (mail_primary_node = new) but surface the failure so they can
+  // retry without losing the trigger. Populated from the most recent
+  // FAILED mail.migration task whose target_node == current primary
+  // (i.e., the migration that tried to satisfy the current intent).
+  lastFailedMigration: z.object({
+    targetNode: z.string(),
+    errorMessage: z.string(),
+    failedAt: z.string(),
+  }).nullable(),
 });
 
 export const mailPlacementUpdateRequestSchema = z.object({
   // Node names persist to system_settings and flow into the
   // migration Job's shell script. Use the strict node-name schema
   // (rejects shell metacharacters) instead of a plain string.
-  primaryNode: kubernetesNodeNameSchema.nullable().optional(),
+  //
+  // 2026-05-28: primaryNode is REQUIRED + non-null. The system must
+  // always have a designated primary — that's the node Stalwart's
+  // Deployment pins to via topology-spread + the source-of-truth for
+  // mail data. Bootstrap auto-populates it from the live Stalwart pod
+  // (see ensureMailStackPlacementApplied's primary self-heal). When
+  // the operator changes primary, the frontend opens a 3-choice modal
+  // (move-now / move-later / cancel) — see UX flow doc.
+  //
+  // secondaryNode / tertiaryNode remain nullable: those are
+  // "Warm Standby Mail Server" assignments that drive both the
+  // mail-stack-standby-replicate DaemonSet (data pre-staging) and
+  // auto-failover candidate list (dr-watcher). null on either =
+  // "no standby + no auto-failover via this slot".
+  primaryNode: kubernetesNodeNameSchema,
   secondaryNode: kubernetesNodeNameSchema.nullable().optional(),
   tertiaryNode: kubernetesNodeNameSchema.nullable().optional(),
   autoFailoverEnabled: z.boolean().optional(),

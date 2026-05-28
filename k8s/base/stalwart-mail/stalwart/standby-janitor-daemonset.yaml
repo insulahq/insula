@@ -1,0 +1,96 @@
+# mail-stack-standby-janitor DaemonSet.
+#
+# Sweeps de-elected standby data older than 48h on EVERY node.
+#
+# Background: when an operator removes a node from secondary/tertiary
+# placement, platform-api spawns a one-shot mail-standby-deelect-*
+# Job (see backend/src/modules/mail-admin/standby-cleanup.ts) that
+# renames `/var/lib/mail-stack-standby/` →
+# `/var/lib/mail-stack-standby.deelected-<unix-ts>/` on that node.
+# The rename gives operators a 48h recovery window — if a secondary
+# swap was a mistake, the data is recoverable by `mv` back.
+#
+# This janitor reaps anything older than the recovery window. Runs as
+# a DaemonSet (not CronJob) so every node gets swept on every cycle —
+# a CronJob would land its single Pod on one node per tick and miss
+# the others entirely.
+#
+# Cycle: one sweep per 6h within the DS pod's bash loop, plus an
+# initial sweep on container start. Cheap enough to run more often
+# than the recovery window so a de-elected dir aged past 48h gets
+# reaped within at most one cycle.
+#
+# Wide nodeSelector (every node) + tolerations: cleanup must run even
+# on cordoned/tainted nodes since those are precisely the nodes likely
+# to have been recently de-elected.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mail-standby-janitor
+  namespace: mail
+  labels:
+    app: mail-standby-janitor
+    app.kubernetes.io/component: mail-standby-janitor
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    matchLabels:
+      app: mail-standby-janitor
+  template:
+    metadata:
+      labels:
+        app: mail-standby-janitor
+        app.kubernetes.io/component: mail-standby-janitor
+    spec:
+      tolerations:
+        - operator: Exists
+      restartPolicy: Always
+      containers:
+        - name: janitor
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              while true; do
+                echo "[janitor] $(date -Iseconds) scanning /host for mail-stack-standby.deelected-* dirs older than 48h"
+                found=0
+                cleaned=0
+                for d in /host/mail-stack-standby.deelected-*; do
+                  # Glob may yield the literal pattern if no matches.
+                  [ -d "$d" ] || continue
+                  found=$((found + 1))
+                  # `-mtime +2` = older than 2*24h. mv preserves the
+                  # original mtime so this is accurate to the
+                  # de-election time.
+                  if find "$d" -maxdepth 0 -mtime +2 | grep -q .; then
+                    echo "[janitor] deleting $d (>48h old)"
+                    rm -rf "$d"
+                    cleaned=$((cleaned + 1))
+                  else
+                    age_days=$(( ( $(date +%s) - $(stat -c %Y "$d") ) / 86400 ))
+                    echo "[janitor] keeping $d (${age_days}d old, within 48h recovery window)"
+                  fi
+                done
+                echo "[janitor] done — found=$found cleaned=$cleaned, sleeping 6h"
+                sleep 21600
+              done
+          volumeMounts:
+            - name: host-var-lib
+              mountPath: /host
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+      volumes:
+        - name: host-var-lib
+          hostPath:
+            path: /var/lib
+            type: Directory
