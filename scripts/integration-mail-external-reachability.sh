@@ -38,9 +38,16 @@ ssh_kubectl() {
 }
 
 api_patch() {
-  local body="$1"
-  ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' "$body" <<'SSH'
-body="$1"
+  # Base64-encode the JSON body to defang ssh argument quote-stripping.
+  # ssh joins argv with spaces and re-parses on the remote — JSON
+  # double-quotes around field names get eaten by the second-pass shell,
+  # so {"mode":"X"} arrives as {mode:X} and Fastify rejects with
+  # FST_ERR_CTP_INVALID_JSON_BODY. Caught 2026-05-28 by Phase 2 of the
+  # external reachability E2E (no port-exposure task ever started).
+  local body_b64
+  body_b64=$(printf '%s' "$1" | base64 -w0)
+  ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' "$body_b64" <<'SSH'
+body=$(printf '%s' "$1" | base64 -d)
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
 PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
@@ -137,10 +144,48 @@ for L in "${NODE_LINES[@]}"; do
   printf "  %s\n" "$L"
 done
 
+# Wait until ALL Stalwart pods are in the new state (replicas==ready
+# and the hostPort expectation matches). Both transitions involve a
+# rolling-update of Stalwart, which is slow because the init container
+# can take a while if it has to FAST-PATH or restic-restore.
+wait_for_stalwart_settled() {
+  local expect_hostport="$1"  # "yes" or "no"
+  local end=$(($(date +%s) + 300))
+  while [ $(date +%s) -lt $end ]; do
+    local ready hp_set
+    ready=$(ssh_kubectl 'kubectl get deploy -n mail stalwart-mail -o jsonpath="{.status.readyReplicas}/{.status.replicas}"')
+    hp_set=$(ssh_kubectl 'kubectl get pod -n mail -l app=stalwart-mail -o jsonpath="{.items[0].spec.containers[0].ports[?(@.containerPort==25)].hostPort}"')
+    local want_hp=""
+    [ "$expect_hostport" = "yes" ] && want_hp="25"
+    if [ "$ready" = "1/1" ] && [ "$hp_set" = "$want_hp" ]; then
+      return 0
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+wait_for_haproxy_ds() {
+  local expect="$1"  # "present" or "absent"
+  local end=$(($(date +%s) + 120))
+  while [ $(date +%s) -lt $end ]; do
+    if ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy' >/dev/null 2>&1; then
+      [ "$expect" = "present" ] && return 0
+    else
+      [ "$expect" = "absent" ] && return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
 # ── PHASE 1: allServerNodes mode ────────────────────────────────────────
 hdr "PHASE 1: allServerNodes mode — every server-role IP should answer mail ports; worker IP should NOT"
 api_patch '{"mode":"allServerNodes"}' >/dev/null
-sleep 60   # haproxy DS rollout
+amber "  waiting for haproxy DS to come up + Stalwart hostPorts to clear…"
+wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
+wait_for_stalwart_settled no || amber "  Stalwart hostPorts didn't clear in 300s (continuing — may not affect external reachability)"
+sleep 10   # extra grace for haproxy hostPort bind + DNS
 fail_count=0
 for L in "${NODE_LINES[@]}"; do
   IFS=$'\t' read -r name role ip <<<"$L"
@@ -160,7 +205,10 @@ fi
 # ── PHASE 2: thisNodeOnly mode — only active node's IP should answer ────
 hdr "PHASE 2: thisNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"
 api_patch '{"mode":"thisNodeOnly"}' >/dev/null
-sleep 90   # haproxy DS delete + Stalwart hostPort bind
+amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind…"
+wait_for_haproxy_ds absent || { red "  haproxy DS didn't delete in 120s"; }
+wait_for_stalwart_settled yes || { red "  Stalwart didn't acquire hostPorts in 300s"; }
+sleep 15   # extra grace for kernel hostPort bind + connection-tracking flush
 fail2_count=0
 for L in "${NODE_LINES[@]}"; do
   IFS=$'\t' read -r name role ip <<<"$L"
@@ -180,7 +228,14 @@ fi
 # ── Restore prior mode ──────────────────────────────────────────────────
 hdr "Restoring mode to $PRE_MODE"
 api_patch "{\"mode\":\"$PRE_MODE\"}" >/dev/null
-sleep 30
+if [ "$PRE_MODE" = "allServerNodes" ]; then
+  wait_for_haproxy_ds present || amber "  haproxy DS restore did not converge in 120s"
+  wait_for_stalwart_settled no || true
+else
+  wait_for_haproxy_ds absent || true
+  wait_for_stalwart_settled yes || true
+fi
+sleep 10
 
 # ── Verify deliverability sub-probes target the right IPs in each mode ──
 hdr "Deliverability sub-probe IP coverage (after restore)"
