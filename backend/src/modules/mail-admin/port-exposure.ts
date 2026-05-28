@@ -55,6 +55,8 @@ import {
 } from './haproxy-builder.js';
 import {
   resolveDataPlaneNodes,
+  resolveHaproxyNodes,
+  resolveExternalIpNodes,
   reconcileMailHaproxyLabels,
   validateModeSwitch,
   type PlacementSettings,
@@ -396,16 +398,37 @@ async function applyModeToClusterUnlocked(
 ): Promise<void> {
   const { apps, core } = await loadK8sAppsTenant(opts.kubeconfigPath);
 
-  // Compute the data plane (node names that should serve mail) ONCE.
-  // Used for both label reconciliation (drives the haproxy DS nodeSelector)
-  // and externalIPs reconciliation (drives kube-proxy iptables routing).
-  // Without db we can't read placement — fall back to legacy behavior.
-  let dataPlane: string[] = [];
-  let dataPlaneNodes: NodeRef[] = [];
+  // Compute the THREE distinct node sets used by orchestration:
+  //   haproxyNodes  — where haproxy DS schedules. EXCLUDES active node in
+  //                   haproxy modes (Stalwart hostPort=25 on active would
+  //                   conflict with haproxy hostPort=25). Empty for
+  //                   activeNodeOnly.
+  //   externalIps   — node names whose IPs go into Service.spec.externalIPs.
+  //                   ALWAYS excludes active node — kube-proxy's
+  //                   externalIP DNAT routes via ClusterIP→pod, and on
+  //                   the active node that path same-node-hairpins on
+  //                   the reply (reply dst=active-IP routes to lo, never
+  //                   reaches the original socket). The active node
+  //                   serves via Stalwart hostPort (CNI portmap, no
+  //                   hairpin). Empty for activeNodeOnly.
+  //   publicDataPlane — what the operator sees as "the set of nodes that
+  //                     answer mail traffic". haproxyNodes ∪ {active}
+  //                     when active is set. Used for the progress text.
+  //
+  // Without db we can't read placement — skip label/externalIPs work and
+  // the orchestrator falls back to just patching the Deployment + DS.
+  let haproxyNodes: string[] = [];
+  let externalIps: string[] = [];
+  let publicDataPlane: string[] = [];
+  let allNodes: NodeRef[] = [];
+  let activeNode: string | null = null;
   if (db) {
     const { settings, nodes } = await loadPlacementAndNodes(db, opts.kubeconfigPath);
-    dataPlaneNodes = nodes;
-    dataPlane = resolveDataPlaneNodes(mode, settings, nodes);
+    allNodes = nodes;
+    activeNode = settings.activeNode;
+    haproxyNodes = resolveHaproxyNodes(mode, settings, nodes);
+    externalIps = resolveExternalIpNodes(mode, settings, nodes);
+    publicDataPlane = resolveDataPlaneNodes(mode, settings, nodes);
     // Re-validate inside the orchestrator: the route-handler
     // pre-validates BEFORE starting the background task, but a
     // concurrent placement PATCH between then and now could have
@@ -421,118 +444,96 @@ async function applyModeToClusterUnlocked(
       );
     }
   }
+  // publicDataPlane referenced below only when db is set — keep linter happy.
+  void publicDataPlane;
 
+  // Post-hairpin-fix invariant (2026-05-28): Stalwart Deployment ALWAYS
+  // has hostPort=25/465/587/143/993/4190 — the active node serves via
+  // CNI portmap directly. In haproxy modes other data-plane nodes still
+  // bind hostPort=25 via the haproxy DS (no conflict because Stalwart's
+  // pod lives only on the active node). In activeNodeOnly Stalwart is
+  // the only listener. ensureHaproxyDaemonSetAbsent is now a no-op when
+  // there are no haproxy nodes; ensureHaproxyDaemonSetExists creates it
+  // when there ARE haproxy nodes.
+
+  // Step 1: Ensure Stalwart hostPort is set (idempotent SSA — only patches
+  // if the field set differs from the current claim).
+  if (onProgress) {
+    await onProgress({
+      stepKey: 'add-hostports',
+      pct: 15,
+      text: 'Ensuring Stalwart Deployment binds host ports on active node',
+    });
+  }
+  await addHostPortsToDeployment(apps);
+
+  if (onProgress) {
+    await onProgress({
+      stepKey: 'wait-stalwart-rollout',
+      pct: 35,
+      text: 'Waiting for Stalwart rollout to complete',
+    });
+  }
+
+  // Step 2: Reconcile haproxy DS lifecycle.
+  //
+  // DS lifecycle is MODE-driven (not data-plane-size driven): a
+  // cluster with no haproxy-eligible nodes in a haproxy mode still
+  // gets the DS created (with 0 ready pods) so the operator-facing
+  // status is consistent with the mode setting. Conversely
+  // activeNodeOnly always deletes the DS.
   if (mode === 'activeNodeOnly') {
-    // Stalwart pod binds mail hostPorts directly on the active node.
-    // No haproxy DS at all.
-
-    // Step 1: Delete the haproxy DaemonSet first so its hostPorts are
-    // released before Stalwart tries to bind them.
     if (onProgress) {
       await onProgress({
         stepKey: 'delete-haproxy-ds',
-        pct: 15,
-        text: 'Deleting haproxy DaemonSet',
+        pct: 50,
+        text: 'Deleting haproxy DaemonSet (activeNodeOnly mode — Stalwart hostPort is the only listener)',
       });
     }
     await ensureHaproxyDaemonSetAbsent(apps);
-
-    // Step 1b: Clear the mail-haproxy label from every node (no DS, no
-    // need for the selector to match).
     if (db) {
-      await reconcileMailHaproxyLabels(core, [], dataPlaneNodes);
-    }
-
-    // Step 2: Re-add hostPorts to Stalwart Deployment.
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'add-hostports',
-        pct: 40,
-        text: 'Adding host ports back to Stalwart Deployment',
-      });
-    }
-    await addHostPortsToDeployment(apps);
-
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'wait-stalwart-rollout',
-        pct: 70,
-        text: 'Waiting for Stalwart rollout to complete',
-      });
-    }
-
-    // Step 3: Reconcile externalIPs to active node only.
-    if (db) {
-      if (onProgress) {
-        await onProgress({
-          stepKey: 'reconcile-service-externalips',
-          pct: 90,
-          text: 'Reconciling stalwart-mail Service externalIPs to active node only',
-        });
-      }
-      await reconcileMailServiceExternalIPsByName(core, dataPlane);
+      // Clear all mail-haproxy labels so a future mode switch starts
+      // from a clean slate.
+      await reconcileMailHaproxyLabels(core, [], allNodes);
     }
   } else {
-    // assignedMailNodes OR allServerNodes — both use haproxy. Difference
-    // is just WHICH nodes haproxy lands on, governed by the mail-haproxy
-    // label we set below.
-
-    // Step 1: Remove hostPort from Stalwart Deployment so haproxy can
-    // bind the same ports without conflict on any node that runs both.
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'remove-hostports',
-        pct: 10,
-        text: 'Removing host ports from Stalwart Deployment',
-      });
-    }
-    await removeHostPortsFromDeployment(apps);
-
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'wait-stalwart-rollout',
-        pct: 40,
-        text: 'Waiting for Stalwart rollout to complete',
-      });
-    }
-
-    // Step 2: Set mail-haproxy=true on every node in the data plane,
-    // remove the label from every other node. The DS's nodeSelector
-    // is keyed on this label, so changing the label set re-shapes the
-    // DS's pod schedule on the next reconcile.
+    // haproxy modes — label the (active-excluded) haproxy data plane
+    // then ensure DS exists.
     if (db) {
       if (onProgress) {
         await onProgress({
           stepKey: 'reconcile-haproxy-labels',
           pct: 55,
-          text: `Labelling data-plane nodes: ${dataPlane.join(', ') || '(none)'}`,
+          text: activeNode
+            ? `Labelling haproxy nodes: ${haproxyNodes.join(', ') || '(none)'} (active node ${activeNode} serves via Stalwart hostPort)`
+            : `Labelling haproxy nodes: ${haproxyNodes.join(', ') || '(none)'}`,
         });
       }
-      await reconcileMailHaproxyLabels(core, dataPlane, dataPlaneNodes);
+      await reconcileMailHaproxyLabels(core, haproxyNodes, allNodes);
     }
-
-    // Step 3: Create the haproxy DaemonSet (if not already present —
-    // ensureHaproxyDaemonSetExists is idempotent).
     if (onProgress) {
       await onProgress({
         stepKey: 'create-haproxy-ds',
-        pct: 75,
+        pct: 70,
         text: 'Ensuring haproxy DaemonSet exists',
       });
     }
     await ensureHaproxyDaemonSetExists(apps);
+  }
 
-    // Step 4: Reconcile externalIPs to match the data plane.
-    if (db) {
-      if (onProgress) {
-        await onProgress({
-          stepKey: 'reconcile-service-externalips',
-          pct: 90,
-          text: 'Reconciling stalwart-mail Service externalIPs',
-        });
-      }
-      await reconcileMailServiceExternalIPsByName(core, dataPlane);
+  // Step 3: Reconcile Service.spec.externalIPs (active node is NEVER
+  // included — see comment block at the top of this function).
+  if (db) {
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'reconcile-service-externalips',
+        pct: 90,
+        text: externalIps.length === 0
+          ? 'Clearing stalwart-mail Service externalIPs (activeNodeOnly — Stalwart hostPort serves directly)'
+          : `Reconciling stalwart-mail Service externalIPs to ${externalIps.join(', ')} (active node served via hostPort)`,
+      });
     }
+    await reconcileMailServiceExternalIPsByName(core, externalIps);
   }
 }
 
@@ -708,12 +709,6 @@ async function replaceStalwartContainerPorts(
   // 90s budget: a typical Stalwart pod restart is ~25s; 90s covers
   // local-path PVC re-attach + restore-state initContainer.
   await waitForStalwartRollout(apps);
-}
-
-async function removeHostPortsFromDeployment(
-  apps: import('@kubernetes/client-node').AppsV1Api,
-): Promise<void> {
-  await replaceStalwartContainerPorts(apps, /* withHostPorts= */ false);
 }
 
 async function addHostPortsToDeployment(

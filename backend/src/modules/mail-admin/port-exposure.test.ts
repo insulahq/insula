@@ -102,7 +102,12 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     mockPatchDeployment.mockResolvedValue({});
   });
 
-  it('activeNodeOnly → allServerNodes: removes hostPorts then CREATES the haproxy DS', async () => {
+  it('allServerNodes mode: ALWAYS adds hostPorts (post-hairpin-fix) AND creates haproxy DS', async () => {
+    // Post-2026-05-28 hairpin fix: Stalwart hostPort is ALWAYS set in
+    // every mode. The active node serves via CNI portmap (no kube-proxy
+    // DNAT hairpin); non-active data-plane nodes serve via haproxy DS
+    // → ClusterIP → Stalwart pod (cross-node, no hairpin). The haproxy
+    // DS still gets created in haproxy modes for the non-active nodes.
     mockReadDs.mockRejectedValue(notFoundError()); // DS absent at start
     mockCreateDs.mockResolvedValue({});
     const { updateMailPortExposure } = await import('./port-exposure.js');
@@ -118,15 +123,12 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     const createArg = mockCreateDs.mock.calls[0][0] as { body: { kind: string; metadata: { name: string } } };
     expect(createArg.body.kind).toBe('DaemonSet');
     expect(createArg.body.metadata.name).toBe('stalwart-haproxy');
-    // The Deployment patch body must include `$patch: replace` as the
-    // FIRST element of the ports list so strategic-merge wholesale-
-    // replaces (instead of merging by containerPort and keeping the
-    // existing hostPort). E2E harness Phase C3/C4 caught this on
-    // runs 2–6 before the directive landed.
+    // Stalwart hostPorts MUST be set on every mail port (always-on
+    // post-hairpin-fix).
     const patchArg = mockPatchDeployment.mock.calls[0][0] as {
       body: { spec: { template: { spec: { containers: Array<{
         name: string;
-        ports: Array<{ $patch?: string; containerPort?: number; hostPort?: number }>;
+        ports: Array<{ containerPort?: number; hostPort?: number }>;
       }> } } } };
     };
     const containers = patchArg.body.spec.template.spec.containers as Array<{
@@ -134,16 +136,14 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
       ports: Array<{ containerPort: number; hostPort?: number; name: string; protocol: string }>;
     }>;
     expect(containers[0].name).toBe('stalwart');
-    // SSA-apply with NO hostPort on mail ports — the apiserver leaves
-    // the field unset since neither the manifest nor we claim it.
     const mailPorts = containers[0].ports.filter((p) => [25, 465, 587, 143, 993, 4190].includes(p.containerPort));
     expect(mailPorts.length).toBe(6);
     for (const p of mailPorts) {
-      expect(p.hostPort).toBeUndefined();
+      expect(p.hostPort).toBe(p.containerPort);
     }
   });
 
-  it('activeNodeOnly → allServerNodes: does NOT re-create when DS already exists', async () => {
+  it('allServerNodes mode: does NOT re-create when DS already exists', async () => {
     mockReadDs.mockResolvedValue({ metadata: { name: 'stalwart-haproxy' } });
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await updateMailPortExposure(

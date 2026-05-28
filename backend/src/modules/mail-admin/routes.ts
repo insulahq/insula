@@ -1842,31 +1842,34 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         }
       })();
 
-      // Step keys + labels per mode. Sequence matches applyModeToCluster.
-      // activeNodeOnly: delete haproxy, add hostPorts, rollout, externalIPs.
-      // assignedMailNodes / allServerNodes: remove hostPorts, rollout, label nodes, create haproxy, externalIPs.
+      // Step keys + labels per mode. Sequence matches applyModeToCluster
+      // (post-2026-05-28 hairpin fix). Stalwart hostPort is ALWAYS set
+      // first — the active node serves via CNI portmap regardless of mode
+      // because the kube-proxy externalIP→ClusterIP→pod path hairpins on
+      // the active node. haproxy modes additionally label + create the DS
+      // on non-active data-plane nodes.
       const stepDef: Record<string, ReadonlyArray<{ key: string; label: string }>> = {
         activeNodeOnly: [
-          { key: 'delete-haproxy-ds',           label: 'Delete haproxy DaemonSet' },
-          { key: 'add-hostports',                label: 'Add host ports to Stalwart Deployment' },
+          { key: 'add-hostports',                label: 'Ensure Stalwart hostPorts on active node' },
           { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
-          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to active node' },
+          { key: 'delete-haproxy-ds',            label: 'Delete haproxy DaemonSet' },
+          { key: 'reconcile-service-externalips',label: 'Clear externalIPs (Stalwart hostPort is the only listener)' },
           { key: 'db-persist',                   label: 'Persist mode to database' },
         ],
         assignedMailNodes: [
-          { key: 'remove-hostports',             label: 'Remove host ports from Stalwart Deployment' },
+          { key: 'add-hostports',                label: 'Ensure Stalwart hostPorts on active node' },
           { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
-          { key: 'reconcile-haproxy-labels',     label: 'Label assigned nodes (primary/secondary/tertiary)' },
+          { key: 'reconcile-haproxy-labels',     label: 'Label assigned nodes (active excluded — served via Stalwart hostPort)' },
           { key: 'create-haproxy-ds',            label: 'Ensure haproxy DaemonSet exists' },
-          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to assigned set' },
+          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to haproxy nodes (active excluded — hairpin avoidance)' },
           { key: 'db-persist',                   label: 'Persist mode to database' },
         ],
         allServerNodes: [
-          { key: 'remove-hostports',             label: 'Remove host ports from Stalwart Deployment' },
+          { key: 'add-hostports',                label: 'Ensure Stalwart hostPorts on active node' },
           { key: 'wait-stalwart-rollout',        label: 'Wait for Stalwart rollout' },
-          { key: 'reconcile-haproxy-labels',     label: 'Label server-role nodes (+ active worker if applicable)' },
+          { key: 'reconcile-haproxy-labels',     label: 'Label server-role nodes (active excluded — served via Stalwart hostPort)' },
           { key: 'create-haproxy-ds',            label: 'Ensure haproxy DaemonSet exists' },
-          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to data plane' },
+          { key: 'reconcile-service-externalips',label: 'Reconcile externalIPs to haproxy nodes (active excluded — hairpin avoidance)' },
           { key: 'db-persist',                   label: 'Persist mode to database' },
         ],
       };
