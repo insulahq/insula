@@ -45,6 +45,7 @@ import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
   type MailPortExposureResponse,
+  type MailPortExposureMode,
   mailPortExposureResponseSchema,
 } from '@k8s-hosting/api-contracts';
 import {
@@ -52,6 +53,13 @@ import {
   HAPROXY_DS_NAME,
   HAPROXY_DS_NAMESPACE,
 } from './haproxy-builder.js';
+import {
+  resolveDataPlaneNodes,
+  reconcileMailHaproxyLabels,
+  validateModeSwitch,
+  type PlacementSettings,
+  type NodeRef,
+} from './port-exposure-modes.js';
 
 const SETTINGS_ID = 'system';
 const DEPLOYMENT_NAME = 'stalwart-mail';
@@ -133,9 +141,13 @@ export async function getMailPortExposure(
     .where(eq(systemSettings.id, SETTINGS_ID));
 
   // Default to allServerNodes (Phase 2 streamline, 2026-05-15). Matches
-  // the schema column default. thisNodeOnly is a debugging escape hatch
-  // for single-node installs, set via the admin API.
-  const mode = (row?.v as 'thisNodeOnly' | 'allServerNodes' | null) ?? 'allServerNodes';
+  // the schema column default. Legacy 'thisNodeOnly' values from
+  // pre-0034 DBs are normalised by migration 0034; defensive
+  // re-mapping here covers any older runtime path.
+  const stored = row?.v;
+  const mode: MailPortExposureMode = stored === 'thisNodeOnly'
+    ? 'activeNodeOnly'
+    : ((stored as MailPortExposureMode | null) ?? 'allServerNodes');
 
   let daemonSetStatus: { ready: number; desired: number } | null = null;
   try {
@@ -149,7 +161,8 @@ export async function getMailPortExposure(
     };
   } catch (err) {
     if (isNotFound(err)) {
-      // DS not present — expected in thisNodeOnly mode.
+      // DS not present — expected in activeNodeOnly mode (where only
+      // Stalwart's own hostPort serves mail, no haproxy at all).
       daemonSetStatus = null;
     }
     // Non-404 errors are swallowed — mode is still readable from DB.
@@ -157,9 +170,67 @@ export async function getMailPortExposure(
 
   return mailPortExposureResponseSchema.parse({
     mode,
-    proxyProtocolActive: mode === 'allServerNodes',
+    // PROXY-protocol is active whenever haproxy is in the data path —
+    // both assignedMailNodes and allServerNodes use haproxy. Only the
+    // activeNodeOnly mode bypasses it (Stalwart binds hostPort directly).
+    proxyProtocolActive: mode !== 'activeNodeOnly',
     daemonSetStatus,
   });
+}
+
+/**
+ * Read placement settings + node list. Shared by ensureMailPortExposureApplied,
+ * applyModeToCluster, and the route handler's pre-PATCH validation.
+ */
+export async function loadPlacementAndNodes(
+  db: Database,
+  kubeconfigPath: string | undefined,
+): Promise<{ settings: PlacementSettings; nodes: NodeRef[] }> {
+  const [row] = await db.select({
+    primaryNode: systemSettings.mailPrimaryNode,
+    secondaryNode: systemSettings.mailSecondaryNode,
+    tertiaryNode: systemSettings.mailTertiaryNode,
+    activeNode: systemSettings.mailActiveNode,
+  })
+    .from(systemSettings)
+    .where(eq(systemSettings.id, SETTINGS_ID));
+  const settings: PlacementSettings = {
+    primaryNode: row?.primaryNode ?? null,
+    secondaryNode: row?.secondaryNode ?? null,
+    tertiaryNode: row?.tertiaryNode ?? null,
+    activeNode: row?.activeNode ?? null,
+  };
+
+  const { core } = await loadK8sAppsTenant(kubeconfigPath);
+  const list = await core.listNode({}) as {
+    items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }>;
+  };
+  const nodes: NodeRef[] = (list.items ?? [])
+    .filter((n) => !!n.metadata?.name)
+    .map((n) => ({
+      metadata: {
+        name: n.metadata!.name!,
+        labels: n.metadata?.labels ?? {},
+      },
+    }));
+  return { settings, nodes };
+}
+
+/**
+ * Run the operator's mode-switch through validateModeSwitch BEFORE
+ * touching the cluster. Returns the human-readable error (suitable
+ * for HTTP 400) or null when the switch is safe.
+ *
+ * Exported so the route handler can refuse the PATCH early — no
+ * destructive cluster operations until validation passes.
+ */
+export async function validateModeSwitchAgainstDb(
+  target: MailPortExposureMode,
+  db: Database,
+  kubeconfigPath: string | undefined,
+): Promise<string | null> {
+  const { settings } = await loadPlacementAndNodes(db, kubeconfigPath);
+  return validateModeSwitch(target, settings);
 }
 
 /**
@@ -188,7 +259,7 @@ export interface PortExposureProgressCallback {
  * minute" and "operator watches the steps tick".
  */
 export async function updateMailPortExposure(
-  { mode }: { mode: 'thisNodeOnly' | 'allServerNodes' },
+  { mode }: { mode: MailPortExposureMode },
   db: Database,
   opts: PortExposureOptions,
   onProgress?: PortExposureProgressCallback,
@@ -231,7 +302,7 @@ export async function ensureMailPortExposureApplied(
   const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
-  const mode = (row?.v as 'thisNodeOnly' | 'allServerNodes' | null) ?? 'allServerNodes';
+  const mode = (row?.v as MailPortExposureMode | null) ?? 'allServerNodes';
   await applyModeToCluster(mode, opts, undefined, db);
 }
 
@@ -241,16 +312,96 @@ export async function ensureMailPortExposureApplied(
  * without writing back to the DB (the DB value is the source of truth).
  */
 async function applyModeToCluster(
-  mode: 'thisNodeOnly' | 'allServerNodes',
+  mode: MailPortExposureMode,
   opts: PortExposureOptions,
   onProgress?: PortExposureProgressCallback,
   db?: Database,
 ): Promise<void> {
   const { apps, core } = await loadK8sAppsTenant(opts.kubeconfigPath);
 
-  if (mode === 'allServerNodes') {
-    // Step 1: Remove hostPort from Stalwart Deployment so haproxy can bind
-    // the same ports on the same nodes without conflict.
+  // Compute the data plane (node names that should serve mail) ONCE.
+  // Used for both label reconciliation (drives the haproxy DS nodeSelector)
+  // and externalIPs reconciliation (drives kube-proxy iptables routing).
+  // Without db we can't read placement — fall back to legacy behavior.
+  let dataPlane: string[] = [];
+  let dataPlaneNodes: NodeRef[] = [];
+  if (db) {
+    const { settings, nodes } = await loadPlacementAndNodes(db, opts.kubeconfigPath);
+    dataPlaneNodes = nodes;
+    dataPlane = resolveDataPlaneNodes(mode, settings, nodes);
+    // Re-validate inside the orchestrator: the route-handler
+    // pre-validates BEFORE starting the background task, but a
+    // concurrent placement PATCH between then and now could have
+    // changed `activeNode` or the assigned set, making the originally-
+    // valid switch now invalid. Refuse late rather than apply a
+    // silently-wrong topology. Caught by typescript-reviewer.
+    const lateErr = validateModeSwitch(mode, settings);
+    if (lateErr) {
+      throw new ApiError(
+        'MAIL_PORT_EXPOSURE_MODE_REFUSED',
+        `Mode switch became invalid mid-flight: ${lateErr}`,
+        409,
+      );
+    }
+  }
+
+  if (mode === 'activeNodeOnly') {
+    // Stalwart pod binds mail hostPorts directly on the active node.
+    // No haproxy DS at all.
+
+    // Step 1: Delete the haproxy DaemonSet first so its hostPorts are
+    // released before Stalwart tries to bind them.
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'delete-haproxy-ds',
+        pct: 15,
+        text: 'Deleting haproxy DaemonSet',
+      });
+    }
+    await ensureHaproxyDaemonSetAbsent(apps);
+
+    // Step 1b: Clear the mail-haproxy label from every node (no DS, no
+    // need for the selector to match).
+    if (db) {
+      await reconcileMailHaproxyLabels(core, [], dataPlaneNodes);
+    }
+
+    // Step 2: Re-add hostPorts to Stalwart Deployment.
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'add-hostports',
+        pct: 40,
+        text: 'Adding host ports back to Stalwart Deployment',
+      });
+    }
+    await addHostPortsToDeployment(apps);
+
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'wait-stalwart-rollout',
+        pct: 70,
+        text: 'Waiting for Stalwart rollout to complete',
+      });
+    }
+
+    // Step 3: Reconcile externalIPs to active node only.
+    if (db) {
+      if (onProgress) {
+        await onProgress({
+          stepKey: 'reconcile-service-externalips',
+          pct: 90,
+          text: 'Reconciling stalwart-mail Service externalIPs to active node only',
+        });
+      }
+      await reconcileMailServiceExternalIPsByName(core, dataPlane);
+    }
+  } else {
+    // assignedMailNodes OR allServerNodes — both use haproxy. Difference
+    // is just WHICH nodes haproxy lands on, governed by the mail-haproxy
+    // label we set below.
+
+    // Step 1: Remove hostPort from Stalwart Deployment so haproxy can
+    // bind the same ports without conflict on any node that runs both.
     if (onProgress) {
       await onProgress({
         stepKey: 'remove-hostports',
@@ -263,25 +414,38 @@ async function applyModeToCluster(
     if (onProgress) {
       await onProgress({
         stepKey: 'wait-stalwart-rollout',
-        pct: 50,
+        pct: 40,
         text: 'Waiting for Stalwart rollout to complete',
       });
     }
 
-    // Step 2: Create the haproxy DaemonSet.
+    // Step 2: Set mail-haproxy=true on every node in the data plane,
+    // remove the label from every other node. The DS's nodeSelector
+    // is keyed on this label, so changing the label set re-shapes the
+    // DS's pod schedule on the next reconcile.
+    if (db) {
+      if (onProgress) {
+        await onProgress({
+          stepKey: 'reconcile-haproxy-labels',
+          pct: 55,
+          text: `Labelling data-plane nodes: ${dataPlane.join(', ') || '(none)'}`,
+        });
+      }
+      await reconcileMailHaproxyLabels(core, dataPlane, dataPlaneNodes);
+    }
+
+    // Step 3: Create the haproxy DaemonSet (if not already present —
+    // ensureHaproxyDaemonSetExists is idempotent).
     if (onProgress) {
       await onProgress({
         stepKey: 'create-haproxy-ds',
-        pct: 70,
-        text: 'Creating haproxy DaemonSet on server-role nodes',
+        pct: 75,
+        text: 'Ensuring haproxy DaemonSet exists',
       });
     }
     await ensureHaproxyDaemonSetExists(apps);
 
-    // Step 3: Reconcile stalwart-mail Service.spec.externalIPs to ALL
-    // server-role node IPs. Without this, the externalIPs left behind
-    // by the original Flux postBuild (just one IP — bootstrap node)
-    // pins traffic to a single node and bypasses haproxy.
+    // Step 4: Reconcile externalIPs to match the data plane.
     if (db) {
       if (onProgress) {
         await onProgress({
@@ -290,59 +454,7 @@ async function applyModeToCluster(
           text: 'Reconciling stalwart-mail Service externalIPs',
         });
       }
-      await reconcileMailServiceExternalIPs(core, mode, null);
-    }
-  } else {
-    // thisNodeOnly path — reverse order.
-
-    // Step 1: Delete the haproxy DaemonSet first so its hostPorts are
-    // released before Stalwart tries to bind them.
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'delete-haproxy-ds',
-        pct: 20,
-        text: 'Deleting haproxy DaemonSet',
-      });
-    }
-    await ensureHaproxyDaemonSetAbsent(apps);
-
-    // Step 2: Re-add hostPorts to Stalwart Deployment.
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'add-hostports',
-        pct: 50,
-        text: 'Adding host ports back to Stalwart Deployment',
-      });
-    }
-    await addHostPortsToDeployment(apps);
-
-    if (onProgress) {
-      await onProgress({
-        stepKey: 'wait-stalwart-rollout',
-        pct: 80,
-        text: 'Waiting for Stalwart rollout to complete',
-      });
-    }
-
-    // Step 3: Reconcile stalwart-mail Service.spec.externalIPs to just
-    // the ACTIVE node's IP. With haproxy gone, the externalIPs list is
-    // the kube-proxy iptables routing rule: ALL listed node IPs accept
-    // traffic and forward to the Stalwart pod via service-proxy.
-    // Leaving stale server-role IPs here means staging1/2/3 still
-    // answer mail ports even though haproxy is gone — the symptom
-    // Phase 2 of the external reachability E2E caught 2026-05-28.
-    if (db) {
-      if (onProgress) {
-        await onProgress({
-          stepKey: 'reconcile-service-externalips',
-          pct: 90,
-          text: 'Reconciling stalwart-mail Service externalIPs to active node only',
-        });
-      }
-      const [row] = await db.select({ v: systemSettings.mailActiveNode })
-        .from(systemSettings)
-        .where(eq(systemSettings.id, SETTINGS_ID));
-      await reconcileMailServiceExternalIPs(core, mode, row?.v ?? null);
+      await reconcileMailServiceExternalIPsByName(core, dataPlane);
     }
   }
 }
@@ -367,12 +479,16 @@ async function applyModeToCluster(
  * next reconcile. Field-manager conflicts return clean errors instead
  * of silent reverts.
  */
-async function reconcileMailServiceExternalIPs(
+/**
+ * Resolve a list of node names to their external (or internal-fallback)
+ * IPs and SSA-apply them to Service.spec.externalIPs.
+ * Same SSA semantics as the legacy mode-keyed variant below.
+ */
+async function reconcileMailServiceExternalIPsByName(
   core: import('@kubernetes/client-node').CoreV1Api,
-  mode: 'thisNodeOnly' | 'allServerNodes',
-  activeNode: string | null,
+  nodeNames: ReadonlyArray<string>,
 ): Promise<void> {
-  type Node = { metadata?: { name?: string; labels?: Record<string, string> }; status?: { addresses?: Array<{ type?: string; address?: string }> } };
+  type Node = { metadata?: { name?: string }; status?: { addresses?: Array<{ type?: string; address?: string }> } };
   const list = await core.listNode({}) as { items?: Node[] };
   const items = list.items ?? [];
   const nodeIp = (n: Node): string | null => {
@@ -381,30 +497,12 @@ async function reconcileMailServiceExternalIPs(
       ?? a.find((x) => x.type === 'InternalIP')?.address
       ?? null;
   };
-
-  let desiredIps: string[];
-  if (mode === 'thisNodeOnly') {
-    if (!activeNode) {
-      // No active node known — safest to clear externalIPs entirely
-      // so traffic only flows through whatever hostPort path exists.
-      desiredIps = [];
-    } else {
-      const n = items.find((x) => x.metadata?.name === activeNode);
-      const ip = n ? nodeIp(n) : null;
-      desiredIps = ip ? [ip] : [];
-    }
-  } else {
-    desiredIps = [];
-    for (const n of items) {
-      if (n.metadata?.labels?.['platform.example.test/node-role'] !== 'server') continue;
-      const ip = nodeIp(n);
-      if (ip && !desiredIps.includes(ip)) desiredIps.push(ip);
-    }
+  const desiredIps: string[] = [];
+  for (const name of nodeNames) {
+    const node = items.find((x) => x.metadata?.name === name);
+    const ip = node ? nodeIp(node) : null;
+    if (ip && !desiredIps.includes(ip)) desiredIps.push(ip);
   }
-
-  // SSA: declare just the fields we own. Apply replaces spec.externalIPs
-  // with our list. Field-manager attribution + force:true lets us win
-  // conflicts against the staging overlay's static value from Flux.
   const { applyPatch } = await import('../../shared/k8s-patch.js');
   await core.patchNamespacedService(
     {

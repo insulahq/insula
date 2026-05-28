@@ -4,8 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * port-exposure unit tests — covers the 2026-05-14 streamline change
  * where the haproxy DaemonSet lifecycle moved out of Flux into
  * platform-api. The mode-flip transition now:
- *   thisNodeOnly → allServerNodes: removeHostPorts → CREATE DS
- *   allServerNodes → thisNodeOnly: DELETE DS → addHostPorts
+ *   activeNodeOnly → allServerNodes: removeHostPorts → CREATE DS
+ *   allServerNodes → activeNodeOnly: DELETE DS → addHostPorts
  *
  * Previously the DS was always present with a dummy nodeSelector and
  * we patched the selector to enable/disable. These tests assert the
@@ -102,7 +102,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     mockPatchDeployment.mockResolvedValue({});
   });
 
-  it('thisNodeOnly → allServerNodes: removes hostPorts then CREATES the haproxy DS', async () => {
+  it('activeNodeOnly → allServerNodes: removes hostPorts then CREATES the haproxy DS', async () => {
     mockReadDs.mockRejectedValue(notFoundError()); // DS absent at start
     mockCreateDs.mockResolvedValue({});
     const { updateMailPortExposure } = await import('./port-exposure.js');
@@ -143,7 +143,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     }
   });
 
-  it('thisNodeOnly → allServerNodes: does NOT re-create when DS already exists', async () => {
+  it('activeNodeOnly → allServerNodes: does NOT re-create when DS already exists', async () => {
     mockReadDs.mockResolvedValue({ metadata: { name: 'stalwart-haproxy' } });
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await updateMailPortExposure(
@@ -155,14 +155,14 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     expect(mockDeleteDs).not.toHaveBeenCalled();
   });
 
-  it('allServerNodes → thisNodeOnly: DELETES the haproxy DS then re-adds hostPorts', async () => {
+  it('allServerNodes → activeNodeOnly: DELETES the haproxy DS then re-adds hostPorts', async () => {
     mockDeleteDs.mockResolvedValue({});
     // After delete, waitForHaproxyDaemonSetGone polls readNamespacedDaemonSet
     // until it 404s. Simulate "gone immediately" so the test doesn't wait.
     mockReadDs.mockRejectedValue(notFoundError());
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await updateMailPortExposure(
-      { mode: 'thisNodeOnly' },
+      { mode: 'activeNodeOnly' },
       buildDb(),
       { kubeconfigPath: undefined },
     );
@@ -282,11 +282,11 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     expect(mockCreateDs).not.toHaveBeenCalled();
   }, 30_000);
 
-  it('allServerNodes → thisNodeOnly: tolerates DS already absent (404 → idempotent)', async () => {
+  it('allServerNodes → activeNodeOnly: tolerates DS already absent (404 → idempotent)', async () => {
     mockDeleteDs.mockRejectedValue(notFoundError());
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await expect(updateMailPortExposure(
-      { mode: 'thisNodeOnly' },
+      { mode: 'activeNodeOnly' },
       buildDb(),
       { kubeconfigPath: undefined },
     )).resolves.not.toThrow();
@@ -317,18 +317,18 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
     expect(r.daemonSetStatus).toEqual({ ready: 3, desired: 3 });
   });
 
-  it('reports daemonSetStatus=null when DS is absent (thisNodeOnly mode)', async () => {
+  it('reports daemonSetStatus=null when DS is absent (activeNodeOnly mode)', async () => {
     mockReadDs.mockRejectedValue(notFoundError());
     const db = {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
-          where: vi.fn().mockResolvedValue([{ v: 'thisNodeOnly' }]),
+          where: vi.fn().mockResolvedValue([{ v: 'activeNodeOnly' }]),
         })),
       })),
     } as unknown as import('../../db/index.js').Database;
     const { getMailPortExposure } = await import('./port-exposure.js');
     const r = await getMailPortExposure(db, { kubeconfigPath: undefined });
-    expect(r.mode).toBe('thisNodeOnly');
+    expect(r.mode).toBe('activeNodeOnly');
     expect(r.proxyProtocolActive).toBe(false);
     expect(r.daemonSetStatus).toBeNull();
   });
