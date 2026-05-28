@@ -158,15 +158,22 @@ async function resolveServerNodeIps(
     return ip ? [ip] : [];
   }
 
-  // allServerNodes: collect every server-role node's IP. Active node is
-  // intentionally NOT added when it's worker-role — mail is reachable
-  // via haproxy on the server nodes, and the worker IP wouldn't accept
-  // mail traffic at the OS level (no listener / no firewall rule).
+  // allServerNodes: collect every server-role node's IP (haproxy
+  // DaemonSet targets) AND the active node's IP if it's not already
+  // included (e.g. active=worker). The active node IS where Stalwart
+  // actually runs and where the cert lives — deliverability probes
+  // need to verify PTR/DNSBL/SMTP-banner for it too, even though
+  // external clients reach mail through the server-role IPs.
   const ips: string[] = [];
   for (const node of items) {
     const role = node.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
     if (role !== 'server') continue;
     const ip = nodeIp(node);
+    if (ip && !ips.includes(ip)) ips.push(ip);
+  }
+  if (activeNode) {
+    const node = items.find((n) => n.metadata?.name === activeNode);
+    const ip = node ? nodeIp(node) : null;
     if (ip && !ips.includes(ip)) ips.push(ip);
   }
   return ips;
