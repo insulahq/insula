@@ -470,8 +470,39 @@ export async function runBundle(
         }
       } catch (err) {
         const msg = (err as Error).message ?? 'mailboxes capture failed';
-        errors.push(`mailboxes: ${msg}`);
-        await markComponentRowFailed(deps.db, componentRowId, msg);
+        // Stalwart-DB drift: the tenant has mailboxes in the platform
+        // DB that don't exist as Stalwart principals (typical after an
+        // E2E run that bootstrapped a tenant but rebuilt Stalwart, or
+        // after operator-removed principals weren't synced back to
+        // platform). Mark the component as `skipped` so the bundle
+        // remains useful for non-mail data instead of going 'partial'.
+        // Operator still sees the reason in lastError.
+        //
+        // IMPORTANT: only `no such user` / `principal not found` /
+        // `not a valid principal` / `principal id is required` are
+        // accepted as drift signals. `AUTHENTICATIONFAILED` and
+        // similar credential errors are NOT drift — they indicate
+        // a broken master-user secret which is a real backup-system
+        // failure and must surface to operators (security review
+        // 2026-05-28 HIGH finding).
+        const isStalwartDrift =
+          /no such user|principal not found|principal id is required|not a valid principal/i.test(msg);
+        if (isStalwartDrift) {
+          // DB-write failures here must not silently drop the row to
+          // pending — fall back to the regular failure path.
+          try {
+            await markComponentRowSkipped(deps.db, componentRowId,
+              `Stalwart principal drift — operator should sync via stalwart-principals-sync. Detail: ${msg}`);
+          } catch (dbErr) {
+            const dbMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+            console.warn(`[tenant-bundles] markComponentRowSkipped failed for ${bundleId}: ${dbMsg}`);
+            errors.push(`mailboxes: ${msg}`);
+            await markComponentRowFailed(deps.db, componentRowId, msg);
+          }
+        } else {
+          errors.push(`mailboxes: ${msg}`);
+          await markComponentRowFailed(deps.db, componentRowId, msg);
+        }
       }
     })());
   }
@@ -588,6 +619,35 @@ export async function runBundle(
   // know it failed. The same details (truncated error, bundleId) flow
   // into a per-user notification so the operator can still find the
   // failure on the bell.
+  // For scheduler-driven bundles (no triggering user), fan out a
+  // tenant-scoped notification so the tenant_admins see scheduled
+  // bundle outcomes on their bell. Tenant-initiated run-now bundles
+  // already get a per-user notification via `triggeredByUserId`
+  // below; admin-initiated bundles are operator-visible via the
+  // admin bell on the existing failure path.
+  if (input.initiator === 'system' && !input.triggeredByUserId) {
+    try {
+      const { resolveRecipients } = await import('../notifications/recipients.js');
+      const { notifyUsers } = await import('../notifications/service.js');
+      const recipients = await resolveRecipients(deps.db, { kind: 'tenant', tenantId: input.tenantId });
+      const failed = errors.length > 0;
+      if (recipients.length > 0) {
+        await notifyUsers(deps.db, recipients, {
+          type: failed ? 'error' : 'info',
+          title: failed ? 'Scheduled backup failed' : 'Scheduled backup completed',
+          message: failed
+            ? `Your scheduled backup did not complete fully: ${errors.join('; ').slice(0, 500)}. The platform will retry on the next schedule.`
+            : `Your scheduled backup completed (${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured).`,
+          resourceType: 'backup_bundle',
+          resourceId: bundleId,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[tenant-bundles] tenant notification fan-out failed for ${bundleId}: ${msg}`);
+    }
+  }
+
   if (input.triggeredByUserId) {
     try {
       const { finishByRef } = await import('../tasks/service.js');

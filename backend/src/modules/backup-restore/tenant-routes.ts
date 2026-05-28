@@ -65,6 +65,25 @@ import { resolveDirectStoreForBundle } from './shared.js';
 import { backupConfigurations, backupTargetAssignments, hostingPlans } from '../../db/schema.js';
 
 /**
+ * Strip operator-only diagnostic context (pod-log tails, internal
+ * stack traces) from an error message before exposing it to a
+ * tenant via the status endpoint. The full message is still in the
+ * DB (`backup_jobs.last_error` / `backup_components.last_error`)
+ * for admin visibility; tenants see only the headline.
+ *
+ * Security review 2026-05-28 HIGH: pod logs tailed into `last_error`
+ * by `waitForJob` can contain credential challenges, internal URLs
+ * with tokens (curl error messages), or master-user identities.
+ * Truncating at `; logs: ` is sufficient because the orchestrator
+ * uses that exact prefix in mailboxes.ts.
+ */
+export function sanitizeTenantVisibleError(raw: string | null): string | null {
+  if (!raw) return raw;
+  const logsIdx = raw.indexOf('; logs:');
+  return logsIdx >= 0 ? raw.slice(0, logsIdx) : raw;
+}
+
+/**
  * Assert a resource (bundle, cart) belongs to the path-param tenant.
  * Even though `requireTenantAccess` guarantees `:tenantId === JWT.tenantId`,
  * we re-check at the data layer so a coding mistake in a future
@@ -143,7 +162,7 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
         sizeBytes: Number(bundle.sizeBytes),
         startedAt: bundle.startedAt ? bundle.startedAt.toISOString() : null,
         finishedAt: bundle.finishedAt ? bundle.finishedAt.toISOString() : null,
-        lastError: bundle.lastError,
+        lastError: sanitizeTenantVisibleError(bundle.lastError),
       },
       components: components.map((c) => ({
         id: c.id,
@@ -153,7 +172,7 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
         sizeBytes: Number(c.sizeBytes),
         startedAt: c.startedAt ? c.startedAt.toISOString() : null,
         finishedAt: c.finishedAt ? c.finishedAt.toISOString() : null,
-        lastError: c.lastError,
+        lastError: sanitizeTenantVisibleError(c.lastError),
       })),
     });
   });

@@ -401,6 +401,8 @@ interface BackupsTabProps {
   readonly onBundle: (tenantId: string) => void;
   readonly onRestore: (row: BundleSummary) => void;
   readonly tenantTargetBound: boolean;
+  /** Per-tenant rollup including the inclusion-in-scheduled-bundles flag. */
+  readonly rollupRows: ReadonlyArray<TenantBackupOverviewRow>;
 }
 
 function BackupsTab(p: BackupsTabProps) {
@@ -428,6 +430,45 @@ function BackupsTab(p: BackupsTabProps) {
         selectedTenantId={p.selectedTenantId}
         setSelectedTenantId={p.setSelectedTenantId}
       />
+      {/* Inclusion summary — operator-visible breakdown of which
+          tenants will be picked up by the platform-global daily
+          scheduler (driven by hosting_plans.include_in_scheduled_bundles
+          with per-tenant override). */}
+      {(() => {
+        const total = p.rollupRows.length;
+        const included = p.rollupRows.filter((r) => r.includedInScheduledBundles).length;
+        const excluded = p.rollupRows.filter((r) => !r.includedInScheduledBundles);
+        if (total === 0) return null;
+        return (
+          <details
+            className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-800/50"
+            data-testid="tenant-inclusion-summary"
+          >
+            <summary className="cursor-pointer font-medium text-gray-700 dark:text-gray-300">
+              Scheduled inclusion: {included}/{total} tenants in the daily backup cron
+              {excluded.length > 0 && ` (${excluded.length} excluded)`}
+            </summary>
+            {excluded.length > 0 && (
+              <div className="mt-2 space-y-0.5 text-gray-600 dark:text-gray-400">
+                <p className="font-medium">Excluded tenants (no scheduled bundles will run for these):</p>
+                <ul className="ml-4 list-disc">
+                  {excluded.map((r) => (
+                    <li key={r.tenantId} className="font-mono text-[11px]" data-testid={`excluded-tenant-${r.tenantId}`}>
+                      {r.tenantName ?? r.tenantId} —{' '}
+                      {r.tenantId.slice(0, 8)}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-500">
+                  Operator can change inclusion on the tenant detail page (per-tenant override) or on the plan (default for all
+                  tenants on that plan).
+                </p>
+              </div>
+            )}
+          </details>
+        );
+      })()}
+
       <div className="flex items-center justify-end gap-2">
         <button
           type="button"
@@ -686,6 +727,7 @@ export default function TenantsBackupsPage() {
               onBundle={handlers.onBundle}
               onRestore={handlers.onRestoreBundle}
               tenantTargetBound={tenantTargetBound}
+              rollupRows={rollupData?.data?.rows ?? []}
             />
           </div>
         }
