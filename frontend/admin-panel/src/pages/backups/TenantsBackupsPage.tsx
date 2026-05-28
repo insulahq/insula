@@ -529,10 +529,20 @@ function BackupsTab(p: BackupsTabProps) {
                     <button
                       type="button"
                       onClick={() => p.onRestore(r)}
-                      disabled={r.status !== 'completed'}
+                      // `partial` bundles can be restored — they're missing one
+                      // or more components (typically mailboxes when Stalwart
+                      // is misconfigured), but the components that DID complete
+                      // still have valid artifacts on the offsite target and
+                      // are restorable via the cart. The cart will skip items
+                      // whose component is missing.
+                      disabled={r.status !== 'completed' && r.status !== 'partial'}
                       className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       data-testid={`tenant-bundle-restore-${r.id}`}
-                      title={r.status === 'completed' ? 'Open the Restoration Wizard' : 'Only completed bundles can be restored'}
+                      title={
+                        r.status === 'completed' ? 'Open the Restoration Wizard'
+                        : r.status === 'partial' ? 'Open the Restoration Wizard (some components are missing — see bundle detail)'
+                        : `Bundles in '${r.status}' state cannot be restored`
+                      }
                     >
                       <RotateCw size={11} /> Restore…
                     </button>

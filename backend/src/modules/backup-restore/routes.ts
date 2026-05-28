@@ -508,8 +508,22 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
       const chunks: Buffer[] = [];
       for await (const c of stream) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
       tree = gunzipSync(Buffer.concat(chunks));
-    } catch (err) {
-      throw new ApiError('NOT_FOUND', `tree.jsonl.gz not found in bundle (was files component captured?): ${(err as Error).message}`, 404);
+    } catch {
+      // Migration window: files.ts dropped the tree.jsonl.gz sidecar in
+      // favour of `restic ls <snapshot-id>` (see files.ts:32-34), but
+      // restic-based browsing is not yet wired into this endpoint.
+      // Return a graceful empty response + migration marker so the UI
+      // can render an explanation rather than a 404. Bundles created
+      // AFTER the sidecar drop legitimately have no tree.jsonl.gz —
+      // the absence is expected, not an error.
+      return success({
+        bundleId,
+        totalCount: 0,
+        entries: [],
+        nextCursor: null,
+        migrated: true,
+        message: 'File browsing for this bundle requires restic-based listing (not yet wired in this endpoint). Use the cart with "Restore full files snapshot" to restore the entire file set.',
+      });
     }
     // tree.jsonl.gz is produced by `find -printf` which is depth-
     // first, NOT lexicographically sorted by path. Pagination via
