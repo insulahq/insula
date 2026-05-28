@@ -72,7 +72,11 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
       .where(eq(backupJobs.tenantId, tenantId))
       .orderBy(desc(backupJobs.createdAt))
       .limit(100);
-    return success({ data: rows.map(toBundleSummary) });
+    // FLAT envelope. The previous `success({ data: rows.map(...) })`
+    // wrapped an already-wrapped object → `{data:{data:[...]}}` —
+    // the tenant Backups page expected `{data:[...]}` and silently
+    // rendered an empty list (user-reported 2026-05-28).
+    return success(rows.map(toBundleSummary));
   });
 
   // ── GET /api/v1/tenant/backups/bundles/:id ─────────────────────────
@@ -164,7 +168,12 @@ function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
     exportArtifact: j.exportArtifact,
     startedAt: j.startedAt ? j.startedAt.toISOString() : null,
     finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
-    lastError: j.lastError,
+    // Strip operator-only pod-log tails before exposing to tenants.
+    // The orchestrator's waitForJob appends `; logs: …` with raw
+    // pod stderr that can contain credential challenges and the
+    // master-user identity. Admin sees the full message via admin
+    // routes; tenants see only the headline.
+    lastError: sanitizeTenantVisibleError(j.lastError),
     createdAt: j.createdAt.toISOString(),
     updatedAt: j.updatedAt.toISOString(),
   };
@@ -180,8 +189,20 @@ function toComponentInfo(c: typeof backupComponents.$inferSelect): BackupCompone
     sha256: c.sha256,
     startedAt: c.startedAt ? c.startedAt.toISOString() : null,
     finishedAt: c.finishedAt ? c.finishedAt.toISOString() : null,
-    lastError: c.lastError,
+    lastError: sanitizeTenantVisibleError(c.lastError),
   };
+}
+
+/**
+ * Drop the `; logs: …` suffix appended by `mailboxes.ts:waitForJob`
+ * so tenant-visible error messages don't include raw pod stderr
+ * (security review 2026-05-28). Helper mirrored from the new
+ * `backup-restore/tenant-routes.ts:sanitizeTenantVisibleError`.
+ */
+function sanitizeTenantVisibleError(raw: string | null): string | null {
+  if (!raw) return raw;
+  const idx = raw.indexOf('; logs:');
+  return idx >= 0 ? raw.slice(0, idx) : raw;
 }
 
 async function resolveStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
