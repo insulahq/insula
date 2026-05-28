@@ -31,6 +31,7 @@ import type {
 } from '@k8s-hosting/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
+import { AdminBundleProgressModal } from '@/components/AdminBundleProgressModal';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 
 // ── Local types ──────────────────────────────────────────────────────
@@ -138,7 +139,11 @@ function useTenantActions(tenantTargetId: string | null) {
     onSuccess: invalidate,
   });
 
-  const bundleNow = useMutation({
+  const bundleNow = useMutation<
+    { data?: { bundleId?: string; status?: string } },
+    Error,
+    string
+  >({
     mutationFn: (tenantId: string) => {
       if (!tenantTargetId) {
         return Promise.reject(
@@ -147,10 +152,16 @@ function useTenantActions(tenantTargetId: string | null) {
           ),
         );
       }
-      return apiFetch('/api/v1/admin/tenant-bundles', {
-        method: 'POST',
-        body: JSON.stringify({ tenantId, targetConfigId: tenantTargetId }),
-      });
+      // async: true → orchestrator returns the bundleId as soon as
+      // the backup_jobs row is inserted; the operator sees progress
+      // via AdminBundleProgressModal which polls /admin/tenant-bundles/:id.
+      return apiFetch<{ data?: { bundleId?: string; status?: string } }>(
+        '/api/v1/admin/tenant-bundles',
+        {
+          method: 'POST',
+          body: JSON.stringify({ tenantId, targetConfigId: tenantTargetId, async: true }),
+        },
+      );
     },
     onSuccess: invalidate,
   });
@@ -590,6 +601,10 @@ export default function TenantsBackupsPage() {
   const [wizardBundle, setWizardBundle] = useState<BundleSummary | null>(null);
   const [snapshotAllPending, setSnapshotAllPending] = useState(false);
   const [bundleAllPending, setBundleAllPending] = useState(false);
+  // Bundle id of the most recent ad-hoc "Bundle now" click — opens
+  // the AdminBundleProgressModal. Cleared via modal Dismiss/Close
+  // (the bundle keeps running in the background regardless).
+  const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
 
   const fireMany = async (
     tenantIds: ReadonlyArray<string>,
@@ -637,6 +652,10 @@ export default function TenantsBackupsPage() {
     onBundle: (tenantId: string) => {
       setError(null);
       bundleNow.mutate(tenantId, {
+        onSuccess: (res) => {
+          const id = res?.data?.bundleId;
+          if (id) setProgressBundleId(id);
+        },
         onError: (e) => setError(`Bundle failed: ${e instanceof Error ? e.message : String(e)}`),
       });
     },
@@ -756,6 +775,13 @@ export default function TenantsBackupsPage() {
             navigate(`/backups/restore?cartId=${cart.data.id}&tenantId=${wizardBundle.tenantId}&bundleId=${wizardBundle.id}`);
             return { taskId: cart.data.id };
           }}
+        />
+      )}
+
+      {progressBundleId && (
+        <AdminBundleProgressModal
+          bundleId={progressBundleId}
+          onClose={() => setProgressBundleId(null)}
         />
       )}
     </>

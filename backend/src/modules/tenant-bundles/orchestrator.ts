@@ -619,32 +619,104 @@ export async function runBundle(
   // know it failed. The same details (truncated error, bundleId) flow
   // into a per-user notification so the operator can still find the
   // failure on the bell.
-  // For scheduler-driven bundles (no triggering user), fan out a
-  // tenant-scoped notification so the tenant_admins see scheduled
-  // bundle outcomes on their bell. Tenant-initiated run-now bundles
-  // already get a per-user notification via `triggeredByUserId`
-  // below; admin-initiated bundles are operator-visible via the
-  // admin bell on the existing failure path.
-  if (input.initiator === 'system' && !input.triggeredByUserId) {
-    try {
-      const { resolveRecipients } = await import('../notifications/recipients.js');
-      const { notifyUsers } = await import('../notifications/service.js');
-      const recipients = await resolveRecipients(deps.db, { kind: 'tenant', tenantId: input.tenantId });
-      const failed = errors.length > 0;
-      if (recipients.length > 0) {
-        await notifyUsers(deps.db, recipients, {
-          type: failed ? 'error' : 'info',
-          title: failed ? 'Scheduled backup failed' : 'Scheduled backup completed',
-          message: failed
-            ? `Your scheduled backup did not complete fully: ${errors.join('; ').slice(0, 500)}. The platform will retry on the next schedule.`
-            : `Your scheduled backup completed (${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured).`,
-          resourceType: 'backup_bundle',
-          resourceId: bundleId,
-        });
+  // Notification fan-out for every terminal bundle outcome.
+  //
+  // Targets:
+  //   - Tenant fan-out: all tenant_admins of the bundle's tenant
+  //     EXCEPT the triggering user (deduped — that user gets a
+  //     dedicated personal notification via triggeredByUserId below).
+  //   - Admin fan-out (failure only): all admin-panel admins
+  //     (DEFAULT_ADMIN_ROLES = super_admin + admin) so platform
+  //     staff can notice degraded tenant-bundle health.
+  //
+  // Sanitization (security review 2026-05-28 HIGH):
+  //   `errors[]` entries are raw orchestrator errors that may contain
+  //   the `; logs: …` suffix appended by mailboxes.ts:waitForJob —
+  //   raw pod stderr that can include credential challenges and the
+  //   master-user identity. We strip that suffix before exposing the
+  //   text to tenant_admins OR admins via their bell. The full
+  //   message is still in backup_jobs.last_error for diagnostic
+  //   queries on the admin side.
+  //
+  // Skipped:
+  //   - `data_export` mode (GDPR exports) — these are not regular
+  //     backups; the requesting user gets their result via the chip.
+  //
+  // Failures must not crash the orchestrator — every dispatch is
+  // wrapped in try/catch.
+  {
+    const failed = errors.length > 0;
+    const isDataExport = input.exportMode === 'data_export';
+    if (!isDataExport) {
+      try {
+        const { resolveRecipients } = await import('../notifications/recipients.js');
+        const { notifyUsers } = await import('../notifications/service.js');
+        const niceSize = `${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured`;
+        // Strip operator-only `; logs: <pod-stderr>` suffix per
+        // error string. The route-layer sanitizer at
+        // tenant-routes.ts:sanitizeTenantVisibleError applies the
+        // same rule to API responses — we mirror it here so
+        // notification bodies stay safe.
+        const stripLogs = (s: string): string => {
+          const i = s.indexOf('; logs:');
+          return i >= 0 ? s.slice(0, i) : s;
+        };
+        const errSlice = errors.map(stripLogs).join('; ').slice(0, 500);
+        const initiatorLabel =
+          input.initiator === 'system' ? 'Scheduled' :
+          input.initiator === 'tenant' ? 'On-demand' :
+          input.initiator === 'admin' ? 'Operator-triggered' :
+          'Backup';
+
+        // ── Tenant fan-out ─────────────────────────────────────
+        // Filter out the triggering user (if tenant_admin) so they
+        // don't get this notification AND the per-user one below.
+        try {
+          const tenantRecipients = (await resolveRecipients(
+            deps.db, { kind: 'tenant', tenantId: input.tenantId },
+          )).filter((uid) => uid !== input.triggeredByUserId);
+          if (tenantRecipients.length > 0) {
+            await notifyUsers(deps.db, tenantRecipients, {
+              type: failed ? 'error' : 'info',
+              title: failed
+                ? `${initiatorLabel} backup failed`
+                : `${initiatorLabel} backup completed`,
+              message: failed
+                ? `Your ${initiatorLabel.toLowerCase()} backup did not complete fully: ${errSlice}.`
+                : `Your ${initiatorLabel.toLowerCase()} backup completed (${niceSize}).`,
+              resourceType: 'backup_bundle',
+              resourceId: bundleId,
+            });
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[tenant-bundles] tenant notification fan-out failed for ${bundleId}: ${msg}`);
+        }
+
+        // ── Admin fan-out (failure only) ───────────────────────
+        // Same filter: don't double-notify a triggering admin user.
+        if (failed) {
+          try {
+            const adminRecipients = (await resolveRecipients(deps.db, { kind: 'admin' }))
+              .filter((uid) => uid !== input.triggeredByUserId);
+            if (adminRecipients.length > 0) {
+              await notifyUsers(deps.db, adminRecipients, {
+                type: 'error',
+                title: `Tenant backup failed`,
+                message: `${initiatorLabel} bundle for tenant ${input.tenantId.slice(0, 8)}… did not complete: ${errSlice}.`,
+                resourceType: 'backup_bundle',
+                resourceId: bundleId,
+              });
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[tenant-bundles] admin notification fan-out failed for ${bundleId}: ${msg}`);
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[tenant-bundles] notification fan-out import failed for ${bundleId}: ${msg}`);
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[tenant-bundles] tenant notification fan-out failed for ${bundleId}: ${msg}`);
     }
   }
 
@@ -654,6 +726,9 @@ export async function runBundle(
       const { toSafeText } = await import('@k8s-hosting/api-contracts');
       const failed = errors.length > 0;
       const taskStatus = failed ? 'failed' : 'succeeded';
+      // Full message goes to finishByRef (operator can see in
+      // task-center chip). Notification body is sanitized below
+      // so pod-log content stays out of the per-user bell.
       const errText = failed ? errors.join('; ').slice(0, 4096) : null;
       await finishByRef(deps.db, 'backup.bundle', bundleId, {
         status: taskStatus,
@@ -663,11 +738,18 @@ export async function runBundle(
       });
       if (failed) {
         try {
+          // Strip `; logs: <pod-stderr>` suffix per error string
+          // (matches the orchestrator-side fan-out sanitizer above).
+          const stripLogs = (s: string): string => {
+            const i = s.indexOf('; logs:');
+            return i >= 0 ? s.slice(0, i) : s;
+          };
+          const safeErrText = errors.map(stripLogs).join('; ').slice(0, 4096);
           const { notifyUser } = await import('../notifications/service.js');
           await notifyUser(deps.db, input.triggeredByUserId, {
             type: 'error',
             title: 'Backup bundle failed',
-            message: `Bundle ${bundleId} (${input.tenantId.slice(0, 8)}…) failed: ${errText ?? 'unknown error'}`,
+            message: `Bundle ${bundleId} (${input.tenantId.slice(0, 8)}…) failed: ${safeErrText || 'unknown error'}`,
             resourceType: 'backup_bundle',
             resourceId: bundleId,
           });
