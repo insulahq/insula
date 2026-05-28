@@ -19,8 +19,23 @@ set -euo pipefail
 HOST="${HOST:-root@staging1.example.test}"
 PLATFORM_APEX="${PLATFORM_APEX:-staging.example.test}"
 SSH_KEY="${SSH_KEY:-${HOME}/hosting-platform.key}"
-EXPECTED_DOMAIN="mail.${PLATFORM_APEX}"
+
+# Discover the operator-configured mail hostname instead of hard-coding
+# `mail.${PLATFORM_APEX}` — the rotation flow uses platform_settings.
+# mail_server_hostname as the source-of-truth, and an operator may have
+# set it to something other than the default (e.g. smtp.example.com).
+discover_mail_hostname() {
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o LogLevel=ERROR "$HOST" "
+    PGPASS=\$(kubectl -n cnpg-system get secret system-db-app -o jsonpath='{.data.password}' | base64 -d 2>/dev/null || true)
+    if [[ -z \"\$PGPASS\" ]]; then echo ''; exit 0; fi
+    kubectl -n cnpg-system exec system-db-1 -c postgres -- env PGPASSWORD=\"\$PGPASS\" \
+      psql -At -U platform -d platform_db -c \"SELECT value FROM platform_settings WHERE key='mail_server_hostname'\" 2>/dev/null | head -1
+  " 2>/dev/null || true
+}
+EXPECTED_DOMAIN="${EXPECTED_DOMAIN:-$(discover_mail_hostname)}"
+EXPECTED_DOMAIN="${EXPECTED_DOMAIN:-mail.${PLATFORM_APEX}}"
 EXPECTED_FQDN="master@${EXPECTED_DOMAIN}"
+echo "INFO: expected mail hostname = $EXPECTED_DOMAIN"
 
 declare -i ok=0 failed=0
 
