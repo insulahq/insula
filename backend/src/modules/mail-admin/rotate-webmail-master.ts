@@ -89,6 +89,14 @@ export async function rotateWebmailMasterPassword(
     // sees the operator hint after auto-reseed.
     principalDescription:
       'Webmail master account (Roundcube + Bulwark JWT impersonation). DO NOT DELETE — recreate via /admin/mail/rotate-webmail-master.',
+    // Admin role REQUIRED for IMAP master-auth impersonation. Without
+    // this the master Account exists with `roles:User` and Stalwart
+    // refuses `tenant@domain%master` IMAP LOGINs with "connection
+    // closed by server" — verified on staging 2026-05-28 after a
+    // role-less auto-reseed broke every tenant bundle's mailbox
+    // capture. Matches `roles:{@type:'Admin'}` shape from bootstrap.sh
+    // provision_stalwart_master_user.
+    principalRoles: { '@type': 'Admin' },
     // No cross-NS mirror — Roundcube and the master Account share the
     // mail namespace.
   });

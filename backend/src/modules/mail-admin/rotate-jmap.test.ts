@@ -48,6 +48,7 @@ function makeDeps(overrides: Partial<RotateJmapDeps> = {}): RotateJmapDeps {
     getJmapAccountId: vi.fn().mockResolvedValue('account-123'),
     findAdminPrincipalId: vi.fn().mockResolvedValue('principal-admin-1'),
     updateAdminPassword: vi.fn().mockResolvedValue(undefined),
+    updateAdminRoles: vi.fn().mockResolvedValue(undefined),
     // Defaults for the auto-reseed deps (FIX 3, 2026-05-28). Tests
     // that exercise the reseed path override these; existing tests
     // never reach them because findAdminPrincipalId returns a real id.
@@ -420,5 +421,72 @@ describe('rotateAdminPasswordViaJmapImpl — auto-reseed (FIX 3, 2026-05-28)', (
         deps,
       ),
     ).rejects.toThrow(/JMAP create rejected/);
+  });
+});
+
+describe('rotateAdminPasswordViaJmapImpl — principalRoles plumbing (FIX 5, 2026-05-28)', () => {
+  it('passes principalRoles to createPrincipal when auto-reseed fires', async () => {
+    const createPrincipalSpy = vi.fn().mockResolvedValue('principal-new');
+    const deps = makeDeps({
+      findAdminPrincipalId: vi.fn().mockResolvedValue(null),
+      resolveOrCreateDomain: vi.fn().mockResolvedValue('domain-id'),
+      createPrincipal: createPrincipalSpy,
+    });
+
+    await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        username: 'master',
+        principalDomain: 'mail.staging.phoenix-host.net',
+        autoReseed: true,
+        principalRoles: { '@type': 'Admin' },
+        skipJmapSessionVerify: true,
+      },
+      deps,
+    );
+
+    expect(createPrincipalSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        roles: { '@type': 'Admin' },
+        name: 'master',
+        domainId: 'domain-id',
+      }),
+    );
+  });
+
+  it('when principal exists AND principalRoles set → updateAdminRoles is called to converge drift', async () => {
+    const updateRolesSpy = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      findAdminPrincipalId: vi.fn().mockResolvedValue('existing-master-id'),
+      updateAdminRoles: updateRolesSpy,
+    });
+
+    await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        username: 'master',
+        principalDomain: 'mail.staging.phoenix-host.net',
+        autoReseed: true,
+        principalRoles: { '@type': 'Admin' },
+        skipJmapSessionVerify: true,
+      },
+      deps,
+    );
+
+    expect(updateRolesSpy).toHaveBeenCalledWith(
+      'account-123', 'existing-master-id', { '@type': 'Admin' },
+    );
+  });
+
+  it('when principalRoles omitted → updateAdminRoles is NOT called (recovery-admin rotation path)', async () => {
+    const updateRolesSpy = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      findAdminPrincipalId: vi.fn().mockResolvedValue('admin-id'),
+      updateAdminRoles: updateRolesSpy,
+    });
+
+    await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+
+    expect(updateRolesSpy).not.toHaveBeenCalled();
   });
 });
