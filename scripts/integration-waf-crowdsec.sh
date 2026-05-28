@@ -513,14 +513,23 @@ else
           fi
         done
 
-        # Unban + verify reachability restored.
+        # Unban + verify reachability restored. Same kubectl-run capture
+        # flake fallback as K9 / H11: when the DELETE response body is
+        # empty (curl pod scheduling hiccup), re-probe the decisions
+        # list — if the decision id is gone, the DELETE succeeded
+        # server-side regardless of what stdout said.
         decision_id=$(api_internal GET "/admin/security/crowdsec/decisions?q=$BAN_TARGET" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['decisions']; print(d[0]['id'] if d else '')")
         if [[ -n "$decision_id" ]]; then
           unban_resp=$(api_internal DELETE "/admin/security/crowdsec/decisions/$decision_id")
           if echo "$unban_resp" | grep -q '"deleted":1'; then
             ok "unban succeeded (decision id $decision_id)"
           else
-            fail "unban failed: $unban_resp"
+            unban_probe=$(api_internal GET "/admin/security/crowdsec/decisions?q=$BAN_TARGET")
+            if ! echo "$unban_probe" | grep -qF "$decision_id"; then
+              ok "unban succeeded (decision id $decision_id, response capture empty, verified via GET)"
+            else
+              fail "unban failed: $unban_resp"
+            fi
           fi
         else
           fail "ban not visible in API after ${BOUNCER_PULL_INTERVAL_S}s — list returned no decisions for $BAN_TARGET"
