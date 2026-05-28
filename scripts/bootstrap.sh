@@ -4682,21 +4682,31 @@ PATCH
   # bulwark-secrets so the drift surface is gone (Bulwark now reads
   # those values from mail-secrets directly).
   #
-  # Use `get -o json | jq 'del(...)' | apply` so the operation is
-  # idempotent regardless of which keys are present (a per-key
-  # JSON-Patch chain hit 422 when either key was already absent and
-  # the fallback chain was fragile in the mixed-absent case).
+  # `kubectl apply` would not work here: Secrets without the
+  # `kubectl.kubernetes.io/last-applied-configuration` annotation
+  # (which bootstrap-created Secrets lack) get THREE-WAY-MERGED on
+  # apply, and removed keys are preserved instead of deleted. JSON-Patch
+  # op:remove is the only reliable way to delete a `.data.<key>` entry.
+  # Build the patch list from only-present keys so we never hit a 422
+  # for an already-removed key.
   if kctl get secret -n mail bulwark-secrets &>/dev/null 2>&1; then
     local has_legacy_user has_legacy_pw
     has_legacy_user="$(kctl get secret -n mail bulwark-secrets \
       -o jsonpath='{.data.BULWARK_STALWART_MASTER_USER}' 2>/dev/null || true)"
     has_legacy_pw="$(kctl get secret -n mail bulwark-secrets \
       -o jsonpath='{.data.BULWARK_STALWART_MASTER_PASSWORD}' 2>/dev/null || true)"
-    if [[ -n "$has_legacy_user" ]] || [[ -n "$has_legacy_pw" ]]; then
+    local -a cleanup_ops=()
+    if [[ -n "$has_legacy_user" ]]; then
+      cleanup_ops+=('{"op":"remove","path":"/data/BULWARK_STALWART_MASTER_USER"}')
+    fi
+    if [[ -n "$has_legacy_pw" ]]; then
+      cleanup_ops+=('{"op":"remove","path":"/data/BULWARK_STALWART_MASTER_PASSWORD"}')
+    fi
+    if (( ${#cleanup_ops[@]} > 0 )); then
       log "Cleaning up legacy mirror keys from bulwark-secrets (Bulwark now reads from mail-secrets directly)."
-      kctl get secret -n mail bulwark-secrets -o json \
-        | jq 'del(.data.BULWARK_STALWART_MASTER_USER, .data.BULWARK_STALWART_MASTER_PASSWORD)' \
-        | kctl apply -f - >/dev/null
+      local cleanup_patch
+      cleanup_patch="$(IFS=,; printf '[%s]' "${cleanup_ops[*]}")"
+      kctl patch secret -n mail bulwark-secrets --type=json -p "$cleanup_patch" >/dev/null
     fi
   fi
 
