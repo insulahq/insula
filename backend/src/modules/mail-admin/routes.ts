@@ -547,8 +547,8 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
 
       // Security defence-in-depth (2026-05-28): refuse to rotate +
       // auto-reseed unless the Secret's recorded domain matches the
-      // platform's expected `mail.<PLATFORM_DOMAIN>`. Without this an
-      // attacker with write access to `mail/mail-secrets` could swap
+      // operator-configured mail hostname. Without this an attacker
+      // with write access to `mail/mail-secrets` could swap
       // `STALWART_MASTER_USER` to `master@<their-tenant-domain>` and
       // the rotation flow would happily create a working master
       // principal under that tenant's Domain — a one-click platform-
@@ -558,14 +558,31 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // here usually means either a misconfigured bootstrap, a
       // migration in flight, OR Secret tampering, and an automated
       // "fix" would mask all three.
-      // Use the same `mailHost(cfg)` helper every other module uses to
-      // derive the mail apex — single source of truth keyed off
-      // `PLATFORM_BASE_DOMAIN` (canonical) with `INGRESS_BASE_DOMAIN`
-      // legacy-fallback. Hard-coding `PLATFORM_DOMAIN` here would only
-      // work on legacy installs that happen to expose it under that
-      // exact env name; staging/prod use the canonical names.
-      const { mailHost } = await import('../../config/domains.js');
-      const expectedPrincipalDomain = mailHost(cfg as { PLATFORM_BASE_DOMAIN?: string; INGRESS_BASE_DOMAIN?: string }).toLowerCase();
+      //
+      // Resolve the expected mail hostname the SAME way every other
+      // mail subsystem does — `getExplicitMailHostname(db)` walks the
+      // cascade:
+      //   1. platform_settings.mail_server_hostname (operator's admin-
+      //      UI override at Email → Settings → Server)
+      //   2. STALWART_HOSTNAME / MAIL_SERVER_HOSTNAME env overrides
+      //   3. mail.<platform_settings.ingress_base_domain> default
+      // Using a derived-from-env-only helper (e.g. mailHost(cfg)) would
+      // silently ignore operator overrides — an operator who set the
+      // mail hostname to `smtp.example.com` would get a
+      // WEBMAIL_MASTER_DOMAIN_MISMATCH every rotation because the route
+      // would expect `mail.example.com`. The reconciler + cert-issuance
+      // + delivery-probe paths all consult the same helper, so the
+      // rotation flow MUST too.
+      const { getExplicitMailHostname } = await import('./stalwart-domain-reconciler.js');
+      const resolvedMailHostname = await getExplicitMailHostname(app.db);
+      if (!resolvedMailHostname) {
+        throw new ApiError(
+          'WEBMAIL_MASTER_MAIL_HOSTNAME_UNRESOLVED',
+          'Cannot rotate — mail hostname is not configured. Set it under Admin → Email → Settings → Server (writes platform_settings.mail_server_hostname) OR set Settings → Platform URLs → Ingress Base Domain, then retry.',
+          412,
+        );
+      }
+      const expectedPrincipalDomain = resolvedMailHostname.trim().toLowerCase();
       if (principalDomain !== expectedPrincipalDomain) {
         app.log.error({
           userId,

@@ -4382,19 +4382,20 @@ STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # empirically 2026-05-07: short 'master' returns AUTHENTICATIONFAILED).
 # 2026-05-16: also CONFIRMED that Stalwart 0.16 blocks the .local TLD
 # entirely on auth ('AUTHENTICATIONFAILED master.local' even with
-# correct password + Admin role) — anchor the master Account under
-# the platform's mail apex (mail.<PLATFORM_DOMAIN>) instead, which is
-# always a real TLD AND matches the cert SAN / DNS that Stalwart uses
-# for its own SMTP/IMAP/JMAP endpoints.
-# 2026-05-28: was master@${PLATFORM_DOMAIN} — moved to
+# correct password + Admin role) — anchor the master Account under a
+# real TLD instead.
+# 2026-05-28a: was master@${PLATFORM_DOMAIN}; moved to
 # master@mail.${PLATFORM_DOMAIN} so the principal lives in the same
-# Domain Stalwart actually serves mail for (tenants own arbitrary
-# user-domains; the platform-controlled mail apex is the only Domain
-# guaranteed to be platform-managed). Also tightens the JMAP-rotation
-# scoped lookup so a tenant who provisions master@<their-tenant>
-# cannot collide. The master Account is provisioned by
-# provision_stalwart_master_user(); rotation/auto-reseed live in
-# backend/src/modules/mail-admin/rotate-webmail-master.ts.
+# Stalwart Domain Stalwart actually serves mail for.
+# 2026-05-28b (final): the rotation flow now consults
+# `platform_settings.mail_server_hostname` (Email → Settings → Server)
+# as the source-of-truth for the principal's home Domain, with
+# `mail.<ingress_base_domain>` as the cascade default. Bootstrap only
+# SEEDS this Secret — operator changes via the admin UI take precedence
+# afterwards (rotate-webmail-master will re-seed under the current
+# operator-set hostname automatically, even if it differs from the
+# bootstrap default). The seeded value here matches the default branch
+# of `getExplicitMailHostname` so a vanilla install round-trips cleanly.
 STALWART_MASTER_USER=master@mail.${PLATFORM_DOMAIN}
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
