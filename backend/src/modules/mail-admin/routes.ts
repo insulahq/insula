@@ -31,6 +31,7 @@ import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
+import { readStalwartMasterUser, MASTER_USER_FALLBACK } from './stalwart-master-user.js';
 import { getMailPvcStorage } from './mail-pvc.js';
 import { getMailNodeStorage } from './mail-node-storage.js';
 import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-store.js';
@@ -87,6 +88,26 @@ import {
 } from '../tenant-bundles/mailbox-backup-engine.js';
 
 const NODE_ROLE_LABEL_KEY = 'platform.example.test/node-role';
+
+/**
+ * Lazy-load a CoreV1Api for the rotate-webmail-master flow's Secret
+ * read. Returns null if @kubernetes/client-node cannot be loaded so the
+ * `readStalwartMasterUser` fallback (compiled-in default) kicks in
+ * instead of throwing. Same load pattern as `blob-store.loadK8sTenants`.
+ */
+async function getCoreV1ApiForRotation(
+  kubeconfigPath: string | undefined,
+): Promise<import('@kubernetes/client-node').CoreV1Api | null> {
+  try {
+    const k8s = await import('@kubernetes/client-node');
+    const kc = new k8s.KubeConfig();
+    if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
+    else kc.loadFromCluster();
+    return kc.makeApiClient(k8s.CoreV1Api);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Resolve the list of node IPs that serve mail. In allServerNodes mode
@@ -487,10 +508,84 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     const userId = req.user?.sub ?? 'unknown';
     app.log.warn({ userId }, 'mail-admin: rotate-webmail-master-password requested');
     try {
+      // Resolve the master principal's FQDN from the live Secret so the
+      // rotation flow scopes the JMAP lookup (and the auto-reseed
+      // create-target) to the exact Domain bootstrap provisioned. Splits
+      // `master@mail.<apex>` → masterUsername=`master`,
+      // principalDomain=`mail.<apex>`. Falls back to the historical
+      // `master@master.local` synthetic Domain if the Secret can't be
+      // read — preserves the pre-2026-05-28 behaviour for fresh installs
+      // that boot before bootstrap finishes.
+      const masterFqdn = await readStalwartMasterUser(
+        await getCoreV1ApiForRotation(cfg.KUBECONFIG_PATH as string | undefined),
+      );
+      // Refuse the compiled-in fallback (`master@master.local`). It's
+      // returned by `readStalwartMasterUser` when the Secret can't be
+      // read at all (no k8s client + no test injection) — splitting it
+      // would route the auto-reseed into the synthetic `master.local`
+      // Domain that Stalwart 0.16 hard-rejects on auth (bootstrap.sh
+      // documents this at MASTER_DOMAIN history). Refusing here is the
+      // safe default: the operator sees a clear error instead of a
+      // silently-broken master Account in `master.local`.
+      if (masterFqdn === MASTER_USER_FALLBACK) {
+        throw new ApiError(
+          'WEBMAIL_MASTER_FQDN_UNRESOLVED',
+          'Cannot rotate webmail master password — mail-secrets STALWART_MASTER_USER is not readable and the compiled-in fallback would route auto-reseed into the retired `master.local` Domain. Confirm platform-api has RBAC to read mail/mail-secrets, then retry.',
+          503,
+        );
+      }
+      const atIdx = masterFqdn.lastIndexOf('@');
+      if (atIdx < 1 || atIdx === masterFqdn.length - 1) {
+        throw new ApiError(
+          'WEBMAIL_MASTER_FQDN_MALFORMED',
+          'mail-secrets STALWART_MASTER_USER is not a full email address (no @ separator or empty local/domain part).',
+          500,
+        );
+      }
+      const masterUsername = masterFqdn.slice(0, atIdx);
+      const principalDomain = masterFqdn.slice(atIdx + 1).toLowerCase();
+
+      // Security defence-in-depth (2026-05-28): refuse to rotate +
+      // auto-reseed unless the Secret's recorded domain matches the
+      // platform's expected `mail.<PLATFORM_DOMAIN>`. Without this an
+      // attacker with write access to `mail/mail-secrets` could swap
+      // `STALWART_MASTER_USER` to `master@<their-tenant-domain>` and
+      // the rotation flow would happily create a working master
+      // principal under that tenant's Domain — a one-click platform-
+      // wide mail backdoor. Mismatch is operator-fixable (re-stamp
+      // the Secret with the correct value) and SHOULD be surfaced
+      // loudly rather than silently corrected: an unexpected drift
+      // here usually means either a misconfigured bootstrap, a
+      // migration in flight, OR Secret tampering, and an automated
+      // "fix" would mask all three.
+      const expectedPlatformDomain = (cfg.PLATFORM_DOMAIN as string | undefined)?.trim().toLowerCase();
+      if (!expectedPlatformDomain) {
+        throw new ApiError(
+          'WEBMAIL_MASTER_PLATFORM_DOMAIN_UNRESOLVED',
+          'platform-api configuration is missing PLATFORM_DOMAIN — cannot validate the rotation target Domain.',
+          500,
+        );
+      }
+      const expectedPrincipalDomain = `mail.${expectedPlatformDomain}`;
+      if (principalDomain !== expectedPrincipalDomain) {
+        app.log.error({
+          userId,
+          observedPrincipalDomain: principalDomain,
+          expectedPrincipalDomain,
+        }, 'mail-admin: refusing to rotate webmail master — Secret-recorded Domain does not match platform config (possible Secret tampering OR misconfigured bootstrap)');
+        throw new ApiError(
+          'WEBMAIL_MASTER_DOMAIN_MISMATCH',
+          `Refusing to rotate — mail-secrets STALWART_MASTER_USER points at Domain '${principalDomain}' but platform config expects '${expectedPrincipalDomain}'. Re-stamp the Secret to match before retrying.`,
+          409,
+        );
+      }
+
       const result = await rotateWebmailMasterPassword({
         kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        masterUsername,
+        principalDomain,
       });
-      app.log.warn({ userId, rotatedAt: result.rotatedAt }, 'mail-admin: webmail master rotation succeeded');
+      app.log.warn({ userId, rotatedAt: result.rotatedAt, principalDomain }, 'mail-admin: webmail master rotation succeeded');
       return success(result);
     } catch (err) {
       app.log.error({ err, userId }, 'mail-admin: webmail master rotation failed');
