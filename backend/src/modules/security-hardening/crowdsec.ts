@@ -78,8 +78,10 @@ export const MANUAL_STATIC_BAN_REASON_PREFIX = 'admin-panel-static:';
 // flag; the longest practical duration is the safety story. Verified
 // against cscli on 2026-05-26: `--duration 876000h` parses cleanly,
 // rounds to `875999h59m57s`, and Go's time.Duration int64 has plenty of
-// headroom (max ~292 years).
-const STATIC_BAN_DURATION = '876000h';
+// headroom (max ~292 years). Exported so the admin route response can
+// echo back the same value the cscli call used (instead of the old
+// hardcoded '8760h' string that lied to callers after the bump).
+export const STATIC_BAN_DURATION = '876000h';
 
 const LAPI_HTTP_TIMEOUT_MS = 8_000;
 
