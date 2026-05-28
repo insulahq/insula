@@ -335,13 +335,14 @@ export async function recordMailSnapshotLastRun(
 export async function applyMailSnapshotRetention(
   db: Database,
   opts: SnapshotSettingsOptions,
-): Promise<{ retentionDays: number; retentionCount: number; patched: boolean }> {
+): Promise<{ retentionDays: number; retentionCount: number; patched: boolean; cronExpression: string | null }> {
   const { backupSchedules } = await import('../../db/schema.js');
 
   const [row] = await db
     .select({
       retentionDays: backupSchedules.retentionDays,
       retentionCount: backupSchedules.retentionCount,
+      cronExpression: backupSchedules.cronExpression,
     })
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'mail'));
@@ -350,8 +351,15 @@ export async function applyMailSnapshotRetention(
   // snapshot-upload.sh fallback when ConfigMap is missing).
   const retentionDays = row?.retentionDays ?? 0;
   const retentionCount = row?.retentionCount ?? 48;
+  // 2026-05-28: also reconcile the CronJob's spec.schedule from
+  // backup_schedules.cron_expression. Pre-fix, this column was written
+  // by /admin/backups/schedules/mail but never propagated to k8s; only
+  // /admin/mail/snapshot-schedule patched the CronJob, so operators
+  // using the unified Backups → Mail schedule editor saw their setting
+  // silently ignored. Both surfaces now drive the same CronJob.
+  const cronExpression = row?.cronExpression ?? null;
 
-  const { core } = await loadK8sTenants(opts.kubeconfigPath);
+  const { core, batch } = await loadK8sTenants(opts.kubeconfigPath);
 
   // Write/update the mail-snapshot-retention ConfigMap.
   //
@@ -414,7 +422,29 @@ export async function applyMailSnapshotRetention(
     }
   }
 
-  return { retentionDays, retentionCount, patched: true };
+  // Reconcile CronJob schedule from backup_schedules.cron_expression.
+  // Skipped when no cron value set (DB row absent) — the manifest
+  // default takes over. NEVER throws — schedule sync is best-effort
+  // so retention reconcile still wins.
+  if (cronExpression) {
+    try {
+      await batch.patchNamespacedCronJob(
+        {
+          namespace: MAIL_NAMESPACE,
+          name: SNAPSHOT_CRONJOB_NAME,
+          body: { spec: { schedule: cronExpression } },
+        } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
+        STRATEGIC_MERGE_PATCH,
+      );
+    } catch (err) {
+      // Don't fail the whole reconcile if the schedule patch fails —
+      // retention still applied. Operator gets the warning in logs.
+      // eslint-disable-next-line no-console
+      console.warn('[snapshot-settings] failed to patch CronJob schedule:', err);
+    }
+  }
+
+  return { retentionDays, retentionCount, patched: true, cronExpression };
 }
 
 const RETENTION_CONFIGMAP_NAME = 'mail-snapshot-retention';

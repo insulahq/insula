@@ -262,17 +262,14 @@ export async function updateMailPlacement(
 ): Promise<void> {
   const { core } = await loadK8sCoreTenant(opts.kubeconfigPath);
 
-  // Validate that each named node exists in the cluster AND is a
-  // server-role node. The mail-stack requires server-role per the
-  // system-node-affinity Kustomize component (Bulwark has a hard
-  // affinity to node-role=server; Stalwart and Bulwark must co-locate
-  // on the same PVC). A worker-role placement would only fail later
-  // at migration preflight + DR failover preflight — refuse upfront.
+  // Validate that each named node exists in the cluster.
+  // Both server-role AND worker-role nodes are valid mail placements —
+  // see affinity-patch-mail-stack.yaml. Operators may legitimately pin
+  // mail to a worker for SSD/CIFS reasons.
   for (const nodeName of [update.primaryNode, update.secondaryNode, update.tertiaryNode]) {
     if (nodeName) {
-      let node: { metadata?: { labels?: Record<string, string> } };
       try {
-        node = await core.readNode({ name: nodeName }) as { metadata?: { labels?: Record<string, string> } };
+        await core.readNode({ name: nodeName });
       } catch (err) {
         const code =
           (err as { statusCode?: number; code?: number }).statusCode ??
@@ -288,15 +285,6 @@ export async function updateMailPlacement(
           'MAIL_PLACEMENT_NODE_LOOKUP_FAILED',
           `Could not verify node '${nodeName}': ${(err as Error).message ?? String(err)}`,
           500,
-        );
-      }
-      const role = node.metadata?.labels?.['platform.example.test/node-role'];
-      if (role && role !== 'server') {
-        throw new ApiError(
-          'MAIL_PLACEMENT_NODE_NOT_SERVER',
-          `Node '${nodeName}' has role '${role}', but mail placement targets must be server-role nodes ` +
-          `(Bulwark requires node-role=server via system-node-affinity). Relabel the node OR choose a different one.`,
-          400,
         );
       }
     }
