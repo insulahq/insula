@@ -58,19 +58,21 @@ patches:
   # ── mail namespace ────────────────────────────────────────────────
   - target: { kind: Deployment, name: roundcube, namespace: mail }
     path: affinity-patch.yaml
-  # ADR-039 — Bulwark webmail. Same shared server-role affinity as
-  # Roundcube; the impersonator sidecar lives inside this Pod so
-  # it inherits the affinity for free.
+  # ADR-039 — Bulwark webmail co-locates with Stalwart on the SAME
+  # PVC (subPath split), so Bulwark must accept the same wider
+  # node-role set as Stalwart. Using affinity-patch.yaml (server-only)
+  # would block a worker-node mail migration with Bulwark Pending
+  # forever — caught 2026-05-28 by Phase C of the mobility E2E.
+  # See affinity-patch-mail-stack.yaml for the rationale.
   - target: { kind: Deployment, name: bulwark, namespace: mail }
-    path: affinity-patch.yaml
+    path: affinity-patch-mail-stack.yaml
   # Cut 3 (2026-05-04): v015 StatefulSet `stalwart-mail` retired;
   # v016 ships as a Deployment named `stalwart-mail`.
   #
   # 2026-05-13: Stalwart uses a wider affinity than the shared patch
-  # — both `server` and `worker` roles are eligible candidates. See
-  # affinity-patch-stalwart.yaml for the rationale.
+  # — both `server` and `worker` roles are eligible candidates.
   - target: { kind: Deployment, name: stalwart-mail, namespace: mail }
-    path: affinity-patch-stalwart.yaml
+    path: affinity-patch-mail-stack.yaml
 
   # ── redis-system namespace ────────────────────────────────────────
   # Valkey/Sentinel coordinator cache shipped 2026-05-07. Without this

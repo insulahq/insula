@@ -313,49 +313,30 @@ phase_C() {
     return
   fi
   local from=$ACTIVE_NODE to=$worker
-  echo "  $from → $to (worker)"
+  echo "  $from → $to (worker — affinity-patch-mail-stack allows both server+worker)"
   local resp run_id
   resp=$(api POST "/admin/mail/migrate" "$(jq -n --arg n "$to" '{targetNode:$n, confirm:true}')" 30)
   run_id=$(echo "$resp" | jq -r '.data.runId // empty')
   if [ -z "$run_id" ]; then
-    # Worker migration may be intentionally refused if portExposureMode=allServerNodes
-    # — verify by reading the error code
-    local code
-    code=$(echo "$resp" | jq -r '.error.code // empty')
-    if [ "$code" = "MAIL_MIGRATION_TARGET_NOT_SERVER" ] || [ "$code" = "MAIL_MIGRATION_PORTS_REQUIRE_SERVER" ]; then
-      green "  worker migration correctly refused with $code (port mode requires server): ✓"
-      pass_phase C "policy correctly refused worker target ($code)"
-      return
-    fi
     fail_phase C "migrate POST no runId: $(echo "$resp" | jq -c '.error // .')"
     return
   fi
-  local final final_status
-  final=$(wait_migration "$run_id" 120 | tail -1)
-  if [ "$final" = "failed" ]; then
-    # Check if the failure message is the expected node-role policy refusal
-    local err
-    err=$(api GET "/admin/mail/migrate/${run_id}" "" 10 | jq -r '.data.error // ""')
-    if echo "$err" | grep -qE "server-role node|node-role=server|requires a server"; then
-      green "  worker migration correctly refused by preflight: $(echo "$err" | head -c 80)…"
-      pass_phase C "policy preflight refused worker target"
-      return
-    fi
-    fail_phase C "worker migration failed with UNEXPECTED message: $err"
-    return
-  fi
+  local final
+  final=$(wait_migration "$run_id" "$MIGRATION_TIMEOUT" | tail -1)
   if [ "$final" != "done" ]; then
-    fail_phase C "worker migration ended in $final (expected 'failed' from preflight refusal)"
+    fail_phase C "worker migration ended in $final (state: $(api GET "/admin/mail/migrate/${run_id}" "" 10 | jq -r '.data.error // "?"' | head -c 200))"
     return
   fi
-  local pod_node
-  pod_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}')
-  if [ "$pod_node" = "$to" ]; then
-    green "  stalwart now on worker $to: ✓"
+  # Verify BOTH stalwart and bulwark on worker (they must co-locate on the PVC)
+  local s_node b_node
+  s_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}')
+  b_node=$(kubectl get pod -n mail -l app=bulwark -o jsonpath='{.items[0].spec.nodeName}')
+  if [ "$s_node" = "$to" ] && [ "$b_node" = "$to" ]; then
+    green "  stalwart + bulwark both on worker $to: ✓"
     ACTIVE_NODE=$to
-    pass_phase C "migration to worker $to complete"
+    pass_phase C "migration to worker $to complete; mail-stack co-located"
   else
-    fail_phase C "pod landed on $pod_node, expected $to"
+    fail_phase C "stalwart on '$s_node', bulwark on '$b_node', expected both on $to"
   fi
 }
 
