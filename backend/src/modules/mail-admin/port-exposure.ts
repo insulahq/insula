@@ -96,6 +96,16 @@ const MAIL_NS = HAPROXY_DS_NAMESPACE;
 // so we can choose to send or omit it based on mode.
 const STALWART_PORTS_PATCH = applyPatch('platform-api.port-exposure', { force: true });
 
+// SSA-apply opts for Service.externalIPs reconciliation (reconcile-
+// MailServiceExternalIPsByName). Module-level const so the
+// ci-k8s-patch-check guard's regex (`[A-Z_]+_PATCH`) catches it —
+// inline `applyPatch(...)` at the call site fails the guard because
+// the `\b` boundary after `(` doesn't match.
+const STALWART_EXTERNAL_IPS_PATCH = applyPatch(
+  'platform-api.mail-port-exposure',
+  { force: true },
+);
+
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
 const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 4190] as const;
 
@@ -558,7 +568,6 @@ async function reconcileMailServiceExternalIPsByName(
     const ip = node ? nodeIp(node) : null;
     if (ip && !desiredIps.includes(ip)) desiredIps.push(ip);
   }
-  const { applyPatch } = await import('../../shared/k8s-patch.js');
   await core.patchNamespacedService(
     {
       namespace: 'mail',
@@ -570,7 +579,7 @@ async function reconcileMailServiceExternalIPsByName(
         spec: { externalIPs: desiredIps },
       },
     } as unknown as Parameters<typeof core.patchNamespacedService>[0],
-    applyPatch('platform-api.mail-port-exposure', { force: true }),
+    STALWART_EXTERNAL_IPS_PATCH,
   );
 }
 
