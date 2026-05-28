@@ -32,6 +32,7 @@ import { buildAllRouteSpecs } from '../ingress-routes/annotation-sync.js';
 import {
   buildIngressRoute,
   hostMatch,
+  middlewareName,
 } from '../ingress-routes/traefik-types.js';
 import type { TraefikRoute } from '../ingress-routes/traefik-types.js';
 import {
@@ -388,6 +389,10 @@ export async function reconcileIngress(
 
   if (traefikRoutes.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
+    // Also drop the HTTP entrypoint companion if it was previously
+    // applied — otherwise it orphans on the cluster after the last
+    // route is deleted.
+    await deleteIngressRoute(k8s.custom, namespace, `${ingressName}-http`);
     await gcOrphanMiddlewares(k8s, namespace, new Set());
     return;
   }
@@ -430,7 +435,7 @@ export async function reconcileIngress(
     }
   }
 
-  // Build + apply the tenant IngressRoute.
+  // Build + apply the tenant IngressRoute (HTTPS / websecure).
   const ingressBody = buildIngressRoute({
     name: ingressName,
     namespace,
@@ -443,11 +448,113 @@ export async function reconcileIngress(
   });
   await applyIngressRoute(k8s.custom, ingressBody);
 
+  // Force-HTTPS HTTP entrypoint — parallel IngressRoute on `web` that
+  // 301s HTTP → HTTPS for every route with forceHttps=true. Without
+  // this the customer-visible "Force HTTPS" toggle was a no-op
+  // (annotation-sync.ts:226-231 documented the gap). Apply only when
+  // there's at least one forceHttps=true route — keeps the cluster
+  // clean of empty IngressRoutes for tenants who don't use the
+  // toggle. When the last forceHttps=true route is unset, the next
+  // reconcile deletes the HTTP IngressRoute via the empty-routes
+  // path below.
+  const httpRoutes = buildForceHttpsRoutes(
+    updatedRoutes as ForceHttpsRouteRow[],
+    (id) => {
+      // resolveBackend is closed over above; mirror its shape here so
+      // the helper stays pure (no Database / k8s).
+      const r = (updatedRoutes as RouteRowLike[]).find((x) => x.id === id);
+      return r ? resolveBackend(r) : null;
+    },
+    namespace,
+  );
+  const httpIngressName = `${ingressName}-http`;
+  if (httpRoutes.length > 0) {
+    const httpBody = buildIngressRoute({
+      name: httpIngressName,
+      namespace,
+      routes: httpRoutes,
+      entryPoints: ['web'],
+      // No tls block — HTTP entrypoint is plaintext by design; the
+      // force-https Middleware sends the 301 before any response body.
+      labels: {
+        'hosting-platform/tenant-id': tenantId,
+        'hosting-platform/entrypoint': 'web',
+      },
+    });
+    await applyIngressRoute(k8s.custom, httpBody);
+  } else {
+    // No forceHttps routes — make sure a previously-applied HTTP
+    // IngressRoute is removed. deleteIngressRoute is idempotent (404
+    // is swallowed in the implementation).
+    await deleteIngressRoute(k8s.custom, namespace, httpIngressName);
+  }
+
   // GC orphan Middlewares that this tenant's reconcile no longer
   // produces. Limited to labels matching hosting-platform/route-id IN
   // (current route ids) — anything else (cluster-shared admin-auth
   // Middlewares, oauth2-proxy break-glass middleware, …) stays put.
   await gcOrphanMiddlewares(k8s, namespace, expectedMiddlewareNames);
+}
+
+// ─── Force-HTTPS HTTP-entrypoint routes ────────────────────────────────────
+//
+// A parallel IngressRoute on the `web` (HTTP) entrypoint that redirects
+// HTTP → HTTPS for every route with forceHttps=true. The `redirectScheme`
+// Middleware is already emitted by annotation-sync (`r-<id>-force-https`);
+// this builder produces the TraefikRoute entries that attach it.
+//
+// The route's services[] points at the same backend as the HTTPS route
+// because TraefikRoute requires the field — the redirectScheme Middleware
+// returns 301 before any traffic reaches the service. Other Middlewares
+// (IP allowlist, rate limit, auth) are deliberately NOT attached on the
+// HTTP route: every HTTP request gets the redirect, so enforcing those
+// gates on HTTP would be redundant + leak rejection signals on a
+// channel the operator wants closed anyway.
+
+export interface ForceHttpsRouteRow {
+  readonly id: string;
+  readonly hostname: string;
+  readonly path: string | null | undefined;
+  readonly forceHttps: number;
+  readonly wwwRedirect: 'none' | 'add-www' | 'remove-www';
+}
+
+export function buildForceHttpsRoutes(
+  routes: ReadonlyArray<ForceHttpsRouteRow>,
+  resolveBackend: (routeId: string) => { serviceName: string; port: number } | null,
+  namespace: string,
+): TraefikRoute[] {
+  const out: TraefikRoute[] = [];
+  for (const route of routes) {
+    if (!route.forceHttps) continue;
+    const backend = resolveBackend(route.id);
+    // Without a backend we can't construct services[]; skip the same
+    // way the HTTPS reconciler does (k8s-ingress.ts:352). Suspended /
+    // orphaned routes silently produce no HTTP redirect entry.
+    if (!backend) continue;
+
+    // Use the same canonical-hostname logic the HTTPS path uses so the
+    // www redirect Middleware target matches the HTTPS-side advertised
+    // host (add-www → www.<host>, remove-www → <host> sans www).
+    let canonicalHost = route.hostname;
+    if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
+      canonicalHost = `www.${route.hostname}`;
+    } else if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
+      canonicalHost = route.hostname.replace(/^www\./, '');
+    }
+
+    const match = route.path && route.path !== '/'
+      ? `${hostMatch(canonicalHost)} && PathPrefix(\`${route.path}\`)`
+      : hostMatch(canonicalHost);
+
+    out.push({
+      match,
+      kind: 'Rule',
+      middlewares: [{ name: middlewareName(route.id, 'force-https'), namespace }],
+      services: [{ name: backend.serviceName, port: backend.port }],
+    });
+  }
+  return out;
 }
 
 // ─── Middleware orphan cleanup ──────────────────────────────────────────────
