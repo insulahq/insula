@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Archive, Download, Lock, Loader2, AlertCircle, CheckCircle2, Play, RotateCcw } from 'lucide-react';
+import { Archive, Download, Lock, Loader2, AlertCircle, Play, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   useTenantBundles,
   useRunBundleNow,
   downloadTenantDataExport,
 } from '@/hooks/use-tenant-backups';
+import { BundleProgressModal } from '@/components/BundleProgressModal';
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null || bytes === 0) return '-';
@@ -32,6 +33,9 @@ export default function Backups() {
   const bundlesQ = useTenantBundles();
   const runNow = useRunBundleNow();
   const bundles = bundlesQ.data?.data ?? [];
+  // Track the in-flight bundle id from the most recent run-now click
+  // so we can open BundleProgressModal. Cleared via modal onClose.
+  const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
@@ -49,7 +53,14 @@ export default function Backups() {
         </div>
         <button
           type="button"
-          onClick={() => runNow.mutate()}
+          onClick={() =>
+            runNow.mutate(undefined, {
+              onSuccess: (res) => {
+                const id = res?.data?.bundleId;
+                if (id) setProgressBundleId(id);
+              },
+            })
+          }
           disabled={runNow.isPending}
           className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           data-testid="run-backup-now"
@@ -58,12 +69,6 @@ export default function Backups() {
           Run backup now
         </button>
       </div>
-
-      {runNow.isSuccess && !runNow.isPending && (
-        <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-700 dark:bg-green-900/40 dark:text-green-200">
-          <CheckCircle2 size={16} /> Bundle started. It will appear in the list below once complete.
-        </div>
-      )}
       {runNow.error && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-700 dark:bg-red-900/40 dark:text-red-200">
           <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
@@ -153,6 +158,13 @@ export default function Backups() {
           </div>
         )}
       </div>
+
+      {progressBundleId && (
+        <BundleProgressModal
+          bundleId={progressBundleId}
+          onClose={() => setProgressBundleId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -161,7 +173,3 @@ export default function Backups() {
 // can no longer set their own backup schedule — scheduled bundles
 // are driven by a single platform-global cron. Operators inclusion-
 // gate per-plan via `hosting_plans.include_in_scheduled_bundles`.
-
-// Defensive imports kept for next round of UI work (avoid unused warns).
-const _kept = { useState };
-void _kept;

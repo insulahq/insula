@@ -223,7 +223,7 @@ if [[ -n "$BUNDLE_ID" ]]; then
   fi
 fi
 
-# ── §4: run-now ───────────────────────────────────────────────────────
+# ── §4: run-now + status polling ──────────────────────────────────────
 log "§4 run-now"
 RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/bundles/run-now" "{}" "$TENANT_TOKEN")
 parse "$RAW"
@@ -231,6 +231,24 @@ if [[ "$STATUS" == "202" ]]; then
   NEW_BUNDLE_ID=$(printf '%s' "$BODY" | jq -r '.data.bundleId // empty')
   if [[ -n "$NEW_BUNDLE_ID" ]]; then
     ok "run-now → 202 bundleId=$NEW_BUNDLE_ID"
+
+    # Status endpoint — cross-tenant 403.
+    RAW=$(api "$ADMIN_HOST" GET "/tenants/$OTHER_TENANT_ID/bundles/$NEW_BUNDLE_ID/status" "" "$TENANT_TOKEN")
+    parse "$RAW"
+    [[ "$STATUS" == "403" ]] && ok "status cross-tenant → 403" || fail "status cross-tenant: expected 403 got $STATUS"
+
+    # Status endpoint — own tenant. Bundle row exists immediately
+    # (run-now waits for the insert before returning), so this should
+    # return 200 with at least a few components rows populated.
+    RAW=$(api "$ADMIN_HOST" GET "/tenants/$TENANT_ID/bundles/$NEW_BUNDLE_ID/status" "" "$TENANT_TOKEN")
+    parse "$RAW"
+    if [[ "$STATUS" == "200" ]]; then
+      BSTATUS=$(printf '%s' "$BODY" | jq -r '.data.bundle.status')
+      CCOUNT=$(printf '%s' "$BODY" | jq -r '.data.components | length')
+      ok "status own → 200 bundle.status=$BSTATUS components=$CCOUNT"
+    else
+      fail "status own: expected 200 got $STATUS body=$BODY"
+    fi
   else
     fail "run-now 202 but no bundleId in response: $BODY"
   fi
