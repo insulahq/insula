@@ -54,7 +54,6 @@ import {
   HAPROXY_DS_NAMESPACE,
 } from './haproxy-builder.js';
 import {
-  resolveDataPlaneNodes,
   resolveHaproxyNodes,
   resolveExternalIpNodes,
   reconcileMailHaproxyLabels,
@@ -411,15 +410,11 @@ async function applyModeToClusterUnlocked(
   //                   reaches the original socket). The active node
   //                   serves via Stalwart hostPort (CNI portmap, no
   //                   hairpin). Empty for activeNodeOnly.
-  //   publicDataPlane — what the operator sees as "the set of nodes that
-  //                     answer mail traffic". haproxyNodes ∪ {active}
-  //                     when active is set. Used for the progress text.
   //
   // Without db we can't read placement — skip label/externalIPs work and
   // the orchestrator falls back to just patching the Deployment + DS.
   let haproxyNodes: string[] = [];
   let externalIps: string[] = [];
-  let publicDataPlane: string[] = [];
   let allNodes: NodeRef[] = [];
   let activeNode: string | null = null;
   if (db) {
@@ -428,7 +423,6 @@ async function applyModeToClusterUnlocked(
     activeNode = settings.activeNode;
     haproxyNodes = resolveHaproxyNodes(mode, settings, nodes);
     externalIps = resolveExternalIpNodes(mode, settings, nodes);
-    publicDataPlane = resolveDataPlaneNodes(mode, settings, nodes);
     // Re-validate inside the orchestrator: the route-handler
     // pre-validates BEFORE starting the background task, but a
     // concurrent placement PATCH between then and now could have
@@ -444,8 +438,6 @@ async function applyModeToClusterUnlocked(
       );
     }
   }
-  // publicDataPlane referenced below only when db is set — keep linter happy.
-  void publicDataPlane;
 
   // Post-hairpin-fix invariant (2026-05-28): Stalwart Deployment ALWAYS
   // has hostPort=25/465/587/143/993/4190 — the active node serves via
@@ -627,13 +619,28 @@ async function reconcileMailServiceExternalIPsByName(
  * Mail-port list is canonical (MAIL_HOST_PORTS); we mirror the
  * manifest's port names/protocol for consistency.
  */
-async function replaceStalwartContainerPorts(
+/**
+ * SSA-apply hostPort=containerPort to every Stalwart mail port and
+ * wait for the rollout. Post-2026-05-28 hairpin fix: Stalwart hostPort
+ * is always-on in every mode (the active node serves via CNI portmap,
+ * never via kube-proxy DNAT). The previous `withHostPorts=false` path
+ * was removed when removeHostPortsFromDeployment became dead code.
+ *
+ * SSA `fieldManager=platform-api.port-exposure, force=true` claims the
+ * hostPort sub-field on each mail port. Idempotent — the apiserver
+ * computes no diff when the field is already at the desired value, so
+ * back-to-back calls don't trigger spurious rollouts (but
+ * waitForStalwartRollout below still polls — see the rollout-wait
+ * note for the cost of that on the steady-state idempotent path).
+ *
+ * Mail-port list is canonical (mirrors k8s/base/stalwart-mail/stalwart/
+ * deployment.yaml). Other container ports (mgmt-http :8080,
+ * http-acme :80) stay owned by kustomize-controller's apply — SSA
+ * merges per port name.
+ */
+async function addHostPortsToDeployment(
   apps: import('@kubernetes/client-node').AppsV1Api,
-  withHostPorts: boolean,
 ): Promise<void> {
-  // Canonical mail-port spec, matching k8s/base/stalwart-mail/stalwart/
-  // deployment.yaml. Keep this list in lockstep with the manifest's
-  // port names; SSA-apply must match name to claim the right entry.
   const mailPortSpecs: Array<{ name: string; containerPort: number }> = [
     { name: 'smtp', containerPort: 25 },
     { name: 'submissions', containerPort: 465 },
@@ -647,17 +654,9 @@ async function replaceStalwartContainerPorts(
     name: p.name,
     containerPort: p.containerPort,
     protocol: 'TCP',
-    // Only claim hostPort in thisNodeOnly mode. In allServerNodes
-    // mode, omit hostPort so the apiserver leaves the field unset
-    // (nobody owns it post-apply — the manifest doesn't declare it
-    // either since the Phase 7 manifest rewrite).
-    ...(withHostPorts ? { hostPort: p.containerPort } : {}),
+    hostPort: p.containerPort,
   }));
 
-  // SSA-apply body — partial Deployment with just the stalwart
-  // container's ports list. We claim `containers[name=stalwart].ports`
-  // wholesale. Non-mail ports (mgmt-http :8080, http-acme :80) stay
-  // owned by kustomize-controller's apply; SSA merges per port name.
   const body = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -686,35 +685,18 @@ async function replaceStalwartContainerPorts(
   ).catch((err) => {
     throw new ApiError(
       'MAIL_DEPLOYMENT_PATCH_FAILED',
-      `Failed to ${withHostPorts ? 're-add' : 'remove'} hostPorts on Stalwart Deployment: ${(err as Error).message ?? String(err)}`,
+      `Failed to apply Stalwart Deployment hostPorts: ${(err as Error).message ?? String(err)}`,
       500,
     );
   });
 
-  // CRITICAL: wait for the rollout to actually complete before
-  // returning. The streamline E2E harness Phase C3/C4 caught the
-  // race: patchNamespacedDeployment returns as soon as the apiserver
-  // accepts the patch, but the existing Stalwart pod KEEPS binding
-  // its hostPorts until the rollout terminates it. If
-  // ensureHaproxyDaemonSetExists creates the haproxy DS in that
-  // window, haproxy on the Stalwart-pod node fails to bind the
-  // hostPort (already taken by the old Stalwart pod) and either
-  // CrashLoopBacks or schedules without serving traffic. By waiting
-  // for the rollout we guarantee:
-  //   - withHostPorts=false (flip to allServerNodes) → old pod gone
-  //     before haproxy DS is created
-  //   - withHostPorts=true  (flip to thisNodeOnly)  → new pod ready
-  //     before mode flip returns (operator sees consistent state in
-  //     the response)
-  // 90s budget: a typical Stalwart pod restart is ~25s; 90s covers
-  // local-path PVC re-attach + restore-state initContainer.
+  // Wait for rollout to complete before returning. When SSA produces
+  // no diff this returns on the first poll; when there's a real diff
+  // (first deploy, or after a manifest churn) the 90s budget covers
+  // pod restart + local-path PVC re-attach + restore-state init.
+  // Follow-up: short-circuit when the apiserver returned the same
+  // metadata.resourceVersion (no diff applied) to skip the wait.
   await waitForStalwartRollout(apps);
-}
-
-async function addHostPortsToDeployment(
-  apps: import('@kubernetes/client-node').AppsV1Api,
-): Promise<void> {
-  await replaceStalwartContainerPorts(apps, /* withHostPorts= */ true);
 }
 
 function sleepMs(ms: number): Promise<void> {

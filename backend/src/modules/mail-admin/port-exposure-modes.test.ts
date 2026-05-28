@@ -279,6 +279,40 @@ describe('resolveExternalIpNodes (excludes active to prevent kube-proxy DNAT hai
       }
     }
   });
+
+  // Independent literal-set assertions (not derived from resolveHaproxyNodes).
+  // If the two functions ever diverge, the matches-resolveHaproxyNodes test
+  // above will pass vacuously; these spell the expected sets out explicitly
+  // so that aliasing changes are caught.
+
+  it('activeNodeOnly with active=worker → [] (literal)', () => {
+    expect(resolveExternalIpNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
+  });
+
+  it('assignedMailNodes with active=staging1 → [staging2,staging3] (literal)', () => {
+    expect(
+      resolveExternalIpNodes(
+        'assignedMailNodes',
+        { ...baseSettings, activeNode: 'staging1' },
+        allNodes,
+      ),
+    ).toEqual(['staging2', 'staging3']);
+  });
+
+  it('allServerNodes with active=worker → [staging1,staging2,staging3] (literal)', () => {
+    expect(resolveExternalIpNodes('allServerNodes', baseSettings, allNodes))
+      .toEqual(['staging1', 'staging2', 'staging3']);
+  });
+
+  it('allServerNodes with active=staging2 → [staging1,staging3] (literal)', () => {
+    expect(
+      resolveExternalIpNodes(
+        'allServerNodes',
+        { ...baseSettings, activeNode: 'staging2' },
+        allNodes,
+      ),
+    ).toEqual(['staging1', 'staging3']);
+  });
 });
 
 // ─── reconcileMailHaproxyLabels ──────────────────────────────────────

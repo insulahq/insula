@@ -143,7 +143,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     }
   });
 
-  it('allServerNodes mode: does NOT re-create when DS already exists', async () => {
+  it('allServerNodes mode: does NOT re-create when DS already exists AND still ensures hostPorts', async () => {
     mockReadDs.mockResolvedValue({ metadata: { name: 'stalwart-haproxy' } });
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await updateMailPortExposure(
@@ -153,6 +153,12 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     );
     expect(mockCreateDs).not.toHaveBeenCalled();
     expect(mockDeleteDs).not.toHaveBeenCalled();
+    // Post-hairpin-fix invariant: hostPorts are ALWAYS ensured, even
+    // when the DS read returns "already exists" and no DS create
+    // happens. Without this assertion, accidentally putting
+    // addHostPortsToDeployment behind a conditional would silently
+    // regress the active-node listener.
+    expect(mockPatchDeployment).toHaveBeenCalledTimes(1);
   });
 
   it('allServerNodes → activeNodeOnly: DELETES the haproxy DS then re-adds hostPorts', async () => {
