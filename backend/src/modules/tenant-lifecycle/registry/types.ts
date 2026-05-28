@@ -69,6 +69,13 @@ export interface HookCtx {
    * return a `failed` HookResult with an envelope instead.
    */
   readonly log?: (event: string, fields?: Record<string, unknown>) => void;
+  /**
+   * When set, the notify-on-transition hook skips sending the tenant-
+   * facing notification (the operator may have communicated separately
+   * out-of-band). Admin-facing notifications are unaffected. Defaults
+   * to false. ADR notification-system Phase 1.
+   */
+  readonly suppressTenantNotification?: boolean;
 }
 
 export type BlockingPolicy = 'abort' | 'continue';

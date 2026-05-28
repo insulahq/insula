@@ -27,6 +27,7 @@ import SftpUsers from '@/pages/SftpUsers';
 import PrivateWorkers from '@/pages/PrivateWorkers';
 import ResourceUsage from '@/pages/ResourceUsage';
 import Notifications from '@/pages/Notifications';
+import NotificationPreferences from '@/pages/NotificationPreferences';
 import Placeholder from '@/pages/Placeholder';
 import LifecycleGate from '@/components/LifecycleGate';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -81,6 +82,7 @@ export default function App() {
             <Route path="settings/zrok-providers" element={<ZrokProviders />} />
             <Route path="resource-usage" element={<ResourceUsage />} />
             <Route path="notifications" element={<Notifications />} />
+            <Route path="notification-preferences" element={<NotificationPreferences />} />
             <Route path="user-settings" element={<UserSettings />} />
 
             {/* Gated routes (blocked on suspend/archived, or during any

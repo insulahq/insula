@@ -35,6 +35,7 @@ import {
   ChevronRight,
   X,
   AlertTriangle,
+  Bell,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
@@ -161,6 +162,7 @@ const navItems: ReadonlyArray<NavItem> = [
       { kind: 'item', to: '/platform/integrations',     icon: Link2,              label: 'Integrations' },
       { kind: 'item', to: '/platform/ai',               icon: Cpu,                label: 'AI Providers' },
       { kind: 'item', to: '/platform/lifecycle-hooks',  icon: Workflow,           label: 'Tenant Lifecycle Hooks' },
+      { kind: 'item', to: '/platform/notifications',    icon: Bell,               label: 'Notifications' },
       { kind: 'item', to: '/platform/export-import',    icon: Upload,             label: 'Export / Import' },
     ],
   },

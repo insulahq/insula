@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { auditLogs, refreshTokens, users, userPasskeys, tenants } from '../../db/schema.js';
 import { createAdminUserSchema, updateAdminUserSchema } from '@k8s-hosting/api-contracts';
+import { eraseUserNotifications } from '../notifications/retention/gdpr-erasure.js';
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -472,6 +473,13 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
         continue;
       }
       try {
+        // GDPR Article 17 — purge per-user notification + delivery
+        // audit rows BEFORE the users row is removed. The order matters:
+        // notification_deliveries.user_id has ON DELETE SET NULL so
+        // letting the user row disappear first would leave anonymous
+        // orphan rows that GDPR-export can no longer retrieve for the
+        // erased user.
+        await eraseUserNotifications(app.db, id);
         await app.db.delete(users).where(eq(users.id, id));
         succeeded.push(id);
       } catch (err) {
@@ -514,6 +522,8 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // GDPR Article 17 — see comment in bulk delete above.
+    await eraseUserNotifications(app.db, id);
     await app.db.delete(users).where(eq(users.id, id));
     reply.status(204).send();
   });

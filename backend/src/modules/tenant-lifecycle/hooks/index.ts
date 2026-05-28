@@ -25,6 +25,10 @@ import { registerBulwarkSettingsPurgeHook } from './bulwark-settings-purge.js';
 // ADR-040 — SYSTEM tenant protection. Runs first on suspended /
 // archived / deleted; aborts the transition if the target is SYSTEM.
 import { registerSystemTenantGuardHook } from './system-tenant-guard.js';
+// notification-system Phase 1: emit a tenant-facing notification at
+// the END of every suspended/restored/archived/deleted transition.
+// order:900 puts it after every cleanup/cascade hook.
+import { registerNotifyOnTransitionHook } from '../../notifications/lifecycle-hooks/notify-on-transition.js';
 
 export function registerAllLifecycleHooks(): void {
   // ADR-040: SYSTEM tenant guard runs FIRST on destructive transitions
@@ -68,4 +72,11 @@ export function registerAllLifecycleHooks(): void {
   // shipped. Orphan settings files are inert; see
   // bulwark-settings-purge.ts for the retire rationale.
   registerBulwarkSettingsPurgeHook();
+
+  // Notification system Phase 1: tenant-facing notification on
+  // every state-change transition. Runs LAST (order:900) so the row
+  // we mention in the email is already in the new state, and runs
+  // with blocking:'continue' so SMTP failures don't abort the
+  // operator action.
+  registerNotifyOnTransitionHook();
 }

@@ -2,6 +2,7 @@ import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { notifications } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveChannels } from './channels/registry.js';
+import { legacyCategoryIdForType } from './categories/seed.js';
 import type { NotificationRecord } from './channels/types.js';
 import type { Database } from '../../db/index.js';
 
@@ -12,10 +13,18 @@ interface CreateNotificationInput {
   readonly message: string;
   readonly resourceType?: string | null;
   readonly resourceId?: string | null;
+  /** New in Phase 1: when supplied, links the row to a category. When
+   *  omitted, a synthetic `legacy.<type>` category is used. */
+  readonly categoryId?: string | null;
 }
 
 export async function createNotification(db: Database, input: CreateNotificationInput) {
   const id = crypto.randomUUID();
+  // Phase 1: every row gets a category id. Call-sites that don't supply
+  // one fall through to the legacy.<type> family so the dispatcher
+  // metrics + operator delivery filters stay consistent. The legacy
+  // categories are seeded by categories/seed.ts.
+  const categoryId = input.categoryId ?? legacyCategoryIdForType(input.type);
   await db.insert(notifications).values({
     id,
     userId: input.userId,
@@ -24,6 +33,7 @@ export async function createNotification(db: Database, input: CreateNotification
     message: input.message,
     resourceType: input.resourceType ?? null,
     resourceId: input.resourceId ?? null,
+    categoryId,
   });
 
   const [created] = await db.select().from(notifications).where(eq(notifications.id, id));
