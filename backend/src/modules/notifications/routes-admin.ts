@@ -29,6 +29,7 @@ import {
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
 import { notificationDeliveries } from '../../db/schema.js';
+import { enqueueDelivery } from './queue/enqueue.js';
 
 export async function notificationAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -192,5 +193,60 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       has_more: hasMore,
       page_size: q.limit,
     });
+  });
+
+  // POST /admin/notifications/deliveries/:id/retry — operator-driven
+  // requeue of a failed or dead-letter delivery. Resets attempt + status
+  // to 'queued' and re-enqueues the pg-boss job. Idempotent: refuses to
+  // touch deliveries already in a non-terminal-error status so a
+  // double-click can't reset a 'sending' row mid-flight.
+  app.post('/admin/notifications/deliveries/:id/retry', async (request) => {
+    const { id } = request.params as { id: string };
+    const [row] = await app.db.select({
+      id: notificationDeliveries.id,
+      status: notificationDeliveries.status,
+      channel: notificationDeliveries.channel,
+    })
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, id))
+      .limit(1);
+    if (!row) {
+      throw new ApiError('DELIVERY_NOT_FOUND', `Delivery '${id}' not found`, 404, { delivery_id: id });
+    }
+    if (row.channel !== 'email') {
+      throw new ApiError(
+        'OPERATION_NOT_ALLOWED',
+        'Only email deliveries can be retried (in_app rows are written synchronously)',
+        400,
+      );
+    }
+    if (row.status !== 'failed' && row.status !== 'dlq') {
+      throw new ApiError(
+        'OPERATION_NOT_ALLOWED',
+        `Cannot retry delivery in status '${row.status}' — only 'failed' or 'dlq' are retriable`,
+        409,
+        { current_status: row.status },
+      );
+    }
+    await app.db.update(notificationDeliveries)
+      .set({
+        status: 'queued',
+        attempt: 0,
+        nextAttemptAt: null,
+        lastError: null,
+        failedAt: null,
+      })
+      .where(eq(notificationDeliveries.id, id));
+    try {
+      // Force a fresh singleton key so the queue doesn't dedupe against
+      // a previous (terminal) job.
+      await enqueueDelivery(id, { singletonKey: `delivery:${id}:manual-retry:${Date.now()}` });
+    } catch (err) {
+      // Soft warn — row is queued; a periodic scan can re-enqueue. The
+      // operator should investigate pg-boss connectivity, but the
+      // delivery isn't lost.
+      app.log.warn({ err, delivery_id: id }, '[notifications] manual retry enqueue failed');
+    }
+    return success({ id, status: 'queued' });
   });
 }

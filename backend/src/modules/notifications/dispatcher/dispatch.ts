@@ -37,7 +37,7 @@ import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
 import { isInQuietHours } from '../preferences/quiet-hours.js';
 import { consumeRateLimit } from '../rate-limit/service.js';
-import { sendNotificationEmail } from '../email-sender.js';
+import { enqueueDelivery } from '../queue/enqueue.js';
 import type {
   NotificationCategoryResponse,
   NotificationDeliveryStatus,
@@ -108,6 +108,7 @@ async function writeDelivery(
     lastError?: string;
     providerMessageId?: string;
     sentAt?: Date | null;
+    eventVariables?: Record<string, unknown>;
   },
 ): Promise<string> {
   const id = crypto.randomUUID();
@@ -131,6 +132,7 @@ async function writeDelivery(
     lastError: input.lastError ?? null,
     providerMessageId: input.providerMessageId ?? null,
     sentAt: input.status === 'sent' ? now : null,
+    eventVariables: input.eventVariables ?? null,
   });
   return id;
 }
@@ -346,7 +348,11 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         continue;
       }
 
-      // 3h. email channel.
+      // 3h. email channel — Phase 2 async path.
+      // Write the delivery row with status='queued' + event variables
+      // (so the worker can re-render); enqueue the pg-boss job; return.
+      // The actual SMTP send happens in queue/worker.ts which also owns
+      // retry / DLQ transitions.
       const queuedDeliveryId = await writeDelivery(db, {
         notificationId: null,
         eventId,
@@ -360,44 +366,18 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         status: 'queued',
         recipientHash,
         contentHash,
+        eventVariables: opts.variables,
       });
 
       try {
-        const encryptionKey = opts.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
-        if (!encryptionKey) {
-          statuses.push({
-            userId,
-            channel,
-            status: 'failed',
-            error: 'PLATFORM_ENCRYPTION_KEY not set',
-          });
-          await db.update(notificationDeliveries)
-            .set({ status: 'failed', lastError: 'PLATFORM_ENCRYPTION_KEY not set', failedAt: new Date() })
-            .where(eq(notificationDeliveries.id, queuedDeliveryId));
-          continue;
-        }
-        await sendNotificationEmail(
-          db,
-          {
-            id: queuedDeliveryId,
-            userId,
-            type: severityToLegacyType(category.defaultSeverity),
-            title: rendered.subject ?? category.displayName,
-            message: rendered.body,
-          },
-          encryptionKey,
-          { subject: rendered.subject ?? category.displayName, html: rendered.body },
-        );
-        await db.update(notificationDeliveries)
-          .set({ status: 'sent', sentAt: new Date() })
-          .where(eq(notificationDeliveries.id, queuedDeliveryId));
-        statuses.push({ userId, channel, status: 'sent' });
+        // Best-effort enqueue. If pg-boss isn't started yet (e.g. unit
+        // tests) the row stays queued and the periodic re-enqueue scan
+        // picks it up. Failures here MUST NOT abort the dispatch loop.
+        await enqueueDelivery(queuedDeliveryId);
+        statuses.push({ userId, channel, status: 'queued' });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await db.update(notificationDeliveries)
-          .set({ status: 'failed', lastError: msg, failedAt: new Date() })
-          .where(eq(notificationDeliveries.id, queuedDeliveryId));
-        statuses.push({ userId, channel, status: 'failed', error: msg });
+        statuses.push({ userId, channel, status: 'queued', error: `enqueue_warn:${msg}` });
       }
     }
   }
