@@ -967,8 +967,10 @@ export async function generateWebmailToken(
     // and rejects `mailbox` claims containing `%` or `:` (defense
     // against caller smuggling master-user syntax into the claim).
     // Bulwark itself builds the `<mailbox>%<masterUser>` Basic auth
-    // header server-side from BULWARK_STALWART_MASTER_USER /
-    // BULWARK_STALWART_MASTER_PASSWORD envs.
+    // header server-side from STALWART_MASTER_USER /
+    // STALWART_MASTER_PASSWORD envs (sourced from mail-secrets;
+    // the legacy BULWARK_ prefix was retired 2026-05-28 to match
+    // Bulwark upstream's actual env name convention).
     const jti = crypto.randomUUID();
     token = signWebmailJwt(
       {
