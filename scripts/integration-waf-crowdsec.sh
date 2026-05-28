@@ -1077,6 +1077,233 @@ except Exception:
   fi
 fi
 
+# ─── Phase L — Per-route config matrix (audit 2026-05-28 follow-up) ──
+#
+# E2E coverage for the 5 customer-facing route-config Middlewares that
+# had ZERO E2E coverage prior to this commit:
+#   force-https        — HTTP→HTTPS 301 redirect
+#   ip-allowlist       — 403 from a non-allowlisted source IP
+#   rate-limit         — 429 after a burst
+#   custom-redirect    — 301 with Location header to operator URL
+#   additional-headers — response carries the configured header
+#
+# Strategy: pick an existing tenant route (same approach as Phase K),
+# snapshot its original config, mutate one knob, probe via Traefik
+# directly (X-Forwarded-Host + --resolve so cert SNI matches), assert
+# user-visible behaviour, then restore the original config. Each
+# sub-test is fully self-contained — a mid-run failure on test N
+# doesn't leave settings dirty for test N+1.
+#
+# Probes hit Traefik pod IPs directly (the same approach Phase 3 uses)
+# instead of cluster Service so the harness works without a public DNS
+# record for the test hostname. The Traefik routing match on
+# X-Forwarded-Host is what selects the right IngressRoute.
+
+phase "Phase L — per-route config matrix"
+
+# L0: discover an existing tenant route to operate on. Use the SAME
+# DB query Phase K uses for symmetry; both phases mutate different
+# config surfaces of the same route safely (L sets redirect/rate/etc;
+# K manages waf_rule_exclusions rows).
+l_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
+  SELECT d.tenant_id, ir.id, ir.hostname
+  FROM ingress_routes ir
+  JOIN domains d ON d.id = ir.domain_id
+  WHERE d.tenant_id IS NOT NULL
+  ORDER BY ir.created_at DESC
+  LIMIT 1;
+\"" 2>/dev/null | tr -d '\r' | grep -E '^[a-f0-9-]+\|[a-f0-9-]+\|' || true)
+
+if [[ -z "$l_route_tuple" ]]; then
+  warn "L: no tenant routes on this cluster — phase skipped"
+else
+  L_TENANT_ID=$(echo "$l_route_tuple" | cut -d'|' -f1)
+  L_ROUTE_ID=$(echo "$l_route_tuple" | cut -d'|' -f2)
+  L_HOSTNAME=$(echo "$l_route_tuple" | cut -d'|' -f3)
+
+  # Snapshot original config so cleanup can restore. We pull the
+  # current values directly from the DB to avoid round-tripping
+  # through the admin API (no admin GET for security settings).
+  L_ORIG=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
+    SELECT
+      COALESCE(force_https::text, '0'),
+      COALESCE(ip_allowlist, ''),
+      COALESCE(rate_limit_rps::text, ''),
+      COALESCE(redirect_url, ''),
+      COALESCE(additional_headers::text, 'null')
+    FROM ingress_routes WHERE id = '$L_ROUTE_ID';
+  \"" 2>/dev/null | tr -d '\r')
+  L_ORIG_FORCE_HTTPS=$(echo "$L_ORIG" | cut -d'|' -f1)
+  L_ORIG_IP_ALLOWLIST=$(echo "$L_ORIG" | cut -d'|' -f2)
+  L_ORIG_RATE_RPS=$(echo "$L_ORIG" | cut -d'|' -f3)
+  L_ORIG_REDIRECT=$(echo "$L_ORIG" | cut -d'|' -f4)
+  L_ORIG_HEADERS=$(echo "$L_ORIG" | cut -d'|' -f5-)
+  ok "L0: discovered route $L_ROUTE_ID hostname=$L_HOSTNAME (snapshot saved)"
+
+  # Cleanup: restore each column to its snapshot value. Trap always
+  # fires regardless of mid-phase failure path.
+  cleanup_l() {
+    kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -c \"
+      UPDATE ingress_routes SET
+        force_https = ${L_ORIG_FORCE_HTTPS:-0}::int,
+        ip_allowlist = NULLIF('$L_ORIG_IP_ALLOWLIST', ''),
+        rate_limit_rps = NULLIF('$L_ORIG_RATE_RPS', '')::int,
+        redirect_url = NULLIF('$L_ORIG_REDIRECT', ''),
+        additional_headers = CASE WHEN '$L_ORIG_HEADERS' = 'null' THEN NULL ELSE '$L_ORIG_HEADERS'::jsonb END
+      WHERE id = '$L_ROUTE_ID';
+    \"" >/dev/null 2>&1 || true
+    # Trigger one annotation-sync via a no-op PATCH so the reconciler
+    # picks the restored values.
+    api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"waf_enabled":false}' >/dev/null 2>&1 || true
+  }
+  trap 'cleanup; cleanup_test_ban_symbolic; cleanup_f2; cleanup_f4; cleanup_k; cleanup_l' EXIT INT TERM
+
+  # Helper: poll the route's IngressRoute(s) until the change settles.
+  # The annotation-sync inline trigger is fast (<2s usually), but the
+  # apiserver cache + Traefik provider reconcile add another 2-5s.
+  wait_for_route_reconcile() {
+    local check="$1"  # bash command that returns 0 when ready
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 2
+      if eval "$check"; then return 0; fi
+    done
+    return 1
+  }
+
+  # Pick one running Traefik pod for all the probes. Stick to the same
+  # pod so a 30s rolling restart elsewhere doesn't trip us mid-test.
+  L_TRAEFIK_POD=$(echo "$traefik_pods" | awk '{print $1}')
+  L_TRAEFIK_IP=$(kubectl_run "get pod -n traefik $L_TRAEFIK_POD -o jsonpath='{.status.podIP}'" 2>/dev/null)
+  L_TRAEFIK_NODE=$(kubectl_run "get pod -n traefik $L_TRAEFIK_POD -o jsonpath='{.spec.nodeName}'" 2>/dev/null)
+  [[ -n "$L_TRAEFIK_IP" && -n "$L_TRAEFIK_NODE" ]] || { fail "L: could not resolve Traefik pod IP/node"; }
+
+  # Helper: probe HTTP entrypoint (port 8000). Returns "<status>|<location-header>".
+  probe_http() {
+    local rnd; rnd=$(next_nonce)
+    local overrides; overrides=$(printf '{"spec":{"nodeName":"%s"}}' "$L_TRAEFIK_NODE")
+    local out; out=$(kubectl_run "run waf-l-http-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -D - -H 'X-Forwarded-Host: $L_HOSTNAME' --resolve '$L_HOSTNAME:8000:$L_TRAEFIK_IP' -w 'STATUS=%{http_code}\n' --max-time 8 http://$L_HOSTNAME:8000/" 2>&1)
+    local code; code=$(printf '%s' "$out" | grep -oE 'STATUS=[0-9]+' | head -1 | cut -d= -f2)
+    local loc; loc=$(printf '%s' "$out" | grep -iE '^Location: ' | head -1 | tr -d '\r' | sed 's/^[Ll]ocation: //')
+    printf '%s|%s' "${code:-000}" "${loc:-}"
+  }
+  # Helper: probe HTTPS entrypoint with optional XFF header for IP gates.
+  probe_https() {
+    local xff="${1:-198.51.100.1}"  # default TEST-NET-2 address
+    local extra="${2:-}"
+    local rnd; rnd=$(next_nonce)
+    local overrides; overrides=$(printf '{"spec":{"nodeName":"%s"}}' "$L_TRAEFIK_NODE")
+    local out; out=$(kubectl_run "run waf-l-https-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -D - -H 'X-Forwarded-Host: $L_HOSTNAME' -H 'X-Forwarded-For: $xff' -H 'X-Real-Ip: $xff' --resolve '$L_HOSTNAME:8443:$L_TRAEFIK_IP' -w 'STATUS=%{http_code}\n' --max-time 8 $extra https://$L_HOSTNAME:8443/" 2>&1)
+    local code; code=$(printf '%s' "$out" | grep -oE 'STATUS=[0-9]+' | head -1 | cut -d= -f2)
+    local headers_b64; headers_b64=$(printf '%s' "$out" | grep -iE '^[A-Z][a-zA-Z-]+:' | base64 -w0 2>/dev/null || true)
+    printf '%s|%s' "${code:-000}" "$headers_b64"
+  }
+
+  # ─── L1: Force HTTPS ON → HTTP returns 301 to HTTPS ──────────────
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" '{"force_https":true}' >/dev/null
+  sleep 4
+  l1_result=$(probe_http)
+  l1_code=$(echo "$l1_result" | cut -d'|' -f1)
+  l1_loc=$(echo "$l1_result" | cut -d'|' -f2)
+  if [[ "$l1_code" == "301" ]] && [[ "$l1_loc" =~ ^https://$L_HOSTNAME ]]; then
+    ok "L1: force_https=true — HTTP 301 → $l1_loc"
+  else
+    fail "L1: force_https HTTP probe got code=$l1_code Location=$l1_loc (expected 301 → https://$L_HOSTNAME...)"
+  fi
+
+  # ─── L2: Force HTTPS OFF → HTTP IngressRoute removed → 404 ───────
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" '{"force_https":false}' >/dev/null
+  sleep 4
+  l2_result=$(probe_http)
+  l2_code=$(echo "$l2_result" | cut -d'|' -f1)
+  if [[ "$l2_code" == "404" ]]; then
+    ok "L2: force_https=false — HTTP IngressRoute removed (404)"
+  else
+    # Some clusters may still serve the route on HTTP if a generic HTTP
+    # catch-all exists. Accept either 404 (route absent) or 503
+    # (backend unreachable) but flag everything else.
+    if [[ "$l2_code" == "503" ]]; then
+      warn "L2: HTTP returned 503 — accept (no force-https route, backend unreachable on plaintext)"
+    else
+      fail "L2: HTTP returned $l2_code after force_https=false (expected 404)"
+    fi
+  fi
+
+  # ─── L3: Custom redirect URL → HTTPS returns 301 to URL ──────────
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" \
+    '{"custom_redirect_url":"https://harness-target.example.invalid/"}' >/dev/null
+  sleep 4
+  l3_result=$(probe_https)
+  l3_code=$(echo "$l3_result" | cut -d'|' -f1)
+  l3_headers=$(echo "$l3_result" | cut -d'|' -f2 | base64 -d 2>/dev/null || true)
+  if [[ "$l3_code" == "301" ]] && echo "$l3_headers" | grep -qi 'harness-target.example.invalid'; then
+    ok "L3: custom_redirect_url — HTTPS 301 → harness-target.example.invalid"
+  else
+    fail "L3: custom redirect probe got code=$l3_code headers=$(echo "$l3_headers" | head -c 200)"
+  fi
+
+  # ─── L4: Clear custom redirect → HTTPS returns non-301 ───────────
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" '{"custom_redirect_url":null}' >/dev/null
+  sleep 4
+  l4_result=$(probe_https)
+  l4_code=$(echo "$l4_result" | cut -d'|' -f1)
+  if [[ "$l4_code" != "301" ]]; then
+    ok "L4: custom_redirect cleared — HTTPS code=$l4_code (no longer 301)"
+  else
+    fail "L4: custom redirect still firing after clear (code=$l4_code)"
+  fi
+
+  # ─── L5: IP allowlist → blocked source IP returns 403 ────────────
+  # Set allowlist to 198.51.100.0/24 — TEST-NET-2, never our pod IP.
+  # Then probe with XFF=203.0.113.1 (TEST-NET-3, also never matches)
+  # — the request must be rejected by the ipAllowList Middleware.
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" \
+    '{"ip_allowlist":"198.51.100.0/24"}' >/dev/null
+  sleep 4
+  l5_result=$(probe_https '203.0.113.1')
+  l5_code=$(echo "$l5_result" | cut -d'|' -f1)
+  if [[ "$l5_code" == "403" ]]; then
+    ok "L5: ip_allowlist — non-allowlisted source IP rejected (403)"
+  else
+    fail "L5: ip_allowlist probe got code=$l5_code (expected 403)"
+  fi
+  # Restore (separate from cleanup so the rest of L runs with no allowlist).
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"ip_allowlist":null}' >/dev/null
+  sleep 3
+
+  # ─── L6: Rate limit → burst returns 429 ──────────────────────────
+  # average=1 rps, default burst×5 = 5. Fire 20 requests rapidly;
+  # expect SOMETHING beyond the burst to 429. Some 200s are fine
+  # (the first ~5 are accepted), but at least one 429 must appear.
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"rate_limit_rps":1}' >/dev/null
+  sleep 4
+  l6_429_seen=0
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    l6_result=$(probe_https)
+    l6_code=$(echo "$l6_result" | cut -d'|' -f1)
+    if [[ "$l6_code" == "429" ]]; then l6_429_seen=$((l6_429_seen + 1)); fi
+  done
+  if (( l6_429_seen > 0 )); then
+    ok "L6: rate_limit_rps=1 — saw $l6_429_seen × 429 in 20 burst requests"
+  else
+    fail "L6: rate_limit_rps=1 — no 429 in 20 burst requests (rate limit not enforcing?)"
+  fi
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"rate_limit_rps":null}' >/dev/null
+  sleep 3
+
+  # ─── L7: Additional response headers → header echoed in response ─
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/advanced" \
+    '{"additional_headers":{"X-Harness-L7":"phase-l-probe"}}' >/dev/null
+  sleep 4
+  l7_result=$(probe_https)
+  l7_headers=$(echo "$l7_result" | cut -d'|' -f2 | base64 -d 2>/dev/null || true)
+  if echo "$l7_headers" | grep -qi '^X-Harness-L7: phase-l-probe'; then
+    ok "L7: additional_headers — custom header echoed in response"
+  else
+    fail "L7: additional header not present in response: $(echo "$l7_headers" | head -c 300)"
+  fi
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/advanced" '{"additional_headers":null}' >/dev/null
+fi
+
 # ─── Phase I — F1+F6 Stage C: L4 enforcement toggle (status + dryrun) ─
 #
 # Scope: verify the read + dryrun-toggle paths work end-to-end without
