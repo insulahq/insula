@@ -10,8 +10,8 @@
 #   A — Pod health
 #     A1. bulwark pod 1/1 Ready, no impersonator sidecar
 #     A2. /api/health returns 200
-#     A3. BULWARK_JWT_AUTH_SECRET / BULWARK_STALWART_MASTER_USER /
-#         BULWARK_STALWART_MASTER_PASSWORD all set
+#     A3. BULWARK_JWT_AUTH_SECRET / STALWART_MASTER_USER /
+#         STALWART_MASTER_PASSWORD all set
 #
 #   B — Happy path
 #     B1. Valid JWT → 303 to /, jmap_session + jmap_stalwart_ctx cookies set
@@ -113,7 +113,7 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   HEALTH="$(in_pod "require('http').get({host:'127.0.0.1',port:3000,path:'/api/health'},r=>{console.log(r.statusCode)})" 2>/dev/null || true)"
   [[ "$HEALTH" == "200" ]] && pass "A2 /api/health returns 200" || fail "A2 /api/health unexpected: $HEALTH"
 
-  for env_name in BULWARK_JWT_AUTH_SECRET BULWARK_STALWART_MASTER_USER BULWARK_STALWART_MASTER_PASSWORD; do
+  for env_name in BULWARK_JWT_AUTH_SECRET STALWART_MASTER_USER STALWART_MASTER_PASSWORD; do
     if "${KCTL[@]}" exec "$POD" -c bulwark -- sh -c "[ -n \"\$$env_name\" ]" 2>/dev/null; then
       pass "A3 $env_name is set"
     else
@@ -160,7 +160,7 @@ if [[ -z "$JWT_SECRET" || ${#JWT_SECRET} -lt 32 ]]; then
   fail "BULWARK_JWT_AUTH_SECRET unset or <32 chars — cannot mint JWTs"
   exit 1
 fi
-MAILBOX="${MAILBOX:-$("${KCTL[@]}" exec "$POD" -c bulwark -- printenv BULWARK_STALWART_MASTER_USER 2>/dev/null || echo master@${DOMAIN})}"
+MAILBOX="${MAILBOX:-$("${KCTL[@]}" exec "$POD" -c bulwark -- printenv STALWART_MASTER_USER 2>/dev/null || echo master@${DOMAIN})}"
 
 # Single-call test helper. POSTs node script through kubectl exec; returns
 # JSON `{status, location, cookies, body}`.
