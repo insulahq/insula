@@ -1248,6 +1248,14 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
 }) {
   const [open, setOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  // Confirm-delete modal: holds the row to delete (null = closed). Was
+  // window.confirm originally, switched to a proper modal so the
+  // pattern matches the rest of RouteDetail (Add modal, ConfirmModal
+  // elsewhere). Browser confirm dialogs are also un-stylable, don't
+  // render inside iframes the way embedded admin views render the
+  // tenant panel, and don't support our test harness's data-testid
+  // pattern.
+  const [pendingDelete, setPendingDelete] = useState<WafRuleExclusionEntry | null>(null);
   const { data, isLoading, isError, error } = useRouteWafExclusions(tenantId, routeId);
   const exclusions = data?.data?.exclusions ?? [];
   const del = useDeleteRouteWafExclusion(tenantId, routeId);
@@ -1331,11 +1339,7 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
                     <WafExclusionRow
                       key={ex.id}
                       ex={ex}
-                      onDelete={() => {
-                        if (window.confirm(`Delete exclusion for rule ${ex.ruleId}?`)) {
-                          del.mutate(ex.id);
-                        }
-                      }}
+                      onDelete={() => setPendingDelete(ex)}
                       isDeleting={del.isPending && del.variables === ex.id}
                     />
                   ))}
@@ -1352,8 +1356,76 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
               onClose={() => setAddOpen(false)}
             />
           )}
+          {pendingDelete && (
+            <ConfirmDeleteWafExclusionModal
+              ex={pendingDelete}
+              hostname={hostname}
+              isDeleting={del.isPending && del.variables === pendingDelete.id}
+              error={del.isError ? (del.error instanceof Error ? del.error.message : 'Delete failed') : null}
+              onCancel={() => setPendingDelete(null)}
+              onConfirm={() => {
+                del.mutate(pendingDelete.id, {
+                  onSuccess: () => setPendingDelete(null),
+                });
+              }}
+            />
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ConfirmDeleteWafExclusionModal({ ex, hostname, isDeleting, error, onCancel, onConfirm }: {
+  readonly ex: WafRuleExclusionEntry;
+  readonly hostname: string;
+  readonly isDeleting: boolean;
+  readonly error: string | null;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-md rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl" data-testid="confirm-delete-waf-exclusion-modal">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete WAF exclusion?</h3>
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          The OWASP CRS rule <code className="font-mono text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">{ex.ruleId}</code>{' '}
+          will start enforcing again on <strong className="font-mono">{hostname}</strong> within ~10s
+          (modsec-crs pods roll). Any traffic that was previously allowed because of this exclusion
+          may begin being blocked.
+        </p>
+        {ex.reason && (
+          <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+            Reason on file: <em>{ex.reason}</em>
+          </p>
+        )}
+        {error && (
+          <div className="mt-3 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-3 py-2 text-xs text-red-700 dark:text-red-200">
+            {error}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isDeleting}
+            className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            data-testid="confirm-delete-waf-exclusion-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isDeleting}
+            className="rounded-md px-3 py-1.5 text-sm border border-red-300 bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
+            data-testid="confirm-delete-waf-exclusion-submit"
+            autoFocus
+          >
+            {isDeleting ? 'Deleting…' : 'Delete exclusion'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

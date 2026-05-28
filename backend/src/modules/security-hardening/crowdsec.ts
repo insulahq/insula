@@ -731,4 +731,13 @@ export const __test = {
   parseLapiDecision,
   parseDurationToAbsolute,
   MANUAL_BAN_REASON_PREFIX,
+  // Self-heal entrypoints exposed for unit tests. lapiGet is the hot
+  // path; reregisterPlatformApiBouncer is the helper it calls on 403.
+  lapiGet,
+  reregisterPlatformApiBouncer,
+  // Reset coalescing state between tests so a 403 in test N doesn't
+  // share the inFlightReregister promise from test N-1.
+  resetInFlightReregister: (): void => {
+    inFlightReregister = null;
+  },
 };
