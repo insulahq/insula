@@ -25,7 +25,7 @@
  * PATCH /admin/mail/placement → 204
  */
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -231,8 +231,57 @@ export async function getMailPlacement(
     // an empty candidate list. The operator still sees the stored policy.
   }
 
+  // Compute drift (primary ≠ active): when both populated AND
+  // different, the operator has staged a primary change but the
+  // Stalwart pod still runs on the old node. Frontend renders a
+  // yellow banner with a "Migrate now" CTA.
+  const primaryNode = (row?.mailPrimaryNode ?? null) as string | null;
+  const drift = (primaryNode && effectiveActiveNode && primaryNode !== effectiveActiveNode)
+    ? { primaryNode, activeNode: effectiveActiveNode }
+    : null;
+
+  // Surface the most-recent failed migration whose targetNode equals
+  // the currently-declared primary. This catches the "Move now"
+  // failure case: operator clicked migrate, migration crashed midway,
+  // mail_primary_node = new is preserved, but the UI should let them
+  // retry without re-typing intent.
+  let lastFailedMigration: { targetNode: string; errorMessage: string; failedAt: string } | null = null;
+  if (primaryNode) {
+    try {
+      const failedRows = await db.execute(sql`
+        SELECT details, error_message, finished_at
+          FROM tasks
+         WHERE kind = 'mail.migration'
+           AND status = 'failed'
+           AND (details->>'targetNode') = ${primaryNode}
+         ORDER BY finished_at DESC
+         LIMIT 1
+      `) as { rows?: Array<{
+        details?: { targetNode?: string };
+        error_message?: string;
+        finished_at?: Date | string;
+      }> };
+      const r = failedRows.rows?.[0];
+      if (r?.details?.targetNode && r.error_message) {
+        lastFailedMigration = {
+          targetNode: r.details.targetNode,
+          errorMessage: r.error_message,
+          failedAt: r.finished_at instanceof Date
+            ? r.finished_at.toISOString()
+            : (r.finished_at ?? new Date().toISOString()),
+        };
+      }
+    } catch (err) {
+      // Non-fatal — drift banner alone is still useful.
+      opts.logger?.warn?.(
+        { err: (err as Error).message ?? String(err) },
+        'placement: lastFailedMigration query failed; banner suppressed',
+      );
+    }
+  }
+
   return mailPlacementResponseSchema.parse({
-    primaryNode: row?.mailPrimaryNode ?? null,
+    primaryNode,
     secondaryNode: row?.mailSecondaryNode ?? null,
     tertiaryNode: row?.mailTertiaryNode ?? null,
     activeNode: effectiveActiveNode,
@@ -242,6 +291,8 @@ export async function getMailPlacement(
     lastFailoverAt: row?.mailLastFailoverAt?.toISOString() ?? null,
     portExposureMode: row?.mailPortExposureMode ?? 'thisNodeOnly',
     candidateNodes: candidates,
+    drift,
+    lastFailedMigration,
   });
 }
 
@@ -345,19 +396,79 @@ export async function ensureMailStackPlacementApplied(
   opts: PlacementOptions,
 ): Promise<void> {
   const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-  const activeNode = row?.mailActiveNode ?? null;
-  if (!activeNode) {
-    opts.logger?.warn?.(
-      'ensureMailStackPlacementApplied: mailActiveNode not set — skipping (placement reconciles on first migration)',
-    );
-    return;
-  }
 
   const k8s = await import('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   if (opts.kubeconfigPath) kc.loadFromFile(opts.kubeconfigPath);
   else kc.loadFromCluster();
   const apps = kc.makeApiClient(k8s.AppsV1Api);
+  const core = kc.makeApiClient(k8s.CoreV1Api);
+  const batch = kc.makeApiClient(k8s.BatchV1Api);
+
+  // 2026-05-28 primaryNode self-heal: a freshly-bootstrapped cluster
+  // has mail_primary_node = NULL (no operator has run the placement
+  // wizard yet). The UX flow now requires primary to be set so we
+  // backfill from the most-authoritative source available:
+  //   1. The live Stalwart pod's spec.nodeName
+  //   2. mail_active_node (last persisted active from prior migration)
+  // If neither is available, log + skip — the next operator action
+  // (manual placement set, or a migration) will populate it.
+  //
+  // Idempotent: skips the write if mail_primary_node already has a
+  // value, so subsequent boots don't clobber operator-set placement.
+  if (!row?.mailPrimaryNode) {
+    let inferredPrimary: string | null = null;
+    try {
+      const podList = await core.listNamespacedPod({
+        namespace: MAIL_NAMESPACE,
+        labelSelector: 'app=stalwart-mail',
+      }) as { items?: Array<{
+        metadata?: { deletionTimestamp?: string };
+        spec?: { nodeName?: string };
+        status?: { phase?: string };
+      }> };
+      const runningPod = (podList.items ?? []).find(
+        (p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp,
+      );
+      inferredPrimary = runningPod?.spec?.nodeName ?? null;
+    } catch (err) {
+      opts.logger?.warn?.(
+        { err: (err as Error).message ?? String(err) },
+        'placement self-heal: live Stalwart pod query failed; falling back to mail_active_node',
+      );
+    }
+    if (!inferredPrimary) {
+      inferredPrimary = (row?.mailActiveNode ?? null) as string | null;
+    }
+    if (inferredPrimary) {
+      await db.update(systemSettings)
+        .set({ mailPrimaryNode: inferredPrimary })
+        .where(eq(systemSettings.id, SETTINGS_ID))
+        .catch((err: unknown) => {
+          opts.logger?.warn?.(
+            { err: (err as Error).message ?? String(err) },
+            'placement self-heal: mail_primary_node backfill write failed (non-fatal)',
+          );
+        });
+      opts.logger?.warn?.(
+        `placement self-heal: backfilled mail_primary_node=${inferredPrimary} ` +
+        `(was NULL; source=${inferredPrimary === row?.mailActiveNode ? 'mail_active_node' : 'live-pod'})`,
+      );
+    } else {
+      opts.logger?.warn?.(
+        'placement self-heal: mail_primary_node is NULL and no inference source ' +
+        '(no Stalwart pod, no mail_active_node) — operator must set placement before mail can serve',
+      );
+    }
+  }
+
+  const activeNode = row?.mailActiveNode ?? null;
+  if (!activeNode) {
+    opts.logger?.warn?.(
+      'ensureMailStackPlacementApplied: mailActiveNode not set — skipping affinity reconcile (placement reconciles on first migration)',
+    );
+    return;
+  }
 
   const { applyDeploymentAffinity } = await import('./migration.js');
   // allowRestore=false on startup — we're not promoting from a
@@ -372,11 +483,16 @@ export async function ensureMailStackPlacementApplied(
   // Always invoked (even when no standby nodes are configured) so the
   // label gets REMOVED from previously-elected nodes when the operator
   // downgrades from HA back to single-node.
+  //
+  // 2026-05-28 follow-up: also spawn a one-shot cleanup Job on any
+  // node that LOST the label this tick — the DaemonSet pod will be
+  // evicted but `/var/lib/mail-stack-standby/` would otherwise stay on
+  // disk indefinitely. The cleanup Job renames to
+  // `.deelected-<ts>/` and the janitor CronJob deletes after 48h.
   const standbyNodes: string[] = [];
   if (row?.mailSecondaryNode) standbyNodes.push(row.mailSecondaryNode);
   if (row?.mailTertiaryNode) standbyNodes.push(row.mailTertiaryNode);
-  const core = kc.makeApiClient(k8s.CoreV1Api);
-  await reconcileMailStandbyLabel(core, standbyNodes, opts.logger);
+  await reconcileMailStandbyLabel(core, batch, standbyNodes, opts.logger);
 }
 
 /**
@@ -387,10 +503,12 @@ export async function ensureMailStackPlacementApplied(
  */
 async function reconcileMailStandbyLabel(
   core: import('@kubernetes/client-node').CoreV1Api,
+  batch: import('@kubernetes/client-node').BatchV1Api,
   standbyNodes: readonly string[],
   logger: PlacementOptions['logger'],
 ): Promise<void> {
   const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
+  const { spawnStandbyDeelectionCleanupJob } = await import('./standby-cleanup.js');
   const STANDBY_LABEL = 'platform.example.test/mail-standby';
   const wantSet = new Set(standbyNodes);
 
@@ -423,6 +541,32 @@ async function reconcileMailStandbyLabel(
       logger?.warn?.(`reconcileMailStandbyLabel: ${shouldHave ? 'added' : 'removed'} ${STANDBY_LABEL}=true on node ${name}`);
     } catch (err) {
       logger?.warn?.(`reconcileMailStandbyLabel: patch ${name} failed (non-fatal) —`, err);
+      // Don't try cleanup if the label patch failed — node state is
+      // unknown, retry next reconcile.
+      continue;
+    }
+
+    // 2026-05-28: on label REMOVAL, schedule the one-shot cleanup Job
+    // that renames /var/lib/mail-stack-standby → .deelected-<ts>/ on
+    // the de-elected node. The janitor CronJob deletes any
+    // .deelected-* dirs older than 48h, giving operators a recovery
+    // window for accidental secondary swaps.
+    if (!shouldHave) {
+      try {
+        await spawnStandbyDeelectionCleanupJob(batch, name);
+        logger?.warn?.(
+          `reconcileMailStandbyLabel: scheduled standby cleanup on de-elected node ${name} — ` +
+          '/var/lib/mail-stack-standby renamed to .deelected-<ts>/, janitor deletes after 48h',
+        );
+      } catch (err) {
+        // Non-fatal: the next reconcile tick will retry, OR the operator
+        // can manually clean up. Leaving the leftover data is a leak,
+        // not a correctness bug.
+        logger?.warn?.(
+          `reconcileMailStandbyLabel: cleanup-job spawn for de-elected node ${name} failed (non-fatal) —`,
+          err,
+        );
+      }
     }
   }
 }
