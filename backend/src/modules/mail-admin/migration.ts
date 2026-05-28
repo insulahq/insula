@@ -1051,6 +1051,20 @@ async function runMigrationStateMachine(
     .set({ mailActiveNode: targetNode, mailDrState: 'healthy' })
     .where(eq(systemSettings.id, SETTINGS_ID));
 
+  // Step 8b: re-reconcile port-exposure for the NEW active node. In
+  // thisNodeOnly mode the stalwart-mail Service.externalIPs must follow
+  // the active node — without this, kube-proxy keeps routing mail
+  // traffic to the OLD active node's IP and the new active node's
+  // hostPorts are the only working external path (so DNS pointing at
+  // the old node breaks). Caught 2026-05-28 by Phase 2 of the external
+  // reachability E2E.
+  try {
+    const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
+    await ensureMailPortExposureApplied(db, { kubeconfigPath });
+  } catch (err) {
+    log.warn('[migration] post-success port-exposure reconcile failed (non-fatal):', err);
+  }
+
   await db.execute(sql`
     UPDATE mail_migration_runs
     SET state = 'done', current_step = 'complete', finished_at = now()
