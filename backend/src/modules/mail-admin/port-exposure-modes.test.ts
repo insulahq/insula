@@ -163,7 +163,7 @@ describe('reconcileMailHaproxyLabels', () => {
   function makeMockCore(initialNodes: Node[]) {
     const patches: Array<{ name: string; body: unknown }> = [];
     const core = {
-      patchNode: vi.fn(async (args: { name: string; body: unknown }) => {
+      patchNode: vi.fn(async (args: { name: string; body: unknown }, _opts?: unknown) => {
         patches.push({ name: args.name, body: args.body });
         return undefined;
       }),
