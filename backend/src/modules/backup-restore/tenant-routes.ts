@@ -102,21 +102,19 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(backupJobs.tenantId, tenantId))
       .orderBy(sql`${backupJobs.createdAt} DESC`)
       .limit(limit);
-    return success({
-      data: rows.map((b) => ({
-        id: b.id,
-        tenantId: b.tenantId,
-        status: b.status,
-        sizeBytes: Number(b.sizeBytes),
-        label: b.label,
-        description: b.description,
-        startedAt: b.startedAt ? b.startedAt.toISOString() : null,
-        finishedAt: b.finishedAt ? b.finishedAt.toISOString() : null,
-        expiresAt: b.expiresAt ? b.expiresAt.toISOString() : null,
-        createdAt: b.createdAt.toISOString(),
-        lastError: b.lastError,
-      })),
-    });
+    return success(rows.map((b) => ({
+      id: b.id,
+      tenantId: b.tenantId,
+      status: b.status,
+      sizeBytes: Number(b.sizeBytes),
+      label: b.label,
+      description: b.description,
+      startedAt: b.startedAt ? b.startedAt.toISOString() : null,
+      finishedAt: b.finishedAt ? b.finishedAt.toISOString() : null,
+      expiresAt: b.expiresAt ? b.expiresAt.toISOString() : null,
+      createdAt: b.createdAt.toISOString(),
+      lastError: b.lastError,
+    })));
   });
 
   // ── GET /api/v1/tenants/:tenantId/bundles/:bundleId/browse/* ───────
@@ -268,7 +266,7 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       .where(where)
       .orderBy(sql`${restoreJobs.createdAt} DESC`)
       .limit(limit);
-    return success({ data: rows.map(toJobSummary) });
+    return success(rows.map(toJobSummary));
   });
 
   // ── GET /api/v1/tenants/:tenantId/restore-carts/:id ────────────────
