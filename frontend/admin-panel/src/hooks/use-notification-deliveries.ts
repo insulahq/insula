@@ -7,7 +7,7 @@
  * blow away previous results.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
   NotificationDeliveryResponse,
@@ -68,5 +68,22 @@ export function useNotificationDeliveries(input: DeliveriesQueryInput) {
     queryFn: () => apiFetch<Envelope<NotificationDeliveryResponse[]>>(
       `/api/v1/admin/notifications/deliveries${buildQs(input)}`,
     ),
+  });
+}
+
+/** POST /api/v1/admin/notifications/deliveries/:id/retry — operator-driven
+ *  requeue. Backend resets attempt + status='queued' and re-enqueues the
+ *  pg-boss job. Refuses with 409 if the delivery isn't in `failed` / `dlq`. */
+export function useRetryNotificationDelivery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (deliveryId: string) =>
+      apiFetch<Envelope<{ id: string; status: string }>>(
+        `/api/v1/admin/notifications/deliveries/${deliveryId}/retry`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: NOTIFICATION_DELIVERIES_QUERY_KEY });
+    },
   });
 }

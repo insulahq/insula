@@ -39,6 +39,9 @@ vi.mock('../rate-limit/service.js', () => ({ consumeRateLimit: consumeRateLimitM
 const sendNotificationEmailMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../email-sender.js', () => ({ sendNotificationEmail: sendNotificationEmailMock }));
 
+const enqueueDeliveryMock = vi.fn().mockResolvedValue('job-id');
+vi.mock('../queue/enqueue.js', () => ({ enqueueDelivery: enqueueDeliveryMock }));
+
 const { emitEvent } = await import('./dispatch.js');
 
 type Db = Parameters<typeof emitEvent>[0];
@@ -223,7 +226,10 @@ describe('emitEvent', () => {
     expect(r.perChannelStatuses.every((s) => s.status === 'skipped')).toBe(true);
   });
 
-  it('full happy-path: 1 user × 2 channels = 2 sent', async () => {
+  it('full happy-path: 1 user × 2 channels → in_app sent + email queued', async () => {
+    // Phase 2: email is async — dispatcher writes status='queued' and
+    // enqueues the worker via pg-boss. The queue/worker tests cover
+    // the queued → sent transition.
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
@@ -235,24 +241,28 @@ describe('emitEvent', () => {
       variables: { userName: 'Alice' },
       encryptionKey: 'KEY',
     });
-    expect(r.deliveryCount).toBe(2);
-    expect(r.perChannelStatuses.filter((s) => s.status === 'sent').length).toBe(2);
-    expect(sendNotificationEmailMock).toHaveBeenCalled();
+    // in_app delivers synchronously; email is enqueued.
+    expect(r.perChannelStatuses.filter((s) => s.status === 'sent').length).toBe(1);
+    expect(r.perChannelStatuses.filter((s) => s.status === 'queued').length).toBe(1);
+    expect(sendNotificationEmailMock).not.toHaveBeenCalled();
   });
 
-  it('records failed status when email send throws', async () => {
+  it('email channel: dispatcher enqueues even if pg-boss is unavailable (queued status preserved)', async () => {
+    // The enqueue call is best-effort — the row stays 'queued' so a
+    // periodic re-enqueue scan can pick it up. The dispatcher MUST
+    // NOT mark the row 'failed' just because the queue wasn't ready.
     getCategoryMock.mockResolvedValue({ ...baseCategory, defaultChannels: ['email'] });
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
     getActiveTemplateMock.mockResolvedValue(baseTemplate);
-    sendNotificationEmailMock.mockRejectedValue(new Error('SMTP boom'));
     const r = await emitEvent(mockDb(), {
       categoryId: 'tenant.suspended',
       scope: { kind: 'tenant', tenantId: 't1' },
       variables: {},
       encryptionKey: 'KEY',
     });
-    expect(r.perChannelStatuses.some((s) => s.status === 'failed')).toBe(true);
+    expect(r.perChannelStatuses.every((s) => s.status === 'queued')).toBe(true);
+    expect(sendNotificationEmailMock).not.toHaveBeenCalled();
   });
 
   it('throws when no encryption key is available (hash salt requirement)', async () => {
