@@ -179,12 +179,37 @@ wait_for_haproxy_ds() {
   return 1
 }
 
+# Wait until Service.spec.externalIPs == expected list (sorted).
+# expected_ips: space-separated list, e.g. "" (empty) or "192.0.2.58 192.0.2.116"
+wait_for_externalips() {
+  local expected="$1"
+  local want
+  want=$(echo "$expected" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
+  local end=$(($(date +%s) + 180))
+  while [ $(date +%s) -lt $end ]; do
+    local got
+    got=$(ssh_kubectl "kubectl get svc -n mail stalwart-mail -o jsonpath='{.spec.externalIPs}'" 2>/dev/null | tr -d '[]"' | tr ',' ' ' | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
+    if [ "$got" = "$want" ]; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "  expected externalIPs '$want', got '$got'" >&2
+  return 1
+}
+
+# Compute expected externalIPs for each mode. allServerNodes →
+# every server-role IP. thisNodeOnly → only the active node's IP.
+SERVER_IPS=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' '$2=="server"{print $3}' | sort -u | tr '\n' ' ' | sed 's/ $//')
+ACTIVE_IP=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1==a{print $3; exit}')
+
 # ── PHASE 1: allServerNodes mode ────────────────────────────────────────
 hdr "PHASE 1: allServerNodes mode — every server-role IP should answer mail ports; worker IP should NOT"
 api_patch '{"mode":"allServerNodes"}' >/dev/null
-amber "  waiting for haproxy DS to come up + Stalwart hostPorts to clear…"
+amber "  waiting for haproxy DS to come up + Stalwart hostPorts to clear + externalIPs to converge…"
 wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
 wait_for_stalwart_settled no || amber "  Stalwart hostPorts didn't clear in 300s (continuing — may not affect external reachability)"
+wait_for_externalips "$SERVER_IPS" || red "  externalIPs didn't converge to server set in 180s"
 sleep 10   # extra grace for haproxy hostPort bind + DNS
 fail_count=0
 for L in "${NODE_LINES[@]}"; do
@@ -205,9 +230,10 @@ fi
 # ── PHASE 2: thisNodeOnly mode — only active node's IP should answer ────
 hdr "PHASE 2: thisNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"
 api_patch '{"mode":"thisNodeOnly"}' >/dev/null
-amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind…"
+amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind + externalIPs to converge…"
 wait_for_haproxy_ds absent || { red "  haproxy DS didn't delete in 120s"; }
 wait_for_stalwart_settled yes || { red "  Stalwart didn't acquire hostPorts in 300s"; }
+wait_for_externalips "$ACTIVE_IP" || red "  externalIPs didn't converge to [$ACTIVE_IP] in 180s"
 sleep 15   # extra grace for kernel hostPort bind + connection-tracking flush
 fail2_count=0
 for L in "${NODE_LINES[@]}"; do
