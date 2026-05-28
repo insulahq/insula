@@ -14,9 +14,17 @@ COPY packages/api-contracts/ ./packages/api-contracts/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
 
+# Build the shared restore-cart UI workspace (packages/ui-restore-cart).
+# AdminBundleProgressModal + tenant-panel's BundleProgressModal both
+# import shared types from here. Same --force discipline applies.
+COPY packages/ui-restore-cart/ ./packages/ui-restore-cart/
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
+
 # Build admin panel
 COPY frontend/admin-panel/package.json ./package.json
 RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
+RUN sed -i 's|"@k8s-hosting/ui-restore-cart": "\*"|"@k8s-hosting/ui-restore-cart": "file:./packages/ui-restore-cart"|' package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
 COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/postcss.config.js ./

@@ -11,9 +11,16 @@ COPY packages/api-contracts/ ./packages/api-contracts/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
 
+# Build the shared restore-cart UI workspace (packages/ui-restore-cart).
+# BundleProgressModal imports shared types from here.
+COPY packages/ui-restore-cart/ ./packages/ui-restore-cart/
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
+
 # Build client panel
 COPY frontend/tenant-panel/package.json ./package.json
 RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
+RUN sed -i 's|"@k8s-hosting/ui-restore-cart": "\*"|"@k8s-hosting/ui-restore-cart": "file:./packages/ui-restore-cart"|' package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
 COPY frontend/tenant-panel/index.html frontend/tenant-panel/tsconfig.json frontend/tenant-panel/vite.config.ts frontend/tenant-panel/postcss.config.js ./
