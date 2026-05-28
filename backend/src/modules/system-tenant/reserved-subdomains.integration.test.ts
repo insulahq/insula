@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
 import { systemSettings, platformSettings, domains } from '../../db/schema.js';
@@ -189,6 +189,27 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
         } as never),
       ).resolves.toBeDefined();
     });
+
+    it('SYSTEM tenant CAN register a reserved platform subdomain (it owns them)', async () => {
+      const db = getTestDb();
+      await seedRegion(db);
+      await seedPlan(db);
+      // Bootstrap SYSTEM tenant so isSystem=true.
+      const systemResult = await ensureSystemTenant(db, TEST_APEX);
+      const systemTenantId = systemResult.tenantId;
+
+      // SYSTEM must be able to register e.g. noreply.<apex> for
+      // transactional mailboxes, even though noreply isn't itself
+      // a reserved label (it's allowed). More importantly SYSTEM
+      // must be able to register `webmail.<apex>` (reserved) which
+      // it owns the routing for.
+      await expect(
+        createDomain(db, systemTenantId, {
+          domain_name: `webmail.${TEST_APEX}`,
+          dns_mode: 'cname',
+        } as never),
+      ).resolves.toBeDefined();
+    });
   });
 
   describe('createDnsRecord enforcement', () => {
@@ -290,6 +311,28 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
           record_value: `admin.${TEST_APEX}`,
         } as never),
       ).rejects.toMatchObject({ code: 'RESERVED_PLATFORM_HOSTNAME' });
+    });
+
+    it('SYSTEM tenant CAN create a CNAME pointing at a platform-reserved hostname', async () => {
+      const db = getTestDb();
+      await seedRegion(db);
+      await seedPlan(db);
+      const systemResult = await ensureSystemTenant(db, TEST_APEX);
+      const systemTenantId = systemResult.tenantId;
+      // SYSTEM owns the apex (registered via the bootstrap path).
+      const [apexDomain] = await db.select().from(domains).where(eq(domains.tenantId, systemTenantId));
+      expect(apexDomain).toBeDefined();
+
+      // Operator wires e.g. `bulwark.<apex>` CNAME → `webmail.<apex>`
+      // via SYSTEM. Both labels are reserved; both must be allowed.
+      await expect(
+        createDnsRecord(db, systemTenantId, apexDomain!.id, {
+          record_type: 'CNAME',
+          record_name: 'bulwark',
+          record_value: `webmail.${TEST_APEX}`,
+          ttl: 3600,
+        } as never),
+      ).resolves.toBeDefined();
     });
   });
 });
