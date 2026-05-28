@@ -1391,6 +1391,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'crowdsec-bouncer-prune scheduler not started');
       }
 
+      // 12h heartbeat — refreshes the platform-api bouncer's last_pull
+      // so the 24h prune scheduler doesn't harvest us during idle
+      // windows (no operator opening the Banned IPs tab for >24h).
+      // Pairs with lapiGet's self-heal on 403 as belt-and-braces.
+      try {
+        const { startCrowdsecBouncerHeartbeatScheduler } = await import(
+          './modules/security-hardening/crowdsec-bouncer-heartbeat-scheduler.js'
+        );
+        const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+        const bouncerHeartbeatHandle = startCrowdsecBouncerHeartbeatScheduler(kubeconfigPath, app.log);
+        app.addHook('onClose', () => bouncerHeartbeatHandle.stop());
+      } catch (err) {
+        app.log.warn({ err }, 'crowdsec-bouncer-heartbeat scheduler not started');
+      }
+
       // Daily prune of expired refresh tokens (Phase 3 split-token auth).
       // Keeps a 7-day forensic window after expiry; older rows are
       // hard-deleted to keep the table small. Failure is non-fatal.
