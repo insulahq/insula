@@ -12,10 +12,12 @@
  *        Detail + components for a bundle the tenant owns.
  *   GET  /api/v1/tenant/backups/bundles/:id/data-export
  *        Stream the GDPR data-export ciphertext (attachment).
- *   GET  /api/v1/tenant/backups/schedule
- *        Get the tenant's schedule row (or null).
- *   PUT  /api/v1/tenant/backups/schedule
- *        Upsert the schedule — plan cap on retentionDays enforced.
+ *
+ * REMOVED 2026-05-28: GET/PUT /api/v1/tenant/backups/schedule.
+ * Tenants no longer set their own bundle schedules; the platform's
+ * global `backup_schedules.tenant_bundle` row runs daily for ALL
+ * eligible tenants. The legacy `tenant_backup_schedules` table is
+ * dropped in migration 00XX_drop_tenant_backup_schedules.
  *
  * The admin-side counterparts under /api/v1/admin/* still exist for
  * platform-staff use; this file is the customer-facing slice.
@@ -31,11 +33,8 @@ import {
   backupComponents,
   backupConfigurations,
   tenants,
-  hostingPlans,
-  tenantBackupSchedules,
 } from '../../db/schema.js';
 import {
-  updateTenantBackupScheduleSchema,
   type BundleSummary,
   type BundleDetail,
   type BackupComponentInfo,
@@ -128,87 +127,10 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
     return reply.send(body);
   });
 
-  // ── GET /api/v1/tenant/backups/schedule ────────────────────────────
-  app.get('/tenant/backups/schedule', {
-    schema: { tags: ['TenantBundles-Client'], summary: 'My backup schedule', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const tenantId = tenantIdFromRequest(request);
-    const [row] = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    if (!row) return success(null);
-    return success({
-      tenantId: row.tenantId,
-      enabled: row.enabled,
-      frequency: row.frequency,
-      hourOfDayUtc: row.hourOfDayUtc,
-      dayOfWeek: row.dayOfWeek,
-      dayOfMonth: row.dayOfMonth,
-      retentionDays: row.retentionDays,
-      lastRunAt: row.lastRunAt ? row.lastRunAt.toISOString() : null,
-      lastRunStatus: row.lastRunStatus,
-    });
-  });
-
-  // ── PUT /api/v1/tenant/backups/schedule ────────────────────────────
-  app.put('/tenant/backups/schedule', {
-    schema: { tags: ['TenantBundles-Client'], summary: 'Upsert my backup schedule', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const tenantId = tenantIdFromRequest(request);
-    const parsed = updateTenantBackupScheduleSchema.safeParse(request.body);
-    if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
-    }
-    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
-    const [plan] = await app.db.select({
-      defaultDays: hostingPlans.defaultBackupRetentionDays,
-      maxDays: hostingPlans.maxBackupRetentionDays,
-    }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
-    if (!plan) throw new ApiError('CONFIG_INVALID', 'Tenant has no resolvable plan', 400);
-    const requestedRetention = parsed.data.retentionDays ?? plan.defaultDays;
-    if (requestedRetention > plan.maxDays) {
-      throw new ApiError(
-        'VALIDATION_ERROR',
-        `retentionDays ${requestedRetention} exceeds your plan's max_backup_retention_days (${plan.maxDays})`,
-        400,
-      );
-    }
-    const existing = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    if (existing.length === 0) {
-      await app.db.insert(tenantBackupSchedules).values({
-        tenantId,
-        enabled: parsed.data.enabled ?? false,
-        frequency: parsed.data.frequency ?? 'weekly',
-        hourOfDayUtc: parsed.data.hourOfDayUtc ?? 3,
-        dayOfWeek: parsed.data.dayOfWeek ?? null,
-        dayOfMonth: parsed.data.dayOfMonth ?? null,
-        retentionDays: requestedRetention,
-      });
-    } else {
-      await app.db.update(tenantBackupSchedules).set({
-        enabled: parsed.data.enabled ?? existing[0]!.enabled,
-        frequency: parsed.data.frequency ?? existing[0]!.frequency,
-        hourOfDayUtc: parsed.data.hourOfDayUtc ?? existing[0]!.hourOfDayUtc,
-        dayOfWeek: parsed.data.dayOfWeek === undefined ? existing[0]!.dayOfWeek : parsed.data.dayOfWeek,
-        dayOfMonth: parsed.data.dayOfMonth === undefined ? existing[0]!.dayOfMonth : parsed.data.dayOfMonth,
-        retentionDays: requestedRetention,
-      }).where(eq(tenantBackupSchedules.tenantId, tenantId));
-    }
-    const [refreshed] = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    return success({
-      tenantId: refreshed!.tenantId,
-      enabled: refreshed!.enabled,
-      frequency: refreshed!.frequency,
-      hourOfDayUtc: refreshed!.hourOfDayUtc,
-      dayOfWeek: refreshed!.dayOfWeek,
-      dayOfMonth: refreshed!.dayOfMonth,
-      retentionDays: refreshed!.retentionDays,
-      lastRunAt: refreshed!.lastRunAt ? refreshed!.lastRunAt.toISOString() : null,
-      lastRunStatus: refreshed!.lastRunStatus,
-    });
-  });
+  // GET/PUT /tenant/backups/schedule routes were removed 2026-05-28.
+  // Tenants no longer control bundle schedules; the platform-global
+  // schedule (`backup_schedules.tenant_bundle`) drives all tenant
+  // bundles. See backend/src/modules/tenant-bundles/global-scheduler.ts.
 }
 
 // ── helpers ───────────────────────────────────────────────────────────

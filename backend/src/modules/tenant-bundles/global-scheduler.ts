@@ -15,8 +15,10 @@
  *        JOIN hosting_plans p ON p.id = t.plan_id
  *        WHERE COALESCE(t.include_in_scheduled_bundles,
  *                       p.include_in_scheduled_bundles) = TRUE
- *          AND t.status != 'deleted'
- *      (SYSTEM tenant participates — no is_system filter.)
+ *          AND t.status != 'archived'
+ *      (SYSTEM tenant participates — no is_system filter. 'archived'
+ *      is the terminal state in `tenant_status` — the enum has no
+ *      'deleted' value; a regression test pins this.)
  *   5. For each tenant, call the existing runOneScheduledBundle
  *      flow from schedule.ts.
  *   6. Update backup_schedules.last_run_at (added via UPDATE in tick).
@@ -40,34 +42,84 @@ const TICK_INTERVAL_MS = 5 * 60 * 1000;
 const FIRE_WINDOW_MIN = 5;
 
 /**
- * Parse just the minute + hour fields of a 5-field cron expression.
- * Returns null on anything unsupported (ranges, lists, steps). Phase
- * 2 swaps this for `cron-parser` to handle ranges/lists/named months.
+ * Parse one field of a 5-field cron expression (minute or hour) into
+ * the set of values it matches. Supports:
+ *   - literal `N`              → {N}
+ *   - star    `*`              → all values in [min, max]
+ *   - step    `* /N` or `M/N`  → multiples of N (or M, M+N, M+2N, …)
+ *   - list    `A,B,C`          → union of A, B, C parsed recursively
+ *
+ * Range syntax (`A-B`) is intentionally NOT supported yet — none of
+ * the platform's schedules use it. Returns null if any token is
+ * malformed (the scheduler then logs and skips the tick rather than
+ * silently misfiring).
  */
-function parseSimpleCron(expr: string): { minute: number; hour: number } | null {
+function parseCronField(token: string, min: number, max: number): Set<number> | null {
+  const result = new Set<number>();
+  const items = token.split(',');
+  for (const raw of items) {
+    const item = raw.trim();
+    if (item.length === 0) return null;
+    const stepMatch = item.match(/^(\*|\d+)\/(\d+)$/);
+    if (stepMatch) {
+      const base = stepMatch[1] === '*' ? min : Number(stepMatch[1]);
+      const step = Number(stepMatch[2]);
+      if (!Number.isInteger(base) || !Number.isInteger(step) || step <= 0) return null;
+      if (base < min || base > max) return null;
+      for (let v = base; v <= max; v += step) result.add(v);
+      continue;
+    }
+    if (item === '*') {
+      for (let v = min; v <= max; v += 1) result.add(v);
+      continue;
+    }
+    const n = Number(item);
+    if (!Number.isInteger(n) || n < min || n > max) return null;
+    result.add(n);
+  }
+  return result.size === 0 ? null : result;
+}
+
+interface ParsedCron {
+  readonly minutes: ReadonlySet<number>;
+  readonly hours: ReadonlySet<number>;
+}
+
+function parseSimpleCron(expr: string): ParsedCron | null {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return null;
-  const minute = Number(parts[0]);
-  const hour = Number(parts[1]);
-  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-  return { minute, hour };
+  const minutes = parseCronField(parts[0], 0, 59);
+  const hours = parseCronField(parts[1], 0, 23);
+  if (!minutes || !hours) return null;
+  return { minutes, hours };
 }
 
 function shouldFireNow(cronExpr: string, lastRun: Date | null, now: Date): boolean {
   const cron = parseSimpleCron(cronExpr);
   if (!cron) return false;
-  // Compute today's fire instant (UTC).
-  const fire = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
-    cron.hour, cron.minute, 0, 0,
-  ));
-  // Inside the ±window?
+  // Compute the nearest fire instant (UTC) that the cron matches.
+  // For step-style crons (e.g. `*/10 * * * *`) the candidate set has
+  // many entries today, so pick the one whose distance to `now` is
+  // smallest. Then apply the ±window check.
   const windowMs = FIRE_WINDOW_MIN * 60_000;
-  const inWindow = Math.abs(now.getTime() - fire.getTime()) <= windowMs;
-  if (!inWindow) return false;
+  let bestDiff = Infinity;
+  let bestFire = 0;
+  for (const hour of cron.hours) {
+    for (const minute of cron.minutes) {
+      const fire = Date.UTC(
+        now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+        hour, minute, 0, 0,
+      );
+      const diff = Math.abs(now.getTime() - fire);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestFire = fire;
+      }
+    }
+  }
+  if (bestDiff > windowMs) return false;
   // Already fired in this window?
-  if (lastRun && lastRun.getTime() >= fire.getTime() - windowMs) return false;
+  if (lastRun && lastRun.getTime() >= bestFire - windowMs) return false;
   return true;
 }
 
@@ -112,7 +164,7 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     .from(tenants)
     .innerJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
     .where(sql`
-      ${tenants.status} != 'deleted'
+      ${tenants.status} != 'archived'
       AND COALESCE(${tenants.includeInScheduledBundlesOverride},
                    ${hostingPlans.includeInScheduledBundles}) = TRUE
     `);

@@ -1,0 +1,22 @@
+-- Drop the legacy `tenant_backup_schedules` table.
+--
+-- 2026-05-28: Tenants no longer control their own backup schedules.
+-- The platform's global `backup_schedules.tenant_bundle` row runs
+-- daily for ALL eligible tenants (driven by
+-- backend/src/modules/tenant-bundles/global-scheduler.ts).
+--
+-- Per the user requirement (2026-05-28):
+--   "Tenants should be able to see their own bundles, ... run once-off
+--    backups with detailed progress, but do NOT have the ability to
+--    set up their own backup schedules."
+--
+-- The corresponding tenant-panel ScheduleEditor + the GET/PUT
+-- /api/v1/tenant/backups/schedule routes were removed in the same
+-- changeset. Any rows in this table are now dead — the legacy
+-- per-tenant scheduler stopped reading them when global-scheduler.ts
+-- shipped (2026-05-18, commit e6121fef).
+--
+-- Idempotent: `IF EXISTS` so re-running on a DB that already dropped
+-- the table is a no-op.
+
+DROP TABLE IF EXISTS tenant_backup_schedules CASCADE;
