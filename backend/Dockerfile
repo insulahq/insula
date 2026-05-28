@@ -3,10 +3,13 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Build shared API contracts first
+# Build shared API contracts first.
+# --build --force prevents stale tsbuildinfo from a Docker layer cache
+# from producing zero output when src changed but the buildinfo wasn't
+# invalidated (see feedback_api_contracts_build_force).
 COPY packages/api-contracts/ ./packages/api-contracts/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build
+    cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
 
 # Build backend
 COPY backend/package.json backend/tsconfig.json ./
