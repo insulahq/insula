@@ -222,7 +222,7 @@ function nodeTotalBytes(n: NodeShape): number | null {
  * where key='kubernetes.io/hostname' and the node is in values[].
  *
  * Only local-path PVs typically have this affinity; cross-node
- * provisioners (Longhorn, CSI) leave it empty so they contribute 0.
+ * provisioners (Longhorn, CSI) leave it empty so they contribute 0. // ci-no-longhorn: ignore
  */
 function sumPvcRequestsOnNode(pvs: ReadonlyArray<PvShape>, nodeName: string): number {
   let sum = 0;
