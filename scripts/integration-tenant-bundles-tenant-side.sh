@@ -151,10 +151,15 @@ fi
 # ── §3: restore-cart + policy ─────────────────────────────────────────
 log "§3 restore-cart + tenant policy"
 
-# Find a recent completed/partial bundle for this tenant.
+# Find a recent COMPLETED bundle for this tenant. Skipping `partial`
+# intentionally — a partial bundle has at least one failed component,
+# and restore tests against it may pass for the wrong reasons (e.g.
+# the missing-mailboxes component is the one we're trying to test).
+# Per [[feedback_partial_bundles_fail_integration]], partial is a
+# regression signal, not a "good enough" state.
 RAW=$(api "$ADMIN_HOST" GET "/tenants/$TENANT_ID/bundles" "" "$TENANT_TOKEN")
 parse "$RAW"
-BUNDLE_ID=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="completed" or .status=="partial") | .id' | head -1)
+BUNDLE_ID=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="completed") | .id' | head -1)
 if [[ -z "$BUNDLE_ID" ]]; then
   log "no existing bundle — triggering run-now first"
   RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/bundles/run-now" "{}" "$TENANT_TOKEN")
@@ -265,11 +270,15 @@ fi
 # actually runs in real conditions, not just in unit tests.
 log "§4.5 cart execute E2E"
 if [[ -n "$BUNDLE_ID" && -n "$CART_ID" ]]; then
-  # Find a freshly-completed bundle (the run-now one may still be
-  # initializing). Re-query for any completed/partial bundle.
+  # Find a freshly-COMPLETED bundle (the run-now one may still be
+  # initializing). Re-query for any completed bundle. Partial bundles
+  # are rejected per [[feedback_partial_bundles_fail_integration]] —
+  # a partial bundle's restore E2E can pass for the wrong reason
+  # (the very component that failed in capture is the one that needs
+  # to round-trip).
   RAW=$(api "$ADMIN_HOST" GET "/tenants/$TENANT_ID/bundles" "" "$TENANT_TOKEN")
   parse "$RAW"
-  E2E_BUNDLE=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="completed" or .status=="partial") | .id' | head -1)
+  E2E_BUNDLE=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="completed") | .id' | head -1)
   if [[ -n "$E2E_BUNDLE" ]]; then
     # Fresh cart for the E2E to avoid mixing with the failed-item
     # cart from §3.

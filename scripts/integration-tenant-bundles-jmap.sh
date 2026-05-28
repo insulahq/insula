@@ -156,8 +156,15 @@ poll_bundle() {
 
 ST=$(poll_bundle "$BUNDLE1")
 echo "  bundle1 status: $ST"
-if [ "$ST" != "completed" ] && [ "$ST" != "partial" ]; then
-  echo "ERROR: bundle did not complete: $ST" >&2; exit 1
+# Strict: per [[feedback_partial_bundles_fail_integration]], partial is
+# a test failure (one or more components failed). Override only via
+# EXPECT_PARTIAL=1 for harnesses that explicitly test partial flows.
+if [ "$ST" != "completed" ]; then
+  if [ "$ST" = "partial" ] && [ "${EXPECT_PARTIAL:-0}" = "1" ]; then
+    echo "  (partial accepted: EXPECT_PARTIAL=1)"
+  else
+    echo "ERROR: bundle did not COMPLETE: $ST (expected 'completed'; set EXPECT_PARTIAL=1 to allow partial)" >&2; exit 1
+  fi
 fi
 
 # ── Validate restic snapshot ───────────────────────────────────────────────
@@ -223,8 +230,12 @@ print(json.dumps({
   echo "  bundle2: $BUNDLE2"
   ST=$(poll_bundle "$BUNDLE2")
   echo "  bundle2 status: $ST"
-  if [ "$ST" != "completed" ] && [ "$ST" != "partial" ]; then
-    echo "ERROR: second bundle did not complete: $ST" >&2; exit 1
+  if [ "$ST" != "completed" ]; then
+    if [ "$ST" = "partial" ] && [ "${EXPECT_PARTIAL:-0}" = "1" ]; then
+      echo "  (partial accepted: EXPECT_PARTIAL=1)"
+    else
+      echo "ERROR: second bundle did not COMPLETE: $ST (expected 'completed'; set EXPECT_PARTIAL=1 to allow partial)" >&2; exit 1
+    fi
   fi
   # Verify the Job log shows fullPull=false for the mailboxes.
   ssh -i "$SSH_KEY" "$STAGING_HOST" "
