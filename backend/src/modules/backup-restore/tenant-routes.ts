@@ -61,7 +61,7 @@ import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
 import { runBundle } from '../tenant-bundles/orchestrator.js';
 import { resolveShimBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { resolveDirectStoreForBundle } from './shared.js';
-import { backupConfigurations, hostingPlans } from '../../db/schema.js';
+import { backupConfigurations, backupTargetAssignments, hostingPlans } from '../../db/schema.js';
 
 /**
  * Assert a resource (bundle, cart) belongs to the path-param tenant.
@@ -553,14 +553,32 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', 'Cannot back up an archived tenant', 400);
     }
 
-    // Resolve the platform's `tenant`-class backup target. The
-    // operator may not have assigned one yet; surface a clear error.
-    const [activeCfg] = await app.db.select().from(backupConfigurations)
-      .where(eq(backupConfigurations.active, true)).limit(1);
+    // Resolve the platform's `tenant`-class backup target. The new
+    // `backup_target_assignments` model binds a backup_configurations
+    // row to a class — pick the lowest-priority binding for 'tenant'.
+    // Fallback to a legacy `backup_configurations.active=true` row
+    // for clusters still on the pre-assignments model.
+    const [assigned] = await app.db.select({ targetId: backupTargetAssignments.targetId })
+      .from(backupTargetAssignments)
+      .where(eq(backupTargetAssignments.backupClass, 'tenant'))
+      .orderBy(backupTargetAssignments.priority)
+      .limit(1);
+    let activeCfg;
+    if (assigned) {
+      const [cfg] = await app.db.select().from(backupConfigurations)
+        .where(eq(backupConfigurations.id, assigned.targetId)).limit(1);
+      activeCfg = cfg;
+    }
+    if (!activeCfg) {
+      // Legacy fallback.
+      const [cfg] = await app.db.select().from(backupConfigurations)
+        .where(eq(backupConfigurations.active, true)).limit(1);
+      activeCfg = cfg;
+    }
     if (!activeCfg) {
       throw new ApiError(
         'NO_BACKUP_TARGET',
-        'No active backup target configured. Contact your platform administrator.',
+        'No backup target assigned to the tenant class. Contact your platform administrator.',
         409,
       );
     }
