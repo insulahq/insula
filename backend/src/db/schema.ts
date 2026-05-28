@@ -2879,28 +2879,14 @@ export const backupComponents = pgTable('backup_components', {
   index('backup_components_status_idx').on(table.status),
 ]);
 
-export const tenantBackupSchedules = pgTable('tenant_backup_schedules', {
-  tenantId: varchar('tenant_id', { length: 36 })
-    .primaryKey()
-    .references(() => tenants.id, { onDelete: 'cascade' }),
-  enabled: boolean('enabled').notNull().default(false),
-  frequency: tenantBackupScheduleFreqEnum('frequency').notNull().default('weekly'),
-  hourOfDayUtc: integer('hour_of_day_utc').notNull().default(3),
-  dayOfWeek: integer('day_of_week'),
-  dayOfMonth: integer('day_of_month'),
-  retentionDays: integer('retention_days').notNull().default(14),
-  lastRunAt: timestamp('last_run_at'),
-  lastRunStatus: backupJobStatusEnum('last_run_status'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+// tenantBackupSchedules table was dropped 2026-05-28 (migration 0034).
+// Tenants no longer set their own bundle schedules; the platform's
+// global `backup_schedules.tenant_bundle` row drives all tenant bundles.
 
 export type BackupJob = typeof backupJobs.$inferSelect;
 export type NewBackupJob = typeof backupJobs.$inferInsert;
 export type BackupComponent = typeof backupComponents.$inferSelect;
 export type NewBackupComponent = typeof backupComponents.$inferInsert;
-export type TenantBackupSchedule = typeof tenantBackupSchedules.$inferSelect;
-export type NewTenantBackupSchedule = typeof tenantBackupSchedules.$inferInsert;
 
 // ─── Tenant Backup v2 (ADR-036, migration 0093) ─────────────────────────
 // Per-tenant restic repository state + per-mailbox JMAP state + global

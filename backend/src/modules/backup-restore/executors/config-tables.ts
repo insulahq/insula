@@ -22,6 +22,7 @@ import { sql } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import type { RestoreItem } from '../../../db/schema.js';
 import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
+import { redactRowForTenant, type TenantRestorePolicy } from '../tenant-restore-policy.js';
 
 /**
  * Tables this executor is allowed to write to. MUST be a superset of
@@ -61,8 +62,17 @@ export async function execConfigTablesItem(args: {
   app: FastifyInstance;
   item: RestoreItem;
   store: BackupStore;
+  /**
+   * When set (tenant-cart path), per-row column redaction is applied
+   * before upsert. The policy denies operator-only columns
+   * (plan_id, is_system, *_override quotas, region_id, …) so a
+   * tenant-cart cannot silently overwrite them via the `tenants`
+   * table restore. Admin-cart callers pass `undefined` to keep the
+   * existing behaviour.
+   */
+  tenantPolicy?: TenantRestorePolicy;
 }): Promise<void> {
-  const { app, item, store } = args;
+  const { app, item, store, tenantPolicy } = args;
   const selector = item.selector as unknown as Selector;
   const dump = await readAndAuthorizeConfigDump({ app, item, store });
 
@@ -90,7 +100,12 @@ export async function execConfigTablesItem(args: {
       const sqlTable = ALLOWED_TABLE_TO_SQL[camelTable]!;
       const rows = dump.tables[camelTable] ?? [];
       for (const row of rows) {
-        await upsertRow(tx, sqlTable, row);
+        // Tenant-cart paths redact denied columns before upsert.
+        // Admin path leaves rows untouched.
+        const safeRow = tenantPolicy
+          ? redactRowForTenant(sqlTable, row as Record<string, unknown>, tenantPolicy)
+          : row;
+        await upsertRow(tx, sqlTable, safeRow);
         totalUpserts++;
       }
     }
