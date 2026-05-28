@@ -4595,10 +4595,16 @@ RCEOF
 
   # ADR-039 Phase 8 — Bulwark webmail secrets.
   #
-  # Bulwark verifies impersonation JWTs natively via its
-  # /api/auth/impersonate route (upstream issue #296, landed in
-  # v1.6.7). The route needs three envs sourced from
-  # `bulwark-secrets`:
+  # 2026-05-28: Stalwart master credentials are NO LONGER mirrored
+  # into bulwark-secrets. Bulwark's Deployment env reads
+  # STALWART_MASTER_USER + STALWART_MASTER_PASSWORD directly from
+  # `mail-secrets` (same Secret Roundcube + tenant-bundle Jobs use)
+  # and the Deployment's Reloader annotation watches both bulwark-secrets
+  # AND mail-secrets so rotation rolls Bulwark automatically. The old
+  # mirror drifted on every rotateWebmailMasterPassword call
+  # (which only patches mail-secrets), breaking Bulwark JMAP auth.
+  #
+  # bulwark-secrets now contains Bulwark-specific keys only:
   #
   #   BULWARK_JWT_AUTH_SECRET           — INDEPENDENT random secret
   #                                       (NOT shared with Roundcube's
@@ -4608,22 +4614,17 @@ RCEOF
   #                                       token replay). Mirrored into
   #                                       platform-api as
   #                                       BULWARK_WEBMAIL_JWT_SECRET.
-  #   BULWARK_STALWART_MASTER_USER      — same master account Roundcube uses
-  #   BULWARK_STALWART_MASTER_PASSWORD  — same master password (or
-  #                                       freshly generated if Roundcube
-  #                                       isn't deployed)
-  #
-  # Plus Bulwark's own admin dashboard creds:
-  #   ADMIN_PASSWORD   — Bulwark /admin/login
-  #   SESSION_SECRET   — cookie encryption key
+  #   ADMIN_PASSWORD                    — Bulwark /admin/login
+  #   SESSION_SECRET                    — cookie encryption key
   if kctl get secret -n mail bulwark-secrets &>/dev/null 2>&1; then
     log "bulwark-secrets already exists, skipping initial provision."
   else
-    local bw_admin_pw bw_session bw_jwt bw_master_pw bw_master_user
+    local bw_admin_pw bw_session bw_jwt
     bw_admin_pw="$(openssl rand -hex 16)"
     bw_session="$(openssl rand -base64 32 | tr -d '\n')"
     # Independent HMAC secret — NOT the same as Roundcube's.
     bw_jwt="$(openssl rand -hex 32)"
+<<<<<<< Updated upstream
     # Master password: reuse Roundcube's if available so the Stalwart
     # master account can authenticate from both engines; generate a
     # fresh one otherwise. Operator-installed Stalwart later updates
@@ -4638,13 +4639,13 @@ RCEOF
     # Pipe stringData via stdin to avoid placing the HMAC secret in the
     # process command-line (visible in /proc/<pid>/cmdline for the
     # duration of kubectl create — review fix H2).
+=======
+>>>>>>> Stashed changes
     kctl create secret generic bulwark-secrets --namespace=mail \
       --from-literal=ADMIN_PASSWORD="$bw_admin_pw" \
       --from-literal=SESSION_SECRET="$bw_session" \
-      --from-literal=BULWARK_JWT_AUTH_SECRET="$bw_jwt" \
-      --from-literal=BULWARK_STALWART_MASTER_USER="$bw_master_user" \
-      --from-literal=BULWARK_STALWART_MASTER_PASSWORD="$bw_master_pw"
-    log "bulwark-secrets created (independent HMAC; master user=${bw_master_user})."
+      --from-literal=BULWARK_JWT_AUTH_SECRET="$bw_jwt"
+    log "bulwark-secrets created (Bulwark-specific keys only; Stalwart master credentials sourced from mail-secrets at runtime)."
     # Mirror the Bulwark HMAC into a platform-api Secret so the API
     # signs with the matching key. Separate Secret keeps Bulwark and
     # platform-api Secrets independent for reloader-driven rotation.
@@ -4669,9 +4670,10 @@ BWEOF
     has_jwt_key="$(kctl get secret -n mail bulwark-secrets \
       -o jsonpath='{.data.BULWARK_JWT_AUTH_SECRET}' 2>/dev/null || true)"
     if [[ -z "$has_jwt_key" ]]; then
-      log "Migrating bulwark-secrets: adding BULWARK_JWT_AUTH_SECRET keys (upstream impersonation route)."
-      local mig_jwt mig_master_pw mig_master_user
+      log "Migrating bulwark-secrets: adding BULWARK_JWT_AUTH_SECRET (upstream impersonation route)."
+      local mig_jwt
       mig_jwt="$(openssl rand -hex 32)"
+<<<<<<< Updated upstream
       mig_master_pw="$(kctl get secret -n mail mail-secrets \
         -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
       if [[ -z "$mig_master_pw" ]]; then
@@ -4682,23 +4684,55 @@ BWEOF
         # Stream the new keys via stdin (avoid leaking the HMAC in `ps`).
         local mig_patch
         mig_patch=$(cat <<PATCH
+=======
+      # 2026-05-28: STALWART_MASTER_USER/PASSWORD are NO LONGER mirrored
+      # here. Deployment env reads them directly from mail-secrets.
+      local mig_patch
+      mig_patch=$(cat <<PATCH
+>>>>>>> Stashed changes
 stringData:
   BULWARK_JWT_AUTH_SECRET: "${mig_jwt}"
-  BULWARK_STALWART_MASTER_USER: "${mig_master_user}"
-  BULWARK_STALWART_MASTER_PASSWORD: "${mig_master_pw}"
 PATCH
-        )
-        printf '%s' "$mig_patch" | kctl patch secret -n mail bulwark-secrets \
-          --type=merge --patch-file=/dev/stdin
-        log "bulwark-secrets migrated — pod restart will pick up new envs."
-        # Mirror to platform-api
-        if ! kctl get secret -n platform platform-bulwark-jwt &>/dev/null 2>&1; then
-          kctl create secret generic platform-bulwark-jwt --namespace=platform \
-            --from-literal=BULWARK_WEBMAIL_JWT_SECRET="$mig_jwt"
-          log "platform-bulwark-jwt created (matches migrated bulwark HMAC)."
-        fi
-        unset mig_jwt mig_master_pw mig_patch
+      )
+      printf '%s' "$mig_patch" | kctl patch secret -n mail bulwark-secrets \
+        --type=merge --patch-file=/dev/stdin
+      log "bulwark-secrets migrated — pod restart will pick up new envs."
+      # Mirror to platform-api
+      if ! kctl get secret -n platform platform-bulwark-jwt &>/dev/null 2>&1; then
+        kctl create secret generic platform-bulwark-jwt --namespace=platform \
+          --from-literal=BULWARK_WEBMAIL_JWT_SECRET="$mig_jwt"
+        log "platform-bulwark-jwt created (matches migrated bulwark HMAC)."
       fi
+      unset mig_jwt mig_patch
+    fi
+  fi
+
+  # 2026-05-28: dead-key cleanup on existing clusters. Remove the
+  # legacy BULWARK_STALWART_MASTER_USER/PASSWORD keys from
+  # bulwark-secrets so the drift surface is gone (Bulwark now reads
+  # those values from mail-secrets directly). Idempotent: kubectl
+  # patch with op:remove no-ops if the key is already absent.
+  if kctl get secret -n mail bulwark-secrets &>/dev/null 2>&1; then
+    local has_legacy_user has_legacy_pw
+    has_legacy_user="$(kctl get secret -n mail bulwark-secrets \
+      -o jsonpath='{.data.BULWARK_STALWART_MASTER_USER}' 2>/dev/null || true)"
+    has_legacy_pw="$(kctl get secret -n mail bulwark-secrets \
+      -o jsonpath='{.data.BULWARK_STALWART_MASTER_PASSWORD}' 2>/dev/null || true)"
+    if [[ -n "$has_legacy_user" ]] || [[ -n "$has_legacy_pw" ]]; then
+      log "Cleaning up legacy mirror keys from bulwark-secrets (Bulwark now reads from mail-secrets directly)."
+      # JSON-Patch op:remove on each. Absent keys return 422 which we
+      # tolerate (kubectl exits non-zero, but `|| true` keeps bootstrap
+      # going).
+      kctl patch secret -n mail bulwark-secrets --type=json -p '[
+        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_USER"},
+        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_PASSWORD"}
+      ]' 2>/dev/null || \
+      kctl patch secret -n mail bulwark-secrets --type=json -p '[
+        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_USER"}
+      ]' 2>/dev/null || true
+      kctl patch secret -n mail bulwark-secrets --type=json -p '[
+        {"op":"remove","path":"/data/BULWARK_STALWART_MASTER_PASSWORD"}
+      ]' 2>/dev/null || true
     fi
   fi
 
