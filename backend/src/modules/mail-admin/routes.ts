@@ -99,24 +99,75 @@ const NODE_ROLE_LABEL_KEY = 'platform.phoenix-host.net/node-role';
  * IPs that DNSBLs see); falls back to internal IPs in dev clusters
  * where ExternalIP isn't populated.
  */
-async function resolveServerNodeIps(k8s: { core: { listNode: (q?: object) => Promise<unknown> } }): Promise<string[]> {
+/**
+ * Resolve the set of NODE IPs that publicly serve mail right now —
+ * MUST match the actual data-plane topology, not just "all server nodes".
+ *
+ * Modes:
+ *   allServerNodes   — haproxy DaemonSet binds mail hostPorts on every
+ *                      server-role node and forwards to the live Stalwart
+ *                      pod via ClusterIP (regardless of whether the pod
+ *                      is on a server or worker node). Public-facing IPs
+ *                      are therefore the server-role nodes.
+ *   thisNodeOnly     — Stalwart pod binds mail hostPorts directly on the
+ *                      active node (which may be server OR worker per
+ *                      affinity-patch-mail-stack.yaml). Public-facing IP
+ *                      is the active node's IP, period.
+ *
+ * Pre-2026-05-28 this hardcoded `role !== 'server' continue`, so when
+ * mail-on-worker landed (Phase C of the mobility E2E) the deliverability
+ * probes silently dropped the worker IP and the operator had no visibility
+ * into PTR/DNSBL/SMTP-banner health for the actually-public IP.
+ */
+async function resolveServerNodeIps(
+  k8s: { core: { listNode: (q?: object) => Promise<unknown> } },
+  db: import('../../db/index.js').Database,
+): Promise<string[]> {
   type NodeAddress = { type?: string; address?: string };
   type Node = {
-    metadata?: { labels?: Record<string, string> };
+    metadata?: { name?: string; labels?: Record<string, string> };
     status?: { addresses?: NodeAddress[] };
   };
+  const { systemSettings } = await import('../../db/schema.js');
+  const { eq } = await import('drizzle-orm');
+  const [settings] = await db
+    .select({
+      mode: systemSettings.mailPortExposureMode,
+      activeNode: systemSettings.mailActiveNode,
+    })
+    .from(systemSettings)
+    .where(eq(systemSettings.id, 'system'));
+  const mode = settings?.mode ?? 'allServerNodes';
+  const activeNode = settings?.activeNode ?? null;
+
   const list = await k8s.core.listNode({}) as { items?: Node[] };
   const items = list.items ?? [];
+  const nodeIp = (n: Node): string | null => {
+    const addrs = n.status?.addresses ?? [];
+    const ext = addrs.find((a) => a.type === 'ExternalIP')?.address;
+    const internal = addrs.find((a) => a.type === 'InternalIP')?.address;
+    return ext ?? internal ?? null;
+  };
+
+  if (mode === 'thisNodeOnly') {
+    // Only the active node binds public hostPorts in this mode.
+    if (!activeNode) return [];
+    const node = items.find((n) => n.metadata?.name === activeNode);
+    if (!node) return [];
+    const ip = nodeIp(node);
+    return ip ? [ip] : [];
+  }
+
+  // allServerNodes: collect every server-role node's IP. Active node is
+  // intentionally NOT added when it's worker-role — mail is reachable
+  // via haproxy on the server nodes, and the worker IP wouldn't accept
+  // mail traffic at the OS level (no listener / no firewall rule).
   const ips: string[] = [];
   for (const node of items) {
     const role = node.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
     if (role !== 'server') continue;
-    const addrs = node.status?.addresses ?? [];
-    // Prefer ExternalIP; fall back to InternalIP if no external.
-    const ext = addrs.find((a) => a.type === 'ExternalIP')?.address;
-    const internal = addrs.find((a) => a.type === 'InternalIP')?.address;
-    const chosen = ext ?? internal;
-    if (chosen && !ips.includes(chosen)) ips.push(chosen);
+    const ip = nodeIp(node);
+    if (ip && !ips.includes(ip)) ips.push(ip);
   }
   return ips;
 }
@@ -194,11 +245,13 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       } catch {
         mailHostname = null;
       }
-      // Server-role node IPs feed the deliverability probes (forward DNS
-      // must cover them, each needs a PTR, each is checked against DNSBLs).
-      // Read external IPs first; fall back to internal IPs in dev clusters.
-      // Best-effort: empty list makes deliverability report `not_implemented`.
-      const serverNodeIps = await resolveServerNodeIps(k8s).catch((err) => {
+      // Public-facing mail node IPs — drives the deliverability probes
+      // (forward DNS must cover them, each needs a PTR, each is checked
+      // against DNSBLs and gets an SMTP-banner probe). The resolver picks
+      // either ALL server-role nodes (allServerNodes mode) or just the
+      // active node (thisNodeOnly mode, even if it's a worker). Best-
+      // effort: empty list makes deliverability report `not_implemented`.
+      const serverNodeIps = await resolveServerNodeIps(k8s, app.db).catch((err) => {
         app.log.warn({ err }, 'mail-admin: serverNodeIps lookup failed; deliverability probes skipped');
         return [] as string[];
       });
