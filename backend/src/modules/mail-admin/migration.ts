@@ -843,6 +843,10 @@ async function runMigrationStateMachine(
         // 20-60s for small DataStores. We poll for up to 5 min.
         await waitForFreshSnapshot(deps, 300, runId);
       } catch (snapErr) {
+        // Don't swallow operator cancels — they must abort the
+        // whole migration, not silently fall through to the next step.
+        // Pre-fix bug caught 2026-05-28 by Phase E of the mobility E2E.
+        if (snapErr instanceof MigrationCancelledError) throw snapErr;
         log.warn('[migration] fresh snapshot failed; will proceed with the latest CronJob snapshot:', snapErr);
       }
     }
