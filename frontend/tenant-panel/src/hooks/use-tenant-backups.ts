@@ -1,19 +1,25 @@
 /**
-^ * Tenant-panel hooks for self-service Tenant Backup. Reads from
+ * Tenant-panel hooks for self-service Tenant Backup. Reads from
  * /api/v1/tenant/backups/* — the JWT carries the tenantId so the
  * hooks don't need it as a parameter.
+ *
+ * 2026-05-28: schedule hooks removed; on-demand `useRunBundleNow`
+ * added. Per platform policy, tenants don't set their own schedules.
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type {
-  BundleSummary,
-  TenantBackupSchedule,
-  UpdateTenantBackupScheduleInput,
-} from '@k8s-hosting/api-contracts';
+import { useAuth } from '@/hooks/use-auth';
+import type { BundleSummary } from '@k8s-hosting/api-contracts';
 
 interface BundlesResponse { readonly data: readonly BundleSummary[] }
-interface ScheduleResponse { readonly data: TenantBackupSchedule | null }
+interface RunNowResponse {
+  readonly data: {
+    readonly bundleId: string;
+    readonly status: string;
+    readonly message: string;
+  };
+}
 
 export function useTenantBundles() {
   return useQuery({
@@ -22,22 +28,18 @@ export function useTenantBundles() {
   });
 }
 
-export function useTenantSchedule() {
-  return useQuery({
-    queryKey: ['tenant-backups', 'schedule'],
-    queryFn: () => apiFetch<ScheduleResponse>('/api/v1/tenant/backups/schedule'),
-  });
-}
-
-export function useUpdateTenantSchedule() {
+export function useRunBundleNow() {
   const qc = useQueryClient();
+  const tenantId = useAuth((s) => s.user?.tenantId);
   return useMutation({
-    mutationFn: (input: UpdateTenantBackupScheduleInput) =>
-      apiFetch<ScheduleResponse>('/api/v1/tenant/backups/schedule', {
-        method: 'PUT',
-        body: JSON.stringify(input),
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['tenant-backups', 'schedule'] }),
+    mutationFn: () => {
+      if (!tenantId) throw new Error('No tenant id on session');
+      return apiFetch<RunNowResponse>(`/api/v1/tenants/${tenantId}/bundles/run-now`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tenant-backups', 'bundles'] }),
   });
 }
 

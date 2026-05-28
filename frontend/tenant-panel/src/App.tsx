@@ -9,6 +9,7 @@ import Domains from '@/pages/Domains';
 import Applications from '@/pages/Applications';
 import CronJobs from '@/pages/CronJobs';
 import Backups from '@/pages/Backups';
+import TenantRestoreCart from '@/pages/RestoreCart';
 import Email from '@/pages/Email';
 import Files from '@/pages/Files';
 import Settings from '@/pages/Settings';
@@ -92,6 +93,7 @@ export default function App() {
             <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
             <Route path="email" element={<LifecycleGate><Email /></LifecycleGate>} />
             <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
+            <Route path="backups/restore/:bundleId" element={<LifecycleGate><TenantRestoreCart /></LifecycleGate>} />
             <Route path="users" element={<LifecycleGate><SubUsers /></LifecycleGate>} />
             <Route path="ssh-keys" element={<LifecycleGate><SshKeys /></LifecycleGate>} />
             <Route path="sftp" element={<LifecycleGate><SftpUsers /></LifecycleGate>} />
