@@ -198,7 +198,7 @@ function RedirectsTab({ tenantId, routeId, route, dnsMode }: {
     >
       <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redirect Settings</h2>
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        Control how traffic is redirected for this route. Changes take effect immediately via NGINX Ingress annotations.
+        Control how traffic is redirected for this route. Changes take effect within a few seconds via the Traefik IngressRoute reconciler.
       </p>
 
       {/* Force HTTPS */}
@@ -778,8 +778,8 @@ function ProtectedDirsSection({ tenantId, routeId }: {
         <div className="flex items-start justify-between gap-4">
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Protect specific URL paths with HTTP Basic Auth. Each directory has its own
-            users and realm. Protection is enforced at the NGINX Ingress level — works
-            with any backend application.
+            users and realm. Protection is enforced at the Traefik IngressRoute level —
+            works with any backend application.
           </p>
           <button
             type="button"
