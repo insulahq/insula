@@ -86,7 +86,7 @@ const BLOCKLISTS: ReadonlyArray<{
 }> = [
   // Spamhaus's `/ip/<ip>` route is the canonical per-IP lookup page in
   // the new (2024+) Spamhaus web UI. Bypasses the open-resolver block.
-  { name: 'Spamhaus ZEN', zone: 'zen.spamhaus.org', listedSeverity: 'fail', lookupUrlTemplate: 'https://check.spamhaus.org/ip/{ip}' },
+  { name: 'Spamhaus ZEN', zone: 'zen.spamhaus.org', listedSeverity: 'fail', lookupUrlTemplate: 'https://check.spamhaus.org/results?query={ip}' },
   { name: 'Barracuda', zone: 'b.barracudacentral.org', listedSeverity: 'fail', lookupUrlTemplate: 'https://www.barracudacentral.org/lookups/lookup-reputation?ip={ip}' },
   { name: 'SpamCop', zone: 'bl.spamcop.net', listedSeverity: 'fail', lookupUrlTemplate: 'https://www.spamcop.net/w3m?action=checkblock&ip={ip}' },
   { name: 'SORBS Aggregate', zone: 'dnsbl.sorbs.net', listedSeverity: 'warning', lookupUrlTemplate: 'https://www.sorbs.net/lookup.shtml?{ip}' },
