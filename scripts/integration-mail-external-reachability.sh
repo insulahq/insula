@@ -276,9 +276,25 @@ fi
 
 # ── PHASE 3: assignedMailNodes — refusal path + (if possible) success path ──
 hdr "PHASE 3a: assignedMailNodes mode — REFUSAL when active∉{primary,secondary,tertiary}"
-# Capture current placement so we can restore later
-PLACEMENT_BEFORE=$(ssh_kubectl 'kubectl exec -n platform $(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath="{.items[0].metadata.name}") -- psql -U postgres -d hosting_platform -tA -c "SELECT mail_primary_node || \"|\" || mail_secondary_node || \"|\" || mail_tertiary_node FROM system_settings;" 2>/dev/null' | head -1)
+# Capture current placement so we can restore later.
+# COALESCE keeps NULL columns rendered as empty strings (not the literal
+# "NULL" the bash variable would otherwise inherit) so the round-trip
+# preserves true NULLs through to the restore step below.
+PLACEMENT_BEFORE=$(ssh_kubectl 'kubectl exec -n platform $(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath="{.items[0].metadata.name}") -- psql -U postgres -d hosting_platform -tA -c "SELECT COALESCE(mail_primary_node,'\'''\'') || \"|\" || COALESCE(mail_secondary_node,'\'''\'') || \"|\" || COALESCE(mail_tertiary_node,'\'''\'') FROM system_settings;" 2>/dev/null' | head -1)
 IFS='|' read -r PRE_PRIMARY PRE_SECONDARY PRE_TERTIARY <<<"$PLACEMENT_BEFORE"
+
+# Render a value as either 'literal' or SQL NULL (no quotes) so that
+# bash defaults of "" produce true SQL NULL instead of the string "NULL".
+# Caught 2026-05-28 when the prior harness left mail_*_node as literal
+# 'NULL' strings, then the validation refused every subsequent placement
+# update because "NULL" isn't a valid RFC 1123 K8s node name.
+sql_str_or_null() {
+  if [ -z "$1" ]; then
+    printf 'NULL'
+  else
+    printf "'%s'" "$1"
+  fi
+}
 echo "  placement before: primary=$PRE_PRIMARY secondary=$PRE_SECONDARY tertiary=$PRE_TERTIARY"
 echo "  active=$ACTIVE → is in assigned set? $([ "$ACTIVE" = "$PRE_PRIMARY" ] || [ "$ACTIVE" = "$PRE_SECONDARY" ] || [ "$ACTIVE" = "$PRE_TERTIARY" ] && echo yes || echo no)"
 
@@ -290,8 +306,13 @@ mapfile -t OTHER_ARR <<<"$OTHER_NODES"
 if [ ${#OTHER_ARR[@]} -lt 1 ]; then
   amber "  SKIP PHASE 3a: no non-active server nodes available"
 else
-  # Set placement to other-nodes only (active is excluded)
-  ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node='${OTHER_ARR[0]}', mail_secondary_node='${OTHER_ARR[1]:-NULL}', mail_tertiary_node='${OTHER_ARR[2]:-NULL}';\"" >/dev/null 2>&1
+  # Set placement to other-nodes only (active is excluded). Use
+  # sql_str_or_null so empty array slots become true SQL NULL, not the
+  # literal string "NULL".
+  P1=$(sql_str_or_null "${OTHER_ARR[0]:-}")
+  P2=$(sql_str_or_null "${OTHER_ARR[1]:-}")
+  P3=$(sql_str_or_null "${OTHER_ARR[2]:-}")
+  ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
   REFUSAL_RESP=$(api_patch '{"mode":"assignedMailNodes"}')
   CODE=$(echo "$REFUSAL_RESP" | jq -r '.error.code // ""')
   MSG=$(echo "$REFUSAL_RESP" | jq -r '.error.message // ""')
@@ -310,7 +331,10 @@ ASSIGNED_NEW=("$ACTIVE")
 for n in $OTHER_NODES; do
   [ ${#ASSIGNED_NEW[@]} -lt 3 ] && ASSIGNED_NEW+=("$n")
 done
-ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node='${ASSIGNED_NEW[0]}', mail_secondary_node='${ASSIGNED_NEW[1]:-NULL}', mail_tertiary_node='${ASSIGNED_NEW[2]:-NULL}';\"" >/dev/null 2>&1
+P1=$(sql_str_or_null "${ASSIGNED_NEW[0]:-}")
+P2=$(sql_str_or_null "${ASSIGNED_NEW[1]:-}")
+P3=$(sql_str_or_null "${ASSIGNED_NEW[2]:-}")
+ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
 echo "  placement re-set: ${ASSIGNED_NEW[*]}"
 
 ASSIGNED_IPS=""
@@ -351,7 +375,10 @@ fi
 
 # ── Restore original placement BEFORE switching back ────────────────────
 hdr "Restoring original placement"
-ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node='${PRE_PRIMARY:-NULL}', mail_secondary_node='${PRE_SECONDARY:-NULL}', mail_tertiary_node='${PRE_TERTIARY:-NULL}';\"" >/dev/null 2>&1
+P1=$(sql_str_or_null "${PRE_PRIMARY:-}")
+P2=$(sql_str_or_null "${PRE_SECONDARY:-}")
+P3=$(sql_str_or_null "${PRE_TERTIARY:-}")
+ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
 
 # ── Restore prior mode ──────────────────────────────────────────────────
 hdr "Restoring mode to $PRE_MODE"
