@@ -20,6 +20,7 @@
 
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { MailPortExposureMode } from '@k8s-hosting/api-contracts';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 export const MAIL_HAPROXY_LABEL_KEY = 'platform.example.test/mail-haproxy';
 const NODE_ROLE_LABEL_KEY = 'platform.example.test/node-role';
@@ -155,6 +156,12 @@ export async function reconcileMailHaproxyLabels(
     const hasLabel = node.metadata.labels[MAIL_HAPROXY_LABEL_KEY] === 'true';
     const shouldHave = desired.has(node.metadata.name);
     if (hasLabel === shouldHave) continue;
+    // MERGE_PATCH (Content-Type: application/merge-patch+json, RFC 7396).
+    // Without this, the SDK defaults to application/json-patch+json
+    // which expects an array of JSON Patch ops; the merge-style body
+    // we send below would error 400 with "cannot unmarshal object into
+    // Go value of type []handlers.jsonPatchOp" — observed at staging
+    // deploy time (2026-05-28).
     await core.patchNode(
       {
         name: node.metadata.name,
@@ -166,6 +173,7 @@ export async function reconcileMailHaproxyLabels(
           },
         },
       } as unknown as Parameters<typeof core.patchNode>[0],
+      MERGE_PATCH,
     );
   }
 }
