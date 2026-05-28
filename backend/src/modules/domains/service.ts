@@ -139,7 +139,7 @@ import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
 
 export async function createDomain(db: Database, tenantId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
   // Verify tenant exists
-  await getTenantById(db, tenantId);
+  const tenant = await getTenantById(db, tenantId);
 
   // Secondary DNS mode requires master_ip
   if (input.dns_mode === 'secondary' && !input.master_ip) {
@@ -152,36 +152,39 @@ export async function createDomain(db: Database, tenantId: string, input: Create
   }
 
   // SYSTEM tenant reservation (ADR-040 §3 Q5): block hostnames the
-  // platform uses for its own UIs/services. Reserved set is computed
-  // at runtime from static config + platform_settings URL keys +
-  // a static deny list, cached 5s, so changes via the admin Settings
-  // → Platform URLs UI propagate without code changes. The SYSTEM
-  // bootstrap's apex-domain insert goes through a direct DB insert
-  // path that doesn't call this function, so the apex can still be
-  // owned by SYSTEM despite being in the reserved set.
-  const reserved = await getReservedPlatformHostnames(db);
-  const requestedHost = input.domain_name.trim().replace(/\.+$/, '').toLowerCase();
-  if (reserved.fqdns.has(requestedHost)) {
-    const reason = reserved.reasons.get(requestedHost) ?? 'platform-reserved hostname';
-    throw new ApiError(
-      'RESERVED_PLATFORM_HOSTNAME',
-      `'${requestedHost}' is reserved for platform use (${reason}). It cannot be registered as a tenant domain.`,
-      409,
-      {
-        hostname: requestedHost,
-        reservedFor: reason,
-        operatorError: {
-          code: 'RESERVED_PLATFORM_HOSTNAME',
-          title: 'Reserved platform hostname',
-          detail: `'${requestedHost}' is used by the platform itself (${reason}). It cannot be registered as a tenant domain.`,
-          remediation: [
-            'Pick a different hostname for the tenant domain.',
-            'If the platform should no longer use this hostname, update Settings → Platform URLs first.',
-          ],
-          retryable: false,
+  // platform uses for its own UIs/services for ALL non-system tenants.
+  // The SYSTEM tenant owns platform-managed hostnames (mail, admin,
+  // webmail, etc.) so it must be ABLE to register them as proper
+  // `domains` rows for the routing pipeline. The bootstrap path
+  // populates the apex via a direct DB insert (skipping this function),
+  // but operator-driven SYSTEM-owned subdomains (e.g. for transactional
+  // mailboxes under noreply.<apex>) need this path. Skip the reserved
+  // check only when the caller is the SYSTEM tenant.
+  if (!tenant.isSystem) {
+    const reserved = await getReservedPlatformHostnames(db);
+    const requestedHost = input.domain_name.trim().replace(/\.+$/, '').toLowerCase();
+    if (reserved.fqdns.has(requestedHost)) {
+      const reason = reserved.reasons.get(requestedHost) ?? 'platform-reserved hostname';
+      throw new ApiError(
+        'RESERVED_PLATFORM_HOSTNAME',
+        `'${requestedHost}' is reserved for platform use (${reason}). It cannot be registered as a tenant domain.`,
+        409,
+        {
+          hostname: requestedHost,
+          reservedFor: reason,
+          operatorError: {
+            code: 'RESERVED_PLATFORM_HOSTNAME',
+            title: 'Reserved platform hostname',
+            detail: `'${requestedHost}' is used by the platform itself (${reason}). It cannot be registered as a tenant domain.`,
+            remediation: [
+              'Pick a different hostname for the tenant domain.',
+              'If the platform should no longer use this hostname, update Settings → Platform URLs first.',
+            ],
+            retryable: false,
+          },
         },
-      },
-    );
+      );
+    }
   }
 
   // Check for duplicate domain name

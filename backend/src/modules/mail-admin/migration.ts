@@ -1106,6 +1106,59 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-success port-exposure reconcile failed (non-fatal):', err);
   }
 
+  // Step 8c (2026-05-28): auto-rotate Stalwart master password.
+  // Behind a feature flag — operators who pre-share the password to a
+  // monitoring tool can opt out. Default ON because the most common
+  // migration cause is "node compromised / drained for security reasons"
+  // — keeping the same password on the new node defeats the move.
+  //
+  // The rotation:
+  //   • Stalwart JMAP master Account password → fresh value
+  //   • mail-secrets/STALWART_MASTER_PASSWORD → patched
+  //   • Roundcube + Bulwark (both via mail-secrets reloader) → rolled
+  //   • tenant-bundle backup Jobs → next Job picks up new value
+  //
+  // Failure is non-fatal — migration itself succeeded; operator can
+  // manually rotate via the admin UI / API. Recorded as a notification
+  // so the operator sees the gap.
+  try {
+    const flagEnabled = await readAutoRotateOnMigrationFlag(db);
+    if (flagEnabled) {
+      // Resolve the master principal's FQDN from mail-secrets so
+      // rotation scopes correctly. Splits `master@mail.<apex>` →
+      // masterUsername + principalDomain. Mirrors the route handler's
+      // resolution exactly (POST /admin/mail/rotate-webmail-master-password).
+      const { readStalwartMasterUser } = await import('./stalwart-master-user.js');
+      const masterFqdn = await readStalwartMasterUser(core);
+      const atIdx = masterFqdn.lastIndexOf('@');
+      if (atIdx < 1 || atIdx === masterFqdn.length - 1) {
+        log.warn(
+          `[migration] skipping auto-rotate: mail-secrets STALWART_MASTER_USER '${masterFqdn}' is not a full email address`,
+        );
+      } else {
+        const rotateMasterUsername = masterFqdn.slice(0, atIdx);
+        const rotatePrincipalDomain = masterFqdn.slice(atIdx + 1).toLowerCase();
+        log.warn(
+          `[migration] auto-rotating Stalwart master password (post-migration security hygiene; principal=${rotateMasterUsername}@${rotatePrincipalDomain})`,
+        );
+        const { rotateWebmailMasterPassword } = await import('./rotate-webmail-master.js');
+        await rotateWebmailMasterPassword({
+          kubeconfigPath,
+          masterUsername: rotateMasterUsername,
+          principalDomain: rotatePrincipalDomain,
+        });
+        log.warn(`[migration] master password rotated; Bulwark + Roundcube rolling on Reloader event`);
+      }
+    } else {
+      log.info(`[migration] auto-rotate-on-migration flag is OFF — skipping password rotation`);
+    }
+  } catch (err) {
+    log.warn(
+      '[migration] auto-rotate post-migration failed (non-fatal — migration itself succeeded; operator should rotate manually):',
+      err,
+    );
+  }
+
   await db.execute(sql`
     UPDATE mail_migration_runs
     SET state = 'done', current_step = 'complete', finished_at = now()
@@ -1127,6 +1180,30 @@ async function runMigrationStateMachine(
   }
 
   log.info(`[migration] run ${runId}: migration to ${targetNode} complete`);
+}
+
+/**
+ * Read the `mail_auto_rotate_on_migration` flag from platform_settings.
+ * Default ON (true) when the key is absent — security-conservative
+ * default: rotate password whenever mail relocates, because the most
+ * common migration trigger is "node compromised / drained for security
+ * reasons" and the rotated key blocks any leaked credential from being
+ * usable on the new node.
+ *
+ * Operators can opt out by setting `mail_auto_rotate_on_migration = false`
+ * (e.g., they pre-share the password to a monitoring tool that they
+ * don't want to re-configure on every migration).
+ */
+async function readAutoRotateOnMigrationFlag(db: Database): Promise<boolean> {
+  const { platformSettings } = await import('../../db/schema.js');
+  const [row] = await db
+    .select({ value: platformSettings.value })
+    .from(platformSettings)
+    .where(eq(platformSettings.key, 'mail_auto_rotate_on_migration'));
+  if (!row || row.value === null) return true;
+  const v = String(row.value).trim().toLowerCase();
+  // Defensive: treat any non-explicit-false as ON.
+  return v !== 'false' && v !== '0' && v !== 'no' && v !== 'off';
 }
 
 // ── PVC helpers ───────────────────────────────────────────────────────────────
