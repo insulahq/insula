@@ -1101,21 +1101,30 @@ fi
 
 phase "Phase L — per-route config matrix"
 
-# L0: discover an existing tenant route to operate on. Use the SAME
-# DB query Phase K uses for symmetry; both phases mutate different
-# config surfaces of the same route safely (L sets redirect/rate/etc;
-# K manages waf_rule_exclusions rows).
+# L0: discover an existing tenant route with a WORKING backend (deployment
+# or private_worker). Routes without a backend resolve to no IngressRoute
+# (annotation-sync skips them), so probing them returns Traefik's default
+# 404 regardless of any Middleware config — every L1-L7 assertion would
+# false-fail. Filter both target columns at the SQL layer.
+#
+# Phase K uses a looser filter because it tests waf_rule_exclusion DB
+# CRUD (no probe), so backend-less routes are fine there.
+#
+# When no working tenant route exists (clean staging install with no
+# tenant deployments), Phase L gracefully skips — to get coverage,
+# run `integration-staging.sh https` first to seed a fixture route.
 l_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
   SELECT d.tenant_id, ir.id, ir.hostname
   FROM ingress_routes ir
   JOIN domains d ON d.id = ir.domain_id
   WHERE d.tenant_id IS NOT NULL
+    AND (ir.deployment_id IS NOT NULL OR ir.private_worker_id IS NOT NULL)
   ORDER BY ir.created_at DESC
   LIMIT 1;
 \"" 2>/dev/null | tr -d '\r' | grep -E '^[a-f0-9-]+\|[a-f0-9-]+\|' || true)
 
 if [[ -z "$l_route_tuple" ]]; then
-  warn "L: no tenant routes on this cluster — phase skipped"
+  warn "L: no tenant routes with a backend on this cluster — phase skipped (seed one via 'integration-staging.sh https' for coverage)"
 else
   L_TENANT_ID=$(echo "$l_route_tuple" | cut -d'|' -f1)
   L_ROUTE_ID=$(echo "$l_route_tuple" | cut -d'|' -f2)
