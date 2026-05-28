@@ -733,6 +733,35 @@ async function runMigrationStateMachine(
   const requiredBytes = Math.ceil(usedBytes * DISK_HEADROOM_RATIO);
   log.info(`[migration ${runId}] preflight: PVC requested=${usedBytes} bytes, target headroom=${requiredBytes}`);
 
+  // CRITICAL preflight (2026-05-28): the mail-stack co-locates Stalwart +
+  // Bulwark on the same local-path PVC, and the system-node-affinity
+  // Kustomize component pins EVERY platform Deployment (including Bulwark)
+  // to nodes labelled platform.phoenix-host.net/node-role=server. Migrating
+  // to a worker-role node leaves Bulwark stuck in Pending forever (HARD
+  // nodeAffinity, no preferredDuringScheduling fallback) and the migration
+  // state machine stuck in scaling-up. Refuse fast with a clear error so
+  // operators don't burn 10 minutes on an impossible target.
+  try {
+    const node = await core.readNode({ name: targetNode } as unknown as Parameters<typeof core.readNode>[0]) as { metadata?: { labels?: Record<string, string> } };
+    const role = node.metadata?.labels?.['platform.phoenix-host.net/node-role'];
+    if (role && role !== 'server') {
+      await failRun(
+        db, runId,
+        `target node '${targetNode}' has role '${role}', but the mail-stack requires a server-role node ` +
+        `(Bulwark has a required nodeAffinity to node-role=server via the system-node-affinity Kustomize ` +
+        `component; Stalwart and Bulwark must co-locate on the same PVC). Choose a node with ` +
+        `platform.phoenix-host.net/node-role=server, or relabel the target before migrating.`,
+        taskId,
+      );
+      return;
+    }
+  } catch (err) {
+    // readNode failures are rare; let the existing restore-readiness
+    // preflight surface them with its own diagnostics rather than
+    // double-failing here.
+    log.warn(`[migration ${runId}] node-role preflight: readNode(${targetNode}) failed (${(err as Error).message}); deferring to next preflight`);
+  }
+
   // CRITICAL preflight (2026-05-27): before the destructive PVC swap,
   // verify the target node has a viable RESTORE PATH. Without this
   // check, an operator can move mail to a node that has neither FAST
