@@ -4383,9 +4383,19 @@ STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # 2026-05-16: also CONFIRMED that Stalwart 0.16 blocks the .local TLD
 # entirely on auth ('AUTHENTICATIONFAILED master.local' even with
 # correct password + Admin role) — anchor the master Account under
-# the platform's base domain instead, which is always a real TLD.
-# The master Account is provisioned by provision_stalwart_master_user().
-STALWART_MASTER_USER=master@${PLATFORM_DOMAIN}
+# the platform's mail apex (mail.<PLATFORM_DOMAIN>) instead, which is
+# always a real TLD AND matches the cert SAN / DNS that Stalwart uses
+# for its own SMTP/IMAP/JMAP endpoints.
+# 2026-05-28: was master@${PLATFORM_DOMAIN} — moved to
+# master@mail.${PLATFORM_DOMAIN} so the principal lives in the same
+# Domain Stalwart actually serves mail for (tenants own arbitrary
+# user-domains; the platform-controlled mail apex is the only Domain
+# guaranteed to be platform-managed). Also tightens the JMAP-rotation
+# scoped lookup so a tenant who provisions master@<their-tenant>
+# cannot collide. The master Account is provisioned by
+# provision_stalwart_master_user(); rotation/auto-reseed live in
+# backend/src/modules/mail-admin/rotate-webmail-master.ts.
+STALWART_MASTER_USER=master@mail.${PLATFORM_DOMAIN}
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
     chmod 600 /etc/platform/stalwart-credentials
@@ -4545,7 +4555,7 @@ STALWART016_EOF
     kctl create secret generic mail-secrets \
       --namespace=mail \
       --from-literal=JWT_AUTH_SECRET="$rc_jwt" \
-      --from-literal=STALWART_MASTER_USER="master@${PLATFORM_DOMAIN}" \
+      --from-literal=STALWART_MASTER_USER="master@mail.${PLATFORM_DOMAIN}" \
       --from-literal=STALWART_MASTER_PASSWORD="$rc_master_pw" \
       --from-literal=ROUNDCUBEMAIL_DES_KEY="$rc_des" \
       --from-literal=ROUNDCUBEMAIL_DB_HOST="system-db-rw.platform.svc.cluster.local" \
@@ -4623,7 +4633,7 @@ RCEOF
       bw_master_pw="$(openssl rand -base64 32 | tr -d '\n')"
       log "mail-secrets not found — generated fresh Stalwart master password for Bulwark-only deployment."
     fi
-    bw_master_user="${BULWARK_MASTER_USER:-master@${PLATFORM_DOMAIN}}"
+    bw_master_user="${BULWARK_MASTER_USER:-master@mail.${PLATFORM_DOMAIN}}"
     # Pipe stringData via stdin to avoid placing the HMAC secret in the
     # process command-line (visible in /proc/<pid>/cmdline for the
     # duration of kubectl create — review fix H2).
@@ -4667,7 +4677,7 @@ BWEOF
         warn "mail-secrets missing STALWART_MASTER_PASSWORD — skipping bulwark-secrets migration."
         warn "Provision STALWART_MASTER_PASSWORD on mail-secrets OR provide BULWARK_STALWART_MASTER_PASSWORD env to bootstrap.sh, then re-run."
       else
-        mig_master_user="${BULWARK_MASTER_USER:-master@${PLATFORM_DOMAIN}}"
+        mig_master_user="${BULWARK_MASTER_USER:-master@mail.${PLATFORM_DOMAIN}}"
         # Stream the new keys via stdin (avoid leaking the HMAC in `ps`).
         local mig_patch
         mig_patch=$(cat <<PATCH
@@ -5218,15 +5228,28 @@ provision_stalwart_master_user() {
 
   # Write MASTER_PW to a Secret so it never appears in pod spec env.
   # Also stamp MASTER_DOMAIN here so the provisioning pod knows which
-  # Stalwart Domain to anchor the master Account in. 2026-05-16:
-  # changed from the synthetic `master.local` to the platform's
-  # base domain because Stalwart 0.16 hard-blocks the .local TLD on
-  # auth (AUTHENTICATIONFAILED master.local regardless of password).
-  # The platform base domain is always a real TLD so it works.
+  # Stalwart Domain to anchor the master Account in.
+  #
+  # History:
+  #   2026-05-16: changed from the synthetic `master.local` to the
+  #               platform base domain (PLATFORM_DOMAIN) because
+  #               Stalwart 0.16 hard-blocks the .local TLD on auth.
+  #   2026-05-28: moved from PLATFORM_DOMAIN to mail.PLATFORM_DOMAIN so
+  #               the master Account lives in the same Stalwart Domain
+  #               Stalwart actually serves mail for. This (a) matches
+  #               the cert SAN / DNS that Stalwart already uses for
+  #               its SMTP/IMAP/JMAP endpoints, and (b) prevents a
+  #               tenant who provisions a `master@<their-tenant-domain>`
+  #               mailbox from colliding with the platform's master
+  #               (the rotation flow scopes the JMAP lookup to this
+  #               Domain). Stale Accounts in the PLATFORM_DOMAIN
+  #               Domain are detected + destroyed in the same
+  #               "STALE_ACCT" branch below as the historical
+  #               master.local migration — no extra step needed.
   kctl create secret generic "${params_secret}" \
     --namespace=mail \
     --from-literal=MASTER_PW="${master_pw}" \
-    --from-literal=MASTER_DOMAIN="${PLATFORM_DOMAIN}" \
+    --from-literal=MASTER_DOMAIN="mail.${PLATFORM_DOMAIN}" \
     --dry-run=client -o yaml | kctl apply -n mail -f - >/dev/null
 
   cat <<EOF | kctl apply -n mail -f - >/dev/null
