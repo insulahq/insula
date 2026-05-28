@@ -1,4 +1,16 @@
 import { z } from 'zod';
+import { cronExpressionSchema } from './cron-expression.js';
+
+// ─── Retention bounds (shared by row + PATCH) ──────────────────────────
+//
+// Practical caps so an operator typo can't request 999999 days of
+// retention or schedule restic forget on a billion-snapshot history.
+// 3650d = 10y is the same cap used elsewhere (system-wal-archive,
+// tenant-bundles). 10000 count is well above any plausible use case
+// at the snapshot-every-2-min cadence (would need ~14 days of full
+// history before forget starts dropping things).
+const RETENTION_DAYS_MAX = 3650;
+const RETENTION_COUNT_MAX = 10000;
 
 /**
  * Phase A.1 of the backup UI consolidation — uniform schedule shape
@@ -30,12 +42,12 @@ export type BackupScheduleSubsystem = z.infer<typeof backupScheduleSubsystemEnum
 export const backupScheduleSchema = z.object({
   subsystem: z.string().min(1).max(64),
   enabled: z.boolean(),
-  /** 5-field cron expression. Optional for subsystems with no cron. */
-  cronExpression: z.string().min(1).max(128).nullable(),
-  /** Days to keep, or null when not applicable. */
-  retentionDays: z.number().int().nonnegative().nullable(),
-  /** Count-based retention (e.g. restic --keep-last). */
-  retentionCount: z.number().int().nonnegative().nullable(),
+  /** Strictly-validated 5-field cron expression. Null for subsystems with no cron. */
+  cronExpression: cronExpressionSchema.nullable(),
+  /** Days to keep, capped at 10y to prevent typos. Null = no day-based retention. */
+  retentionDays: z.number().int().nonnegative().max(RETENTION_DAYS_MAX).nullable(),
+  /** restic --keep-last count, capped at 10000. Null = no count-based retention. */
+  retentionCount: z.number().int().nonnegative().max(RETENTION_COUNT_MAX).nullable(),
   updatedAt: z.string().datetime(),
   updatedBy: z.string().nullable(),
   /** When enabled=false, which class needs a target before enable is allowed. */
@@ -59,8 +71,22 @@ export type ListSubsystemBackupSchedulesResponse = z.infer<typeof listSubsystemB
 
 export const updateBackupScheduleSchema = z.object({
   enabled: z.boolean().optional(),
-  cronExpression: z.string().min(1).max(128).nullable().optional(),
-  retentionDays: z.number().int().nonnegative().nullable().optional(),
-  retentionCount: z.number().int().nonnegative().nullable().optional(),
-});
+  cronExpression: cronExpressionSchema.nullable().optional(),
+  retentionDays: z.number().int().nonnegative().max(RETENTION_DAYS_MAX).nullable().optional(),
+  retentionCount: z.number().int().nonnegative().max(RETENTION_COUNT_MAX).nullable().optional(),
+}).refine(
+  // Reject "both zero" — restic forget requires at least one --keep-*
+  // flag, and an operator setting both to 0 effectively means "never
+  // forget" which is rarely intended (snapshot-upload.sh falls back to
+  // --keep-last 48 in that case, masking the bad setting). Surface the
+  // intent error at the API.
+  (data) => {
+    if (data.retentionDays === 0 && data.retentionCount === 0) return false;
+    return true;
+  },
+  {
+    message: 'retentionDays and retentionCount cannot both be 0 — restic forget needs at least one to keep snapshots',
+    path: ['retentionCount'],
+  },
+);
 export type UpdateBackupScheduleInput = z.infer<typeof updateBackupScheduleSchema>;
