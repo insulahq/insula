@@ -57,6 +57,9 @@ export class WafRuleExclusionError extends Error {
  * by the admin WhitelistRuleModal pre-fill, but lives server-side
  * here because tenants don't get to choose the regex — the server
  * derives it from the route they're operating on.
+ *
+ * Exported via `__test` only — unit-test target. The service-layer
+ * call sites read it from this module's scope, not via the export.
  */
 const buildHostnameRegexFromHostname = (hostname: string): string => {
   const escaped = hostname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -491,3 +494,14 @@ export const deleteExclusionForTenantRoute = async (
     await tx.delete(wafRuleExclusions).where(eq(wafRuleExclusions.id, id));
   });
 };
+
+/**
+ * Test-only exports. Pure helpers that don't need a real DB or k8s
+ * client to validate. Use via `import { __test } from './service.js'`
+ * in *.test.ts files. Lives at end-of-module so all referenced
+ * symbols are initialised by the time the const is evaluated.
+ */
+export const __test = {
+  buildHostnameRegexFromHostname,
+  rowToContract,
+} as const;
