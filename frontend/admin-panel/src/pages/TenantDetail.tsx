@@ -12,7 +12,10 @@ import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
-import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
+// BackupScheduleEditor removed 2026-05-28 — tenants no longer have
+// per-tenant schedules. The platform-global `backup_schedules.tenant_bundle`
+// runs daily for all eligible tenants. To control which tenants get
+// included, use Settings → Backups → Schedules + the per-plan flag.
 import { useDeployments, useRestartDeployment, useBulkRestartDeployments, useDeleteDeployment, useUpdateDeployment, useSetCustomDeploymentAllowRoot } from '@/hooks/use-deployments';
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
@@ -538,7 +541,6 @@ export default function TenantDetail() {
           {activeTab === 'email' && <EmailTab tenantId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
           {activeTab === 'backups' && (
             <div className="space-y-4">
-              {id && <BackupScheduleEditor tenantId={id} />}
               <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />
             </div>
           )}

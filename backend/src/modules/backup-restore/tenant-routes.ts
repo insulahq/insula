@@ -58,6 +58,10 @@ import {
 } from './tenant-restore-policy.js';
 import { snapshotTenant, rollbackToSnapshot } from '../storage-lifecycle/service.js';
 import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
+import { runBundle } from '../tenant-bundles/orchestrator.js';
+import { resolveShimBackupStore } from '../tenant-bundles/shim-backup-store.js';
+import { resolveDirectStoreForBundle } from './shared.js';
+import { backupConfigurations, hostingPlans } from '../../db/schema.js';
 
 /**
  * Assert a resource (bundle, cart) belongs to the path-param tenant.
@@ -485,6 +489,117 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       throw new ApiError('ROLLBACK_FAILED', `Rollback dispatch failed: ${(err as Error).message}`, 500);
     }
+  });
+
+  // ── POST /api/v1/tenants/:tenantId/bundles/run-now ─────────────────
+  // On-demand bundle capture initiated by the tenant. Returns the new
+  // bundle id immediately; the orchestrator runs async. Frontend
+  // polls GET /tenants/:tenantId/bundles to see status flip to
+  // `running` → `completed`. Phase 4 follow-up will add detailed
+  // step events.
+  app.post('/tenants/:tenantId/bundles/run-now', {
+    schema: { tags: ['Tenant Restore'], summary: 'Trigger an on-demand tenant bundle', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+
+    // Tenant must exist + not be archived.
+    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
+    if (tenant.status === 'archived') {
+      throw new ApiError('VALIDATION_ERROR', 'Cannot back up an archived tenant', 400);
+    }
+
+    // Resolve the platform's `tenant`-class backup target. The
+    // operator may not have assigned one yet; surface a clear error.
+    const [activeCfg] = await app.db.select().from(backupConfigurations)
+      .where(eq(backupConfigurations.active, true)).limit(1);
+    if (!activeCfg) {
+      throw new ApiError(
+        'NO_BACKUP_TARGET',
+        'No active backup target configured. Contact your platform administrator.',
+        409,
+      );
+    }
+
+    // Plan-bound retention (tenant cannot bypass).
+    const [plan] = await app.db.select({
+      defaultDays: hostingPlans.defaultBackupRetentionDays,
+      maxDays: hostingPlans.maxBackupRetentionDays,
+    }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
+    if (!plan) throw new ApiError('CONFIG_INVALID', 'Tenant has no resolvable plan', 400);
+    const retentionDays = plan.defaultDays;
+
+    // B9 routing parity: tenant bundles go through the rclone-shim.
+    let store;
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8sClients = createK8sClients(kubeconfigPath);
+      store = await resolveShimBackupStore(k8sClients.core, 'tenant', { log: app.log });
+    } catch (err) {
+      app.log.warn({ err }, 'tenant-restore run-now: shim unavailable, falling back to direct store');
+      store = await resolveDirectStoreForBundle(app, activeCfg.id);
+    }
+
+    let k8s;
+    try {
+      const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      k8s = createK8sClients(kc);
+    } catch (err) {
+      app.log.warn({ err }, 'tenant-restore run-now: k8s clients unavailable');
+      k8s = undefined;
+    }
+
+    const platformApiUrl = (app.config as Record<string, unknown>).PLATFORM_API_INTERNAL_URL as string | undefined
+      ?? process.env.PLATFORM_API_INTERNAL_URL
+      ?? 'http://platform-api.platform.svc:3000';
+    const platformVersion = (app.config as Record<string, unknown>).PLATFORM_VERSION as string | undefined ?? '0.0.0';
+    const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+      ?? process.env.PLATFORM_ENCRYPTION_KEY;
+    if (!configuredKey && process.env.NODE_ENV === 'production') {
+      throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
+    }
+    const secretsKeyHex = configuredKey ?? '0'.repeat(64);
+
+    const triggeredByUserId = request.user?.sub ?? null;
+
+    // Fire-and-forget; returns the eventual bundleId via the awaitable
+    // result. We DO wait for the orchestrator's pre-flight (insert
+    // backup_jobs row) so the client gets a valid bundle id back.
+    const result = await runBundle(
+      {
+        db: app.db,
+        k8s,
+        store,
+        platformVersion,
+        secretsKeyHex,
+        platformApiUrl,
+        platformBaseDomain: (app.config as Record<string, unknown>).PLATFORM_BASE_DOMAIN as string | undefined
+          ?? (app.config as Record<string, unknown>).INGRESS_BASE_DOMAIN as string | undefined,
+        kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+      },
+      {
+        tenantId,
+        initiator: 'admin', // 'tenant' is not in the backup_initiator enum;
+                            // 'admin' is the closest match meaning
+                            // "interactive user-initiated" (vs 'system' for
+                            // scheduler-driven). Audit log captures the
+                            // tenant_admin user id via triggeredByUserId.
+        systemTrigger: null,
+        label: 'tenant-run-now',
+        description: null,
+        retentionDays,
+        targetConfigId: activeCfg.id,
+        targetUri: `${store.kind}://${activeCfg.id}`,
+        components: { files: true, mailboxes: true, config: true, secrets: true },
+        triggeredByUserId,
+      },
+    );
+
+    reply.status(202).send(success({
+      bundleId: result.bundleId,
+      status: result.status,
+      message: 'Bundle started. Poll /tenants/:tenantId/bundles to watch progress.',
+    }));
   });
 
   // ── Helper exports for tests (not used in routing) ────────────────
