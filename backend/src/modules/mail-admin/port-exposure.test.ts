@@ -300,13 +300,18 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
   });
 
   /**
-   * Build a DB that responds differently to the two select chains used
-   * by ensureMailPortExposureApplied:
-   *   1. select tasks where kind=mail.port-exposure AND status=running LIMIT 1
-   *   2. select systemSettings.mailPortExposureMode where id='system'
+   * Build a DB that explicitly dispatches on the table passed to .from():
+   *   - tasks         → tasks-query chain (has .limit())
+   *   - systemSettings → settings chain (no .limit())
    *
-   * `runningTasks` controls chain #1 — set to [] for "no running task"
-   * or [{ id: '...' }] to simulate an in-flight operator PATCH.
+   * Discriminating by `table.constructor.name`-equivalent (Drizzle's
+   * pgTable objects expose a Symbol-keyed name; we use a structural
+   * check on a known column-set marker the production code passes in).
+   *
+   * This replaces the prior order-sensitive mock — see code review
+   * 2026-05-28 HIGH finding: the previous mock returned correct values
+   * by coincidence of which chain called .limit(), so deleting the
+   * guard wouldn't have made the tests fail.
    */
   function buildRaceDb(opts: {
     runningTasks: Array<{ id: string }>;
@@ -314,21 +319,24 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
   }) {
     return {
       select: vi.fn(() => ({
-        from: vi.fn((_table: unknown) => ({
-          // Tasks-query chain has .limit(); systemSettings chain ends
-          // at .where(). Both branches return Thenable arrays.
-          where: vi.fn(() => {
-            const result = opts.runningTasks; // tasks-query branch
-            // Return an object that BOTH (a) is awaitable resolving
-            // to the systemSettings row AND (b) has .limit() for the
-            // tasks-query branch.
-            const arr = result.length ? result : null;
-            return Object.assign(
-              Promise.resolve(arr ? [] : [{ v: opts.mode }]),
-              { limit: vi.fn().mockResolvedValue(opts.runningTasks) },
-            );
-          }),
-        })),
+        from: vi.fn((table: unknown) => {
+          // pgTable identity: Drizzle exposes column names on the table
+          // object as own properties. `id` is on tasks; `id` + a
+          // distinct column is on systemSettings. Discriminate on the
+          // presence of `mailPortExposureMode`.
+          const isSettings = typeof table === 'object'
+            && table !== null
+            && 'mailPortExposureMode' in (table as Record<string, unknown>);
+          return {
+            where: vi.fn(() => {
+              if (isSettings) {
+                return Promise.resolve([{ v: opts.mode }]);
+              }
+              // tasks chain — returns object with awaitable .limit()
+              return { limit: vi.fn().mockResolvedValue(opts.runningTasks) };
+            }),
+          };
+        }),
       })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({
@@ -351,6 +359,36 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
     expect(mockCreateDs).not.toHaveBeenCalled();
     expect(mockDeleteDs).not.toHaveBeenCalled();
     expect(mockPatchDeployment).not.toHaveBeenCalled();
+  });
+
+  it('asserts the tasks query is actually issued (guard is exercised, not bypassed)', async () => {
+    // Mock that tracks which TABLE was passed to .from(). If the
+    // production code never queries `tasks`, the guard is dead code
+    // and the SKIPS-test above would silently pass for the wrong
+    // reason (caught 2026-05-28 code review HIGH finding).
+    const tablesQueried: string[] = [];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn((table: unknown) => {
+          // Identify the table by presence of marker columns.
+          if (typeof table === 'object' && table !== null) {
+            if ('kind' in (table as Record<string, unknown>) && 'status' in (table as Record<string, unknown>)) {
+              tablesQueried.push('tasks');
+            } else if ('mailPortExposureMode' in (table as Record<string, unknown>)) {
+              tablesQueried.push('systemSettings');
+            }
+          }
+          return {
+            where: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue([{ id: 'block' }]),
+            })),
+          };
+        }),
+      })),
+    } as unknown as import('../../db/index.js').Database;
+    const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined });
+    expect(tablesQueried[0]).toBe('tasks');
   });
 
   it('PROCEEDS with reconciliation when no port-exposure task is running', async () => {
