@@ -1138,6 +1138,26 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => drWatcherStop());
 
+        // Migration orphan reconciler — sweeps mail_migration_runs rows
+        // older than 2h that are stuck in non-terminal state. Without
+        // this, any platform-api restart mid-migration leaves a row
+        // pinned in `running` forever and blocks every subsequent
+        // migration with MAIL_MIGRATION_ALREADY_RUNNING. 5-min cadence
+        // — orchestration is rare and 2h grace window is well past the
+        // worst-case real run time.
+        const migrationReconcilerTimer = setInterval(async () => {
+          try {
+            const { reconcileAbandonedMailMigrations } = await import('./modules/mail-admin/migration.js');
+            await reconcileAbandonedMailMigrations(app.db, {
+              info: (m) => app.log.info(m),
+              warn: (m) => app.log.warn(m),
+            });
+          } catch (err) {
+            app.log.warn({ err }, '[migration-reconciler] tick error');
+          }
+        }, 5 * 60_000);
+        app.addHook('onClose', () => clearInterval(migrationReconcilerTimer));
+
         // Proxy-networks reconciler: keeps Stalwart's `proxyNetworks` on every
         // mail NetworkListener in sync with the cluster's server-role node IPs.
         // Required for haproxy DaemonSet (allServerNodes mode) to forward
