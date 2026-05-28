@@ -16,7 +16,30 @@ import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, Save, Power, PowerOff } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
-import type { BackupScheduleRow } from '@k8s-hosting/api-contracts';
+import { validateCronExpression, type BackupScheduleRow } from '@k8s-hosting/api-contracts';
+
+// Mirror the backend bounds so the operator sees the constraint inline
+// rather than after PATCH. Keep in sync with backup-schedules.ts.
+const RETENTION_DAYS_MAX = 3650;
+const RETENTION_COUNT_MAX = 10000;
+
+function validateRetentionDays(s: string): string | null {
+  if (s === '') return null;
+  const n = Number(s);
+  if (!Number.isInteger(n)) return 'must be an integer';
+  if (n < 0) return 'must be ≥ 0';
+  if (n > RETENTION_DAYS_MAX) return `must be ≤ ${RETENTION_DAYS_MAX} (10 years)`;
+  return null;
+}
+
+function validateRetentionCount(s: string): string | null {
+  if (s === '') return null;
+  const n = Number(s);
+  if (!Number.isInteger(n)) return 'must be an integer';
+  if (n < 0) return 'must be ≥ 0';
+  if (n > RETENTION_COUNT_MAX) return `must be ≤ ${RETENTION_COUNT_MAX}`;
+  return null;
+}
 
 interface Props {
   readonly subsystem: 'mail' | 'tenant_bundle' | 'system_pitr' | 'longhorn_recurring';
@@ -61,6 +84,21 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
   const retentionDaysDirty = !!row && retentionDaysDraft !== (row.retentionDays?.toString() ?? '');
   const retentionCountDirty = !!row && retentionCountDraft !== (row.retentionCount?.toString() ?? '');
   const dirty = cronDirty || retentionDaysDirty || retentionCountDirty;
+
+  // Per-field validation surfaces inline below each input. Empty is
+  // allowed (treated as "clear this field" → null on PATCH).
+  const cronError = cronDraft === '' ? null : validateCronExpression(cronDraft);
+  const retentionDaysError = validateRetentionDays(retentionDaysDraft);
+  const retentionCountError = validateRetentionCount(retentionCountDraft);
+
+  // Cross-field: both retention fields zero would make restic forget
+  // refuse — the backend enforces this too, but show it before PATCH.
+  const bothZero = retentionDaysDraft === '0' && retentionCountDraft === '0';
+  const combinedError = bothZero
+    ? 'retentionDays and retentionCount cannot both be 0 — restic forget needs at least one'
+    : null;
+
+  const hasError = !!(cronError || retentionDaysError || retentionCountError || combinedError);
 
   if (isLoading) {
     return (
@@ -136,8 +174,20 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             onChange={(e) => setCronDraft(e.target.value)}
             placeholder="0 2 * * *"
             data-testid={`schedule-cron-${subsystem}`}
-            className="mt-1 w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 font-mono text-sm text-gray-900 dark:text-gray-100"
+            aria-invalid={!!cronError}
+            className={`mt-1 w-full rounded-md border bg-white dark:bg-gray-800 px-2 py-1.5 font-mono text-sm text-gray-900 dark:text-gray-100 ${
+              cronError
+                ? 'border-rose-400 dark:border-rose-600 focus:ring-rose-300'
+                : 'border-gray-300 dark:border-gray-600'
+            }`}
           />
+          {cronError ? (
+            <p className="mt-1 text-xs text-rose-600 dark:text-rose-400" data-testid={`schedule-cron-error-${subsystem}`}>
+              {cronError}
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-gray-500">5 fields: min hour day-of-month month day-of-week</p>
+          )}
         </div>
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retdays-${subsystem}`}>Retention (days)</label>
@@ -145,11 +195,22 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             id={`retdays-${subsystem}`}
             type="number"
             min={0}
+            max={RETENTION_DAYS_MAX}
             value={retentionDaysDraft}
             onChange={(e) => setRetentionDaysDraft(e.target.value)}
             data-testid={`schedule-retention-days-${subsystem}`}
-            className="mt-1 w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+            aria-invalid={!!retentionDaysError}
+            className={`mt-1 w-full rounded-md border bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100 ${
+              retentionDaysError
+                ? 'border-rose-400 dark:border-rose-600'
+                : 'border-gray-300 dark:border-gray-600'
+            }`}
           />
+          {retentionDaysError && (
+            <p className="mt-1 text-xs text-rose-600 dark:text-rose-400" data-testid={`schedule-retention-days-error-${subsystem}`}>
+              {retentionDaysError}
+            </p>
+          )}
         </div>
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retcount-${subsystem}`}>Retention (keep last N)</label>
@@ -157,26 +218,44 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             id={`retcount-${subsystem}`}
             type="number"
             min={0}
+            max={RETENTION_COUNT_MAX}
             value={retentionCountDraft}
             onChange={(e) => setRetentionCountDraft(e.target.value)}
             data-testid={`schedule-retention-count-${subsystem}`}
-            className="mt-1 w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+            aria-invalid={!!retentionCountError}
+            className={`mt-1 w-full rounded-md border bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100 ${
+              retentionCountError
+                ? 'border-rose-400 dark:border-rose-600'
+                : 'border-gray-300 dark:border-gray-600'
+            }`}
           />
+          {retentionCountError && (
+            <p className="mt-1 text-xs text-rose-600 dark:text-rose-400" data-testid={`schedule-retention-count-error-${subsystem}`}>
+              {retentionCountError}
+            </p>
+          )}
         </div>
       </div>
+
+      {combinedError && (
+        <div className="rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" data-testid={`schedule-combined-error-${subsystem}`}>
+          {combinedError}
+        </div>
+      )}
 
       {dirty && (
         <div className="flex justify-end">
           <button
             type="button"
-            disabled={mutation.isPending}
+            disabled={mutation.isPending || hasError}
             onClick={() => mutation.mutate({
               cronExpression: cronDirty ? (cronDraft || null) : undefined,
               retentionDays: retentionDaysDirty ? (retentionDaysDraft ? parseInt(retentionDaysDraft, 10) : null) : undefined,
               retentionCount: retentionCountDirty ? (retentionCountDraft ? parseInt(retentionCountDraft, 10) : null) : undefined,
             })}
             data-testid={`schedule-save-${subsystem}`}
-            className="inline-flex items-center gap-2 rounded-lg border border-brand-500 bg-brand-500 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-brand-500 bg-brand-500 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            title={hasError ? 'Fix validation errors before saving' : undefined}
           >
             <Save size={14} />
             Save schedule
