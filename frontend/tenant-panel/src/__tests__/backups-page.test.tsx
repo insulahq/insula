@@ -13,8 +13,7 @@ import Backups from '../pages/Backups';
 
 vi.mock('../hooks/use-tenant-backups', () => ({
   useTenantBundles: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false })),
-  useTenantSchedule: vi.fn(() => ({ data: { data: null }, isLoading: false })),
-  useUpdateTenantSchedule: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, error: null })),
+  useRunBundleNow: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, error: null })),
   downloadTenantDataExport: vi.fn(),
 }));
 

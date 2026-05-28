@@ -98,6 +98,7 @@ import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal
 import { backupsV2InternalDownloadRoutes } from './modules/tenant-bundles/internal-download-route.js';
 import { backupsV2ClientRoutes } from './modules/tenant-bundles/tenant-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
+import { tenantRestoreRoutes } from './modules/backup-restore/tenant-routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
@@ -139,7 +140,8 @@ import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startRetentionScheduler } from './modules/tenant-bundles/retention.js';
-import { startBackupScheduleTick } from './modules/tenant-bundles/schedule.js';
+// startBackupScheduleTick (legacy per-tenant scheduler) retired 2026-05-28;
+// see app.ts inline note where the wiring was removed.
 // M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
@@ -491,6 +493,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupsV2InternalDownloadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2ClientRoutes, { prefix: '/api/v1' });
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
+  await app.register(tenantRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
@@ -772,16 +775,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'tenant-backup retention: scheduler startup skipped');
       }
 
-      // Tenant Backup Tier-1 scheduler — fans out scheduled bundles
-      // for tenants whose tenant_backup_schedules.last_run_at is
-      // older than the configured frequency (daily/weekly/monthly).
-      // Cross-replica CAS via UPDATE ... RETURNING serialises ticks.
-      try {
-        const scheduleTimer = startBackupScheduleTick(app);
-        app.addHook('onClose', () => clearInterval(scheduleTimer));
-      } catch (err) {
-        app.log.warn({ err }, 'tenant-backup schedule: scheduler startup skipped');
-      }
+      // Legacy per-tenant scheduler retired 2026-05-28. The global
+      // scheduler (startGlobalBundleScheduler below) replaces it —
+      // single cron drives bundles for every eligible tenant. The
+      // legacy tenant_backup_schedules table is dropped in migration
+      // 0034. Keep the import path alive so `await import('./schedule.js')`
+      // inside global-scheduler can still resolve `runOneScheduledBundle`.
 
       // Phase A.4 of the backup UI consolidation: system-wide
       // tenant-bundle scheduler. Reads backup_schedules.tenant_bundle

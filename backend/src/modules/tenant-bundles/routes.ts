@@ -5,7 +5,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans, tenantBackupSchedules } from '../../db/schema.js';
+import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans } from '../../db/schema.js';
 import {
   BACKUP_META_SCHEMA_VERSION,
   createBundleSchema,
@@ -1578,166 +1578,11 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.status(204).send();
   });
 
-  // ── GET /api/v1/admin/backup-schedules ─────────────────────────────
-  // Global list of every per-tenant schedule, joined with the tenant's
-  // business_name for display. Powers the "Schedules" tab on the
-  // Tenant Backup admin page. We left-join so a stale schedule row
-  // pointing at a deleted tenant still surfaces (operator sees
-  // businessName=null and can prune).
-  app.get('/admin/backup-schedules', {
-    schema: { tags: ['TenantBundles'], summary: 'List all tenant backup schedules', security: [{ bearerAuth: [] }] },
-  }, async () => {
-    const rows = await app.db
-      .select({
-        tenantId: tenantBackupSchedules.tenantId,
-        enabled: tenantBackupSchedules.enabled,
-        frequency: tenantBackupSchedules.frequency,
-        hourOfDayUtc: tenantBackupSchedules.hourOfDayUtc,
-        dayOfWeek: tenantBackupSchedules.dayOfWeek,
-        dayOfMonth: tenantBackupSchedules.dayOfMonth,
-        retentionDays: tenantBackupSchedules.retentionDays,
-        lastRunAt: tenantBackupSchedules.lastRunAt,
-        lastRunStatus: tenantBackupSchedules.lastRunStatus,
-        businessName: tenants.name,
-      })
-      .from(tenantBackupSchedules)
-      .leftJoin(tenants, eq(tenantBackupSchedules.tenantId, tenants.id))
-      .orderBy(desc(tenantBackupSchedules.lastRunAt));
-    return success({
-      data: rows.map((r) => ({
-        tenantId: r.tenantId,
-        enabled: r.enabled,
-        frequency: r.frequency,
-        hourOfDayUtc: r.hourOfDayUtc,
-        dayOfWeek: r.dayOfWeek,
-        dayOfMonth: r.dayOfMonth,
-        retentionDays: r.retentionDays,
-        lastRunAt: r.lastRunAt ? r.lastRunAt.toISOString() : null,
-        lastRunStatus: r.lastRunStatus,
-        businessName: r.businessName,
-      })),
-    });
-  });
-
-  // ── GET /api/v1/admin/tenants/:tenantId/backup-schedule ────────────
-  // Returns the tenant's schedule row, or null when none exists yet.
-  app.get('/admin/tenants/:tenantId/backup-schedule', {
-    schema: { tags: ['TenantBundles'], summary: 'Get the tenant backup schedule', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const [row] = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    if (!row) return success(null);
-    return success({
-      tenantId: row.tenantId,
-      enabled: row.enabled,
-      frequency: row.frequency,
-      hourOfDayUtc: row.hourOfDayUtc,
-      dayOfWeek: row.dayOfWeek,
-      dayOfMonth: row.dayOfMonth,
-      retentionDays: row.retentionDays,
-      lastRunAt: row.lastRunAt ? row.lastRunAt.toISOString() : null,
-      lastRunStatus: row.lastRunStatus,
-    });
-  });
-
-  // ── PUT /api/v1/admin/tenants/:tenantId/backup-schedule ────────────
-  // Upsert the schedule row. PUT semantics — full row supplied each time.
-  app.put('/admin/tenants/:tenantId/backup-schedule', {
-    schema: { tags: ['TenantBundles'], summary: 'Upsert the tenant backup schedule', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const parsed = updateTenantBackupScheduleSchema.safeParse(request.body);
-    if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.issues.map((i) => i.message).join('; '), 400);
-    }
-    const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
-    // Plan retention cap applies here too (Tier-3 cannot bypass).
-    const [plan] = await app.db.select({
-      defaultDays: hostingPlans.defaultBackupRetentionDays,
-      maxDays: hostingPlans.maxBackupRetentionDays,
-    }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
-    if (!plan) throw new ApiError('CONFIG_INVALID', 'Tenant has no resolvable plan', 400);
-    const requestedRetention = parsed.data.retentionDays ?? plan.defaultDays;
-    if (requestedRetention > plan.maxDays) {
-      throw new ApiError(
-        'VALIDATION_ERROR',
-        `retentionDays ${requestedRetention} exceeds the plan's max_backup_retention_days (${plan.maxDays})`,
-        400,
-      );
-    }
-
-    // Upsert. Reset last_run_at when enabling so the next tick fires
-    // immediately; preserve when re-saving without flipping enable.
-    const existing = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    if (existing.length === 0) {
-      await app.db.insert(tenantBackupSchedules).values({
-        tenantId,
-        enabled: parsed.data.enabled ?? false,
-        frequency: parsed.data.frequency ?? 'weekly',
-        hourOfDayUtc: parsed.data.hourOfDayUtc ?? 3,
-        dayOfWeek: parsed.data.dayOfWeek ?? null,
-        dayOfMonth: parsed.data.dayOfMonth ?? null,
-        retentionDays: requestedRetention,
-      });
-    } else {
-      await app.db.update(tenantBackupSchedules).set({
-        enabled: parsed.data.enabled ?? existing[0]!.enabled,
-        frequency: parsed.data.frequency ?? existing[0]!.frequency,
-        hourOfDayUtc: parsed.data.hourOfDayUtc ?? existing[0]!.hourOfDayUtc,
-        dayOfWeek: parsed.data.dayOfWeek === undefined ? existing[0]!.dayOfWeek : parsed.data.dayOfWeek,
-        dayOfMonth: parsed.data.dayOfMonth === undefined ? existing[0]!.dayOfMonth : parsed.data.dayOfMonth,
-        retentionDays: requestedRetention,
-      }).where(eq(tenantBackupSchedules.tenantId, tenantId));
-    }
-    const [refreshed] = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    return success({
-      tenantId: refreshed!.tenantId,
-      enabled: refreshed!.enabled,
-      frequency: refreshed!.frequency,
-      hourOfDayUtc: refreshed!.hourOfDayUtc,
-      dayOfWeek: refreshed!.dayOfWeek,
-      dayOfMonth: refreshed!.dayOfMonth,
-      retentionDays: refreshed!.retentionDays,
-      lastRunAt: refreshed!.lastRunAt ? refreshed!.lastRunAt.toISOString() : null,
-      lastRunStatus: refreshed!.lastRunStatus,
-    });
-  });
-
-  // ── DELETE /api/v1/admin/tenants/:tenantId/backup-schedule ─────────
-  app.delete('/admin/tenants/:tenantId/backup-schedule', {
-    schema: { tags: ['TenantBundles'], summary: 'Disable + remove the tenant backup schedule', security: [{ bearerAuth: [] }] },
-  }, async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    await app.db.delete(tenantBackupSchedules).where(eq(tenantBackupSchedules.tenantId, tenantId));
-    reply.status(204).send();
-  });
-
-  // ── POST /api/v1/admin/tenants/:tenantId/backup-schedule/run-now ───
-  // Reset last_run_at on the tenant's schedule so the next Tier-1
-  // tick (within 5 min) picks it up. Operator-friendly affordance:
-  // lets you test a schedule without waiting for the natural next-due
-  // window. Requires the schedule to exist + be enabled.
-  app.post('/admin/tenants/:tenantId/backup-schedule/run-now', {
-    schema: { tags: ['TenantBundles'], summary: 'Force the next scheduler tick to fire this tenant immediately', security: [{ bearerAuth: [] }] },
-  }, async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const [row] = await app.db.select().from(tenantBackupSchedules)
-      .where(eq(tenantBackupSchedules.tenantId, tenantId)).limit(1);
-    if (!row) throw new ApiError('NOT_FOUND', 'No schedule for this tenant — create one first', 404);
-    if (!row.enabled) throw new ApiError('VALIDATION_ERROR', 'Schedule is disabled — enable it before requesting a run', 400);
-    // Setting last_run_at to NULL marks the row as "never run" which
-    // matches the eligibility predicate `last_run_at IS NULL` in
-    // schedule.ts.runScheduleTick. The cross-replica CAS still
-    // serialises if multiple admins hit Run-Now simultaneously.
-    await app.db.update(tenantBackupSchedules)
-      .set({ lastRunAt: null, lastRunStatus: null })
-      .where(eq(tenantBackupSchedules.tenantId, tenantId));
-    reply.send(success({ tenantId, message: 'Scheduled for next tick (within 5 minutes)' }));
-  });
+  // Per-tenant schedule admin endpoints (/admin/backup-schedules,
+  // /admin/tenants/:tenantId/backup-schedule[/run-now]) were retired
+  // 2026-05-28 with the tenant_backup_schedules table drop (migration
+  // 0034). Use /admin/backups/schedules/tenant_bundle to manage the
+  // platform-global schedule that drives ALL tenant bundles.
 }
 
 async function resolveStore(

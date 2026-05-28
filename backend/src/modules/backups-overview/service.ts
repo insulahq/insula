@@ -231,7 +231,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       WHERE tenant_id = t.id AND status NOT IN ('completed', 'failed', 'cancelled')
       ORDER BY created_at DESC LIMIT 1
     ) cart ON TRUE
-    WHERE t.status != 'deleted'
+    WHERE t.status != 'archived'
       ${opts.filter ? sql`AND t.name ILIKE ${'%' + opts.filter + '%'}` : sql``}
     ORDER BY t.is_system DESC, t.name
     LIMIT ${limit}
