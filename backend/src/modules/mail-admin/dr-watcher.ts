@@ -121,10 +121,36 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
         return;
       }
 
-      // Threshold exceeded — pick failover target.
-      const targetNode = settings.mailSecondaryNode ?? settings.mailTertiaryNode ?? null;
+      // Threshold exceeded — pick failover target. Walk the priority
+      // list (secondary then tertiary) skipping non-server-role nodes,
+      // since the mail-stack requires server-role per the
+      // system-node-affinity Kustomize component (Bulwark has a hard
+      // affinity to node-role=server). Picking a worker node here would
+      // cause the migration's preflight to fail-fast and leave the
+      // cluster in `degraded` state on the next dr-watcher tick — caught
+      // 2026-05-28 by Phase H of the mobility E2E when the operator had
+      // mistakenly set secondary=worker.
+      const candidates = [settings.mailSecondaryNode, settings.mailTertiaryNode].filter((n): n is string => !!n);
+      let targetNode: string | null = null;
+      const skippedNonServer: string[] = [];
+      for (const c of candidates) {
+        try {
+          const n = await core.readNode({ name: c } as unknown as Parameters<typeof core.readNode>[0]) as { metadata?: { labels?: Record<string, string> } };
+          const role = n.metadata?.labels?.['platform.example.test/node-role'];
+          if (role && role !== 'server') {
+            skippedNonServer.push(`${c}(role=${role})`);
+            continue;
+          }
+          targetNode = c;
+          break;
+        } catch {
+          // Node not found / API error — try the next candidate
+          skippedNonServer.push(`${c}(unreadable)`);
+        }
+      }
       if (!targetNode) {
-        log.warn('No secondary/tertiary node configured — cannot auto-failover. Set placement policy.');
+        const detail = skippedNonServer.length ? ` (skipped: ${skippedNonServer.join(', ')})` : '';
+        log.warn(`No viable secondary/tertiary node for auto-failover${detail}. Set a server-role node in placement.`);
         return;
       }
 
