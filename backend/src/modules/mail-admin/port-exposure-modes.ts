@@ -88,8 +88,16 @@ export function validateModeSwitch(
 }
 
 /**
- * Compute the set of node names that should serve mail externally
- * (haproxy hostPort bind in modes 2/3, Stalwart hostPort in mode 1).
+ * Compute the public-facing "data plane" — every node that exposes
+ * mail ports to external clients. This is the OPERATOR-FACING set
+ * (used for display, externalIPs computation pre-hairpin-fix, etc.).
+ *
+ * For internal orchestration prefer the two more-specific resolvers:
+ *   - resolveHaproxyNodes:    where haproxy DS schedules (excludes active)
+ *   - resolveExternalIpNodes: which IPs go into Service.spec.externalIPs (excludes active)
+ *
+ * The active node is ALWAYS in the public-facing set when there is
+ * one, because Stalwart's hostPort exposes it directly via CNI portmap.
  *
  * Sort is alphabetical for stable label-reconciler output.
  */
@@ -127,6 +135,68 @@ export function resolveDataPlaneNodes(
     out.add(settings.activeNode);
   }
   return Array.from(out).sort();
+}
+
+/**
+ * Compute the set of nodes that should run a haproxy DS pod.
+ *
+ * Excludes the active node in ALL haproxy-using modes because the
+ * Stalwart Deployment ALWAYS binds hostPort=25 on the active node
+ * (post-2026-05-28 hairpin fix), so haproxy hostPort=25 on the same
+ * node would conflict. Returns [] for activeNodeOnly (no DS at all —
+ * Stalwart hostPort is the only listener).
+ *
+ * Returns deduplicated, alphabetically sorted node names.
+ */
+export function resolveHaproxyNodes(
+  mode: MailPortExposureMode,
+  settings: PlacementSettings,
+  nodes: ReadonlyArray<NodeRef>,
+): string[] {
+  if (mode === 'activeNodeOnly') return [];
+
+  const known = new Set(nodes.map((n) => n.metadata.name));
+  let candidates: string[];
+
+  if (mode === 'assignedMailNodes') {
+    candidates = [settings.primaryNode, settings.secondaryNode, settings.tertiaryNode]
+      .filter((n): n is string => !!n && known.has(n));
+  } else {
+    // allServerNodes — every server-role node
+    candidates = nodes
+      .filter((n) => n.metadata.labels[NODE_ROLE_LABEL_KEY] === 'server')
+      .map((n) => n.metadata.name);
+  }
+
+  // Exclude active node (port conflict + hairpin avoidance — see file header).
+  const active = settings.activeNode;
+  const filtered = active ? candidates.filter((n) => n !== active) : candidates;
+  return Array.from(new Set(filtered)).sort();
+}
+
+/**
+ * Compute the set of node names whose IPs should be in
+ * Service.spec.externalIPs.
+ *
+ * Always equals resolveHaproxyNodes (one-to-one with where haproxy is
+ * actually binding hostPort=25, so externalIP DNAT routes are guaranteed
+ * to land on a node that will accept and forward). Crucially the active
+ * node is NEVER included — see [[project_mail_port_exposure_3mode_2026_05_28]]:
+ * kube-proxy installs a PREROUTING DNAT for each externalIP that runs
+ * BEFORE CNI-HOSTPORT-DNAT; on the active node this DNATs externalIP→
+ * ClusterIP→pod (same node) and the reply hairpins via the loopback
+ * interface, never reaching the original socket. Stalwart's hostPort
+ * (CNI portmap) handles the active node directly.
+ *
+ * Returns activeNodeOnly = [] (active node has Stalwart hostPort; no
+ * other listeners; no externalIPs needed).
+ */
+export function resolveExternalIpNodes(
+  mode: MailPortExposureMode,
+  settings: PlacementSettings,
+  nodes: ReadonlyArray<NodeRef>,
+): string[] {
+  return resolveHaproxyNodes(mode, settings, nodes);
 }
 
 /**
