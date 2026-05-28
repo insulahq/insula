@@ -155,17 +155,85 @@ interface LapiRawDecision {
   simulated?: boolean;
 }
 
-async function lapiGet<T>(path: string, key: string): Promise<T> {
+/**
+ * The bouncer name CrowdSec sees us as. Matches what bootstrap.sh's
+ * generate_platform_api_bouncer_key() registers via `cscli bouncers
+ * add platform-api -k <key>`. Used by:
+ *   - reregisterPlatformApiBouncer() — self-heal on 403
+ *   - pruneStaleBouncersExcept()    — never prune our own registration
+ */
+export const PLATFORM_API_BOUNCER_NAME = 'platform-api';
+
+/**
+ * Re-register the platform-api bouncer with CrowdSec, using the key
+ * stored in the k8s Secret. Called when LAPI returns 403 (bouncer
+ * registration lost — e.g. CrowdSec pod restarted with ephemeral
+ * storage, the prune scheduler caught us during a long idle window,
+ * or an operator manually deleted the entry).
+ *
+ * Idempotent via delete-then-add: cscli refuses to overwrite an
+ * existing bouncer name, and `bouncers add` is what generates a NEW
+ * key by default — so we delete first (no-op if absent), then add
+ * with `-k <our-key>` to keep the Secret's key value authoritative.
+ *
+ * Returns true on success, false on any failure (caller decides
+ * whether to retry the LAPI call or bubble up). Errors are logged
+ * by the caller because we don't take a `log` here — the function
+ * is intentionally narrow.
+ */
+async function reregisterPlatformApiBouncer(
+  kc: k8s.KubeConfig,
+  key: string,
+): Promise<boolean> {
+  try {
+    const podName = await findCrowdsecPodName(kc);
+    // `delete` may fail with "bouncer not found" — that's the normal
+    // self-heal path. Swallow and continue to `add`.
+    await cscliExec(kc, podName, ['bouncers', 'delete', PLATFORM_API_BOUNCER_NAME]).catch(() => {});
+    // `add -k <key>` — the bootstrap.sh comment notes the short -k form
+    // is reliable via `kubectl exec` whereas --key was observed to be
+    // silently ignored. Stick with -k here too.
+    await cscliExec(kc, podName, ['bouncers', 'add', PLATFORM_API_BOUNCER_NAME, '-k', key]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Coalesce concurrent self-heal attempts onto one promise. Without
+// this, N parallel lapiGet calls that all hit 403 would each spawn
+// their own cscli delete+add cycle (and could race on the cscli's
+// sqlite). One coalesced re-register caps the load.
+//
+// Cross-replica caveat: this is module-level state in a single Node
+// process. With multiple platform-api replicas, each pod has its own
+// `inFlightReregister`. The cscli sqlite (single-writer WAL) serialises
+// the actual delete+add at the DB level, so cross-replica races resolve
+// safely — replica A's `add` wins; replica B's `add` errors with
+// "bouncer already exists" and `reregisterPlatformApiBouncer` returns
+// false. Replica B's next lapiGet (or next heartbeat tick) will then
+// see a valid registration and succeed. Acceptable degraded behaviour;
+// no Redis-coordinated lock needed.
+let inFlightReregister: Promise<boolean> | null = null;
+
+// Lightweight fetcher used for the initial attempt AND the retry.
+// Each call gets its own AbortController + timeout so the retry path
+// after a slow self-heal doesn't inherit an already-aborted signal
+// from the initial attempt's timeout (which was the actual failure
+// mode in degraded-CrowdSec scenarios: initial fetch times out → ctrl
+// aborts → reregister runs ~5-15s → retry fetch sees aborted signal →
+// rejects instantly → operator sees "self-heal didn't help").
+async function lapiGetOnce(path: string, key: string): Promise<Response> {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), LAPI_HTTP_TIMEOUT_MS);
   try {
-    const res = await fetch(`${LAPI_BASE_URL}${path}`, {
-      // User-Agent is required: Node.js's undici defaults to literally
-      // "node", which CrowdSec rejects as "bad user agent" and falls
-      // back to creating a per-source-IP bouncer entry under the
-      // shared Traefik bouncer name. Setting an explicit UA + using
-      // the platform-api-specific pre-registered bouncer key keeps
-      // CrowdSec mapping to a single stable bouncer entry.
+    // User-Agent is required: Node.js's undici defaults to literally
+    // "node", which CrowdSec rejects as "bad user agent" and falls
+    // back to creating a per-source-IP bouncer entry under the
+    // shared Traefik bouncer name. Setting an explicit UA + using
+    // the platform-api-specific pre-registered bouncer key keeps
+    // CrowdSec mapping to a single stable bouncer entry.
+    return await fetch(`${LAPI_BASE_URL}${path}`, {
       headers: {
         'X-Api-Key': key,
         'Accept': 'application/json',
@@ -173,25 +241,43 @@ async function lapiGet<T>(path: string, key: string): Promise<T> {
       },
       signal: ctrl.signal,
     });
-    if (!res.ok) {
-      // 403 means the bouncer key was rejected — almost always because
-      // the registered bouncer entry was lost on a CrowdSec restart
-      // (the bouncer registration lives in CrowdSec's sqlite DB; if
-      // the pod's storage is ephemeral the entry is dropped on restart
-      // even though our Secret still holds the same key value).
-      // Surface a remediation hint instead of the bare status code so
-      // operators can fix it without spelunking logs.
-      if (res.status === 403) {
-        throw new Error(
-          `LAPI GET ${path} → HTTP 403 (bouncer key rejected; the platform-api bouncer is likely no longer registered with CrowdSec — re-run \`scripts/bootstrap.sh --resume-from-phase3\` or \`kubectl -n crowdsec exec deploy/crowdsec -- cscli bouncers add platform-api -k <key-from-platform-api-bouncer-key-Secret>\`)`,
-        );
-      }
-      throw new Error(`LAPI GET ${path} → HTTP ${res.status}`);
-    }
-    return (await res.json()) as T;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function lapiGet<T>(path: string, key: string, kc?: k8s.KubeConfig): Promise<T> {
+  let res = await lapiGetOnce(path, key);
+  if (res.status === 403 && kc) {
+    // Self-heal: bouncer registration lost (pod restart with ephemeral
+    // storage, prune scheduler caught us during a long idle window,
+    // etc.). Re-register from the Secret's key — same value, just
+    // re-stamped into CrowdSec's sqlite — and retry ONCE. Coalesce
+    // concurrent attempts onto a single inFlight promise so a thundering
+    // herd of admin-panel tabs doesn't spawn N parallel cscli runs.
+    if (!inFlightReregister) {
+      inFlightReregister = reregisterPlatformApiBouncer(kc, key).finally(() => {
+        inFlightReregister = null;
+      });
+    }
+    const healed = await inFlightReregister;
+    if (healed) {
+      res = await lapiGetOnce(path, key);
+    }
+  }
+  if (!res.ok) {
+    // 403 still means the bouncer key was rejected after self-heal
+    // (or kc wasn't provided so we couldn't try). Surface a remediation
+    // hint instead of the bare status code so operators can fix it
+    // without spelunking logs.
+    if (res.status === 403) {
+      throw new Error(
+        `LAPI GET ${path} → HTTP 403 (bouncer key rejected after self-heal attempt; check the Secret crowdsec/${PLATFORM_API_BOUNCER_SECRET} key matches what CrowdSec stores, or re-run \`scripts/bootstrap.sh --resume-from-phase3\`)`,
+      );
+    }
+    throw new Error(`LAPI GET ${path} → HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
 }
 
 async function lapiHealth(): Promise<{ healthy: boolean; error: string | null }> {
@@ -266,13 +352,31 @@ function parseDurationToAbsolute(duration: string): string | null {
 
 // ─── Public service surface ────────────────────────────────────────────
 
+/**
+ * Heartbeat helper for crowdsec-bouncer-heartbeat-scheduler. Calls the
+ * same `/v1/decisions` endpoint a real bouncer would, which bumps
+ * CrowdSec's `last_pull` timestamp on the platform-api bouncer
+ * registration and prevents the 24h prune scheduler from harvesting
+ * us during idle windows. Returns the number of decisions seen so the
+ * scheduler can log non-zero ticks as a coarse health signal.
+ */
+export async function fetchDecisionsHeartbeat(
+  kubeconfigPath: string | undefined,
+): Promise<number> {
+  const kc = createKubeConfig(kubeconfigPath);
+  const key = await loadBouncerKey(kc);
+  const raw = await lapiGet<LapiRawDecision[] | null>('/v1/decisions', key, kc);
+  return (raw ?? []).length;
+}
+
 export async function listDecisions(
   kubeconfigPath: string | undefined,
   query: CrowdsecListDecisionsQuery,
 ): Promise<CrowdsecListDecisionsResponse> {
   const kc = createKubeConfig(kubeconfigPath);
   const key = await loadBouncerKey(kc);
-  const raw = await lapiGet<LapiRawDecision[] | null>('/v1/decisions', key);
+  // Pass kc so lapiGet can self-heal on 403 (re-register bouncer + retry).
+  const raw = await lapiGet<LapiRawDecision[] | null>('/v1/decisions', key, kc);
   const all = (raw ?? []).map(parseLapiDecision).filter((d): d is CrowdsecDecision => d !== null);
   let filtered = all;
   if (query.scope) filtered = filtered.filter((d) => d.scope === query.scope);
