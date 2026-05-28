@@ -58,6 +58,38 @@ export const nodeCandidateSchema = z.object({
   ready: z.boolean(),
 });
 
+/**
+ * Mail port exposure modes — 3 operator-intent surfaces (2026-05-28).
+ *
+ *   activeNodeOnly    — Stalwart pod binds mail hostPorts directly on
+ *                       the active node. No haproxy. Minimal attack
+ *                       surface. Single-VPS / debugging.
+ *
+ *   assignedMailNodes — haproxy DS runs on every node in the operator-
+ *                       chosen {primary, secondary, tertiary} set.
+ *                       Mode-switch refused unless the active node is
+ *                       in that set (so DNS + data plane stay consistent
+ *                       with operator placement intent).
+ *
+ *   allServerNodes    — haproxy DS runs on every server-role node, PLUS
+ *                       the active node if it's not server-role (e.g.
+ *                       active=worker). Maximum redundancy: mail
+ *                       survives a server-tier outage as long as the
+ *                       active node is up.
+ *
+ * Pre-2026-05-28 the enum was ['thisNodeOnly', 'allServerNodes'];
+ * 'thisNodeOnly' was renamed for clarity (migration 0034). The old
+ * value is no longer accepted at the API boundary; the migration
+ * rewrites any stored 'thisNodeOnly' to 'activeNodeOnly' on first
+ * platform-api start after this fix lands.
+ */
+export const mailPortExposureModeEnum = z.enum([
+  'activeNodeOnly',
+  'assignedMailNodes',
+  'allServerNodes',
+]);
+export type MailPortExposureMode = z.infer<typeof mailPortExposureModeEnum>;
+
 export const mailPlacementResponseSchema = z.object({
   primaryNode: z.string().nullable(),
   secondaryNode: z.string().nullable(),
@@ -67,7 +99,7 @@ export const mailPlacementResponseSchema = z.object({
   autoFailoverEnabled: z.boolean(),
   failoverThresholdSeconds: z.number(),
   lastFailoverAt: z.string().nullable(),
-  portExposureMode: z.enum(['thisNodeOnly', 'allServerNodes']),
+  portExposureMode: mailPortExposureModeEnum,
   candidateNodes: z.array(nodeCandidateSchema),
 });
 
@@ -100,7 +132,7 @@ export const mailFailbackRequestSchema = z.object({
 });
 
 export const mailPortExposureUpdateSchema = z.object({
-  mode: z.enum(['thisNodeOnly', 'allServerNodes']),
+  mode: mailPortExposureModeEnum,
 });
 
 /**
@@ -118,7 +150,7 @@ export const mailPortExposureUpdateResponseSchema = z.object({
 });
 
 export const mailPortExposureResponseSchema = z.object({
-  mode: z.enum(['thisNodeOnly', 'allServerNodes']),
+  mode: mailPortExposureModeEnum,
   proxyProtocolActive: z.boolean(),
   daemonSetStatus: z.object({
     ready: z.number(),

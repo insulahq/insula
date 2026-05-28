@@ -17,10 +17,10 @@ describe('mail-admin/haproxy-builder.buildHaproxyDaemonSet', () => {
     expect(ds.metadata.labels['platform.phoenix-host.net/managed-by']).toBe('platform-api');
   });
 
-  it('targets server-role nodes via nodeSelector', () => {
+  it('targets data-plane nodes via the mail-haproxy=true label (label-driven, set by port-exposure-modes reconciler)', () => {
     const ds = buildHaproxyDaemonSet() as Record<string, any>;
     const sel = ds.spec.template.spec.nodeSelector;
-    expect(sel).toEqual({ 'platform.phoenix-host.net/node-role': 'server' });
+    expect(sel).toEqual({ 'platform.phoenix-host.net/mail-haproxy': 'true' });
   });
 
   it('binds all six mail ports with hostPort=containerPort', () => {
