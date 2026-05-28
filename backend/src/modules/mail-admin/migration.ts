@@ -1159,7 +1159,7 @@ async function readActualPvcBoundNode(core: CoreV1Api): Promise<string | null> {
       };
     };
     // Scan ALL terms × ALL matchExpressions for key === 'kubernetes.io/hostname'.
-    // Local-path provisioner always uses that key, but a Longhorn-backed PV
+    // Local-path provisioner always uses that key, but a Longhorn-backed PV  // ci-no-longhorn: ignore
     // would have topology.kubernetes.io/zone in matchExpressions[0] and the
     // hostname key elsewhere — pre-fix readers took [0][0] blindly and would
     // have returned a zone string as a node name (caught by code review).
