@@ -218,16 +218,16 @@ ACTIVE_IP=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$
 # answer (worker has no data-plane role).
 hdr "PHASE 1: allServerNodes mode — server-role nodes serve mail; worker too IF it's the active node"
 api_patch '{"mode":"allServerNodes"}' >/dev/null
-amber "  waiting for haproxy DS to come up + Stalwart hostPorts to clear + externalIPs to converge…"
+amber "  waiting for haproxy DS to come up + Stalwart hostPorts (always-on post-hairpin-fix) + externalIPs to converge…"
 wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
-wait_for_stalwart_settled no || amber "  Stalwart hostPorts didn't clear in 300s (continuing — may not affect external reachability)"
-# Compute expected IPs for allServerNodes: server IPs always, + active IP if active is worker-role.
+# Post-hairpin-fix: Stalwart hostPort is ALWAYS bound on the active node.
+wait_for_stalwart_settled yes || amber "  Stalwart hostPorts not yet bound in 300s (continuing — may not affect external reachability)"
+# Post-hairpin-fix (2026-05-28): the active node is NEVER in externalIPs
+# (kube-proxy DNAT preempts CNI portmap, causing same-node hairpin).
+# Server IPs are in externalIPs EXCEPT when the active node is server-role
+# (then that server's IP is excluded too — Stalwart hostPort handles it).
 ACTIVE_ROLE=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1==a{print $2; exit}')
-if [ "$ACTIVE_ROLE" = "server" ]; then
-  EXPECTED_PHASE1_IPS="$SERVER_IPS"
-else
-  EXPECTED_PHASE1_IPS=$(echo "$SERVER_IPS $ACTIVE_IP" | xargs -n1 | sort -u | xargs)
-fi
+EXPECTED_PHASE1_IPS=$(echo "$SERVER_IPS" | xargs -n1 | grep -v "^${ACTIVE_IP}$" | xargs)
 wait_for_externalips "$EXPECTED_PHASE1_IPS" || red "  externalIPs didn't converge to expected set in 180s"
 sleep 10   # extra grace for haproxy hostPort bind + DNS
 fail_count=0
@@ -250,10 +250,13 @@ fi
 # ── PHASE 2: activeNodeOnly mode — only active node's IP should answer ────
 hdr "PHASE 2: activeNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"
 api_patch '{"mode":"activeNodeOnly"}' >/dev/null
-amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind + externalIPs to converge…"
+amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind + externalIPs to clear…"
 wait_for_haproxy_ds absent || { red "  haproxy DS didn't delete in 120s"; }
 wait_for_stalwart_settled yes || { red "  Stalwart didn't acquire hostPorts in 300s"; }
-wait_for_externalips "$ACTIVE_IP" || red "  externalIPs didn't converge to [$ACTIVE_IP] in 180s"
+# Post-hairpin-fix: externalIPs cleared in activeNodeOnly — Stalwart
+# hostPort (CNI portmap) is the only listener and serves the active
+# node directly without kube-proxy DNAT.
+wait_for_externalips "" || red "  externalIPs didn't clear in 180s"
 sleep 15   # extra grace for kernel hostPort bind + connection-tracking flush
 fail2_count=0
 for L in "${NODE_LINES[@]}"; do
@@ -316,13 +319,19 @@ for n in "${ASSIGNED_NEW[@]}"; do
   [ -n "$ip" ] && ASSIGNED_IPS="$ASSIGNED_IPS $ip"
 done
 ASSIGNED_IPS=$(echo "$ASSIGNED_IPS" | xargs -n1 | sort -u | xargs)
-echo "  expected externalIPs: $ASSIGNED_IPS"
+# Post-hairpin-fix: active node is NEVER in externalIPs (Stalwart hostPort
+# serves it directly). All assigned set nodes should ANSWER (active via
+# hostPort, others via haproxy → ClusterIP → pod), but externalIPs only
+# lists the haproxy-bound ones.
+EXPECTED_PHASE3B_EXT_IPS=$(echo "$ASSIGNED_IPS" | xargs -n1 | grep -v "^${ACTIVE_IP}$" | xargs)
+echo "  expected externalIPs (active excluded): $EXPECTED_PHASE3B_EXT_IPS"
+echo "  expected to ANSWER (active via hostPort + others via haproxy): $ASSIGNED_IPS"
 
 api_patch '{"mode":"assignedMailNodes"}' >/dev/null
 amber "  waiting for haproxy DS + label reconcile + externalIPs convergence…"
 wait_for_haproxy_ds present || red "  haproxy DS didn't come up in 120s"
-wait_for_stalwart_settled no || true
-wait_for_externalips "$ASSIGNED_IPS" || red "  externalIPs didn't converge to assigned set in 180s"
+wait_for_stalwart_settled yes || true
+wait_for_externalips "$EXPECTED_PHASE3B_EXT_IPS" || red "  externalIPs didn't converge to assigned set in 180s"
 sleep 15
 fail3_count=0
 for L in "${NODE_LINES[@]}"; do
@@ -347,12 +356,14 @@ ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/
 # ── Restore prior mode ──────────────────────────────────────────────────
 hdr "Restoring mode to $PRE_MODE"
 api_patch "{\"mode\":\"$PRE_MODE\"}" >/dev/null
-if [ "$PRE_MODE" = "allServerNodes" ]; then
-  wait_for_haproxy_ds present || amber "  haproxy DS restore did not converge in 120s"
-  wait_for_stalwart_settled no || true
-else
+# Post-hairpin-fix: Stalwart hostPort is always-on regardless of mode.
+# Only haproxy DS presence varies (absent in activeNodeOnly, present in
+# the haproxy modes).
+wait_for_stalwart_settled yes || true
+if [ "$PRE_MODE" = "activeNodeOnly" ]; then
   wait_for_haproxy_ds absent || true
-  wait_for_stalwart_settled yes || true
+else
+  wait_for_haproxy_ds present || amber "  haproxy DS restore did not converge in 120s"
 fi
 sleep 10
 
