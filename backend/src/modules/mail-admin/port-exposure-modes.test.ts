@@ -15,6 +15,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   validateModeSwitch,
   resolveDataPlaneNodes,
+  resolveHaproxyNodes,
+  resolveExternalIpNodes,
   reconcileMailHaproxyLabels,
   MAIL_HAPROXY_LABEL_KEY,
 } from './port-exposure-modes.js';
@@ -154,6 +156,162 @@ describe('resolveDataPlaneNodes', () => {
       primaryNode: 'staging1', secondaryNode: 'ghost-node', tertiaryNode: 'staging3', activeNode: 'staging1',
     }, allNodes);
     expect(r.sort()).toEqual(['staging1', 'staging3']);
+  });
+});
+
+// ─── resolveHaproxyNodes (NEW 2026-05-28 hairpin fix) ────────────────
+//
+// resolveHaproxyNodes returns the set of nodes that should run a haproxy
+// DS pod. Excludes the active node in ALL haproxy-using modes because
+// haproxy hostPort=25 would conflict with Stalwart hostPort=25 (which is
+// ALWAYS bound on the active node post-fix). Returns [] for activeNodeOnly.
+
+describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + hairpin)', () => {
+  const allNodes = [
+    node('staging1', { 'platform.example.test/node-role': 'server' }),
+    node('staging2', { 'platform.example.test/node-role': 'server' }),
+    node('staging3', { 'platform.example.test/node-role': 'server' }),
+    node('worker',   { 'platform.example.test/node-role': 'worker' }),
+  ];
+
+  const baseSettings: Settings = {
+    primaryNode: 'staging1',
+    secondaryNode: 'staging2',
+    tertiaryNode: 'staging3',
+    activeNode: 'worker',
+  };
+
+  it('returns [] for activeNodeOnly (no haproxy DS at all)', () => {
+    expect(resolveHaproxyNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
+  });
+
+  it('assignedMailNodes EXCLUDES active even when active is in the assigned set', () => {
+    // active=staging1, assigned={staging1,staging2,staging3} → haproxy on staging2,staging3
+    const r = resolveHaproxyNodes(
+      'assignedMailNodes',
+      { ...baseSettings, activeNode: 'staging1' },
+      allNodes,
+    );
+    expect(r).toEqual(['staging2', 'staging3']);
+  });
+
+  it('assignedMailNodes returns full assigned set when active is NOT in assigned', () => {
+    // The validateModeSwitch already refuses this; resolveHaproxyNodes
+    // should still behave deterministically. active=worker is not in
+    // {staging1,staging2,staging3} so all 3 get haproxy.
+    const r = resolveHaproxyNodes('assignedMailNodes', baseSettings, allNodes);
+    expect(r).toEqual(['staging1', 'staging2', 'staging3']);
+  });
+
+  it('allServerNodes EXCLUDES active when active is a server-role node', () => {
+    // active=staging2 → haproxy on staging1+staging3 (NOT staging2)
+    const r = resolveHaproxyNodes(
+      'allServerNodes',
+      { ...baseSettings, activeNode: 'staging2' },
+      allNodes,
+    );
+    expect(r).toEqual(['staging1', 'staging3']);
+  });
+
+  it('allServerNodes returns ALL server nodes when active is worker (active not in server set already)', () => {
+    // active=worker → haproxy on all 3 servers; worker NOT in haproxy
+    // pool (Stalwart hostPort there directly)
+    const r = resolveHaproxyNodes('allServerNodes', baseSettings, allNodes);
+    expect(r).toEqual(['staging1', 'staging2', 'staging3']);
+  });
+
+  it('handles null active node gracefully (no exclusion to apply)', () => {
+    const r = resolveHaproxyNodes(
+      'allServerNodes',
+      { ...baseSettings, activeNode: null },
+      allNodes,
+    );
+    expect(r).toEqual(['staging1', 'staging2', 'staging3']);
+  });
+});
+
+// ─── resolveExternalIpNodes (NEW 2026-05-28 hairpin fix) ─────────────
+//
+// resolveExternalIpNodes returns the node names whose IPs go into the
+// Service.spec.externalIPs list. ALWAYS excludes the active node because
+// kube-proxy installs a PREROUTING DNAT for each externalIP that runs
+// BEFORE CNI-HOSTPORT-DNAT and routes via ClusterIP → kube-proxy →
+// pod-on-active-node, causing a same-node hairpin (reply has dst=
+// active-node-IP which routes to lo, never reaches the original socket).
+// Proven on staging 2026-05-28.
+
+describe('resolveExternalIpNodes (excludes active to prevent kube-proxy DNAT hairpin)', () => {
+  const allNodes = [
+    node('staging1', { 'platform.example.test/node-role': 'server' }),
+    node('staging2', { 'platform.example.test/node-role': 'server' }),
+    node('staging3', { 'platform.example.test/node-role': 'server' }),
+    node('worker',   { 'platform.example.test/node-role': 'worker' }),
+  ];
+
+  const baseSettings: Settings = {
+    primaryNode: 'staging1',
+    secondaryNode: 'staging2',
+    tertiaryNode: 'staging3',
+    activeNode: 'worker',
+  };
+
+  it('returns [] for activeNodeOnly (Stalwart hostPort handles the active node directly; no other listener)', () => {
+    expect(resolveExternalIpNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
+  });
+
+  it('matches resolveHaproxyNodes for haproxy modes (one-to-one with where haproxy actually binds)', () => {
+    for (const mode of ['assignedMailNodes', 'allServerNodes'] as const) {
+      const haproxy = resolveHaproxyNodes(mode, baseSettings, allNodes);
+      const extIp = resolveExternalIpNodes(mode, baseSettings, allNodes);
+      expect(extIp).toEqual(haproxy);
+    }
+  });
+
+  it('NEVER contains active node in any mode', () => {
+    for (const mode of ['activeNodeOnly', 'assignedMailNodes', 'allServerNodes'] as const) {
+      for (const active of ['worker', 'staging1', 'staging2', 'staging3']) {
+        const r = resolveExternalIpNodes(
+          mode,
+          { ...baseSettings, activeNode: active },
+          allNodes,
+        );
+        expect(r).not.toContain(active);
+      }
+    }
+  });
+
+  // Independent literal-set assertions (not derived from resolveHaproxyNodes).
+  // If the two functions ever diverge, the matches-resolveHaproxyNodes test
+  // above will pass vacuously; these spell the expected sets out explicitly
+  // so that aliasing changes are caught.
+
+  it('activeNodeOnly with active=worker → [] (literal)', () => {
+    expect(resolveExternalIpNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
+  });
+
+  it('assignedMailNodes with active=staging1 → [staging2,staging3] (literal)', () => {
+    expect(
+      resolveExternalIpNodes(
+        'assignedMailNodes',
+        { ...baseSettings, activeNode: 'staging1' },
+        allNodes,
+      ),
+    ).toEqual(['staging2', 'staging3']);
+  });
+
+  it('allServerNodes with active=worker → [staging1,staging2,staging3] (literal)', () => {
+    expect(resolveExternalIpNodes('allServerNodes', baseSettings, allNodes))
+      .toEqual(['staging1', 'staging2', 'staging3']);
+  });
+
+  it('allServerNodes with active=staging2 → [staging1,staging3] (literal)', () => {
+    expect(
+      resolveExternalIpNodes(
+        'allServerNodes',
+        { ...baseSettings, activeNode: 'staging2' },
+        allNodes,
+      ),
+    ).toEqual(['staging1', 'staging3']);
   });
 });
 
