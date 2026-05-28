@@ -97,6 +97,7 @@ export interface PortExposureOptions {
 
 interface K8sAppsBundle {
   apps: import('@kubernetes/client-node').AppsV1Api;
+  core: import('@kubernetes/client-node').CoreV1Api;
 }
 
 async function loadK8sAppsTenant(kubeconfigPath: string | undefined): Promise<K8sAppsBundle> {
@@ -104,7 +105,10 @@ async function loadK8sAppsTenant(kubeconfigPath: string | undefined): Promise<K8
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
   else kc.loadFromCluster();
-  return { apps: kc.makeApiClient(k8s.AppsV1Api) };
+  return {
+    apps: kc.makeApiClient(k8s.AppsV1Api),
+    core: kc.makeApiClient(k8s.CoreV1Api),
+  };
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -189,7 +193,7 @@ export async function updateMailPortExposure(
   opts: PortExposureOptions,
   onProgress?: PortExposureProgressCallback,
 ): Promise<void> {
-  await applyModeToCluster(mode, opts, onProgress);
+  await applyModeToCluster(mode, opts, onProgress, db);
 
   if (onProgress) {
     await onProgress({
@@ -228,7 +232,7 @@ export async function ensureMailPortExposureApplied(
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
   const mode = (row?.v as 'thisNodeOnly' | 'allServerNodes' | null) ?? 'allServerNodes';
-  await applyModeToCluster(mode, opts);
+  await applyModeToCluster(mode, opts, undefined, db);
 }
 
 /**
@@ -240,8 +244,9 @@ async function applyModeToCluster(
   mode: 'thisNodeOnly' | 'allServerNodes',
   opts: PortExposureOptions,
   onProgress?: PortExposureProgressCallback,
+  db?: Database,
 ): Promise<void> {
-  const { apps } = await loadK8sAppsTenant(opts.kubeconfigPath);
+  const { apps, core } = await loadK8sAppsTenant(opts.kubeconfigPath);
 
   if (mode === 'allServerNodes') {
     // Step 1: Remove hostPort from Stalwart Deployment so haproxy can bind
@@ -272,6 +277,21 @@ async function applyModeToCluster(
       });
     }
     await ensureHaproxyDaemonSetExists(apps);
+
+    // Step 3: Reconcile stalwart-mail Service.spec.externalIPs to ALL
+    // server-role node IPs. Without this, the externalIPs left behind
+    // by the original Flux postBuild (just one IP — bootstrap node)
+    // pins traffic to a single node and bypasses haproxy.
+    if (db) {
+      if (onProgress) {
+        await onProgress({
+          stepKey: 'reconcile-service-externalips',
+          pct: 90,
+          text: 'Reconciling stalwart-mail Service externalIPs',
+        });
+      }
+      await reconcileMailServiceExternalIPs(core, mode, null);
+    }
   } else {
     // thisNodeOnly path — reverse order.
 
@@ -303,7 +323,102 @@ async function applyModeToCluster(
         text: 'Waiting for Stalwart rollout to complete',
       });
     }
+
+    // Step 3: Reconcile stalwart-mail Service.spec.externalIPs to just
+    // the ACTIVE node's IP. With haproxy gone, the externalIPs list is
+    // the kube-proxy iptables routing rule: ALL listed node IPs accept
+    // traffic and forward to the Stalwart pod via service-proxy.
+    // Leaving stale server-role IPs here means staging1/2/3 still
+    // answer mail ports even though haproxy is gone — the symptom
+    // Phase 2 of the external reachability E2E caught 2026-05-28.
+    if (db) {
+      if (onProgress) {
+        await onProgress({
+          stepKey: 'reconcile-service-externalips',
+          pct: 90,
+          text: 'Reconciling stalwart-mail Service externalIPs to active node only',
+        });
+      }
+      const [row] = await db.select({ v: systemSettings.mailActiveNode })
+        .from(systemSettings)
+        .where(eq(systemSettings.id, SETTINGS_ID));
+      await reconcileMailServiceExternalIPs(core, mode, row?.v ?? null);
+    }
   }
+}
+
+/**
+ * Set `stalwart-mail` Service.spec.externalIPs to match the active
+ * port-exposure topology.
+ *
+ *   allServerNodes  → every server-role node IP (kube-proxy routes
+ *                     from those IPs to the Stalwart pod via the
+ *                     Service ClusterIP, in parallel with haproxy
+ *                     hostPort traffic on the same nodes).
+ *   thisNodeOnly    → JUST the active node's IP. Other nodes must
+ *                     NOT route mail traffic — they have no haproxy
+ *                     and the mail-stack-only-on-this-node contract
+ *                     would be violated by leftover kube-proxy
+ *                     iptables rules.
+ *
+ * Server-Side-Apply with our own field manager so the staging overlay's
+ * Flux-managed externalIPs (single IP from `${STALWART_EXTERNAL_IP}`)
+ * gets overwritten — and re-overwritten if Flux tries to revert it on
+ * next reconcile. Field-manager conflicts return clean errors instead
+ * of silent reverts.
+ */
+async function reconcileMailServiceExternalIPs(
+  core: import('@kubernetes/client-node').CoreV1Api,
+  mode: 'thisNodeOnly' | 'allServerNodes',
+  activeNode: string | null,
+): Promise<void> {
+  type Node = { metadata?: { name?: string; labels?: Record<string, string> }; status?: { addresses?: Array<{ type?: string; address?: string }> } };
+  const list = await core.listNode({}) as { items?: Node[] };
+  const items = list.items ?? [];
+  const nodeIp = (n: Node): string | null => {
+    const a = n.status?.addresses ?? [];
+    return a.find((x) => x.type === 'ExternalIP')?.address
+      ?? a.find((x) => x.type === 'InternalIP')?.address
+      ?? null;
+  };
+
+  let desiredIps: string[];
+  if (mode === 'thisNodeOnly') {
+    if (!activeNode) {
+      // No active node known — safest to clear externalIPs entirely
+      // so traffic only flows through whatever hostPort path exists.
+      desiredIps = [];
+    } else {
+      const n = items.find((x) => x.metadata?.name === activeNode);
+      const ip = n ? nodeIp(n) : null;
+      desiredIps = ip ? [ip] : [];
+    }
+  } else {
+    desiredIps = [];
+    for (const n of items) {
+      if (n.metadata?.labels?.['platform.phoenix-host.net/node-role'] !== 'server') continue;
+      const ip = nodeIp(n);
+      if (ip && !desiredIps.includes(ip)) desiredIps.push(ip);
+    }
+  }
+
+  // SSA: declare just the fields we own. Apply replaces spec.externalIPs
+  // with our list. Field-manager attribution + force:true lets us win
+  // conflicts against the staging overlay's static value from Flux.
+  const { applyPatch } = await import('../../shared/k8s-patch.js');
+  await core.patchNamespacedService(
+    {
+      namespace: 'mail',
+      name: 'stalwart-mail',
+      body: {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'stalwart-mail', namespace: 'mail' },
+        spec: { externalIPs: desiredIps },
+      },
+    } as unknown as Parameters<typeof core.patchNamespacedService>[0],
+    applyPatch('platform-api.mail-port-exposure', { force: true }),
+  );
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────────
