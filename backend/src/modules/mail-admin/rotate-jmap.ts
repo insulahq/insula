@@ -101,6 +101,23 @@ export interface RotateJmapOptions {
    */
   readonly principalDescription?: string;
   /**
+   * Stalwart `roles` value set on the principal at auto-reseed time.
+   * The webmail master MUST be an Admin (`{ '@type': 'Admin' }`) for
+   * IMAP master-auth impersonation to work — `mailbox@tenant%master`
+   * IMAP LOGINs are rejected by Stalwart unless the master Account
+   * has Admin scope. Without this, the auto-reseed creates a regular
+   * User principal that Stalwart can authenticate as itself but cannot
+   * impersonate tenant mailboxes — bundle Jobs fail with "connection
+   * closed by server" or AUTHENTICATIONFAILED depending on protocol
+   * (verified on staging post-2026-05-28 auto-reseed). Bootstrap's
+   * direct-JMAP provision_stalwart_master_user() sets this; the
+   * auto-reseed path MUST too.
+   *
+   * Recovery-admin rotation omits this — the admin lives outside the
+   * Account namespace and doesn't need Stalwart-side roles.
+   */
+  readonly principalRoles?: Record<string, unknown>;
+  /**
    * Skip the post-rotation verifyNewPassword(jmap-session) check. Used
    * for the webmail master account, which is NOT a JMAP-admin principal
    * — `/jmap/session` would 401 with master credentials regardless of
@@ -155,6 +172,13 @@ export interface RotateJmapDeps {
   ): Promise<string | null>;
   updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void>;
   /**
+   * Patch `roles` on an existing principal. Used by rotation when
+   * `principalRoles` is set, so an existing master whose roles were
+   * wiped by a prior (incomplete) reseed converges back to Admin.
+   * Idempotent — Stalwart accepts setting the same roles object.
+   */
+  updateAdminRoles(accountId: JmapAccountId, principalId: string, roles: Record<string, unknown>): Promise<void>;
+  /**
    * Resolve a Stalwart Domain by name; create it if missing. Returns
    * the Domain id. Used by the auto-reseed path so a missing master
    * Domain on a wiped-Stalwart cluster doesn't block rotation.
@@ -173,6 +197,8 @@ export interface RotateJmapDeps {
     name: string;
     password: string;
     description?: string;
+    /** Stalwart `roles` value, e.g. `{ '@type': 'Admin' }`. */
+    roles?: Record<string, unknown>;
   }): Promise<string>;
   patchK8sSecret(req: { namespace: string; name: string; stringData: Record<string, string> }): Promise<void>;
   verifyNewPassword(password: string): Promise<boolean>;
@@ -233,6 +259,13 @@ export async function rotateAdminPasswordViaJmapImpl(
     );
     if (principalId) {
       await deps.updateAdminPassword(accountId, principalId, plain);
+      // When `principalRoles` is set, also patch roles so a master
+      // principal that was created without Admin role (e.g. by a prior
+      // incomplete auto-reseed) converges back to the correct role on
+      // the next rotation. Idempotent on already-correct principals.
+      if (opts.principalRoles) {
+        await deps.updateAdminRoles(accountId, principalId, opts.principalRoles);
+      }
       jmapPathSucceeded = true;
     } else if (opts.autoReseed && opts.principalDomain) {
       // Self-heal: principal not found (likely a wiped Stalwart
@@ -252,6 +285,7 @@ export async function rotateAdminPasswordViaJmapImpl(
         name: opts.username,
         password: plain,
         description: opts.principalDescription,
+        roles: opts.principalRoles,
       });
       jmapPathSucceeded = true;
       log.info(
@@ -603,6 +637,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
         domainId: args.domainId,
         credentials,
         ...(args.description ? { description: args.description } : {}),
+        ...(args.roles ? { roles: args.roles } : {}),
       };
       const result = await accountSet({
         accountId: args.accountId,
@@ -641,6 +676,24 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       if (notUpdated) {
         throw new Error(
           `JMAP x:Account/set update failed for admin '${principalId}': `
+          + `${notUpdated.description ?? notUpdated.type}`,
+        );
+      }
+    },
+
+    async updateAdminRoles(accountId: JmapAccountId, principalId: string, roles: Record<string, unknown>): Promise<void> {
+      // Match the shape bootstrap.sh:5363-5374 uses in the master-
+      // provisioning Pod: top-level `roles` property on x:Account/set
+      // update — same path as `description`, NOT a nested patch.
+      const result = await accountSet({
+        accountId,
+        request: { update: { [principalId]: { roles } } },
+        baseUrl,
+      });
+      const notUpdated = result.notUpdated?.[principalId];
+      if (notUpdated) {
+        throw new Error(
+          `JMAP x:Account/set roles update failed for principal '${principalId}': `
           + `${notUpdated.description ?? notUpdated.type}`,
         );
       }
