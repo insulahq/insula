@@ -441,45 +441,28 @@ async function applyModeToClusterUnlocked(
 
   // Post-hairpin-fix invariant (2026-05-28): Stalwart Deployment ALWAYS
   // has hostPort=25/465/587/143/993/4190 — the active node serves via
-  // CNI portmap directly. In haproxy modes other data-plane nodes still
+  // CNI portmap directly. In haproxy modes the OTHER data-plane nodes
   // bind hostPort=25 via the haproxy DS (no conflict because Stalwart's
-  // pod lives only on the active node). In activeNodeOnly Stalwart is
-  // the only listener. ensureHaproxyDaemonSetAbsent is now a no-op when
-  // there are no haproxy nodes; ensureHaproxyDaemonSetExists creates it
-  // when there ARE haproxy nodes.
-
-  // Step 1: Ensure Stalwart hostPort is set (idempotent SSA — only patches
-  // if the field set differs from the current claim).
-  if (onProgress) {
-    await onProgress({
-      stepKey: 'add-hostports',
-      pct: 15,
-      text: 'Ensuring Stalwart Deployment binds host ports on active node',
-    });
-  }
-  await addHostPortsToDeployment(apps);
-
-  if (onProgress) {
-    await onProgress({
-      stepKey: 'wait-stalwart-rollout',
-      pct: 35,
-      text: 'Waiting for Stalwart rollout to complete',
-    });
-  }
-
-  // Step 2: Reconcile haproxy DS lifecycle.
+  // pod lives only on the active node, and the active node is excluded
+  // from haproxyNodes).
   //
-  // DS lifecycle is MODE-driven (not data-plane-size driven): a
-  // cluster with no haproxy-eligible nodes in a haproxy mode still
-  // gets the DS created (with 0 ready pods) so the operator-facing
-  // status is consistent with the mode setting. Conversely
-  // activeNodeOnly always deletes the DS.
+  // CRITICAL ORDERING: free port 25 on the active node FIRST. If a
+  // haproxy DS pod is currently scheduled on the active node it will
+  // be holding hostPort=25, blocking the new Stalwart pod's scheduler
+  // from finding a free port. The active node is Stalwart's only
+  // eligible node (topology spread), so a single conflict deadlocks
+  // the whole rollout. Order: drain haproxy from active → apply
+  // Stalwart hostPort → wait rollout → re-converge DS on remaining
+  // haproxy nodes.
+
+  // Step 1: drain haproxy from the active node (so port 25 is free
+  // when Stalwart's new pod tries to schedule there).
   if (mode === 'activeNodeOnly') {
     if (onProgress) {
       await onProgress({
         stepKey: 'delete-haproxy-ds',
-        pct: 50,
-        text: 'Deleting haproxy DaemonSet (activeNodeOnly mode — Stalwart hostPort is the only listener)',
+        pct: 10,
+        text: 'Deleting haproxy DaemonSet (frees port 25 cluster-wide for Stalwart hostPort)',
       });
     }
     await ensureHaproxyDaemonSetAbsent(apps);
@@ -488,25 +471,54 @@ async function applyModeToClusterUnlocked(
       // from a clean slate.
       await reconcileMailHaproxyLabels(core, [], allNodes);
     }
-  } else {
-    // haproxy modes — label the (active-excluded) haproxy data plane
-    // then ensure DS exists.
-    if (db) {
-      if (onProgress) {
-        await onProgress({
-          stepKey: 'reconcile-haproxy-labels',
-          pct: 55,
-          text: activeNode
-            ? `Labelling haproxy nodes: ${haproxyNodes.join(', ') || '(none)'} (active node ${activeNode} serves via Stalwart hostPort)`
-            : `Labelling haproxy nodes: ${haproxyNodes.join(', ') || '(none)'}`,
-        });
-      }
-      await reconcileMailHaproxyLabels(core, haproxyNodes, allNodes);
+  } else if (db) {
+    if (onProgress) {
+      await onProgress({
+        stepKey: 'reconcile-haproxy-labels',
+        pct: 15,
+        text: activeNode
+          ? `Labelling haproxy nodes: ${haproxyNodes.join(', ') || '(none)'} (active node ${activeNode} excluded — Stalwart hostPort there)`
+          : `Labelling haproxy nodes: ${haproxyNodes.join(', ') || '(none)'}`,
+      });
     }
+    await reconcileMailHaproxyLabels(core, haproxyNodes, allNodes);
+    // Brief settle window so the kubelet on the active node has time
+    // to evict the now-deselected haproxy pod and release hostPort 25
+    // before Stalwart's new pod tries to schedule. The DS controller's
+    // pod GC + kubelet's port-release cycle is sub-second normally;
+    // 5s is a comfortable upper bound and well under the rollout-wait
+    // budget. Without this delay the next addHostPortsToDeployment ->
+    // scheduler race hits FailedScheduling("didn't have free ports")
+    // and waitForStalwartRollout times out at 90s.
+    await sleepMs(5_000);
+  }
+
+  // Step 2: SSA Stalwart hostPorts + wait rollout.
+  if (onProgress) {
+    await onProgress({
+      stepKey: 'add-hostports',
+      pct: 35,
+      text: 'Ensuring Stalwart Deployment binds host ports on active node',
+    });
+  }
+  await addHostPortsToDeployment(apps);
+
+  if (onProgress) {
+    await onProgress({
+      stepKey: 'wait-stalwart-rollout',
+      pct: 60,
+      text: 'Waiting for Stalwart rollout to complete',
+    });
+  }
+
+  // Step 3: ensure haproxy DS in haproxy modes (idempotent — usually
+  // a no-op since the DS already exists from the prior steady state;
+  // creates it on first ever haproxy-mode entry).
+  if (mode !== 'activeNodeOnly') {
     if (onProgress) {
       await onProgress({
         stepKey: 'create-haproxy-ds',
-        pct: 70,
+        pct: 75,
         text: 'Ensuring haproxy DaemonSet exists',
       });
     }
