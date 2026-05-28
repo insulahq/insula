@@ -247,11 +247,11 @@ describe('DNSBL probes', () => {
     expect(zen?.listed).toBe(false);
     expect(zen?.actual).toMatch(/open_resolver/);
     // lookupUrl MUST have the CLUSTER IP, NOT the resolver IP from Spamhaus's TXT.
-    expect(zen?.lookupUrl).toBe('https://check.spamhaus.org/ip/198.51.100.10');
+    expect(zen?.lookupUrl).toBe('https://check.spamhaus.org/results?query=198.51.100.10');
     expect(zen?.lookupUrl).not.toContain('172.68.24.5');
     // Remediation includes the same per-IP URL so the operator can
     // click through from the modal text too.
-    expect(zen?.remediation).toContain('https://check.spamhaus.org/ip/198.51.100.10');
+    expect(zen?.remediation).toContain('https://check.spamhaus.org/results?query=198.51.100.10');
     expect(r.healthy).toBe(true);
   });
 
