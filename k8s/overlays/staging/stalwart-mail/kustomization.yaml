@@ -40,6 +40,17 @@ patches:
   # mail-externalip-reconciler CronJob (k8s/base/mail-externalips) keeps
   # the live Service.spec.externalIPs in sync with worker-role nodes on
   # multi-node clusters.
+  # 2026-05-28: externalIPs is NO LONGER declared here. Flux's
+  # kustomize-controller and platform-api's mail-port-exposure reconciler
+  # both tried to own the field — Flux's 5-10 min cycle would revert
+  # the runtime SSA, sending traffic back to the bootstrap node (caught
+  # by Phase 2 of the external reachability E2E with mail-on-worker).
+  # platform-api now owns externalIPs exclusively (field-manager
+  # 'platform-api.mail-port-exposure', applied via SSA in
+  # backend/src/modules/mail-admin/port-exposure.ts). The startup hook
+  # ensureMailPortExposureApplied populates externalIPs on every
+  # platform-api boot, so there's only a brief externalIPs-empty window
+  # at very first bootstrap before platform-api ever starts.
   - patch: |
       apiVersion: v1
       kind: Service
@@ -49,8 +60,6 @@ patches:
       spec:
         type: ClusterIP
         externalTrafficPolicy: Cluster
-        externalIPs:
-          - ${STALWART_EXTERNAL_IP}
     target:
       kind: Service
       name: stalwart-mail
