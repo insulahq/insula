@@ -338,12 +338,19 @@ spec:
             # could drift on every rotation (rotateWebmailMasterPassword
             # only patches mail-secrets). With a direct reference the
             # mirror disappears entirely.
-            - name: BULWARK_STALWART_MASTER_USER
+            #
+            # Env var names are STALWART_MASTER_USER + STALWART_MASTER_PASSWORD
+            # (NOT prefixed BULWARK_*) — that's what the upstream Bulwark
+            # /api/auth/impersonate route reads (see
+            # docs/06-features/BULWARK_UPSTREAM_ISSUE.md). The
+            # BULWARK_STALWART_* names previously here were wrapper-
+            # invented and Bulwark would not have found them.
+            - name: STALWART_MASTER_USER
               valueFrom:
                 secretKeyRef:
                   name: mail-secrets
                   key: STALWART_MASTER_USER
-            - name: BULWARK_STALWART_MASTER_PASSWORD
+            - name: STALWART_MASTER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: mail-secrets
