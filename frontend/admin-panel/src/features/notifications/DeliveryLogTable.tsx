@@ -10,8 +10,12 @@
  */
 
 import { useState } from 'react';
-import { Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useNotificationDeliveries, type NotificationDeliveryFilters } from '@/hooks/use-notification-deliveries';
+import { Loader2, ChevronLeft, ChevronRight, RotateCw } from 'lucide-react';
+import {
+  useNotificationDeliveries,
+  useRetryNotificationDelivery,
+  type NotificationDeliveryFilters,
+} from '@/hooks/use-notification-deliveries';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import {
   NOTIFICATION_CHANNEL_ID,
@@ -70,6 +74,11 @@ export default function DeliveryLogTable() {
     cursor: pagination.cursor,
     limit: pagination.limit,
   });
+
+  const retry = useRetryNotificationDelivery();
+  const onRetry = async (deliveryId: string): Promise<void> => {
+    try { await retry.mutateAsync(deliveryId); } catch { /* surfaced */ }
+  };
 
   // Whenever a filter changes, drop back to page 0.
   const resetAndSet = <T,>(setter: (v: T) => void) => (v: T): void => {
@@ -193,19 +202,20 @@ export default function DeliveryLogTable() {
                 <th className="px-4 py-2 text-left">Recipient Hash</th>
                 <th className="px-4 py-2 text-right">Attempt</th>
                 <th className="px-4 py-2 text-left">Last Error</th>
+                <th className="px-4 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {list.isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                  <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
                     <Loader2 size={16} className="mx-auto animate-spin" />
                   </td>
                 </tr>
               )}
               {!list.isLoading && (list.data?.data.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-3 text-center text-gray-500">
+                  <td colSpan={8} className="px-4 py-3 text-center text-gray-500">
                     No deliveries match the current filters.
                   </td>
                 </tr>
@@ -240,6 +250,21 @@ export default function DeliveryLogTable() {
                   </td>
                   <td className="max-w-xs truncate px-4 py-2 text-red-700 dark:text-red-400" title={d.lastError ?? undefined}>
                     {d.lastError ?? '—'}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {(d.status === 'failed' || d.status === 'dlq') && d.channel === 'email' && (
+                      <button
+                        type="button"
+                        onClick={() => onRetry(d.id)}
+                        disabled={retry.isPending}
+                        data-testid={`retry-${d.id}`}
+                        title="Re-queue this delivery for the email worker"
+                        className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-[10px] hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                      >
+                        {retry.isPending ? <Loader2 size={10} className="animate-spin" /> : <RotateCw size={10} />}
+                        Retry
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

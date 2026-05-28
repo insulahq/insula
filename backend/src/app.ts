@@ -96,6 +96,8 @@ import { seedCategoriesIfMissing } from './modules/notifications/categories/serv
 import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
 import { purgeOldDeliveriesSafe } from './modules/notifications/retention/purge.js';
 import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js';
+import { startEmailWorker } from './modules/notifications/queue/worker.js';
+import { stopBoss } from './modules/notifications/queue/bootstrap.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
@@ -706,6 +708,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // unref so the timer doesn't keep the event loop alive after close.
       notificationRetentionTimer.unref?.();
       app.addHook('onClose', () => clearInterval(notificationRetentionTimer));
+
+      // Phase 2: pg-boss email send worker. Best-effort start —
+      // failures (no DATABASE_URL in unit tests, pg-boss schema lock
+      // contention on cold start) leave email deliveries queued; a
+      // future tick of the retention scan can re-enqueue them.
+      try {
+        await startEmailWorker({ db: app.db });
+        app.log.info('[notifications] email send worker started');
+        app.addHook('onClose', async () => { await stopBoss().catch(() => {}); });
+      } catch (err) {
+        app.log.warn({ err }, '[notifications] email send worker failed to start (deliveries will stay queued)');
+      }
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 
