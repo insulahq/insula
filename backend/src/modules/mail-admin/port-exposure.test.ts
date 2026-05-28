@@ -33,10 +33,21 @@ vi.mock('@kubernetes/client-node', () => ({
           patchNamespacedDeployment: mockPatchDeployment,
         };
       }
+      if (name === 'CoreV1Api') {
+        return {
+          // Tests don't exercise reconcileMailServiceExternalIPs paths
+          // — they don't pass a db param so the reconcile is skipped.
+          // Stubs return empty so the module can still call into core
+          // if the codepath changes.
+          listNode: vi.fn(async () => ({ items: [] })),
+          patchNamespacedService: vi.fn(async () => undefined),
+        };
+      }
       return {};
     }
   },
   AppsV1Api: { name: 'AppsV1Api' },
+  CoreV1Api: { name: 'CoreV1Api' },
 }));
 
 vi.mock('../../shared/k8s-patch.js', () => ({
