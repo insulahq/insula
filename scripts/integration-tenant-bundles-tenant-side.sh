@@ -93,16 +93,17 @@ OTHER_TENANT_ID=$(printf '%s' "$BODY" | jq -r '.data[] | .id' | grep -v "^$TENAN
 [[ -n "$OTHER_TENANT_ID" ]] || OTHER_TENANT_ID="11111111-1111-1111-1111-111111111111"
 log "cross-tenant id for negative test: $OTHER_TENANT_ID"
 
-# Provision a tenant_admin user for this tenant if one doesn't exist.
+# Provision a tenant_admin user for this tenant.
 log "provisioning tenant_admin user"
 TENANT_USER_EMAIL="tenant-restore-e2e-$(date +%s)@example.test"
 TENANT_USER_PASSWORD="TestRestore!$(date +%s)"
-RAW=$(api "$ADMIN_HOST" POST "/admin/tenants/$TENANT_ID/users" "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"fullName\":\"Restore E2E User\",\"role\":\"tenant_admin\"}" "$ADMIN_TOKEN")
+RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/users" "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"full_name\":\"Restore E2E User\",\"role_name\":\"tenant_admin\"}" "$ADMIN_TOKEN")
 parse "$RAW"
 if [[ "$STATUS" == "201" || "$STATUS" == "200" ]]; then
   ok "tenant_admin provisioned: $TENANT_USER_EMAIL"
 else
-  log "tenant_admin provisioning returned $STATUS: $BODY (may already exist; continuing)"
+  fail "tenant_admin provisioning returned $STATUS: $BODY"
+  exit 1
 fi
 
 # Login as the tenant_admin via tenant panel.
