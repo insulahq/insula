@@ -693,6 +693,50 @@ async function setStep(
   }
 }
 
+/**
+ * Reconcile mail-migration runs that the orchestrator never finished.
+ *
+ * Why: runMigrationStateMachine runs as a fire-and-forget background
+ * promise on whichever platform-api pod accepted the original POST.
+ * If THAT pod is killed mid-run (OOM, rolling restart, eviction) the
+ * run row stays in a non-terminal state forever and blocks every
+ * subsequent migration attempt with MAIL_MIGRATION_ALREADY_RUNNING.
+ *
+ * Caught 2026-05-28 by Phase E of the mobility E2E — a platform-api
+ * deploy mid-test left two run rows stuck in `running` that required
+ * manual SQL UPDATE to drain.
+ *
+ * Strategy:
+ *   - Find rows in non-terminal state older than 2 hours (well past
+ *     any legitimate worst-case CIFS/restic restore time).
+ *   - Mark each as failed with a clear diagnostic so operators see why
+ *     it was reaped.
+ *
+ * Safe to call from multiple platform-api replicas — the UPDATE only
+ * affects rows whose state is still non-terminal.
+ */
+export async function reconcileAbandonedMailMigrations(
+  db: Database,
+  log?: { info: (m: string) => void; warn: (m: string) => void },
+): Promise<{ reaped: number }> {
+  const result = await db.execute(sql`
+    UPDATE mail_migration_runs
+    SET state = 'failed',
+        finished_at = now(),
+        error_message = COALESCE(error_message,'')
+                      || CASE WHEN error_message IS NULL OR error_message = '' THEN '' ELSE E'\n' END
+                      || 'orphaned: orchestrator pod was killed; reaped by migration reconciler'
+    WHERE state NOT IN ('done','failed','rolled-back','cancelled')
+      AND started_at < now() - make_interval(secs => 7200)
+    RETURNING id
+  `) as unknown as { rows?: Array<{ id: string }> };
+  const reaped = (result.rows ?? []).length;
+  if (reaped > 0) {
+    log?.warn(`[migration-reconciler] reaped ${reaped} orphan migration(s) older than 2h`);
+  }
+  return { reaped };
+}
+
 async function failRun(
   db: Database,
   runId: string,

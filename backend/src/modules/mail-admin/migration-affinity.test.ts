@@ -69,22 +69,50 @@ describe('applyDeploymentAffinity (mail-stack co-location)', () => {
     // Fix #4: the annotation must live in the POD template (spec.template.metadata.annotations),
     // not the Deployment object (metadata.annotations). The restore-state init container reads
     // /podinfo via downwardAPI which mounts pod.metadata.annotations (inherited from template).
+    //
+    // 2026-05-28: both annotations (`allow-restore`, `restore-snapshot-id`) are ALWAYS set in
+    // the patch — null when absent — so a regular migration explicitly clears any stale
+    // restore-snapshot-id left over from a prior operator-initiated per-snapshot restore
+    // (strategic-merge-patch interprets null as "delete this key"). Bulwark only ever gets
+    // null for both (it has no restore-state init container today).
     const { apps, calls } = makeAppsMock();
     await applyDeploymentAffinity(apps, 'staging2', /* allowRestore */ true);
     const stalwart = calls.find((c) => c.name === 'stalwart-mail');
     const bulwark = calls.find((c) => c.name === 'bulwark');
     expect(stalwart?.body.spec?.template?.metadata?.annotations).toEqual({
       'mail.platform/allow-restore': 'true',
+      'mail.platform/restore-snapshot-id': null,
     });
-    expect(bulwark?.body.spec?.template?.metadata?.annotations).toBeUndefined();
+    expect(bulwark?.body.spec?.template?.metadata?.annotations).toEqual({
+      'mail.platform/allow-restore': null,
+      'mail.platform/restore-snapshot-id': null,
+    });
   });
 
-  it('omits the annotation block entirely when allowRestore=false', async () => {
+  it('clears both annotations when allowRestore=false (regular migration / DR cleanup)', async () => {
     const { apps, calls } = makeAppsMock();
     await applyDeploymentAffinity(apps, 'staging2', false);
     for (const c of calls) {
-      expect(c.body.spec?.template?.metadata).toBeUndefined();
+      expect(c.body.spec?.template?.metadata?.annotations).toEqual({
+        'mail.platform/allow-restore': null,
+        'mail.platform/restore-snapshot-id': null,
+      });
     }
+  });
+
+  it('stamps restore-snapshot-id ONLY on stalwart-mail (Bulwark has no restore-state)', async () => {
+    const { apps, calls } = makeAppsMock();
+    await applyDeploymentAffinity(apps, 'staging2', /* allowRestore */ true, 'abc12345');
+    const stalwart = calls.find((c) => c.name === 'stalwart-mail');
+    const bulwark = calls.find((c) => c.name === 'bulwark');
+    expect(stalwart?.body.spec?.template?.metadata?.annotations).toEqual({
+      'mail.platform/allow-restore': 'true',
+      'mail.platform/restore-snapshot-id': 'abc12345',
+    });
+    expect(bulwark?.body.spec?.template?.metadata?.annotations).toEqual({
+      'mail.platform/allow-restore': null,
+      'mail.platform/restore-snapshot-id': null,
+    });
   });
 
   it('re-throws on partial failure (first patch ok, second throws) without rolling back the first', async () => {
