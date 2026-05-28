@@ -518,7 +518,28 @@ else
         # empty (curl pod scheduling hiccup), re-probe the decisions
         # list — if the decision id is gone, the DELETE succeeded
         # server-side regardless of what stdout said.
-        decision_id=$(api_internal GET "/admin/security/crowdsec/decisions?q=$BAN_TARGET" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['decisions']; print(d[0]['id'] if d else '')")
+        #
+        # Retry the GET up to 3× — bare api_internal occasionally drops
+        # the response body when the ephemeral curl pod has a
+        # scheduling hiccup. The decision parse uses a try/except so
+        # an empty body produces empty stdout instead of a python
+        # traceback poisoning the variable.
+        decision_id=""
+        for _i in 1 2 3; do
+          decision_id=$(api_internal GET "/admin/security/crowdsec/decisions?q=$BAN_TARGET" \
+            | python3 -c "
+import sys, json
+try:
+    body = sys.stdin.read()
+    if not body.strip(): sys.exit(0)
+    d = json.loads(body).get('data', {}).get('decisions', [])
+    print(d[0]['id'] if d else '')
+except Exception:
+    pass
+" 2>/dev/null)
+          if [[ -n "$decision_id" ]]; then break; fi
+          sleep 2
+        done
         if [[ -n "$decision_id" ]]; then
           unban_resp=$(api_internal DELETE "/admin/security/crowdsec/decisions/$decision_id")
           if echo "$unban_resp" | grep -q '"deleted":1'; then
