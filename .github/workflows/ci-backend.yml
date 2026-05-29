@@ -85,7 +85,7 @@ jobs:
       postgres:
         image: postgres:18-alpine
         env:
-          POSTGRES_DB: hosting_platform_test
+          POSTGRES_DB: platform_test
           POSTGRES_USER: platform
           POSTGRES_PASSWORD: platform
         ports:
@@ -105,7 +105,7 @@ jobs:
           --health-timeout=5s
           --health-retries=5
     env:
-      DATABASE_URL: postgres://platform:platform@localhost:5432/hosting_platform_test
+      DATABASE_URL: postgres://platform:platform@localhost:5432/platform_test
       JWT_SECRET: ci-test-secret-key-at-least-16-chars
       NODE_ENV: test
     steps:

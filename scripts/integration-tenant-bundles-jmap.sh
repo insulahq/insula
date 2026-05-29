@@ -117,7 +117,7 @@ if [ -z "${TENANT_ID:-}" ]; then
   TENANT_ID=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "
     PG_PW=\$(kubectl -n platform get secret system-db-app -o jsonpath='{.data.password}' | base64 -d)
     PG_POD=\$(kubectl -n platform get pods -l cnpg.io/cluster=system-db -o name 2>/dev/null | head -1 | sed 's|pod/||')
-    kubectl -n platform exec \$PG_POD -c postgres -- env PGPASSWORD=\"\$PG_PW\" psql -h system-db-rw -U platform -d hosting_platform -tAc \
+    kubectl -n platform exec \$PG_POD -c postgres -- env PGPASSWORD=\"\$PG_PW\" psql -h system-db-rw -U platform -d platform -tAc \
       \"SELECT tenant_id FROM mailboxes GROUP BY tenant_id ORDER BY count(*) DESC LIMIT 1;\" 2>/dev/null
   " | strip_cr)
 fi
@@ -205,7 +205,7 @@ echo "[7/8] checking tenant_jmap_state rows for client $TENANT_ID…"
 ROWS=$(ssh -i "$SSH_KEY" "$STAGING_HOST" "
   PG_PW=\$(kubectl -n platform get secret system-db-app -o jsonpath='{.data.password}' | base64 -d)
   PG_POD=\$(kubectl -n platform get pods -l cnpg.io/cluster=system-db -o name 2>/dev/null | head -1 | sed 's|pod/||')
-  kubectl -n platform exec \$PG_POD -c postgres -- env PGPASSWORD=\"\$PG_PW\" psql -h system-db-rw -U platform -d hosting_platform -tAc \
+  kubectl -n platform exec \$PG_POD -c postgres -- env PGPASSWORD=\"\$PG_PW\" psql -h system-db-rw -U platform -d platform -tAc \
     \"SELECT count(*) FROM tenant_jmap_state WHERE tenant_id='$TENANT_ID';\" 2>/dev/null
 " | strip_cr)
 [ "$ROWS" -gt 0 ] || { echo "ERROR: tenant_jmap_state has 0 rows for $TENANT_ID (post-ack persist failed)" >&2; exit 1; }

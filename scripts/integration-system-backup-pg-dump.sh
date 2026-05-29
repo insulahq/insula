@@ -29,7 +29,7 @@ SOURCE_NS="${SOURCE_NS:-platform}"
 # version baggage). Override via SOURCE_CLUSTER when testing
 # alternate clusters.
 SOURCE_CLUSTER="${SOURCE_CLUSTER:-system-db}"
-SOURCE_DB="${SOURCE_DB:-hosting_platform}"
+SOURCE_DB="${SOURCE_DB:-platform}"
 
 [[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD required" >&2; exit 2; }
 [[ -n "$TARGET_CONFIG_ID" ]] || { echo "ERROR: TARGET_CONFIG_ID (uuid of active backup_configurations row) required" >&2; exit 2; }

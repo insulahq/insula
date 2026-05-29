@@ -89,7 +89,7 @@ TENANT_URL="https://tenant.${DOMAIN}"
 WEBMAIL_URL="https://webmail.${DOMAIN}"
 MAIL_HOST="mail.${DOMAIN}"
 
-kubectl -n "$NAMESPACE" exec -i "$POD" -c postgres -- psql -v ON_ERROR_STOP=1 hosting_platform <<SQL
+kubectl -n "$NAMESPACE" exec -i "$POD" -c postgres -- psql -v ON_ERROR_STOP=1 platform <<SQL
 BEGIN;
 UPDATE system_settings
    SET admin_panel_url     = '${ADMIN_URL}',
@@ -107,7 +107,7 @@ SQL
 
 # Audit row (non-critical; runs in its own statement so a schema
 # mismatch can't roll back the rewrite).
-kubectl -n "$NAMESPACE" exec -i "$POD" -c postgres -- psql hosting_platform >/dev/null 2>&1 <<SQL || true
+kubectl -n "$NAMESPACE" exec -i "$POD" -c postgres -- psql platform >/dev/null 2>&1 <<SQL || true
 INSERT INTO audit_logs (id, action_type, resource_type, resource_id, actor_id, actor_type,
                         http_method, http_path, http_status, changes, created_at)
 VALUES (gen_random_uuid()::text, 'admin_domain_rewrite_via_cli', 'system_settings', 'system',

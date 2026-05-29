@@ -2496,7 +2496,7 @@ except Exception:
   log "── scenario system_backup: pg_dump platform/system-db ──"
   if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
      TARGET_CONFIG_ID="$target_id" \
-     SOURCE_NS=platform SOURCE_CLUSTER=system-db SOURCE_DB=hosting_platform \
+     SOURCE_NS=platform SOURCE_CLUSTER=system-db SOURCE_DB=platform \
      bash "$script_dir/integration-system-backup-pg-dump.sh"; then
     ok "system_backup: platform/system-db pg_dump"
   else

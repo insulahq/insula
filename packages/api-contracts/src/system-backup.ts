@@ -64,7 +64,7 @@ const dnsLabelSchema = z
 
 // Postgres unquoted identifier: letter or underscore, then alnum or
 // underscore. Avoids needing to escape the value when it appears as a
-// `-d <db>` argument to pg_dump. Examples: hosting_platform, app, mail.
+// `-d <db>` argument to pg_dump. Examples: platform, app, mail.
 const pgIdentifierSchema = z
   .string()
   .min(1)

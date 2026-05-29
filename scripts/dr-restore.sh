@@ -333,7 +333,7 @@ phase_postgres_restore() {
   run kubectl -n platform cp "$dump" "${POD}:/tmp/restore.dump"
   run kubectl -n platform exec "$POD" -- \
     bash -c 'pg_restore --clean --if-exists --no-owner --no-privileges \
-             -U platform -d hosting_platform /tmp/restore.dump' || {
+             -U platform -d platform /tmp/restore.dump' || {
     warn "pg_restore exited non-zero. Most 'already exists' / 'does not exist' noise on --clean --if-exists is harmless; check logs."
   }
   log "  ✓ Postgres restore complete"

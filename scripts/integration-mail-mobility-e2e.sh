@@ -72,7 +72,7 @@ pass_phase() { echo "PHASE_PASS:$1:$2"; }
 # Mint admin JWT once
 PGPOD=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
 JWT_SECRET=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
-ADMIN_ID=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
+ADMIN_ID=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
 APIPOD=$(kubectl get pod -n platform -l app=platform-api -o jsonpath='{.items[0].metadata.name}')
 TOKEN=$(kubectl exec -n platform "$APIPOD" -- env JWT_SECRET="$JWT_SECRET" SUB="$ADMIN_ID" node -e '
 const { SignJWT } = require("jose");
@@ -133,7 +133,7 @@ wait_pod_ready() {
 # Resolve cluster topology once
 NODES_SERVER=$(kubectl get node -l insula.host/node-role=server -o jsonpath='{.items[*].metadata.name}')
 NODES_WORKER=$(kubectl get node -l insula.host/node-role!=server -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
-ACTIVE_NODE=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
+ACTIVE_NODE=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
 OTHER_SERVER=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
 
 echo "Topology: server-role=[$NODES_SERVER] worker-role=[$NODES_WORKER] active=$ACTIVE_NODE other-server=$OTHER_SERVER"
@@ -213,7 +213,7 @@ phase_A() {
   # Wait for the new Stalwart pod to be Ready, then check via kubectl exec
   wait_pod_ready "app=stalwart-mail" mail 180 || true
   local POST_ACTIVE POST_FILES POST_BYTES POST_POD
-  POST_ACTIVE=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
+  POST_ACTIVE=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
   POST_POD=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
   POST_FILES=$(kubectl exec -n mail "$POST_POD" -c stalwart -- sh -c 'find /var/lib/stalwart/data -type f 2>/dev/null | wc -l' 2>/dev/null || echo 0)
   POST_BYTES=$(kubectl exec -n mail "$POST_POD" -c stalwart -- sh -c 'du -sb /var/lib/stalwart/data 2>/dev/null | awk "{print \$1}"' 2>/dev/null || echo 0)
@@ -464,7 +464,7 @@ phase_F() {
   hdr "PHASE F: recovery flow (simulate broken state)"
   # Simulate by setting mail_active_node to a node where PVC isn't bound
   local current pvc_node target
-  current=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
+  current=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
   pvc_node=$(kubectl get pvc -n mail mail-stack-data -o jsonpath='{.metadata.annotations.volume\.kubernetes\.io/selected-node}')
   echo "  Pre: active=$current pvc=$pvc_node"
   # Pick a different node to point at
@@ -476,7 +476,7 @@ phase_F() {
     return
   fi
   # Inject the divergence
-  kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -c \
+  kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -c \
     "UPDATE system_settings SET mail_active_node='$other_node';" > /dev/null 2>&1
   echo "  Injected: mail_active_node=$other_node (PVC actually on $pvc_node)"
   # Read recovery-status — must report broken
@@ -485,7 +485,7 @@ phase_F() {
   state=$(echo "$rs" | jq -r '.data.status.state')
   if [ "$state" != "broken" ]; then
     # Restore truth before bailing
-    kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -c "UPDATE system_settings SET mail_active_node='$pvc_node';" > /dev/null 2>&1
+    kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -c "UPDATE system_settings SET mail_active_node='$pvc_node';" > /dev/null 2>&1
     fail_phase F "recovery-status reported '$state' expected 'broken'"
     return
   fi
@@ -495,7 +495,7 @@ phase_F() {
   resp=$(api POST "/admin/mail/recover" "$(jq -n --arg n "$pvc_node" --arg c "$pvc_node" '{targetNode:$n,confirmTargetNode:$c}')" 30)
   run_id=$(echo "$resp" | jq -r '.data.runId // empty')
   if [ -z "$run_id" ]; then
-    kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -c "UPDATE system_settings SET mail_active_node='$pvc_node';" > /dev/null 2>&1
+    kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -c "UPDATE system_settings SET mail_active_node='$pvc_node';" > /dev/null 2>&1
     fail_phase F "recover POST no runId: $(echo "$resp" | jq -c '.error // .')"
     return
   fi
@@ -580,7 +580,7 @@ phase_H() {
 
   # Baseline migration count so we can detect a new dr-watcher-launched run
   local pre_runs
-  pre_runs=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT COUNT(*) FROM mail_migration_runs;" 2>/dev/null | head -1 | tr -d ' ')
+  pre_runs=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT COUNT(*) FROM mail_migration_runs;" 2>/dev/null | head -1 | tr -d ' ')
 
   # Stop k3s on the active node — this kills kubelet, the node goes NotReady
   # after the node-monitor-grace-period (~40s default). dr-watcher detects
@@ -593,9 +593,9 @@ phase_H() {
   local new_run=""
   while [ $(date +%s) -lt "$end" ]; do
     local now_runs
-    now_runs=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT COUNT(*) FROM mail_migration_runs;" 2>/dev/null | head -1 | tr -d ' ')
+    now_runs=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT COUNT(*) FROM mail_migration_runs;" 2>/dev/null | head -1 | tr -d ' ')
     if [ "$now_runs" -gt "$pre_runs" ]; then
-      new_run=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT id FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;" 2>/dev/null | head -1)
+      new_run=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT id FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;" 2>/dev/null | head -1)
       echo "  dr-watcher launched new migration: $new_run"
       break
     fi

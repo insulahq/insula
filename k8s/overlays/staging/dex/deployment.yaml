@@ -86,7 +86,7 @@ spec:
                 secretKeyRef:
                   name: oauth2-proxy-config
                   key: OAUTH2_PROXY_CLIENT_SECRET
-            # Same `hosting_platform` DB + `platform` SQL user that
+            # Same `platform` DB + `platform` SQL user that
             # platform-api uses (Secret platform-db-credentials,
             # bootstrapped from the postgres init Job). Dex creates
             # its own table set on first start; none of those names

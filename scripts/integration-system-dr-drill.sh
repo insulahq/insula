@@ -87,7 +87,7 @@ curl -sS -k -o "$WORKDIR/secrets.tar.age" "$SOURCE_ADMIN_HOST$DOWNLOAD_URL"
 log "3) Trigger pg_dump on platform/system-db"
 PG_PLATFORM=$(curl_admin -X POST "$SOURCE_ADMIN_HOST/api/v1/system-backup/pg-dump" \
   -H 'Content-Type: application/json' \
-  -d "{\"sourceNamespace\":\"platform\",\"sourceCluster\":\"system-db\",\"sourceDatabase\":\"hosting_platform\",\"targetConfigId\":\"$TARGET_CONFIG_ID\",\"reason\":\"DR drill\"}")
+  -d "{\"sourceNamespace\":\"platform\",\"sourceCluster\":\"system-db\",\"sourceDatabase\":\"platform\",\"targetConfigId\":\"$TARGET_CONFIG_ID\",\"reason\":\"DR drill\"}")
 PG_PLATFORM_RUN=$(echo "$PG_PLATFORM" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["runId"])' 2>/dev/null || echo "")
 [[ -n "$PG_PLATFORM_RUN" ]] || fail "platform pg_dump failed to start: $PG_PLATFORM"
 pass "platform pg_dump: $PG_PLATFORM_RUN"
@@ -172,7 +172,7 @@ log "9) pg_restore platform DB"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \
    kubectl -n platform cp /root/platform.pgdump system-db-1:/tmp/platform.pgdump && \
-   kubectl -n platform exec system-db-1 -- bash -c 'PGPASSWORD=\$(cat /run/postgres/credentials/password 2>/dev/null || echo \$POSTGRES_PASSWORD) pg_restore --no-owner --no-privileges --clean --if-exists -U platform -d hosting_platform /tmp/platform.pgdump 2>&1 | tail -10'" \
+   kubectl -n platform exec system-db-1 -- bash -c 'PGPASSWORD=\$(cat /run/postgres/credentials/password 2>/dev/null || echo \$POSTGRES_PASSWORD) pg_restore --no-owner --no-privileges --clean --if-exists -U platform -d platform /tmp/platform.pgdump 2>&1 | tail -10'" \
   2>&1 | tail -10
 
 log "10b) Rewrite system_settings domain (post-pg_restore DR fixup)"

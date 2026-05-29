@@ -76,7 +76,7 @@ psql_pg() {
   local primary sql="$1"
   primary=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}' 2>/dev/null)
   [[ -n "$primary" ]] || { echo "psql_pg: no primary found" >&2; return 1; }
-  $SSH "kubectl exec -n platform '$primary' -c postgres -i -- psql -tA -d hosting_platform" <<EOF
+  $SSH "kubectl exec -n platform '$primary' -c postgres -i -- psql -tA -d platform" <<EOF
 $sql
 EOF
 }

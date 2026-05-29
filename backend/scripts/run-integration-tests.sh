@@ -15,7 +15,7 @@ docker compose -f docker-compose.test.yml up -d
 # Wait for PostgreSQL to be healthy
 log "Waiting for PostgreSQL to be ready..."
 for i in $(seq 1 30); do
-  if docker compose -f docker-compose.test.yml exec postgres-test pg_isready -U platform -d hosting_platform_test 2>/dev/null; then
+  if docker compose -f docker-compose.test.yml exec postgres-test pg_isready -U platform -d platform_test 2>/dev/null; then
     log "PostgreSQL is ready."
     break
   fi
@@ -39,7 +39,7 @@ if [ -n "${DOCKER_HOST:-}" ] && [[ "$DOCKER_HOST" == tcp://dind:* ]]; then
 else
   PG_HOST="${PG_HOST:-localhost}"
 fi
-export DATABASE_URL="postgresql://platform:platform@${PG_HOST}:5433/hosting_platform_test"
+export DATABASE_URL="postgresql://platform:platform@${PG_HOST}:5433/platform_test"
 export JWT_SECRET="test-secret-key-for-testing-only"
 export NODE_ENV="test"
 npx tsx src/db/migrate.ts || log "Warning: Migration runner failed (tables may already exist)"
