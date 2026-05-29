@@ -33,6 +33,13 @@ export const notificationCategoryResponseSchema = z.object({
   rateLimitWindowS: z.number().int().nullable(),
   rateLimitMax: z.number().int().nullable(),
   isActive: z.boolean(),
+  /**
+   * Phase 5: optional per-source email-provider routing. NULL → the
+   * worker uses the default platform email provider; otherwise it
+   * sends through this specific notification_providers row. The UI
+   * surfaces this as a "Send via" dropdown on the Source editor.
+   */
+  emailProviderId: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -44,6 +51,8 @@ export const updateNotificationCategorySchema = z.object({
   rateLimitWindowS: z.number().int().min(1).max(86400).nullable().optional(),
   rateLimitMax: z.number().int().min(1).max(10000).nullable().optional(),
   isActive: z.boolean().optional(),
+  /** Phase 5: pass null to clear the override (revert to default). */
+  emailProviderId: z.string().uuid().nullable().optional(),
 }).refine(
   (data) => (data.rateLimitWindowS === undefined) === (data.rateLimitMax === undefined)
     || (data.rateLimitWindowS === null && data.rateLimitMax === null),

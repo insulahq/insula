@@ -24,6 +24,7 @@ const {
   updateProvider,
   deleteProvider,
   getDefaultProviderRow,
+  getProviderForCategoryEmail,
   testProvider,
 } = await import('./service.js');
 
@@ -216,5 +217,72 @@ describe('notificationProvidersService', () => {
     await updateProvider(db, 'p1', { authPassword: 'rotated' }, { encryptionKey: 'KEY' });
     expect(encryptMock).toHaveBeenCalledWith('rotated', 'KEY');
     expect(updateCalls[0]).toMatchObject({ authPasswordEncrypted: 'enc:rotated' });
+  });
+
+  describe('getProviderForCategoryEmail (Phase 5)', () => {
+    // Build a db whose select chain returns sequenced rows. Each
+    // .limit() call dequeues the next array.
+    function buildSequencedDb(sequence: unknown[][]) {
+      let i = 0;
+      const select = vi.fn().mockImplementation(() => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve(sequence[i++] ?? []),
+          }),
+        }),
+      }));
+      return { select } as unknown as Parameters<typeof getProviderForCategoryEmail>[0];
+    }
+
+    it('returns the override row when the category sets email_provider_id and override is enabled', async () => {
+      const override = { ...row({ id: 'p-override' }), enabled: true };
+      const db = buildSequencedDb([
+        [{ emailProviderId: 'p-override' }], // categories lookup
+        [override],                          // providers lookup for override
+      ]);
+      const r = await getProviderForCategoryEmail(db, 'security.password_changed');
+      expect(r?.id).toBe('p-override');
+    });
+
+    it('returns null when override exists but is disabled (no silent fallback) — security review fix', async () => {
+      // Phase 5 security correction: disabling an override is the
+      // operator's signal to stop using that provider. We must NOT
+      // fall through to the default. Worker translates null into a
+      // failed delivery so the operator sees something is wrong.
+      const db = buildSequencedDb([
+        [{ emailProviderId: 'p-override' }], // categories lookup
+        [],                                  // override disabled → filtered out
+      ]);
+      const r = await getProviderForCategoryEmail(db, 'security.password_changed');
+      expect(r).toBeNull();
+    });
+
+    it('falls back to default when the category has no override (email_provider_id NULL)', async () => {
+      const defaultProvider = { ...row({ id: 'p-default' }), isDefault: true };
+      const db = buildSequencedDb([
+        [{ emailProviderId: null }],         // categories lookup, no override
+        [defaultProvider],                   // default lookup
+      ]);
+      const r = await getProviderForCategoryEmail(db, 'tenant.welcome');
+      expect(r?.id).toBe('p-default');
+    });
+
+    it('returns null when both override and default are missing', async () => {
+      const db = buildSequencedDb([
+        [{ emailProviderId: null }],         // no override
+        [],                                  // no default
+      ]);
+      const r = await getProviderForCategoryEmail(db, 'tenant.welcome');
+      expect(r).toBeNull();
+    });
+
+    it('returns null when category does not exist', async () => {
+      const db = buildSequencedDb([
+        [],                                  // no category row
+        [],                                  // default lookup also empty
+      ]);
+      const r = await getProviderForCategoryEmail(db, 'unknown.category');
+      expect(r).toBeNull();
+    });
   });
 });

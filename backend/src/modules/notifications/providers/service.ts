@@ -7,7 +7,7 @@
  */
 import { and, desc, eq } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
-import { notificationProviders } from '../../../db/schema.js';
+import { notificationCategories, notificationProviders } from '../../../db/schema.js';
 import { encrypt, decrypt } from '../../oidc/crypto.js';
 import { ApiError } from '../../../shared/errors.js';
 import type { Database } from '../../../db/index.js';
@@ -90,6 +90,52 @@ export async function getDefaultProviderRow(
     ))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Phase 5: resolve the email provider for a specific category.
+ *
+ * Priority:
+ *   1. If the category has NO override (email_provider_id IS NULL),
+ *      use the platform-default email provider.
+ *   2. If the category HAS an override AND it is enabled, use it.
+ *   3. If the category HAS an override AND it is disabled or missing,
+ *      return NULL — the worker will mark the delivery `failed` with
+ *      reason `override_provider_unavailable`. We deliberately do NOT
+ *      fall through to the default here: disabling a provider is the
+ *      only tool an operator has to stop traffic through a compromised
+ *      or quarantined endpoint, and silently rerouting subverts that
+ *      intent (security review 2026-05-29 MEDIUM-2).
+ *
+ * Returns null when both override-required and default-fallback paths
+ * have no candidate. Callers (queue/worker.ts) translate null into a
+ * delivery-row failure with a descriptive lastError.
+ */
+export async function getProviderForCategoryEmail(
+  db: Database,
+  categoryId: string,
+): Promise<Row | null> {
+  const [cat] = await db
+    .select({ emailProviderId: notificationCategories.emailProviderId })
+    .from(notificationCategories)
+    .where(eq(notificationCategories.id, categoryId))
+    .limit(1);
+  if (cat?.emailProviderId) {
+    const [override] = await db
+      .select()
+      .from(notificationProviders)
+      .where(and(
+        eq(notificationProviders.id, cat.emailProviderId),
+        eq(notificationProviders.enabled, true),
+        eq(notificationProviders.channel, 'email'),
+      ))
+      .limit(1);
+    // Override is set; honour it strictly. Missing/disabled → null
+    // (NOT a fall-through to default) so the operator's "stop using
+    // this provider" toggle takes effect.
+    return override ?? null;
+  }
+  return await getDefaultProviderRow(db, 'email');
 }
 
 interface CreateContext {

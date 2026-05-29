@@ -1637,11 +1637,19 @@ export const notificationCategories = pgTable('notification_categories', {
   rateLimitWindowS: integer('rate_limit_window_s'),
   rateLimitMax: integer('rate_limit_max'),
   isActive: boolean('is_active').notNull().default(true),
+  // Phase 5 (migration 0044): optional per-source provider routing.
+  // NULL → dispatcher uses the default email provider; when SET, the
+  // dispatcher uses ONLY that provider — disabled / missing override
+  // produces a failed delivery rather than falling through to default
+  // (operator intent: routing decisions are deliberate).
+  emailProviderId: varchar('email_provider_id', { length: 36 })
+    .references(() => notificationProviders.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   // Mirrors `WHERE is_active = TRUE` predicate in migration 0035.
   index('notification_categories_audience_idx').on(table.audience).where(sql`is_active = TRUE`),
+  index('notification_categories_email_provider_idx').on(table.emailProviderId).where(sql`email_provider_id IS NOT NULL`),
 ]);
 
 export const notificationTemplates = pgTable('notification_templates', {
@@ -1719,6 +1727,11 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   // worker dequeue. Domain data only (e.g. tenantName, subscriptionPlan)
   // — no recipient PII. NULLed by a 7-day cleanup pass.
   eventVariables: jsonb('event_variables').$type<Record<string, unknown> | null>(),
+  // Phase 4 follow-up (migration 0045): per-delivery idempotency key.
+  // The dispatcher's dedupe check queries this column so email-only
+  // categories (which never write a notifications row) participate
+  // in the dedupe window.
+  dedupeKey: varchar('dedupe_key', { length: 128 }),
 }, (table) => [
   index('notification_deliveries_event_idx').on(table.eventId),
   // Per-user/tenant list views are newest-first; DESC matches the SQL

@@ -46,14 +46,27 @@ const { emitEvent } = await import('./dispatch.js');
 
 type Db = Parameters<typeof emitEvent>[0];
 
-function mockDb(overrides: { userEmail?: string | null } = {}): Db {
-  const select = vi.fn().mockReturnValue({
+function mockDb(overrides: { userEmail?: string | null; dedupedExists?: boolean; dedupeChecked?: boolean } = {}): Db {
+  // The dispatcher issues `select` for two distinct shapes:
+  //   - dedupe check (only when opts.dedupeKey set, runs once per user)
+  //   - email lookup (per recipient × email channel)
+  // We track which has run via a closure flag. The default test cases
+  // don't use dedupeKey so the dedupe call never happens.
+  let dedupeCheckSeen = false;
+  const select = vi.fn().mockImplementation(() => ({
     from: () => ({
       where: () => ({
-        limit: () => Promise.resolve(overrides.userEmail === null ? [] : [{ email: overrides.userEmail ?? 'u1@example.com' }]),
+        limit: () => {
+          if (overrides.dedupedExists !== undefined && !dedupeCheckSeen) {
+            dedupeCheckSeen = true;
+            return Promise.resolve(overrides.dedupedExists ? [{ id: 'existing-notif' }] : []);
+          }
+          if (overrides.userEmail === null) return Promise.resolve([]);
+          return Promise.resolve([{ email: overrides.userEmail ?? 'u1@example.com' }]);
+        },
       }),
     }),
-  });
+  }));
   const insertValues = vi.fn().mockResolvedValue(undefined);
   const insert = vi.fn().mockReturnValue({ values: insertValues });
   const updateWhere = vi.fn().mockResolvedValue(undefined);
@@ -296,5 +309,41 @@ describe('emitEvent', () => {
       encryptionKey: 'KEY',
     });
     expect(r.perChannelStatuses.every((s) => s.status === 'failed')).toBe(true);
+  });
+
+  it('dedupeKey: skips every channel for a user with an existing notifications row in the window', async () => {
+    // Phase 4: when caller passes dedupeKey and a prior notifications
+    // row for (user, key, last 30d) exists, dispatcher must NOT write
+    // any new row for that recipient. Per-channel statuses surface
+    // status='skipped' with error='duplicate'.
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    const r = await emitEvent(mockDb({ dedupedExists: true }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+      dedupeKey: 'sub-expiry:t1:7d:2026-06-08',
+    });
+    expect(r.perChannelStatuses.every((s) => s.status === 'skipped')).toBe(true);
+    expect(r.perChannelStatuses.every((s) => s.error === 'duplicate')).toBe(true);
+  });
+
+  it('dedupeKey: no existing row → dispatches normally', async () => {
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    const r = await emitEvent(mockDb({ dedupedExists: false }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+      dedupeKey: 'sub-expiry:t1:7d:2026-06-08',
+    });
+    // Either sent or queued; explicitly NOT skipped:duplicate.
+    expect(r.perChannelStatuses.some((s) => s.error === 'duplicate')).toBe(false);
   });
 });

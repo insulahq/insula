@@ -24,6 +24,38 @@ vi.mock('@/hooks/use-notification-categories', () => ({
   }),
 }));
 
+// Phase 5: the Source editor reads the provider catalog so it can
+// render the per-source override dropdown.
+const SEED_PROVIDERS = [
+  {
+    id: 'p-default', name: 'Default Stalwart', providerType: 'stalwart-internal' as const,
+    scope: 'platform' as const, tenantId: null, channel: 'email' as const,
+    isDefault: true, enabled: true,
+    smtpHost: 'stalwart-mail.mail.svc.cluster.local', smtpPort: 465, smtpSecure: true,
+    authUsername: 'master@apex.test', authPasswordSet: true,
+    fromAddress: 'notifications@apex.test', fromName: null, region: null,
+    lastTestedAt: null, lastTestStatus: null, lastTestError: null,
+    createdAt: '2026-05-29T00:00:00Z', updatedAt: '2026-05-29T00:00:00Z', createdByUserId: 'admin',
+  },
+  {
+    id: 'p-postmark', name: 'Postmark Transactional', providerType: 'postmark' as const,
+    scope: 'platform' as const, tenantId: null, channel: 'email' as const,
+    isDefault: false, enabled: true,
+    smtpHost: 'smtp.postmarkapp.com', smtpPort: 587, smtpSecure: false,
+    authUsername: 'apikey', authPasswordSet: true,
+    fromAddress: 'noreply@apex.test', fromName: null, region: null,
+    lastTestedAt: null, lastTestStatus: null, lastTestError: null,
+    createdAt: '2026-05-29T00:00:00Z', updatedAt: '2026-05-29T00:00:00Z', createdByUserId: 'admin',
+  },
+];
+vi.mock('@/hooks/use-notification-providers', () => ({
+  useNotificationProviders: () => ({
+    data: { data: SEED_PROVIDERS },
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 const SEED_CATEGORIES = [
   {
     id: 'backup.failed',
@@ -116,6 +148,46 @@ describe('CategoriesTable', () => {
     expect(call.id).toBe('tenant.welcome');
     expect(call.input.defaultChannels).toContain('in_app');
     expect(call.input.defaultChannels).toContain('email');
+  });
+
+  it('Phase 5: renders the provider override dropdown with available providers', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('category-row-tenant.welcome'));
+    const select = screen.getByTestId('category-email-provider') as HTMLSelectElement;
+    // Both providers + the "Default" placeholder = 3 options.
+    expect(select.options.length).toBe(3);
+    expect(select.value).toBe(''); // initial value: no override
+  });
+
+  it('Phase 5: saving with a selected provider sends emailProviderId in the input', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('category-row-tenant.welcome'));
+    await user.selectOptions(screen.getByTestId('category-email-provider'), 'p-postmark');
+    await user.click(screen.getByTestId('category-save'));
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    const call = updateMutate.mock.calls[0][0] as { input: { emailProviderId?: string | null } };
+    expect(call.input.emailProviderId).toBe('p-postmark');
+  });
+
+  it('Phase 5: clearing the override sends emailProviderId=null', async () => {
+    // Seed with an existing override so the dropdown starts pre-selected.
+    listMock.mockReturnValue({
+      data: { data: [{ ...SEED_CATEGORIES[1], emailProviderId: 'p-postmark' }] },
+      isLoading: false,
+      error: null,
+    });
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('category-row-tenant.welcome'));
+    const select = screen.getByTestId('category-email-provider') as HTMLSelectElement;
+    expect(select.value).toBe('p-postmark');
+    await user.selectOptions(select, '');
+    await user.click(screen.getByTestId('category-save'));
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    const call = updateMutate.mock.calls[0][0] as { input: { emailProviderId?: string | null } };
+    expect(call.input.emailProviderId).toBeNull();
   });
 
   it('renders empty state when category list is empty', () => {
