@@ -5,7 +5,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 1m
-  url: https://github.com/phoenixtechnam/k8s-hosting-platform
+  url: https://github.com/insulahq/insula
   ref:
     branch: staging
   # For private repos, uncomment and create the secret:

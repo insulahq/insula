@@ -14,7 +14,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     mailNamespace: 'mail',
     tenantId: 'abc',
     backupId: 'bkp-test',
-    toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
+    toolsImage: 'ghcr.io/insulahq/insula/mail-backup-tools:latest',
     jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
     stalwartMasterUser: 'master@master.local',
     masterSecretName: 'mail-secrets',

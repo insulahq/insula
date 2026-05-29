@@ -19,7 +19,7 @@ export async function buildTestApp(): Promise<FastifyInstance> {
       FILE_MANAGER_IMAGE: 'file-manager:test',
       TUNNEL_BASE_URL: 'wss://tunnels.example.com',
       PRIVATE_WORKER_FRPS_IMAGE: 'fatedier/frps:v0.62.1',
-      PRIVATE_WORKER_AGENT_IMAGE: 'ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest',
+      PRIVATE_WORKER_AGENT_IMAGE: 'ghcr.io/insulahq/insula/private-worker-agent:latest',
       STORAGE_SNAPSHOT_BACKEND: 'hostpath',
       STORAGE_SNAPSHOT_HOST_ROOT: '/tmp/test-snapshots',
       STORAGE_SNAPSHOT_LOCAL_ROOT: '/tmp/test-snapshots',

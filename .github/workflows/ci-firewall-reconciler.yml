@@ -19,7 +19,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/firewall-reconciler
+  IMAGE: ghcr.io/insulahq/insula/firewall-reconciler
 
 jobs:
   build:

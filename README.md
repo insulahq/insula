@@ -68,7 +68,7 @@ docs/                     # Architecture docs, ADRs, specs
 ```
 
 > Workload Dockerfiles (apache-php, nginx-php, nodejs, static-nginx, etc.) live in the external catalog repo:
-> `https://github.com/phoenixtechnam/k8s-application-catalog`. CI in that repo builds and publishes them to GHCR.
+> `https://github.com/insulahq/application-catalog`. CI in that repo builds and publishes them to GHCR.
 
 ## Server Deployment
 
@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/phoenixtechnam/k8s-hosting-platform
 Or clone first:
 
 ```bash
-git clone https://github.com/phoenixtechnam/k8s-hosting-platform.git
+git clone https://github.com/insulahq/insula.git
 cd k8s-hosting-platform
 ./scripts/bootstrap.sh
 ```
@@ -138,7 +138,7 @@ kubectl get nodes
 ### Setup
 
 ```bash
-git clone https://github.com/phoenixtechnam/k8s-hosting-platform.git
+git clone https://github.com/insulahq/insula.git
 cd k8s-hosting-platform
 npm install
 docker compose up -d          # Start MariaDB + Redis

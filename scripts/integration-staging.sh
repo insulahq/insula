@@ -1394,7 +1394,7 @@ for c in (items if isinstance(items, list) else []):
     # so we hit Stalwart through the same auth path the Job uses.
     # The seeded Message-ID is the canonical assertion target for
     # round-trip + idempotency.
-    local probe_image="ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest"
+    local probe_image="ghcr.io/insulahq/insula/mail-backup-tools:latest"
     local probe_msgid_local="harness-${stamp}-$RANDOM"
     local probe_msgid="<${probe_msgid_local}@phoenix-host.net>"
 

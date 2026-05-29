@@ -20,8 +20,8 @@
 # that stages /plugins-local/src/<moduleName>/ onto a shared emptyDir
 # volume, which the main Traefik container then mounts.
 #
-# Build:  docker build -t ghcr.io/phoenixtechnam/hosting-platform/traefik-plugin-coraza:<tag> docker/traefik-plugin-coraza/
-# Push:   docker push ghcr.io/phoenixtechnam/hosting-platform/traefik-plugin-coraza:<tag>
+# Build:  docker build -t ghcr.io/insulahq/insula/traefik-plugin-coraza:<tag> docker/traefik-plugin-coraza/
+# Push:   docker push ghcr.io/insulahq/insula/traefik-plugin-coraza:<tag>
 # Update: bump TRAEFIK_PLUGIN_CORAZA_IMAGE + CORAZA_WASM_VERSION in scripts/bootstrap.sh.
 
 # ─── Builder: download + verify WASM binary ──────────────────────────

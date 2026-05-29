@@ -390,7 +390,7 @@ BACKUP_TARGET_S3_PREFIX=""      # --backup-target-s3-prefix    <prefix>  (option
 BACKUP_TARGET_NAME="primary"    # --backup-target-name         <name>    (defaults primary)
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
-REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
+REPO_URL="https://github.com/insulahq/insula.git"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
