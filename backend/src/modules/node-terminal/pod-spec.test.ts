@@ -29,8 +29,8 @@ describe('buildTerminalPodSpec', () => {
   it('labels the pod for orphan-sweeper + observability', () => {
     const pod = buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: VALID_SESSION });
     expect(pod.metadata?.labels?.[TERMINAL_POD_LABEL]).toBe('true');
-    expect(pod.metadata?.labels?.['platform.example.test/session-id']).toBe(VALID_SESSION);
-    expect(pod.metadata?.labels?.['platform.example.test/target-node']).toBe(VALID_NODE);
+    expect(pod.metadata?.labels?.['insula.host/session-id']).toBe(VALID_SESSION);
+    expect(pod.metadata?.labels?.['insula.host/target-node']).toBe(VALID_NODE);
   });
 
   it('pins to the target node via spec.nodeName', () => {

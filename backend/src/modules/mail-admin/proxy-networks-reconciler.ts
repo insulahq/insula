@@ -42,7 +42,7 @@ type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 export const PROXY_NETWORKS_RECONCILER_TICK_MS = 60_000;
 
 /** Server-role node label — matches placement.ts. */
-const SERVER_ROLE_LABEL_KEY = 'platform.example.test/node-role';
+const SERVER_ROLE_LABEL_KEY = 'insula.host/node-role';
 const SERVER_ROLE_LABEL_VALUE = 'server';
 
 /** JMAP capability URIs (mirrors stalwart-jmap/client.ts). */
@@ -299,7 +299,7 @@ export async function runProxyNetworksReconcilerTick(
 // ── Internal: server-node enumeration ────────────────────────────────
 
 /**
- * List the server-role nodes (`platform.example.test/node-role=server`)
+ * List the server-role nodes (`insula.host/node-role=server`)
  * and return their primary InternalIP. Nodes without an InternalIP are
  * skipped (kubelet should always report one for a healthy node).
  */

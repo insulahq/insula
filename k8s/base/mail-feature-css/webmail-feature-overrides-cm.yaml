@@ -8,7 +8,7 @@
 #   1. Reads platform_settings.webmail_show_{contacts,calendar,files}.
 #   2. Computes the CSS body per engine (Bulwark + Roundcube).
 #   3. PATCHes this ConfigMap with the computed content.
-#   4. Stamps a `platform.example.test/feature-css-hash` annotation
+#   4. Stamps a `insula.host/feature-css-hash` annotation
 #      on both Deployments' `spec.template.metadata.annotations` so a
 #      rolling restart picks up content changes.
 #

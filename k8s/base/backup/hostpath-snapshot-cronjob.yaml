@@ -14,12 +14,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
-    platform.example.test/backup-health-watch: "true"
-    platform.example.test/backup-category: "dr"
-    platform.example.test/backup-severity: "warning"
-    platform.example.test/depends-on: "backup-credentials"
+    insula.host/backup-health-watch: "true"
+    insula.host/backup-category: "dr"
+    insula.host/backup-severity: "warning"
+    insula.host/depends-on: "backup-credentials"
   annotations:
-    platform.example.test/backup-display-name: "Hostpath snapshot upload"
+    insula.host/backup-display-name: "Hostpath snapshot upload"
 spec:
   # Suspended by default. Unsuspended by longhorn-reconciler when a
   # backup target becomes active. See cluster-state-cronjob.yaml for the

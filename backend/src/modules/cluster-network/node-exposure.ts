@@ -1,6 +1,6 @@
 /**
  * Node exposure toggle — flip a Node's
- * `platform.example.test/exposure` label between "public" (default,
+ * `insula.host/exposure` label between "public" (default,
  * label absent) and "private". The label drives:
  *
  *   1. Scheduler affinity for ingress controllers + cert-manager

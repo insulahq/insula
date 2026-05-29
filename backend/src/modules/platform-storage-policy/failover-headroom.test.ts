@@ -18,7 +18,7 @@ function node(opts: {
     metadata: {
       name: opts.name,
       labels: opts.role
-        ? { 'platform.example.test/node-role': opts.role }
+        ? { 'insula.host/node-role': opts.role }
         : {},
     },
     status: {

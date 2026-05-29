@@ -144,7 +144,7 @@ interface SetNodeExposurePayload {
   readonly exposure: 'public' | 'private';
 }
 
-/** Toggle a Node's platform.example.test/exposure label. Drives
+/** Toggle a Node's insula.host/exposure label. Drives
  *  ingress-nginx + cert-manager solver scheduler affinity (manifest-
  *  side); a future Phase 6.5 will add reconciler firewall-chain drops
  *  on private nodes for workload ports. Invalidates the existing

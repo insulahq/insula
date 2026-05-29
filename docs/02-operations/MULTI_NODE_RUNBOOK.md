@@ -8,7 +8,7 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
 
 - **Server**: k3s control plane node. Runs etcd, platform-api,
   admin/tenant-panel, Postgres, Stalwart. Carries the
-  `platform.example.test/node-role=server` label.
+  `insula.host/node-role=server` label.
 - **Worker**: tenant workload node. Runs the per-tenant pods,
   ingress-nginx DaemonSet, Longhorn replica.
 - **Quorum**: etcd requires a majority of servers to accept writes.
@@ -44,7 +44,7 @@ ssh root@<server-1> cat /var/lib/rancher/k3s/server/node-token
 The new server joins the etcd cluster. You can verify with:
 
 ```bash
-ssh root@<server-1> kubectl get nodes -L platform.example.test/node-role
+ssh root@<server-1> kubectl get nodes -L insula.host/node-role
 ```
 
 New server appears with the `server` label applied automatically by
@@ -78,9 +78,9 @@ After the script completes, from the control plane:
 
 ```bash
 ssh root@<server-1> kubectl label node <worker-hostname> \
-  platform.example.test/node-role=worker --overwrite
+  insula.host/node-role=worker --overwrite
 ssh root@<server-1> kubectl label node <worker-hostname> \
-  platform.example.test/host-client-workloads=true --overwrite
+  insula.host/host-client-workloads=true --overwrite
 ```
 
 Workers default to `host-client-workloads=true` via the bootstrap

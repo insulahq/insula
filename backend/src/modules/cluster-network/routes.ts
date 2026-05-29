@@ -185,7 +185,7 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
   );
 
   // ─── Node exposure (Phase 6 PRIVATE NODE) ────────────────────────────
-  // Flips the platform.example.test/exposure label on a Node.
+  // Flips the insula.host/exposure label on a Node.
   // Drives traefik + cert-manager solver scheduler affinity
   // (manifest-side); a future Phase 6.5 will add reconciler firewall-
   // chain drops on private nodes for workload ports.

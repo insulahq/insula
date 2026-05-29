@@ -329,7 +329,7 @@ except Exception: pass
     pass "Both web + api Pods reached Running"
   else
     fail "compose stack did not stabilise within 180s"
-    remote_kubectl get pods -n "$TENANT_NS" -l "platform.example.test/deployment-id=$COMPOSE_ID" -o wide || true
+    remote_kubectl get pods -n "$TENANT_NS" -l "insula.host/deployment-id=$COMPOSE_ID" -o wide || true
     return 1
   fi
 
@@ -346,7 +346,7 @@ except Exception: pass
   # Two Services exist, one per service.
   local svc_count
   svc_count=$(remote_kubectl get svc -n "$TENANT_NS" \
-    -l "platform.example.test/deployment-id=$COMPOSE_ID" \
+    -l "insula.host/deployment-id=$COMPOSE_ID" \
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w)
   if [[ "$svc_count" -ge 2 ]]; then
     pass "$svc_count Services owned by compose deployment"
@@ -424,7 +424,7 @@ scenario_delete() {
     while ((SECONDS < end)); do
       local cnt
       cnt=$(remote_kubectl get all,configmap,secret -n "$TENANT_NS" \
-        -l "platform.example.test/deployment-id=$id" \
+        -l "insula.host/deployment-id=$id" \
         -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w)
       if [[ "$cnt" == "0" ]]; then
         pass "All k8s resources for $id reaped"
@@ -434,7 +434,7 @@ scenario_delete() {
     done
     local final
     final=$(remote_kubectl get all,configmap,secret -n "$TENANT_NS" \
-      -l "platform.example.test/deployment-id=$id" \
+      -l "insula.host/deployment-id=$id" \
       -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w)
     if [[ "$final" != "0" ]]; then
       fail "$final resources still labelled deployment-id=$id after delete"

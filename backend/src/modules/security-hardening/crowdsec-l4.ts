@@ -35,16 +35,16 @@ const FIREWALL_RECONCILER_DS = 'firewall-reconciler';
 const CROWDSEC_L4_ENV = 'CROWDSEC_L4_MODE';
 
 // CTR + CPP GVRs match what the firewall-reconciler Go code uses.
-// The CRDs live under `networking.platform.example.test` — see
+// The CRDs live under `networking.insula.host` — see
 // k8s/base/cluster-network/ + backend/src/modules/cluster-network/
 // k8s-client.ts CRD_GROUP. Until 2026-05-21 these constants were
-// wrong (`platform.example.test`), every listClusterCustomObject
+// wrong (`insula.host`), every listClusterCustomObject
 // returned 404, and the silent catch below left the trust lists
 // EMPTY — so every operator IP failed the trust check, even when
 // covered by a ClusterTrustedRange CR. Lockout warning showed on
 // every panel load.
-const CTR_GVR = { group: 'networking.platform.example.test', version: 'v1alpha1', plural: 'clustertrustedranges' } as const;
-const CPP_GVR = { group: 'networking.platform.example.test', version: 'v1alpha1', plural: 'clusterpendingpeers' } as const;
+const CTR_GVR = { group: 'networking.insula.host', version: 'v1alpha1', plural: 'clustertrustedranges' } as const;
+const CPP_GVR = { group: 'networking.insula.host', version: 'v1alpha1', plural: 'clusterpendingpeers' } as const;
 
 export class OperatorIpNotTrustedError extends Error {
   constructor(public readonly operatorIp: string | null, message: string) {

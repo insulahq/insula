@@ -7,7 +7,7 @@ import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
  *
  *  1. Helm-installed singleton control-plane Deployments (Longhorn CSI
  *     controllers, Calico typha + kube-controllers, Longhorn UI) carry
- *     `nodeSelector: platform.example.test/node-role=server` plus a
+ *     `nodeSelector: insula.host/node-role=server` plus a
  *     toleration for the matching `server-only` taint, so they don't
  *     consume worker capacity.
  *
@@ -28,8 +28,8 @@ import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const TICK_MS = 5 * 60 * 1000;
 const INITIAL_DELAY_MS = 60_000;
-const NODE_ROLE_LABEL = 'platform.example.test/node-role';
-const SERVER_ONLY_TAINT_KEY = 'platform.example.test/server-only';
+const NODE_ROLE_LABEL = 'insula.host/node-role';
+const SERVER_ONLY_TAINT_KEY = 'insula.host/server-only';
 const WORKER_RESERVE_PCT = 10;
 
 interface SingletonTarget {

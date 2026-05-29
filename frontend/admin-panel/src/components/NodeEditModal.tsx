@@ -41,7 +41,7 @@ interface NodeEditModalProps {
  *  - displayName (alias) — operator-friendly label, falls back to k8s name.
  *  - role + canHostTenantWorkloads — preserved from the legacy form.
  *  - ingressMode — three-state (all / local / none) — sets the
- *    platform.example.test/ingress-mode label which the
+ *    insula.host/ingress-mode label which the
  *    ingress-nginx DaemonSet's nodeAffinity respects.
  *  - notes — operator free text, surfaced only here.
  */

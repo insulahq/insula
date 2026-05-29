@@ -603,7 +603,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // notification with enough context to recover by hand, then
       // clear the lock so writes are not blocked forever. Also
       // best-effort cleans up leftover temp PITR clusters (identified
-      // by the platform.example.test/pitr-restore=true label) so
+      // by the insula.host/pitr-restore=true label) so
       // they don't pin Longhorn volumes.
       try {
         const { recoverInterruptedRestore } = await import('./modules/postgres-restore/service.js');
@@ -1187,7 +1187,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => systemPodPlacementHandle.stop());
 
         // Backup-health: watches Jobs cluster-wide via the
-        // platform.example.test/backup-health-watch=true label and
+        // insula.host/backup-health-watch=true label and
         // emits one notification per failed Job UID. Routes admin or
         // tenant_admin recipients per the optional tenant-id label.
         const { startBackupHealthScheduler } = await import('./modules/backup-health/scheduler.js');

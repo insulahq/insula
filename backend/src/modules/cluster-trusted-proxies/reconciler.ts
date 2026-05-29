@@ -24,7 +24,7 @@
  *      probes still work.
  *
  *   3. admin-panel + tenant-panel Deployments — stamp pod-template
- *      annotation `platform.example.test/trusted-proxies-hash`
+ *      annotation `insula.host/trusted-proxies-hash`
  *      with the ConfigMap CSV hash so a content change triggers a
  *      rolling restart (nginx re-reads `/etc/nginx/conf.d/trusted-
  *      proxies.d/*.conf` on start).
@@ -58,7 +58,7 @@ const PANEL_DEPLOYMENTS: ReadonlyArray<{ name: string; namespace: string }> = [
   { name: 'admin-panel', namespace: 'platform' },
   { name: 'tenant-panel', namespace: 'platform' },
 ];
-const ANNOTATION_KEY = 'platform.example.test/trusted-proxies-hash';
+const ANNOTATION_KEY = 'insula.host/trusted-proxies-hash';
 /**
  * Bootstrap-CIDR source: ConfigMap `platform/platform-cluster-cidrs`
  * with keys POD_CIDR and SVC_CIDR. Written by bootstrap.sh on cluster

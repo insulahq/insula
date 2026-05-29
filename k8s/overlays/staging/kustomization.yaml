@@ -84,7 +84,7 @@ resources:
   # deployments are no longer installed by bootstrap.sh.
 
 # Admin-auth gate — applies an auth_request to every Ingress labelled
-# `platform.example.test/admin-ui=true` (Longhorn UI, Stalwart web-
+# `insula.host/admin-ui=true` (Longhorn UI, Stalwart web-
 # admin, future admin-only UIs). Cookie mode gates on platform_session
 # (current staging login flow). Switch to admin-auth-gate-oauth2 when
 # oauth2-proxy is wired into the public admin ingress — every admin
@@ -93,7 +93,7 @@ components:
   - ../../components/admin-auth-gate-cookie
   # M1: pin all system workloads (admin-panel, platform-api, postgres,
   # redis, oauth2-proxy, sftp-gateway, stalwart-mail, roundcube, …) to
-  # nodes labelled platform.example.test/node-role=server. The
+  # nodes labelled insula.host/node-role=server. The
   # component excludes dex because dex is overlay-only (not in base /
   # not in production); its matching patch is wired inline below.
   # See docs/07-reference/NODE_ROLE_TAXONOMY.md for apply-order notes.
@@ -134,11 +134,11 @@ patches:
                 requiredDuringSchedulingIgnoredDuringExecution:
                   nodeSelectorTerms:
                     - matchExpressions:
-                        - key: platform.example.test/node-role
+                        - key: insula.host/node-role
                           operator: In
                           values: [server]
             tolerations:
-              - key: platform.example.test/server-only
+              - key: insula.host/server-only
                 operator: Equal
                 value: "true"
                 effect: NoSchedule

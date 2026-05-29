@@ -85,12 +85,12 @@ export interface LonghornTenants {
 
 // CronJob discovery is label-based: any CronJob in the `platform`
 // namespace carrying the
-//   platform.example.test/depends-on=backup-credentials
+//   insula.host/depends-on=backup-credentials
 // label gets suspended when no backup target is active and unsuspended
 // when one becomes active. Replaces the previously-hardcoded
 // BACKUP_CRONJOB_NAMES constant — adding a new credentials-dependent
 // CronJob is now a YAML-only change, no backend release required.
-const DEPENDS_ON_LABEL = 'platform.example.test/depends-on';
+const DEPENDS_ON_LABEL = 'insula.host/depends-on';
 const DEPENDS_ON_VALUE = 'backup-credentials';
 
 /**

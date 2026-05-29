@@ -91,7 +91,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              platform.example.test/tenant-backup-allowed: "true"
+              insula.host/tenant-backup-allowed: "true"
       ports:
         - protocol: TCP
           port: 9000

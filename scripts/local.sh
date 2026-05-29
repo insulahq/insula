@@ -354,11 +354,11 @@ _ensure_k3s_running() {
   fi
   # Label the single DinD node with the production "system" role label
   # so manifests that pin via nodeSelector
-  # `platform.example.test/node-role=server` (CNPG cluster, system
+  # `insula.host/node-role=server` (CNPG cluster, system
   # Deployments) actually schedule. Without this, postgres-1 stays Pending
   # forever and nothing comes up. Idempotent — kubectl label --overwrite.
   k3s_exec kubectl label node --all \
-    platform.example.test/node-role=server --overwrite >/dev/null 2>&1 || true
+    insula.host/node-role=server --overwrite >/dev/null 2>&1 || true
 
   # Traefik v3 + CrowdSec bouncer + ModSec plugin — same helm install
   # as scripts/bootstrap.sh's install_traefik so the local DinD stack
@@ -1289,7 +1289,7 @@ cmd_samba_status() {
 cmd_sftp_dev_up() {
   echo "Deploying dev SFTP (SSH/SFTP backend for snapshot E2E)..."
   # Apply namespace first so the Secret can land in it.
-  printf '%s\n' "apiVersion: v1" "kind: Namespace" "metadata: { name: dev-sftp, labels: { platform.example.test/env: dev } }" \
+  printf '%s\n' "apiVersion: v1" "kind: Namespace" "metadata: { name: dev-sftp, labels: { insula.host/env: dev } }" \
     | docker exec -i "${K3S_CONTAINER}" kubectl apply -f - >/dev/null
   # Generate a throwaway ed25519 keypair on the HOST (k3s container
   # is minimal and lacks ssh-keygen). The keys exist only in transit

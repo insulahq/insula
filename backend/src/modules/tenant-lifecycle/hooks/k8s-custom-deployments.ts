@@ -10,7 +10,7 @@ import {
 /**
  * Scale K8s Deployments for all custom deployments in a namespace.
  *
- * Uses the `platform.example.test/deployment-id=<id>` label that
+ * Uses the `insula.host/deployment-id=<id>` label that
  * the custom k8s-deployer stamps on every Deployment it owns (single
  * service or multi-service compose stack). Works across all services
  * in a stack without needing to enumerate service names.
@@ -28,7 +28,7 @@ async function scaleCustomK8sDeployments(
     ));
 
   for (const row of rows) {
-    const labelSelector = `platform.example.test/deployment-id=${row.id}`;
+    const labelSelector = `insula.host/deployment-id=${row.id}`;
     const list = await (ctx.k8s.apps as unknown as {
       listNamespacedDeployment: (args: { namespace: string; labelSelector: string }) => Promise<{ items?: Array<{ metadata?: { name?: string } }> }>;
     }).listNamespacedDeployment({ namespace: ctx.namespace, labelSelector });

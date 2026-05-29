@@ -1,6 +1,6 @@
 # admin-auth-gate-oauth2 — Kustomize Component
 #
-# Gates every IngressRoute labelled `platform.example.test/admin-ui=true`
+# Gates every IngressRoute labelled `insula.host/admin-ui=true`
 # behind oauth2-proxy's Dex-OIDC session AND a backend role-check that
 # maps the OIDC email to an admin role.
 #

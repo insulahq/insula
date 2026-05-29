@@ -193,7 +193,7 @@ Settings → Platform URLs propagate automatically. CI guard:
 
 Every Ingress that exposes an admin-only web UI (Longhorn dashboard, Stalwart web-admin, etc.) MUST:
 
-1. Be labelled `platform.example.test/admin-ui: "true"` on `metadata.labels`
+1. Be labelled `insula.host/admin-ui: "true"` on `metadata.labels`
 2. Be included via an overlay that lists exactly one of these Kustomize components:
    - `k8s/components/admin-auth-gate-cookie` → gate by `platform_session` cookie
    - `k8s/components/admin-auth-gate-oauth2` → gate by oauth2-proxy + Dex OIDC

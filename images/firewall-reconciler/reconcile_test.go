@@ -153,7 +153,7 @@ func (f *fakeApplier) observeTenantPortsFingerprint() (string, error) {
 
 func mkCTR(name, cidr string, gen int64) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetAPIVersion("networking.platform.example.test/v1alpha1")
+	u.SetAPIVersion("networking.insula.host/v1alpha1")
 	u.SetKind("ClusterTrustedRange")
 	u.SetName(name)
 	u.SetGeneration(gen)
@@ -163,7 +163,7 @@ func mkCTR(name, cidr string, gen int64) *unstructured.Unstructured {
 
 func mkCPP(name, ip, role string, ttlSec int64, ageSec int64, now time.Time, gen int64) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetAPIVersion("networking.platform.example.test/v1alpha1")
+	u.SetAPIVersion("networking.insula.host/v1alpha1")
 	u.SetKind("ClusterPendingPeer")
 	u.SetName(name)
 	u.SetGeneration(gen)
@@ -342,7 +342,7 @@ func TestReconcileOnce_claimDetectionSinglePatch(t *testing.T) {
 func TestReconcileOnce_zeroCreationTimestampGuarded(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	cpp := &unstructured.Unstructured{}
-	cpp.SetAPIVersion("networking.platform.example.test/v1alpha1")
+	cpp.SetAPIVersion("networking.insula.host/v1alpha1")
 	cpp.SetKind("ClusterPendingPeer")
 	cpp.SetName("zero-ct")
 	cpp.SetGeneration(1)

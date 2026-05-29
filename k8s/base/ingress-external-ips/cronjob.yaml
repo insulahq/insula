@@ -48,7 +48,7 @@ spec:
           # of the system-component placement and avoids consuming a
           # tenant scheduling slot on workers).
           tolerations:
-            - key: platform.example.test/server-only
+            - key: insula.host/server-only
               operator: Equal
               value: "true"
               effect: NoSchedule
@@ -61,7 +61,7 @@ spec:
                 - weight: 1
                   preference:
                     matchExpressions:
-                      - key: platform.example.test/node-role
+                      - key: insula.host/node-role
                         operator: In
                         values: ["server"]
           containers:

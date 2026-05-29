@@ -66,12 +66,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
-    platform.example.test/backup-health-watch: "true"
-    platform.example.test/backup-category: "dr"
-    platform.example.test/backup-severity: "critical"
-    platform.example.test/depends-on: "backup-credentials"
+    insula.host/backup-health-watch: "true"
+    insula.host/backup-category: "dr"
+    insula.host/backup-severity: "critical"
+    insula.host/depends-on: "backup-credentials"
   annotations:
-    platform.example.test/backup-display-name: "Cluster state backup"
+    insula.host/backup-display-name: "Cluster state backup"
 spec:
   # Suspended by default. The longhorn-reconciler unsuspends DR CronJobs
   # when a backup target is activated (Settings → Backups → Active) and

@@ -41,11 +41,11 @@ const CLIENT_PVC_VOLUME_NAME = 'tenant-storage';
  * Platform-reserved label-key prefix. Tenants cannot stamp labels
  * starting with this prefix on their pods; the deployer strips them
  * before applying the manifest. Protects forensic queries
- * (`platform.example.test/deployment-id`, etc.) from being
+ * (`insula.host/deployment-id`, etc.) from being
  * shadowed by tenant-controlled values once compose YAML (PR-3)
  * lets a tenant supply arbitrary labels.
  */
-const RESERVED_LABEL_PREFIX = 'platform.example.test/';
+const RESERVED_LABEL_PREFIX = 'insula.host/';
 
 function filterServiceLabels(raw: Record<string, string> | undefined): Record<string, string> {
   if (!raw) return {};
@@ -210,9 +210,9 @@ async function applyDeployment(
     // Stack-level label so all Pods of all services in this
     // deployment share a discriminator — used by image-audit's
     // pod-listing label selector and by the delete-by-label sweep.
-    'platform.example.test/deployment-id': input.deploymentId,
-    'platform.example.test/owner': 'custom-deployments',
-    'platform.example.test/stack-service': serviceName,
+    'insula.host/deployment-id': input.deploymentId,
+    'insula.host/owner': 'custom-deployments',
+    'insula.host/stack-service': serviceName,
   };
   const selectorLabels = { app: name };
 
@@ -706,10 +706,10 @@ async function applyService(
   const name = `${owningDeploymentName}-${port.name}`;
   const labels = {
     app: owningDeploymentName,
-    'platform.example.test/deployment-id': input.deploymentId,
-    'platform.example.test/owner': 'custom-deployments',
-    'platform.example.test/stack-service': serviceName,
-    ...(port.ingressEligible ? { 'platform.example.test/ingress-eligible': 'true' } : {}),
+    'insula.host/deployment-id': input.deploymentId,
+    'insula.host/owner': 'custom-deployments',
+    'insula.host/stack-service': serviceName,
+    ...(port.ingressEligible ? { 'insula.host/ingress-eligible': 'true' } : {}),
   };
   const body = {
     metadata: { name, namespace: input.namespace, labels },
@@ -828,8 +828,8 @@ function secretVolumeName(deploymentId: string, key: string): string {
 
 function ownerLabels(input: DeployCustomInput): Record<string, string> {
   return {
-    'platform.example.test/deployment-id': input.deploymentId,
-    'platform.example.test/owner': 'custom-deployments',
+    'insula.host/deployment-id': input.deploymentId,
+    'insula.host/owner': 'custom-deployments',
   };
 }
 
@@ -841,7 +841,7 @@ function isK8s409(err: unknown): boolean {
 /**
  * Delete the Deployment + Services + ConfigMaps + Secrets owned by a
  * custom deployment. Uses the label selector
- * `platform.example.test/deployment-id=<id>` so we don't have to
+ * `insula.host/deployment-id=<id>` so we don't have to
  * know the exact list of resources at delete time. Idempotent.
  */
 export async function deleteCustomDeployment(
@@ -850,7 +850,7 @@ export async function deleteCustomDeployment(
   deploymentId: string,
   _deploymentName: string,
 ): Promise<void> {
-  const selector = `platform.example.test/deployment-id=${deploymentId}`;
+  const selector = `insula.host/deployment-id=${deploymentId}`;
 
   // Multi-service stacks (PR-3) have one Deployment per service —
   // listing by the deployment-id label covers them all in a single

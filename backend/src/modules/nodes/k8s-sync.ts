@@ -140,7 +140,7 @@ const SYSTEM_TAG = 'system';
 /**
  * Patch each Longhorn node CR's `.spec.tags` so it contains the
  * "system" tag iff the matching k8s node carries
- * `platform.example.test/node-role=server`. Idempotent.
+ * `insula.host/node-role=server`. Idempotent.
  *
  * Longhorn's StorageClass `nodeSelector` parameter is matched against
  * `.spec.tags` on the longhorn-system/Node CRs (NOT the k8s Node
@@ -179,7 +179,7 @@ async function reconcileLonghornNodeTags(
   for (const n of k8sNodes) {
     const name = n.metadata?.name;
     if (!name) continue;
-    const role = n.metadata?.labels?.['platform.example.test/node-role'] ?? 'worker';
+    const role = n.metadata?.labels?.['insula.host/node-role'] ?? 'worker';
     k8sRoleByName.set(name, role);
   }
 

@@ -179,7 +179,7 @@ export default function BackupHealthTable({ summaries, isLoading }: BackupHealth
       {(summaries?.length ?? 0) === 0 && !isLoading && (
         <p className="text-sm text-gray-500 dark:text-gray-400">
           No backup jobs are participating in health observability yet.
-          Add the platform.example.test/backup-health-watch=true label
+          Add the insula.host/backup-health-watch=true label
           to a CronJob to opt in.
         </p>
       )}

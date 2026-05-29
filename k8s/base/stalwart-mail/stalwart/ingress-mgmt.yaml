@@ -44,9 +44,9 @@ metadata:
     app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
-    platform.example.test/admin-ui: "true"
+    insula.host/admin-ui: "true"
   annotations:
-    platform.example.test/admin-auth-gate: cookie
+    insula.host/admin-auth-gate: cookie
 spec:
   entryPoints:
     - websecure
