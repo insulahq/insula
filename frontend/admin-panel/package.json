@@ -1,5 +1,5 @@
 {
-  "name": "@k8s-hosting/admin-panel",
+  "name": "@insula/admin-panel",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,8 +13,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@k8s-hosting/api-contracts": "*",
-    "@k8s-hosting/ui-restore-cart": "*",
+    "@insula/api-contracts": "*",
+    "@insula/ui-restore-cart": "*",
     "@simplewebauthn/browser": "^11.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",

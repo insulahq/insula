@@ -18,7 +18,7 @@ import type {
   NotificationSeverity,
   NotificationChannelId,
   NotificationGdprBasis,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export interface CategoryDefinition {
   readonly id: string;

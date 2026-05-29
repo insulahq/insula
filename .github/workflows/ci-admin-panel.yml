@@ -19,8 +19,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build -w @k8s-hosting/api-contracts
-      - run: npm run lint -w @k8s-hosting/admin-panel
-      - run: npm run typecheck -w @k8s-hosting/admin-panel
-      - run: npm run test -w @k8s-hosting/admin-panel
-      - run: npm run build -w @k8s-hosting/admin-panel
+      - run: npm run build -w @insula/api-contracts
+      - run: npm run lint -w @insula/admin-panel
+      - run: npm run typecheck -w @insula/admin-panel
+      - run: npm run test -w @insula/admin-panel
+      - run: npm run build -w @insula/admin-panel

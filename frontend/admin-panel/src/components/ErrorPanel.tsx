@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, AlertOctagon, AlertCircle, ChevronDown, ChevronRight, RotateCw, Copy } from 'lucide-react';
-import type { OperatorError } from '@k8s-hosting/api-contracts';
+import type { OperatorError } from '@insula/api-contracts';
 
 export type ErrorSeverity = 'info' | 'warn' | 'error';
 

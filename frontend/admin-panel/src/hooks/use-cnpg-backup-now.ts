@@ -15,7 +15,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   CnpgBackupNowRequest,
   CnpgBackupNowResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export function useCnpgBackupNow() {
   const qc = useQueryClient();

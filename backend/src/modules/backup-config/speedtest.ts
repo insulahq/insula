@@ -22,7 +22,7 @@ import { ApiError } from '../../shared/errors.js';
 import { decrypt } from '../oidc/crypto.js';
 import { requireWritableTarget } from './writable-guard.js';
 import { rcloneObscure } from '../storage-lifecycle/rclone-obscure.js';
-import type { SpeedtestResult } from '@k8s-hosting/api-contracts';
+import type { SpeedtestResult } from '@insula/api-contracts';
 
 const RCLONE_IMAGE = 'rclone/rclone:1.74.1';
 const DEFAULT_PAYLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
@@ -81,7 +81,7 @@ export async function runSpeedtest(
   // Job is created so the chip lights up immediately on click.
   const { start: startTask, progress: progressTask, finish: finishTask } =
     await import('../tasks/service.js');
-  const { toSafeText } = await import('@k8s-hosting/api-contracts');
+  const { toSafeText } = await import('@insula/api-contracts');
   const started = await startTask(db, {
     kind: 'backup.speedtest',
     refId: operationId,

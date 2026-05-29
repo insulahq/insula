@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { X, Save, Loader2, AlertCircle, CheckCircle, ShieldAlert } from 'lucide-react';
 import { useUpdateClusterNode } from '@/hooks/use-cluster-nodes';
-import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-contracts';
+import type { ClusterNodeResponse, NodeIngressMode } from '@insula/api-contracts';
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';

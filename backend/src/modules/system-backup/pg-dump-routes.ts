@@ -25,7 +25,7 @@ import {
   pgDumpListQuerySchema,
   type PgDumpResponse,
   type SystemBackupRun,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { createPgDumpJob } from './pg-dump-job-spawner.js';
 import { resolveSystemStore, SYSTEM_BACKUP_CLIENT_ID, resolveCnpgCredentials } from './pg-dump-orchestrator.js';
 import { getPlatformApiImage } from '../postgres-restore/service.js';

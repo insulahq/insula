@@ -33,7 +33,7 @@ import {
   type WalArchiveActionResponse,
   type WalArchiveCluster,
   type WalArchiveListResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   enableWalArchive,
   disableWalArchive,

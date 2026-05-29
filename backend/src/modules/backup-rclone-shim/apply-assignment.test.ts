@@ -40,7 +40,7 @@ import {
   DRAIN_TIMEOUT_SECONDS_DEFAULT,
   DRAIN_TIMEOUT_SECONDS_MAX,
   DRAIN_TIMEOUT_SECONDS_MIN,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ---------------------------------------------------------------------------
 // resolveDrainTimeoutSeconds

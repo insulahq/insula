@@ -8,7 +8,7 @@ import {
   serializeDrRows,
   BundleVersionError,
 } from './dr-sidecars.js';
-import { DR_BUNDLE_VERSION } from '@k8s-hosting/api-contracts';
+import { DR_BUNDLE_VERSION } from '@insula/api-contracts';
 
 // ─── Shared mock-DB helper ───────────────────────────────────────────
 

@@ -84,7 +84,7 @@ export function startStorageLifecycleScheduler(
   // the caller catches and logs (auto-archive becomes a no-op for that
   // tenant until the operator configures an assignment).
   const buildSnapshotCtx = async (
-    backupClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+    backupClass: import('@insula/api-contracts').SnapshotClass,
   ) => {
     const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
     const platformNamespace = (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform';

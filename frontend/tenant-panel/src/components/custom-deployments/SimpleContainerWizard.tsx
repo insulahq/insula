@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle, Loader2, Plus, Trash2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useCreateCustomDeployment, useUpdateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
-import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
+import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 import { Tooltip } from '@/components/ui/Tooltip';
 

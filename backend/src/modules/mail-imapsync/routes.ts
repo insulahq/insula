@@ -19,7 +19,7 @@ import { authenticate, requireRole, requireTenantAccess } from '../../middleware
 import { mailboxes } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { createImapSyncJobSchema, updateImapSyncJobSchema } from '@k8s-hosting/api-contracts';
+import { createImapSyncJobSchema, updateImapSyncJobSchema } from '@insula/api-contracts';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import * as service from './service.js';

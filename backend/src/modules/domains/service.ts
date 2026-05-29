@@ -135,7 +135,7 @@ async function enrichWithCertInfo(
     };
   });
 }
-import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
+import type { DomainDeletePreview } from '@insula/api-contracts';
 
 export async function createDomain(db: Database, tenantId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
   // Verify tenant exists
@@ -627,7 +627,7 @@ export async function deleteDomain(
 // resources that deleteDomain would remove, with enough detail for
 // the UI to list each one by name. Pure read — no side effects.
 // Review HIGH-3: the DomainDeletePreview type is the single source of
-// truth in @k8s-hosting/api-contracts; see packages/api-contracts/src/domains.ts.
+// truth in @insula/api-contracts; see packages/api-contracts/src/domains.ts.
 export async function getDomainDeletePreview(
   db: Database,
   tenantId: string,

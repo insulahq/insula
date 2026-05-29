@@ -26,7 +26,7 @@ import {
   deleteExclusionForTenantRoute,
   listExclusionsForTenantRoute,
 } from './service.js';
-import type { WafRuleExclusion } from '@k8s-hosting/api-contracts';
+import type { WafRuleExclusion } from '@insula/api-contracts';
 
 const { buildHostnameRegexFromHostname, rowToContract } = svcTest;
 

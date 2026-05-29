@@ -46,7 +46,7 @@ import {
   DRAIN_TIMEOUT_SECONDS_MAX,
   DRAIN_TIMEOUT_SECONDS_MIN,
   toSafeText,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 import type { Database } from '../../db/index.js';
 import { backupConfigurations, backupTargetAssignments } from '../../db/schema.js';

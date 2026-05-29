@@ -32,7 +32,7 @@ import {
   domainSet,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
-import { rotateStalwartPasswordResponseSchema, type RotateStalwartPasswordResponse } from '@k8s-hosting/api-contracts';
+import { rotateStalwartPasswordResponseSchema, type RotateStalwartPasswordResponse } from '@insula/api-contracts';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'mail-admin-rotate' });

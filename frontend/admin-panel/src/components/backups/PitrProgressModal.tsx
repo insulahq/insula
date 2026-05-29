@@ -23,7 +23,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, CheckCircle2, Circle, XCircle, Loader2, AlertTriangle, Clock } from 'lucide-react';
 import { useRestoreStatus } from '@/hooks/use-postgres-restore';
-import type { PitrStep } from '@k8s-hosting/api-contracts';
+import type { PitrStep } from '@insula/api-contracts';
 
 interface Props {
   readonly jobName: string;

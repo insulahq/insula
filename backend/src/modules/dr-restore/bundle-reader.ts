@@ -26,7 +26,7 @@ import {
   parseDrRows,
   BundleVersionError,
 } from '../system-backup/dr-sidecars.js';
-import type { DrInputs, DrRows } from '@k8s-hosting/api-contracts';
+import type { DrInputs, DrRows } from '@insula/api-contracts';
 
 // Hard upper bound on the encrypted bundle size. A legitimate bundle
 // is a few hundred KB (Secrets YAMLs + sidecars). The cap exists to

@@ -215,14 +215,14 @@ describe('CnpgBackupNowError', () => {
 // then 400'd inside the service. Lock that in here.
 describe('contract / service name alignment', () => {
   it('contract rejects uppercase identifiers (matches service guard)', async () => {
-    const { cnpgBackupNowRequestSchema } = await import('@k8s-hosting/api-contracts');
+    const { cnpgBackupNowRequestSchema } = await import('@insula/api-contracts');
     const result = cnpgBackupNowRequestSchema.safeParse({
       namespace: 'platform', clusterName: 'UPPER',
     });
     expect(result.success).toBe(false);
   });
   it('contract rejects > 50 char identifiers (matches service guard)', async () => {
-    const { cnpgBackupNowRequestSchema } = await import('@k8s-hosting/api-contracts');
+    const { cnpgBackupNowRequestSchema } = await import('@insula/api-contracts');
     const result = cnpgBackupNowRequestSchema.safeParse({
       namespace: 'platform', clusterName: 'a'.repeat(51),
     });

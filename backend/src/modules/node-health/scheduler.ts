@@ -34,7 +34,7 @@ import {
 import type {
   NodeHealthEntry,
   NodeHealthSeverity,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const TICK_MS = 5 * 60 * 1000;
 const INITIAL_DELAY_MS = 90_000;

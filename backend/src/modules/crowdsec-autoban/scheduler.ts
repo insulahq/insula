@@ -31,7 +31,7 @@ import { crowdsecAutobanRuns, platformSettings, wafLogs } from '../../db/schema.
 import { addBan } from '../security-hardening/crowdsec.js';
 import { isIpInAllowlist } from '../security-hardening/crowdsec-allowlists.js';
 import { evaluateWafBatch, type WafLogRow } from './evaluator.js';
-import type { CrowdsecAutobanConfig, CrowdsecAutobanOutcome } from '@k8s-hosting/api-contracts';
+import type { CrowdsecAutobanConfig, CrowdsecAutobanOutcome } from '@insula/api-contracts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;

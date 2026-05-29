@@ -11,7 +11,7 @@
 
 import { ArrowUpCircle, Check, HelpCircle, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
-import type { UpdateCheckResult } from '@k8s-hosting/api-contracts';
+import type { UpdateCheckResult } from '@insula/api-contracts';
 
 interface UpdatesPillProps {
   readonly result: UpdateCheckResult | undefined;

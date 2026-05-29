@@ -16,7 +16,7 @@ import {
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
-import type { CreateMailboxInput, UpdateMailboxInput } from '@k8s-hosting/api-contracts';
+import type { CreateMailboxInput, UpdateMailboxInput } from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
 
 const BCRYPT_ROUNDS = 12;

@@ -23,7 +23,7 @@ import { cscliExec, findCrowdsecPodName } from './cscli-exec.js';
 import type {
   CrowdsecAllowlistEntry,
   CrowdsecAddAllowlistRequest,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const ALLOWLIST_NAME = 'admin-panel';
 const ALLOWLIST_DESCRIPTION = 'Operator-managed allowlist via the admin panel';

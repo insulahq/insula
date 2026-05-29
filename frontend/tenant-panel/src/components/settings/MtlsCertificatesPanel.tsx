@@ -27,7 +27,7 @@ import type {
   CertificateStatus,
   CertificateRevocationReason,
   MtlsProviderResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // RFC 5280 reason codes — keep aligned with backend
 // revokeCertificateInputSchema. Order matters for UX (most common first).

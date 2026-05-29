@@ -18,7 +18,7 @@ import type {
   NotificationBodyFormat,
   NotificationChannelId,
   NotificationTemplateVariable,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export interface SeedTemplate {
   readonly categoryId: string;

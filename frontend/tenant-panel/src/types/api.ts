@@ -21,9 +21,9 @@ export type {
   DeletePreviewRoute,
   StorageFolder,
   StorageFolderListResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
-export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
+export { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 
 // Generic paginated response wrapper
 export interface PaginatedResponse<T> {

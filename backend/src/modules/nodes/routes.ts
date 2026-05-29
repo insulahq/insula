@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
-import { updateClusterNodeSchema, drainNodeRequestSchema } from '@k8s-hosting/api-contracts';
+import { updateClusterNodeSchema, drainNodeRequestSchema } from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';

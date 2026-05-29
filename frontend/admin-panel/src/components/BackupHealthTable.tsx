@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
-import type { BackupHealthSummary } from '@k8s-hosting/api-contracts';
+import type { BackupHealthSummary } from '@insula/api-contracts';
 
 interface BackupHealthTableProps {
   readonly summaries: ReadonlyArray<BackupHealthSummary> | undefined;

@@ -11,7 +11,7 @@ import { Link } from 'react-router-dom';
 import { Check, AlertTriangle, Mail, Play, Loader2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { SystemBackupsOverview, MailSnapshotTriggerResponse } from '@k8s-hosting/api-contracts';
+import type { SystemBackupsOverview, MailSnapshotTriggerResponse } from '@insula/api-contracts';
 
 function formatBytes(b: number): string {
   if (b === 0) return '0 B';

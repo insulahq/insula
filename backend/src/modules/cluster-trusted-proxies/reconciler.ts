@@ -40,7 +40,7 @@ import * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import {
   createTrustedProxyRangeRequestSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { listMaterialisedCidrs, upsertBootstrapRange } from './service.js';

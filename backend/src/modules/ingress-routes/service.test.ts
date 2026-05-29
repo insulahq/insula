@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hostnameToSlug, isApexHostname } from './service.js';
-import { createIngressRouteSchema, updateIngressRouteSchema, ingressSettingsResponseSchema } from '@k8s-hosting/api-contracts';
+import { createIngressRouteSchema, updateIngressRouteSchema, ingressSettingsResponseSchema } from '@insula/api-contracts';
 
 describe('ingress-routes service', () => {
   describe('hostnameToSlug', () => {

@@ -12,7 +12,7 @@ import type {
   ClearTasksResponse,
   MeTasksSnapshotResponse,
   TaskRow,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export const TASK_CENTER_QUERY_KEY = ['task-center', 'me'] as const;
 

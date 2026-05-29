@@ -17,9 +17,9 @@ import {
   destroyPrincipal as jmapDestroyPrincipal,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
-import type { EmailDomainDisablePreview, WebmailStatus } from '@k8s-hosting/api-contracts';
+import type { EmailDomainDisablePreview, WebmailStatus } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
-import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
+import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
@@ -635,7 +635,7 @@ export async function getDerivedWebmailUrlForMailbox(
 // the same and we never accidentally leave a row in 'pending'.
 //
 // Review HIGH-1: type is the canonical one from
-// @k8s-hosting/api-contracts so the backend and frontend cannot
+// @insula/api-contracts so the backend and frontend cannot
 // drift on lifecycle values.
 async function setWebmailStatus(
   db: Database,

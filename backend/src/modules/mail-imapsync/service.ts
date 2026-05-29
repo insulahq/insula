@@ -32,12 +32,12 @@ import { ApiError } from '../../shared/errors.js';
 import { encrypt } from '../oidc/crypto.js';
 import { notifyTenantImapsyncTerminal } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
-import type { CreateImapSyncJobInput, UpdateImapSyncJobInput, ImapSyncJobResponse } from '@k8s-hosting/api-contracts';
+import type { CreateImapSyncJobInput, UpdateImapSyncJobInput, ImapSyncJobResponse } from '@insula/api-contracts';
 import {
   MAX_ACTIVE_IMAPSYNC_JOBS,
   MAX_TOTAL_IMAPSYNC_JOBS,
   IMAPSYNC_JOB_RETENTION_DAYS,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // Pinned image — operators can override via STALWART_IMAPSYNC_IMAGE
 // env var if they need a different mirror or local image.

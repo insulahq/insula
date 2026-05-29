@@ -12,7 +12,7 @@ import {
   type NotificationChannelId,
   type NotificationDigestMode,
   type UpdateUserNotificationPreferencesInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 

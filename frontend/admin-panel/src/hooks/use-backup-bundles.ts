@@ -5,7 +5,7 @@ import type {
   BundleDetail,
   CreateBundleInput,
   VerifyBundleResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * apiFetch returns raw wire JSON (no envelope unwrap), and the
@@ -209,9 +209,9 @@ export interface ImportPreviewResponse {
     readonly capturedAt: string | null;
     readonly platformVersion: string | null;
     readonly label: string | null;
-    readonly tenant: import('@k8s-hosting/api-contracts').BackupMetaTenant | null;
-    readonly domainsSummary: ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary>;
-    readonly deploymentsSummary: ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary>;
+    readonly tenant: import('@insula/api-contracts').BackupMetaTenant | null;
+    readonly domainsSummary: ReadonlyArray<import('@insula/api-contracts').BackupMetaDomainSummary>;
+    readonly deploymentsSummary: ReadonlyArray<import('@insula/api-contracts').BackupMetaDeploymentSummary>;
   };
   readonly components: Record<string, { count: number; totalBytes: number }>;
   readonly localTenantMatch: {
@@ -372,7 +372,7 @@ export function useVerifyAllBundles() {
   });
 }
 
-interface CoverageEnvelope { readonly data: import('@k8s-hosting/api-contracts').BundleCoverageResponse }
+interface CoverageEnvelope { readonly data: import('@insula/api-contracts').BundleCoverageResponse }
 
 /**
  * Bundle coverage report — declared component registry + runtime

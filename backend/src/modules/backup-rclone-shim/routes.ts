@@ -31,7 +31,7 @@ import {
   type ShimStatusResponse,
   type SwitchPreviewResponse,
   type SwitchWithPauseResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as k8s from '@kubernetes/client-node';
 
 import { authenticate, requireRole } from '../../middleware/auth.js';

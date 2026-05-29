@@ -3,7 +3,7 @@ import { mkdtemp, rm, readdir, stat as fsStat, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { BACKUP_META_SCHEMA_VERSION, type BackupMetaV1 } from '@k8s-hosting/api-contracts';
+import { BACKUP_META_SCHEMA_VERSION, type BackupMetaV1 } from '@insula/api-contracts';
 import { LocalHostPathBackupStore } from './local-hostpath-backup-store.js';
 
 const VALID_META: BackupMetaV1 = {

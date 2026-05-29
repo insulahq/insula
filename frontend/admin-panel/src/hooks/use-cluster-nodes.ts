@@ -7,7 +7,7 @@ import type {
   DrainNodeRequest,
   DrainNodeResponse,
   DeleteNodeResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // M1 C4: TanStack Query wrappers for the admin /nodes API. M4 builds
 // the Nodes page UI on top of these hooks — this module is purely

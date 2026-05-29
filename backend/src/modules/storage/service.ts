@@ -9,7 +9,7 @@ import type {
   ImageInventoryResponse,
   ImageEntry,
   PurgeImagesResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ─── Image Classification ────────────────────────────────────────────────────
 

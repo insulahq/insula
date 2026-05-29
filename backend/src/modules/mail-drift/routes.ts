@@ -14,7 +14,7 @@ import {
   type MailDriftListResponse,
   type MailDriftDismissResponse,
   type MailDriftRecreateResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';

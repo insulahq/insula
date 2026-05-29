@@ -15,7 +15,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { zitiProviderInputSchema } from '@k8s-hosting/api-contracts';
+import { zitiProviderInputSchema } from '@insula/api-contracts';
 import {
   listProviders,
   createProvider,

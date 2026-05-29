@@ -91,8 +91,8 @@ import type {
   CrowdsecL4Mode,
   WafRuleExclusionAdminListResponse,
   WafRuleExclusionScope,
-} from '@k8s-hosting/api-contracts';
-import { buildHostnameRegexFromEventHost } from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
+import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
 
 // ─── WAF tab filter option constants (moved from PosturePage) ──────────
 

@@ -25,7 +25,7 @@ import { Database, RotateCw, AlertTriangle } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
-import type { CnpgBackupCatalogueResponse } from '@k8s-hosting/api-contracts';
+import type { CnpgBackupCatalogueResponse } from '@insula/api-contracts';
 
 /**
  * Resolve the (namespace, objectStoreName) pair to query for backups.

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { SslCertResponse, UploadSslCertInput } from '@k8s-hosting/api-contracts';
+import type { SslCertResponse, UploadSslCertInput } from '@insula/api-contracts';
 
 function basePath(tenantId: string, domainId: string) {
   return `/api/v1/tenants/${tenantId}/domains/${domainId}/ssl-cert`;

@@ -12,7 +12,7 @@ import {
   Loader2, CheckCircle2, AlertTriangle, Activity, X, Trash2, ChevronRight,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { TaskRow } from '@k8s-hosting/api-contracts';
+import type { TaskRow } from '@insula/api-contracts';
 import { useTaskCenter, useClearTasks } from '@/hooks/use-task-center';
 
 const RECENT_TERMINAL_WINDOW_MS = 5 * 60 * 1000;

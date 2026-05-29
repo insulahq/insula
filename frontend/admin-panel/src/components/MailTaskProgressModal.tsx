@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { X, Loader2, CheckCircle2, AlertTriangle, ChevronRight } from 'lucide-react';
 import { useTaskCenter } from '@/hooks/use-task-center';
-import type { TaskRow } from '@k8s-hosting/api-contracts';
+import type { TaskRow } from '@insula/api-contracts';
 
 /**
  * Generic mail-operation progress modal.

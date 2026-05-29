@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { CnpgClusterBackupHealth } from '@k8s-hosting/api-contracts';
+import type { CnpgClusterBackupHealth } from '@insula/api-contracts';
 
 interface Envelope {
   readonly data: CnpgClusterBackupHealth[];

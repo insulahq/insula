@@ -10,7 +10,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
-import type { BundleSummary, RestoreJobSummary } from '@k8s-hosting/api-contracts';
+import type { BundleSummary, RestoreJobSummary } from '@insula/api-contracts';
 
 interface BundlesResponse { readonly data: readonly BundleSummary[] }
 interface RunNowResponse {
