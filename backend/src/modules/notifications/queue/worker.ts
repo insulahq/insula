@@ -34,7 +34,9 @@ import { notificationCategories, notificationDeliveries, users } from '../../../
 import { renderTemplateAsync } from '../templates/renderer.js';
 import { getTemplate } from '../templates/service.js';
 import { getProviderForCategoryEmail } from '../providers/service.js';
+import { readStalwartMasterCredentials } from '../providers/stalwart-master-creds.js';
 import { decrypt } from '../../oidc/crypto.js';
+import type { CoreV1Api } from '@kubernetes/client-node';
 import { decideRetry } from './retry.js';
 import { enqueueDelivery } from './enqueue.js';
 import { getBoss, type BossLike } from './bootstrap.js';
@@ -51,8 +53,19 @@ export interface ProviderSendInput {
   readonly secure: boolean;
   readonly authUsername: string | null;
   readonly authPassword: string | null;
+  /** Recipient-visible From: header (e.g. notifications@apex). */
   readonly fromAddress: string;
   readonly fromName: string | null;
+  /**
+   * Explicit SMTP envelope sender (MAIL FROM). When provided,
+   * decouples the envelope from the From: header — required by the
+   * stalwart-internal Provider path because Stalwart enforces
+   * MAIL FROM == authenticated user (501 5.5.4 otherwise) but the
+   * recipient should still see the operator-chosen sender. For every
+   * external SMTP type leave this null and the envelope tracks the
+   * From: header.
+   */
+  readonly envelopeFrom?: string | null;
   readonly to: string;
   readonly subject: string;
   readonly html: string;
@@ -68,7 +81,16 @@ const defaultSend: WorkerSendFn = async (input) => {
     auth: input.authUsername ? { user: input.authUsername, pass: input.authPassword ?? '' } : undefined,
   });
   const fromHeader = input.fromName ? `"${input.fromName}" <${input.fromAddress}>` : input.fromAddress;
-  await transport.sendMail({ from: fromHeader, to: input.to, subject: input.subject, html: input.html });
+  const mailOpts: Parameters<typeof transport.sendMail>[0] = {
+    from: fromHeader,
+    to: input.to,
+    subject: input.subject,
+    html: input.html,
+  };
+  if (input.envelopeFrom) {
+    mailOpts.envelope = { from: input.envelopeFrom, to: input.to };
+  }
+  await transport.sendMail(mailOpts);
 };
 
 export interface WorkerOptions {
@@ -80,6 +102,16 @@ export interface WorkerOptions {
   readonly send?: WorkerSendFn;
   /** Override the boss for tests. */
   readonly boss?: BossLike;
+  /**
+   * Kubernetes CoreV1 client used by the stalwart-internal Provider
+   * path to read the platform master account credentials from the
+   * `mail/mail-secrets` Secret. Null is fine for unit tests or for
+   * deployments that never use a stalwart-internal Provider — the
+   * worker only consults this when an actual send needs it.
+   */
+  readonly k8sCore?: CoreV1Api | null;
+  /** Test-only override for the stalwart master creds lookup. */
+  readonly readStalwartMasterCreds?: typeof readStalwartMasterCredentials;
 }
 
 interface DeliveryRow {
@@ -209,13 +241,32 @@ export async function processDelivery(
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'provider_smtp_host_missing', opts);
     }
 
-    // 6. Decrypt provider auth password (when set).
+    // 6. Resolve auth credentials. Two paths:
+    //  - 'stalwart-internal'  → master account creds read from
+    //    `mail/mail-secrets`. The operator's Provider row has no
+    //    password (Stalwart enforces MAIL FROM == auth user, so we
+    //    auth as master AND set SMTP envelope to the master address,
+    //    while the recipient-visible From: header is the operator-
+    //    chosen address. See providers/stalwart-master-creds.ts).
+    //  - everything else      → operator-supplied authPassword,
+    //    decrypted with PLATFORM_ENCRYPTION_KEY (existing behaviour).
     const encryptionKey = opts.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
     if (!encryptionKey) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'platform_encryption_key_missing', opts);
     }
+    let authUsername: string | null = provider.authUsername ?? null;
     let authPassword: string | null = null;
-    if (provider.authPasswordEncrypted) {
+    let envelopeFrom: string | null = null;
+    if (provider.providerType === 'stalwart-internal') {
+      const credsReader = opts.readStalwartMasterCreds ?? readStalwartMasterCredentials;
+      const creds = await credsReader(opts.k8sCore ?? null);
+      if (!creds) {
+        return await markFailedOrDlq(db, row.id, row.attempt + 1, 'stalwart_master_credentials_unavailable', opts);
+      }
+      authUsername = creds.user;
+      authPassword = creds.password;
+      envelopeFrom = creds.user; // Stalwart requires MAIL FROM == auth user
+    } else if (provider.authPasswordEncrypted) {
       try {
         authPassword = decrypt(provider.authPasswordEncrypted, encryptionKey);
       } catch {
@@ -229,10 +280,11 @@ export async function processDelivery(
       host: provider.smtpHost,
       port: provider.smtpPort,
       secure: provider.smtpSecure,
-      authUsername: provider.authUsername ?? null,
+      authUsername,
       authPassword,
       fromAddress: provider.fromAddress,
       fromName: provider.fromName ?? null,
+      envelopeFrom,
       to: u.email,
       subject: rendered.subject ?? '',
       html: rendered.body,
