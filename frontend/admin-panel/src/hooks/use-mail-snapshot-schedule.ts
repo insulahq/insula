@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   MailSnapshotScheduleResponse,
   MailSnapshotScheduleUpdate,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface ScheduleEnvelope {
   readonly data: MailSnapshotScheduleResponse;

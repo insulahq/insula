@@ -25,7 +25,7 @@ import {
   type BundleStatus,
   type BundleStatusResponse,
   type ComponentStatus,
-} from '@k8s-hosting/ui-restore-cart';
+} from '@insula/ui-restore-cart';
 
 function componentIcon(c: BundleComponent['component']) {
   if (c === 'files') return <FileText className="h-4 w-4" />;

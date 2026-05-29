@@ -19,7 +19,7 @@ import { success } from '../../shared/response.js';
 import {
   ingressAuthConfigSchema,
   type IngressAuthTestResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { ingressRoutes, domains, tenants } from '../../db/schema.js';
 import {
   getAuthConfig,

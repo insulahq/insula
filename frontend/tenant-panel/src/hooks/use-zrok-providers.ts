@@ -4,7 +4,7 @@ import type {
   ZrokProviderInput,
   ZrokProviderResponse,
   ZrokProviderTestResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface ApiEnvelope<T> {
   readonly data: T;

@@ -1,4 +1,4 @@
-module github.com/insulahq/k8s-hosting-platform/security-probe
+module github.com/insulahq/insula/security-probe
 
 go 1.22.0
 

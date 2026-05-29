@@ -285,7 +285,7 @@ A reconciler in `platform-api` (`backend/src/modules/backup-rclone-shim/postgres
 Remote backup is handled by a Kubernetes `CronJob` (`platform/etcd-snap-via-shim`):
 - `nodeSelector: node-role.kubernetes.io/control-plane`, control-plane tolerations
 - Schedule `0 * * * *` (configurable per target)
-- Image: `ghcr.io/insulahq/backup-rclone:<digest>` (same image as the shim; ~25 MiB)
+- Image: `ghcr.io/insulahq/insula/backup-rclone:<digest>` (same image as the shim; ~25 MiB)
 - Steps: pick newest snapshot under `/var/lib/rancher/k3s/server/db/snapshots/` (hostPath ro) → `rclone --s3-endpoint=https://backup-rclone-shim.platform.svc:443 copy <snapshot> s3://system/etcd-<ts>.db.zst` → write `.meta` sidecar (timestamp, sha256, source node) → enforce retention via `rclone delete`
 - `envFrom: backup-rclone-shim-creds` Secret
 - `restartPolicy: OnFailure`, `backoffLimit: 2`, `ttlSecondsAfterFinished: 3600`
@@ -423,7 +423,7 @@ Same flat shape on `/backups/tenants/:id` (per-tenant subsystems: tenant-bundle 
 | ~~R5~~ | ~~Degradation badges~~ **OBSOLETE** — shim eliminates degradation states | ~~4~~ 0 | n/a |
 | R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI; global quotas | 6 | M |
 | **R-X0** | **Correct prior misleading docs commit** — this commit | 2 | L |
-| **R-X1** | **`backup-rclone` image** — alpine + rclone + tini, multi-arch, signed, `ghcr.io/insulahq/backup-rclone:<sha>` pinned by digest | 3 | L |
+| **R-X1** | **`backup-rclone` image** — alpine + rclone + tini, multi-arch, signed, `ghcr.io/insulahq/insula/backup-rclone:<sha>` pinned by digest | 3 | L |
 | **R-X2** | **`BACKUP_TARGET_KEY` lifecycle** — bootstrap generates; Tier-1 in secrets bundle; `make backup-target-key-rotate` with 3-step confirm | 4 | M |
 | **R-X3** | **Shim DaemonSet manifests** — DaemonSet + Service (`internalTrafficPolicy: Local`) + cert + NetworkPolicy + PDB; SMB CSI driver install for CIFS support | 5 | L |
 | **R-X4** | **Multi-bucket config renderer + target schema** — supports S3 / SFTP / CIFS / NFS; emits rclone.conf per-class crypt + raw buckets; CIFS/NFS via Pod-volume mounts + `type=local` | 7 | M |

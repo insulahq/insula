@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import * as yaml from 'js-yaml';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { generateManifestSchema } from '@k8s-hosting/api-contracts';
+import { generateManifestSchema } from '@insula/api-contracts';
 import { generateTenantManifests } from './generator.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';

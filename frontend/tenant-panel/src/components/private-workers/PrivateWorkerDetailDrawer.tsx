@@ -17,7 +17,7 @@ import type {
   PrivateWorkerResponse,
   PrivateWorkerSecretResponse,
   PrivateWorkerStatus,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   usePrivateWorker,
   usePrivateWorkerAudit,

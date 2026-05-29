@@ -55,7 +55,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
    * Non-snapshot ops (suspend, resume, fsck) keep the legacy ctx() since
    * they don't write to a backup target.
    */
-  async function snapshotCtx(backupClass: import('@k8s-hosting/api-contracts').SnapshotClass) {
+  async function snapshotCtx(backupClass: import('@insula/api-contracts').SnapshotClass) {
     const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kcfg);
     const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';

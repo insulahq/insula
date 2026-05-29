@@ -10,7 +10,7 @@ import MailHealthDetailsModal from './MailHealthDetailsModal';
 import { useMailHealth, useRefreshMailHealth } from '@/hooks/use-mail-health';
 import type {
   MailHealthResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Live mail-server health banner.

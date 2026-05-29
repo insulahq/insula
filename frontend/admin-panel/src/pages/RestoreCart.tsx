@@ -1,7 +1,7 @@
 /**
  * Admin restore-cart page (thin wrapper).
  *
- * The 500-line implementation lives in `@k8s-hosting/ui-restore-cart`
+ * The 500-line implementation lives in `@insula/ui-restore-cart`
  * as `RestoreCartLayout`. This wrapper:
  *   - Reads cart context from the URL query string
  *     (`?bundleId=…&tenantId=…&cartId=…`)
@@ -10,7 +10,7 @@
  *   - Renders the shared layout with `showRollback`
  */
 import { useSearchParams } from 'react-router-dom';
-import { RestoreCartLayout, type RestoreCartHooks } from '@k8s-hosting/ui-restore-cart';
+import { RestoreCartLayout, type RestoreCartHooks } from '@insula/ui-restore-cart';
 
 import {
   useRestoreCart,

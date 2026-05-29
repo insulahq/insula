@@ -17,7 +17,7 @@
  */
 import { useState } from 'react';
 import { Shield, Plus, Trash2, RefreshCw, AlertCircle } from 'lucide-react';
-import type { TrustedProxySource } from '@k8s-hosting/api-contracts';
+import type { TrustedProxySource } from '@insula/api-contracts';
 import {
   useCreateTrustedProxy,
   useDeleteTrustedProxy,

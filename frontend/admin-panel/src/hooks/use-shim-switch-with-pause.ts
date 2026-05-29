@@ -17,7 +17,7 @@ import type {
   SwitchPreviewResponse,
   SwitchWithPauseRequest,
   SwitchWithPauseResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Preview hook. Enabled for BOTH bound switches and unbinds (operator

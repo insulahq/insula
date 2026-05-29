@@ -1,4 +1,4 @@
-import type { OperatorError } from '@k8s-hosting/api-contracts';
+import type { OperatorError } from '@insula/api-contracts';
 import { ApiError } from './api-client';
 
 /**

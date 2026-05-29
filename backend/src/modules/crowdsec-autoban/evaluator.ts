@@ -10,7 +10,7 @@
  * code for the audit table.
  */
 
-import type { CrowdsecAutobanConfig, CrowdsecAutobanOutcome } from '@k8s-hosting/api-contracts';
+import type { CrowdsecAutobanConfig, CrowdsecAutobanOutcome } from '@insula/api-contracts';
 
 /** Shape we read from waf_logs — kept minimal so tests don't need full row mocks. */
 export interface WafLogRow {

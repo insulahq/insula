@@ -42,7 +42,7 @@ import type {
   DrRows,
   BackupConfigurationRow,
   BackupTargetAssignmentRow,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export class DrImportError extends Error {
   // Renamed from `cause` (TS review M-1): ES2022 declares

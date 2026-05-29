@@ -1,6 +1,6 @@
 import { HardDrive, AlertTriangle, Loader2, Activity, Snowflake } from 'lucide-react';
 import { useMailNodeStorage } from '@/hooks/use-mail-node-storage';
-import type { MailNodeStorage } from '@k8s-hosting/api-contracts';
+import type { MailNodeStorage } from '@insula/api-contracts';
 
 /**
  * Per-mail-node storage cards — replaces the legacy single MailStorageCard.

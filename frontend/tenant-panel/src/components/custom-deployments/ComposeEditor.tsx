@@ -12,7 +12,7 @@ import clsx from 'clsx';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { useCreateCustomDeployment, useValidateCustomDeployment, useDeleteCustomDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
-import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
+import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 
 // Lazy-load Monaco + monaco-yaml (~1.5 MB gzipped). The dynamic import

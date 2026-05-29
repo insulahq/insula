@@ -21,7 +21,7 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { mailDriftItems, emailDomains, mailboxes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import type { MailDriftItem, MailDriftKind } from '@k8s-hosting/api-contracts';
+import type { MailDriftItem, MailDriftKind } from '@insula/api-contracts';
 
 /** Default page size for the operator list view. */
 const LIST_LIMIT = 100;

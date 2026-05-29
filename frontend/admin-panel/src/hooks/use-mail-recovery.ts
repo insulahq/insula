@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   MailRecoveryStatusResponse,
   MailRecoverResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface StatusEnvelope { readonly data: MailRecoveryStatusResponse }
 interface RecoverEnvelope { readonly data: MailRecoverResponse }

@@ -75,7 +75,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: tools
-        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest}
+        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/insula/mail-backup-tools:latest}
         imagePullPolicy: ${IMAGE_PULL_POLICY:-IfNotPresent}
         env: [{name: STALWART_MASTER_PASSWORD, value: "$MPW"}]
         command: ["sh", "-c"]
@@ -166,7 +166,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: tools
-        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest}
+        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/insula/mail-backup-tools:latest}
         imagePullPolicy: ${IMAGE_PULL_POLICY:-IfNotPresent}
         env: [{name: STALWART_MASTER_PASSWORD, value: "$MPW"}]
         command: ["sh", "-c"]

@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { config as runtimeConfig } from '@/lib/runtime-config';
-import type { PlatformUrlsResponse, UpdatePlatformUrlsInput } from '@k8s-hosting/api-contracts';
+import type { PlatformUrlsResponse, UpdatePlatformUrlsInput } from '@insula/api-contracts';
 
 // TanStack Query key — a single cache entry shared by every consumer so
 // a PATCH invalidation refreshes all pages at once.

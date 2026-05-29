@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/hosting-platform/file-manager
+  IMAGE: ghcr.io/insulahq/insula/file-manager
 
 jobs:
   build:

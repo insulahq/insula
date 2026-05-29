@@ -8,7 +8,7 @@ import type { CoreV1Api, CustomObjectsApi, AppsV1Api } from '@kubernetes/client-
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   type SecurityHardeningSnapshot,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { readProbeSnapshots, aggregateConntrack } from './ssh-probe.js';
 import { buildFirewallPosture } from './firewall-posture.js';
 import { fetchRecentSecurityEvents } from './recent-events.js';

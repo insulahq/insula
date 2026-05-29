@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { renderTemplate, renderTemplateAsync, _resetRendererCacheForTests } from './renderer.js';
-import type { NotificationTemplateResponse } from '@k8s-hosting/api-contracts';
+import type { NotificationTemplateResponse } from '@insula/api-contracts';
 import { ApiError } from '../../../shared/errors.js';
 
 function tpl(overrides: Partial<NotificationTemplateResponse> = {}): NotificationTemplateResponse {

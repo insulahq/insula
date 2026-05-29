@@ -5,7 +5,7 @@ import type {
   MailPlacementUpdateRequest,
   MailFailoverRequest,
   MailFailbackRequest,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface PlacementEnvelope {
   readonly data: MailPlacementResponse;

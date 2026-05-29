@@ -8,7 +8,7 @@ import {
   useDeleteOrphan,
   usePurgeAllOrphans,
 } from '@/hooks/use-orphaned-volumes';
-import type { OrphanedVolumeEntry, OrphanReason } from '@k8s-hosting/api-contracts';
+import type { OrphanedVolumeEntry, OrphanReason } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 

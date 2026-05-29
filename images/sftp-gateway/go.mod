@@ -1,4 +1,4 @@
-module github.com/k8s-hosting-platform/sftp-gateway
+module github.com/insulahq/sftp-gateway
 
 go 1.23.0
 

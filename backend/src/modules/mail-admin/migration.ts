@@ -263,7 +263,7 @@ export async function startMailMigration(
   if (deps.userId) {
     try {
       const { start: startTask } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       const label = intent.kind === 'failover'
         ? `Failover mail to ${targetNode}`
         : intent.kind === 'failback'
@@ -687,7 +687,7 @@ async function setStep(
     const meta = MIGRATION_STEP_META[step] ?? { label: step, pct: null };
     try {
       const { progress: progressTask } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       await progressTask(db, taskId, {
         pct: meta.pct,
         text: toSafeText(meta.label),
@@ -1272,7 +1272,7 @@ async function runMigrationStateMachine(
   if (taskId) {
     try {
       const { finish: finishTask } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       await finishTask(db, taskId, {
         status: 'succeeded',
         text: toSafeText(`Mail relocated to ${targetNode}`),

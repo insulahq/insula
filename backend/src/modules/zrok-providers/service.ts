@@ -19,7 +19,7 @@ import type { Database } from '../../db/index.js';
 import type {
   ZrokProviderInput,
   ZrokProviderResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export async function listProviders(
   db: Database,

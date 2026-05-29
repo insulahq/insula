@@ -8,7 +8,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     tenantId: 'tenant-acme',
     cartId: 'rstr-1',
     itemId: 'item-1',
-    toolsImage: 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest',
+    toolsImage: 'ghcr.io/insulahq/insula/mail-backup-tools:latest',
     jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
     stalwartMasterUser: 'master@master.local',
     masterSecretName: 'mail-secrets',

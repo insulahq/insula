@@ -9,7 +9,7 @@ import {
   ShieldAlert,
   Info,
 } from 'lucide-react';
-import type { ClusterIssuerSummary } from '@k8s-hosting/api-contracts';
+import type { ClusterIssuerSummary } from '@insula/api-contracts';
 import {
   usePrivateWorkerTunnelSettings,
   usePrivateWorkerTunnelStatus,

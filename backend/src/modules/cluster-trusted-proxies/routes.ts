@@ -14,7 +14,7 @@ import * as k8s from '@kubernetes/client-node';
 import {
   createTrustedProxyRangeRequestSchema,
   type ListTrustedProxyRangesResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import type { Database } from '../../db/index.js';

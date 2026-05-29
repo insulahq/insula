@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { WafRuleExclusion } from '@k8s-hosting/api-contracts';
+import type { WafRuleExclusion } from '@insula/api-contracts';
 import {
   DYNAMIC_RULE_ID_BASE,
   DYNAMIC_RULE_ID_MAX,

@@ -19,7 +19,7 @@
  */
 
 import type { CoreV1Api } from '@kubernetes/client-node';
-import type { MailPortExposureMode } from '@k8s-hosting/api-contracts';
+import type { MailPortExposureMode } from '@insula/api-contracts';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 export const MAIL_HAPROXY_LABEL_KEY = 'platform.example.test/mail-haproxy';

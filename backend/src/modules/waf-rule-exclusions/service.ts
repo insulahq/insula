@@ -20,7 +20,7 @@ import {
   type CreateWafRuleExclusionRequest,
   type UpdateWafRuleExclusionRequest,
   type WafRuleExclusion,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { domains, ingressRoutes, tenants, wafRuleExclusions } from '../../db/schema.js';
 

@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/hosting-platform/private-worker-agent
+  IMAGE: ghcr.io/insulahq/insula/private-worker-agent
 
 jobs:
   build:

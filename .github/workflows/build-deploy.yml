@@ -44,7 +44,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/insulahq/hosting-platform
+  IMAGE_PREFIX: ghcr.io/insulahq/insula
 
 jobs:
   changes:

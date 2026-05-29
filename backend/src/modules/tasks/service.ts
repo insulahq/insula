@@ -27,7 +27,7 @@ import {
   type TaskStatus,
   type TaskTarget,
   taskRowSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ─── start ───────────────────────────────────────────────────────────────
 

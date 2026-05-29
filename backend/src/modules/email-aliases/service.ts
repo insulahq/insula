@@ -2,7 +2,7 @@ import { eq, and } from 'drizzle-orm';
 import { emailAliases, emailDomains, mailboxes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
-import type { CreateEmailAliasInput, UpdateEmailAliasInput } from '@k8s-hosting/api-contracts';
+import type { CreateEmailAliasInput, UpdateEmailAliasInput } from '@insula/api-contracts';
 
 export async function createAlias(
   db: Database,

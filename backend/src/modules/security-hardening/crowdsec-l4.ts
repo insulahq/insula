@@ -27,7 +27,7 @@
 
 import { isIP } from 'node:net';
 import * as k8s from '@kubernetes/client-node';
-import type { CrowdsecL4Mode, CrowdsecL4Status } from '@k8s-hosting/api-contracts';
+import type { CrowdsecL4Mode, CrowdsecL4Status } from '@insula/api-contracts';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const FIREWALL_RECONCILER_NAMESPACE = 'platform-system';

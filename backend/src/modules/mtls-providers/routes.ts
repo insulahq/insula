@@ -31,7 +31,7 @@ import {
   mtlsIssueCertInputSchema,
   listCertificatesQuerySchema,
   revokeCertificateInputSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   listProviders,
   createProvider,

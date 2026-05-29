@@ -68,7 +68,7 @@ docs/                     # Architecture docs, ADRs, specs
 ```
 
 > Workload Dockerfiles (apache-php, nginx-php, nodejs, static-nginx, etc.) live in the external catalog repo:
-> `https://github.com/insulahq/k8s-application-catalog`. CI in that repo builds and publishes them to GHCR.
+> `https://github.com/insulahq/application-catalog`. CI in that repo builds and publishes them to GHCR.
 
 ## Server Deployment
 
@@ -77,14 +77,14 @@ docs/                     # Architecture docs, ADRs, specs
 SSH into a fresh **Debian 12+** or **Ubuntu 22.04+** server and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/insulahq/k8s-hosting-platform/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/insulahq/insula/main/scripts/bootstrap.sh | bash
 ```
 
 Or clone first:
 
 ```bash
-git clone https://github.com/insulahq/k8s-hosting-platform.git
-cd k8s-hosting-platform
+git clone https://github.com/insulahq/insula.git
+cd insula
 ./scripts/bootstrap.sh
 ```
 
@@ -138,8 +138,8 @@ kubectl get nodes
 ### Setup
 
 ```bash
-git clone https://github.com/insulahq/k8s-hosting-platform.git
-cd k8s-hosting-platform
+git clone https://github.com/insulahq/insula.git
+cd insula
 npm install
 docker compose up -d          # Start MariaDB + Redis
 ```
@@ -148,8 +148,8 @@ docker compose up -d          # Start MariaDB + Redis
 
 ```bash
 npm run dev -w backend                    # API on port 3000
-npm run dev -w @k8s-hosting/admin-panel   # Admin UI on port 5173
-npm run dev -w @k8s-hosting/tenant-panel  # Tenant UI on port 5174
+npm run dev -w @insula/admin-panel   # Admin UI on port 5173
+npm run dev -w @insula/tenant-panel  # Tenant UI on port 5174
 ```
 
 ### Testing
@@ -157,8 +157,8 @@ npm run dev -w @k8s-hosting/tenant-panel  # Tenant UI on port 5174
 ```bash
 npm run test -w backend                    # Backend unit tests
 npm run test:integration -w backend        # Integration tests (requires DB)
-npm run test -w @k8s-hosting/admin-panel   # Admin panel tests
-npm run test -w @k8s-hosting/tenant-panel  # Tenant panel tests
+npm run test -w @insula/admin-panel   # Admin panel tests
+npm run test -w @insula/tenant-panel  # Tenant panel tests
 ```
 
 ### Linting & Type Checking
@@ -166,8 +166,8 @@ npm run test -w @k8s-hosting/tenant-panel  # Tenant panel tests
 ```bash
 npm run lint -w backend
 npm run typecheck -w backend
-npm run lint -w @k8s-hosting/admin-panel
-npm run typecheck -w @k8s-hosting/admin-panel
+npm run lint -w @insula/admin-panel
+npm run typecheck -w @insula/admin-panel
 ```
 
 ## Environments
@@ -215,7 +215,7 @@ For infrastructure validation, integration testing, and pre-production E2E. Runs
 
 ```bash
 # Bootstrap a fresh server
-curl -fsSL https://raw.githubusercontent.com/insulahq/k8s-hosting-platform/main/scripts/bootstrap.sh | bash -s -- --env dev --skip-monitoring
+curl -fsSL https://raw.githubusercontent.com/insulahq/insula/main/scripts/bootstrap.sh | bash -s -- --env dev --skip-monitoring
 
 # Or after cloning:
 ./scripts/bootstrap.sh --env dev --skip-monitoring

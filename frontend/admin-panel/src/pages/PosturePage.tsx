@@ -102,8 +102,8 @@ import type {
   CrowdsecL4Mode,
   WafRuleExclusion,
   WafRuleExclusionScope,
-} from '@k8s-hosting/api-contracts';
-import { buildHostnameRegexFromEventHost } from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
+import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
 
 type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events';
 

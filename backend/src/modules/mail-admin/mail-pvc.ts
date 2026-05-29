@@ -14,7 +14,7 @@ import { ApiError } from '../../shared/errors.js';
 import {
   type MailPvcStorageResponse,
   mailPvcStorageResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
 // A2.5 (2026-05-25): mail-stack consolidation — the PVC now holds

@@ -7,7 +7,7 @@ import clsx from 'clsx';
 import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
 import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
-import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-contracts';
+import type { ClusterNodeResponse, NodeIngressMode } from '@insula/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';

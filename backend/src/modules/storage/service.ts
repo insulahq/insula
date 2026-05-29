@@ -9,7 +9,7 @@ import type {
   ImageInventoryResponse,
   ImageEntry,
   PurgeImagesResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ─── Image Classification ────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ const PROTECTED_PREFIXES: readonly string[] = [
   'ghcr.io/cloudnative-pg/',
   'ghcr.io/fluxcd/',
   'docker.io/bitnami/sealed-secrets-controller',
-  'ghcr.io/insulahq/hosting-platform/',
+  'ghcr.io/insulahq/insula/',
 ];
 
 export interface ClassifiedImage {

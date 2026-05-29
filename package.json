@@ -1,5 +1,5 @@
 {
-  "name": "k8s-hosting-platform",
+  "name": "insula",
   "private": true,
   "workspaces": [
     "packages/api-contracts",

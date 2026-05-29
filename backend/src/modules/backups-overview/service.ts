@@ -24,7 +24,7 @@ import type {
   TenantsBackupsOverviewResponse,
   TenantBackupDetail,
   TenantBackupOverviewRow,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // Avoid drizzle complaining about unused — kept for future joins.
 export const __unused = and;

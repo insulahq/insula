@@ -14,7 +14,7 @@ export const TERMINAL_POD_NAME_PREFIX = 'node-terminal-';
 // Default image — overridable via NODE_TERMINAL_IMAGE env. The image
 // ONLY needs to provide /usr/bin/nsenter and a sleeping process for
 // `kubectl exec` to hook into. See images/node-terminal/Dockerfile.
-export const DEFAULT_TERMINAL_IMAGE = 'ghcr.io/insulahq/hosting-platform/node-terminal:latest';
+export const DEFAULT_TERMINAL_IMAGE = 'ghcr.io/insulahq/insula/node-terminal:latest';
 
 // 1 hour. Hard backstop: even if every other lifecycle guarantee fails
 // (platform-api crashes mid-session, WS gets stuck, orphan-sweeper is

@@ -6,7 +6,7 @@
 -- onto the NEW target. The wait is bounded by this per-target value
 -- so a hung backup cannot lock out a target switch indefinitely.
 --
--- Bounds (mirrored in @k8s-hosting/api-contracts BackupRcloneShim):
+-- Bounds (mirrored in @insula/api-contracts BackupRcloneShim):
 --   * MIN 30 s  — anything lower would force-roll on healthy backups.
 --   * MAX 1800 s (30 min) — a multi-GiB tenant bundle to slow SFTP can
 --                            take this long; 30 min is the longest we

@@ -7,4 +7,4 @@ export {
   type CatalogEntryResponse,
   type CatalogRepoResponse,
   type CatalogEntryVersionResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Loader2, CheckCircle, AlertTriangle, X, Wrench } from 'lucide-react';
 import { useMailStalwartReprovision } from '@/hooks/use-mail-stalwart-reprovision';
-import type { StalwartReprovisionResponse } from '@k8s-hosting/api-contracts';
+import type { StalwartReprovisionResponse } from '@insula/api-contracts';
 import { ApiError } from '@/lib/api-client';
 
 /**

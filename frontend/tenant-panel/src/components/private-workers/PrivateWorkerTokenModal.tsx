@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, Copy, ShieldAlert, X } from 'lucide-react';
 import clsx from 'clsx';
-import type { PrivateWorkerSecretResponse } from '@k8s-hosting/api-contracts';
+import type { PrivateWorkerSecretResponse } from '@insula/api-contracts';
 
 interface PrivateWorkerTokenModalProps {
   readonly secret: PrivateWorkerSecretResponse;

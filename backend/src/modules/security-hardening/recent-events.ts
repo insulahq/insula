@@ -17,7 +17,7 @@
 import { inArray, desc } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { auditLogs } from '../../db/schema.js';
-import { type SecurityEvent } from '@k8s-hosting/api-contracts';
+import { type SecurityEvent } from '@insula/api-contracts';
 
 const SECURITY_RESOURCE_TYPES = [
   'cluster_trusted_range',

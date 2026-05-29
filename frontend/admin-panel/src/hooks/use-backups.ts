@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
-import type { BackupResponse } from '@k8s-hosting/api-contracts';
+import type { BackupResponse } from '@insula/api-contracts';
 
-export type { BackupResponse as Backup } from '@k8s-hosting/api-contracts';
+export type { BackupResponse as Backup } from '@insula/api-contracts';
 
 export function useBackups(tenantId: string | undefined) {
   const path = `/api/v1/tenants/${tenantId}/backups`;

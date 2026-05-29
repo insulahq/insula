@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { Tenant, PaginatedResponse } from '@/types/api';
-import type { CreateTenantInput, UpdateTenantInput, CreateTenantResponse } from '@k8s-hosting/api-contracts';
+import type { CreateTenantInput, UpdateTenantInput, CreateTenantResponse } from '@insula/api-contracts';
 
 interface ListTenantsParams {
   readonly search?: string;

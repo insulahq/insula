@@ -96,7 +96,7 @@ The `k8s/overlays/staging/` overlay pins ingresses to `letsencrypt-staging-http0
 
 ### GitHub / image access
 
-- Images are public on `ghcr.io/insulahq/hosting-platform/...` — no auth needed for pulls
+- Images are public on `ghcr.io/insulahq/insula/...` — no auth needed for pulls
 - Flux needs HTTPS access to GitHub to watch the `staging` branch
 - GitHub repo is public — no PAT required. If the repo later goes private, `bootstrap.sh` will need to be extended to accept a `--flux-github-token` argument that gets written to a `flux-system-git-auth` secret before Flux is installed.
 
@@ -225,7 +225,7 @@ flux get kustomizations -A
 # platform-staging — status should be Ready=True, last reconciled recently
 
 flux get sources git -A
-# flux-system — pulling from https://github.com/insulahq/k8s-hosting-platform branch=staging
+# flux-system — pulling from https://github.com/insulahq/insula branch=staging
 
 flux get images all -A
 # shows image policies + repositories Flux is tracking

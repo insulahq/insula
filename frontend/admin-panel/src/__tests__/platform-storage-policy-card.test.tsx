@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { GetPlatformStoragePolicyResponse } from '@k8s-hosting/api-contracts';
+import type { GetPlatformStoragePolicyResponse } from '@insula/api-contracts';
 import PlatformStoragePolicyCard from '../components/PlatformStoragePolicyCard';
 
 // The card uses two hooks; we stub them so the test stays focused on

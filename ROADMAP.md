@@ -134,7 +134,7 @@ layer for forks.
 - [ ] **CI fork-safety**: audit `.github/workflows/*.yml` for hardcoded
       `insulahq` strings (build-deploy.yml already uses
       `${{ github.repository_owner }}` — confirm). Add
-      `if: github.repository == 'insulahq/hosting-platform'` guards to
+      `if: github.repository == 'insulahq/insula'` guards to
       sync-staging.yml and any workflow that pushes to upstream
       infrastructure.
 - [ ] **PR-from-fork CI must run tests + lints WITHOUT push secrets**.
@@ -143,7 +143,7 @@ layer for forks.
       upstream repo, or use `workflow_run` for the push side. Tests stay in
       the pull_request trigger.
 - [ ] **GHCR package visibility**: confirm
-      `ghcr.io/insulahq/hosting-platform/*` packages are set to
+      `ghcr.io/insulahq/insula/*` packages are set to
       `public` in package settings. Required for "unmodified clone just
       works".
 

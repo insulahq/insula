@@ -24,7 +24,7 @@ import type {
   BackupShimClass,
   ShimAssignmentRow,
   ShimState,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const CLASS_META: Record<BackupShimClass, { title: string; subtitle: string }> = {
   system: {

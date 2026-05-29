@@ -25,7 +25,7 @@ import {
   updatePrivateWorkerSchema,
   rotatePrivateWorkerTokenSchema,
   revokePrivateWorkerSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   authenticate,
   requireTenantAccess,

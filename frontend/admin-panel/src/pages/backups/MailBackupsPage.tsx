@@ -27,7 +27,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   MailBackupSnapshot,
   SystemBackupsOverview,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import MailObjectBackupCard from '@/components/backups/MailObjectBackupCard';
 import { useMailBackups, useRestoreMailBackup } from '@/hooks/use-mail-backups';

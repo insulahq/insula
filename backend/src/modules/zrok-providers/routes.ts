@@ -12,7 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { zrokProviderInputSchema } from '@k8s-hosting/api-contracts';
+import { zrokProviderInputSchema } from '@insula/api-contracts';
 import {
   listProviders,
   createProvider,

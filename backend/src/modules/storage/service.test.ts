@@ -69,7 +69,7 @@ describe('storage service', () => {
       expect(classifyImage('ghcr.io/cloudnative-pg/cloudnative-pg:1.22.0', false).protected).toBe(false);
       expect(classifyImage('ghcr.io/fluxcd/source-controller:v1.0.0', false).protected).toBe(false);
       expect(classifyImage('docker.io/bitnami/sealed-secrets-controller:v0.24.0', false).protected).toBe(false);
-      expect(classifyImage('ghcr.io/insulahq/hosting-platform/backend:v1.0.0', false).protected).toBe(false);
+      expect(classifyImage('ghcr.io/insulahq/insula/backend:v1.0.0', false).protected).toBe(false);
     });
 
     it('should classify in-use system images as protected regardless of version (B0.3)', () => {

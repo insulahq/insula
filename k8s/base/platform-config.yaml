@@ -40,4 +40,4 @@ data:
   # (the wildcard DNS entry must point at cluster ingress).
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.62.1"
-  private-worker-agent-image: "ghcr.io/insulahq/hosting-platform/private-worker-agent:latest"
+  private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"

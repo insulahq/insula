@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { MailHealthResponse } from '@k8s-hosting/api-contracts';
+import type { MailHealthResponse } from '@insula/api-contracts';
 
 const HEALTH_KEY = ['mail', 'health'] as const;
 

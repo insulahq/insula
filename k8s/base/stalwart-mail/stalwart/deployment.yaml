@@ -274,7 +274,7 @@ spec:
         #   survive Flux postBuild substituteFrom rendering. Flux collapses
         #   $$VAR → $VAR before applying the manifest; sh then expands.
         - name: restore-state
-          image: ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+          image: ghcr.io/insulahq/insula/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
           imagePullPolicy: Always
           command:
             - sh

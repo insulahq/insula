@@ -30,7 +30,7 @@ import {
   systemWalArchiveState,
   backupConfigurations,
 } from '../../db/schema.js';
-import type { BackupShimClass } from '@k8s-hosting/api-contracts';
+import type { BackupShimClass } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';

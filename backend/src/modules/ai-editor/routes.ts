@@ -13,7 +13,7 @@ import {
   updateAiModelSchema,
   aiEditRequestSchema,
   aiTestConnectionSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as service from './service.js';
 import type { AiProvider, AiModel } from '../../db/schema.js';
 

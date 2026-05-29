@@ -43,7 +43,7 @@ import {
   addRestoreItemSchema,
   type RestoreItemPayload,
   type RestoreJobDetail,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   loadBundle,

@@ -2,4 +2,4 @@
 export {
   updateHostingSettingsSchema,
   type UpdateHostingSettingsInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

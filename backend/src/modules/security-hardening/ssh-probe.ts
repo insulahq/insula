@@ -31,7 +31,7 @@ import {
   type SshRestrictionMode,
   type CisSeverity,
   type DeniedCountWindow,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   PROBE_NAMESPACE,
   PROBE_CONFIGMAP_PREFIX,

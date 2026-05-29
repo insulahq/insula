@@ -11,7 +11,7 @@
  *     the per-panel progress modals.
  *
  * Authoritative DTOs (RestoreItemInfo, RestoreJobDetail, etc.) live in
- * @k8s-hosting/api-contracts and are re-exported via
+ * @insula/api-contracts and are re-exported via
  * `restore-cart-types.js`.
  *
  * History:

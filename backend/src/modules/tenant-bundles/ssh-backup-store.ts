@@ -52,7 +52,7 @@ import { Client, type ClientChannel, type ConnectConfig, type SFTPWrapper, type 
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
-import type { BackupComponentName, BackupMetaV1 } from '@k8s-hosting/api-contracts';
+import type { BackupComponentName, BackupMetaV1 } from '@insula/api-contracts';
 import type {
   BackupStore,
   BundleHandle,
