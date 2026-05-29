@@ -155,6 +155,16 @@ export function resolveHaproxyNodes(
 ): string[] {
   if (mode === 'activeNodeOnly') return [];
 
+  // Single-server deployments NEVER run haproxy: Stalwart binds the mail
+  // hostPorts directly via CNI portmap (the always-on hostPort invariant).
+  // haproxy exists only to forward external mail from OTHER nodes to the
+  // active node — with a single node there are none, and a haproxy DS on
+  // the sole node fights Stalwart for hostPort=25. This guard is load-
+  // bearing on a fresh single-node bootstrap where `settings.activeNode`
+  // is not yet recorded, so the active-node exclusion below is a no-op and
+  // would otherwise schedule haproxy on the one node (regression, 2026-05-29).
+  if (nodes.length <= 1) return [];
+
   const known = new Set(nodes.map((n) => n.metadata.name));
   let candidates: string[];
 
