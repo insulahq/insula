@@ -1183,12 +1183,11 @@ async function runMigrationStateMachine(
       }
     }
   } catch (err) {
-    // High-severity log — operator must act manually. Recorded with
-    // the same shape as other migration warnings so the existing log-
-    // aggregation pipeline surfaces it. A first-class notification API
-    // for this case is filed as a follow-up; for now the log + the
-    // task-center entry for the migration itself (which succeeded)
-    // are the operator's signal channels.
+    // High-severity log AND a fan-out notification to every admin /
+    // super_admin so the rotation failure surfaces in the bell-icon
+    // tray (not just buried in backend logs the operator may never
+    // open). Same fan-out pattern as image-pressure-watcher.
+    const errMsg = err instanceof Error ? err.message : String(err);
     log.warn(
       `[migration] auto-rotate post-migration FAILED for targetNode=${targetNode} — ` +
       'migration itself succeeded but Bulwark + Roundcube + tenant-bundle Jobs are still using ' +
@@ -1196,6 +1195,32 @@ async function runMigrationStateMachine(
       '"Rotate webmail master password". Error:',
       err,
     );
+    try {
+      const { users, notifications } = await import('../../db/schema.js');
+      const { inArray } = await import('drizzle-orm');
+      const adminRows = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(inArray(users.roleName, ['super_admin', 'admin']));
+      for (const a of adminRows) {
+        await db.insert(notifications).values({
+          id: randomUUID(),
+          userId: a.id,
+          type: 'warning',
+          title: 'Mail master-password auto-rotation failed',
+          message:
+            `Mail migration to ${targetNode} succeeded, but the post-migration auto-rotate ` +
+            `of the Stalwart master password failed: ${errMsg.slice(0, 200)}. ` +
+            'Bulwark + Roundcube + tenant-bundle Jobs may be using a stale password. ' +
+            'Rotate manually via Admin → Email → "Rotate webmail master password".',
+          resourceType: 'mail_migration',
+          resourceId: runId,
+        }).catch(() => { /* fire-and-forget per-row */ });
+      }
+    } catch {
+      // Fan-out failure is non-fatal — log line above is the
+      // last-resort signal channel.
+    }
   }
 
   await db.execute(sql`
