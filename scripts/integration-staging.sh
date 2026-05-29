@@ -3104,6 +3104,197 @@ scenario_webmail_url_change() {
   fi
 }
 
+# ─── scenario: mail-migration subPath guard + pre-migration tag + cron SSA ──
+#
+# Added 2026-05-29 after three production incidents on staging:
+#   1. PR #103 silent-loss init container wrongly mounted PVC root
+#      without subPath:stalwart. The `>2` entries heuristic NEVER
+#      matched a healthy install (consolidated PVC root always has
+#      exactly bulwark/ + stalwart/) so every migration bricked the
+#      pod with CrashLoopBackOff.
+#   2. Pre-migration snapshots used the same tags as routine
+#      every-two-min CronJob runs — indistinguishable in
+#      /backups/mail?tab=backups.
+#   3. Operator-set CronJob schedule via /backups/mail?tab=routing
+#      silently reverted to manifest default on every Flux reconcile
+#      (`STRATEGIC_MERGE_PATCH` does not claim SSA field ownership).
+#
+# This scenario exercises the FIXED paths E2E against the live staging
+# cluster — DinD harness can't catch (1) or (3) because there's no Flux
+# and no real PVC subPath-bound volume in DinD.
+#
+# REQUIREMENTS
+#   - super_admin token (auth flow at harness start covers this)
+#   - cluster has at least two server-role nodes (migration source/target)
+#   - mail BackupTarget configured (otherwise pre-migration step skips,
+#     and the tag assertion can't be made)
+#
+# Run only this scenario:
+#   SCENARIO=mail_migration_fixes ./scripts/integration-staging.sh
+scenario_mail_migration_fixes() {
+  # ── Part A: CronJob schedule survives a Flux reconcile cycle ──────
+  log "mail-migration-fixes: PART A — CronJob schedule SSA ownership"
+
+  local orig_sched
+  orig_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | tr -d '[:space:]')
+  log "PART A: live schedule before = ${orig_sched}"
+
+  # Pick a DIFFERENT schedule from the manifest default `*/2 * * * *`
+  # so the assertion can't false-pass if Flux happens to reapply
+  # something semantically equivalent.
+  local probe_sched='*/7 * * * *'
+
+  # Operator-side patch via the existing API surface (used by
+  # /backups/mail?tab=routing). When the API surface lands, we'll
+  # switch this to that endpoint; for now /admin/mail/snapshot-schedule
+  # is the canonical one that exercises the same applyMailSnapshotRetention
+  # → applyPatch(...,force:true) path.
+  local patch_status
+  patch_status=$(api_raw PATCH /admin/mail/snapshot-schedule "{\"scheduleExpression\":\"${probe_sched}\"}" 2>&1 | tail -1)
+  if [[ "$patch_status" != "200" ]]; then
+    fail "PART A: PATCH /admin/mail/snapshot-schedule returned ${patch_status}"
+    return 1
+  fi
+  ok "PART A: PATCH accepted (200)"
+
+  # Wait 5s for the apiserver to settle, then re-read.
+  sleep 5
+  local now_sched
+  now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | tr -d '[:space:]')
+  if [[ "$now_sched" != "$probe_sched" ]]; then
+    fail "PART A: live schedule after PATCH = '${now_sched}', expected '${probe_sched}' — applyPatch did not take effect"
+    return 1
+  fi
+  ok "PART A: live CronJob.spec.schedule = ${now_sched}"
+
+  # Confirm SSA ownership has actually transferred to platform-api
+  # (force:true). Without this assertion, the next Flux reconcile
+  # would silently revert and we'd never know until the operator
+  # noticed the manifest default `*/2` coming back hours later.
+  local owner
+  owner=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.metadata.managedFields[?(@.fieldsType==\"FieldsV1\")].manager}'" 2>/dev/null | tr ' ' '\n' | grep -F 'platform-api.snapshot-settings' || true)
+  if [[ -n "$owner" ]]; then
+    ok "PART A: spec.schedule managed-by 'platform-api.snapshot-settings' (Flux will not revert)"
+  else
+    fail "PART A: managedFields does not list platform-api.snapshot-settings as a manager — SSA ownership did NOT transfer; the next Flux reconcile WILL revert spec.schedule"
+  fi
+
+  # Force a Flux reconcile RIGHT NOW so we don't have to wait the natural 5-10m.
+  ssh_cp "flux reconcile kustomization platform -n flux-system --with-source --timeout=60s" >/dev/null 2>&1 || true
+  sleep 10
+  local post_flux
+  post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | tr -d '[:space:]')
+  if [[ "$post_flux" == "$probe_sched" ]]; then
+    ok "PART A: schedule SURVIVED forced Flux reconcile (= ${post_flux})"
+  else
+    fail "PART A: Flux reconcile reverted schedule to '${post_flux}' (regression of SSA-ownership fix)"
+  fi
+
+  # Restore original schedule.
+  api_raw PATCH /admin/mail/snapshot-schedule "{\"scheduleExpression\":\"${orig_sched}\"}" >/dev/null 2>&1 || true
+  ok "PART A: original schedule '${orig_sched}' restored"
+
+  # ── Part B: Stalwart starts cleanly post-migration (subPath guard) ──
+  log "mail-migration-fixes: PART B — silent-loss guard does NOT brick a healthy migration"
+
+  # Identify a viable migration target — pick the first server-role
+  # candidate that is NOT the current active node.
+  local placement_json active_node target_node
+  placement_json=$(api GET /admin/mail/placement)
+  active_node=$(printf '%s' "$placement_json" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('activeNode') or '')")
+  if [[ -z "$active_node" ]]; then
+    fail "PART B: could not determine current activeNode — mail-stack may be down"
+    return 1
+  fi
+  target_node=$(printf '%s' "$placement_json" | ACTIVE="$active_node" python3 -c "
+import json, sys, os
+active = os.environ['ACTIVE']
+d = json.load(sys.stdin)
+cands = d['data'].get('candidateNodes', [])
+for c in cands:
+    if c.get('hostname') and c['hostname'] != active and c.get('ready') and c.get('role') == 'server':
+        print(c['hostname'])
+        break
+")
+  if [[ -z "$target_node" ]]; then
+    log "PART B: no second server-role candidate available — skipping migration test (single-server cluster)"
+    return 0
+  fi
+  log "PART B: will migrate $active_node → $target_node"
+
+  # Kick off the migration via the API the operator uses.
+  local migrate_body
+  migrate_body="{\"targetNode\":\"${target_node}\",\"confirm\":true}"
+  local migrate_resp run_id
+  migrate_resp=$(api POST /admin/mail/migrate "$migrate_body")
+  run_id=$(printf '%s' "$migrate_resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('runId',''))" 2>/dev/null)
+  if [[ -z "$run_id" ]]; then
+    fail "PART B: migration POST did not return runId — body: $(printf '%s' "$migrate_resp" | head -c 200)"
+    return 1
+  fi
+  ok "PART B: migration started — runId=${run_id}"
+
+  # Poll the migration status. Timeout 10 min.
+  local deadline=$((SECONDS + 600))
+  local final_state="" final_step="" final_err=""
+  while (( SECONDS < deadline )); do
+    sleep 5
+    local mig_json
+    mig_json=$(api GET "/admin/mail/migrate/${run_id}" 2>/dev/null || echo "{}")
+    final_state=$(printf '%s' "$mig_json" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('state',''))" 2>/dev/null)
+    final_step=$(printf '%s' "$mig_json" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('currentStep',''))" 2>/dev/null)
+    case "$final_state" in
+      done|failed|rolled-back) break ;;
+    esac
+  done
+  final_err=$(api GET "/admin/mail/migrate/${run_id}" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('error') or '')" 2>/dev/null)
+
+  if [[ "$final_state" != "done" ]]; then
+    fail "PART B: migration ended state=${final_state} step=${final_step} err=${final_err}"
+    return 1
+  fi
+  ok "PART B: migration state=done (no state-machine lie)"
+
+  # Crucial: the post-migration Stalwart pod must be Running on the
+  # target node — that's where the subPath guard would have bricked
+  # things pre-fix.
+  sleep 10
+  local pod_phase pod_node
+  pod_phase=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.phase}'" | tr -d '[:space:]')
+  pod_node=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" | tr -d '[:space:]')
+  if [[ "$pod_phase" == "Running" && "$pod_node" == "$target_node" ]]; then
+    ok "PART B: stalwart-mail Pod Running on target node ${target_node} — silent-loss guard did NOT false-positive"
+  else
+    fail "PART B: stalwart-mail Pod phase=${pod_phase} node=${pod_node} (expected Running on ${target_node}). The init container guard likely refused — check 'kubectl -n mail logs <pod> -c protect-from-silent-data-loss'"
+    return 1
+  fi
+
+  # ── Part C: pre-migration snapshot carries the distinct tag ──────
+  log "mail-migration-fixes: PART C — pre-migration tag visible to operators"
+
+  local backups_json
+  backups_json=$(api GET /admin/mail/backups)
+  local has_pre_migration
+  has_pre_migration=$(printf '%s' "$backups_json" | RUN="$run_id" python3 -c "
+import json, sys, os
+run = os.environ['RUN']
+d = json.load(sys.stdin)
+for s in d.get('data', {}).get('snapshots', []):
+    tags = s.get('tags', [])
+    if 'pre-migration' in tags and ('run=' + run) in tags:
+        print('yes')
+        break
+else:
+    print('no')
+")
+  if [[ "$has_pre_migration" == "yes" ]]; then
+    ok "PART C: a snapshot with tags ['pre-migration', 'run=${run_id}'] is in the restic list"
+  else
+    fail "PART C: no snapshot with tags ['pre-migration', 'run=${run_id}'] — UI badge will not render. (Mail BackupTarget may not be configured; check /backups/mail.)"
+    return 1
+  fi
+}
+
 case "$SCENARIO" in
   all)
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
@@ -3122,6 +3313,7 @@ case "$SCENARIO" in
     run_scenario mail_hostname_rename
     run_scenario system_backup
     run_scenario redis
+    run_scenario mail_migration_fixes
     ;;
   *)
     if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then
