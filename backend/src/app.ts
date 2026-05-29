@@ -716,7 +716,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // contention on cold start) leave email deliveries queued; a
       // future tick of the retention scan can re-enqueue them.
       try {
-        await startEmailWorker({ db: app.db });
+        // Phase 6 prep: k8sCore is used by the stalwart-internal
+        // Provider path to read master account creds from
+        // mail/mail-secrets at send time. Best-effort — if the
+        // platform-api has no kubeconfig, stalwart-internal sends
+        // will fail with a clear error but every other Provider type
+        // still works.
+        const workerKubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+        let workerK8sCore: import('@kubernetes/client-node').CoreV1Api | null = null;
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          workerK8sCore = createK8sClients(workerKubeconfigPath).core;
+        } catch (err) {
+          app.log.warn({ err }, '[notifications] email worker: k8s client unavailable — stalwart-internal Provider sends will fail until kubeconfig is wired');
+        }
+        await startEmailWorker({ db: app.db, k8sCore: workerK8sCore });
         app.log.info('[notifications] email send worker started');
         app.addHook('onClose', async () => { await stopBoss().catch(() => {}); });
       } catch (err) {

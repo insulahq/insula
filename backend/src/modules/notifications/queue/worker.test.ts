@@ -224,4 +224,70 @@ describe('processDelivery', () => {
     expect(r.error).toBe('no_default_notification_provider');
     expect(workerSendMock).not.toHaveBeenCalled();
   });
+
+  describe('stalwart-internal Provider path (Phase 6 prep)', () => {
+    // The Provider row has NO password. The worker must read the
+    // master account credentials from mail-secrets and inject them as
+    // SMTP auth + envelope sender, while keeping the recipient-visible
+    // From: header as the operator-chosen address.
+    it('reads master creds at send time and overrides envelope sender', async () => {
+      const stalwartProvider = {
+        ...defaultProvider(),
+        providerType: 'stalwart-internal',
+        smtpHost: 'stalwart-mail.mail.svc.cluster.local',
+        smtpPort: 465,
+        smtpSecure: true,
+        // NULL — operator never entered a password.
+        authUsername: null,
+        authPasswordEncrypted: null,
+        fromAddress: 'notifications@apex.test',
+        fromName: 'Phoenix Notifications',
+      };
+      getDefaultProviderRowMock.mockResolvedValue(stalwartProvider);
+      const { db } = buildDb({
+        delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: null },
+        user: { email: 'u1@example.com' },
+      });
+      getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
+      renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
+      const readCreds = vi.fn().mockResolvedValue({ user: 'master@mail.apex.test', password: 'master-pw' });
+      workerSendMock.mockResolvedValue(undefined);
+
+      const r = await processDelivery('d1', {
+        db, encryptionKey: 'KEY', send: workerSendMock, readStalwartMasterCreds: readCreds,
+      });
+
+      expect(r.status).toBe('sent');
+      expect(workerSendMock).toHaveBeenCalledTimes(1);
+      const sendArg = workerSendMock.mock.calls[0][0] as {
+        authUsername: string | null; authPassword: string | null;
+        fromAddress: string; envelopeFrom: string | null;
+      };
+      // SMTP authenticates as master.
+      expect(sendArg.authUsername).toBe('master@mail.apex.test');
+      expect(sendArg.authPassword).toBe('master-pw');
+      // SMTP envelope = master (so Stalwart accepts MAIL FROM).
+      expect(sendArg.envelopeFrom).toBe('master@mail.apex.test');
+      // Recipient-visible From: header = operator-chosen address.
+      expect(sendArg.fromAddress).toBe('notifications@apex.test');
+    });
+
+    it('marks delivery failed when mail-secrets is unreachable', async () => {
+      const stalwartProvider = { ...defaultProvider(), providerType: 'stalwart-internal', authPasswordEncrypted: null };
+      getDefaultProviderRowMock.mockResolvedValue(stalwartProvider);
+      const { db } = buildDb({
+        delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: null },
+        user: { email: 'u1@example.com' },
+      });
+      getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
+      renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
+      const readCreds = vi.fn().mockResolvedValue(null);
+      const r = await processDelivery('d1', {
+        db, encryptionKey: 'KEY', send: workerSendMock, readStalwartMasterCreds: readCreds,
+      });
+      expect(r.status).toBe('failed');
+      expect(r.error).toBe('stalwart_master_credentials_unavailable');
+      expect(workerSendMock).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -14,6 +14,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import * as k8s from '@kubernetes/client-node';
 import { notifications } from '../../db/schema.js';
 import { notifyUsers } from '../notifications/service.js';
+import { notifyAdminBackupFailed } from '../notifications/events.js';
 import { resolveRecipients } from '../notifications/recipients.js';
 import { listHealthWatchedJobs, findNewFailures } from './service.js';
 import { severityToNotificationType } from './labels.js';
@@ -129,5 +130,15 @@ async function notifyForFailure(
       `Reason: ${reason}`,
     resourceType: RESOURCE_TYPE_BACKUP_JOB,
     resourceId: failure.uid,
+  });
+
+  // Phase 6A: route through the new categorised dispatcher in
+  // addition to the legacy notifyUsers fanout. dispatchSafe never
+  // throws, so this is fire-and-forget. The legacy call above stays
+  // for back-compat with any non-categorised consumer (e.g. the bell
+  // dropdown reads from `notifications` directly).
+  await notifyAdminBackupFailed(db, {
+    backupName: failure.displayName,
+    errorMessage: reason,
   });
 }

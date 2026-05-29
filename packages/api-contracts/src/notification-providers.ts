@@ -89,10 +89,28 @@ const baseProviderInput = {
   isDefault: z.boolean().default(false),
 };
 
+/**
+ * Phase 6 prep: 'stalwart-internal' has DIFFERENT auth semantics from
+ * every other provider type. The worker reads the platform master
+ * account credentials from the K8s Secret `mail/mail-secrets` at send
+ * time and uses them for SMTP authentication AND envelope sender —
+ * the operator never enters a password, only the From: address that
+ * recipients will see. `auth_username` / `auth_password` are therefore
+ * ignored for this type and the validator rejects them so misuse is
+ * loud rather than confusing.
+ */
 export const createNotificationProviderSchema = z.object({
   providerType: z.enum(NOTIFICATION_PROVIDER_TYPE),
   ...baseProviderInput,
-});
+}).refine(
+  (data) => data.providerType === 'stalwart-internal'
+    ? data.authPassword === undefined && (data.authUsername === undefined || data.authUsername === null)
+    : true,
+  {
+    message: 'stalwart-internal providers must not specify authUsername / authPassword — the worker uses the platform master account credentials from mail-secrets',
+    path: ['authPassword'],
+  },
+);
 export type CreateNotificationProviderInput = z.infer<typeof createNotificationProviderSchema>;
 
 export const updateNotificationProviderSchema = z.object({

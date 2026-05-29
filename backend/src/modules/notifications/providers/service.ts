@@ -149,7 +149,16 @@ export async function createProvider(
   ctx: CreateContext,
 ): Promise<NotificationProviderResponse> {
   // Phase 3: only platform-scope. Tenant scope is reserved.
-  const passwordEncrypted = input.authPassword ? encrypt(input.authPassword, ctx.encryptionKey) : null;
+  // Phase 6 prep: 'stalwart-internal' providers never store
+  // operator-supplied auth — the worker reads master account creds
+  // from mail/mail-secrets at send time. The Zod schema already
+  // rejects authUsername / authPassword on create, but we also blank
+  // them defensively here so a refactor that loosens the schema
+  // can't accidentally persist credentials we'd silently ignore.
+  const isStalwartInternal = input.providerType === 'stalwart-internal';
+  const passwordEncrypted = !isStalwartInternal && input.authPassword
+    ? encrypt(input.authPassword, ctx.encryptionKey)
+    : null;
   await ensureSingleDefault(db, { channel: 'email', wantDefault: input.isDefault });
   const id = crypto.randomUUID();
   await db.insert(notificationProviders).values({
@@ -164,7 +173,7 @@ export async function createProvider(
     smtpHost: input.smtpHost,
     smtpPort: input.smtpPort,
     smtpSecure: input.smtpSecure,
-    authUsername: input.authUsername ?? null,
+    authUsername: isStalwartInternal ? null : (input.authUsername ?? null),
     authPasswordEncrypted: passwordEncrypted,
     fromAddress: input.fromAddress,
     fromName: input.fromName ?? null,
