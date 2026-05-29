@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { apiFetch } from '@/lib/api-client';
 import { useTenantContext } from './use-tenant-context';
-import type { AiEditResponse, AiModelResponse } from '@k8s-hosting/api-contracts';
+import type { AiEditResponse, AiModelResponse } from '@insula/api-contracts';
 import { useQuery } from '@tanstack/react-query';
 
 export interface AiTokenBudget {

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { updatePlatformUrlsSchema } from '@k8s-hosting/api-contracts';
+import { updatePlatformUrlsSchema } from '@insula/api-contracts';
 import type { ZodError } from 'zod';
 import * as service from './service.js';
 import {

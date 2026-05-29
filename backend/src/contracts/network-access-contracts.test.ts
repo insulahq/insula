@@ -12,7 +12,7 @@ import {
   listCertificatesQuerySchema,
   revokeCertificateInputSchema,
   mtlsIssueCertResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 describe('ingressMtlsConfigSchema', () => {
   it('accepts a minimal enabled config with a CA bundle', () => {

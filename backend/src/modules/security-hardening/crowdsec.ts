@@ -30,7 +30,7 @@ import type {
   CrowdsecListDecisionsResponse,
   CrowdsecMachine,
   CrowdsecStatus,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const CROWDSEC_NAMESPACE = 'crowdsec';
 // Platform-api uses its own pre-registered bouncer key so it shows up

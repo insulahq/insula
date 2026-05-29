@@ -384,7 +384,7 @@ export interface ResolveSnapshotStoreOptions {
    * throws ApiError('NO_SNAPSHOT_TARGET') if the class is unassigned.
    * When omitted, the legacy single-active-target fallback applies.
    */
-  readonly backupClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
+  readonly backupClass?: import('@insula/api-contracts').SnapshotClass;
 }
 
 export interface ResolvedSnapshotStoreBundle {
@@ -479,7 +479,7 @@ export async function resolveSnapshotStoreForClass(
     readonly STORAGE_SNAPSHOT_HOST_ROOT?: string;
     readonly STORAGE_SNAPSHOT_LOCAL_ROOT?: string;
   },
-  backupClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  backupClass: import('@insula/api-contracts').SnapshotClass,
   /**
    * Phase 11: optional k8s context for stores that need to spawn
    * one-shot Jobs (CIFS stat/delete/readSidecar). Callers in the
@@ -757,7 +757,7 @@ export async function resolveSnapshotStoreForClass(
 export async function resolveSnapshotStoreByTargetId(
   db: import('../../db/index.js').Database,
   targetId: string,
-  backupClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  backupClass: import('@insula/api-contracts').SnapshotClass,
   /**
    * Phase 11: optional k8s context for CIFS read paths during restore.
    * Restore service plumbs this through from its ServiceCtx.

@@ -5,7 +5,7 @@ import type {
   BlobStoreUpdateRequest,
   BlobStoreUpdateResponse,
   BlobStoreJobStatusResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface BlobStoreEnvelope {
   readonly data: BlobStoreResponse;

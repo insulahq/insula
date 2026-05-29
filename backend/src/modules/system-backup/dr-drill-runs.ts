@@ -20,7 +20,7 @@ import {
   type DrDrillRun,
   type DrDrillSummary,
   type RecordDrDrillRunRequest,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { drDrillRuns, type DrDrillRunRow } from '../../db/schema.js';
 
 const MAX_LIST_ROWS = 12;

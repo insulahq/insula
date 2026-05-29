@@ -17,7 +17,7 @@ import { ApiError } from '../../shared/errors.js';
 import {
   updateUserNotificationPreferencesSchema,
   updateUserNotificationSettingsSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as preferenceService from './preferences/service.js';
 
 export async function notificationUserRoutes(app: FastifyInstance): Promise<void> {

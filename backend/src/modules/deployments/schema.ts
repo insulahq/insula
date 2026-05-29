@@ -7,4 +7,4 @@ export {
   type UpdateDeploymentInput,
   type UpdateDeploymentResourcesInput,
   type DeploymentResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

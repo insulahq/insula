@@ -63,7 +63,7 @@ spec:
       serviceAccountName: sftp-gateway
       containers:
         - name: gateway
-          image: ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest # {"$imagepolicy": "flux-system:sftp-gateway"}
+          image: ghcr.io/insulahq/insula/sftp-gateway:latest # {"$imagepolicy": "flux-system:sftp-gateway"}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 2222

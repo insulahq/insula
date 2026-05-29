@@ -4,7 +4,7 @@ import bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { auditLogs, refreshTokens, users, userPasskeys, tenants } from '../../db/schema.js';
-import { createAdminUserSchema, updateAdminUserSchema } from '@k8s-hosting/api-contracts';
+import { createAdminUserSchema, updateAdminUserSchema } from '@insula/api-contracts';
 import { eraseUserNotifications } from '../notifications/retention/gdpr-erasure.js';
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';

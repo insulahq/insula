@@ -1,4 +1,4 @@
-module github.com/phoenixtechnam/k8s-hosting-platform/firewall-reconciler
+module github.com/insulahq/insula/firewall-reconciler
 
 go 1.22.0
 

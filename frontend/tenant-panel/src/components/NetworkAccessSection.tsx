@@ -10,7 +10,7 @@ import { useZrokProviders } from '@/hooks/use-zrok-providers';
 import type {
   DeploymentNetworkAccessInput,
   NetworkAccessMode,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';

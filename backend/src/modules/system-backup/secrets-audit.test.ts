@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { AllowlistEntry } from '@k8s-hosting/api-contracts';
+import type { AllowlistEntry } from '@insula/api-contracts';
 import { classify } from './secrets-audit.js';
 
 const emptyAllowlist = new Map<string, AllowlistEntry>();

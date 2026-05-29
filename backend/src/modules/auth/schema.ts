@@ -6,4 +6,4 @@ export {
   type LoginInput,
   type ChangePasswordInput,
   type UpdateProfileInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

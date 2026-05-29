@@ -26,7 +26,7 @@
  */
 
 import { ApiError } from '../../shared/errors.js';
-import { type BootstrapCommandResponse } from '@k8s-hosting/api-contracts';
+import { type BootstrapCommandResponse } from '@insula/api-contracts';
 import { getPendingPeer } from './cluster-pending-peers.js';
 import {
   loadClusterNetworkClients,

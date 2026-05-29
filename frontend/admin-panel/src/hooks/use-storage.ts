@@ -4,7 +4,7 @@ import type {
   StorageOverviewResponse,
   ImageInventoryResponse,
   PurgeImagesResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export function useStorageOverview() {
   return useQuery({

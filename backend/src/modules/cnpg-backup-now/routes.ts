@@ -6,7 +6,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   cnpgBackupNowRequestSchema,
   type CnpgBackupNowResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { createBackupNow, CnpgBackupNowError } from './service.js';
 
 export async function cnpgBackupNowRoutes(app: FastifyInstance): Promise<void> {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   stalwartCredentialsResponseSchema,
   type StalwartCredentialsResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Resolve the Stalwart fallback-admin credentials.

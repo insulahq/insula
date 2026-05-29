@@ -28,7 +28,7 @@ import type {
   BundleSummary,
   TenantsBackupsOverviewResponse,
   TenantBackupOverviewRow,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
 import { AdminBundleProgressModal } from '@/components/AdminBundleProgressModal';

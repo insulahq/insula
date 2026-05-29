@@ -38,7 +38,7 @@ import {
   type BundleSummary,
   type BundleDetail,
   type BackupComponentInfo,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';

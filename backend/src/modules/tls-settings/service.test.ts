@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tlsSettingsResponseSchema, updateTlsSettingsSchema } from '@k8s-hosting/api-contracts';
+import { tlsSettingsResponseSchema, updateTlsSettingsSchema } from '@insula/api-contracts';
 
 describe('tls-settings schemas', () => {
   it('should validate TLS settings response', () => {

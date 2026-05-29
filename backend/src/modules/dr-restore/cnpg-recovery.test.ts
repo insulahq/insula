@@ -10,7 +10,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runCnpgRecovery, CnpgRecoveryError } from './cnpg-recovery.js';
 import type { CnpgRecoveryOpts } from './cnpg-recovery.js';
-import type { CnpgRecoveryPointer } from '@k8s-hosting/api-contracts';
+import type { CnpgRecoveryPointer } from '@insula/api-contracts';
 
 // Tiny stand-in for K8sClients — only the fields cnpg-recovery touches.
 function makeK8sStub(opts: {

@@ -16,7 +16,7 @@ import {
   type ShimAssignmentRow,
   type ShimState,
   DRAIN_TIMEOUT_SECONDS_DEFAULT,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 import {
   SHIM_CLASSES,

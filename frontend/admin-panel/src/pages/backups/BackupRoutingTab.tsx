@@ -25,7 +25,7 @@
 import { useState } from 'react';
 import { Cloud, Loader2, Power, PowerOff, AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { BackupShimClass } from '@k8s-hosting/api-contracts';
+import type { BackupShimClass } from '@insula/api-contracts';
 import {
   useShimAssignments,
   usePutShimAssignment,

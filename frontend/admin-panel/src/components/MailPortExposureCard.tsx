@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Network, AlertTriangle, Loader2, Check, Info } from 'lucide-react';
 import { useMailPortExposure, useUpdateMailPortExposure } from '@/hooks/use-mail-port-exposure';
 import MailTaskProgressModal from '@/components/MailTaskProgressModal';
-import type { MailPortExposureMode } from '@k8s-hosting/api-contracts';
+import type { MailPortExposureMode } from '@insula/api-contracts';
 
 // Mode catalogue. The descriptions are the ONLY place an operator
 // reads how each mode actually exposes traffic — keep them concrete

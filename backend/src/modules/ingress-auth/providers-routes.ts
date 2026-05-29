@@ -18,7 +18,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { oidcProviderInputSchema } from '@k8s-hosting/api-contracts';
+import { oidcProviderInputSchema } from '@insula/api-contracts';
 import {
   listProviders,
   getProvider,

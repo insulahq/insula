@@ -29,7 +29,7 @@ const configSchema = z.object({
   // platform-dev-tls, prod: platform-tls).
   PLATFORM_TLS_SECRET_NAME: z.string().optional(),
   PLATFORM_NAMESPACE: z.string().default('platform'),
-  FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/hosting-platform/file-manager:latest'),
+  FILE_MANAGER_IMAGE: z.string().default('ghcr.io/insulahq/insula/file-manager:latest'),
   // Private Worker — overlay-supplied. TUNNEL_BASE_URL is the public WSS
   // dial-in (e.g. wss://tunnels.staging.phoenix-host.net). The agent token
   // blob's server_url field is built from this. The frps image is the
@@ -39,7 +39,7 @@ const configSchema = z.object({
   PRIVATE_WORKER_FRPS_IMAGE: z.string().default('fatedier/frps:v0.62.1'),
   PRIVATE_WORKER_AGENT_IMAGE: z
     .string()
-    .default('ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest'),
+    .default('ghcr.io/insulahq/insula/private-worker-agent:latest'),
   // Storage-lifecycle snapshot store. Dev default = hostPath; prod
   // operators would swap to s3 + credentials via the STORAGE_SNAPSHOT_*
   // prefix. STORAGE_SNAPSHOT_HOST_ROOT is the path ON THE NODE the

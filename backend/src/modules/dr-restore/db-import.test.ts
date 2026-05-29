@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { importDrRows, DrImportError, probeClusterState } from './db-import.js';
-import { DR_BUNDLE_VERSION, type DrInputs, type DrRows } from '@k8s-hosting/api-contracts';
+import { DR_BUNDLE_VERSION, type DrInputs, type DrRows } from '@insula/api-contracts';
 
 // ─── Mock DB ─────────────────────────────────────────────────────────
 //

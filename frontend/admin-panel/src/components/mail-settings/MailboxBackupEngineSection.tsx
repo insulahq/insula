@@ -4,7 +4,7 @@ import {
   useMailboxBackupSettings,
   useUpdateMailboxBackupSettings,
 } from '@/hooks/use-mailbox-backup-settings';
-import type { MailboxBackupEngineValue } from '@k8s-hosting/api-contracts';
+import type { MailboxBackupEngineValue } from '@insula/api-contracts';
 
 const ENGINES: { value: MailboxBackupEngineValue; label: string; tagline: string }[] = [
   {

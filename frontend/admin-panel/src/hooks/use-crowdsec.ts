@@ -34,7 +34,7 @@ import type {
   CrowdsecListDecisionsResponse,
   CrowdsecRemoveAllowlistResponse,
   CrowdsecStatus,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface Envelope<T> { readonly data: T; }
 

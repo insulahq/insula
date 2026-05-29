@@ -118,11 +118,11 @@ export function useUpdateEmailDomain(tenantId: string) {
 // `useDisableEmailDomain(tenantId)` invalidates email-domains,
 // mailboxes, mailbox-usage, and email-aliases on success.
 //
-// Review HIGH-5: type imported from @k8s-hosting/api-contracts —
+// Review HIGH-5: type imported from @insula/api-contracts —
 // the local interface that previously lived here was a duplicate
 // and violated the project's single-source-of-truth rule.
-export type { EmailDomainDisablePreview } from '@k8s-hosting/api-contracts';
-import type { EmailDomainDisablePreview } from '@k8s-hosting/api-contracts';
+export type { EmailDomainDisablePreview } from '@insula/api-contracts';
+import type { EmailDomainDisablePreview } from '@insula/api-contracts';
 
 export function useEmailDomainDisablePreview(
   tenantId: string | undefined,
@@ -403,7 +403,7 @@ export interface ImapSyncJob {
   readonly errorMessage: string | null;
   // Round-4 Phase 3: progress tracking columns. Reconciler updates
   // these on every tick while a job is running. Required-nullable
-  // to match @k8s-hosting/api-contracts (review HIGH-1 fix).
+  // to match @insula/api-contracts (review HIGH-1 fix).
   readonly messagesTotal: number | null;
   readonly messagesTransferred: number | null;
   readonly currentFolder: string | null;

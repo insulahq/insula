@@ -81,7 +81,7 @@ const mlog = mailLogger().child({ module: 'mailboxes-by-address-restore' });
 import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface Selector {
   kind: 'all' | 'addresses';
@@ -108,7 +108,7 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 // `mail/mail-secrets.STALWART_MASTER_USER`.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/mail-backup-tools:latest';
 const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
 // Parallelism for Blob/upload from a single jmap-restore.py invocation.

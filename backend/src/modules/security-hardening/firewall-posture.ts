@@ -12,7 +12,7 @@ import {
   type PublicPortsPerNode,
   type DeniedCountWindow,
   type FirewallMode,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const CRD_GROUP = 'networking.platform.phoenix-host.net';
 const CRD_VERSION = 'v1alpha1';

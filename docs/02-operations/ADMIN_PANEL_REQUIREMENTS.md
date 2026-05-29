@@ -449,7 +449,7 @@ See also: `WORKLOAD_DEPLOYMENT.md` (catalog repo structure), `DATABASE_SCHEMA.md
 | `POST` | `/api/v1/admin/workload-repos` | Register a new catalog repo (`name`, `url`, `branch`, `auth_token`, `sync_interval_minutes`); validates repo access and `catalog.json` presence |
 | `DELETE` | `/api/v1/admin/workload-repos/{id}` | Remove a catalog repo and its synced container images |
 | `POST` | `/api/v1/admin/workload-repos/{id}/sync` | Trigger manual sync — fetches `catalog.json`, then each workload's `manifest.json`, upserts `container_images` |
-| `POST` | `/api/v1/admin/workload-repos/restore-default` | Restore the official default catalog repo (`https://github.com/phoenixtechnam/hosting-platform-workload-catalog`) |
+| `POST` | `/api/v1/admin/workload-repos/restore-default` | (deprecated) Restore a default catalog repo — no built-in default is pre-registered |
 
 ### W.1 Container Image Management
 

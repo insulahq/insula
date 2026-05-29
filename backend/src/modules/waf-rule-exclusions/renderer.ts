@@ -24,7 +24,7 @@
  * this invariant on the generated conf string as well as on YAML.
  */
 
-import type { WafRuleExclusion } from '@k8s-hosting/api-contracts';
+import type { WafRuleExclusion } from '@insula/api-contracts';
 
 export const DYNAMIC_RULE_ID_BASE = 9_001_000;
 export const DYNAMIC_RULE_ID_MAX = 9_001_999;

@@ -7,7 +7,7 @@ import type {
   SftpUserResponse,
   SftpConnectionInfo,
   SftpAuditLogEntry,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export type SftpUser = SftpUserResponse & {
   linkedSshKeys?: Array<{ id: string; name: string }>;

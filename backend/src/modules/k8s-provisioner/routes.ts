@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { triggerProvisionSchema } from '@k8s-hosting/api-contracts';
+import { triggerProvisionSchema } from '@insula/api-contracts';
 import { tenants, provisioningTasks } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';

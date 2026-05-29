@@ -34,7 +34,7 @@ import type {
   MailBackupListResponse,
   MailBackupSnapshot,
   MailBackupRestoreResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
 const LIST_JOB_PREFIX = 'mail-backup-list-';
@@ -169,7 +169,7 @@ function buildListJob(name: string): Record<string, unknown> {
           containers: [
             {
               name: 'list',
-              image: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
+              image: 'ghcr.io/insulahq/insula/mail-backup-tools:latest',
               imagePullPolicy: 'IfNotPresent',
               // restic snapshots --json prints a JSON array to stdout, one
               // entry per snapshot. --no-cache to avoid touching /root in

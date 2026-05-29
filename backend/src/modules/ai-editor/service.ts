@@ -4,7 +4,7 @@ import type { Database } from '../../db/index.js';
 import { aiProviders, aiModels, aiTokenUsage, tenants, hostingPlans } from '../../db/schema.js';
 import { createProviderAdapter, type LlmMessage, type LlmResponse } from './providers/index.js';
 import { scanOutput } from './output-scanner.js';
-import type { AiProviderType } from '@k8s-hosting/api-contracts';
+import type { AiProviderType } from '@insula/api-contracts';
 
 // ─── Token Budget ──────────────────────────────────────────────────────────
 

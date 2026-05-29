@@ -189,7 +189,7 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
     if (actor?.sub) {
       try {
         const { start: startTask } = await import('../tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         await startTask(app.db, {
           kind: 'postgres.pitr',
           refId: job.jobName,

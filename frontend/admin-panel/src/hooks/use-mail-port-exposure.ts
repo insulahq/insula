@@ -5,7 +5,7 @@ import type {
   MailPortExposureResponse,
   MailPortExposureUpdate,
   MailPortExposureUpdateResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface PortExposureEnvelope {
   readonly data: MailPortExposureResponse;

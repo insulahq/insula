@@ -23,7 +23,7 @@ import {
   type CreateTrustedRangeRequest,
   type UpdateTrustedRangeRequest,
   trustedRangeSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   loadClusterNetworkClients,
   type ClusterNetworkClients,

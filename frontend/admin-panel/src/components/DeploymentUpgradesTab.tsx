@@ -32,7 +32,7 @@ import {
   useSetAutoUpgrade,
   type BulkUpgradeResult,
 } from '@/hooks/use-deployment-upgrades';
-import type { AdminUpgradesGroup, AdminUpgradesDeployment } from '@k8s-hosting/api-contracts';
+import type { AdminUpgradesGroup, AdminUpgradesDeployment } from '@insula/api-contracts';
 import StatusBadge from './ui/StatusBadge';
 
 type FilterMode = 'all' | 'upgradeable' | 'stale' | 'strict';

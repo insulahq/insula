@@ -11,7 +11,7 @@ import { eq, and } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { deploymentNetworkAccessInputSchema } from '@k8s-hosting/api-contracts';
+import { deploymentNetworkAccessInputSchema } from '@insula/api-contracts';
 import { deployments } from '../../db/schema.js';
 import { getConfig, upsertConfig, deleteConfig } from './service.js';
 import { reconcileTenant } from './reconciler.js';

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and, desc, lt, sql, or, ilike } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
-import { createMailboxSchema, updateMailboxSchema, mailboxAccessSchema } from '@k8s-hosting/api-contracts';
+import { createMailboxSchema, updateMailboxSchema, mailboxAccessSchema } from '@insula/api-contracts';
 import { mailboxes, tenants, emailDomains, domains } from '../../db/schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
@@ -281,7 +281,7 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       },
     }, async (request) => {
       const user = request.user as JwtPayload;
-      const { webmailTokenRequestSchema } = await import('@k8s-hosting/api-contracts');
+      const { webmailTokenRequestSchema } = await import('@insula/api-contracts');
       const parsed = webmailTokenRequestSchema.safeParse(request.body);
       if (!parsed.success) {
         const firstError = parsed.error.issues[0];

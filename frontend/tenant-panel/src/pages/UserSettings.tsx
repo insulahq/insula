@@ -5,7 +5,7 @@ import { useChangePassword } from '@/hooks/use-password';
 import { useUpdateProfile } from '@/hooks/use-profile';
 import { usePasskey } from '@/hooks/use-passkey';
 import { ApiError } from '@/lib/api-client';
-import type { PasskeySummary, PasskeyMode } from '@k8s-hosting/api-contracts';
+import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
 import TimezoneSelect from '@/components/TimezoneSelect';
 
 const INPUT_CLASS =

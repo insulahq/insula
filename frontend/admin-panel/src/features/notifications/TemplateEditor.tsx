@@ -21,7 +21,7 @@ import {
 import type {
   NotificationTemplateVariable,
   PreviewNotificationTemplateResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 

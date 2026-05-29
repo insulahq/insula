@@ -102,11 +102,11 @@ The CLI is the canonical path. Two modes:
 
 ```bash
 # A — interactive (password typed, never in shell history)
-sudo /opt/k8s-hosting-platform/scripts/admin-password-reset.sh \
+sudo /opt/insula/scripts/admin-password-reset.sh \
   --email admin@phoenix-host.net
 
 # B — generate a strong random password (printed ONCE)
-sudo /opt/k8s-hosting-platform/scripts/admin-password-reset.sh \
+sudo /opt/insula/scripts/admin-password-reset.sh \
   --email admin@phoenix-host.net --random
 ```
 
@@ -168,7 +168,7 @@ aws s3 cp s3://$BUCKET/secrets/secrets-<latest>.tar.age - | age -d -i ~/k8s-stag
 | Decrypt + list a bundle | `age -d -i ~/k8s-staging/operator-private.key <bundle.tar.age> \| tar -tvf -` |
 | Extract a single Secret YAML | `age -d -i ~/k8s-staging/operator-private.key <bundle.tar.age> \| tar -xf - platform__platform-admin-seed.yaml` |
 | Restore from bundle | `KUBECONFIG=... make secrets-restore BUNDLE=<path> KEY=~/k8s-staging/operator-private.key` |
-| Reset admin password | `sudo /opt/k8s-hosting-platform/scripts/admin-password-reset.sh --email <addr> --random` |
+| Reset admin password | `sudo /opt/insula/scripts/admin-password-reset.sh --email <addr> --random` |
 | Rotate operator key (rare) | `bootstrap.sh --force-rotate-operator-key` (after exporting current bundle) |
 | Force a fresh daily snapshot | `kubectl create job --from=cronjob/platform-secrets-backup -n platform manual-backup-$(date +%s)` |
 

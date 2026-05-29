@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   NodeHealthEntry,
   NodeHealthSeverity,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export type { NodeHealthEntry, NodeHealthSeverity };
 

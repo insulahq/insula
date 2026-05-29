@@ -131,7 +131,7 @@ console.log(`  Seeded default admin user (${adminEmail})`);
 await db.insert(catalogRepositories).values([{
   id: crypto.randomUUID(),
   name: 'Official Catalog',
-  url: 'https://github.com/phoenixtechnam/k8s-application-catalog',
+  url: 'https://github.com/insulahq/application-catalog',
   branch: 'main',
   syncIntervalMinutes: 60,
   status: 'active',

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { IngressSettingsResponse } from '@k8s-hosting/api-contracts';
+import type { IngressSettingsResponse } from '@insula/api-contracts';
 
 interface IngressSettingsWrapped {
   readonly data: IngressSettingsResponse;

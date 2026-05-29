@@ -133,7 +133,7 @@ export async function bulkUpdateTenantStatus(
       const pct = total === 0 ? 100 : Math.round((done / total) * 100);
       try {
         const { progress } = await import('../tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         await progress(db, parentTaskId, {
           pct,
           text: toSafeText(`${done}/${total} processed`),
@@ -228,7 +228,7 @@ export async function bulkDeleteTenants(
       const pct = total === 0 ? 100 : Math.round((done / total) * 100);
       try {
         const { progress } = await import('../tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         await progress(db, parentTaskId, {
           pct,
           text: toSafeText(`${done}/${total} processed`),
@@ -257,7 +257,7 @@ async function createBulkParentTask(
   if (!userId) return null;
   try {
     const { start: startTask } = await import('../tasks/service.js');
-    const { toSafeText } = await import('@k8s-hosting/api-contracts');
+    const { toSafeText } = await import('@insula/api-contracts');
     const action: 'suspend' | 'reactivate' | 'delete' =
       kind === 'tenant.suspend.bulk' ? 'suspend'
       : kind === 'tenant.reactivate.bulk' ? 'reactivate'
@@ -292,7 +292,7 @@ async function finalizeBulkParentTask(
 ): Promise<void> {
   try {
     const { finish } = await import('../tasks/service.js');
-    const { toSafeText } = await import('@k8s-hosting/api-contracts');
+    const { toSafeText } = await import('@insula/api-contracts');
     const total = succeededCount + failedCount;
     const status: 'succeeded' | 'failed' =
       failedCount === 0 ? 'succeeded'

@@ -44,12 +44,12 @@ patches:
       name: system-db
 
 images:
-  - name: ghcr.io/phoenixtechnam/hosting-platform/backend
+  - name: ghcr.io/insulahq/insula/backend
     newName: hosting-platform/backend
     newTag: local
-  - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
+  - name: ghcr.io/insulahq/insula/admin-panel
     newName: hosting-platform/admin-panel
     newTag: local
-  - name: ghcr.io/phoenixtechnam/hosting-platform/tenant-panel
+  - name: ghcr.io/insulahq/insula/tenant-panel
     newName: hosting-platform/tenant-panel
     newTag: local

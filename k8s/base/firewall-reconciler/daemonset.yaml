@@ -53,7 +53,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
         - name: reconciler
-          image: ghcr.io/phoenixtechnam/hosting-platform/firewall-reconciler:latest # {"$imagepolicy": "flux-system:firewall-reconciler"}
+          image: ghcr.io/insulahq/insula/firewall-reconciler:latest # {"$imagepolicy": "flux-system:firewall-reconciler"}
           # Always pull on pod start because the manifest pins :latest;
           # kubelet's IfNotPresent cache otherwise sticks at the first-
           # ever image SHA forever. The deploy-rev annotation in the

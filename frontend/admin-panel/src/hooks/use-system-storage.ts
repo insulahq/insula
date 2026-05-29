@@ -4,7 +4,7 @@ import type {
   SystemPvcStorageResponse,
   SystemPvcResizeRequest,
   SystemPvcResizeResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface StorageEnvelope {
   readonly data: SystemPvcStorageResponse;

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { updateStorageSettingsSchema } from '@k8s-hosting/api-contracts';
+import { updateStorageSettingsSchema } from '@insula/api-contracts';
 import * as service from './service.js';
 
 export async function storageSettingsRoutes(app: FastifyInstance): Promise<void> {

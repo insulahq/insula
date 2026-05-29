@@ -13,7 +13,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 
 # Build backend
 COPY backend/package.json backend/tsconfig.json ./
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
+RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:./packages/api-contracts"|' package.json
 # Fix tsconfig reference path for Docker flat layout
 RUN sed -i 's|\.\./packages/api-contracts|./packages/api-contracts|' tsconfig.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
@@ -60,7 +60,7 @@ WORKDIR /app
 
 COPY --from=builder /app/packages/api-contracts/ ./packages/api-contracts/
 COPY backend/package.json ./
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
+RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
 

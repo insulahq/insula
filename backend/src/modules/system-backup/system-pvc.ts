@@ -18,7 +18,7 @@ import {
   type SystemPvcResizeResponse,
   systemPvcStorageResponseSchema,
   systemPvcResizeResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const SYSTEM_NAMESPACE = 'platform';
 // Cluster renamed 2026-05-07 from `postgres` → `system-db`. CNPG-managed

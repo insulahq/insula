@@ -144,9 +144,9 @@ patches:
                 effect: NoSchedule
 
 images:
-  - name: ghcr.io/phoenixtechnam/hosting-platform/backend
+  - name: ghcr.io/insulahq/insula/backend
     newTag: "20260529115021-dc7af82" # {"$imagepolicy": "flux-system:backend:tag"}
-  - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
+  - name: ghcr.io/insulahq/insula/admin-panel
     newTag: "20260529115018-dc7af82" # {"$imagepolicy": "flux-system:admin-panel:tag"}
-  - name: ghcr.io/phoenixtechnam/hosting-platform/tenant-panel
+  - name: ghcr.io/insulahq/insula/tenant-panel
     newTag: "20260529115017-dc7af82" # {"$imagepolicy": "flux-system:tenant-panel:tag"}

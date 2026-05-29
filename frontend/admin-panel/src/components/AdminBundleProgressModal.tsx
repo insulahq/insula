@@ -13,7 +13,7 @@
  * operator can find the result on the bell.
  *
  * Mirrors the tenant-panel BundleProgressModal — types shared via
- * @k8s-hosting/ui-restore-cart so both panels render the same shape.
+ * @insula/ui-restore-cart so both panels render the same shape.
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -25,7 +25,7 @@ import {
   formatBundleBytes,
   type BundleComponent,
   type BundleStatus,
-} from '@k8s-hosting/ui-restore-cart';
+} from '@insula/ui-restore-cart';
 
 interface AdminBundleResponse {
   readonly data: {

@@ -29,7 +29,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { platformStorageApplyRuns } from '../../db/schema.js';
 import { readClusterState } from './service.js';
 import * as tasks from '../tasks/service.js';
-import { toSafeText } from '@k8s-hosting/api-contracts';
+import { toSafeText } from '@insula/api-contracts';
 import type { ApplyPolicyOutcome } from './service.js';
 
 export type RunStatus = 'running' | 'succeeded' | 'partial' | 'failed' | 'capacity_blocked';

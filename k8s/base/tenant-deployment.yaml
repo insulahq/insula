@@ -30,7 +30,7 @@ spec:
               app: tenant-panel
       containers:
         - name: tenant
-          image: ghcr.io/phoenixtechnam/hosting-platform/tenant-panel:latest
+          image: ghcr.io/insulahq/insula/tenant-panel:latest
           ports:
             - containerPort: 80
               protocol: TCP

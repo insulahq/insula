@@ -5,7 +5,7 @@ import { hostingPlans, tenants } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
-import { createPlanSchema, updatePlanSchema } from '@k8s-hosting/api-contracts';
+import { createPlanSchema, updatePlanSchema } from '@insula/api-contracts';
 
 export async function planRoutes(app: FastifyInstance) {
   // GET /api/v1/plans — public, no auth

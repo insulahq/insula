@@ -25,7 +25,7 @@ import { mkdir, rename, rm, stat as fsStat, readdir, readFile, writeFile, unlink
 import { join, dirname, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
-import type { BackupComponentName, BackupMetaV1 } from '@k8s-hosting/api-contracts';
+import type { BackupComponentName, BackupMetaV1 } from '@insula/api-contracts';
 import type {
   BackupStore,
   BundleHandle,

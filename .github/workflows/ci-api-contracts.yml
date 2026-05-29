@@ -24,6 +24,6 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Build (tsc)
-        run: npm run build -w @k8s-hosting/api-contracts
+        run: npm run build -w @insula/api-contracts
       - name: Verify dist was produced
         run: test -f packages/api-contracts/dist/index.d.ts && test -f packages/api-contracts/dist/index.js

@@ -20,7 +20,7 @@ import type {
   AddAllowlistEntryRequest,
   DrDrillRun,
   DrDrillSummary,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // API envelope used by all admin endpoints.
 interface ApiEnv<T> { data: T }

@@ -114,7 +114,7 @@ export async function runTransition(
   if (opts.triggeredByUserId) {
     try {
       const { start: startTask } = await import('../../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       await startTask(db, {
         kind: 'tenant.transition',
         refId: transitionId,
@@ -288,7 +288,7 @@ export async function runTransition(
   if (opts.triggeredByUserId) {
     try {
       const { finishByRef } = await import('../../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       const taskStatus =
         finalState === 'completed' ? 'succeeded'
         : finalState === 'failed_blocking' ? 'failed'

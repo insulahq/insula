@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { HardDrive, Loader2, Trash2, AlertTriangle, CheckCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useStorageOverview, useImageInventory, usePurgeImages } from '@/hooks/use-storage';
-import type { ImageEntry } from '@k8s-hosting/api-contracts';
+import type { ImageEntry } from '@insula/api-contracts';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';

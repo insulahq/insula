@@ -8,7 +8,7 @@ import { Loader2, ArrowUpCircle, AlertTriangle, RotateCcw, Lock, CheckCircle2 } 
 import clsx from 'clsx';
 import { apiFetch } from '@/lib/api-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AvailableUpgradesResponse, DeploymentResponse } from '@k8s-hosting/api-contracts';
+import type { AvailableUpgradesResponse, DeploymentResponse } from '@insula/api-contracts';
 
 interface Props {
   readonly tenantId: string;
