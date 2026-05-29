@@ -6,8 +6,13 @@ vi.mock('../templates/service.js', () => ({ getTemplate: getTemplateMock }));
 const renderTemplateAsyncMock = vi.fn();
 vi.mock('../templates/renderer.js', () => ({ renderTemplateAsync: renderTemplateAsyncMock }));
 
-const getDefaultProviderRowMock = vi.fn();
-vi.mock('../providers/service.js', () => ({ getDefaultProviderRow: getDefaultProviderRowMock }));
+const getProviderForCategoryEmailMock = vi.fn();
+vi.mock('../providers/service.js', () => ({
+  getProviderForCategoryEmail: getProviderForCategoryEmailMock,
+}));
+// Backward-compat alias so existing test cases that referenced the
+// old mock name keep working without churn.
+const getDefaultProviderRowMock = getProviderForCategoryEmailMock;
 
 const sendNotificationEmailMock = vi.fn();
 const workerSendMock = vi.fn();
