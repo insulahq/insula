@@ -6,7 +6,11 @@ vi.mock('../templates/service.js', () => ({ getTemplate: getTemplateMock }));
 const renderTemplateAsyncMock = vi.fn();
 vi.mock('../templates/renderer.js', () => ({ renderTemplateAsync: renderTemplateAsyncMock }));
 
+const getDefaultProviderRowMock = vi.fn();
+vi.mock('../providers/service.js', () => ({ getDefaultProviderRow: getDefaultProviderRowMock }));
+
 const sendNotificationEmailMock = vi.fn();
+const workerSendMock = vi.fn();
 vi.mock('../email-sender.js', () => ({ sendNotificationEmail: sendNotificationEmailMock }));
 
 const enqueueDeliveryMock = vi.fn();
@@ -37,13 +41,12 @@ type DeliveryFields = Partial<{
 function buildDb(opts: {
   delivery?: DeliveryFields;
   user?: { email: string | null } | null;
-  relay?: { id: string; isDefault: number } | null;
 }) {
   const updateCalls: Array<Record<string, unknown>> = [];
   const selectImpl = vi.fn();
 
-  // First select call returns delivery, second returns user, third returns relay.
-  // Use a sequence-aware mock.
+  // Worker now queries: 1) delivery row, 2) user email. The provider
+  // lookup goes through getDefaultProviderRow (separately mocked).
   let selectCount = 0;
   const selectChain = (rows: unknown[]) => ({
     from: () => ({
@@ -57,10 +60,7 @@ function buildDb(opts: {
     if (selectCount === 1) {
       return selectChain(opts.delivery ? [opts.delivery] : []);
     }
-    if (selectCount === 2) {
-      return selectChain(opts.user ? [opts.user] : []);
-    }
-    return selectChain(opts.relay ? [opts.relay] : []);
+    return selectChain(opts.user ? [opts.user] : []);
   });
 
   const updateSet = (vals: Record<string, unknown>) => {
@@ -75,17 +75,33 @@ function buildDb(opts: {
   };
 }
 
+function defaultProvider() {
+  return {
+    id: 'p1', name: 'Test', providerType: 'smtp', scope: 'platform', tenantId: null,
+    channel: 'email', isDefault: true, enabled: true,
+    smtpHost: 'mail.example.test', smtpPort: 587, smtpSecure: false,
+    authUsername: 'user', authPasswordEncrypted: null,
+    fromAddress: 'noreply@example.test', fromName: null, region: null,
+    lastTestedAt: null, lastTestStatus: null, lastTestError: null,
+    createdAt: new Date(), updatedAt: new Date(), createdByUserId: null,
+  };
+}
+
 beforeEach(() => {
   getTemplateMock.mockReset();
   renderTemplateAsyncMock.mockReset();
   sendNotificationEmailMock.mockReset();
+  workerSendMock.mockReset();
   enqueueDeliveryMock.mockReset();
+  getDefaultProviderRowMock.mockReset();
+  // Default: a working provider is always available unless a test overrides.
+  getDefaultProviderRowMock.mockResolvedValue(defaultProvider());
 });
 
 describe('processDelivery', () => {
   it('returns skipped when delivery row not found', async () => {
     const { db } = buildDb({});
-    const r = await processDelivery('d1', { db, encryptionKey: 'KEY' });
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
     expect(r.status).toBe('skipped');
     expect(r.error).toBe('delivery_not_found');
   });
@@ -94,7 +110,7 @@ describe('processDelivery', () => {
     const { db } = buildDb({
       delivery: { id: 'd1', status: 'sent', channel: 'email', attempt: 1, maxAttempts: 6, templateId: 't', userId: 'u', categoryId: 'c', locale: 'en', eventVariables: null },
     });
-    const r = await processDelivery('d1', { db, encryptionKey: 'KEY' });
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
     expect(r.status).toBe('skipped');
     expect(r.error).toBe('terminal_status:sent');
   });
@@ -103,32 +119,32 @@ describe('processDelivery', () => {
     const { db, updateCalls } = buildDb({
       delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: { name: 'a' } },
       user: { email: 'u1@example.com' },
-      relay: { id: 'r1', isDefault: 1 },
+
     });
     getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
     renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
-    sendNotificationEmailMock.mockResolvedValue(undefined);
+    workerSendMock.mockResolvedValue(undefined);
 
-    const r = await processDelivery('d1', { db, encryptionKey: 'KEY' });
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
     expect(r.status).toBe('sent');
     // First update: status='sending'. Second: status='sent', sentAt, attempt=1.
     expect(updateCalls[0]).toMatchObject({ status: 'sending' });
     expect(updateCalls[1]).toMatchObject({ status: 'sent', attempt: 1 });
     expect(updateCalls[1].sentAt).toBeInstanceOf(Date);
-    expect(sendNotificationEmailMock).toHaveBeenCalled();
+    expect(workerSendMock).toHaveBeenCalled();
   });
 
   it('first failure: marks failed + re-enqueues with backoff', async () => {
     const { db, updateCalls } = buildDb({
       delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: { name: 'a' } },
       user: { email: 'u1@example.com' },
-      relay: { id: 'r1', isDefault: 1 },
+
     });
     getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
     renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
-    sendNotificationEmailMock.mockRejectedValue(new Error('SMTP boom'));
+    workerSendMock.mockRejectedValue(new Error('SMTP boom'));
 
-    const r = await processDelivery('d1', { db, encryptionKey: 'KEY' });
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
     expect(r.status).toBe('failed');
     expect(r.error).toBe('SMTP boom');
     // Second update is the failure decision.
@@ -147,13 +163,13 @@ describe('processDelivery', () => {
     const { db, updateCalls } = buildDb({
       delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 5, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: { name: 'a' } },
       user: { email: 'u1@example.com' },
-      relay: { id: 'r1', isDefault: 1 },
+
     });
     getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
     renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
-    sendNotificationEmailMock.mockRejectedValue(new Error('SMTP boom again'));
+    workerSendMock.mockRejectedValue(new Error('SMTP boom again'));
 
-    const r = await processDelivery('d1', { db, encryptionKey: 'KEY' });
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
     expect(r.status).toBe('dlq');
     const failUpdate = updateCalls[1];
     expect(failUpdate.status).toBe('dlq');
@@ -168,7 +184,7 @@ describe('processDelivery', () => {
       delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: null },
     });
     getTemplateMock.mockResolvedValue(null);
-    const r = await processDelivery('d1', { db, encryptionKey: 'KEY' });
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
     expect(r.status).toBe('failed');
     expect(r.error).toBe('template_not_found');
   });
@@ -177,7 +193,7 @@ describe('processDelivery', () => {
     const { db } = buildDb({
       delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: null },
       user: { email: 'u1@example.com' },
-      relay: { id: 'r1', isDefault: 1 },
+
     });
     getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
     renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
@@ -185,5 +201,22 @@ describe('processDelivery', () => {
     const r = await processDelivery('d1', { db });
     expect(r.status).toBe('failed');
     expect(r.error).toBe('platform_encryption_key_missing');
+  });
+
+  it('no default notification provider → failed + enqueued', async () => {
+    // Phase 3B: dispatcher used to look up smtp_relay_configs; now
+    // we use notification_providers. If the operator hasn't configured
+    // one, the worker surfaces a clear error rather than crashing.
+    const { db } = buildDb({
+      delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: null },
+      user: { email: 'u1@example.com' },
+    });
+    getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'plaintext', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
+    renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: 'b' });
+    getDefaultProviderRowMock.mockResolvedValueOnce(null);
+    const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
+    expect(r.status).toBe('failed');
+    expect(r.error).toBe('no_default_notification_provider');
+    expect(workerSendMock).not.toHaveBeenCalled();
   });
 });

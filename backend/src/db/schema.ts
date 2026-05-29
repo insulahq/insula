@@ -136,6 +136,11 @@ export const channelIdEnum = pgEnum('channel_id_enum', ['in_app', 'email']);
 export const notificationGdprBasisEnum = pgEnum('notification_gdpr_basis_enum', [
   'contract', 'legitimate_interest', 'consent',
 ]);
+// Dedicated provider type for the notification system (NOT to be
+// confused with smtp_provider_type which is for tenant outbound mail).
+export const notificationProviderTypeEnum = pgEnum('notification_provider_type', [
+  'stalwart-internal', 'smtp', 'postmark', 'brevo', 'mailjet', 'mailgun-eu',
+]);
 export const upgradeStatusEnum = pgEnum('upgrade_status', [
   'pending', 'backing_up', 'pre_check', 'upgrading', 'health_check',
   'rolling_back', 'completed', 'failed', 'rolled_back',
@@ -1752,6 +1757,40 @@ export const userNotificationSettings = pgTable('user_notification_settings', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
+
+export const notificationProviders = pgTable('notification_providers', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: varchar('name', { length: 255 }).notNull(),
+  providerType: notificationProviderTypeEnum('provider_type').notNull(),
+  scope: varchar('scope', { length: 16 }).notNull().default('platform'),
+  tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'cascade' }),
+  channel: channelIdEnum('channel').notNull().default('email'),
+  isDefault: boolean('is_default').notNull().default(false),
+  enabled: boolean('enabled').notNull().default(true),
+  smtpHost: varchar('smtp_host', { length: 255 }),
+  smtpPort: integer('smtp_port').notNull().default(587),
+  smtpSecure: boolean('smtp_secure').notNull().default(false),
+  authUsername: varchar('auth_username', { length: 255 }),
+  authPasswordEncrypted: varchar('auth_password_encrypted', { length: 500 }),
+  fromAddress: varchar('from_address', { length: 255 }).notNull(),
+  fromName: varchar('from_name', { length: 255 }),
+  region: varchar('region', { length: 50 }),
+  lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
+  lastTestStatus: varchar('last_test_status', { length: 32 }),
+  lastTestError: text('last_test_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  createdByUserId: varchar('created_by_user_id', { length: 36 }),
+}, (table) => [
+  uniqueIndex('notification_providers_default_platform_channel_idx')
+    .on(table.channel)
+    .where(sql`is_default = TRUE AND scope = 'platform'`),
+  uniqueIndex('notification_providers_default_tenant_channel_idx')
+    .on(table.tenantId, table.channel)
+    .where(sql`is_default = TRUE AND scope = 'tenant'`),
+  index('notification_providers_channel_idx').on(table.channel).where(sql`enabled = TRUE`),
+  index('notification_providers_tenant_idx').on(table.tenantId),
+]);
 
 export const notificationRateLimitBuckets = pgTable('notification_rate_limit_buckets', {
   bucketKey: varchar('bucket_key', { length: 255 }).primaryKey(),

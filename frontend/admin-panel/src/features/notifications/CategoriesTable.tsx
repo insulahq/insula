@@ -1,11 +1,12 @@
 /**
- * Notification Categories table — Platform → Notifications → Categories.
+ * Notification Sources table — Platform → Notifications → Sources.
  *
- * Lists every notification-category seeded by the catalog and lets the
- * operator override defaultChannels + rate limit. Mandatory categories
- * render with a lock icon and channel checkboxes are stubbed out (the
- * backend dispatcher would ignore unchecked channels on mandatory
- * messages anyway, but the disabled UI prevents confusion).
+ * Lists every notification source (`notification_categories` row — the
+ * table name stays for backward compatibility; the operator-facing label
+ * is "Source"). Operator can override defaultChannels + rate limit per
+ * source. Mandatory sources render with a lock icon and channel
+ * checkboxes are disabled (the backend dispatcher enforces mandatory
+ * on in_app + email regardless, but the disabled UI prevents confusion).
  *
  * Editing is in a right-drawer panel — same UX shape the operator
  * already knows from the Tenant Lifecycle and WAF Exclusions surfaces.
@@ -74,7 +75,7 @@ export default function CategoriesTable() {
       <section className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
         <div className="border-b border-gray-200 px-4 py-2 dark:border-gray-700">
           <h2 className="text-sm font-medium text-gray-900 dark:text-gray-100">
-            Categories ({list.data?.data.length ?? 0})
+            Sources ({list.data?.data.length ?? 0})
           </h2>
         </div>
         <div className="overflow-x-auto">
@@ -102,7 +103,7 @@ export default function CategoriesTable() {
               {!list.isLoading && (list.data?.data.length ?? 0) === 0 && (
                 <tr>
                   <td colSpan={8} className="px-4 py-3 text-center text-gray-500">
-                    No notification categories defined.
+                    No notification sources defined.
                   </td>
                 </tr>
               )}
@@ -231,7 +232,7 @@ function CategoryEditDrawer({ category, onClose }: CategoryEditDrawerProps) {
       <div className="flex h-full w-full max-w-md flex-col overflow-y-auto bg-white dark:bg-gray-800">
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            Edit Category — {category.displayName}
+            Edit Source — {category.displayName}
           </h3>
           <button
             type="button"
