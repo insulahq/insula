@@ -62,7 +62,7 @@ const updateSchema = z.object({
   allowHostPortsWorker: z.boolean().optional(),
   // Node-defaults (migration 0063). Default applied to freshly-joined
   // SERVER nodes that arrive without an explicit
-  // `platform.example.test/host-tenant-workloads` label.
+  // `insula.host/host-tenant-workloads` label.
   newServerHostsTenantWorkloads: z.boolean().optional(),
   // Kubelet image-GC thresholds (migration 0065). high > low, both 0–100,
   // minTtl ≥ 0. Applied on new nodes via bootstrap.sh --kubelet-arg.

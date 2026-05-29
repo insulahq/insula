@@ -42,12 +42,12 @@ export const SYSTEM_NAMESPACES = Object.freeze([
   'monitoring',
 ] as const);
 
-export const NODE_ROLE_LABEL = 'platform.example.test/node-role';
-export const HOST_TENANT_WORKLOADS_LABEL = 'platform.example.test/host-tenant-workloads';
-export const SERVER_ONLY_TAINT_KEY = 'platform.example.test/server-only';
+export const NODE_ROLE_LABEL = 'insula.host/node-role';
+export const HOST_TENANT_WORKLOADS_LABEL = 'insula.host/host-tenant-workloads';
+export const SERVER_ONLY_TAINT_KEY = 'insula.host/server-only';
 // M-NS-1: ingress-mode label. The ingress-nginx DaemonSet's
 // nodeSelector excludes nodes carrying `ingress-mode=none`.
-export const INGRESS_MODE_LABEL = 'platform.example.test/ingress-mode';
+export const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
 
 export async function listNodes(db: Database): Promise<ClusterNode[]> {
   return db.select().from(clusterNodes).orderBy(desc(clusterNodes.role), clusterNodes.name);
@@ -624,7 +624,7 @@ export async function buildDrainImpact(
       name: podName,
       nodeName: raw.spec?.nodeName,
       ownerKind: isMirror ? 'Node' : ownerKind,
-      tenantId: raw.metadata?.labels?.['platform.example.test/tenant-id'] ?? null,
+      tenantId: raw.metadata?.labels?.['insula.host/tenant-id'] ?? null,
       hasNodeAffinityToThisNode: detectNodePin(raw.spec, name) !== null,
     };
     const verdict = isUnevictable(lite, name);

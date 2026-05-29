@@ -354,7 +354,7 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
         <div className="flex-1">
           <div className="font-medium">Deliverability probes skipped</div>
           <div className="text-xs mt-1">
-            {d.forwardDns?.remediation ?? 'Configure mail hostname under Email Management → Webmail Settings and ensure the cluster has server-role nodes labelled with platform.example.test/node-role=server.'}
+            {d.forwardDns?.remediation ?? 'Configure mail hostname under Email Management → Webmail Settings and ensure the cluster has server-role nodes labelled with insula.host/node-role=server.'}
           </div>
         </div>
       </div>

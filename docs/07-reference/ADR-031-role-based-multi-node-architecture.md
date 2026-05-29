@@ -44,7 +44,7 @@ on the same day this decision was accepted.
 ### 1. Role-based node taxonomy, two roles
 
 Every node carries one of two platform roles, stamped as the k8s label
-`platform.example.test/node-role`:
+`insula.host/node-role`:
 
 | Role     | Runs                                                     | Default count        |
 |----------|----------------------------------------------------------|----------------------|
@@ -75,14 +75,14 @@ node belong to."
 ### 2. `canHostClientWorkloads` opt-in on servers
 
 A server node can additionally register itself as tenant-capable by
-setting `platform.example.test/host-client-workloads=true`. This is
+setting `insula.host/host-client-workloads=true`. This is
 the "small cluster economy" escape hatch — a single-server install
 works today exactly because the staging node was manually relabeled
 with `host-client-workloads=true` on 2026-04-24.
 
 When a server opts OUT of tenant workloads
 (`host-client-workloads=false`, the default), the node gets the taint
-`platform.example.test/server-only=true:NoSchedule`. Every system
+`insula.host/server-only=true:NoSchedule`. Every system
 Deployment gets a matching toleration; tenant workloads don't, so they
 can't land. Workers never carry this taint.
 

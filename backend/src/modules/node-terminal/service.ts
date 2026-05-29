@@ -912,7 +912,7 @@ export async function sweepOrphanPods(
   let deleted = 0;
   for (const pod of list.items) {
     const name = pod.metadata?.name;
-    const sessionId = pod.metadata?.labels?.['platform.example.test/session-id'];
+    const sessionId = pod.metadata?.labels?.['insula.host/session-id'];
     const createdAt = pod.metadata?.creationTimestamp
       ? new Date(pod.metadata.creationTimestamp).getTime()
       : 0;

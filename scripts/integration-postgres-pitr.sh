@@ -231,10 +231,10 @@ INSTANCES_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec
 
 # Discover temp clusters by label rather than by name (the HTTP
 # response may not have included the name if the request was killed
-# mid-cutover). Any cluster carrying the platform.example.test/
+# mid-cutover). Any cluster carrying the insula.host/
 # pitr-restore label is a temp cluster.
 log "11) Discover + clean any leftover temp PITR clusters"
-LEFTOVER=$($KUBECTL get cluster -n platform -l platform.example.test/pitr-restore=true -o name 2>/dev/null)
+LEFTOVER=$($KUBECTL get cluster -n platform -l insula.host/pitr-restore=true -o name 2>/dev/null)
 if [[ -n "$LEFTOVER" ]]; then
   warn "leftover temp clusters: $LEFTOVER (cleaning manually — orchestration crash mid-cutover prevented auto-cleanup)"
   for c in $LEFTOVER; do

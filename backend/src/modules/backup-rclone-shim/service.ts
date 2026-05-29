@@ -82,13 +82,13 @@ export const RCLONE_CONF_KEY = 'rclone.conf';
  *  changing it triggers a rolling pod restart. Value is the renderer's
  *  random-IV-influenced `configHash`. */
 export const CONFIG_HASH_ANNOTATION =
-  'platform.example.test/config-hash';
+  'insula.host/config-hash';
 
 /** Annotation on the status ConfigMap. Recorded value is the deterministic
  *  `inputHash` (NOT the random-IV configHash) so external pollers can
  *  detect "did the inputs change?" without re-rendering. */
 export const INPUT_HASH_ANNOTATION =
-  'platform.example.test/input-hash';
+  'insula.host/input-hash';
 
 /** Identity recorded on every reconciler-managed resource so subsequent
  *  reconciler runs can identify what they own and Flux drift detection

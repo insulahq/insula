@@ -40,7 +40,7 @@ resources:
   - webmail-ingress.yaml
 
 # M1: pin all system workloads to nodes labelled
-# platform.example.test/node-role=server. Operators MUST have
+# insula.host/node-role=server. Operators MUST have
 # relabeled every control-plane node before this overlay reconciles
 # or the scheduler evicts every platform pod. See
 # docs/07-reference/NODE_ROLE_TAXONOMY.md.

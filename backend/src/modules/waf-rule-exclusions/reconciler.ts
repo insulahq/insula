@@ -27,7 +27,7 @@ export const WAF_EXCLUSION_CM_NAME = 'modsec-crs-exclusions-dynamic';
 export const WAF_EXCLUSION_CM_NAMESPACE = 'traefik';
 export const WAF_EXCLUSION_CM_KEY = 'REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf';
 export const WAF_EXCLUSION_HASH_ANNOTATION =
-  'platform.example.test/waf-exclusion-hash';
+  'insula.host/waf-exclusion-hash';
 export const WAF_EXCLUSION_FIELD_MANAGER = 'platform-api-waf-rule-exclusions';
 export const MODSEC_DEPLOY_NAME = 'modsec-crs';
 

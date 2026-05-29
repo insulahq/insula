@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/component: webmail
   annotations:
     # 2026-05-18: Flux SSA merge mode lets platform-api stamp
-    # spec.template.metadata.annotations[platform.example.test/feature-css-hash]
+    # spec.template.metadata.annotations[insula.host/feature-css-hash]
     # (set by webmail-feature-css reconciler) without Flux reverting
     # it on the next sync. Without this annotation Flux would
     # overwrite the pod-template annotation every ~60s, preventing

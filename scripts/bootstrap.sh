@@ -426,14 +426,14 @@ OPTIONS:
                          Workers: defaults true (workers exist to run
                          tenants).
                          Servers: when UNSET (default), bootstrap leaves
-                         the platform.example.test/host-tenant-
+                         the insula.host/host-tenant-
                          workloads label unset and platform-api's
                          k8s-sync reconciler stamps the label according
                          to the admin Setting "New SERVER nodes host
                          tenant workloads by default" (defaults ON).
                          When set explicitly to `false` on a server,
                          bootstrap stamps the label = false AND applies
-                         the platform.example.test/server-only:
+                         the insula.host/server-only:
                          NoSchedule taint so only system pods (Flux,
                          platform-api, etc.) land here — this is the
                          classic dedicated-control-plane setup.
@@ -881,7 +881,7 @@ parse_args() {
   #
   # Servers: leave UNSET when the operator didn't pass an explicit
   # --host-tenant-workloads. apply_node_labels_and_taints will then
-  # skip stamping the platform.example.test/host-tenant-workloads
+  # skip stamping the insula.host/host-tenant-workloads
   # label and the server-only NoSchedule taint, leaving the node
   # unlabelled for platform-api's k8s-sync reconciler. That
   # reconciler (backend/src/modules/nodes/k8s-sync.ts) reads the
@@ -1864,7 +1864,7 @@ seed_cluster_trusted_range_crs() {
   if [[ ${#ALLOW_SOURCE_LIST_V4[@]} -eq 0 && ${#ALLOW_SOURCE_LIST_V6[@]} -eq 0 ]]; then
     return 0
   fi
-  if ! kctl get crd clustertrustedranges.networking.platform.example.test &>/dev/null; then
+  if ! kctl get crd clustertrustedranges.networking.insula.host &>/dev/null; then
     log "ClusterTrustedRange CRD not yet applied — skipping CR seed; re-run bootstrap.sh after Flux finishes to pick up."
     return 0
   fi
@@ -1880,12 +1880,12 @@ seed_cluster_trusted_range_crs() {
     name="bootstrap-seed-$(printf '%02d' $idx)"
     idx=$((idx + 1))
     kctl apply -f - <<CR | grep -v "unchanged" || true
-apiVersion: networking.platform.example.test/v1alpha1
+apiVersion: networking.insula.host/v1alpha1
 kind: ClusterTrustedRange
 metadata:
   name: ${name}
   labels:
-    platform.example.test/seed: bootstrap
+    insula.host/seed: bootstrap
 spec:
   cidr: ${entry}
   description: bootstrap.sh --allow-source seed (rename via admin UI to take ownership)
@@ -1923,7 +1923,7 @@ seed_cluster_pending_peer_crs() {
   if [[ ${#PRE_ENROLL_PEERS_V4[@]} -eq 0 && ${#PRE_ENROLL_PEERS_V6[@]} -eq 0 ]]; then
     return 0
   fi
-  if ! kctl get crd clusterpendingpeers.networking.platform.example.test &>/dev/null; then
+  if ! kctl get crd clusterpendingpeers.networking.insula.host &>/dev/null; then
     log "ClusterPendingPeer CRD not yet applied — skipping CR seed; re-run bootstrap.sh after Flux finishes to pick up."
     return 0
   fi
@@ -1947,12 +1947,12 @@ seed_cluster_pending_peer_crs() {
     # operator a full day; the reconciler's sweeper deletes the CR
     # automatically once the corresponding Node appears in kube-API.
     kctl apply -f - <<CR | grep -v "unchanged" || true
-apiVersion: networking.platform.example.test/v1alpha1
+apiVersion: networking.insula.host/v1alpha1
 kind: ClusterPendingPeer
 metadata:
   name: ${name}
   labels:
-    platform.example.test/seed: bootstrap
+    insula.host/seed: bootstrap
 spec:
   ip: ${entry}
   role: server
@@ -2022,7 +2022,7 @@ verify_underlay() {
 # ─── Phase 2: k3s + Calico ───────────────────────────────────────────────────
 
 # M1 C5: pin Helm-managed system components to nodes labelled
-# platform.example.test/node-role=server and add a toleration for
+# insula.host/node-role=server and add a toleration for
 # the server-only taint. The Kustomize system-node-affinity component
 # handles base/overlay manifests; this function covers the Helm
 # installs (flux-system, cert-manager, sealed-secrets) and adds the
@@ -2057,9 +2057,9 @@ pin_system_components_to_servers() {
   # admin/client/postgres/redis pods on staging, leaving staging at
   # ~52% RAM while staging2/3 sat near idle.
   local server_patch
-  server_patch='{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"platform.example.test/node-role","operator":"In","values":["server"]}]}]}}},"tolerations":[{"key":"platform.example.test/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
+  server_patch='{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"insula.host/node-role","operator":"In","values":["server"]}]}]}}},"tolerations":[{"key":"insula.host/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
   local toleration_only_patch
-  toleration_only_patch='{"spec":{"template":{"spec":{"tolerations":[{"key":"platform.example.test/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
+  toleration_only_patch='{"spec":{"template":{"spec":{"tolerations":[{"key":"insula.host/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
 
   # Apply a topology spread constraint to a Deployment by pod label.
   # Args: namespace, deployment-name, label-key, label-value
@@ -2157,7 +2157,7 @@ pin_system_components_to_servers() {
   if kubectl get deploy coredns -n kube-system &>/dev/null 2>&1; then
     local desired=2
     local nodes
-    nodes=$(kubectl get nodes -l platform.example.test/node-role=server --no-headers 2>/dev/null | wc -l)
+    nodes=$(kubectl get nodes -l insula.host/node-role=server --no-headers 2>/dev/null | wc -l)
     if [[ "$nodes" -ge 3 ]]; then desired=3; fi
     log "Scaling CoreDNS to ${desired} replicas + topology spread."
     kubectl scale deployment/coredns -n kube-system --replicas="$desired" 2>/dev/null || true
@@ -2191,7 +2191,7 @@ pin_system_components_to_servers() {
   if [[ -z "$K3S_SERVER_IP" ]] && kubectl get deploy platform-api -n platform &>/dev/null 2>&1; then
     local api_desired=2
     local server_count
-    server_count=$(kubectl get nodes -l platform.example.test/node-role=server --no-headers 2>/dev/null | wc -l)
+    server_count=$(kubectl get nodes -l insula.host/node-role=server --no-headers 2>/dev/null | wc -l)
     if [[ "$server_count" -ge 3 ]]; then api_desired=3; fi
     log "Scaling platform-api to ${api_desired} replicas across servers."
     kubectl scale deployment/platform-api -n platform --replicas="$api_desired" 2>/dev/null || true
@@ -2219,8 +2219,8 @@ apply_node_labels_and_taints() {
   if [[ "$NODE_ROLE" == "worker" ]]; then
     log "Worker node labelling must be applied from the control plane."
     log "  After this script completes, run on the server:"
-    log "    kubectl label node ${node_name} platform.example.test/node-role=worker --overwrite"
-    log "    kubectl label node ${node_name} platform.example.test/host-tenant-workloads=${HOST_CLIENT_WORKLOADS} --overwrite"
+    log "    kubectl label node ${node_name} insula.host/node-role=worker --overwrite"
+    log "    kubectl label node ${node_name} insula.host/host-tenant-workloads=${HOST_CLIENT_WORKLOADS} --overwrite"
     log "  (Unlabeled nodes default to worker/true — skipping the above is fine for vanilla workers.)"
     return 0
   fi
@@ -2232,7 +2232,7 @@ apply_node_labels_and_taints() {
   # of truth for distinguishing servers from workers and is consumed by
   # affinity rules across the platform. Idempotent via --overwrite.
   kubectl label node "${node_name}" \
-    "platform.example.test/node-role=${NODE_ROLE}" \
+    "insula.host/node-role=${NODE_ROLE}" \
     --overwrite
 
   # host-tenant-workloads label + server-only taint: stamp ONLY when
@@ -2249,17 +2249,17 @@ apply_node_labels_and_taints() {
   else
     log "Labelling ${node_name}: role=${NODE_ROLE}, host-tenant-workloads=${HOST_CLIENT_WORKLOADS} (explicit --host-tenant-workloads override)"
     kubectl label node "${node_name}" \
-      "platform.example.test/host-tenant-workloads=${HOST_CLIENT_WORKLOADS}" \
+      "insula.host/host-tenant-workloads=${HOST_CLIENT_WORKLOADS}" \
       --overwrite
     if [[ "$HOST_CLIENT_WORKLOADS" == "false" ]]; then
       log "Applying server-only taint (NoSchedule) — tenant pods will not schedule here."
       kubectl taint node "${node_name}" \
-        "platform.example.test/server-only=true:NoSchedule" \
+        "insula.host/server-only=true:NoSchedule" \
         --overwrite
     else
       log "Removing any server-only taint — this server will accept tenant pods."
       kubectl taint node "${node_name}" \
-        "platform.example.test/server-only:NoSchedule-" \
+        "insula.host/server-only:NoSchedule-" \
         2>/dev/null || true
     fi
   fi
@@ -2936,7 +2936,7 @@ install_k3s_worker() {
   # --help text ("workers exist to run tenants"); only an explicit
   # --host-tenant-workloads=false overrides.
   local worker_host_tenant="${HOST_CLIENT_WORKLOADS:-true}"
-  exec_args="${exec_args} --node-label=platform.example.test/node-role=worker --node-label=platform.example.test/host-tenant-workloads=${worker_host_tenant}"
+  exec_args="${exec_args} --node-label=insula.host/node-role=worker --node-label=insula.host/host-tenant-workloads=${worker_host_tenant}"
 
   # Worker installs hit the same peer-firewall gate as joining
   # servers: k3s-agent.service can't reach :6443 on the control
@@ -3397,10 +3397,10 @@ install_traefik() {
     --set resources.requests.cpu=50m \
     --set resources.requests.memory=128Mi \
     --set resources.limits.memory=512Mi \
-    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=platform.example.test/ingress-mode' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=insula.host/ingress-mode' \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=NotIn' \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]=none' \
-    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].key=platform.example.test/exposure' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].key=insula.host/exposure' \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].operator=NotIn' \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].values[0]=private' \
     --wait \
@@ -3645,7 +3645,7 @@ spec:
           ingressClassName: traefik
           # Solver Pods are short-lived Jobs spawned by cert-manager.
           # On clusters where servers carry the platform-managed
-          # platform.example.test/server-only=true:NoSchedule taint
+          # insula.host/server-only=true:NoSchedule taint
           # (single-server installs, or any cluster where workers don't
           # accept system Pods), the solver lacks the required
           # toleration and stays Pending — every Order hangs forever.
@@ -3653,7 +3653,7 @@ spec:
           podTemplate:
             spec:
               tolerations:
-                - key: platform.example.test/server-only
+                - key: insula.host/server-only
                   operator: Equal
                   value: "true"
                   effect: NoSchedule
@@ -3690,7 +3690,7 @@ spec:
           ingressClassName: traefik
           # Solver Pods are short-lived Jobs spawned by cert-manager.
           # On clusters where servers carry the platform-managed
-          # platform.example.test/server-only=true:NoSchedule taint
+          # insula.host/server-only=true:NoSchedule taint
           # (single-server installs, or any cluster where workers don't
           # accept system Pods), the solver lacks the required
           # toleration and stays Pending — every Order hangs forever.
@@ -3698,7 +3698,7 @@ spec:
           podTemplate:
             spec:
               tolerations:
-                - key: platform.example.test/server-only
+                - key: insula.host/server-only
                   operator: Equal
                   value: "true"
                   effect: NoSchedule
@@ -4267,8 +4267,8 @@ generate_platform_secrets() {
       --from-literal=fingerprint="$fingerprint"
 
     kctl annotate secret -n platform backup-target-key \
-      'platform.example.test/role=backup-target-key' \
-      'platform.example.test/restore-tier=tier-1-platform' \
+      'insula.host/role=backup-target-key' \
+      'insula.host/restore-tier=tier-1-platform' \
       --overwrite >/dev/null 2>&1 || true
 
     log "backup-target-key created (fingerprint: ${fingerprint}…). MUST be backed up offline via 'make secrets-fetch'."

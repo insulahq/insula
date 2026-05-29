@@ -498,7 +498,7 @@ async function upsertPerWorkerService(
         'app.kubernetes.io/name': name,
         'app.kubernetes.io/component': 'private-worker',
         'app.kubernetes.io/managed-by': 'platform-api',
-        'platform.example.test/private-worker-service': 'true',
+        'insula.host/private-worker-service': 'true',
       },
     },
     spec: {
@@ -699,8 +699,8 @@ async function upsertExternalNameService(
       namespace: PLATFORM_SYSTEM_NAMESPACE,
       labels: {
         'app.kubernetes.io/managed-by': 'platform-api',
-        'platform.example.test/private-worker-tunnel': 'true',
-        'platform.example.test/tenant-namespace': tenantNamespace,
+        'insula.host/private-worker-tunnel': 'true',
+        'insula.host/tenant-namespace': tenantNamespace,
       },
     },
     spec: {
@@ -756,8 +756,8 @@ async function upsertTunnelIngress(
     namespace: PLATFORM_SYSTEM_NAMESPACE,
     spec: rateLimitSpec({ average: 5, burst: 5 }),
     labels: {
-      'platform.example.test/private-worker-tunnel': 'true',
-      'platform.example.test/tenant-namespace': tenantNamespace,
+      'insula.host/private-worker-tunnel': 'true',
+      'insula.host/tenant-namespace': tenantNamespace,
     },
   });
   await applyMiddleware(custom, rateLimitMiddleware);
@@ -774,8 +774,8 @@ async function upsertTunnelIngress(
       namespace: PLATFORM_SYSTEM_NAMESPACE,
       labels: {
         'app.kubernetes.io/managed-by': 'platform-api',
-        'platform.example.test/private-worker-tunnel': 'true',
-        'platform.example.test/tenant-namespace': tenantNamespace,
+        'insula.host/private-worker-tunnel': 'true',
+        'insula.host/tenant-namespace': tenantNamespace,
       },
     },
     spec: {
@@ -842,8 +842,8 @@ async function upsertTunnelIngress(
     ],
     tls: { secretName: tlsSecret },
     labels: {
-      'platform.example.test/private-worker-tunnel': 'true',
-      'platform.example.test/tenant-namespace': tenantNamespace,
+      'insula.host/private-worker-tunnel': 'true',
+      'insula.host/tenant-namespace': tenantNamespace,
     },
   });
   await applyIngressRoute(custom, ingressRoute);
@@ -862,7 +862,7 @@ async function reapStaleTunnels(
   // namespace via the labels set during upsert. Without the
   // tenant-namespace scope, one tenant's teardown (activeSlugs=∅) would
   // delete every other tenant's live tunnels.
-  const labelSelector = `platform.example.test/private-worker-tunnel=true,platform.example.test/tenant-namespace=${tenantNamespace}`;
+  const labelSelector = `insula.host/private-worker-tunnel=true,insula.host/tenant-namespace=${tenantNamespace}`;
 
   // ── Services (ExternalName backing the tunnel) ──────────────────
   let services: k8s.V1ServiceList;
@@ -948,7 +948,7 @@ async function reapStalePerWorkerServices(
   try {
     services = (await core.listNamespacedService({
       namespace,
-      labelSelector: 'platform.example.test/private-worker-service=true',
+      labelSelector: 'insula.host/private-worker-service=true',
     } as never)) as k8s.V1ServiceList;
   } catch (err) {
     if (isNotFound(err)) return;

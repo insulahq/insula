@@ -101,10 +101,10 @@ describe('validateModeSwitch', () => {
 
 describe('resolveDataPlaneNodes', () => {
   const allNodes = [
-    node('staging1', { 'platform.example.test/node-role': 'server' }),
-    node('staging2', { 'platform.example.test/node-role': 'server' }),
-    node('staging3', { 'platform.example.test/node-role': 'server' }),
-    node('worker',   { 'platform.example.test/node-role': 'worker' }),
+    node('staging1', { 'insula.host/node-role': 'server' }),
+    node('staging2', { 'insula.host/node-role': 'server' }),
+    node('staging3', { 'insula.host/node-role': 'server' }),
+    node('worker',   { 'insula.host/node-role': 'worker' }),
   ];
 
   const baseSettings: Settings = {
@@ -168,10 +168,10 @@ describe('resolveDataPlaneNodes', () => {
 
 describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + hairpin)', () => {
   const allNodes = [
-    node('staging1', { 'platform.example.test/node-role': 'server' }),
-    node('staging2', { 'platform.example.test/node-role': 'server' }),
-    node('staging3', { 'platform.example.test/node-role': 'server' }),
-    node('worker',   { 'platform.example.test/node-role': 'worker' }),
+    node('staging1', { 'insula.host/node-role': 'server' }),
+    node('staging2', { 'insula.host/node-role': 'server' }),
+    node('staging3', { 'insula.host/node-role': 'server' }),
+    node('worker',   { 'insula.host/node-role': 'worker' }),
   ];
 
   const baseSettings: Settings = {
@@ -242,10 +242,10 @@ describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + ha
 
 describe('resolveExternalIpNodes (excludes active to prevent kube-proxy DNAT hairpin)', () => {
   const allNodes = [
-    node('staging1', { 'platform.example.test/node-role': 'server' }),
-    node('staging2', { 'platform.example.test/node-role': 'server' }),
-    node('staging3', { 'platform.example.test/node-role': 'server' }),
-    node('worker',   { 'platform.example.test/node-role': 'worker' }),
+    node('staging1', { 'insula.host/node-role': 'server' }),
+    node('staging2', { 'insula.host/node-role': 'server' }),
+    node('staging3', { 'insula.host/node-role': 'server' }),
+    node('worker',   { 'insula.host/node-role': 'worker' }),
   ];
 
   const baseSettings: Settings = {
@@ -330,10 +330,10 @@ describe('reconcileMailHaproxyLabels', () => {
   }
 
   const nodes = [
-    node('staging1', { 'platform.example.test/node-role': 'server' }),
-    node('staging2', { 'platform.example.test/node-role': 'server', 'platform.example.test/mail-haproxy': 'true' }),
-    node('staging3', { 'platform.example.test/node-role': 'server', 'platform.example.test/mail-haproxy': 'true' }),
-    node('worker',   { 'platform.example.test/node-role': 'worker' }),
+    node('staging1', { 'insula.host/node-role': 'server' }),
+    node('staging2', { 'insula.host/node-role': 'server', 'insula.host/mail-haproxy': 'true' }),
+    node('staging3', { 'insula.host/node-role': 'server', 'insula.host/mail-haproxy': 'true' }),
+    node('worker',   { 'insula.host/node-role': 'worker' }),
   ];
 
   it('labels nodes in the data plane set that are NOT yet labelled', async () => {

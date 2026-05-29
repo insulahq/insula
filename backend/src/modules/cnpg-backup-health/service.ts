@@ -2,7 +2,7 @@
  * CNPG (CloudNative-PG) Backup CR health aggregator.
  *
  * Different from the existing `backup-health` module, which watches
- * tenant-side K8s Jobs labelled `platform.example.test/backup-health-watch`.
+ * tenant-side K8s Jobs labelled `insula.host/backup-health-watch`.
  * CNPG `Backup` is a separate Custom Resource managed by the CNPG
  * operator — `apiVersion: postgresql.cnpg.io/v1`, `kind: Backup`. It
  * has its own lifecycle (started → running → completed | failed) and

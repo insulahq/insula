@@ -151,7 +151,7 @@ restart. Manual cleanup of any in-flight privileged Pods:
 
 ```bash
 kubectl -n platform delete pod \
-  -l platform.example.test/node-terminal=true \
+  -l insula.host/node-terminal=true \
   --grace-period=5
 ```
 

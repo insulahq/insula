@@ -14,7 +14,7 @@ import {
   type FirewallMode,
 } from '@insula/api-contracts';
 
-const CRD_GROUP = 'networking.platform.example.test';
+const CRD_GROUP = 'networking.insula.host';
 const CRD_VERSION = 'v1alpha1';
 const CTR_PLURAL = 'clustertrustedranges';
 const CPP_PLURAL = 'clusterpendingpeers';

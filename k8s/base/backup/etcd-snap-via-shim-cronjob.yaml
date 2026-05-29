@@ -33,11 +33,11 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
     app.kubernetes.io/managed-by: platform-api-etcd-cronjob
-    platform.example.test/backup-health-watch: "true"
-    platform.example.test/backup-category: "dr"
-    platform.example.test/backup-severity: "critical"
+    insula.host/backup-health-watch: "true"
+    insula.host/backup-category: "dr"
+    insula.host/backup-severity: "critical"
   annotations:
-    platform.example.test/backup-display-name: "etcd snapshot via shim"
+    insula.host/backup-display-name: "etcd snapshot via shim"
 spec:
   # Reconciler toggles off when SYSTEM target is bound.
   suspend: true

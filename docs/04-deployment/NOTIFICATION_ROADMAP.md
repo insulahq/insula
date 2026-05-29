@@ -13,12 +13,12 @@ refactor and the label-driven backup-health module.
 - `notifications/recipients.ts` — `RecipientScope` discriminated union
   (`admin` / `admin_role` / `client` / `user`) + `resolveRecipients(db, scope)`.
 - `backup-health/` module — discovers Jobs cluster-wide via the
-  `platform.example.test/backup-health-watch=true` label; emits one
+  `insula.host/backup-health-watch=true` label; emits one
   notification per failed Job UID (deduplicated via
   `notifications.resourceId=<uid>`); routes admin or tenant_admin recipients
   per the optional `client-id` label.
 - `longhorn-reconciler.ts` — refactored to discover the suspend-list via
-  `platform.example.test/depends-on=backup-credentials` (replaces the
+  `insula.host/depends-on=backup-credentials` (replaces the
   hardcoded `BACKUP_CRONJOB_NAMES` constant).
 - 6 DR CronJob YAMLs (`k8s/base/backup/*.yaml`) carry both labels.
 - `GET /admin/backup-health` — auth-gated rollup endpoint.

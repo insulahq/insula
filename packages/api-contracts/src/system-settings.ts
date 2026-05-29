@@ -47,7 +47,7 @@ export const updateSystemSettingsSchema = z.object({
   allowHostPortsWorker: z.boolean().optional(),
   // Node-defaults (migration 0063). When TRUE (default), a freshly
   // joined SERVER node that did not carry an explicit
-  // `platform.example.test/host-tenant-workloads` label gets
+  // `insula.host/host-tenant-workloads` label gets
   // labelled to host tenant workloads by the cluster-side
   // reconciler. Operator-set labels (via bootstrap.sh
   // `--host-tenant-workloads`) always win.
