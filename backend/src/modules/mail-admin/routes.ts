@@ -2139,15 +2139,19 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     async () => {
       const { mailboxes, emailDomains } = await import('../../db/schema.js');
       const { sql, isNotNull } = await import('drizzle-orm');
-      const [m] = await app.db.execute(sql`
+      // drizzle's PG adapter returns { rows: [...], rowCount, ... } — not
+      // a bare array. Destructure via .rows; raw destructure fails with
+      // "intermediate value is not iterable" (caught live on staging
+      // 2026-05-28).
+      const mRes = await app.db.execute(sql`
         SELECT COUNT(*)::int AS c FROM ${mailboxes} WHERE ${isNotNull(mailboxes.stalwartPrincipalId)}
-      `) as unknown as Array<{ c: number }>;
-      const [d] = await app.db.execute(sql`
+      `) as { rows?: Array<{ c: number }> };
+      const dRes = await app.db.execute(sql`
         SELECT COUNT(*)::int AS c FROM ${emailDomains} WHERE ${isNotNull(emailDomains.stalwartDomainId)}
-      `) as unknown as Array<{ c: number }>;
+      `) as { rows?: Array<{ c: number }> };
       return {
-        expectedPrincipals: Number(m?.c ?? 0),
-        expectedDomains: Number(d?.c ?? 0),
+        expectedPrincipals: Number(mRes.rows?.[0]?.c ?? 0),
+        expectedDomains: Number(dRes.rows?.[0]?.c ?? 0),
       };
     },
   );
