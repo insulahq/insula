@@ -23,7 +23,7 @@ import { useMailRecoveryStatus, useStartMailRecover } from '@/hooks/use-mail-rec
 import { useMailStandbyReports } from '@/hooks/use-mail-standby-reports';
 import { useQueryClient } from '@tanstack/react-query';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
-import type { NodeCandidate, StandbyReport } from '@k8s-hosting/api-contracts';
+import type { NodeCandidate, StandbyReport } from '@insula/api-contracts';
 
 type DrState = 'healthy' | 'degraded' | 'failing-over' | 'failed-over' | 'failing-back';
 

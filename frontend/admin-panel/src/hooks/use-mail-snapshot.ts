@@ -4,7 +4,7 @@ import type {
   MailSnapshotStatusResponse,
   MailSnapshotTriggerResponse,
   MailSnapshotJobStatusResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface StatusEnvelope {
   readonly data: MailSnapshotStatusResponse;

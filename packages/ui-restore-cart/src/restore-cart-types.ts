@@ -2,7 +2,7 @@
  * Shared types for the Plesk-style restore-cart UI surface.
  *
  * Authoritative DTOs (RestoreItemInfo, RestoreJobDetail, etc.) live
- * in `@k8s-hosting/api-contracts` and are re-exported here so the
+ * in `@insula/api-contracts` and are re-exported here so the
  * UI layer + the backend can never drift. This module ADDS:
  *
  *   - Browse-response shapes (one per picker) that aren't first-class
@@ -20,10 +20,10 @@ import type {
   RestoreJobStatus,
   RestoreItemStatus,
   RestoreItemType,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // Re-exports so panel-side wrappers can `import { RestoreItemInfo }
-// from '@k8s-hosting/ui-restore-cart'` without also importing
+// from '@insula/ui-restore-cart'` without also importing
 // api-contracts directly.
 export type {
   RestoreItemInfo,

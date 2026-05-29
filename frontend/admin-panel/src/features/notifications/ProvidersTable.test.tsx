@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ProvidersTable from './ProvidersTable';
-import type { NotificationProviderResponse } from '@k8s-hosting/api-contracts';
+import type { NotificationProviderResponse } from '@insula/api-contracts';
 
 const listMock = vi.fn();
 const createMutate = vi.fn().mockResolvedValue({ data: {} });

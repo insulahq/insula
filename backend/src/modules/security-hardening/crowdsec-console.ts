@@ -16,7 +16,7 @@ import type * as k8s from '@kubernetes/client-node';
 import type {
   CrowdsecConsoleEnrollRequest,
   CrowdsecConsoleStatus,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { cscliExec, findCrowdsecPodName } from './cscli-exec.js';
 import { createKubeConfig } from '../container-console/service.js';
 

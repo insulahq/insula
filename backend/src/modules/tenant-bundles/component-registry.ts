@@ -15,7 +15,7 @@
  *      endpoint will pick it up automatically.
  */
 
-import type { BackupComponentName } from '@k8s-hosting/api-contracts';
+import type { BackupComponentName } from '@insula/api-contracts';
 
 export interface ComponentOwnership {
   /**

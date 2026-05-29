@@ -16,7 +16,7 @@
  */
 
 import type { Readable } from 'node:stream';
-import type { BackupComponentName, BackupMetaV1 } from '@k8s-hosting/api-contracts';
+import type { BackupComponentName, BackupMetaV1 } from '@insula/api-contracts';
 
 export type { BackupComponentName, BackupMetaV1 };
 

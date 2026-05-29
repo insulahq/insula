@@ -27,7 +27,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/node-terminal
+  IMAGE: ghcr.io/insulahq/insula/node-terminal
 
 jobs:
   build:

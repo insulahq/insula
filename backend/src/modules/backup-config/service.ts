@@ -3,7 +3,7 @@ import { backupConfigurations } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
-import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@k8s-hosting/api-contracts';
+import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@insula/api-contracts';
 import { probeS3 } from './s3-probe.js';
 import { probeSsh } from './ssh-probe.js';
 import { notifyAdminBackupTargetUnreachable } from '../notifications/events.js';

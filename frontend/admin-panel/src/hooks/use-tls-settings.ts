@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { TlsSettingsResponse } from '@k8s-hosting/api-contracts';
+import type { TlsSettingsResponse } from '@insula/api-contracts';
 
 interface TlsSettingsWrapped {
   readonly data: TlsSettingsResponse;

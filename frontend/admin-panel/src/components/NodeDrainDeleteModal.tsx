@@ -11,7 +11,7 @@ import {
   useClusterNodes,
 } from '@/hooks/use-cluster-nodes';
 import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
-import type { ClusterNodeResponse, DrainImpact } from '@k8s-hosting/api-contracts';
+import type { ClusterNodeResponse, DrainImpact } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 

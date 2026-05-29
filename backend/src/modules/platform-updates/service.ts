@@ -7,11 +7,11 @@ import { parseResourceValue } from '../../shared/resource-parser.js';
 // public repos and matches what release.yml publishes on `v*.*.*`
 // tags. We previously hit GHCR's tags/list which requires auth for
 // public images and always returned 401.
-const RELEASES_API = 'https://api.github.com/repos/phoenixtechnam/k8s-hosting-platform/releases/latest';
+const RELEASES_API = 'https://api.github.com/repos/insulahq/insula/releases/latest';
 // Fallback when no releases are published yet (fresh repos). Lists all
 // tags; we pick the newest valid semver. Keeps the UI from showing a
 // permanent "—" just because release.yml hasn't been cut yet.
-const TAGS_API = 'https://api.github.com/repos/phoenixtechnam/k8s-hosting-platform/tags?per_page=20';
+const TAGS_API = 'https://api.github.com/repos/insulahq/insula/tags?per_page=20';
 const FETCH_OPTS = {
   signal: AbortSignal.timeout(10_000),
   headers: { 'Accept': 'application/vnd.github+json' } as const,

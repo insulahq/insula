@@ -4,7 +4,7 @@ import * as k8s from '@kubernetes/client-node';
 import {
   rotateStalwartPasswordResponseSchema,
   type RotateStalwartPasswordResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 // ─── Public API ───────────────────────────────────────────────────────────

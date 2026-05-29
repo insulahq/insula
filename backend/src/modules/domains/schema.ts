@@ -4,4 +4,4 @@ export {
   updateDomainSchema,
   type CreateDomainInput,
   type UpdateDomainInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

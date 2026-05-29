@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { updateStorageSettingsSchema } from '@k8s-hosting/api-contracts';
+import { updateStorageSettingsSchema } from '@insula/api-contracts';
 
 describe('storage-settings defaults', () => {
   it('should have correct default values', () => {

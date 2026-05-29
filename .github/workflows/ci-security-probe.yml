@@ -19,7 +19,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/security-probe
+  IMAGE: ghcr.io/insulahq/insula/security-probe
 
 jobs:
   build:

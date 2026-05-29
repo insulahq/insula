@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { StandbyReportsResponse } from '@k8s-hosting/api-contracts';
+import type { StandbyReportsResponse } from '@insula/api-contracts';
 
 interface StandbyReportsEnvelope {
   readonly data: StandbyReportsResponse;

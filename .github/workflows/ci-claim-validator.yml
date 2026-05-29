@@ -20,7 +20,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/claim-validator
+  IMAGE: ghcr.io/insulahq/insula/claim-validator
 
 jobs:
   build:

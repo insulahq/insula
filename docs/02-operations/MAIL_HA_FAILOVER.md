@@ -540,7 +540,7 @@ authoritative data with the fresh-start state.
 # 1. List snapshots in the restic repo. Run from any Pod that has
 #    the stalwart-snapshot-restic-repo Secret + restic binary.
 kubectl run restic-list --restart=Never --rm -it \
-  --image=ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest \
+  --image=ghcr.io/insulahq/insula/mail-backup-tools:latest \
   --env="$(kubectl get secret stalwart-snapshot-restic-repo -n mail -o json | jq -r '.data | to_entries[] | "\(.key)=\(.value | @base64d)"' | head -1)" \
   --env-from='secretRef:{name: stalwart-snapshot-restic-repo}' \
   --command -- restic snapshots --compact

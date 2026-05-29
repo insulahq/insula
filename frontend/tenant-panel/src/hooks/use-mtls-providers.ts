@@ -11,7 +11,7 @@ import type {
   ListCertificatesResponse,
   RevokeCertificateInput,
   CrlMetadataResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface ApiEnvelope<T> {
   readonly data: T;

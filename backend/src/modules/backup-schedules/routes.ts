@@ -5,7 +5,7 @@ import { ApiError } from '../../shared/errors.js';
 import {
   updateBackupScheduleSchema,
   backupScheduleSubsystemEnum,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as service from './service.js';
 
 function actorIdOf(req: FastifyRequest): string | null {

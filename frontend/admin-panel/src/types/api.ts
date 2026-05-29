@@ -18,12 +18,12 @@ export type {
   ProtectedDirectoryResponse,
   ProtectedDirectoryUserResponse,
   TlsSettingsResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
-export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
+export { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 
 // Generic paginated response for hooks — also from contracts
-export type { PaginationMeta as PaginationInfo } from '@k8s-hosting/api-contracts';
+export type { PaginationMeta as PaginationInfo } from '@insula/api-contracts';
 
 // Re-export deployment type from the new hook
 export type { Deployment } from '@/hooks/use-deployments';

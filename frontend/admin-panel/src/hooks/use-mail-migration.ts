@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   MailMigrationStartRequest,
   MailMigrationStatusResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const TERMINAL_STATES = new Set(['done', 'failed', 'rolled-back']);
 

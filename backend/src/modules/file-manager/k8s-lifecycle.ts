@@ -8,7 +8,7 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { FileManagerStatus } from '@k8s-hosting/api-contracts';
+import type { FileManagerStatus } from '@insula/api-contracts';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 

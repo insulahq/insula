@@ -7,4 +7,4 @@ export {
   type CreateProtectedDirectoryInput,
   type UpdateProtectedDirectoryInput,
   type CreateProtectedDirectoryUserInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

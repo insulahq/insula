@@ -27,7 +27,7 @@ import {
   type MailArchiveScheduleInterval,
   type MailArchiveScheduleUpdate,
   mailArchiveScheduleResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const SETTINGS_ID = 'system';
 

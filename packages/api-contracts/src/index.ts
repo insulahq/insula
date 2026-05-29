@@ -4,7 +4,7 @@
 // Both backend and frontend import from here.
 //
 // Usage:
-//   import { createTenantSchema, type TenantResponse } from '@k8s-hosting/api-contracts';
+//   import { createTenantSchema, type TenantResponse } from '@insula/api-contracts';
 //
 // Rules:
 //   1. ALL API input/output types MUST be defined here

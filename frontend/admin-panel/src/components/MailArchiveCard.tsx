@@ -22,7 +22,7 @@ import type {
   MailArchiveMode,
   MailArchiveRun,
   MailArchiveScheduleInterval,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Email Management → Mail Archive card.

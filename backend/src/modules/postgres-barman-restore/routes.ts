@@ -204,7 +204,7 @@ export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise
     if (actor?.sub) {
       try {
         const { start: startTask } = await import('../tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         await startTask(app.db, {
           kind: 'postgres.barman-promote',
           refId: result!.jobName,

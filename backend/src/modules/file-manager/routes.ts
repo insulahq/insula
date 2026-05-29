@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
-import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@k8s-hosting/api-contracts';
+import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@insula/api-contracts';
 import { tenants } from '../../db/schema.js';
 import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';

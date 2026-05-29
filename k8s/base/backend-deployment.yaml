@@ -33,7 +33,7 @@ spec:
               app: platform-api
       containers:
         - name: api
-          image: ghcr.io/phoenixtechnam/hosting-platform/backend:latest
+          image: ghcr.io/insulahq/insula/backend:latest
           ports:
             - containerPort: 3000
               protocol: TCP

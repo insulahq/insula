@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { Domain, PaginatedResponse } from '@/types/api';
-import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
+import type { DomainDeletePreview } from '@insula/api-contracts';
 
 // Re-export so existing imports from `use-domains.ts` keep working.
 export type { DomainDeletePreview };

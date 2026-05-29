@@ -123,7 +123,7 @@ export interface SubUsersDb {
  * against callers that bypass the route-level Zod parse (e.g.
  * scripts, future internal callers). Changing this set also
  * requires updating `subUserRoleSchema` in
- * `@k8s-hosting/api-contracts` so the HTTP surface stays in sync.
+ * `@insula/api-contracts` so the HTTP surface stays in sync.
  */
 const ALLOWED_SUB_USER_ROLES = ['tenant_admin', 'tenant_user'] as const;
 type AllowedSubUserRole = typeof ALLOWED_SUB_USER_ROLES[number];

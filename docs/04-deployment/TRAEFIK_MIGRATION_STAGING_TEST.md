@@ -71,7 +71,7 @@ ssh root@test-traefik.<your-domain>
 
 apt-get update && apt-get install -y git curl
 
-git clone https://github.com/phoenixtechnam/hosting-platform.git /opt/platform
+git clone https://github.com/insulahq/insula.git /opt/platform
 cd /opt/platform
 git checkout feat/traefik-migration
 

@@ -35,7 +35,7 @@ export {
   composeValidateRequestSchema,
   composeParseResultSchema,
   composeSchemaResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export type {
   CustomDeploymentSpec,
@@ -67,4 +67,4 @@ export type {
   ComposeValidateRequest,
   ComposeParseResult,
   ComposeSchemaResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

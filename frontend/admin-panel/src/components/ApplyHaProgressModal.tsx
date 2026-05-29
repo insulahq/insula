@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, AlertTriangle, Loader2, X, AlertCircle, AlertOctagon } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
-import type { PlatformStorageApplyRun } from '@k8s-hosting/api-contracts';
+import type { PlatformStorageApplyRun } from '@insula/api-contracts';
 
 /**
  * Live progress for an Apply HA / Apply Local run.

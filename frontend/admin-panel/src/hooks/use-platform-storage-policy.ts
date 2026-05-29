@@ -4,7 +4,7 @@ import type {
   GetPlatformStoragePolicyResponse,
   ApplyPlatformStoragePolicyResponse,
   UpdatePlatformStoragePolicyInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export function usePlatformStoragePolicy() {
   return useQuery({

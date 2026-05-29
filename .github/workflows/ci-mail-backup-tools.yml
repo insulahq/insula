@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools
+  IMAGE: ghcr.io/insulahq/insula/mail-backup-tools
 
 jobs:
   build:

@@ -127,7 +127,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: c
-    image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest
+    image: ghcr.io/insulahq/insula/mail-backup-tools:latest
     imagePullPolicy: Always
     command: ["sh","-c","sleep 7200"]
     env:

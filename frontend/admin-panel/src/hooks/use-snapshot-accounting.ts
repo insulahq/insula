@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { SnapshotAccountingResponse } from '@k8s-hosting/api-contracts';
+import type { SnapshotAccountingResponse } from '@insula/api-contracts';
 
 interface ApiEnvelope<T> {
   readonly data: T;

@@ -4,7 +4,7 @@ import { authenticate, requireRole, requirePanel, type JwtPayload } from '../../
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { updatePlatformStoragePolicySchema } from '@k8s-hosting/api-contracts';
+import { updatePlatformStoragePolicySchema } from '@insula/api-contracts';
 import { auditLogs, notifications, users, platformStorageApplyRuns } from '../../db/schema.js';
 import { inArray, eq, and, desc } from 'drizzle-orm';
 import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.js';
@@ -12,7 +12,7 @@ import { readClusterCapacity } from './capacity-reconciler.js';
 import { getClusterFailoverHeadroom } from './failover-headroom.js';
 import { startRun, recordPatchOutcome, watchConvergence, type RunStatus } from './runs.js';
 import * as tasks from '../tasks/service.js';
-import { toSafeText } from '@k8s-hosting/api-contracts';
+import { toSafeText } from '@insula/api-contracts';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);

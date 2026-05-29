@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { k8sNameRegex, createDeploymentSchema } from '@k8s-hosting/api-contracts';
+import { k8sNameRegex, createDeploymentSchema } from '@insula/api-contracts';
 import { computeVolumePaths } from './service.js';
 
 // ─── computeVolumePaths ─────────────────────────────────────────────────────

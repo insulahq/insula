@@ -44,7 +44,7 @@ import {
   type MailHealthTcpComponent,
   type MailHealthTcpPort,
   mailHealthResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { probeDeliverability, type DeliverabilityDeps } from './deliverability.js';
 

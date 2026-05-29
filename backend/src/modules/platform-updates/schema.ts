@@ -2,4 +2,4 @@
 export {
   updateSettingsSchema,
   type UpdateSettings,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

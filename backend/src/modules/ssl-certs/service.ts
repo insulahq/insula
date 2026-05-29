@@ -4,7 +4,7 @@ import { sslCertificates, domains } from '../../db/schema.js';
 import { encrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
-import type { UploadSslCertInput } from '@k8s-hosting/api-contracts';
+import type { UploadSslCertInput } from '@insula/api-contracts';
 
 function parseCertInfo(pem: string): {
   readonly issuer: string;

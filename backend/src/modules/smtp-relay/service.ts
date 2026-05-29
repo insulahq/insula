@@ -3,7 +3,7 @@ import { smtpRelayConfigs } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
-import type { CreateSmtpRelayInput, UpdateSmtpRelayInput } from '@k8s-hosting/api-contracts';
+import type { CreateSmtpRelayInput, UpdateSmtpRelayInput } from '@insula/api-contracts';
 import type { SmtpRelayAdapter } from './adapters/types.js';
 import { DirectAdapter } from './adapters/direct.js';
 import { MailgunAdapter } from './adapters/mailgun.js';

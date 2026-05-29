@@ -47,7 +47,7 @@ import {
   type MailPortExposureResponse,
   type MailPortExposureMode,
   mailPortExposureResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   buildHaproxyDaemonSet,
   HAPROXY_DS_NAME,

@@ -21,7 +21,7 @@ import {
   stepUpPasskeyVerifyRequestSchema,
   type StepUpMethod,
   type StepUpPurpose,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // Required bearer-auth (no cookie fallback). Step-up always operates
 // inside an existing session; if the caller can't present a bearer

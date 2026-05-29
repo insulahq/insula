@@ -42,7 +42,7 @@ import {
   type BackupInitiator,
   type BackupSystemTrigger,
   type BackupComponentName,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   captureFilesComponent,
   FilesComponentSkippedError,
@@ -186,7 +186,7 @@ export async function runBundle(
   if (input.triggeredByUserId) {
     try {
       const { start: startTask } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       await startTask(deps.db, {
         kind: 'backup.bundle',
         refId: bundleId,
@@ -723,7 +723,7 @@ export async function runBundle(
   if (input.triggeredByUserId) {
     try {
       const { finishByRef } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       const failed = errors.length > 0;
       const taskStatus = failed ? 'failed' : 'succeeded';
       // Full message goes to finishByRef (operator can see in
@@ -895,7 +895,7 @@ function addDays(d: Date, days: number): Date {
 async function captureTenantBlock(
   db: Database,
   tenantId: string,
-): Promise<import('@k8s-hosting/api-contracts').BackupMetaTenant> {
+): Promise<import('@insula/api-contracts').BackupMetaTenant> {
   const [c] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!c) throw new Error(`captureTenantBlock: tenant ${tenantId} not found`);
 
@@ -945,7 +945,7 @@ async function captureTenantBlock(
 async function captureDomainsSummary(
   db: Database,
   tenantId: string,
-): Promise<ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary>> {
+): Promise<ReadonlyArray<import('@insula/api-contracts').BackupMetaDomainSummary>> {
   const rows = await db
     .select({ name: domains.domainName, status: domains.status })
     .from(domains)
@@ -956,7 +956,7 @@ async function captureDomainsSummary(
 async function captureDeploymentsSummary(
   db: Database,
   tenantId: string,
-): Promise<ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary>> {
+): Promise<ReadonlyArray<import('@insula/api-contracts').BackupMetaDeploymentSummary>> {
   const rows = await db
     .select({
       name: deployments.name,

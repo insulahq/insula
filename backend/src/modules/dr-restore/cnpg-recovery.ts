@@ -59,7 +59,7 @@ import {
 import { isPostgresRestoreInProgressClusterWide } from '../postgres-restore/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
-import type { CnpgRecoveryPointer } from '@k8s-hosting/api-contracts';
+import type { CnpgRecoveryPointer } from '@insula/api-contracts';
 
 const CNPG_GROUP = 'postgresql.cnpg.io';
 const CNPG_VERSION = 'v1';

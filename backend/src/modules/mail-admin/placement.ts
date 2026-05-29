@@ -33,7 +33,7 @@ import {
   type MailPlacementResponse,
   type NodeCandidate,
   mailPlacementResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const SETTINGS_ID = 'system';
 const MAIL_NAMESPACE = 'mail';

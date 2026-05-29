@@ -11,7 +11,7 @@ import type {
   PutShimAssignmentRequest,
   PutShimAssignmentResponse,
   ShimStatusResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const ASSIGN_KEY = ['backup-rclone-shim', 'assignments'];
 const STATUS_KEY = ['backup-rclone-shim', 'status'];

@@ -8,7 +8,7 @@
  * Critical-severity messages bypass quiet hours — that decision is made
  * by the dispatcher; this helper only reports the window state.
  */
-import type { UserNotificationSettingsResponse } from '@k8s-hosting/api-contracts';
+import type { UserNotificationSettingsResponse } from '@insula/api-contracts';
 
 function parseHM(hm: string): number | null {
   const m = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(hm);

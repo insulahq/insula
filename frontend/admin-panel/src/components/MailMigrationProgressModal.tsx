@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, ArrowRight, CheckCircle, XCircle, Loader2, Ban } from 'lucide-react';
 import { useMailMigrationStatus, useCancelMailMigration } from '@/hooks/use-mail-migration';
-import type { MailMigrationStatusResponse } from '@k8s-hosting/api-contracts';
+import type { MailMigrationStatusResponse } from '@insula/api-contracts';
 
 // Migration step labels — kept in sync with mailMigrationStatusResponseSchema.state
 // in packages/api-contracts/src/mail-placement.ts. Phase 1 streamline (2026-05-15)

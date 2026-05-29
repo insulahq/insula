@@ -73,7 +73,7 @@ import {
   mailArchiveRunSchema,
   mailArchiveStatusResponseSchema,
   toSafeText,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as taskCenter from '../tasks/service.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
@@ -704,7 +704,7 @@ async function createArchiveJob(
 ): Promise<void> {
   const toolsImage =
     process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
+    'ghcr.io/insulahq/insula/mail-backup-tools:latest';
   const stalwartImage =
     process.env[STALWART_IMAGE_ENV] ??
     'docker.io/stalwartlabs/stalwart:v0.16.5';
@@ -898,13 +898,13 @@ async function createArchiveJobNoDowntime(
 ): Promise<void> {
   const toolsImage =
     process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
+    'ghcr.io/insulahq/insula/mail-backup-tools:latest';
   const stalwartImage =
     process.env[STALWART_IMAGE_ENV] ??
     'docker.io/stalwartlabs/stalwart:v0.16.5';
   const rocksdbSecondaryImage =
     process.env[ROCKSDB_SECONDARY_IMAGE_ENV] ??
-    'ghcr.io/phoenixtechnam/hosting-platform/rocksdb-secondary-checkpoint:latest';
+    'ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest';
 
   // Checkpoint dir lives INSIDE the data PVC (same filesystem as the
   // primary's SST files — required for hard-link). Name includes the

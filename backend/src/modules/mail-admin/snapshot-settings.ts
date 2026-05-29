@@ -39,7 +39,7 @@ import {
   type MailSnapshotBackupTargetUpdate,
   mailSnapshotScheduleResponseSchema,
   mailSnapshotBackupTargetResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
 const SNAPSHOT_CRONJOB_NAME = 'stalwart-snapshot';

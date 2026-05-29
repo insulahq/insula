@@ -21,7 +21,7 @@ import {
   Package,
   Snowflake,
 } from 'lucide-react';
-import type { BackupHealthSummary } from '@k8s-hosting/api-contracts';
+import type { BackupHealthSummary } from '@insula/api-contracts';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
 import { useBackupHealth } from '@/hooks/use-backup-health';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
