@@ -155,6 +155,8 @@ jobs:
       - name: Sign image (keyless, OCI 1.1 referrers)
         env:
           DIGEST: ${{ steps.build_push.outputs.digest }}
+          # Newer cosign requires this opt-in for --registry-referrers-mode=oci-1-1
+          COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign sign --yes \
             --registry-referrers-mode=oci-1-1 \
