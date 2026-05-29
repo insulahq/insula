@@ -955,6 +955,44 @@ export async function buildDrainImpact(
   };
 }
 
+/** Minimal shape of a `core.listNode()` item we depend on. */
+type LiveNodeLite = {
+  metadata?: { name?: string };
+  spec?: { unschedulable?: boolean };
+  status?: { conditions?: Array<{ type?: string; status?: string }> };
+};
+
+/**
+ * Count nodes OTHER than `drainTarget` that are positively confirmed able
+ * to host tenant workloads right now: present in the live cluster, Ready,
+ * uncordoned (`spec.unschedulable !== true`), and flagged tenant-capable
+ * in the platform DB.
+ *
+ * Used by drainNode's last-node guard, which fails CLOSED — a node the DB
+ * doesn't know about, or whose `Ready` condition isn't `True`, does NOT
+ * count as safe schedulable surface. Callers must treat a Kubernetes API
+ * failure as "cannot confirm" and refuse the drain; never pass an empty
+ * list synthesised from a failed read.
+ */
+export function countOtherSchedulableTenantNodes(
+  drainTarget: string,
+  dbNodes: ReadonlyArray<{ name: string; canHostTenantWorkloads: boolean }>,
+  liveNodes: ReadonlyArray<LiveNodeLite>,
+): number {
+  const tenantCapable = new Map(dbNodes.map((n) => [n.name, n.canHostTenantWorkloads]));
+  let count = 0;
+  for (const kn of liveNodes) {
+    const nodeName = kn.metadata?.name;
+    if (!nodeName || nodeName === drainTarget) continue;
+    if (kn.spec?.unschedulable === true) continue; // cordoned
+    if (tenantCapable.get(nodeName) !== true) continue; // not tenant-capable / unknown to DB
+    const ready = (kn.status?.conditions ?? []).find((c) => c.type === 'Ready');
+    if (ready?.status !== 'True') continue; // NotReady / unknown
+    count += 1;
+  }
+  return count;
+}
+
 /**
  * Cordon the node (so the scheduler stops placing new pods) and evict
  * everything in `nonSystemPods`. The Eviction API respects PodDisruption
@@ -991,6 +1029,46 @@ export async function drainNode(
   rePinnedWorkloads: number;
   rePinnedPvcs: number;
 }> {
+  // 0) Refuse draining the LAST schedulable, tenant-capable node.
+  // Doing so leaves the cluster unable to host any tenant workload, and
+  // on a single-node cluster it bricks everything (cordoning the only
+  // node strands CrowdSec/Valkey/Traefik → ingress 403 cascade). This is
+  // NOT bypassable by forceLastReplica — that flag only covers Longhorn
+  // data risk, not loss of the entire schedulable surface. The drain-e2e
+  // single-node guard asserts this 4xx rejection.
+  //
+  // We FAIL CLOSED: read the live node list directly (NOT via
+  // listNodesEnriched, whose safeCall fallback would silently report
+  // every node present when the API is down) and require positive
+  // confirmation of another Ready, uncordoned, tenant-capable node. If
+  // the Kubernetes API is unreachable we cannot confirm a safe surface,
+  // so we refuse rather than risk a brick.
+  const dbNodes = await listNodes(db);
+  if (!dbNodes.some((n) => n.name === name)) {
+    throw new ApiError('NODE_NOT_FOUND', `Node '${name}' is not known to the platform.`, 404);
+  }
+  let liveNodes: LiveNodeLite[];
+  try {
+    const resp = (await k8s.core.listNode()) as { items?: LiveNodeLite[] };
+    liveNodes = resp.items ?? [];
+  } catch {
+    throw new ApiError(
+      'NODE_DRAIN_PRECHECK_FAILED',
+      `Cannot verify the cluster has another schedulable node — the Kubernetes API is unreachable. ` +
+      `Refusing to drain '${name}' to avoid bricking the cluster; retry once the API responds.`,
+      503,
+    );
+  }
+  if (countOtherSchedulableTenantNodes(name, dbNodes, liveNodes) === 0) {
+    throw new ApiError(
+      'NODE_DRAIN_BLOCKED_LAST_NODE',
+      `Node '${name}' is the only schedulable tenant-capable node — draining it would leave the cluster ` +
+      `unable to host tenant workloads (on a single-node cluster this bricks it). Add and Ready another ` +
+      `tenant-capable node, or uncordon an existing one, before draining this node.`,
+      409,
+    );
+  }
+
   // 1) Refuse if last Longhorn replica anywhere on this node, unless overridden.
   const impact = await buildDrainImpact(k8s, db, name);
   const lastReplicaVolumes = impact.longhornReplicas.filter((r) => r.isLastReplica);
