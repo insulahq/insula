@@ -343,7 +343,7 @@ Workload definitions are **not maintained in this monorepo**. They live in **ext
 5. Unique constraint `(code, source_repo_id)` prevents collisions across repos
 6. Admin can trigger manual sync via `POST /api/v1/admin/workload-repos/:id/sync`
 
-**Default catalog:** `https://github.com/phoenixtechnam/hosting-platform-workload-catalog` is pre-registered and can be restored via `POST /api/v1/admin/workload-repos/restore-default`.
+**Default catalog:** none pre-registered — operators register a workload catalog repo via the admin panel.
 
 **Image build pipeline** runs in the catalog repo's own CI (not in this platform):
 1. Maintainer updates Dockerfile in the catalog repo

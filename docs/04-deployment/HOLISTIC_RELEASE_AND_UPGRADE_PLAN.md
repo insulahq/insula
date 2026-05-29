@@ -211,7 +211,7 @@ These are settled. Implementation MUST honour them. Changes require an amendment
 | 5 | `platform/VERSION` between tags | **Pinned to last released tag**. Between tags the file says `2026.05.1` while CI computes `2026.05.1-<sha>` for staging. `cut-release.sh` is the only thing that edits the file. |
 | 6 | Versioning scheme | **CalVer `YYYY.0M.PATCH`** (e.g. `2026.05.1`). Leading-zero month for lexical sort stability. PATCH starts at `.1` per calver.org. Breaking-change signal preserved via `### BREAKING` heading in CHANGELOG; auto-update refuses to auto-apply any release whose CHANGELOG section contains `BREAKING`. |
 | 7 | Auto-update defaults | **Staging ON, production OFF, local clusters N/A** (button hidden). Stored in `platform_settings.upgrade.auto_update_enabled`. |
-| 8 | Release feed source | **GitHub Releases API** of `PLATFORM_RELEASES_REPO` env (default `phoenixtechnam/hosting-platform`, fork-overridable). **Cosign signature** on release artifacts verified before any apply. Public key pinned in `platform/cosign.pub` checked into the repo. Fork operators MUST replace this key with their own. |
+| 8 | Release feed source | **GitHub Releases API** of `PLATFORM_RELEASES_REPO` env (default `insulahq/insula`, fork-overridable). **Cosign signature** on release artifacts verified before any apply. Public key pinned in `platform/cosign.pub` checked into the repo. Fork operators MUST replace this key with their own. |
 | 9 | Release tagging | **Manual only** via `scripts/cut-release.sh`. No auto-promote from staging/main. |
 | 10 | `stable` branch | **DROP**. `release.yml` stops opening PRs to stable. Production Flux pins `spec.ref.tag` directly; version-poller re-pins on operator click. |
 | 11 | Pre-releases | `cut-release.sh --prerelease` produces `YYYY.0M.PATCH-rc.N`. GitHub Release `prerelease=true`. Separate flag `auto_update_include_prereleases` (default ON staging / OFF prod). |
@@ -248,7 +248,7 @@ Numbered W0–W17. Independently shippable workstreams are marked; gating relati
 
 ### W2 — OSS PR1: image-org preflight + CI fork-safety
 **Goal**: Fork's `git clone && ./scripts/local.sh up` works without overlay edits; PR-from-fork CI runs tests without push secrets.
-**Deliverables**: `scripts/preflight-image-org.sh`; audit all 19 workflow files for hardcoded `phoenixtechnam`; `if: github.repository == 'phoenixtechnam/hosting-platform'` guards on push-side workflows; `pull_request` vs `pull_request_target` review; GHCR package public-visibility confirmation.
+**Deliverables**: `scripts/preflight-image-org.sh`; audit all 19 workflow files for hardcoded `insulahq`; `if: github.repository == 'insulahq/insula'` guards on push-side workflows; `pull_request` vs `pull_request_target` review; GHCR package public-visibility confirmation.
 **Dependencies**: W0.
 **Complexity**: M.
 **Risk**: M (getting `pull_request_target` wrong opens malicious-fork-PR attacks).

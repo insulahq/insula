@@ -2198,7 +2198,7 @@ This approach tightly couples workload definition maintenance to the platform re
 2. The platform fetches `catalog.json` from the repo's raw GitHub URL, then fetches each workload's `manifest.json`
 3. Container images are upserted into the `container_images` table with a `source_repo_id` FK back to `workload_repositories`
 4. Unique constraint `(code, source_repo_id)` allows the same workload code from different repos without collision
-5. An official default catalog (`https://github.com/phoenixtechnam/hosting-platform-workload-catalog`) is pre-registered and can be restored via `POST /api/v1/admin/workload-repos/restore-default`
+5. No official default workload catalog is pre-registered; operators register a workload catalog repo via the admin panel
 6. Admins can trigger manual sync via `POST /api/v1/admin/workload-repos/:id/sync`; automatic sync runs on the configured interval
 
 **Database tables:**

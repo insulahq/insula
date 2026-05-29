@@ -45,7 +45,7 @@ done
 
 - [ ] `main` branch commit: `_______________` (git sha, 7 chars)
 - [ ] All CI workflows green on that commit (`gh run list --branch=main --limit=5`)
-- [ ] Images published to GHCR with that sha tag (`gh api /users/phoenixtechnam/packages?package_type=container | jq ...`)
+- [ ] Images published to GHCR with that sha tag (`gh api /orgs/insulahq/packages?package_type=container | jq ...`)
 - [ ] `staging` branch is either pointing at same sha OR will be fast-forwarded as part of bootstrap
 - [ ] `kubectl kustomize k8s/overlays/staging` builds cleanly locally (no unresolved refs)
 

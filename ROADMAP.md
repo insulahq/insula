@@ -107,7 +107,7 @@ templating + NetworkPolicy duplication + a backend code audit.
 **Goal**: external developers can clone the repo, run any part of the platform
 independently, and PR improvements back. Today the repo is functional but
 contains friction points for first-time contributors: hard-coded
-`phoenixtechnam` image refs in two overlay files, no top-level CONTRIBUTING
+`insulahq` image refs in two overlay files, no top-level CONTRIBUTING
 guide, CI workflows that may push to upstream from fork-PR runs, per-component
 dev paths that aren't documented.
 
@@ -117,14 +117,14 @@ a 30-min on-ramp instead of a multi-hour archaeology dig.
 
 ### PR 1 — Image-org auto-resolution + CI fork-safety
 
-**Image refs**: keep `phoenixtechnam` as the upstream canonical so unmodified
+**Image refs**: keep `insulahq` as the upstream canonical so unmodified
 clones pull public images out of the box, then add a thin auto-detection
 layer for forks.
 
 - [ ] `scripts/preflight-image-org.sh` — idempotent. Resolves
       `IMAGE_REGISTRY_OWNER` from a precedence chain:
       `GITHUB_REPOSITORY_OWNER` (CI) > explicit env > `git remote get-url
-      origin` parse > `phoenixtechnam` fallback. If the resolved org differs
+      origin` parse > `insulahq` fallback. If the resolved org differs
       from what's in the three overlay `kustomization.yaml` files, rewrites
       in place. Auto-invoked at the top of `local.sh up` and `bootstrap.sh`.
 - [ ] **Why a script, not Flux postBuild**: kustomize processes the
@@ -132,9 +132,9 @@ layer for forks.
       `images.newName` doesn't substitute. Script is the only working path
       for Flux-managed clusters.
 - [ ] **CI fork-safety**: audit `.github/workflows/*.yml` for hardcoded
-      `phoenixtechnam` strings (build-deploy.yml already uses
+      `insulahq` strings (build-deploy.yml already uses
       `${{ github.repository_owner }}` — confirm). Add
-      `if: github.repository == 'phoenixtechnam/hosting-platform'` guards to
+      `if: github.repository == 'insulahq/insula'` guards to
       sync-staging.yml and any workflow that pushes to upstream
       infrastructure.
 - [ ] **PR-from-fork CI must run tests + lints WITHOUT push secrets**.

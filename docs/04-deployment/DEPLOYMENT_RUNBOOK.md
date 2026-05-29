@@ -100,11 +100,11 @@ ssh root@<VPS_IP>
 
 # Either clone and run:
 git clone https://github.com/insulahq/insula.git
-cd k8s-hosting-platform
+cd insula
 ./scripts/bootstrap.sh --domain phoenix-host.net --env production
 
 # Or one-liner:
-curl -fsSL https://raw.githubusercontent.com/phoenixtechnam/k8s-hosting-platform/main/scripts/bootstrap.sh \
+curl -fsSL https://raw.githubusercontent.com/insulahq/insula/main/scripts/bootstrap.sh \
   | bash -s -- --domain phoenix-host.net --env production
 ```
 
