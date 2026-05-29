@@ -6,7 +6,7 @@ import { splitSqlStatements } from '../db/sql-splitter.js';
 import fs from 'fs';
 import path from 'path';
 
-const TEST_DB_URL = process.env.DATABASE_URL ?? 'postgresql://platform:local-dev-password@localhost:5432/hosting_platform_test';
+const TEST_DB_URL = process.env.DATABASE_URL ?? 'postgresql://platform:local-dev-password@localhost:5432/platform_test';
 
 let pool: pg.Pool | null = null;
 

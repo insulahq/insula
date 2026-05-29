@@ -11,7 +11,7 @@
 issuer: https://dex.${DOMAIN}/dex
 
 # Postgres-backed storage: Dex auth_request / auth_code / refresh_token /
-# device_request rows live in the platform's `hosting_platform` database
+# device_request rows live in the platform's `platform` database
 # (shared with platform-api, same `platform` SQL user). Dex creates its
 # own table set on first start (auth_request, auth_code, refresh_token,
 # keys, client, connector, password, offline_session, device_request,
@@ -33,7 +33,7 @@ storage:
   config:
     host: postgres.platform.svc.cluster.local
     port: 5432
-    database: hosting_platform
+    database: platform
     user: $DEX_DB_USER
     password: $DEX_DB_PASSWORD
     ssl:

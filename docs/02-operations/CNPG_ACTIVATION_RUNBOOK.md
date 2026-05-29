@@ -38,7 +38,7 @@ operation with review gates):
 ```bash
 ssh root@<control-plane>
 kubectl -n platform exec postgres-0 -- \
-  pg_dump -U platform hosting_platform \
+  pg_dump -U platform platform \
   | gzip > /root/platform-pg-pre-cnpg-$(date -u +%Y%m%dT%H%MZ).sql.gz
 scp /root/platform-pg-pre-cnpg-*.sql.gz  operator-workstation:/safe/place/
 ```
@@ -114,7 +114,7 @@ should point at `-rw`:
 
 ```bash
 kubectl -n platform set env deploy/platform-api \
-  DATABASE_URL="postgres://platform:<password>@platform-pg-rw.platform.svc:5432/hosting_platform"
+  DATABASE_URL="postgres://platform:<password>@platform-pg-rw.platform.svc:5432/platform"
 ```
 
 (Credential rotation: the CNPG operator generates a fresh

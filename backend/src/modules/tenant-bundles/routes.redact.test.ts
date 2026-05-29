@@ -3,9 +3,9 @@ import { redactCredentialsForUi, tenantRowToBundleStatus } from './routes.js';
 
 describe('redactCredentialsForUi', () => {
   it('masks the password in a postgres connection string', () => {
-    const msg = 'failed to connect: postgresql://platform:Gu5laahImT1qoZN5GVIHigETQsEuZ3@system-db-rw.platform:5432/hosting_platform';
+    const msg = 'failed to connect: postgresql://platform:Gu5laahImT1qoZN5GVIHigETQsEuZ3@system-db-rw.platform:5432/platform';
     const out = redactCredentialsForUi(msg);
-    expect(out).toContain('postgresql://platform:***@system-db-rw.platform:5432/hosting_platform');
+    expect(out).toContain('postgresql://platform:***@system-db-rw.platform:5432/platform');
     expect(out).not.toContain('Gu5laahImT1qoZN5GVIHigETQsEuZ3');
   });
 

@@ -58,7 +58,7 @@ export default function DrDrillTab() {
           <li>Tag the node: <code className="text-xs">kubectl label nodes --all insula.host/node-role=server --overwrite</code></li>
           <li>Tag Longhorn node: <code className="text-xs">kubectl -n longhorn-system patch nodes.longhorn.io/&lt;name&gt; --type=merge -p '{`{"spec":{"tags":["system"]}}`}'</code></li>
           <li>Wait for CNPG clusters to reach <code>Cluster in healthy state</code> (≤15 min)</li>
-          <li>Restore platform: <code className="text-xs">kubectl -n platform exec system-db-1 -c postgres -- pg_restore --clean --if-exists -d hosting_platform &lt; platform.pgdump</code></li>
+          <li>Restore platform: <code className="text-xs">kubectl -n platform exec system-db-1 -c postgres -- pg_restore --clean --if-exists -d platform &lt; platform.pgdump</code></li>
           <li>Rewrite system_settings to new domain: <code className="text-xs">bash scripts/admin-domain-rewrite.sh --domain &lt;new-apex&gt;</code> (bumps platform-api automatically)</li>
           <li>Verify admin login on the restored cluster</li>
         </ol>

@@ -82,7 +82,7 @@ spec:
 
   bootstrap:
     initdb:
-      database: hosting_platform
+      database: platform
       owner: platform
       # Secret with username + password keys. bootstrap.sh creates
       # this; CNPG reads it once at first init and stores the

@@ -66,9 +66,9 @@ _psql() {
 
   if [[ -n "$pg_pod" ]]; then
     # DB name + owner come from CNPG bootstrap.initdb in
-    # k8s/base/database.yaml — `hosting_platform` / `platform`.
+    # k8s/base/database.yaml — `platform` / `platform`.
     _kubectl exec -n platform "$pg_pod" -- \
-      psql -U platform -d hosting_platform -tAc "$1"
+      psql -U platform -d platform -tAc "$1"
   else
     # Fallback: direct psql on localhost (if running outside cluster)
     psql "${PLATFORM_DB_URL:-postgresql://platform_app@localhost:5432/platform}" -tAc "$1"
