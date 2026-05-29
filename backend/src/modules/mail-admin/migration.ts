@@ -43,7 +43,12 @@ import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
 import { systemSettings, emailDomains, mailboxes, platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { triggerMailSnapshot } from './snapshot.js';
+// snapshot.js is dynamic-imported below in the snapshotting step
+// (we need `triggerMailSnapshot`, `waitForSnapshotJob`,
+// `SnapshotCancelledError`, `MAIL_NAMESPACE`, and the `JobShape` type).
+// Keeping it dynamic avoids load-time cycles and matches the existing
+// pattern used elsewhere in this module for the same kind of late
+// binding.
 import { parseQuantity } from './mail-pvc.js';
 import { readStalwartCredentials } from './credentials.js';
 
@@ -1828,63 +1833,14 @@ async function waitForReplicaCount(
 }
 
 // ── Snapshot helpers ──────────────────────────────────────────────────────────
-
-/**
- * Poll the snapshot CronJob's lastSuccessfulTime until it advances past
- * the migration's start time, indicating our on-demand trigger produced
- * a fresh snapshot. Falls through silently after `timeoutSeconds` — the
- * migration will still proceed using the latest available snapshot.
- *
- * @deprecated 2026-05-29 — only update by CronJob-controller-spawned
- *   Jobs touches `CronJob.status.lastSuccessfulTime`. Manually-created
- *   Jobs (which `triggerMailSnapshot` produces) do NOT update it, so a
- *   caller that pairs this wait with `triggerMailSnapshot` adds up to
- *   ~2 min of dead-wait on every call. New callers should use
- *   `waitForSnapshotJob(jobName)` from `./snapshot.js` instead, which
- *   polls the specific Job by name. Keeping this helper around solely
- *   for the recovery paths that DON'T spawn a new snapshot Job — those
- *   genuinely wait for the next CronJob fire to complete.
- */
-async function waitForFreshSnapshot(
-  deps: MigrationDeps,
-  timeoutSeconds: number,
-  runId?: string,
-): Promise<void> {
-  const { batch, db } = deps;
-  const startTs = Date.now();
-  const deadline = startTs + timeoutSeconds * 1000;
-  while (Date.now() < deadline) {
-    // Honor cancel — without this the wait runs the full timeout
-    // even after the operator clicked Cancel. Discovered 2026-05-28
-    // during Phase E of the mobility E2E (the wait was also hitting
-    // a wrong-CronJob-name 404 bug, so it always burned the full 5min).
-    if (runId && (await isCancelRequested(db, runId))) {
-      throw new MigrationCancelledError('snapshotting');
-    }
-    try {
-      const cron = await batch.readNamespacedCronJob({
-        // Real CronJob name is `stalwart-snapshot` (see
-        // k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml).
-        // Pre-2026-05-28 code looked for `stalwart-mail-snapshot`,
-        // a name that has never existed — the readNamespacedCronJob
-        // 404 was swallowed by the catch and the loop burned the
-        // full timeout on every migration. Migration would still
-        // succeed (the wait is best-effort) but added 5 minutes to
-        // every run + made cancel impossible during snapshotting.
-        name: 'stalwart-snapshot',
-        namespace: MAIL_NAMESPACE,
-      }) as { status?: { lastSuccessfulTime?: string } };
-      const lastStr = cron.status?.lastSuccessfulTime;
-      if (lastStr) {
-        const last = Date.parse(lastStr);
-        if (Number.isFinite(last) && last >= startTs) return;
-      }
-    } catch {
-      /* swallow — the wait is best-effort */
-    }
-    await sleep(5000);
-  }
-}
+//
+// (Historical: `waitForFreshSnapshot` lived here. It polled the
+// CronJob.status.lastSuccessfulTime — which is only updated by the
+// CronJob controller's own scheduled Jobs, NOT manually-triggered
+// ones. The migration path that uses `triggerMailSnapshot` now waits
+// via `waitForSnapshotJob(jobName)` exported from `./snapshot.js`,
+// which polls the specific Job we just spawned. Removed 2026-05-29
+// because no other caller existed.)
 
 // ── Pod inspection ────────────────────────────────────────────────────────────
 
