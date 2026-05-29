@@ -742,12 +742,12 @@ export async function ensureWebmailIngress(
       labels: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/component': 'webmail-upstream',
-        'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+        'app.kubernetes.io/managed-by': 'insula',
         // Stamp the engine so a quick `kubectl get svc -l ...` shows
         // which engine each per-tenant route currently targets. The
         // reconciler reads this label to detect drift cheaply
         // (label compare beats reading + diffing the full spec).
-        'platform.phoenix-host.net/webmail-engine': activeEngine,
+        'insula.host/webmail-engine': activeEngine,
       },
     },
     spec: {
@@ -808,7 +808,7 @@ export async function ensureWebmailIngress(
       labels: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/component': 'webmail',
-        'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+        'app.kubernetes.io/managed-by': 'insula',
       },
     },
     spec: {

@@ -172,7 +172,7 @@ export async function reconcileWebmailCertificates(
  * manually toggled `webmail_enabled` on each row.
  *
  * Drift detection is label-based for cheapness: each ExternalName
- * Service carries `platform.phoenix-host.net/webmail-engine: <engine>`
+ * Service carries `insula.host/webmail-engine: <engine>`
  * stamped by `ensureWebmailIngress`. If the label doesn't match the
  * active engine, we MERGE_PATCH both the label and `spec.externalName`
  * in a single API call. Pre-2026-05-18 Services missing the label are
@@ -182,7 +182,7 @@ export async function reconcileWebmailCertificates(
  * `ensureWebmailIngress` re-bootstrap. Disabled rows
  * (`webmailEnabled !== 1`) are skipped.
  */
-export const WEBMAIL_ENGINE_LABEL = 'platform.phoenix-host.net/webmail-engine';
+export const WEBMAIL_ENGINE_LABEL = 'insula.host/webmail-engine';
 
 interface ExternalNameServiceShape {
   metadata?: {

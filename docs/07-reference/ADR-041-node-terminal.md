@@ -99,7 +99,7 @@ A terminal Pod's death is triggered by, in priority order:
 3. **Idle 15min** — `session-registry.findIdle` + scheduler tick.
 4. **`activeDeadlineSeconds: 3600`** — k8s evicts. Hard cap.
 5. **Orphan sweeper** — 60s scheduler tick lists pods labelled
-   `platform.phoenix-host.net/node-terminal=true` whose `sessionId`
+   `insula.host/node-terminal=true` whose `sessionId`
    label isn't in the in-memory registry AND were created >5min ago.
 
 ### Audit

@@ -375,7 +375,7 @@ export async function acquirePitrLockOrThrow(
  *   - Emit a sticky admin notification with full lock context
  *   - Clear the persisted lock so writes are not blocked forever
  *   - Best-effort delete any leftover temp PITR cluster (identified by
- *     the platform.phoenix-host.net/pitr-restore=true label) so they
+ *     the insula.host/pitr-restore=true label) so they
  *     don't pin Longhorn volumes indefinitely. Requires a K8sClients
  *     argument; called with null at startup, the cleanup is skipped.
  */
@@ -398,7 +398,7 @@ export async function recoverInterruptedRestore(
   // source clusters in other namespaces are not touched. Labels are
   // set on every PITR-created resource via pitrLabels() (see step 6
   // and wrapVolumeSnapshot below).
-  const labelSelector = `platform.phoenix-host.net/pitr-restore=true,platform.phoenix-host.net/pitr-namespace=${lock.clusterNamespace}`;
+  const labelSelector = `insula.host/pitr-restore=true,insula.host/pitr-namespace=${lock.clusterNamespace}`;
 
   // CRITICAL: with the Job-based design, a platform-api restart (rolling
   // deploy, liveness kill) is NOT correlated with the orchestration's
@@ -1093,7 +1093,7 @@ async function preflight(
   // (we read CNPG-managed PVCs via the cnpg.io/cluster label).
   //
   // EXCEPTION: snapshots produced by Phase 3.1 barman-promote (labeled
-  // `platform.phoenix-host.net/barman-promote=true`) are sourced from
+  // `insula.host/barman-promote=true`) are sourced from
   // the RESTORED side-by-side cluster's PVC, NOT the source cluster.
   // That's the whole point of promote — replace source data with the
   // restored cluster's data. The membership check would always fail
@@ -1101,7 +1101,7 @@ async function preflight(
   // the label is server-set on the Longhorn Snapshot CR by
   // barman-restore service when it takes the snapshot, so it can't be
   // spoofed by a UI submission.
-  const isBarmanPromoteSnapshot = snap.metadata?.labels?.['platform.phoenix-host.net/barman-promote'] === 'true';
+  const isBarmanPromoteSnapshot = snap.metadata?.labels?.['insula.host/barman-promote'] === 'true';
   let matchingPvcName: string | undefined;
   if (!isBarmanPromoteSnapshot) {
     const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
@@ -1165,8 +1165,8 @@ async function preflight(
 // for human inspection / kubectl get filtering.
 function pitrLabels(clusterNamespace: string): Record<string, string> {
   return {
-    'platform.phoenix-host.net/pitr-restore': 'true',
-    'platform.phoenix-host.net/pitr-namespace': clusterNamespace,
+    'insula.host/pitr-restore': 'true',
+    'insula.host/pitr-namespace': clusterNamespace,
   };
 }
 
@@ -2206,8 +2206,8 @@ export async function createPitrJob(
   // unlabeled Job. The Job-CR-level labels (used by harness +
   // recoverInterruptedRestore) only need pitr-restore + pitr-namespace.
   const jobLabels = {
-    'platform.phoenix-host.net/pitr-restore': 'true',
-    'platform.phoenix-host.net/pitr-namespace': inputs.clusterNamespace,
+    'insula.host/pitr-restore': 'true',
+    'insula.host/pitr-namespace': inputs.clusterNamespace,
     'app.kubernetes.io/part-of': 'hosting-platform',
     'app.kubernetes.io/component': 'pitr-job',
   };
@@ -2263,9 +2263,9 @@ export async function createPitrJob(
           restartPolicy: 'Never',
           // Tolerate the same scheduling rules as platform-api so the
           // Job lands on a server node (CNPG, Longhorn, etc are there).
-          nodeSelector: { 'platform.phoenix-host.net/node-role': 'server' },
+          nodeSelector: { 'insula.host/node-role': 'server' },
           tolerations: [
-            { key: 'platform.phoenix-host.net/server-only', operator: 'Exists', effect: 'NoSchedule' },
+            { key: 'insula.host/server-only', operator: 'Exists', effect: 'NoSchedule' },
           ],
           containers: [{
             name: 'pitr',

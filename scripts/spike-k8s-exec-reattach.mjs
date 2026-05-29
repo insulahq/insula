@@ -51,7 +51,7 @@ async function createPod() {
     kind: 'Pod',
     metadata: {
       name: POD,
-      labels: { 'platform.phoenix-host.net/spike': 'exec-reattach' },
+      labels: { 'insula.host/spike': 'exec-reattach' },
     },
     spec: {
       hostPID: true,

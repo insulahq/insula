@@ -138,7 +138,7 @@ Move beyond observability: convert findings into actions, surface deeper posture
 - HIGH blast radius — typed-confirm + super_admin + audit log + circuit breaker
 
 ### 3.2 Per-node firewall chain gating (cluster-network Phase 6.5)
-- Tie firewall chain selection to existing `platform.phoenix-host.net/exposure` label
+- Tie firewall chain selection to existing `insula.host/exposure` label
 - Private nodes drop all workload ports at the input chain
 - Coordinate with `firewall-reconciler` (Go) work
 
@@ -174,7 +174,7 @@ All 10 surfaced by the planner. Top 5 implemented in Phase 2.5; remaining 5 docu
 |---|---|---|---|
 | 6 | Longhorn replica health + encryption-at-rest | `longhorn-system` tracked in `cluster-health/service.ts:29`. Cross-ref `snapshot-quota.ts` retention. | Longhorn has its own UI; duplication risk. Add only if operators ask. |
 | 7 | CNPG TLS + WAL-archive posture | `cnpg-system` tracked in `cluster-health/service.ts:25`. mTLS, current primary, WAL lag. | CNPG Operator UI exists; mostly observability sugar. |
-| 8 | oauth2-proxy + Dex session age + admin-ui label coverage | Cross-ref `platform.phoenix-host.net/admin-ui` label per CLAUDE.md admin-only UIs section. | Partial coverage in Phase 2.2 (auth metrics tab); the label-coverage piece is its own work. |
+| 8 | oauth2-proxy + Dex session age + admin-ui label coverage | Cross-ref `insula.host/admin-ui` label per CLAUDE.md admin-only UIs section. | Partial coverage in Phase 2.2 (auth metrics tab); the label-coverage piece is its own work. |
 | 9 | Tenant lifecycle hook breaker status | ADR-033 hook registry; existing `Settings → Lifecycle Hooks` page. | Better lives on its own page; cross-link from Security page when relevant. |
 | 10 | SFTP chroot integrity | `sftp-gateway` (4 security review rounds). Chroot active, N sessions, last failed-auth. | Existing SFTP-users page covers this; add summary row if there's space. |
 

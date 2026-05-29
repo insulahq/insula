@@ -45,8 +45,8 @@ export async function createPgDumpJob(
   const jobNamespace = 'platform';
 
   const jobLabels = {
-    'platform.phoenix-host.net/system-backup': 'pg-dump',
-    'platform.phoenix-host.net/system-backup-run': inputs.runId,
+    'insula.host/system-backup': 'pg-dump',
+    'insula.host/system-backup-run': inputs.runId,
     'app.kubernetes.io/part-of': 'hosting-platform',
     'app.kubernetes.io/component': 'pg-dump-job',
   };
@@ -106,9 +106,9 @@ export async function createPgDumpJob(
           restartPolicy: 'Never',
           // System DBs land on system-tagged servers — keep dump
           // Job near the data to avoid cross-node bandwidth.
-          nodeSelector: { 'platform.phoenix-host.net/node-role': 'server' },
+          nodeSelector: { 'insula.host/node-role': 'server' },
           tolerations: [
-            { key: 'platform.phoenix-host.net/server-only', operator: 'Exists', effect: 'NoSchedule' },
+            { key: 'insula.host/server-only', operator: 'Exists', effect: 'NoSchedule' },
           ],
           containers: [{
             name: 'pgdump',

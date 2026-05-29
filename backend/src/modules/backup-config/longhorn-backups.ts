@@ -182,7 +182,7 @@ export async function triggerBackupNow(
     const snapName = `manual-${ts}`.toLowerCase().slice(0, 40);
     const volUrl = `${apiBase}/v1/volumes/${encodeURIComponent(volumeName)}`;
     const labels = {
-      'platform.phoenix-host.net/trigger': 'manual',
+      'insula.host/trigger': 'manual',
       'app.kubernetes.io/managed-by': 'platform-api',
     };
     try {

@@ -51,7 +51,7 @@ async function repinAndRestart(k8s: K8sClients, namespace: string, nodeName: str
           template: {
             metadata: {
               annotations: {
-                'platform.phoenix-host.net/restarted-at': now,
+                'insula.host/restarted-at': now,
               },
             },
             spec: {

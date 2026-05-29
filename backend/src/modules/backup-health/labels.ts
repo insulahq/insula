@@ -8,19 +8,19 @@
  */
 
 /** Required: opt into backup-health discovery. Value must be "true". */
-export const LABEL_HEALTH_WATCH = 'platform.phoenix-host.net/backup-health-watch';
+export const LABEL_HEALTH_WATCH = 'insula.host/backup-health-watch';
 
 /** Required: drives UI grouping + notification routing. */
-export const LABEL_CATEGORY = 'platform.phoenix-host.net/backup-category';
+export const LABEL_CATEGORY = 'insula.host/backup-category';
 
 /** Optional: drives notification severity. Default 'warning'. */
-export const LABEL_SEVERITY = 'platform.phoenix-host.net/backup-severity';
+export const LABEL_SEVERITY = 'insula.host/backup-severity';
 
 /** Optional: route notifications to that tenant's recipients. */
-export const LABEL_TENANT_ID = 'platform.phoenix-host.net/tenant-id';
+export const LABEL_TENANT_ID = 'insula.host/tenant-id';
 
 /** Optional: human-friendly UI label (annotation, not a label). */
-export const ANNOTATION_DISPLAY_NAME = 'platform.phoenix-host.net/backup-display-name';
+export const ANNOTATION_DISPLAY_NAME = 'insula.host/backup-display-name';
 
 export type BackupCategory = 'dr' | 'tenant' | 'audit' | 'custom';
 export type BackupSeverity = 'critical' | 'warning' | 'info';

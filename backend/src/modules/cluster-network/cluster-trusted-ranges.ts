@@ -214,7 +214,7 @@ function mapK8sError(err: unknown, op: string): ApiError {
   if (status === 401 || status === 403) {
     return new ApiError(
       'CLUSTER_NETWORK_FORBIDDEN',
-      `kube-API rejected ${op} (status ${status}). Verify platform-api ClusterRole has rights on networking.platform.phoenix-host.net resources.`,
+      `kube-API rejected ${op} (status ${status}). Verify platform-api ClusterRole has rights on networking.insula.host resources.`,
       503,
     );
   }

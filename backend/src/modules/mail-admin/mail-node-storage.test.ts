@@ -9,7 +9,7 @@ function node(name: string, opts: { standby?: boolean; epStorageGi?: number } = 
       name,
       labels: {
         'kubernetes.io/hostname': name,
-        ...(opts.standby ? { 'platform.phoenix-host.net/mail-standby': 'true' } : {}),
+        ...(opts.standby ? { 'insula.host/mail-standby': 'true' } : {}),
       },
     },
     status: {

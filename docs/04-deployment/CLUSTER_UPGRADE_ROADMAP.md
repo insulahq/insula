@@ -150,7 +150,7 @@ with no manual fix-up.
 - CI bakes value into backend image and `platform-version` ConfigMap.
 - `bootstrap.sh` + `local.sh` + `docker-compose.local.yml` write the
   ConfigMap idempotently. Local writes `0.0.0-local-<git-sha>`.
-- `platform-api` Deployment gets a `platform.phoenix-host.net/version` label
+- `platform-api` Deployment gets a `insula.host/version` label
   with the same value (visible via plain `kubectl get`).
 - Backend at startup persists `platform_settings.installed_platform_version`.
 - `GET /api/admin/platform/version` returns `{ installed, available, running }`.
@@ -358,7 +358,7 @@ SHAs on resume, the design needs adjustment before implementation continues.
   5. Restore Longhorn volumes from VolumeSnapshots (parallel within ns,
      serial across ns).
   6. Restore Secrets/ConfigMaps from secrets bundle. Skip Secrets labelled
-     `platform.phoenix-host.net/rotated-after-snapshot=true` (explicit
+     `insula.host/rotated-after-snapshot=true` (explicit
      opt-out for emergency-rotated credentials).
   7. Reverse host-package upgrades to recorded `k3sVersion` /
      `kernelVersion`. Re-apply kernel/sysctl baseline by rewriting the

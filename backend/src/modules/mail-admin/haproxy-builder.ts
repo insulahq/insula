@@ -70,7 +70,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
         'app.kubernetes.io/part-of': 'hosting-platform',
         // Marker so the harness + future tooling can tell at a glance
         // that this object was platform-api-built and not Flux-managed.
-        'platform.phoenix-host.net/managed-by': 'platform-api',
+        'insula.host/managed-by': 'platform-api',
       },
       annotations: {
         'configmap.reloader.stakater.com/reload': 'stalwart-haproxy-config',
@@ -95,7 +95,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
           nodeSelector: { [MAIL_HAPROXY_LABEL_KEY]: MAIL_HAPROXY_LABEL_VALUE },
           tolerations: [
             {
-              key: 'platform.phoenix-host.net/server-only',
+              key: 'insula.host/server-only',
               operator: 'Exists',
               effect: 'NoSchedule',
             },

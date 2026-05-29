@@ -14,7 +14,7 @@
  *
  * Watchdog behavior:
  *   1. Every 60s, list Jobs labeled
- *      `platform.phoenix-host.net/pitr-restore=true`.
+ *      `insula.host/pitr-restore=true`.
  *   2. For each Job: if age > STUCK_THRESHOLD_MS AND Job has no
  *      Active+Succeeded pods AND there are FailedCreate events,
  *      declare it stuck.
@@ -40,7 +40,7 @@ import { toSafeText } from '@insula/api-contracts';
 // Tunables — exported for testing.
 export const WATCHDOG_INTERVAL_MS = 60_000;
 export const STUCK_THRESHOLD_MS = 90_000;
-const PITR_LABEL_SELECTOR = 'platform.phoenix-host.net/pitr-restore=true';
+const PITR_LABEL_SELECTOR = 'insula.host/pitr-restore=true';
 
 interface PitrJob {
   readonly metadata?: {

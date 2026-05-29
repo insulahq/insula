@@ -7,9 +7,9 @@ M1 of the multi-node + HA track (ADR-031 pending).
 
 | Key                                                   | Applied to         | Values            | Purpose                                                                 |
 |-------------------------------------------------------|--------------------|-------------------|-------------------------------------------------------------------------|
-| `platform.phoenix-host.net/node-role`                 | Node label         | `server` / `worker` | Which pool the node belongs to. System workloads pin to `server`.       |
-| `platform.phoenix-host.net/host-client-workloads`     | Node label         | `true` / `false`    | Whether the node accepts tenant pods. Default: `false` for servers, `true` for workers. |
-| `platform.phoenix-host.net/server-only`               | Node taint (NoSchedule) | `true`          | Applied when a server sets `host-client-workloads=false`. Repels tenant pods; system pods tolerate it. |
+| `insula.host/node-role`                 | Node label         | `server` / `worker` | Which pool the node belongs to. System workloads pin to `server`.       |
+| `insula.host/host-client-workloads`     | Node label         | `true` / `false`    | Whether the node accepts tenant pods. Default: `false` for servers, `true` for workers. |
+| `insula.host/server-only`               | Node taint (NoSchedule) | `true`          | Applied when a server sets `host-client-workloads=false`. Repels tenant pods; system pods tolerate it. |
 
 Unlabeled nodes (legacy, or ones that bootstrapped before M1) are
 treated as `worker` with `canHostClientWorkloads=true` — matches
@@ -69,7 +69,7 @@ still land on server-only-tainted nodes.
 
 The `system-node-affinity` Kustomize component (included by staging +
 production overlays) requires the target node to carry
-`platform.phoenix-host.net/node-role=server` BEFORE Flux reconciles.
+`insula.host/node-role=server` BEFORE Flux reconciles.
 If it doesn't, every system pod enters Pending, Flux can't reach the
 platform-api, and the admin UI becomes unreachable.
 
@@ -81,11 +81,11 @@ before the new overlay ships:
 
 ```bash
 ssh root@<control-plane> \
-  kubectl label node <node-name> platform.phoenix-host.net/node-role=server --overwrite
+  kubectl label node <node-name> insula.host/node-role=server --overwrite
 ssh root@<control-plane> \
-  kubectl label node <node-name> platform.phoenix-host.net/host-client-workloads=true --overwrite
+  kubectl label node <node-name> insula.host/host-client-workloads=true --overwrite
 ssh root@<control-plane> \
-  kubectl get nodes -L platform.phoenix-host.net/node-role,platform.phoenix-host.net/host-client-workloads
+  kubectl get nodes -L insula.host/node-role,insula.host/host-client-workloads
 ```
 
 Only after the verification command shows `server / true` should the

@@ -11,7 +11,7 @@ const REFETCH_MS = 60_000;
 /**
  * Polls /admin/backup-health every 60s. The backend rolls up Job
  * health from labels — adding new backup jobs (with the
- * platform.phoenix-host.net/backup-health-watch=true label) is a
+ * insula.host/backup-health-watch=true label) is a
  * pure YAML change, no hook update needed.
  */
 export function useBackupHealth() {

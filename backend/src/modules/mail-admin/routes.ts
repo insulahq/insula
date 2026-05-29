@@ -87,7 +87,7 @@ import {
   setMailboxBackupSettings,
 } from '../tenant-bundles/mailbox-backup-engine.js';
 
-const NODE_ROLE_LABEL_KEY = 'platform.phoenix-host.net/node-role';
+const NODE_ROLE_LABEL_KEY = 'insula.host/node-role';
 
 /**
  * Lazy-load a CoreV1Api for the rotate-webmail-master flow's Secret

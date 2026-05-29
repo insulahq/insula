@@ -101,7 +101,7 @@ spec:
         # ports unconditionally (lines 877-884) so this annotation is
         # belt-and-suspenders, but it keeps the runtime-firewall view of
         # the cluster consistent.
-        platform.phoenix-host.net/firewall-tcp-ports: "25,465,587,143,993,4190"
+        insula.host/firewall-tcp-ports: "25,465,587,143,993,4190"
     spec:
       terminationGracePeriodSeconds: 300
       # Spread Stalwart pods one-per-node so any node IP that lands

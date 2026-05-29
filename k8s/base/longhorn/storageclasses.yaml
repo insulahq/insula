@@ -50,7 +50,7 @@ metadata:
   name: longhorn-system-ha
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: system-ha
+    insula.host/tier: system-ha
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain
@@ -80,7 +80,7 @@ metadata:
   name: longhorn-system-local
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: system-local
+    insula.host/tier: system-local
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain
@@ -119,7 +119,7 @@ metadata:
   name: longhorn-tenant
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: tenant
+    insula.host/tier: tenant
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain
@@ -185,8 +185,8 @@ metadata:
   name: longhorn-tenant-test
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: tenant
-    platform.phoenix-host.net/test-only: "true"
+    insula.host/tier: tenant
+    insula.host/test-only: "true"
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
@@ -204,7 +204,7 @@ metadata:
   name: longhorn-mail-local
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: mail-local
+    insula.host/tier: mail-local
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain
@@ -225,7 +225,7 @@ metadata:
   name: longhorn-mail-ha
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: mail-ha
+    insula.host/tier: mail-ha
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain

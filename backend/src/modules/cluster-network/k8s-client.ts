@@ -12,15 +12,15 @@
 
 import type { CoreV1Api, CustomObjectsApi } from '@kubernetes/client-node';
 
-export const CRD_GROUP = 'networking.platform.phoenix-host.net';
+export const CRD_GROUP = 'networking.insula.host';
 export const CRD_VERSION = 'v1alpha1';
 export const CTR_PLURAL = 'clustertrustedranges';
 export const CPP_PLURAL = 'clusterpendingpeers';
 
 /** Label key the platform writes onto Node objects to flag exposure. */
-export const EXPOSURE_LABEL = 'platform.phoenix-host.net/exposure';
+export const EXPOSURE_LABEL = 'insula.host/exposure';
 /** Annotation key recording who toggled the label and when. */
-export const EXPOSURE_AUDIT_ANNOTATION = 'platform.phoenix-host.net/exposure-audit';
+export const EXPOSURE_AUDIT_ANNOTATION = 'insula.host/exposure-audit';
 
 export interface ClusterNetworkClients {
   readonly core: CoreV1Api;

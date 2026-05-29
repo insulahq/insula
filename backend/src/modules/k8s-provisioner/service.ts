@@ -321,7 +321,7 @@ export async function applyNamespace(
   // still classifies correctly if a future operator renames a tenant
   // namespace off the conventional prefix.
   const annotations = {
-    'platform.phoenix-host.net/tenant-namespace': 'true',
+    'insula.host/tenant-namespace': 'true',
   };
 
   // Check if namespace already exists. Either path (exists or 404)

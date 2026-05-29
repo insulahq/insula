@@ -180,8 +180,8 @@ describe('createBarmanRestore', () => {
       spec: {
         ...sourceCluster.spec,
         affinity: { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: {} } },
-        nodeSelector: { 'platform.phoenix-host.net/node-role': 'server' },
-        tolerations: [{ key: 'platform.phoenix-host.net/server-only', operator: 'Exists', effect: 'NoSchedule' }],
+        nodeSelector: { 'insula.host/node-role': 'server' },
+        tolerations: [{ key: 'insula.host/server-only', operator: 'Exists', effect: 'NoSchedule' }],
       },
     };
     const { api, created } = makeCustom({ source: withScheduling });
@@ -710,8 +710,8 @@ describe('promoteRestoredCluster', () => {
     expect(createdSnapshots).toHaveLength(1);
     const snap = createdSnapshots[0] as Record<string, unknown>;
     const metadata = snap.metadata as { labels?: Record<string, string>; name?: string };
-    expect(metadata.labels?.['platform.phoenix-host.net/pitr-restore']).toBe('true');
-    expect(metadata.labels?.['platform.phoenix-host.net/barman-promote']).toBe('true');
+    expect(metadata.labels?.['insula.host/pitr-restore']).toBe('true');
+    expect(metadata.labels?.['insula.host/barman-promote']).toBe('true');
     // PITR Job was created with the source name + BARMAN_PROMOTE env vars.
     const createPitrCall = promoteMocks.createPitrJobSpy.mock.calls[0]?.[1] as { extraEnv?: ReadonlyArray<{ name: string; value: string }>; clusterName: string };
     expect(createPitrCall.clusterName).toBe('system-db');

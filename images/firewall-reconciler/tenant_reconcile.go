@@ -4,7 +4,7 @@
 // inputs (Pod hostPort + platform.io/firewall-{tcp,udp}-ports
 // annotation), same tenant-namespace classification (namespace prefix
 // `tenant-` OR namespace has annotation
-// platform.phoenix-host.net/tenant-namespace=true), same set targets.
+// insula.host/tenant-namespace=true), same set targets.
 // Different writer: libnftnl netlink (no `nft` binary in container).
 //
 // Per-node scope: a Pod informer with a server-side
@@ -32,7 +32,7 @@ import (
 // sufficient. We'd rather have a false-negative (skip a tenant
 // namespace someone forgot to label) than a false-positive (open
 // infra ports to the public-facing accept set).
-const tenantNamespaceAnnotation = "platform.phoenix-host.net/tenant-namespace"
+const tenantNamespaceAnnotation = "insula.host/tenant-namespace"
 
 // tenantPortAnnotationTCP / UDP — operator-supplied CSV with bare
 // ports or ranges. Matches the bash worker's annotation contract

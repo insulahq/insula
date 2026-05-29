@@ -141,5 +141,5 @@ LABEL org.opencontainers.image.description="R-X19 backup mediator (rclone serve 
 LABEL org.opencontainers.image.source="https://github.com/insulahq/insula"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="Phoenix Tech"
-LABEL platform.phoenix-host.net/role="backup-rclone-shim"
-LABEL platform.phoenix-host.net/rclone-version="1.74.1"
+LABEL insula.host/role="backup-rclone-shim"
+LABEL insula.host/rclone-version="1.74.1"
