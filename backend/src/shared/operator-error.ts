@@ -194,6 +194,31 @@ export function translateOperatorError(
   }
 
   // ─── Drain ────────────────────────────────────────────────────
+  if (text.includes('NODE_DRAIN_PRECHECK_FAILED')) {
+    return {
+      code: OPERATOR_ERROR_CODES.DRAIN_PRECHECK_FAILED,
+      title: 'Drain blocked — cannot verify cluster state',
+      detail: 'The Kubernetes API was unreachable, so the platform could not confirm another schedulable node exists. The drain was refused to avoid bricking the cluster.',
+      remediation: [
+        'Check the Kubernetes API / control-plane health, then retry.',
+      ],
+      retryable: true,
+      diagnostics: { raw },
+    };
+  }
+  if (text.includes('NODE_DRAIN_BLOCKED_LAST_NODE')) {
+    return {
+      code: OPERATOR_ERROR_CODES.DRAIN_LAST_NODE,
+      title: 'Drain blocked — last schedulable node',
+      detail: 'This is the only schedulable, tenant-capable node. Draining it would leave the cluster unable to host tenant workloads (on a single-node cluster it bricks everything).',
+      remediation: [
+        'Add another node and wait for it to become Ready, OR',
+        'Uncordon an existing tenant-capable node, then retry the drain.',
+      ],
+      retryable: false,
+      diagnostics: { raw },
+    };
+  }
   if (text.includes('NODE_DRAIN_BLOCKED_LAST_REPLICA')) {
     return {
       code: OPERATOR_ERROR_CODES.DRAIN_LAST_REPLICA,

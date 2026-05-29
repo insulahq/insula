@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { buildDrainImpact, listNodesEnriched } from './service.js';
+import {
+  buildDrainImpact,
+  countOtherSchedulableTenantNodes,
+  drainNode,
+  listNodesEnriched,
+} from './service.js';
 
 // Schema mock so the dynamic import inside service.ts doesn't blow up.
 // `clusterNodes` is used by listNodes() (static import); the rest are
@@ -312,6 +317,8 @@ describe('buildDrainImpact', () => {
 interface MockNodeRow {
   name: string;
   role?: 'server' | 'worker';
+  /** Defaults to true — mirrors the clusterNodes column default. */
+  canHost?: boolean;
 }
 function makeListNodesDb(rows: MockNodeRow[]): Database {
   // Drizzle chain: db.select().from(clusterNodes).orderBy(desc(role), name)
@@ -321,6 +328,7 @@ function makeListNodesDb(rows: MockNodeRow[]): Database {
         orderBy: () => Promise.resolve(rows.map((r) => ({
           name: r.name,
           role: r.role ?? 'worker',
+          canHostTenantWorkloads: r.canHost ?? true,
         }))),
       }),
     }),
@@ -388,5 +396,119 @@ describe('listNodesEnriched — orphan detection', () => {
     for (const n of enriched) {
       expect(n.existsInKubernetes).toBe(true);
     }
+  });
+});
+
+interface LiveNodeOpt {
+  name: string;
+  unschedulable?: boolean;
+  notReady?: boolean;
+}
+function liveNode(n: LiveNodeOpt) {
+  return {
+    metadata: { name: n.name },
+    spec: { unschedulable: n.unschedulable ?? false },
+    status: { conditions: [{ type: 'Ready', status: n.notReady ? 'False' : 'True' }] },
+  };
+}
+
+describe('countOtherSchedulableTenantNodes (drain guard #0 predicate)', () => {
+  const dbTwo = [
+    { name: 'a', canHostTenantWorkloads: true },
+    { name: 'b', canHostTenantWorkloads: true },
+  ];
+
+  it('counts a healthy, Ready, uncordoned, tenant-capable peer', () => {
+    expect(countOtherSchedulableTenantNodes('a', dbTwo, [liveNode({ name: 'a' }), liveNode({ name: 'b' })])).toBe(1);
+  });
+
+  it('returns 0 on a single-node cluster (only node is the drain target)', () => {
+    expect(countOtherSchedulableTenantNodes('solo', [{ name: 'solo', canHostTenantWorkloads: true }], [liveNode({ name: 'solo' })])).toBe(0);
+  });
+
+  it('excludes a cordoned peer', () => {
+    expect(countOtherSchedulableTenantNodes('a', dbTwo, [liveNode({ name: 'a' }), liveNode({ name: 'b', unschedulable: true })])).toBe(0);
+  });
+
+  it('excludes a NotReady peer (degraded node is not safe schedulable surface)', () => {
+    expect(countOtherSchedulableTenantNodes('a', dbTwo, [liveNode({ name: 'a' }), liveNode({ name: 'b', notReady: true })])).toBe(0);
+  });
+
+  it('excludes a peer the DB flags non-tenant-capable (control-plane-only)', () => {
+    const db = [{ name: 'a', canHostTenantWorkloads: true }, { name: 'cp', canHostTenantWorkloads: false }];
+    expect(countOtherSchedulableTenantNodes('a', db, [liveNode({ name: 'a' }), liveNode({ name: 'cp' })])).toBe(0);
+  });
+
+  it('excludes a live node unknown to the platform DB (fail closed)', () => {
+    expect(countOtherSchedulableTenantNodes('a', [{ name: 'a', canHostTenantWorkloads: true }], [liveNode({ name: 'a' }), liveNode({ name: 'ghost' })])).toBe(0);
+  });
+
+  it('treats a missing Ready condition as not-Ready', () => {
+    const live = [liveNode({ name: 'a' }), { metadata: { name: 'b' }, spec: { unschedulable: false }, status: { conditions: [] } }];
+    expect(countOtherSchedulableTenantNodes('a', dbTwo, live)).toBe(0);
+  });
+});
+
+describe('drainNode — last schedulable tenant-capable node guard (#0)', () => {
+  // k8s mock driving guard #0's direct core.listNode() read. Pass 'throw'
+  // to simulate an unreachable Kubernetes API (fail-closed path).
+  function makeK8sNodes(nodes: LiveNodeOpt[] | 'throw'): K8sClients {
+    const listNode = nodes === 'throw'
+      ? vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'))
+      : vi.fn().mockResolvedValue({ items: nodes.map(liveNode) });
+    return {
+      core: {
+        listNode,
+        listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [] }),
+      },
+    } as unknown as K8sClients;
+  }
+
+  it('refuses to drain the only node (single-node cluster) even with forceLastReplica', async () => {
+    const db = makeListNodesDb([{ name: 'solo' }]);
+    const k8s = makeK8sNodes([{ name: 'solo' }]);
+
+    await expect(
+      drainNode(k8s, db, 'solo', { forceLastReplica: true, tenantPlacement: {} }),
+    ).rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_NODE', status: 409 });
+  });
+
+  it('refuses when the only other node is cordoned (no schedulable surface left)', async () => {
+    const db = makeListNodesDb([{ name: 'a' }, { name: 'b' }]);
+    const k8s = makeK8sNodes([{ name: 'a' }, { name: 'b', unschedulable: true }]);
+
+    await expect(
+      drainNode(k8s, db, 'a', { forceLastReplica: true, tenantPlacement: {} }),
+    ).rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_NODE', status: 409 });
+  });
+
+  it('refuses when the only other node cannot host tenant workloads', async () => {
+    const db = makeListNodesDb([{ name: 'a' }, { name: 'cp', canHost: false }]);
+    const k8s = makeK8sNodes([{ name: 'a' }, { name: 'cp' }]);
+
+    await expect(
+      drainNode(k8s, db, 'a', { forceLastReplica: true, tenantPlacement: {} }),
+    ).rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_NODE', status: 409 });
+  });
+
+  it('fails CLOSED with 503 when the Kubernetes API is unreachable', async () => {
+    const db = makeListNodesDb([{ name: 'a' }, { name: 'b' }]);
+    const k8s = makeK8sNodes('throw');
+
+    await expect(
+      drainNode(k8s, db, 'a', { forceLastReplica: true, tenantPlacement: {} }),
+    ).rejects.toMatchObject({ code: 'NODE_DRAIN_PRECHECK_FAILED', status: 503 });
+  });
+
+  it('returns 404 when the target node is unknown to the platform', async () => {
+    const db = makeListNodesDb([{ name: 'a' }, { name: 'b' }]);
+    const k8s = makeK8sNodes([{ name: 'a' }, { name: 'b' }]);
+
+    await expect(
+      drainNode(k8s, db, 'ghost', { forceLastReplica: true, tenantPlacement: {} }),
+    ).rejects.toMatchObject({ code: 'NODE_NOT_FOUND', status: 404 });
   });
 });
