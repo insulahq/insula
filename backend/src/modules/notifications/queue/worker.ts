@@ -29,15 +29,47 @@
  * from the rendered output (no PII in the queue).
  */
 import { eq } from 'drizzle-orm';
-import { notificationDeliveries, smtpRelayConfigs, users } from '../../../db/schema.js';
+import nodemailer from 'nodemailer';
+import { notificationDeliveries, users } from '../../../db/schema.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
 import { getTemplate } from '../templates/service.js';
-import { sendNotificationEmail } from '../email-sender.js';
+import { getDefaultProviderRow } from '../providers/service.js';
+import { decrypt } from '../../oidc/crypto.js';
 import { decideRetry } from './retry.js';
 import { enqueueDelivery } from './enqueue.js';
 import { getBoss, type BossLike } from './bootstrap.js';
 import { NOTIFICATIONS_EMAIL_QUEUE, type NotificationSendJob } from './types.js';
 import type { Database } from '../../../db/index.js';
+
+/**
+ * Worker SMTP send shape — test-injectable so the unit tests don't open
+ * actual SMTP connections.
+ */
+export interface ProviderSendInput {
+  readonly host: string;
+  readonly port: number;
+  readonly secure: boolean;
+  readonly authUsername: string | null;
+  readonly authPassword: string | null;
+  readonly fromAddress: string;
+  readonly fromName: string | null;
+  readonly to: string;
+  readonly subject: string;
+  readonly html: string;
+}
+
+export type WorkerSendFn = (input: ProviderSendInput) => Promise<void>;
+
+const defaultSend: WorkerSendFn = async (input) => {
+  const transport = nodemailer.createTransport({
+    host: input.host,
+    port: input.port,
+    secure: input.secure,
+    auth: input.authUsername ? { user: input.authUsername, pass: input.authPassword ?? '' } : undefined,
+  });
+  const fromHeader = input.fromName ? `"${input.fromName}" <${input.fromAddress}>` : input.fromAddress;
+  await transport.sendMail({ from: fromHeader, to: input.to, subject: input.subject, html: input.html });
+};
 
 export interface WorkerOptions {
   readonly db: Database;
@@ -45,7 +77,7 @@ export interface WorkerOptions {
   /** Override the renderer for tests. */
   readonly render?: typeof renderTemplateAsync;
   /** Override the sender for tests. */
-  readonly send?: typeof sendNotificationEmail;
+  readonly send?: WorkerSendFn;
   /** Override the boss for tests. */
   readonly boss?: BossLike;
 }
@@ -134,33 +166,44 @@ export async function processDelivery(
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'recipient_email_missing', opts);
     }
 
-    // 5. Look up default relay (the dispatcher already picks a provider
-    //    when enqueuing in Phase 3+; for Phase 2 we use the default).
-    const [relay] = await db.select().from(smtpRelayConfigs)
-      .where(eq(smtpRelayConfigs.isDefault, 1))
-      .limit(1);
-    if (!relay) {
-      return await markFailedOrDlq(db, row.id, row.attempt + 1, 'no_default_smtp_relay', opts);
+    // 5. Look up the default notification provider (Phase 3B: dedicated
+    //    notification_providers table, separate from smtp_relay_configs).
+    const provider = await getDefaultProviderRow(db, 'email');
+    if (!provider) {
+      return await markFailedOrDlq(db, row.id, row.attempt + 1, 'no_default_notification_provider', opts);
+    }
+    if (!provider.smtpHost) {
+      return await markFailedOrDlq(db, row.id, row.attempt + 1, 'provider_smtp_host_missing', opts);
     }
 
-    // 6. Send.
+    // 6. Decrypt provider auth password (when set).
     const encryptionKey = opts.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
     if (!encryptionKey) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'platform_encryption_key_missing', opts);
     }
-    const sender = opts.send ?? sendNotificationEmail;
-    await sender(
-      db,
-      {
-        id: row.id,
-        userId: row.userId,
-        type: 'info',
-        title: rendered.subject ?? '',
-        message: rendered.body,
-      },
-      encryptionKey,
-      { subject: rendered.subject ?? '', html: rendered.body },
-    );
+    let authPassword: string | null = null;
+    if (provider.authPasswordEncrypted) {
+      try {
+        authPassword = decrypt(provider.authPasswordEncrypted, encryptionKey);
+      } catch {
+        return await markFailedOrDlq(db, row.id, row.attempt + 1, 'provider_password_decrypt_failed', opts);
+      }
+    }
+
+    // 7. Send.
+    const sender = opts.send ?? defaultSend;
+    await sender({
+      host: provider.smtpHost,
+      port: provider.smtpPort,
+      secure: provider.smtpSecure,
+      authUsername: provider.authUsername ?? null,
+      authPassword,
+      fromAddress: provider.fromAddress,
+      fromName: provider.fromName ?? null,
+      to: u.email,
+      subject: rendered.subject ?? '',
+      html: rendered.body,
+    });
 
     // 7. Success.
     await db.update(notificationDeliveries)

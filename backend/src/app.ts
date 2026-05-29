@@ -98,6 +98,7 @@ import { purgeOldDeliveriesSafe } from './modules/notifications/retention/purge.
 import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { stopBoss } from './modules/notifications/queue/bootstrap.js';
+import { startReenqueueScheduler } from './modules/notifications/queue/scanner.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
@@ -720,6 +721,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       } catch (err) {
         app.log.warn({ err }, '[notifications] email send worker failed to start (deliveries will stay queued)');
       }
+
+      // Phase 3C: re-enqueue scan. Defense in depth — catches any
+      // delivery row that got stuck in `queued` (pg-boss outage at
+      // dispatch time) or `failed` with an overdue retry that pg-boss
+      // never picked up. Best-effort; failures log but don't crash.
+      const reenqueueTimer = startReenqueueScheduler(app.db, {
+        info: (msg, extra) => app.log.info(extra ?? {}, msg),
+        warn: (msg, err) => app.log.warn({ err }, msg),
+      });
+      app.addHook('onClose', () => clearInterval(reenqueueTimer));
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 
