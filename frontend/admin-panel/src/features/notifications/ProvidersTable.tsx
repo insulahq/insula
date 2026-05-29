@@ -226,6 +226,11 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
 
   const onSave = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
+    // For stalwart-internal we must NOT submit any auth credentials —
+    // the backend Zod schema rejects them and would 400 the request.
+    const isStalwartInternal = providerType === 'stalwart-internal';
+    const authUsernameValue = isStalwartInternal ? null : (authUsername || null);
+    const authPasswordValue = isStalwartInternal ? undefined : (authPassword || undefined);
     try {
       if (isNew) {
         const input: CreateNotificationProviderInput = {
@@ -234,8 +239,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
           smtpHost,
           smtpPort: Number.parseInt(smtpPort, 10),
           smtpSecure,
-          authUsername: authUsername || null,
-          authPassword: authPassword || undefined,
+          authUsername: authUsernameValue,
+          authPassword: authPasswordValue,
           fromAddress,
           fromName: fromName || null,
           enabled,
@@ -250,8 +255,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
             smtpHost,
             smtpPort: Number.parseInt(smtpPort, 10),
             smtpSecure,
-            authUsername: authUsername || null,
-            authPassword: authPassword || undefined,
+            authUsername: authUsernameValue,
+            authPassword: authPasswordValue,
             fromAddress,
             fromName: fromName || null,
             enabled,
@@ -339,29 +344,44 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
             Implicit TLS (SMTPS — usually port 465)
           </span>
         </label>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="block">
-            <span className="text-xs text-gray-600 dark:text-gray-300">Auth username</span>
-            <input
-              value={authUsername}
-              onChange={(e) => setAuthUsername(e.target.value)}
-              data-testid="provider-auth-username"
-              className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-gray-600 dark:text-gray-300">
-              Auth password {!isNew && <span className="text-gray-400">(leave empty to keep)</span>}
-            </span>
-            <input
-              type="password"
-              value={authPassword}
-              onChange={(e) => setAuthPassword(e.target.value)}
-              data-testid="provider-auth-password"
-              className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
-            />
-          </label>
-        </div>
+        {providerType === 'stalwart-internal' ? (
+          <div
+            className="rounded-md border border-blue-200 bg-blue-50 p-2 text-[11px] text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200"
+            data-testid="provider-stalwart-internal-note"
+          >
+            <strong>Stalwart in-cluster</strong> — no auth credentials needed. The worker
+            authenticates as the platform master account (read at send time from
+            <code className="mx-1 rounded bg-blue-100 px-1 dark:bg-blue-900">mail/mail-secrets</code>)
+            and uses the From address below only for the recipient-visible header.
+            You must first create the local mailbox (e.g.{' '}
+            <code className="rounded bg-blue-100 px-1 dark:bg-blue-900">notifications@&lt;apex&gt;</code>)
+            in Stalwart admin before adding this provider.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-gray-600 dark:text-gray-300">Auth username</span>
+              <input
+                value={authUsername}
+                onChange={(e) => setAuthUsername(e.target.value)}
+                data-testid="provider-auth-username"
+                className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-gray-600 dark:text-gray-300">
+                Auth password {!isNew && <span className="text-gray-400">(leave empty to keep)</span>}
+              </span>
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                data-testid="provider-auth-password"
+                className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+              />
+            </label>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
             <span className="text-xs text-gray-600 dark:text-gray-300">From address</span>

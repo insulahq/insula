@@ -61,7 +61,7 @@ set -euo pipefail
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
-PHASES="${PHASES:-A,B,C,D,E,F,G,H,I}"
+PHASES="${PHASES:-A,B,C,D,E,F,G,H,I,J,K}"
 
 # Use kubectl-via-docker to talk to the API service inside k3s.
 kx() { docker exec "$K3S_CONTAINER" kubectl -n platform "$@"; }
@@ -449,6 +449,51 @@ phase_i() {
   fi
 }
 
+# ─── Phase J — Stalwart-internal Provider semantics (Phase 6 prep) ──
+phase_j() {
+  section "Phase J — Stalwart-internal Provider semantics"
+  acquire_admin_token || return 1
+
+  # J1. Creating a stalwart-internal Provider WITH authPassword must
+  # be refused by the contract validator (no operator-supplied creds).
+  local raw
+  raw=$(api POST /api/v1/admin/notifications/providers \
+    '{"name":"Stalwart bad","providerType":"stalwart-internal","smtpHost":"stalwart-mail.mail.svc","smtpPort":465,"smtpSecure":true,"fromAddress":"notifications@apex.test","authUsername":"u","authPassword":"oops","enabled":true,"isDefault":false}')
+  if printf %s "$raw" | grep -q '"code":"INVALID_FIELD_VALUE"'; then
+    pass "J1 stalwart-internal Provider with authPassword rejected"
+  else
+    fail "J1 expected INVALID_FIELD_VALUE for stalwart-internal+authPassword; got: $raw"
+  fi
+
+  # J2. Creating a stalwart-internal Provider WITHOUT auth fields
+  # succeeds. The row carries authPasswordSet=false.
+  raw=$(api POST /api/v1/admin/notifications/providers \
+    '{"name":"Stalwart OK","providerType":"stalwart-internal","smtpHost":"stalwart-mail.mail.svc","smtpPort":465,"smtpSecure":true,"fromAddress":"notifications@apex.test","enabled":true,"isDefault":false}')
+  local provider_id
+  provider_id=$(printf %s "$raw" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{try{console.log(JSON.parse(s).data?.id ?? "")}catch{console.log("")}})')
+  if [[ -n "$provider_id" ]] && printf %s "$raw" | grep -q '"authPasswordSet":false'; then
+    pass "J2 stalwart-internal Provider without auth creates with authPasswordSet=false"
+    api DELETE "/api/v1/admin/notifications/providers/${provider_id}" >/dev/null 2>&1
+  else
+    fail "J2 stalwart-internal Provider create or authPasswordSet check failed: $raw"
+  fi
+}
+
+# ─── Phase K — Admin event Sources seeded (Phase 6A) ──
+phase_k() {
+  section "Phase K — Admin event Sources"
+  acquire_admin_token || return 1
+  for src in admin.cert_expiring admin.cert_renewal_failed admin.backup_failed admin.backup_target_unreachable admin.node_down; do
+    local n
+    n=$(psql_ro "SELECT count(*) FROM notification_categories WHERE id='${src}' AND is_active=TRUE;" | tr -d ' \r')
+    if [[ "$n" -eq 1 ]]; then
+      pass "K ${src} seeded + active"
+    else
+      fail "K ${src} missing or inactive"
+    fi
+  done
+}
+
 # ─── Driver ──
 run_phase A && phase_a
 run_phase B && phase_b
@@ -459,6 +504,8 @@ run_phase F && phase_f
 run_phase G && phase_g
 run_phase H && phase_h
 run_phase I && phase_i
+run_phase J && phase_j
+run_phase K && phase_k
 
 echo
 echo "═══════════════════════════════════════════"
