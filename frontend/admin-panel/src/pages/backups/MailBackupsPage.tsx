@@ -344,6 +344,23 @@ export default function MailBackupsPage() {
                             {formatBytes(s.sizeBytes)}
                           </td>
                           <td className="py-2 pr-3 text-xs text-gray-600 dark:text-gray-400">
+                            {/*
+                              2026-05-29: surface the `pre-migration`
+                              purpose as a distinct badge so operators
+                              can immediately tell which snapshot is the
+                              safety net taken just before a migration.
+                              Pre-fix the tag was buried in the comma-
+                              joined list and indistinguishable from the
+                              routine every-two-min CronJob runs.
+                            */}
+                            {s.tags.includes('pre-migration') && (
+                              <span
+                                className="mr-1 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                                data-testid="mail-backup-pre-migration-badge"
+                              >
+                                pre-migration
+                              </span>
+                            )}
                             {s.tags.length > 0 ? s.tags.join(', ') : '—'}
                           </td>
                           <td className="py-2 text-right">

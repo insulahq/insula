@@ -87,7 +87,15 @@ interface CronJobShape {
   };
 }
 
-interface JobShape {
+/**
+ * Minimal Job shape consumed by snapshot.ts. Exported so callers
+ * (notably the migration state machine) can declare a `readJob`
+ * function for `waitForSnapshotJob` without re-deriving the type via
+ * a conditional-type cast off `Parameters<typeof waitForSnapshotJob>`.
+ * The real `@kubernetes/client-node` `V1Job` is a structural superset
+ * of this — downcasting `V1Job → JobShape` is always safe.
+ */
+export interface JobShape {
   metadata?: {
     name?: string;
     creationTimestamp?: string;
@@ -101,6 +109,24 @@ interface JobShape {
     conditions?: { type: string; status: string; message?: string }[];
   };
 }
+
+/**
+ * Typed sentinel for cancel-from-operator. The outer migration state
+ * machine catches this and routes to the cancel path (rather than the
+ * "snapshot failed, warn-and-continue" path). Switching from a regex
+ * match on the error message to a typed sentinel makes the contract
+ * resilient against future error-message wording changes.
+ */
+export class SnapshotCancelledError extends Error {
+  override readonly name = 'SnapshotCancelledError';
+  constructor(jobName: string) {
+    super(`snapshot Job ${jobName} wait cancelled by operator`);
+  }
+}
+
+// Public API: also export the namespace constant + a label-safe
+// validator so external callers don't have to re-derive either.
+export { MAIL_NAMESPACE };
 
 interface JobListShape {
   items?: JobShape[];
@@ -237,6 +263,49 @@ export async function getMailSnapshotStatus(
 }
 
 /**
+ * Optional tagging for snapshots spawned outside the routine CronJob
+ * cadence (e.g. the migration state machine's pre-migration safety net).
+ * Propagated to the Job's container env (`EXTRA_RESTIC_TAGS`) so
+ * `snapshot-upload.sh` adds them as restic `--tag` args at backup time.
+ * Also stamped as Job labels so the UI can filter without parsing tags.
+ *
+ * 2026-05-29: added to fix the operator-visibility gap where
+ * pre-migration snapshots were indistinguishable from the every-two-min
+ * routine snapshots in /backups/mail?tab=backups.
+ */
+export interface SnapshotPurposeOptions {
+  /** Single-token classifier — currently `pre-migration` is the only caller. */
+  readonly purpose?: string;
+  /** Migration run id for cross-referencing in the UI. */
+  readonly runId?: string;
+}
+
+/**
+ * Label-safe charset enforcement for `purpose` + `runId`. Both end up
+ * as Kubernetes label values (DNS-1123-derived: `[a-zA-Z0-9][-_.A-Za-z0-9]*`,
+ * max 63 chars) AND as restic --tag args via shell word-splitting
+ * inside snapshot-upload.sh. The intersection of "safe in k8s labels"
+ * and "no shell meaning at all" is `[A-Za-z0-9._-]`. Reject anything
+ * else at the API boundary so a future caller that exposes these to
+ * operator input can't smuggle backticks/`;`/`$()` into either path.
+ *
+ * Today the only caller (migration.ts) passes the hard-coded literal
+ * `'pre-migration'` plus a server-generated UUID — both pass — so this
+ * is forward-looking defence-in-depth, not a live-exploit fix.
+ */
+const LABEL_SAFE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+
+function assertLabelSafe(value: string, field: string): void {
+  if (!LABEL_SAFE_RE.test(value)) {
+    throw new ApiError(
+      'INVALID_SNAPSHOT_LABEL',
+      `${field} must match [A-Za-z0-9][A-Za-z0-9._-]{0,62} — got '${value.slice(0, 50)}'`,
+      400,
+    );
+  }
+}
+
+/**
  * POST /admin/mail/snapshot/trigger
  *
  * Spawns a one-shot Job based on the stalwart-snapshot CronJob template.
@@ -244,8 +313,15 @@ export async function getMailSnapshotStatus(
  * GET /admin/mail/snapshot/jobs/:name for status.
  */
 export async function triggerMailSnapshot(
-  opts: SnapshotOptions,
+  opts: SnapshotOptions & SnapshotPurposeOptions,
 ): Promise<MailSnapshotTriggerResponse> {
+  // Enforce label-safe charset FIRST — before any k8s/DB calls. Without
+  // this ordering, validation regressions would surface as a confusing
+  // ENOENT / ECONNREFUSED from the kube-config step and operators
+  // wouldn't realise the actual issue was an unsafe `purpose` token.
+  if (opts.purpose !== undefined) assertLabelSafe(opts.purpose, 'purpose');
+  if (opts.runId !== undefined) assertLabelSafe(opts.runId, 'runId');
+
   // DR safety: if the `mail` backup class is bound to a frozen target,
   // refuse the snapshot before we spawn the Job. Otherwise the Job
   // will fail mid-flight against the upstream that the shim refuses
@@ -294,7 +370,10 @@ export async function triggerMailSnapshot(
   const jobName = `${SNAPSHOT_JOB_MANUAL_PREFIX}${randomShort()}`;
   const startedAt = new Date().toISOString();
 
-  const jobManifest = renderManualSnapshotJob(jobName, cronJob);
+  const jobManifest = renderManualSnapshotJob(jobName, cronJob, {
+    purpose: opts.purpose,
+    runId: opts.runId,
+  });
 
   try {
     await batch.createNamespacedJob({
@@ -397,9 +476,62 @@ export async function getMailSnapshotJobStatus(
  * Render a one-shot Job from the CronJob's jobTemplate spec.
  * The Job is labelled with stalwart-snapshot so it shows up in
  * `getMailSnapshotStatus()` counts and the snapshot-status poll.
+ *
+ * When `opts.purpose` is set, the rendered Job carries:
+ *   - Labels `mail.platform/snapshot-purpose=<purpose>` and (if runId)
+ *     `mail.platform/migration-run-id=<runId>` for cheap filtering.
+ *   - Container env `EXTRA_RESTIC_TAGS="<purpose> [run=<runId>]"` that
+ *     `snapshot-upload.sh` picks up and passes to `restic backup --tag`.
+ *
+ * The combination lets the UI surface a "pre-migration" badge in the
+ * /backups/mail?tab=backups list (via restic tags) without parsing
+ * restic JSON in a hot path (label-based filtering on Job inventory
+ * is enough for in-flight status).
  */
-function renderManualSnapshotJob(jobName: string, cronJob: CronJobShape): unknown {
-  const jobTemplateSpec = cronJob.spec?.jobTemplate?.spec ?? {};
+function renderManualSnapshotJob(
+  jobName: string,
+  cronJob: CronJobShape,
+  opts: SnapshotPurposeOptions = {},
+): unknown {
+  const jobTemplateSpec = (cronJob.spec?.jobTemplate?.spec ?? {}) as Record<string, unknown>;
+
+  const purposeTagTokens: string[] = [];
+  if (opts.purpose) purposeTagTokens.push(opts.purpose);
+  if (opts.runId) purposeTagTokens.push(`run=${opts.runId}`);
+  const extraTagsValue = purposeTagTokens.join(' ');
+
+  const purposeLabels: Record<string, string> = {};
+  if (opts.purpose) purposeLabels['mail.platform/snapshot-purpose'] = opts.purpose;
+  if (opts.runId) purposeLabels['mail.platform/migration-run-id'] = opts.runId;
+
+  // Deep-clone the template's container[0] env to avoid mutating the
+  // CronJob spec we just read. The CronJob template's first container
+  // is the snapshot uploader (see snapshot-cronjob.yaml). If the
+  // template ever changes shape, the safest no-op is to return the
+  // job unchanged so a manifest evolution doesn't break this path.
+  const podTemplate = (jobTemplateSpec.template as Record<string, unknown> | undefined) ?? {};
+  const podSpec = (podTemplate.spec as Record<string, unknown> | undefined) ?? {};
+  const containers = Array.isArray(podSpec.containers)
+    ? (podSpec.containers as Array<Record<string, unknown>>)
+    : [];
+
+  let templateWithExtraTags = podTemplate;
+  if (extraTagsValue && containers.length > 0) {
+    const first = { ...containers[0] };
+    const env = Array.isArray(first.env)
+      ? [...(first.env as Array<{ name: string; value: string }>)]
+      : [];
+    // Replace any existing EXTRA_RESTIC_TAGS (idempotency).
+    const filteredEnv = env.filter((e) => e?.name !== 'EXTRA_RESTIC_TAGS');
+    filteredEnv.push({ name: 'EXTRA_RESTIC_TAGS', value: extraTagsValue });
+    first.env = filteredEnv;
+    const newContainers = [first, ...containers.slice(1)];
+    templateWithExtraTags = {
+      ...podTemplate,
+      spec: { ...podSpec, containers: newContainers },
+    };
+  }
+
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -409,6 +541,7 @@ function renderManualSnapshotJob(jobName: string, cronJob: CronJobShape): unknow
       labels: {
         [SNAPSHOT_JOB_LABEL_KEY]: SNAPSHOT_JOB_LABEL_VALUE,
         'stalwart-snapshot-trigger': 'manual',
+        ...purposeLabels,
       },
     },
     spec: {
@@ -416,15 +549,103 @@ function renderManualSnapshotJob(jobName: string, cronJob: CronJobShape): unknow
       // Override ttlSecondsAfterFinished so manual jobs are visible for 1 hour
       ttlSecondsAfterFinished: 3600,
       template: {
-        ...((jobTemplateSpec as Record<string, unknown>).template ?? {}),
+        ...templateWithExtraTags,
         metadata: {
           labels: {
             [SNAPSHOT_JOB_LABEL_KEY]: SNAPSHOT_JOB_LABEL_VALUE,
             'job-name': jobName,
             'stalwart-snapshot-trigger': 'manual',
+            ...purposeLabels,
           },
         },
       },
     },
   };
+}
+
+/**
+ * Test-only export — exposes the rendering function so unit tests can
+ * assert the Job manifest shape without spinning up k8s. The function
+ * itself is private so external callers can't accidentally bypass
+ * `triggerMailSnapshot`'s pre-flight checks (BackupTarget freeze
+ * detection, CronJob 404 handling, etc.).
+ */
+export function renderManualSnapshotJobForTest(
+  jobName: string,
+  cronJob: CronJobShape,
+  opts: SnapshotPurposeOptions = {},
+): unknown {
+  return renderManualSnapshotJob(jobName, cronJob, opts);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// waitForSnapshotJob — replaces waitForFreshSnapshot in migration.ts.
+//
+// PRE-FIX BUG (2026-05-29): migration's "snapshotting" step polled
+// `CronJob.status.lastSuccessfulTime` which is only populated by Jobs
+// the CronJob CONTROLLER spawned. Manually-created Jobs (which
+// triggerMailSnapshot creates) do NOT update lastSuccessfulTime even
+// when they succeed.
+//
+// Result: the migration's snapshotting step blocked until the next
+// every-two-min CronJob fire happened to update lastSuccessfulTime
+// (up to ~2 min of dead wait time on top of the manual Job's actual
+// 4-10 s completion). Operators saw "Taking pre-migration mail
+// backup" sit on the same label for an unreasonable duration even
+// when the underlying restic backup was already done.
+//
+// Fix: poll the specific Job we just spawned by jobName.
+// ─────────────────────────────────────────────────────────────────────
+
+export interface WaitForSnapshotJobOptions {
+  readonly jobName: string;
+  readonly timeoutMs: number;
+  readonly pollIntervalMs: number;
+  /** Indirection for tests — production caller passes the real k8s client. */
+  readonly readJob: (jobName: string) => Promise<JobShape>;
+  /** Optional cancel hook — if it returns true, throws an "operator cancelled" error. */
+  readonly isCancelRequested?: () => Promise<boolean>;
+}
+
+export async function waitForSnapshotJob(opts: WaitForSnapshotJobOptions): Promise<void> {
+  const deadline = Date.now() + opts.timeoutMs;
+  while (Date.now() < deadline) {
+    // Use a try/catch around isCancelRequested so a transient DB error
+    // doesn't propagate to the caller as a non-cancel error (which the
+    // outer migration would log as "snapshot failed" and silently
+    // proceed past the cancel). Treat any error from the cancel hook
+    // as "not cancelled this tick" — the real cancel will resurface
+    // on the next poll once the DB recovers.
+    let isCancelled = false;
+    if (opts.isCancelRequested) {
+      try {
+        isCancelled = await opts.isCancelRequested();
+      } catch {
+        isCancelled = false;
+      }
+    }
+    if (isCancelled) {
+      throw new SnapshotCancelledError(opts.jobName);
+    }
+    let job: JobShape | null = null;
+    try {
+      job = await opts.readJob(opts.jobName);
+    } catch {
+      // ENOENT / transient — keep polling until the deadline.
+    }
+    const succeeded = (job?.status?.succeeded ?? 0) >= 1;
+    if (succeeded) return;
+    const failed = (job?.status?.failed ?? 0) >= 1;
+    if (failed) {
+      const condMsg =
+        (job?.status?.conditions ?? []).find((c) => c.type === 'Failed')?.message ?? null;
+      throw new Error(
+        `snapshot Job ${opts.jobName} failed${condMsg ? `: ${condMsg}` : ''}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, opts.pollIntervalMs));
+  }
+  throw new Error(
+    `snapshot Job ${opts.jobName} timed out after ${opts.timeoutMs}ms (deadline exceeded)`,
+  );
 }
