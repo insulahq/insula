@@ -852,16 +852,50 @@ async function runMigrationStateMachine(
     } else {
       await setStep(db, runId, 'snapshotting', 'running', taskId);
       try {
-        await triggerMailSnapshot({ kubeconfigPath, db });
-        // Wait until the snapshot completes. The snapshot CronJob runs
-        // every 2 minutes; an on-demand trigger usually completes in
-        // 20-60s for small DataStores. We poll for up to 5 min.
-        await waitForFreshSnapshot(deps, 300, runId);
+        // 2026-05-29: tag the pre-migration snapshot so /backups/mail
+        // can render a `pre-migration` badge instead of leaving it
+        // indistinguishable from the every-two-min routine runs.
+        const snapshotModule = await import('./snapshot.js');
+        const triggerResp = await snapshotModule.triggerMailSnapshot({
+          kubeconfigPath,
+          db,
+          purpose: 'pre-migration',
+          runId,
+        });
+        // Wait until THIS specific Job succeeds (not until the CronJob
+        // controller's lastSuccessfulTime catches up — that race added
+        // up to 2 min of dead wait on every migration pre-fix).
+        const k8s = await import('@kubernetes/client-node');
+        const kc = new k8s.KubeConfig();
+        if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
+        else kc.loadFromCluster();
+        const batchApi = kc.makeApiClient(k8s.BatchV1Api);
+        await snapshotModule.waitForSnapshotJob({
+          jobName: triggerResp.jobName,
+          timeoutMs: 5 * 60 * 1000,
+          pollIntervalMs: 2_000,
+          // V1Job is structurally a superset of JobShape; downcast is safe.
+          readJob: async (jn) => {
+            type JobShape = import('./snapshot.js').JobShape;
+            return (await batchApi.readNamespacedJob({
+              namespace: snapshotModule.MAIL_NAMESPACE,
+              name: jn,
+            })) as JobShape;
+          },
+          isCancelRequested: () => isCancelRequested(db, runId),
+        });
       } catch (snapErr) {
         // Don't swallow operator cancels — they must abort the
         // whole migration, not silently fall through to the next step.
         // Pre-fix bug caught 2026-05-28 by Phase E of the mobility E2E.
         if (snapErr instanceof MigrationCancelledError) throw snapErr;
+        // Re-classify the typed sentinel from snapshot.ts. The previous
+        // regex-on-error-message approach silently broke whenever the
+        // error string was rephrased; typed sentinel survives refactors.
+        const { SnapshotCancelledError } = await import('./snapshot.js');
+        if (snapErr instanceof SnapshotCancelledError) {
+          throw new MigrationCancelledError('snapshotting');
+        }
         log.warn('[migration] fresh snapshot failed; will proceed with the latest CronJob snapshot:', snapErr);
       }
     }
@@ -1800,6 +1834,16 @@ async function waitForReplicaCount(
  * the migration's start time, indicating our on-demand trigger produced
  * a fresh snapshot. Falls through silently after `timeoutSeconds` — the
  * migration will still proceed using the latest available snapshot.
+ *
+ * @deprecated 2026-05-29 — only update by CronJob-controller-spawned
+ *   Jobs touches `CronJob.status.lastSuccessfulTime`. Manually-created
+ *   Jobs (which `triggerMailSnapshot` produces) do NOT update it, so a
+ *   caller that pairs this wait with `triggerMailSnapshot` adds up to
+ *   ~2 min of dead-wait on every call. New callers should use
+ *   `waitForSnapshotJob(jobName)` from `./snapshot.js` instead, which
+ *   polls the specific Job by name. Keeping this helper around solely
+ *   for the recovery paths that DON'T spawn a new snapshot Job — those
+ *   genuinely wait for the next CronJob fire to complete.
  */
 async function waitForFreshSnapshot(
   deps: MigrationDeps,
