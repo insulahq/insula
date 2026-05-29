@@ -61,6 +61,22 @@ export default function MailDrCard() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showReprovision, setShowReprovision] = useState(false);
 
+  // 2026-05-29: these two `useState`s used to live AFTER the early
+  // returns for isLoading / isError below (around the legacy "current"
+  // computation). That violated the Rule of Hooks — initial loading
+  // render called 11 hooks, the loaded render called 13, and React 18
+  // would throw "Rendered more hooks than during the previous render"
+  // on the loading→loaded transition. Symptom seen on staging during
+  // a destructive failback (worker→staging1) ended with React error
+  // #300 ("Too many re-renders") because React's render bailout fires
+  // before the hook-count error in production builds.
+  // ALL hooks MUST be unconditional and appear in the same order on
+  // every render — moved here so they're declared before any return.
+  const [primaryChangeModal, setPrimaryChangeModal] = useState<
+    null | { newPrimary: string; oldPrimary: string | null }
+  >(null);
+  const [persistingPlacement, setPersistingPlacement] = useState(false);
+
   // Init draft from server data
   useEffect(() => {
     if (query.data?.data && !draft) {
@@ -122,19 +138,17 @@ export default function MailDrCard() {
   const selectedNodes = [d.primaryNode, d.secondaryNode, d.tertiaryNode].filter(Boolean) as string[];
   const hasDuplicates = new Set(selectedNodes).size < selectedNodes.length;
 
-  // Primary-change modal state (2026-05-28). If the operator changes
-  // primary AND there's already an active node, ask whether to migrate
-  // immediately, defer until later, or cancel the placement change.
-  const [primaryChangeModal, setPrimaryChangeModal] = useState<
-    null | { newPrimary: string; oldPrimary: string | null }
-  >(null);
-  // Local in-flight guard for the modal's "Move now"/"Move later"
-  // buttons. Closes a race where the operator clicks Move Now, the
-  // modal closes immediately, then they click the drift-banner CTA
-  // before `update.mutateAsync` resolves — `movePending` is still
-  // false at that point because handleMove hasn't fired yet. Caught
-  // 2026-05-28 code review HIGH-2.
-  const [persistingPlacement, setPersistingPlacement] = useState(false);
+  // primaryChangeModal + persistingPlacement state declared above
+  // with the rest of the hooks (must precede early returns).
+  // - primaryChangeModal opens the 3-choice "primary changed" modal
+  //   when the operator edits primary AND mail is currently active on
+  //   a different node.
+  // - persistingPlacement is the local in-flight guard for the modal's
+  //   "Move now"/"Move later" buttons. Closes a race where the operator
+  //   clicks Move Now, the modal closes immediately, then they click
+  //   the drift-banner CTA before `update.mutateAsync` resolves —
+  //   `movePending` is still false at that point because handleMove
+  //   hasn't fired yet. Caught 2026-05-28 code review HIGH-2.
 
   async function persistPlacement(
     extra: { triggerMigration?: boolean } = {},
