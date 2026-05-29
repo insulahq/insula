@@ -3,10 +3,10 @@ name: Tenant Panel CI
 on:
   push:
     branches: [main]
-    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**']
+    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-tenant-panel.yml']
   pull_request:
     branches: [main]
-    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**']
+    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-tenant-panel.yml']
 
 jobs:
   lint-typecheck-test-build:
