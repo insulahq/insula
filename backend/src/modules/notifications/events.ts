@@ -36,6 +36,7 @@ async function dispatchSafe(
   scope: Parameters<typeof emitEvent>[1]['scope'],
   variables: object,
   tenantId?: string,
+  extraOpts?: { readonly dedupeKey?: string },
 ): Promise<void> {
   try {
     await emitEvent(db, {
@@ -43,6 +44,7 @@ async function dispatchSafe(
       scope,
       variables: { ...variables } as Record<string, unknown>,
       tenantId,
+      dedupeKey: extraOpts?.dedupeKey,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -262,6 +264,7 @@ export async function notifyTenantEmailBootstrapped(
 
 export interface SubscriptionChangedPayload {
   readonly tenantName?: string;
+  readonly oldPlanName?: string;
   readonly newPlanName?: string;
 }
 export async function notifyTenantSubscriptionChanged(
@@ -272,16 +275,50 @@ export async function notifyTenantSubscriptionChanged(
   await dispatchSafe(db, 'subscription.changed', { kind: 'tenant', tenantId }, payload, tenantId);
 }
 
+export interface SubscriptionRenewedPayload {
+  readonly tenantName?: string;
+  readonly newExpiresAt: string;
+}
+/**
+ * Fire when a tenant's subscription_expires_at advances past its
+ * previous value — admin manual renewal today, auto-renewal worker
+ * tomorrow. The category is informational (non-mandatory).
+ */
+export async function notifyTenantSubscriptionRenewed(
+  db: Database,
+  tenantId: string,
+  payload: SubscriptionRenewedPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'subscription.renewed', { kind: 'tenant', tenantId }, payload, tenantId);
+}
+
 export interface SubscriptionExpiryPayload {
   readonly tenantName?: string;
   readonly expiresAt: string;
+  readonly daysUntilExpiry?: number;
 }
+/**
+ * The `dedupeKey` argument lets the scheduler call this from a daily
+ * cron without flooding the tenant inbox — the dispatcher silently
+ * skips when the same key has fired for this recipient in the last 30
+ * days. Format the key as
+ *   `subscription-expiry:<tenantId>:<daysOut>:<expiryDate>`
+ * so that each (tenant, warning slot, expiry slot) emits at most once.
+ */
 export async function notifyTenantSubscriptionExpiry(
   db: Database,
   tenantId: string,
   payload: SubscriptionExpiryPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'subscription.expiry_warning', { kind: 'tenant', tenantId }, payload, tenantId);
+  await dispatchSafe(
+    db,
+    'subscription.expiry_warning',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey },
+  );
 }
 
 export interface SubAccountAddedPayload {

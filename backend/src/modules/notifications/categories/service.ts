@@ -7,9 +7,9 @@
  * code-owned to keep audit trails stable.
  */
 
-import { eq, asc } from 'drizzle-orm';
+import { and, eq, asc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { notificationCategories, auditLogs } from '../../../db/schema.js';
+import { notificationCategories, notificationProviders, auditLogs } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { ALL_CATEGORIES } from './seed.js';
 import type {
@@ -75,6 +75,7 @@ function rowToResponse(row: typeof notificationCategories.$inferSelect): Notific
     rateLimitWindowS: row.rateLimitWindowS ?? null,
     rateLimitMax: row.rateLimitMax ?? null,
     isActive: row.isActive,
+    emailProviderId: row.emailProviderId ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -138,6 +139,36 @@ export async function updateCategory(
   if (input.rateLimitWindowS !== undefined) patch.rateLimitWindowS = input.rateLimitWindowS;
   if (input.rateLimitMax !== undefined) patch.rateLimitMax = input.rateLimitMax;
   if (input.isActive !== undefined) patch.isActive = input.isActive;
+  // Phase 5: per-source provider override. Pass null to clear; the
+  // FK has ON DELETE SET NULL so a deleted provider auto-reverts.
+  // We validate at write time (security review MEDIUM-1): a non-null
+  // value must reference an enabled platform-scope email provider.
+  // Without this an admin could (accidentally or maliciously) point
+  // the override at a provider that doesn't match the channel —
+  // dispatcher would silently fall back to default with no audit log
+  // explaining why.
+  if (input.emailProviderId !== undefined) {
+    if (input.emailProviderId !== null) {
+      const [target] = await db
+        .select({ id: notificationProviders.id })
+        .from(notificationProviders)
+        .where(and(
+          eq(notificationProviders.id, input.emailProviderId),
+          eq(notificationProviders.channel, 'email'),
+          eq(notificationProviders.scope, 'platform'),
+        ))
+        .limit(1);
+      if (!target) {
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          'emailProviderId must reference an existing platform-scope email provider',
+          400,
+          { field: 'emailProviderId' },
+        );
+      }
+    }
+    patch.emailProviderId = input.emailProviderId;
+  }
 
   if (Object.keys(patch).length === 0) {
     return existing;

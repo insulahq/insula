@@ -61,7 +61,7 @@ set -euo pipefail
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
-PHASES="${PHASES:-A,B,C,D,E,F,G}"
+PHASES="${PHASES:-A,B,C,D,E,F,G,H,I}"
 
 # Use kubectl-via-docker to talk to the API service inside k3s.
 kx() { docker exec "$K3S_CONTAINER" kubectl -n platform "$@"; }
@@ -383,6 +383,72 @@ phase_g() {
   fi
 }
 
+# ─── Phase H: Subscription event wiring (Phase 4) ──
+phase_h() {
+  section "Phase H — Subscription event wiring"
+  acquire_admin_token || return 1
+
+  # H1. subscription.renewed category seeded.
+  local cat_count
+  cat_count=$(psql_ro "SELECT count(*) FROM notification_categories WHERE id='subscription.renewed';" | tr -d ' \r')
+  if [[ "$cat_count" -eq 1 ]]; then
+    pass "H1 subscription.renewed category seeded"
+  else
+    fail "H1 subscription.renewed category missing"
+  fi
+
+  # H2. dedupe_key column on notification_deliveries (Phase 4 follow-up).
+  local col_exists
+  col_exists=$(psql_ro "SELECT count(*) FROM information_schema.columns WHERE table_name='notification_deliveries' AND column_name='dedupe_key';" | tr -d ' \r')
+  if [[ "$col_exists" -eq 1 ]]; then
+    pass "H2 dedupe_key column present on notification_deliveries"
+  else
+    fail "H2 dedupe_key column missing (migration 0045 not applied)"
+  fi
+
+  # H3. dedupe lookup index present.
+  local idx_exists
+  idx_exists=$(psql_ro "SELECT count(*) FROM pg_indexes WHERE indexname='notification_deliveries_dedupe_lookup_idx';" | tr -d ' \r')
+  if [[ "$idx_exists" -eq 1 ]]; then
+    pass "H3 notification_deliveries_dedupe_lookup_idx partial index present"
+  else
+    fail "H3 dedupe partial index missing"
+  fi
+}
+
+# ─── Phase I: Per-Source provider routing (Phase 5) ──
+phase_i() {
+  section "Phase I — Per-Source provider routing"
+  acquire_admin_token || return 1
+
+  # I1. email_provider_id column on notification_categories (migration 0044).
+  local col_exists
+  col_exists=$(psql_ro "SELECT count(*) FROM information_schema.columns WHERE table_name='notification_categories' AND column_name='email_provider_id';" | tr -d ' \r')
+  if [[ "$col_exists" -eq 1 ]]; then
+    pass "I1 email_provider_id column present on notification_categories"
+  else
+    fail "I1 email_provider_id column missing (migration 0044 not applied)"
+  fi
+
+  # I2. emailProviderId exposed via GET /admin/notifications/categories.
+  local raw
+  raw=$(api GET /api/v1/admin/notifications/categories)
+  if printf %s "$raw" | grep -q 'emailProviderId'; then
+    pass "I2 categories response includes emailProviderId"
+  else
+    fail "I2 categories response missing emailProviderId field"
+  fi
+
+  # I3. PATCH with invalid emailProviderId should be rejected (security fix).
+  local invalid_raw
+  invalid_raw=$(api PATCH /api/v1/admin/notifications/categories/tenant.suspended '{"emailProviderId":"00000000-0000-0000-0000-000000000000"}')
+  if printf %s "$invalid_raw" | grep -q '"code":"INVALID_FIELD_VALUE"'; then
+    pass "I3 PATCH rejects emailProviderId pointing at non-existent provider"
+  else
+    fail "I3 PATCH accepted bad emailProviderId: $invalid_raw"
+  fi
+}
+
 # ─── Driver ──
 run_phase A && phase_a
 run_phase B && phase_b
@@ -391,6 +457,8 @@ run_phase D && phase_d
 run_phase E && phase_e
 run_phase F && phase_f
 run_phase G && phase_g
+run_phase H && phase_h
+run_phase I && phase_i
 
 echo
 echo "═══════════════════════════════════════════"
