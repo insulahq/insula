@@ -1171,6 +1171,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => backupHealthStop());
 
+        // Restore-cart cleanup: sweeps `status='draft'` carts older than
+        // 7 days every 15 min. Tab-close orphans accumulate forever
+        // otherwise. Cascade FK on restore_items takes care of items.
+        // Non-draft carts are NEVER touched — the audit trail for a
+        // destructive op stays forever.
+        const { startCleanupDraftsScheduler } = await import('./modules/backup-restore/cleanup-drafts-scheduler.js');
+        const cleanupDraftsStop = startCleanupDraftsScheduler({
+          db: app.db,
+          logger: {
+            info: (msg, ctx) => app.log.info(ctx ?? {}, `restore-cart-cleanup: ${msg}`),
+            warn: (msg, err) => app.log.warn({ err }, `restore-cart-cleanup: ${msg}`),
+          },
+        });
+        app.addHook('onClose', () => cleanupDraftsStop());
+
         // CNPG-backup-health: sister scheduler that watches CNPG Backup
         // CRs (postgresql.cnpg.io/v1, distinct from K8s batch/v1 Jobs)
         // and emits one admin notification per failed CR. Closes the
