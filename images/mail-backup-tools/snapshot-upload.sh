@@ -80,14 +80,18 @@ if [ -n "${EXTRA_RESTIC_TAGS:-}" ]; then
     # Skip empty tokens defensively (double space, leading/trailing).
     [ -z "$tok" ] && continue
     # Defence-in-depth: reject any token containing characters outside
-    # the label-safe set [A-Za-z0-9._-]. The TypeScript caller
-    # (snapshot.ts:assertLabelSafe) ALREADY enforces this at the API
-    # boundary, but a missing/broken validator there must not become
-    # arbitrary shell execution here. `case` with a glob negation is
-    # POSIX-portable and avoids regex tooling differences across busybox
-    # / Alpine / Debian containers.
+    # the restic-tag-safe set [A-Za-z0-9._=-]. The TypeScript caller
+    # (snapshot.ts:assertLabelSafe) enforces stricter rules on each
+    # SINGLE-VALUE component (purpose, runId — no `=`), but the
+    # combined env value carries multiple `key=value` style tokens
+    # (e.g. `run=<uuid>`) so we accept `=` here. The intersection of
+    # "restic-tag-meaningful" and "shell-quiet" still excludes the
+    # interesting metachars: `$`, backtick, `*`, `?`, `;`, `&`, `|`,
+    # `<`, `>`, `(`, `)`, `[`, `]`, `{`, `}`, quotes, `\`.
+    # `case` with a glob negation is POSIX-portable and avoids regex
+    # tooling differences across busybox / Alpine / Debian containers.
     case "$tok" in
-      *[!A-Za-z0-9._-]*)
+      *[!A-Za-z0-9._=-]*)
         echo "  skipping token with unsafe chars: '$tok'" >&2
         continue
         ;;
