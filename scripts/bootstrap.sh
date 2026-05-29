@@ -4084,14 +4084,21 @@ spec:
     # exists in-cluster with a valid schedule, so removing it from
     # Flux's apply input leaves the live value untouched.
     - patch: |
-        - op: remove
-          path: /spec/schedule
-          # /spec/suspend is owned by the platform-api mail-snapshot
-          # reconciler (suspended until a mail backup target is bound).
-          # Strip it too so Flux never re-suspends an operator-enabled
-          # job. Unlike schedule, suspend is optional (defaults false),
-          # so removing it never trips the apiserver required-field
-          # validation on a fresh bootstrap.
+        # Strip ONLY /spec/suspend — it is owned by the platform-api
+        # mail-snapshot reconciler (suspended until a mail backup target
+        # is bound); stripping it stops Flux re-suspending an
+        # operator-enabled job. suspend is optional (defaults false), so
+        # removing it never trips required-field validation.
+        #
+        # We deliberately do NOT strip /spec/schedule: removing a REQUIRED
+        # field makes Flux apply a schedule-less CronJob, which fails the
+        # apiserver dry-run ("spec.schedule: Required value") and pins the
+        # platform Kustomization at Ready=False on fresh bootstrap (the
+        # field has no surviving owner at apply time). Instead the manifest
+        # ships a valid default (*/30); the reconciler SSA-asserts the
+        # operator override (system_settings.mail_snapshot_schedule) every
+        # 5 min and the CronJob's kustomize.toolkit.fluxcd.io/ssa:
+        # IgnoreConflicts annotation keeps Flux from reverting it.
         - op: remove
           path: /spec/suspend
       target:
