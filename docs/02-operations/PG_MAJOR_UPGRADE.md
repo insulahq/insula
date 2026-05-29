@@ -31,7 +31,7 @@ curl -sSL -X POST "$HOST/api/v1/system-backup/pg-dump" \
   -d "{
     \"sourceNamespace\": \"platform\",
     \"sourceCluster\":   \"system-db\",
-    \"sourceDatabase\":  \"hosting_platform\",
+    \"sourceDatabase\":  \"platform\",
     \"targetConfigId\":  \"$TARGET\",
     \"reason\":          \"PG 18 -> 19 upgrade\"
   }"
@@ -41,7 +41,7 @@ Response (202): `{ runId, status: "running", jobName, pollUrl }`. Poll `pollUrl`
 
 ## Restore a dump
 
-`POST /api/v1/system-backup/pg-dump/runs/:id/restore-recipe` returns a copy-pasteable kubectl + pg_restore recipe. The recipe assumes you've already built the destination cluster (a fresh CNPG `Cluster` CR on the new PG major version, empty database, same `hosting_platform` role/db pair).
+`POST /api/v1/system-backup/pg-dump/runs/:id/restore-recipe` returns a copy-pasteable kubectl + pg_restore recipe. The recipe assumes you've already built the destination cluster (a fresh CNPG `Cluster` CR on the new PG major version, empty database, same `platform` role/db pair).
 
 The recipe will `pg_restore --clean --if-exists` — it WIPES the destination database before loading. Make absolutely sure you're pointing at the new cluster, not the old one.
 

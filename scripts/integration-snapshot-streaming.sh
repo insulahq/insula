@@ -96,7 +96,7 @@ api_with_status() {
 
 psql_exec() {
   docker exec -i hosting-platform-k3s-server-1 kubectl exec -n platform system-db-1 -c postgres -- \
-    psql -U postgres -d hosting_platform -tA -c "$1"
+    psql -U postgres -d platform -tA -c "$1"
 }
 
 kubectl_dind() {

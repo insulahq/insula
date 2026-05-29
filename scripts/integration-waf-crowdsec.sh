@@ -368,7 +368,7 @@ done
 phase "Phase 3 — WAF events captured per Traefik DS pod"
 
 # Snapshot waf_logs count before
-before=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
+before=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
 log "waf_logs count in last 2min before probes: ${before:-0}"
 
 for pod in $traefik_pods; do
@@ -391,7 +391,7 @@ done
 log "waiting 40s for WAF scraper to capture..."
 sleep 40
 
-after=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
+after=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
 delta=$(( ${after:-0} - ${before:-0} ))
 if (( delta >= traefik_count )); then
   ok "waf_logs grew by $delta (≥ $traefik_count probes)"
@@ -401,7 +401,7 @@ fi
 
 # Verify hostname extraction works (X-Forwarded-Host should be captured,
 # not the modsec Service hostname or 'localhost').
-real_host_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes' AND hostname = '$PROBE_HOSTNAME';\"" 2>/dev/null | tr -d '[:space:]')
+real_host_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes' AND hostname = '$PROBE_HOSTNAME';\"" 2>/dev/null | tr -d '[:space:]')
 if (( ${real_host_count:-0} >= 1 )); then
   ok "Events captured with hostname=$PROBE_HOSTNAME (X-Forwarded-Host extraction works)"
 else
@@ -410,7 +410,7 @@ fi
 
 # Verify source IP extraction (X-Real-Ip should be captured, not the
 # in-cluster pod IP).
-real_ip_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes' AND source_ip = '$TEST_BAN_IP';\"" 2>/dev/null | tr -d '[:space:]')
+real_ip_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes' AND source_ip = '$TEST_BAN_IP';\"" 2>/dev/null | tr -d '[:space:]')
 if (( ${real_ip_count:-0} >= 1 )); then
   ok "Events captured with source_ip=$TEST_BAN_IP (X-Real-Ip extraction works)"
 else
@@ -943,7 +943,7 @@ phase "Phase K — B2 tenant-scoped WAF exclusions"
 # Pick the most-recent active route to minimise the chance the harness
 # fights with a long-lived operator session. Skip the phase cleanly if
 # no tenant routes exist (clean staging install case).
-k_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
+k_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -F '|' -c \"
   SELECT d.tenant_id, ir.id, ir.hostname
   FROM ingress_routes ir
   JOIN domains d ON d.id = ir.domain_id
@@ -1143,7 +1143,7 @@ phase "Phase L — per-route config matrix"
 # When no working tenant route exists (clean staging install with no
 # tenant deployments), Phase L gracefully skips — to get coverage,
 # run `integration-staging.sh https` first to seed a fixture route.
-l_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
+l_route_tuple=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -F '|' -c \"
   SELECT d.tenant_id, ir.id, ir.hostname
   FROM ingress_routes ir
   JOIN domains d ON d.id = ir.domain_id
@@ -1163,7 +1163,7 @@ else
   # Snapshot original config so cleanup can restore. We pull the
   # current values directly from the DB to avoid round-tripping
   # through the admin API (no admin GET for security settings).
-  L_ORIG=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -tA -F '|' -c \"
+  L_ORIG=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -F '|' -c \"
     SELECT
       COALESCE(force_https::text, '0'),
       COALESCE(ip_allowlist, ''),
@@ -1182,7 +1182,7 @@ else
   # Cleanup: restore each column to its snapshot value. Trap always
   # fires regardless of mid-phase failure path.
   cleanup_l() {
-    kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d hosting_platform -c \"
+    kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -c \"
       UPDATE ingress_routes SET
         force_https = ${L_ORIG_FORCE_HTTPS:-0}::int,
         ip_allowlist = NULLIF('$L_ORIG_IP_ALLOWLIST', ''),

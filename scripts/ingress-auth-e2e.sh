@@ -85,7 +85,7 @@ api() {
 ssh_run() { ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@"; }
 
 psql_q() {
-  ssh_run "kubectl -n platform exec -i postgres-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"$1\""
+  ssh_run "kubectl -n platform exec -i postgres-1 -c postgres -- psql -U postgres -d platform -t -A -c \"$1\""
 }
 
 run_scenario() {
