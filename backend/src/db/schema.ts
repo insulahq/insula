@@ -2358,7 +2358,10 @@ export const systemSettings = pgTable('system_settings', {
   supportEmail: varchar('support_email', { length: 255 }),
   supportUrl: varchar('support_url', { length: 500 }),
   ingressBaseDomain: varchar('ingress_base_domain', { length: 255 }),
-  mailHostname: varchar('mail_hostname', { length: 255 }),
+  // NOTE: the canonical mail hostname is platform_settings.mail_server_hostname
+  // (Admin → Email → Server). The former system_settings.mail_hostname column
+  // was vestigial (backend ignored writes, nothing read it) and was dropped
+  // in migration 0046.
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),

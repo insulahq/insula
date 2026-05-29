@@ -49,10 +49,11 @@ const updateSchema = z.object({
   // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat for
   // every monetary amount shown in both panels. Default 'USD'.
   currency: z.string().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter ISO 4217 code (e.g. USD)').optional(),
-  // Deprecated here — mailHostname + webmailUrl moved to /admin/webmail-settings
-  // in the 2026-04-19 consolidation. Accept silently for backwards compat so
-  // existing tooling doesn't break; the service layer ignores them.
-  mailHostname: z.string().max(255).optional().nullable(),
+  // Deprecated here — webmailUrl moved to /admin/webmail-settings in the
+  // 2026-04-19 consolidation. Accept silently for backwards compat so
+  // existing tooling doesn't break; the service layer ignores it.
+  // (mailHostname removed — canonical value is mailServerHostname under
+  // /admin/webmail-settings; the column was dropped in migration 0046.)
   webmailUrl: z.string().url().max(500).optional().nullable(),
   // Host-port gating (migration 0062). When false, the catalog deploy
   // path rejects workloads that request hostPort or carry the
