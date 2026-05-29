@@ -25,11 +25,24 @@ import {
   updateNotificationTemplateSchema,
   previewNotificationTemplateSchema,
   listNotificationDeliveriesQuerySchema,
+  createNotificationProviderSchema,
+  updateNotificationProviderSchema,
+  testNotificationProviderSchema,
 } from '@k8s-hosting/api-contracts';
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
+import * as providerService from './providers/service.js';
 import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
+
+const PROVIDERS_RATE_LIMIT_ERR =
+  'PLATFORM_ENCRYPTION_KEY is required for notification provider operations (credential encryption)';
+
+function requireEncryptionKey(): string {
+  const key = process.env.PLATFORM_ENCRYPTION_KEY;
+  if (!key) throw new ApiError('CONFIGURATION_ERROR', PROVIDERS_RATE_LIMIT_ERR, 500);
+  return key;
+}
 
 export async function notificationAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -248,5 +261,74 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       app.log.warn({ err, delivery_id: id }, '[notifications] manual retry enqueue failed');
     }
     return success({ id, status: 'queued' });
+  });
+
+  // ── Providers (Phase 3B) ────────────────────────────────────────
+  // Dedicated transport endpoint catalogue — distinct from
+  // smtp_relay_configs (which is tenant-side outbound mail).
+  app.get('/admin/notifications/providers', async () => {
+    const rows = await providerService.listProviders(app.db);
+    return success(rows);
+  });
+
+  app.get('/admin/notifications/providers/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    return success(await providerService.getProvider(app.db, id));
+  });
+
+  app.post('/admin/notifications/providers', async (request) => {
+    const parsed = createNotificationProviderSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+      );
+    }
+    const encryptionKey = requireEncryptionKey();
+    const created = await providerService.createProvider(app.db, parsed.data, {
+      userId: request.user!.sub,
+      encryptionKey,
+    });
+    return success(created);
+  });
+
+  app.patch('/admin/notifications/providers/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const parsed = updateNotificationProviderSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+      );
+    }
+    const encryptionKey = requireEncryptionKey();
+    const updated = await providerService.updateProvider(app.db, id, parsed.data, { encryptionKey });
+    return success(updated);
+  });
+
+  app.delete('/admin/notifications/providers/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    await providerService.deleteProvider(app.db, id);
+    reply.status(204).send();
+  });
+
+  app.post('/admin/notifications/providers/:id/test', async (request) => {
+    const { id } = request.params as { id: string };
+    const parsed = testNotificationProviderSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+      );
+    }
+    const encryptionKey = requireEncryptionKey();
+    const result = await providerService.testProvider(app.db, id, parsed.data, { encryptionKey });
+    return success(result);
   });
 }

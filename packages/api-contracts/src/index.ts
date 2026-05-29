@@ -47,6 +47,7 @@ export * from './notification-categories.js';
 export * from './notification-templates.js';
 export * from './notification-preferences.js';
 export * from './notification-deliveries.js';
+export * from './notification-providers.js';
 export * from './backup-config.js';
 export * from './k8s-manifests.js';
 export * from './admin-users.js';

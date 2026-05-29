@@ -99,7 +99,7 @@ describe('CategoriesTable', () => {
     render(<CategoriesTable />, { wrapper: createWrapper() });
     await user.click(screen.getByTestId('category-row-tenant.welcome'));
     expect(screen.getByTestId('category-edit-drawer')).toBeInTheDocument();
-    expect(screen.getByText(/Edit Category — Tenant Welcome/)).toBeInTheDocument();
+    expect(screen.getByText(/Edit Source — Tenant Welcome/)).toBeInTheDocument();
   });
 
   it('save calls the update mutation with the edited input', async () => {
@@ -121,6 +121,6 @@ describe('CategoriesTable', () => {
   it('renders empty state when category list is empty', () => {
     listMock.mockReturnValue({ data: { data: [] }, isLoading: false, error: null });
     render(<CategoriesTable />, { wrapper: createWrapper() });
-    expect(screen.getByText('No notification categories defined.')).toBeInTheDocument();
+    expect(screen.getByText('No notification sources defined.')).toBeInTheDocument();
   });
 });

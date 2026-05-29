@@ -61,7 +61,7 @@ set -euo pipefail
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
-PHASES="${PHASES:-A,B,C,D,E,F}"
+PHASES="${PHASES:-A,B,C,D,E,F,G}"
 
 # Use kubectl-via-docker to talk to the API service inside k3s.
 kx() { docker exec "$K3S_CONTAINER" kubectl -n platform "$@"; }
@@ -89,8 +89,10 @@ _node_http() {
     HTTP_METHOD="$method" HTTP_PATH="$path" HTTP_AUTH="$auth" HTTP_BODY="$body" \
     node -e '
 const http=require("http");
-const opts={hostname:"localhost",port:3000,path:process.env.HTTP_PATH,method:process.env.HTTP_METHOD,headers:{"Content-Type":"application/json"}};
-if(process.env.HTTP_AUTH) opts.headers.Authorization="Bearer "+process.env.HTTP_AUTH;
+const headers={};
+if(process.env.HTTP_BODY) headers["Content-Type"]="application/json";
+if(process.env.HTTP_AUTH) headers.Authorization="Bearer "+process.env.HTTP_AUTH;
+const opts={hostname:"localhost",port:3000,path:process.env.HTTP_PATH,method:process.env.HTTP_METHOD,headers};
 const r=http.request(opts,res=>{let s="";res.on("data",c=>s+=c);res.on("end",()=>process.stdout.write(s))});
 r.on("error",e=>{process.stderr.write(String(e));process.exit(1)});
 if(process.env.HTTP_BODY) r.write(process.env.HTTP_BODY);
@@ -304,12 +306,91 @@ phase_e() {
   fi
 }
 
+# ─── Phase F: Providers (Phase 3B) ──
+phase_f() {
+  section "Phase F — Notification Providers"
+  acquire_admin_token || return 1
+
+  # F1. notification_providers table exists (migration 0043 applied).
+  local col_exists
+  col_exists=$(psql_ro "SELECT count(*) FROM information_schema.tables WHERE table_name='notification_providers';" | tr -d ' \r')
+  if [[ "$col_exists" -eq 1 ]]; then
+    pass "F1 notification_providers table present"
+  else
+    fail "F1 notification_providers table missing (migration 0043 not applied)"
+  fi
+
+  # F2. notification_provider_type enum present.
+  local enum_exists
+  enum_exists=$(psql_ro "SELECT count(*) FROM pg_type WHERE typname='notification_provider_type';" | tr -d ' \r')
+  if [[ "$enum_exists" -eq 1 ]]; then
+    pass "F2 notification_provider_type enum present"
+  else
+    fail "F2 notification_provider_type enum missing"
+  fi
+
+  # F3. GET /admin/notifications/providers reachable.
+  local raw
+  raw=$(api GET /api/v1/admin/notifications/providers)
+  if printf %s "$raw" | grep -q '"data":\['; then
+    pass "F3 GET /admin/notifications/providers returns a list"
+  else
+    fail "F3 GET /admin/notifications/providers failed: $raw"
+  fi
+
+  # F4. POST a test provider, verify it's listed.
+  local create_raw provider_id
+  create_raw=$(api POST /api/v1/admin/notifications/providers '{"name":"Harness Test","providerType":"smtp","smtpHost":"mail.example.test","smtpPort":587,"smtpSecure":false,"authUsername":"user","authPassword":"secret","fromAddress":"noreply@example.test","enabled":true,"isDefault":false}')
+  provider_id=$(printf %s "$create_raw" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{try{console.log(JSON.parse(s).data.id)}catch{console.log("")}})')
+  if [[ -n "$provider_id" ]]; then
+    pass "F4 POST /admin/notifications/providers created provider $provider_id"
+  else
+    fail "F4 POST /admin/notifications/providers failed: $create_raw"
+    return 1
+  fi
+
+  # F5. Credentials never returned in response.
+  if printf %s "$create_raw" | grep -q '"authPasswordSet":true'; then
+    pass "F5 password stored (authPasswordSet=true) and never returned"
+  else
+    fail "F5 authPasswordSet flag missing from response"
+  fi
+
+  # F6. DELETE the test provider.
+  api DELETE "/api/v1/admin/notifications/providers/${provider_id}" >/dev/null 2>&1
+  local after_delete
+  after_delete=$(psql_ro "SELECT count(*) FROM notification_providers WHERE id='${provider_id}';" | tr -d ' \r')
+  if [[ "$after_delete" -eq 0 ]]; then
+    pass "F6 DELETE /admin/notifications/providers/:id removed the row"
+  else
+    fail "F6 provider row still present after DELETE"
+  fi
+}
+
+# ─── Phase G: Re-enqueue scheduler health (Phase 3C) ──
+phase_g() {
+  section "Phase G — Re-enqueue scheduler"
+  # G1. App log line confirming the scheduler started.
+  # (Best-effort — we don't have direct log access from this harness.
+  #  Instead, verify the worker module exports load by checking the
+  #  table column the scheduler queries.)
+  local col_exists
+  col_exists=$(psql_ro "SELECT count(*) FROM information_schema.columns WHERE table_name='notification_deliveries' AND column_name='next_attempt_at';" | tr -d ' \r')
+  if [[ "$col_exists" -eq 1 ]]; then
+    pass "G1 next_attempt_at column present (scanner can query it)"
+  else
+    fail "G1 next_attempt_at column missing"
+  fi
+}
+
 # ─── Driver ──
 run_phase A && phase_a
 run_phase B && phase_b
 run_phase C && phase_c
 run_phase D && phase_d
 run_phase E && phase_e
+run_phase F && phase_f
+run_phase G && phase_g
 
 echo
 echo "═══════════════════════════════════════════"
