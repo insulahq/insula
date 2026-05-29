@@ -25,7 +25,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { buildSecurityHardeningSnapshot, triggerProbeRefresh } from './service.js';
 import { loadSecurityHardeningClients } from './k8s-client.js';
 import { listWafEvents } from './waf-events.js';
-import { wafEventsQuerySchema } from '@k8s-hosting/api-contracts';
+import { wafEventsQuerySchema } from '@insula/api-contracts';
 import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -50,7 +50,7 @@ import {
   crowdsecListDecisionsQuerySchema,
   createWafRuleExclusionRequestSchema,
   updateWafRuleExclusionRequestSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { calibrateAutoban, listRecentRuns, loadConfig as loadAutobanConfig, SETTING_KEYS as AUTOBAN_SETTING_KEYS } from '../crowdsec-autoban/scheduler.js';
 import {
   createExclusion as createWafExclusion,
@@ -70,7 +70,7 @@ import {
   crowdsecConsoleEnrollRequestSchema,
   crowdsecConsoleMetaPatchSchema,
   crowdsecL4PatchModeRequestSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   getL4Status,
   getOperatorIpWithSource,
@@ -797,7 +797,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             // Trust the existing Zod schema on the patch route for
             // override; calibration is read-only so partial validation
             // here is acceptable.
-            override as Partial<import('@k8s-hosting/api-contracts').CrowdsecAutobanConfig> | undefined,
+            override as Partial<import('@insula/api-contracts').CrowdsecAutobanConfig> | undefined,
           );
           return success(result);
         } catch (err) {

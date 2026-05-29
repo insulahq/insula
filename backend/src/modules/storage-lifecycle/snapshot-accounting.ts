@@ -16,7 +16,7 @@ import type {
   SnapshotAccountingResponse,
   SnapshotClassAggregate,
   TenantSnapshotAggregate,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const TOP_TENANTS_LIMIT = 100;
 

@@ -32,8 +32,8 @@ import {
   backupTargetAssignments,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import type { SnapshotClass } from '@k8s-hosting/api-contracts';
-import type { BackupShimClass } from '@k8s-hosting/api-contracts';
+import type { SnapshotClass } from '@insula/api-contracts';
+import type { BackupShimClass } from '@insula/api-contracts';
 
 import {
   deriveShimAccessKey,

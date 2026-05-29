@@ -7,7 +7,7 @@ import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
 // SYSTEM_CPU_RESERVE / SYSTEM_MEMORY_RESERVE removed — quota is now
 // plan-exact and file-manager is exempt via priorityClassName.
-import type { GenerateManifestInput } from '@k8s-hosting/api-contracts';
+import type { GenerateManifestInput } from '@insula/api-contracts';
 
 export interface ManifestFile {
   readonly filename: string;

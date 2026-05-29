@@ -2,7 +2,7 @@
  * Tenant restore-cart page (thin wrapper).
  *
  * Renders the same `RestoreCartLayout` the admin panel uses (from
- * @k8s-hosting/ui-restore-cart) so the UI is identical between the
+ * @insula/ui-restore-cart) so the UI is identical between the
  * two panels. Differences:
  *
  *   - Tenant hook bag points at /api/v1/tenants/:tenantId/... routes
@@ -20,7 +20,7 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
-import { RestoreCartLayout, type RestoreCartHooks } from '@k8s-hosting/ui-restore-cart';
+import { RestoreCartLayout, type RestoreCartHooks } from '@insula/ui-restore-cart';
 
 import { useAuth } from '@/hooks/use-auth';
 import {

@@ -4,7 +4,7 @@ import {
   createSubUserSchema,
   updateSubUserSchema,
   resetSubUserPasswordSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
 import { createTenantSchema, updateTenantSchema } from './schema.js';

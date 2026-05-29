@@ -76,7 +76,7 @@ WORKDIR /home/pwagent
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD nc -z 127.0.0.1 7400 || exit 1
 
-LABEL org.opencontainers.image.source="https://github.com/insulahq/k8s-hosting-platform" \
+LABEL org.opencontainers.image.source="https://github.com/insulahq/insula" \
       org.opencontainers.image.title="private-worker-agent" \
       org.opencontainers.image.description="Home agent that dials a private worker tunnel into the platform" \
       org.opencontainers.image.licenses="Apache-2.0"

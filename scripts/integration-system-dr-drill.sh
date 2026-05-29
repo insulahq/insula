@@ -127,9 +127,9 @@ log "7) Run bootstrap.sh on target (this takes 5-10 min)"
 # rehearse a production cut), staging overlay is the right target.
 DR_DRILL_ENV="${DR_DRILL_ENV:-staging}"
 if ! ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
-  "set -e; cd /tmp && rm -rf k8s-hosting-platform && \
-   git clone --depth 1 https://github.com/insulahq/k8s-hosting-platform.git && \
-   cd k8s-hosting-platform && \
+  "set -e; cd /tmp && rm -rf insula && \
+   git clone --depth 1 https://github.com/insulahq/insula.git && \
+   cd insula && \
    bash scripts/bootstrap.sh --join-as server --env '$DR_DRILL_ENV' --domain '$TARGET_VM_DOMAIN' \
      --secrets-bundle /root/secrets.tar.age --age-key /root/operator-private.key 2>&1" \
   | tail -50; then

@@ -29,7 +29,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../db/index.js';
 import { tasks as tasksTable } from '../../db/schema.js';
-import type { BackupShimClass, DrainPhase } from '@k8s-hosting/api-contracts';
+import type { BackupShimClass, DrainPhase } from '@insula/api-contracts';
 
 // ---------------------------------------------------------------------------
 // Constants

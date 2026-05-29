@@ -4,7 +4,7 @@ import type {
   StalwartCredentialsResponse,
   RotateStalwartPasswordResponse,
   RotateWebmailMasterPasswordResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface CredentialsEnvelope {
   readonly data: StalwartCredentialsResponse;

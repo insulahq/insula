@@ -22,7 +22,7 @@ import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { backupTargetAssignments, backupConfigurations } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import type { SnapshotClass } from '@k8s-hosting/api-contracts';
+import type { SnapshotClass } from '@insula/api-contracts';
 
 /** R-X shim routing classes — the only values stored in
  *  `backup_target_assignments.backup_class` after the Phase 2 purge. */

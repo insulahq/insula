@@ -5,7 +5,7 @@ import type {
   UpdateUserNotificationPreferencesInput,
   UserNotificationSettingsResponse,
   UpdateUserNotificationSettingsInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export interface NotificationEntry {
   readonly id: string;

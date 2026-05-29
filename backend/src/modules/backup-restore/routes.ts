@@ -37,7 +37,7 @@ import {
   createRestoreCartSchema,
   addRestoreItemSchema,
   type RestoreJobDetail,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { gunzipSync } from 'node:zlib';
 import {
   loadBundle,
@@ -221,7 +221,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     if (job.initiatorUserId) {
       try {
         const { start: startTask } = await import('../tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         await startTask(app.db, {
           kind: 'restore.cart',
           refId: cartId,

@@ -1,5 +1,5 @@
 import { AlertCircle } from 'lucide-react';
-import type { BackupHealthSummary } from '@k8s-hosting/api-contracts';
+import type { BackupHealthSummary } from '@insula/api-contracts';
 
 interface BackupHealthBannerProps {
   readonly summaries: ReadonlyArray<BackupHealthSummary> | undefined;

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { purgeImagesInputSchema } from '@k8s-hosting/api-contracts';
+import { purgeImagesInputSchema } from '@insula/api-contracts';
 import { getStorageOverview, getImageInventory, purgeUnusedImages } from './service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { success } from '../../shared/response.js';
@@ -46,7 +46,7 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
     const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
     if (userId) {
       const { tracked } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       const result = await tracked(
         app.db,
         {

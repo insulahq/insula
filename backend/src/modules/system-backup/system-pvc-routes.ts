@@ -22,7 +22,7 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSystemPvcStorage, resizeSystemPvc } from './system-pvc.js';
-import { systemPvcResizeRequestSchema } from '@k8s-hosting/api-contracts';
+import { systemPvcResizeRequestSchema } from '@insula/api-contracts';
 
 export async function systemPvcRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);

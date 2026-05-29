@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
-import { createSmtpRelaySchema, updateSmtpRelaySchema } from '@k8s-hosting/api-contracts';
+import { createSmtpRelaySchema, updateSmtpRelaySchema } from '@insula/api-contracts';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';

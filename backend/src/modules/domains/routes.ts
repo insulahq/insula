@@ -181,7 +181,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     let result;
     if (userId) {
       const { tracked } = await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
       result = await tracked(
         app.db,
         {

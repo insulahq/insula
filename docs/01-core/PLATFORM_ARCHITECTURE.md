@@ -343,7 +343,7 @@ Workload definitions are **not maintained in this monorepo**. They live in **ext
 5. Unique constraint `(code, source_repo_id)` prevents collisions across repos
 6. Admin can trigger manual sync via `POST /api/v1/admin/workload-repos/:id/sync`
 
-**Default catalog:** `https://github.com/insulahq/hosting-platform-workload-catalog` is pre-registered and can be restored via `POST /api/v1/admin/workload-repos/restore-default`.
+**Default catalog:** none pre-registered — operators register a workload catalog repo via the admin panel.
 
 **Image build pipeline** runs in the catalog repo's own CI (not in this platform):
 1. Maintainer updates Dockerfile in the catalog repo
@@ -382,7 +382,7 @@ The admin panel provides full lifecycle control over catalog repos and container
 
 When a new container version is published (e.g., `apache-php` with a security patch):
 
-1. CI in the catalog repo (`https://github.com/insulahq/k8s-application-catalog`) builds and pushes the new image to GHCR
+1. CI in the catalog repo (`https://github.com/insulahq/application-catalog`) builds and pushes the new image to GHCR
 2. Management API marks old version as deprecated
 3. Notification sent to all affected clients
 4. Rolling update automatically migrates clients to new version (configurable per admin)

@@ -34,7 +34,7 @@ import type {
   MailHealthForwardDnsProbe,
   MailHealthReverseDnsProbe,
   MailHealthSmtpBannerProbe,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const DELIVERABILITY_WALL_TIMEOUT_MS = 8_000;
 // DNS lookups (A/AAAA, PTR) — single authoritative query, fast in

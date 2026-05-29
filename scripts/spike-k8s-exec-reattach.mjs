@@ -34,7 +34,7 @@ import { PassThrough } from 'node:stream';
 const NS = 'default';
 const POD = `spike-exec-reattach-${Date.now()}`;
 const IMAGE = process.env.IMAGE
-  ?? 'ghcr.io/insulahq/hosting-platform/node-terminal:latest';
+  ?? 'ghcr.io/insulahq/insula/node-terminal:latest';
 
 const kc = new k8s.KubeConfig();
 if (process.env.KUBECONFIG_PATH) kc.loadFromFile(process.env.KUBECONFIG_PATH);

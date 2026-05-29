@@ -86,7 +86,7 @@ spec:
                       - mail
           containers:
             - name: upload
-              image: ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+              image: ghcr.io/insulahq/insula/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
               imagePullPolicy: Always
               command: ["/usr/local/bin/snapshot-upload.sh"]
               envFrom:

@@ -14,7 +14,7 @@ import type {
   BundleSummary,
   BackupConfigResponse,
   VerifyBundleResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { formatBytes } from '@/hooks/use-platform-storage';
 
 const INPUT_CLASS =

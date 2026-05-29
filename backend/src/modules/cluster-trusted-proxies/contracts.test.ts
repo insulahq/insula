@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTrustedProxyRangeRequestSchema } from '@k8s-hosting/api-contracts';
+import { createTrustedProxyRangeRequestSchema } from '@insula/api-contracts';
 
 describe('createTrustedProxyRangeRequestSchema — CIDR validation', () => {
   const good = (cidr: string) => ({ cidr, description: 'x' });

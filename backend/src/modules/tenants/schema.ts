@@ -4,4 +4,4 @@ export {
   updateTenantSchema,
   type CreateTenantInput,
   type UpdateTenantInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

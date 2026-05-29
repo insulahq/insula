@@ -10,7 +10,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { CreateSshKeyInput, UpdateSshKeyInput, SshKeyResponse } from '@k8s-hosting/api-contracts';
+import type { CreateSshKeyInput, UpdateSshKeyInput, SshKeyResponse } from '@insula/api-contracts';
 
 export type SshKey = SshKeyResponse;
 

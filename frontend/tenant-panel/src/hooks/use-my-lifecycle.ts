@@ -13,7 +13,7 @@ import { apiFetch } from '@/lib/api-client';
 // Enum types come from the shared contracts package so a change to
 // `statusEnum` or `storageLifecycleStateEnum` flows through without
 // silent drift in this hook.
-import type { TenantStatus, StorageLifecycleState } from '@k8s-hosting/api-contracts';
+import type { TenantStatus, StorageLifecycleState } from '@insula/api-contracts';
 export type { TenantStatus, StorageLifecycleState };
 
 export interface MyLifecycleInfo {

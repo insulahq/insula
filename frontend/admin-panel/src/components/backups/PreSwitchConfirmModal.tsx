@@ -17,7 +17,7 @@
  */
 
 import { X, AlertTriangle, Loader2, CheckCircle2 } from 'lucide-react';
-import type { BackupShimClass } from '@k8s-hosting/api-contracts';
+import type { BackupShimClass } from '@insula/api-contracts';
 import {
   useShimSwitchPreview,
   useShimSwitchWithPause,

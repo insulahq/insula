@@ -67,7 +67,7 @@ const PASSTHROUGH_INGRESS_NAME = 'oauth2-proxy-passthrough';
 const OAUTH2_PROXY_IMAGE = process.env.OAUTH2_PROXY_IMAGE
   ?? 'quay.io/oauth2-proxy/oauth2-proxy:v7.6.0';
 const CLAIM_VALIDATOR_IMAGE = process.env.CLAIM_VALIDATOR_IMAGE
-  ?? 'ghcr.io/insulahq/hosting-platform/claim-validator:latest';
+  ?? 'ghcr.io/insulahq/insula/claim-validator:latest';
 
 export interface IngressAuthTenants {
   readonly core: k8s.CoreV1Api;

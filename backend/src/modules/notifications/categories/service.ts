@@ -15,7 +15,7 @@ import { ALL_CATEGORIES } from './seed.js';
 import type {
   NotificationCategoryResponse,
   UpdateNotificationCategoryInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import type { Database } from '../../../db/index.js';
 
 interface ListCategoriesOptions {

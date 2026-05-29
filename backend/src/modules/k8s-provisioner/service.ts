@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { K8sClients } from './k8s-client.js';
-import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
-import { toSafeText } from '@k8s-hosting/api-contracts';
+import type { ProvisioningStep } from '@insula/api-contracts';
+import { toSafeText } from '@insula/api-contracts';
 import { tenants, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { getFileManagerImage } from '../file-manager/image.js';

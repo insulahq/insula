@@ -2,7 +2,7 @@
  * React Query hooks for the tenant-backup-restore cart APIs (ADR-034).
  *
  * Mirrors the backend's POST /admin/restores/carts + bundle-browse
- * routes. Types are imported from @k8s-hosting/api-contracts so the
+ * routes. Types are imported from @insula/api-contracts so the
  * UI and backend can never drift.
  */
 
@@ -14,7 +14,7 @@ import type {
   RestoreItemInfo,
   RestoreItemPayload,
   RestoreItemType,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface CartDetailResponse { readonly data: RestoreJobDetail }
 interface CartSummaryResponse { readonly data: RestoreJobSummary }

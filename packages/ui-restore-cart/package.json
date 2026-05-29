@@ -1,5 +1,5 @@
 {
-  "name": "@k8s-hosting/ui-restore-cart",
+  "name": "@insula/ui-restore-cart",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@k8s-hosting/api-contracts": "*"
+    "@insula/api-contracts": "*"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",

@@ -33,7 +33,7 @@ import {
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
 import { apiFetch } from '@/lib/api-client';
-import type { WalArchiveCluster, CnpgBackupCatalogueResponse } from '@k8s-hosting/api-contracts';
+import type { WalArchiveCluster, CnpgBackupCatalogueResponse } from '@insula/api-contracts';
 
 // 6-field cron validation: matches CNPG's robfig/cron/v3 parser. The
 // backend's baseBackupScheduleSchema applies the SAME regex

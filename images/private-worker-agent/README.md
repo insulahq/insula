@@ -42,7 +42,7 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -e PRIVATE_WORKER_TOKEN='paste-the-token-here' \
-  ghcr.io/insulahq/hosting-platform/private-worker-agent:latest
+  ghcr.io/insulahq/insula/private-worker-agent:latest
 ```
 
 `--network host` is the simplest way to reach a service running on `127.0.0.1`
@@ -71,7 +71,7 @@ services:
       - "8080"
 
   private-worker-agent:
-    image: ghcr.io/insulahq/hosting-platform/private-worker-agent:latest
+    image: ghcr.io/insulahq/insula/private-worker-agent:latest
     restart: unless-stopped
     depends_on:
       - my-app
@@ -112,7 +112,7 @@ When you minted the worker, you set `local` to (for example)
 ## Updating
 
 ```bash
-docker pull ghcr.io/insulahq/hosting-platform/private-worker-agent:latest
+docker pull ghcr.io/insulahq/insula/private-worker-agent:latest
 docker restart private-worker-agent
 ```
 

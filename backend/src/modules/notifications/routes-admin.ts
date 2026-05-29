@@ -28,7 +28,7 @@ import {
   createNotificationProviderSchema,
   updateNotificationProviderSchema,
   testNotificationProviderSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
 import * as providerService from './providers/service.js';

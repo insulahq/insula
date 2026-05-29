@@ -87,7 +87,7 @@ own writes.
 ## Workload manifest changes required
 
 The application catalog repo
-(`https://github.com/insulahq/k8s-application-catalog`)
+(`https://github.com/insulahq/application-catalog`)
 
 ### 1. Mounts the `.platform` subPath
 

@@ -81,7 +81,7 @@ export async function downloadCatalogRepo(
 
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'k8s-hosting-platform/1.0',
+    'User-Agent': 'insula/1.0',
   };
   if (authToken) {
     headers['Authorization'] = `token ${authToken}`;

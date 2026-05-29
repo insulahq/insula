@@ -3,10 +3,10 @@ name: Tenant Panel CI
 on:
   push:
     branches: [main]
-    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**']
+    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-tenant-panel.yml']
   pull_request:
     branches: [main]
-    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**']
+    paths: ['frontend/tenant-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-tenant-panel.yml']
 
 jobs:
   lint-typecheck-test-build:
@@ -19,8 +19,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build -w @k8s-hosting/api-contracts
-      - run: npm run lint -w @k8s-hosting/tenant-panel
-      - run: npm run typecheck -w @k8s-hosting/tenant-panel
-      - run: npm run test -w @k8s-hosting/tenant-panel
-      - run: npm run build -w @k8s-hosting/tenant-panel
+      - run: npm run build -w @insula/api-contracts
+      - run: npm run build -w @insula/ui-restore-cart
+      - run: npm run lint -w @insula/tenant-panel
+      - run: npm run typecheck -w @insula/tenant-panel
+      - run: npm run test -w @insula/tenant-panel
+      - run: npm run build -w @insula/tenant-panel

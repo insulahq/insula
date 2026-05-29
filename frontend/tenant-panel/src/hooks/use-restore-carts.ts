@@ -10,7 +10,7 @@
  * forged bundleId or table selector can't escape the tenant boundary
  * even from a tampered request.
  *
- * Shape matches `RestoreCartHooks` in @k8s-hosting/ui-restore-cart
+ * Shape matches `RestoreCartHooks` in @insula/ui-restore-cart
  * so the shared `RestoreCartLayout` renders identically for tenants.
  */
 
@@ -27,7 +27,7 @@ import type {
   BrowseDomainsData,
   BrowseMailboxesData,
   BrowseFilesData,
-} from '@k8s-hosting/ui-restore-cart';
+} from '@insula/ui-restore-cart';
 
 interface CartDetailEnvelope { readonly data: RestoreCartDetail }
 interface CartSummaryEnvelope { readonly data: { id: string; tenantId: string; status: RestoreCartStatus } }

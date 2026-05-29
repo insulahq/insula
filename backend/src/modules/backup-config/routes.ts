@@ -8,7 +8,7 @@ import {
   updateBackupConfigSchema,
   markBackupTargetWritableSchema,
   type CreateBackupConfigInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { markBackupTargetWritable } from './mark-writable.js';
 import type { ZodError } from 'zod';
 import { z } from 'zod';

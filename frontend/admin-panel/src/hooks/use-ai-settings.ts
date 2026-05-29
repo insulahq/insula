@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { AiProviderResponse, AiModelResponse } from '@k8s-hosting/api-contracts';
+import type { AiProviderResponse, AiModelResponse } from '@insula/api-contracts';
 
 // ─── Providers ─────────────────────────────────────────────────────────────
 

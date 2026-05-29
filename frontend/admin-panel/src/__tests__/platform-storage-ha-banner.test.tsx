@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { GetPlatformStoragePolicyResponse } from '@k8s-hosting/api-contracts';
+import type { GetPlatformStoragePolicyResponse } from '@insula/api-contracts';
 import PlatformStorageHaBanner from '../components/PlatformStorageHaBanner';
 
 const mockUsePolicy = vi.fn();

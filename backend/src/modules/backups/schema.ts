@@ -2,4 +2,4 @@
 export {
   createBackupSchema,
   type CreateBackupInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

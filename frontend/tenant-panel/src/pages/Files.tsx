@@ -28,7 +28,7 @@ import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-edi
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useResourceAvailability } from '@/hooks/use-resource-availability';
 import ErrorPanel from '@/components/ErrorPanel';
-import type { OperatorError } from '@k8s-hosting/api-contracts';
+import type { OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
 import AiFolderModal from '@/components/AiFolderModal';
 import CloneSiteModal from '@/components/CloneSiteModal';
@@ -1162,7 +1162,7 @@ export default function Files() {
  * caps at 95% until phase=ready so it never shows 100% while we're
  * still waiting.
  */
-function FmStartingScreen({ status }: { readonly status: import('@k8s-hosting/api-contracts').FileManagerStatus | undefined }) {
+function FmStartingScreen({ status }: { readonly status: import('@insula/api-contracts').FileManagerStatus | undefined }) {
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

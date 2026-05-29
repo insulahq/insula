@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { updateEolSettingsSchema, eolSettingsResponseSchema, eolScanResultSchema } from '@k8s-hosting/api-contracts';
+import { updateEolSettingsSchema, eolSettingsResponseSchema, eolScanResultSchema } from '@insula/api-contracts';
 
 describe('eol-scanner schemas', () => {
   it('should validate EOL settings response', () => {

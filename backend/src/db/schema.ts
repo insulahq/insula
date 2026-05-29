@@ -560,7 +560,7 @@ export const deployments = pgTable('deployments', {
   /**
    * ADR-036 normalized custom-deployment spec. Null when source='catalog'.
    * Shape is `customDeploymentSpecSchema` from
-   * @k8s-hosting/api-contracts/custom-deployments. The `specVersion`
+   * @insula/api-contracts/custom-deployments. The `specVersion`
    * field inside lets us migrate older shapes forward without a table
    * migration.
    */

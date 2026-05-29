@@ -85,7 +85,7 @@ spec:
           # .github/workflows/ci-backup-rclone.yml publishes new
           # tags on push to main; Flux image-policy controller
           # bumps this line.
-          image: ghcr.io/insulahq/hosting-platform/backup-rclone:latest # {"$imagepolicy": "flux-system:backup-rclone"}
+          image: ghcr.io/insulahq/insula/backup-rclone:latest # {"$imagepolicy": "flux-system:backup-rclone"}
           imagePullPolicy: IfNotPresent
 
           # The image's ENTRYPOINT is tini; we exec the launcher

@@ -150,7 +150,7 @@ const IMAP_PORT_DEFAULT = 993;
 // source-of-truth for the master FQDN.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest';
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/mail-backup-tools:latest';
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';
 const STDIN_FILENAME = 'maildir.tar';
 

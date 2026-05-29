@@ -46,7 +46,7 @@ import {
   mailArchiveRestoreRequestSchema,
   mailArchiveScheduleUpdateSchema,
   mailArchiveTriggerRequestSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   getMailArchiveSchedule,
   updateMailArchiveSchedule,
@@ -81,7 +81,7 @@ import {
   mailFailoverRequestSchema,
   mailFailbackRequestSchema,
   mailboxBackupSettingsUpdateSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   getMailboxBackupSettingsView,
   setMailboxBackupSettings,
@@ -355,7 +355,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     if (req.user?.sub) {
       try {
         const { start: startTask } = await import('../tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         const started = await startTask(app.db, {
           kind: 'mail.rotate',
           scope: 'admin',
@@ -865,7 +865,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           try {
             const { start: startTask, progress: progressTask, finish: finishTask } =
               await import('../tasks/service.js');
-            const { toSafeText } = await import('@k8s-hosting/api-contracts');
+            const { toSafeText } = await import('@insula/api-contracts');
             const started = await startTask(app.db, {
               kind: 'mail.snapshot.trigger',
               refId: result.jobName,
@@ -1720,7 +1720,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     '/admin/mail/recover',
     { preHandler: requireRole('super_admin') },
     async (req: { body: unknown; user?: { sub?: string } }) => {
-      const { mailRecoverRequestSchema } = await import('@k8s-hosting/api-contracts');
+      const { mailRecoverRequestSchema } = await import('@insula/api-contracts');
       const parsed = mailRecoverRequestSchema.safeParse(req.body);
       if (!parsed.success) {
         throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'invalid recover body', 400);
@@ -1813,7 +1813,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     '/admin/mail/backups/:shortId/restore',
     { preHandler: requireRole('super_admin') },
     async (req: { params: unknown; body: unknown; user?: { sub?: string } }) => {
-      const { mailBackupRestoreRequestSchema } = await import('@k8s-hosting/api-contracts');
+      const { mailBackupRestoreRequestSchema } = await import('@insula/api-contracts');
       const params = req.params as { shortId?: string };
       const shortId = params.shortId ?? '';
       if (!/^[0-9a-f]{8,64}$/.test(shortId)) {
@@ -1923,7 +1923,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // modal polls the task row + chip surfaces it.
       const { start: startTask, progress: progressTask, finish: finishTask } =
         await import('../tasks/service.js');
-      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const { toSafeText } = await import('@insula/api-contracts');
 
       if (!req.user?.sub) {
         // Service-account caller (no user_id) — fall through to the

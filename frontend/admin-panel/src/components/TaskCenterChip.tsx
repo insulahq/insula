@@ -15,7 +15,7 @@ import {
   Loader2, CheckCircle2, AlertTriangle, Activity, X, Trash2, ChevronRight, Clock,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { TaskRow } from '@k8s-hosting/api-contracts';
+import type { TaskRow } from '@insula/api-contracts';
 import { useTaskCenter, useClearTasks } from '@/hooks/use-task-center';
 import { TaskModalHost } from '@/tasks/modal-registry';
 

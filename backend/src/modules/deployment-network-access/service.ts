@@ -25,7 +25,7 @@ import type {
   DeploymentNetworkAccessInput,
   DeploymentNetworkAccessResponse,
   NetworkAccessMode,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export async function getConfig(
   db: Database,

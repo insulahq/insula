@@ -4,4 +4,4 @@ export {
   updateDnsRecordSchema,
   type CreateDnsRecordInput,
   type UpdateDnsRecordInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';

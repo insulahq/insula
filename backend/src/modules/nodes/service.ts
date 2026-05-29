@@ -2,7 +2,7 @@ import { eq, sql, desc } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { clusterNodes, type ClusterNode } from '../../db/schema.js';
-import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@k8s-hosting/api-contracts';
+import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { projectNode } from './k8s-sync.js';
 import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';

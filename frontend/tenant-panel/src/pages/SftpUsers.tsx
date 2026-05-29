@@ -11,7 +11,7 @@ import {
   useDeleteSftpUser, useSftpConnectionInfo,
   useSftpAuditLog, type SftpUser,
 } from '@/hooks/use-sftp-users';
-import type { UpdateSftpUserInput } from '@k8s-hosting/api-contracts';
+import type { UpdateSftpUserInput } from '@insula/api-contracts';
 import { useSshKeys } from '@/hooks/use-ssh-keys';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';

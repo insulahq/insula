@@ -13,7 +13,7 @@ import type {
   NodeHealthEntry,
   NodeHealthSeverity,
   NodePressureKind,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Number of evictions/hour at which we flip from `normal` → `warning`.

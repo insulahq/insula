@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BACKUP_META_SCHEMA_VERSION, type BackupMetaV1 } from '@k8s-hosting/api-contracts';
+import { BACKUP_META_SCHEMA_VERSION, type BackupMetaV1 } from '@insula/api-contracts';
 import { BackupMetaError, parseMeta, serializeMeta, componentDir, META_FILENAME } from './meta.js';
 
 const VALID_META: BackupMetaV1 = {

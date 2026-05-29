@@ -15,7 +15,7 @@ import { useNotificationCategories } from '@/hooks/use-notification-categories';
 import {
   NOTIFICATION_CHANNEL_ID,
   type NotificationChannelId,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import TemplateEditor from './TemplateEditor';

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeBanDuration, evaluateWafBatch, type WafLogRow } from './evaluator.js';
-import type { CrowdsecAutobanConfig } from '@k8s-hosting/api-contracts';
+import type { CrowdsecAutobanConfig } from '@insula/api-contracts';
 
 const baseConfig: CrowdsecAutobanConfig = {
   enabled: true,

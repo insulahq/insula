@@ -9,7 +9,7 @@ import { useState, Fragment } from 'react';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { useSystemSnapshots } from '@/hooks/use-system-snapshots';
 import SystemSnapshotsModal from '@/components/SystemSnapshotsModal';
-import type { SystemPvcSnapshotSummary } from '@k8s-hosting/api-contracts';
+import type { SystemPvcSnapshotSummary } from '@insula/api-contracts';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';

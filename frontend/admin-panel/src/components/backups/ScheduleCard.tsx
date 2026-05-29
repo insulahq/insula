@@ -16,7 +16,7 @@ import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, Save, Power, PowerOff } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
-import { validateCronExpression, type BackupScheduleRow } from '@k8s-hosting/api-contracts';
+import { validateCronExpression, type BackupScheduleRow } from '@insula/api-contracts';
 
 // Mirror the backend bounds so the operator sees the constraint inline
 // rather than after PATCH. Keep in sync with backup-schedules.ts.

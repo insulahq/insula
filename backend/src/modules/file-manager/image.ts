@@ -6,7 +6,7 @@
  *   1. `process.env.FILE_MANAGER_IMAGE` — set from the
  *      platform-config ConfigMap key `file-manager-image`. Staging
  *      and production resolve to a registry-qualified path like
- *      `ghcr.io/insulahq/hosting-platform/file-manager:latest`.
+ *      `ghcr.io/insulahq/insula/file-manager:latest`.
  *   2. Fallback `'file-manager:latest'` — bare image name for local
  *      DinD where containerd has been pre-loaded by `scripts/local.sh`.
  *

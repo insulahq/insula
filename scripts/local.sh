@@ -283,10 +283,10 @@ _build_all_images() {
     if grep -q '^HP_IMAGE_CHANGED_node-terminal=' "${PROJECT_DIR}/.local.build-state" 2>/dev/null; then
       node_terminal_changed=true
     fi
-    if [[ "$node_terminal_changed" == true ]] || ! _image_in_k3s "ghcr.io/insulahq/hosting-platform/node-terminal:latest"; then
+    if [[ "$node_terminal_changed" == true ]] || ! _image_in_k3s "ghcr.io/insulahq/insula/node-terminal:latest"; then
       docker tag "hosting-platform/node-terminal:local" \
-        "ghcr.io/insulahq/hosting-platform/node-terminal:latest"
-      docker save "ghcr.io/insulahq/hosting-platform/node-terminal:latest" \
+        "ghcr.io/insulahq/insula/node-terminal:latest"
+      docker save "ghcr.io/insulahq/insula/node-terminal:latest" \
         | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
     fi
   fi
@@ -311,10 +311,10 @@ _build_all_images() {
       docker save "file-manager:latest" \
         | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
     fi
-    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "ghcr.io/insulahq/hosting-platform/file-manager:latest"; then
+    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "ghcr.io/insulahq/insula/file-manager:latest"; then
       docker tag "hosting-platform/file-manager:local" \
-        "ghcr.io/insulahq/hosting-platform/file-manager:latest"
-      docker save "ghcr.io/insulahq/hosting-platform/file-manager:latest" \
+        "ghcr.io/insulahq/insula/file-manager:latest"
+      docker save "ghcr.io/insulahq/insula/file-manager:latest" \
         | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
     fi
   fi
@@ -1163,8 +1163,8 @@ cmd_sftp_up() {
   if [[ -d "${PROJECT_DIR}/images/sftp-gateway" ]]; then
     _build_and_import "sftp-gateway" "images/sftp-gateway" "images/sftp-gateway/Dockerfile"
     docker tag "hosting-platform/sftp-gateway:local" \
-      "ghcr.io/insulahq/hosting-platform/sftp-gateway:latest"
-    docker save "ghcr.io/insulahq/hosting-platform/sftp-gateway:latest" \
+      "ghcr.io/insulahq/insula/sftp-gateway:latest"
+    docker save "ghcr.io/insulahq/insula/sftp-gateway:latest" \
       | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
   fi
 

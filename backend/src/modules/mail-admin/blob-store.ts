@@ -40,7 +40,7 @@ import {
   blobStoreResponseSchema,
   blobStoreUpdateResponseSchema,
   blobStoreJobStatusResponseSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   STALWART_CLI_SHA256,
   STALWART_CLI_DOWNLOAD_URL,

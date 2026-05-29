@@ -12,7 +12,7 @@ import {
   useUpdateBlobStore,
   useBlobStoreJobStatus,
 } from '@/hooks/use-stalwart-blob-store';
-import type { BlobStoreType } from '@k8s-hosting/api-contracts';
+import type { BlobStoreType } from '@insula/api-contracts';
 
 /**
  * Email Management → Stalwart Blob Storage card.
@@ -606,7 +606,7 @@ function BlobStoreConfirmModal({
                 Old messages may become unreachable until you run an external
                 migration tool — see{' '}
                 <a
-                  href="https://github.com/insulahq/k8s-hosting-platform/blob/main/docs/06-features/STALWART_BLOB_STORE_MIGRATION.md"
+                  href="https://github.com/insulahq/insula/blob/main/docs/06-features/STALWART_BLOB_STORE_MIGRATION.md"
                   className="underline text-blue-700 dark:text-blue-300"
                   target="_blank"
                   rel="noreferrer noopener"
@@ -697,7 +697,7 @@ function BlobStoreConfirmModal({
 // ── job status panel ──────────────────────────────────────────────
 
 interface JobStatusPanelProps {
-  readonly status: import('@k8s-hosting/api-contracts').BlobStoreJobStatusResponse;
+  readonly status: import('@insula/api-contracts').BlobStoreJobStatusResponse;
   readonly onClose: () => void;
 }
 function JobStatusPanel({ status, onClose }: JobStatusPanelProps) {

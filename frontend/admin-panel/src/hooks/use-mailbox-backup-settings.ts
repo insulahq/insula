@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   MailboxBackupSettingsResponse,
   MailboxBackupSettingsUpdate,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface Wrapped<T> {
   readonly data: T;

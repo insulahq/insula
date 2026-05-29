@@ -8,7 +8,7 @@
  */
 
 import { CheckCircle2, XCircle, Clock, AlertTriangle } from 'lucide-react';
-import type { DrDrillRun } from '@k8s-hosting/api-contracts';
+import type { DrDrillRun } from '@insula/api-contracts';
 import { useDrDrillRuns, useDrDrillSummary } from '@/hooks/use-system-backup';
 
 export default function DrDrillRunsSection() {

@@ -99,7 +99,7 @@ packages/api-contracts/src/
 ```
 
 **Rules:**
-1. ALL API input/output types MUST be defined in `@k8s-hosting/api-contracts`
+1. ALL API input/output types MUST be defined in `@insula/api-contracts`
 2. Backend validates with Zod schemas imported from this package
 3. Frontend uses `z.infer<typeof schema>` types from this package
 4. NEVER define API types locally in backend `schema.ts` or frontend `types/api.ts`
@@ -208,8 +208,8 @@ These services are managed by **separate projects** — this platform consumes t
 - **DNS:** PowerDNS REST API (ADR-022)
 - **VPN Mesh:** NetBird (ADR-022)
 - **IAM/Auth:** Dex OIDC provider (ADR-022)
-- **Workload Catalog:** Composable runtimes/databases/services via `manifest.json` (ADR-025) — default: `https://github.com/insulahq/hosting-platform-workload-catalog`
-- **Application Catalog:** Managed app stacks via Helm charts (ADR-026, Phase 2) — `https://github.com/insulahq/hosting-platform-application-catalog`
+- **Workload Catalog:** Composable runtimes/databases/services via `manifest.json` (ADR-025) — no catalog is pre-registered; operators add a workload catalog repo via Settings → Catalog Repos
+- **Application Catalog:** Managed app stacks via Helm charts (ADR-026, Phase 2) — `https://github.com/insulahq/application-catalog`
 
 **Two catalogs (ADR-026):** Workloads = composable building blocks (generic PHP, Node.js, MariaDB). Applications = self-contained managed stacks (WordPress, Nextcloud, Jitsi). Workloads share databases; applications bundle their own.
 

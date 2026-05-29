@@ -4,7 +4,7 @@ import type {
   MailDriftListResponse,
   MailDriftDismissResponse,
   MailDriftRecreateResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface ListEnvelope { readonly data: MailDriftListResponse }
 interface DismissEnvelope { readonly data: MailDriftDismissResponse }

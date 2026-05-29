@@ -15,7 +15,7 @@ import {
   BACKUP_META_SCHEMA_VERSION,
   backupMetaV1Schema,
   type BackupMetaV1,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 export class BackupMetaError extends Error {
   readonly code: 'INVALID_JSON' | 'UNKNOWN_SCHEMA_VERSION' | 'INVALID_META';
