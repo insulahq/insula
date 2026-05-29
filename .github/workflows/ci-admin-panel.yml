@@ -3,10 +3,10 @@ name: Admin Panel CI
 on:
   push:
     branches: [main]
-    paths: ['frontend/admin-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**']
+    paths: ['frontend/admin-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-admin-panel.yml']
   pull_request:
     branches: [main]
-    paths: ['frontend/admin-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**']
+    paths: ['frontend/admin-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-admin-panel.yml']
 
 jobs:
   lint-typecheck-test-build:
