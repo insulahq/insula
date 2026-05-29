@@ -53,7 +53,8 @@ const updateSchema = z.object({
   // 2026-04-19 consolidation. Accept silently for backwards compat so
   // existing tooling doesn't break; the service layer ignores it.
   // (mailHostname removed — canonical value is mailServerHostname under
-  // /admin/webmail-settings; the column was dropped in migration 0046.)
+  // /admin/webmail-settings; the column is retired in code, physical drop
+  // deferred — see migration 0046.)
   webmailUrl: z.string().url().max(500).optional().nullable(),
   // Host-port gating (migration 0062). When false, the catalog deploy
   // path rejects workloads that request hostPort or carry the

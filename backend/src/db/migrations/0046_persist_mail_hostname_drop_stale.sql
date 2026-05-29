@@ -19,8 +19,12 @@ ON CONFLICT (setting_key) DO UPDATE
 SET setting_value = COALESCE(NULLIF(platform_settings.setting_value, ''), EXCLUDED.setting_value),
     updated_at = NOW();
 
--- Drop the vestigial system_settings.mail_hostname column. It was
--- deprecated (the backend silently ignored writes — see
--- system-settings/routes.ts) and read by nothing; the canonical value
--- lives in platform_settings.mail_server_hostname (above).
-ALTER TABLE system_settings DROP COLUMN IF EXISTS mail_hostname;
+-- NOTE: the vestigial system_settings.mail_hostname column is RETIRED in
+-- code as of this release (removed from the Drizzle schema, api-contracts,
+-- routes and the admin panel — nothing reads or writes it). The physical
+-- `ALTER TABLE ... DROP COLUMN` is deliberately DEFERRED to a follow-up
+-- migration: dropping it here would break still-running old backend pods
+-- during a rolling deploy (their Drizzle schema still SELECTs the column
+-- → undefined_column 500s until they're replaced). This project has no
+-- prior DROP COLUMN migration, so we follow expand/contract: ship the
+-- code change first, drop the now-orphaned column in a later release.

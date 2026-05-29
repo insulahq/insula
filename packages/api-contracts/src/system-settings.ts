@@ -38,7 +38,7 @@ export const updateSystemSettingsSchema = z.object({
   // older callers don't break; the backend silently ignores it.
   // (mailHostname removed — the canonical mail hostname is
   // mailServerHostname under /admin/webmail-settings; the backing
-  // column was dropped in migration 0046.)
+  // column is retired in code, physical drop deferred — see migration 0046.)
   webmailUrl: z.string().url().max(500).nullable().optional(),
   // Runtime-firewall toggles (migration 0062). When false, the catalog
   // deploy path rejects workloads that declare host-network ports on
