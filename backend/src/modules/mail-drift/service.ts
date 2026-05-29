@@ -143,10 +143,17 @@ export async function recreateDriftItemEmpty(
   // Lazy-load JMAP client. `getDomainJmapAccountId` is local to the
   // email-domains service (cached singleton); we duplicate the minimal
   // session lookup here to keep mail-drift independent.
+  //
+  // NB: `accountSet` is the modern Stalwart 0.16 API that takes
+  // `domainId` + bare local-part `name`. The legacy `createMailbox`
+  // shim that passes the full address as `name` + `emails` is rejected
+  // by Stalwart 0.16 with "Invalid email local part" because the
+  // server validates `name` as a local-part token, not a full address.
+  // We call `accountSet` directly here to match `mailboxes/service.ts`.
   const {
     getJmapSession,
     createDomain: jmapCreateDomain,
-    createMailbox: jmapCreateMailbox,
+    accountSet,
   } = await import('../stalwart-jmap/client.js');
   const baseUrl = process.env.STALWART_MGMT_URL;
   const session = await getJmapSession(baseUrl, process.env);
@@ -246,17 +253,79 @@ export async function recreateDriftItemEmpty(
       );
     }
 
-    const created = await jmapCreateMailbox({
+    // Resolve the parent Domain's Stalwart ID — `x:Account/set` needs
+    // `domainId` to bind the User to a domain, and rejects payloads
+    // that pass `emails` without it. If the parent domain itself is
+    // also drifting (no current stalwartDomainId), recreate the domain
+    // first before retrying this mailbox.
+    const [parentDomain] = await db
+      .select({
+        id: emailDomains.id,
+        stalwartDomainId: emailDomains.stalwartDomainId,
+      })
+      .from(emailDomains)
+      .where(eq(emailDomains.id, mbRow.emailDomainId));
+    if (!parentDomain) {
+      throw new ApiError(
+        'PARENT_DOMAIN_GONE',
+        `Mailbox ${mbRow.fullAddress} references email_domains row ${mbRow.emailDomainId} which no longer exists`,
+        409,
+      );
+    }
+    if (!parentDomain.stalwartDomainId) {
+      throw new ApiError(
+        'PARENT_DOMAIN_NOT_IN_STALWART',
+        `Mailbox ${mbRow.fullAddress}: its parent Domain has no Stalwart entry. Recreate the Domain drift item first, then retry this mailbox.`,
+        409,
+      );
+    }
+
+    // Split fullAddress into local-part + domain. The platform-DB
+    // mailboxes.full_address column is unique-indexed in canonical
+    // lowercase, so `@` is always present exactly once.
+    const atIdx = mbRow.fullAddress.indexOf('@');
+    if (atIdx <= 0) {
+      throw new ApiError(
+        'MAILBOX_ADDRESS_MALFORMED',
+        `Mailbox ${mbRow.fullAddress} has no local-part — cannot recreate`,
+        409,
+      );
+    }
+    const localPart = mbRow.fullAddress.slice(0, atIdx);
+
+    const result = await accountSet({
       accountId,
-      input: {
-        type: 'individual',
-        name: mbRow.fullAddress,
-        emails: [mbRow.fullAddress],
-        secrets: [mbRow.passwordHash],
-      },
       baseUrl,
+      request: {
+        create: {
+          'recreated-mailbox': {
+            '@type': 'User',
+            name: localPart,
+            domainId: parentDomain.stalwartDomainId,
+            emails: [mbRow.fullAddress],
+            credentials: {
+              '0': {
+                '@type': 'Password',
+                secret: mbRow.passwordHash,
+                allowedIps: {},
+                expiresAt: null,
+              },
+            },
+          },
+        },
+      },
     });
-    if (!created.id) {
+    const notCreated = result.notCreated?.['recreated-mailbox'];
+    if (notCreated) {
+      throw new ApiError(
+        'STALWART_CREATE_REJECTED',
+        `Stalwart x:Account/set rejected recreate: ${notCreated.description ?? notCreated.type}`,
+        502,
+        { type: notCreated.type, properties: notCreated.properties ?? null },
+      );
+    }
+    const created = result.created?.['recreated-mailbox'] as { id?: string } | undefined;
+    if (!created?.id) {
       throw new ApiError(
         'STALWART_CREATE_NO_ID',
         `Stalwart accepted the create call but returned no id — refusing to update platform DB`,

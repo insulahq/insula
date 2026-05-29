@@ -228,7 +228,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
     ) bun ON TRUE
     LEFT JOIN LATERAL (
       SELECT id FROM restore_jobs
-      WHERE tenant_id = t.id AND status NOT IN ('completed', 'failed', 'cancelled')
+      WHERE tenant_id = t.id AND status NOT IN ('done', 'failed')
       ORDER BY created_at DESC LIMIT 1
     ) cart ON TRUE
     WHERE t.status != 'archived'
