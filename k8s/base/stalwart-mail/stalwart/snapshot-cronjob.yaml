@@ -56,7 +56,17 @@ metadata:
     # — Flux's reconcile yanked spec.schedule back to "*/2" every cycle.
     kustomize.toolkit.fluxcd.io/ssa: IgnoreConflicts
 spec:
-  schedule: "*/2 * * * *"
+  # Default cadence 30min. Operators can override via
+  # PATCH /admin/mail/snapshot-schedule (SSA-owned by
+  # platform-api.snapshot-settings; Flux strips /spec/schedule so it
+  # never reverts the operator value).
+  schedule: "*/30 * * * *"
+  # Ships SUSPENDED. A restic backup with no target is pointless churn —
+  # the mail-snapshot reconciler (snapshot-cronjob-reconciler.ts) flips
+  # suspend=false only once a mail backup target is configured
+  # (system_settings.mail_snapshot_backup_store_id). Flux strips
+  # /spec/suspend so it never re-suspends an operator-enabled job.
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
