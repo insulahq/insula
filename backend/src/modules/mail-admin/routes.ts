@@ -1471,7 +1471,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // ─── Admin: read standby-replicate per-node freshness ────────────
   app.get(
     '/admin/mail/standby-reports',
-    { preHandler: requireRole('admin') },
+    { preHandler: requireRole('super_admin', 'admin') },
     async () => {
       const reports = await getStandbyReports(app.db);
       return success({ reports });
