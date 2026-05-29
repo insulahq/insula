@@ -3148,15 +3148,18 @@ scenario_mail_migration_fixes() {
   # something semantically equivalent.
   local probe_sched='*/7 * * * *'
 
-  # Operator-side patch via the existing API surface (used by
-  # /backups/mail?tab=routing). When the API surface lands, we'll
-  # switch this to that endpoint; for now /admin/mail/snapshot-schedule
-  # is the canonical one that exercises the same applyMailSnapshotRetention
-  # → applyPatch(...,force:true) path.
+  # 2026-05-29 fix: use the SAME endpoint the UI at /backups/mail?tab=routing
+  # actually uses (PATCH /admin/backups/schedules/mail), NOT the legacy
+  # /admin/mail/snapshot-schedule which writes to a DIFFERENT DB column
+  # (system_settings.mailSnapshotSchedule vs backup_schedules.cron_expression).
+  # The two write paths can disagree, and the startup reconciler reads only
+  # the latter — so testing the former passes locally but breaks the
+  # operator's UI experience because the next platform-api restart
+  # silently reverts the operator's setting to backup_schedules' value.
   local patch_status
-  patch_status=$(api_raw PATCH /admin/mail/snapshot-schedule "{\"scheduleExpression\":\"${probe_sched}\"}" 2>&1 | tail -1)
+  patch_status=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\"}" 2>&1 | tail -1)
   if [[ "$patch_status" != "200" ]]; then
-    fail "PART A: PATCH /admin/mail/snapshot-schedule returned ${patch_status}"
+    fail "PART A: PATCH /admin/backups/schedules/mail returned ${patch_status}"
     return 1
   fi
   ok "PART A: PATCH accepted (200)"
@@ -3194,8 +3197,8 @@ scenario_mail_migration_fixes() {
     fail "PART A: Flux reconcile reverted schedule to '${post_flux}' (regression of SSA-ownership fix)"
   fi
 
-  # Restore original schedule.
-  api_raw PATCH /admin/mail/snapshot-schedule "{\"scheduleExpression\":\"${orig_sched}\"}" >/dev/null 2>&1 || true
+  # Restore original schedule via the same UI-facing endpoint.
+  api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${orig_sched}\"}" >/dev/null 2>&1 || true
   ok "PART A: original schedule '${orig_sched}' restored"
 
   # ── Part B: Stalwart starts cleanly post-migration (subPath guard) ──

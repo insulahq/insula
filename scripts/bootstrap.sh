@@ -4046,6 +4046,24 @@ spec:
         version: v1
         kind: Cluster
         name: postgres
+    # 2026-05-29: strip spec.schedule from Flux's view of the
+    # stalwart-snapshot CronJob so Flux never tries to apply it. The
+    # field is operator-owned via the /backups/mail?tab=routing UI which
+    # calls applyMailSnapshotRetention → applyPatch(force:true) with the
+    # fieldManager `platform-api.snapshot-settings`. Pre-fix Flux's
+    # IgnoreConflicts/Merge annotations did NOT actually preserve field
+    # ownership across reconciles (live E2E confirmed Flux always took
+    # over and reverted the operator's value). The CronJob already
+    # exists in-cluster with a valid schedule, so removing it from
+    # Flux's apply input leaves the live value untouched.
+    - patch: |
+        - op: remove
+          path: /spec/schedule
+      target:
+        group: batch
+        version: v1
+        kind: CronJob
+        name: stalwart-snapshot
 KUSTYAML
 
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
