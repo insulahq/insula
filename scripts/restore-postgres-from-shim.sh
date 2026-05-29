@@ -135,9 +135,9 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/managed-by: restore-postgres-from-shim
   annotations:
-    platform.phoenix-host.net/restore-source: system-postgres-objectstore
-    platform.phoenix-host.net/restore-mode: "$MODE"
-    platform.phoenix-host.net/restore-pitr-target: "$PITR_TARGET"
+    insula.host/restore-source: system-postgres-objectstore
+    insula.host/restore-mode: "$MODE"
+    insula.host/restore-pitr-target: "$PITR_TARGET"
 spec:
   # New cluster — 1 instance is enough to validate the restore.
   # Operator scales out manually after rename + cutover.

@@ -15,8 +15,8 @@ step, not a push-to-main.
 Pre-requisites (none are automated — this is a "do it yourself"
 operation with review gates):
 
-- **3+ server nodes** labelled `platform.phoenix-host.net/node-role=server`.
-  `kubectl get nodes -L platform.phoenix-host.net/node-role` should
+- **3+ server nodes** labelled `insula.host/node-role=server`.
+  `kubectl get nodes -L insula.host/node-role` should
   show at least 3 `server` rows, all Ready.
 - **Longhorn system-ha StorageClass** available (check
   `kubectl get sc longhorn-system-ha`). CNPG will provision replica
@@ -90,7 +90,7 @@ spec:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
           - matchExpressions:
-              - key: platform.phoenix-host.net/node-role
+              - key: insula.host/node-role
                 operator: In
                 values: [server]
     topologySpreadConstraints:

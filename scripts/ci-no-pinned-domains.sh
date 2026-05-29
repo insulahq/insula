@@ -21,7 +21,7 @@ set -euo pipefail
 #   - test fixtures / *.test.ts / *.spec.ts
 #   - YAML/TS comment lines
 #   - examples in script `usage` / docs help text
-#   - K8s annotation/label keys like `platform.phoenix-host.net/foo`
+#   - K8s annotation/label keys like `insula.host/foo`
 #     (these are project identifiers, not the cluster apex — see CLAUDE.md)
 
 set +e

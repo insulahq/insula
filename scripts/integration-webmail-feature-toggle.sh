@@ -59,7 +59,7 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-mail}"
 KUBECTL="${KUBECTL:-kubectl}"
 CM_NAME="webmail-feature-overrides"
-ANNOTATION="platform.phoenix-host.net/feature-css-hash"
+ANNOTATION="insula.host/feature-css-hash"
 PASS=0
 FAIL=0
 

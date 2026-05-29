@@ -241,7 +241,7 @@ BundleComponent or lifecycle hook was required**:
   > dedicated `LifecycleHook` for custom deployment teardown. Kubernetes
   > resource cleanup (Deployments, Services, PVC subPaths) is handled by the
   > platform reconciler's `deleteCustomDeploymentResources()` path, which
-  > label-sweeps everything owned by `platform.phoenix-host.net/deployment-id`.
+  > label-sweeps everything owned by `insula.host/deployment-id`.
   > The ADR-033 `db-deployments` hook removes the DB row on `deleted`.
   > No manual cleanup is needed beyond `DELETE /custom-deployments/:id`.
 

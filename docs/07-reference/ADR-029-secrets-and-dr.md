@@ -61,7 +61,7 @@ Operator with both: active target picks which one today, switchable any time via
 
 ### 5. Tenant PVC backup is opt-in by label, audited daily
 
-Every tenant PVC is labeled `recurring-job-group.longhorn.io/default=enabled` at creation time (backend enforcement, one-shot migration script for pre-existing). A daily audit CronJob emits a Kubernetes `Warning` event for any Longhorn PVC lacking the label — unless it carries the opt-out annotation `platform.phoenix-host.net/backup-excluded=true`.
+Every tenant PVC is labeled `recurring-job-group.longhorn.io/default=enabled` at creation time (backend enforcement, one-shot migration script for pre-existing). A daily audit CronJob emits a Kubernetes `Warning` event for any Longhorn PVC lacking the label — unless it carries the opt-out annotation `insula.host/backup-excluded=true`.
 
 This closes the silent-footgun where a forgotten label meant a tenant's data was quietly not backed up.
 

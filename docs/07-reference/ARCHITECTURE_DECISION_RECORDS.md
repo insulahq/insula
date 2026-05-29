@@ -2378,7 +2378,7 @@ ConfigMap on first install. Secrets-backup CronJob enumerates platform +
 tenant Secrets daily, age-encrypts to operator recipient, uploads to
 S3 or SSH target per backup-credentials Secret's `TARGET_KIND`. Dual
 S3/SSH target supports both cloud and colo deployments. Tenant opt-in
-to backup via `platform.phoenix-host.net/backup-excluded` annotation;
+to backup via `insula.host/backup-excluded` annotation;
 backup-audit CronJob daily enforces via Kubernetes Warning events.
 
 ---

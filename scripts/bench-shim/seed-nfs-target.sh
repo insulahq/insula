@@ -25,7 +25,7 @@ log() { printf '[seed-nfs-target] %s\n' "$*" >&2; }
 # Defence in depth: the SSH target above is hardcoded to staging1,
 # but if this script is ever templated or run from a different host,
 # verify the kubeconfig context still points at staging before any
-# DB writes hit. The platform.phoenix-host.net/environment label is
+# DB writes hit. The insula.host/environment label is
 # applied to the platform namespace by the staging overlay.
 CLUSTER_CONTEXT=$($SSH "kubectl config current-context" || echo "")
 CLUSTER_LABEL=$($SSH "kubectl get ns platform -o jsonpath='{.metadata.labels.platform\\.phoenix-host\\.net/environment}'" 2>/dev/null || echo "")

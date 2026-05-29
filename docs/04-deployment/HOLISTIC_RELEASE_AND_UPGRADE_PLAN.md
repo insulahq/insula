@@ -269,7 +269,7 @@ Numbered W0–W17. Independently shippable workstreams are marked; gating relati
 
 ### W5 — Version spine
 **Goal**: The §2 diagram becomes real.
-**Deliverables**: `platform/VERSION` file (CalVer); `release.yml` cut-tag job validates file matches `${GITHUB_REF_NAME#v}`; `build-deploy.yml` keeps writing `${LAST_TAG}-${SHORT_SHA}` to development overlay + adds `platform.phoenix-host.net/version` label on the three Deployments; bootstrap.sh + scripts/local.sh write `platform-version` ConfigMap idempotently; backend startup persists `platform_settings.installed_platform_version`; `GET /api/admin/platform/version` returns `{ installed, available, running }`; admin UI version banner across all admin pages when `available > installed`.
+**Deliverables**: `platform/VERSION` file (CalVer); `release.yml` cut-tag job validates file matches `${GITHUB_REF_NAME#v}`; `build-deploy.yml` keeps writing `${LAST_TAG}-${SHORT_SHA}` to development overlay + adds `insula.host/version` label on the three Deployments; bootstrap.sh + scripts/local.sh write `platform-version` ConfigMap idempotently; backend startup persists `platform_settings.installed_platform_version`; `GET /api/admin/platform/version` returns `{ installed, available, running }`; admin UI version banner across all admin pages when `available > installed`.
 **Dependencies**: W0, W1 (overlay directory name).
 **Complexity**: M.
 **Risk**: L.

@@ -140,7 +140,7 @@ echo "Current mode: $PRE_MODE"
 mapfile -t NODE_LINES < <(
   echo "$NODES_JSON" | jq -r '.items[] | [
     .metadata.name,
-    (.metadata.labels["platform.phoenix-host.net/node-role"] // "unknown"),
+    (.metadata.labels["insula.host/node-role"] // "unknown"),
     (.status.addresses[]? | select(.type=="ExternalIP") | .address) // (.status.addresses[]? | select(.type=="InternalIP") | .address)
   ] | @tsv'
 )

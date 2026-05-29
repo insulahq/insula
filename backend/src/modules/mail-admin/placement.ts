@@ -37,7 +37,7 @@ import {
 
 const SETTINGS_ID = 'system';
 const MAIL_NAMESPACE = 'mail';
-const NODE_ROLE_LABEL_KEY = 'platform.phoenix-host.net/node-role';
+const NODE_ROLE_LABEL_KEY = 'insula.host/node-role';
 const ELIGIBLE_NODE_ROLES = new Set(['server', 'worker']);
 
 export interface PlacementOptions {
@@ -497,7 +497,7 @@ export async function ensureMailStackPlacementApplied(
 
 /**
  * A3 (2026-05-25): ensure exactly the supplied set of nodes carries
- * the `platform.phoenix-host.net/mail-standby=true` label. Other
+ * the `insula.host/mail-standby=true` label. Other
  * nodes get the label removed (cleanup if a previous secondary was
  * de-elected, or HA disabled entirely). Idempotent.
  */
@@ -509,7 +509,7 @@ async function reconcileMailStandbyLabel(
 ): Promise<void> {
   const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
   const { spawnStandbyDeelectionCleanupJob } = await import('./standby-cleanup.js');
-  const STANDBY_LABEL = 'platform.phoenix-host.net/mail-standby';
+  const STANDBY_LABEL = 'insula.host/mail-standby';
   const wantSet = new Set(standbyNodes);
 
   let allNodes: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> = [];

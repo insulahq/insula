@@ -98,7 +98,7 @@ spec:
       #
       # When platform-api flips one of the feature flags, the reconciler
       # rewrites the ConfigMap content + stamps a
-      # `platform.phoenix-host.net/feature-css-hash` annotation on this
+      # `insula.host/feature-css-hash` annotation on this
       # Deployment's pod template, which triggers a rolling restart that
       # re-runs this initContainer with the new ConfigMap content.
       initContainers:

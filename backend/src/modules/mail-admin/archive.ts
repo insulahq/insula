@@ -823,10 +823,10 @@ async function createArchiveJob(
       labels: {
         'app.kubernetes.io/component': 'stalwart-archive',
         'app.kubernetes.io/managed-by': 'platform-api',
-        'platform.phoenix-host.net/archive-mode': mode,
+        'insula.host/archive-mode': mode,
       },
       annotations: {
-        'platform.phoenix-host.net/started-by': deps.userId ?? 'system',
+        'insula.host/started-by': deps.userId ?? 'system',
       },
     },
     spec: {
@@ -1106,10 +1106,10 @@ async function createArchiveJobNoDowntime(
       labels: {
         'app.kubernetes.io/component': 'stalwart-archive',
         'app.kubernetes.io/managed-by': 'platform-api',
-        'platform.phoenix-host.net/archive-mode': 'no_downtime',
+        'insula.host/archive-mode': 'no_downtime',
       },
       annotations: {
-        'platform.phoenix-host.net/started-by': deps.userId ?? 'system',
+        'insula.host/started-by': deps.userId ?? 'system',
       },
     },
     spec: {

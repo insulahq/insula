@@ -247,7 +247,7 @@ async function triggerFreshBarmanBackup(
       name: backupName,
       namespace,
       labels: {
-        'platform.phoenix-host.net/barman-pre-restore': 'true',
+        'insula.host/barman-pre-restore': 'true',
       },
     },
     spec: {
@@ -418,14 +418,14 @@ export async function createBarmanRestore(
       namespace: inputs.namespace,
       labels: {
         'app.kubernetes.io/managed-by': 'platform-api-postgres-barman-restore',
-        'platform.phoenix-host.net/barman-restore-source': inputs.sourceClusterName,
+        'insula.host/barman-restore-source': inputs.sourceClusterName,
         ...(inputs.recoveryTargetTime
-          ? { 'platform.phoenix-host.net/barman-restore-target-time-set': 'true' }
-          : { 'platform.phoenix-host.net/barman-restore-target-time-set': 'false' }),
+          ? { 'insula.host/barman-restore-target-time-set': 'true' }
+          : { 'insula.host/barman-restore-target-time-set': 'false' }),
       },
       annotations: {
         ...(inputs.recoveryTargetTime
-          ? { 'platform.phoenix-host.net/barman-restore-target-time': inputs.recoveryTargetTime }
+          ? { 'insula.host/barman-restore-target-time': inputs.recoveryTargetTime }
           : {}),
       },
     },
@@ -770,9 +770,9 @@ async function takeLonghornSnapshotOfRestoredCluster(
       name: snapshotName,
       namespace: LONGHORN_NS,
       labels: {
-        'platform.phoenix-host.net/pitr-restore': 'true',
-        'platform.phoenix-host.net/pitr-namespace': sourceNamespace,
-        'platform.phoenix-host.net/barman-promote': 'true',
+        'insula.host/pitr-restore': 'true',
+        'insula.host/pitr-namespace': sourceNamespace,
+        'insula.host/barman-promote': 'true',
       },
     },
     spec: {

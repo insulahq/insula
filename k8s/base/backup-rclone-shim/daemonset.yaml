@@ -44,7 +44,7 @@ spec:
         # ConfigMap or backup-target-key Secret content changes. The
         # rolling restart picks up the new config without us needing
         # to touch the DaemonSet spec directly.
-        platform.phoenix-host.net/config-hash: "placeholder-replace-via-renderer"
+        insula.host/config-hash: "placeholder-replace-via-renderer"
     spec:
       serviceAccountName: backup-rclone-shim
       automountServiceAccountToken: false

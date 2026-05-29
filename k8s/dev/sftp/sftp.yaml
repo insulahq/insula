@@ -22,7 +22,7 @@ kind: Namespace
 metadata:
   name: dev-sftp
   labels:
-    platform.phoenix-host.net/env: dev
+    insula.host/env: dev
 ---
 apiVersion: apps/v1
 kind: Deployment

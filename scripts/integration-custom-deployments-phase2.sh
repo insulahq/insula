@@ -196,12 +196,12 @@ cleanup() {
   # Belt-and-braces: sweep any remaining resources by the e2e label we set.
   local cnt
   cnt=$(remote_kubectl get all,configmap,secret -n "$TENANT_NS" \
-    -l "platform.phoenix-host.net/e2e-phase2=$STAMP" \
+    -l "insula.host/e2e-phase2=$STAMP" \
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w || echo "0")
   if [[ "$cnt" -gt "0" ]]; then
     info "$cnt lingering Phase-2 resources — removing…"
     remote_kubectl delete all,configmap,secret -n "$TENANT_NS" \
-      -l "platform.phoenix-host.net/e2e-phase2=$STAMP" 2>/dev/null || true
+      -l "insula.host/e2e-phase2=$STAMP" 2>/dev/null || true
   fi
 
   # Verify defaults restored.
@@ -356,7 +356,7 @@ print(json.dumps({
     pass "T6: writer pod running"
   else
     fail "T6: writer pod did not reach Running in 120s"
-    remote_kubectl get pods -n "$TENANT_NS" -l "platform.phoenix-host.net/deployment-id=$id" -o wide 2>/dev/null || true
+    remote_kubectl get pods -n "$TENANT_NS" -l "insula.host/deployment-id=$id" -o wide 2>/dev/null || true
     return
   fi
 
@@ -449,7 +449,7 @@ print(json.dumps({
   local replicas
   while ((SECONDS < end)); do
     replicas=$(remote_kubectl get deploy -n "$TENANT_NS" \
-      -l "platform.phoenix-host.net/deployment-id=$id" \
+      -l "insula.host/deployment-id=$id" \
       -o jsonpath='{.items[0].spec.replicas}' 2>/dev/null || echo "?")
     if [[ "$replicas" == "0" ]]; then break; fi
     sleep 3
@@ -1046,7 +1046,7 @@ else:
     local deploy_name="p2-quota-probe-$STAMP"
     local replica_fail_reason
     replica_fail_reason=$(remote_kubectl get deploy -n "$TENANT_NS" \
-      -l "platform.phoenix-host.net/deployment-id=$dep_id" \
+      -l "insula.host/deployment-id=$dep_id" \
       -o jsonpath='{.items[0].status.conditions[?(@.type=="ReplicaFailure")].reason}' \
       2>/dev/null || echo "")
     # Also check Deployment events for quota messages as a fallback.
@@ -1283,7 +1283,7 @@ print(len(bad))
 
   local svc_count
   svc_count=$(remote_kubectl get svc -n "$TENANT_NS" \
-    -l "platform.phoenix-host.net/deployment-id=$dep_id" \
+    -l "insula.host/deployment-id=$dep_id" \
     --no-headers 2>/dev/null | wc -l)
   if [[ "$svc_count" -ge 2 ]]; then
     pass "T18: ≥2 Services created (one per exposed port)"

@@ -107,7 +107,7 @@ export async function spawnStandbyDeelectionCleanupJob(
       labels: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/component': 'mail-standby-cleanup',
-        'platform.phoenix-host.net/de-elected-node': nodeName.slice(0, 63),
+        'insula.host/de-elected-node': nodeName.slice(0, 63),
       },
     },
     spec: {
@@ -122,7 +122,7 @@ export async function spawnStandbyDeelectionCleanupJob(
         metadata: {
           labels: {
             'app.kubernetes.io/component': 'mail-standby-cleanup',
-            'platform.phoenix-host.net/de-elected-node': nodeName.slice(0, 63),
+            'insula.host/de-elected-node': nodeName.slice(0, 63),
           },
         },
         spec: {

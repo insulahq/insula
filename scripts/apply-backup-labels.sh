@@ -26,7 +26,7 @@ fi
 # Opt-out annotation lets operators intentionally exclude a PVC from
 # the default group (e.g. a pay-tier client who declined backups). The
 # audit CronJob in Phase N6 honours the same annotation.
-OPT_OUT_ANNOTATION='platform.phoenix-host.net/backup-excluded'
+OPT_OUT_ANNOTATION='insula.host/backup-excluded'
 TARGET_LABEL='recurring-job-group.longhorn.io/default=enabled'
 
 mapfile -t rows < <(kubectl get pvc -A -o json \

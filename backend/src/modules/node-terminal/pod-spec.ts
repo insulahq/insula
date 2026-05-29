@@ -2,9 +2,9 @@ import type * as k8s from '@kubernetes/client-node';
 
 // Label keys are exported so the orphan-sweeper and CI guard can pin
 // to the same strings without import-of-magic-string surprises.
-export const TERMINAL_POD_LABEL = 'platform.phoenix-host.net/node-terminal';
-export const TERMINAL_SESSION_LABEL = 'platform.phoenix-host.net/session-id';
-export const TERMINAL_TARGET_NODE_LABEL = 'platform.phoenix-host.net/target-node';
+export const TERMINAL_POD_LABEL = 'insula.host/node-terminal';
+export const TERMINAL_SESSION_LABEL = 'insula.host/session-id';
+export const TERMINAL_TARGET_NODE_LABEL = 'insula.host/target-node';
 
 // Namespace + naming. Pods land in the same namespace as platform-api
 // so the SA's existing pod-management RBAC suffices.
@@ -48,7 +48,7 @@ export interface BuildTerminalPodSpecInput {
  *      the platform-api itself is uninstalled, every live terminal
  *      Pod cascade-deletes.
  *   3. Specific labels — orphan sweeper + admin observability tools
- *      can list `platform.phoenix-host.net/node-terminal=true` and
+ *      can list `insula.host/node-terminal=true` and
  *      verify there are no surprises.
  *   4. automountServiceAccountToken=false — the inside-the-shell user
  *      should not have an SA token; the shell needs root on the host,
@@ -91,7 +91,7 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Po
         'app.kubernetes.io/managed-by': 'platform-api',
       },
       annotations: {
-        'platform.phoenix-host.net/created-at': new Date().toISOString(),
+        'insula.host/created-at': new Date().toISOString(),
       },
       ...(input.ownerReference
         ? { ownerReferences: [input.ownerReference] }

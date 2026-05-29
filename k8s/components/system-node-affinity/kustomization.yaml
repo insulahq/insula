@@ -2,14 +2,14 @@
 #
 # Pins every platform-managed system workload (Deployment / StatefulSet
 # in the `platform`, `platform-system`, and `mail` namespaces) to nodes
-# labelled `platform.phoenix-host.net/node-role=server`, and adds a
-# toleration for the `platform.phoenix-host.net/server-only:NoSchedule`
+# labelled `insula.host/node-role=server`, and adds a
+# toleration for the `insula.host/server-only:NoSchedule`
 # taint so those pods still schedule on servers that refuse tenant
 # workloads (`--host-tenant-workloads=false`).
 #
 # Apply order (CRITICAL — see docs/07-reference/NODE_ROLE_TAXONOMY.md):
 # the staging / production node MUST already carry
-# `platform.phoenix-host.net/node-role=server` before this component is
+# `insula.host/node-role=server` before this component is
 # included in the overlay's kustomization. Otherwise the scheduler
 # re-evaluates the affinity, finds no matching node, evicts every
 # platform pod, and the API becomes unreachable — including the admin

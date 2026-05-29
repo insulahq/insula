@@ -66,7 +66,7 @@ describe('createBackupNow', () => {
     });
     expect(created).toHaveLength(1);
     expect(created[0]?.name).toMatch(/^on-demand-\d{13}$/);
-    expect(created[0]?.labels?.['platform.phoenix-host.net/on-demand']).toBe('true');
+    expect(created[0]?.labels?.['insula.host/on-demand']).toBe('true');
     expect(created[0]?.spec).toEqual({
       cluster: { name: 'system-db' },
       method: 'plugin',
@@ -166,12 +166,12 @@ describe('createBackupNow', () => {
       namespace: 'platform', clusterName: 'system-db',
       description: 'pre-upgrade: tenant import',
     });
-    expect(created[0]?.annotations?.['platform.phoenix-host.net/description']).toBe('pre-upgrade: tenant import');
+    expect(created[0]?.annotations?.['insula.host/description']).toBe('pre-upgrade: tenant import');
     // Must NOT also write the label (it would fail k8s label-value
     // validation for descriptions with spaces or colons).
-    expect(created[0]?.labels).not.toHaveProperty('platform.phoenix-host.net/description');
+    expect(created[0]?.labels).not.toHaveProperty('insula.host/description');
     // The on-demand label still rides along.
-    expect(created[0]?.labels?.['platform.phoenix-host.net/on-demand']).toBe('true');
+    expect(created[0]?.labels?.['insula.host/on-demand']).toBe('true');
   });
 
   it('omits the description annotation when no description supplied', async () => {
@@ -181,7 +181,7 @@ describe('createBackupNow', () => {
     });
     // No annotations block at all when there's nothing to write.
     expect(created[0]?.annotations).toBeUndefined();
-    expect(created[0]?.labels?.['platform.phoenix-host.net/on-demand']).toBe('true');
+    expect(created[0]?.labels?.['insula.host/on-demand']).toBe('true');
   });
 
   it('accepts a barman plugin whose name does not match the exact constant but is a barman variant', async () => {

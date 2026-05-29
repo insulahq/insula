@@ -335,7 +335,7 @@ export async function listSnapshotsForVolume(
       createdAt: s.status?.creationTime ?? s.metadata?.creationTimestamp ?? null,
       sizeBytes: parseQuantityBytes(s.status?.size),
       usable: s.status?.readyToUse === true,
-      userLabel: s.metadata?.labels?.['platform.phoenix-host.net/user-label'] ?? null,
+      userLabel: s.metadata?.labels?.['insula.host/user-label'] ?? null,
       markedForRemoval: s.status?.markRemoved === true,
     });
   }
@@ -421,7 +421,7 @@ export async function takeSnapshot(
   const snapshotName = `manual-${Date.now()}-${volumeName.slice(0, 24)}`;
   const labels: Record<string, string> = {};
   if (userLabel && userLabel.length <= 63) {
-    labels['platform.phoenix-host.net/user-label'] = userLabel.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 63);
+    labels['insula.host/user-label'] = userLabel.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 63);
   }
   await k8s.custom.createNamespacedCustomObject({
     group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',

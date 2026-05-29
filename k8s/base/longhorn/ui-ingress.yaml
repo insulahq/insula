@@ -17,7 +17,7 @@ metadata:
   namespace: longhorn-system
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/admin-ui: "true"
+    insula.host/admin-ui: "true"
 spec:
   entryPoints:
     - websecure

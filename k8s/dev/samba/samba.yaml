@@ -21,7 +21,7 @@ kind: Namespace
 metadata:
   name: dev-samba
   labels:
-    platform.phoenix-host.net/env: dev
+    insula.host/env: dev
 ---
 apiVersion: v1
 kind: Secret

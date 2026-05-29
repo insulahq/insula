@@ -29,7 +29,7 @@ const SYSTEM_NAMESPACE = 'platform';
 // replicas, so a future multi-instance UI can either patch the CR
 // directly or call this endpoint per-instance.
 const SYSTEM_PVC_NAME = 'system-db-1';
-const LAST_RESIZED_ANNOTATION = 'platform.phoenix-host.net/last-resized-at';
+const LAST_RESIZED_ANNOTATION = 'insula.host/last-resized-at';
 
 export interface SystemPvcOptions {
   readonly kubeconfigPath: string | undefined;
