@@ -22,6 +22,7 @@ import { gunzipSync } from 'node:zlib';
 import {
   authenticate,
   requirePanel,
+  requireRole,
   requireTenantRoleByMethod,
   requireTenantAccess,
 } from '../../middleware/auth.js';
@@ -331,7 +332,21 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     const q = request.query as { limit?: string; status?: string };
     const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 200);
     const conditions = [eq(restoreJobs.tenantId, tenantId)];
-    if (q.status) conditions.push(eq(restoreJobs.status, q.status as 'draft'));
+    // Validate `status` against the cart-status enum. Without this,
+    // an unchecked `q.status as 'draft'` cast would let Postgres reject
+    // unknown values with a 500 (or — more subtly — let an attacker
+    // probe which enum strings the schema accepts via timing/error
+    // differences). Empty + unrecognised → fall through to "no filter".
+    if (q.status) {
+      const allowed: ReadonlyArray<'draft' | 'executing' | 'paused' | 'done' | 'failed'> = [
+        'draft', 'executing', 'paused', 'done', 'failed',
+      ];
+      if (allowed.includes(q.status as typeof allowed[number])) {
+        conditions.push(eq(restoreJobs.status, q.status as typeof allowed[number]));
+      } else {
+        throw new ApiError('VALIDATION_ERROR', `status must be one of: ${allowed.join(', ')}`, 400);
+      }
+    }
     const where = conditions.length === 1 ? conditions[0] : and(...conditions);
     const rows = await app.db.select().from(restoreJobs)
       .where(where)
@@ -580,7 +595,19 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── POST /api/v1/tenants/:tenantId/restore-carts/:id/rollback ─────
-  app.post('/tenants/:tenantId/restore-carts/:id/rollback', async (request) => {
+  //
+  // Operator-only despite living in the tenant-routes plugin: PVC
+  // rollback quiesces workloads, replaces volume contents from the
+  // pre-restore snapshot, and unquiesces. That destructive infra op
+  // shouldn't be triggerable by a tenant_admin token. The plugin-wide
+  // `requireTenantRoleByMethod` already lets tenant_admin through,
+  // so we add a per-route `requireRole(super_admin,admin)` to narrow.
+  // The admin counterpart at `/admin/restores/carts/:id/rollback`
+  // applies the same gate. Tenant UI hides the button via
+  // `showRollback={false}` on the shared layout.
+  app.post('/tenants/:tenantId/restore-carts/:id/rollback', {
+    preHandler: requireRole('super_admin', 'admin'),
+  }, async (request) => {
     const { tenantId, id: cartId } = request.params as { tenantId: string; id: string };
     const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, cartId)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Restore cart not found', 404);
