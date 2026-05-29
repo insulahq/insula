@@ -1083,6 +1083,30 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // stalwart-snapshot CronJob reconciler. Flips spec.suspend false
+        // ONLY when a mail-class backup target is bound (no pointless
+        // restic churn without a target), and SSA-asserts spec.schedule
+        // (default */30, or the operator override) so the Flux
+        // schedule-strip leaves a valid value → platform Kustomization
+        // reaches Ready on fresh bootstrap. 5-min tick + cold-start kick,
+        // non-blocking on failure.
+        try {
+          const { startMailSnapshotCronJobReconciler } = await import(
+            './modules/mail-admin/snapshot-cronjob-scheduler.js'
+          );
+          const mailSnapHandle = startMailSnapshotCronJobReconciler(
+            app.db,
+            { batch: k8sForImapsync.batch },
+            app.log,
+          );
+          app.addHook('onClose', () => mailSnapHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'mail-snapshot-cronjob: scheduler start failed (non-blocking)',
+          );
+        }
+
         // R-X6: postgres ObjectStore + ScheduledBackup reconciler.
         // Materialises the CNPG plugin-barman-cloud wiring whenever
         // the SYSTEM-class shim target binding changes. 5-min tick.
