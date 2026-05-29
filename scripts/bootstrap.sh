@@ -398,7 +398,7 @@ usage() {
   cat <<'HELPTEXT'
 Usage: bootstrap.sh --join-as <server|worker> [OPTIONS]
 
-Server provisioning and platform installation for k8s-hosting-platform.
+Server provisioning and platform installation for insula.
 
 SUPPORTED OPERATING SYSTEMS:
   Tier 1 (CI-tested):
@@ -6162,12 +6162,12 @@ apply_platform_manifests() {
   local repo_dir=""
   if [[ -f "k8s/base/kustomization.yaml" ]]; then
     repo_dir="."
-  elif [[ -f "/opt/k8s-hosting-platform/k8s/base/kustomization.yaml" ]]; then
-    repo_dir="/opt/k8s-hosting-platform"
+  elif [[ -f "/opt/insula/k8s/base/kustomization.yaml" ]]; then
+    repo_dir="/opt/insula"
   else
     log "Cloning platform repository..."
-    git clone --depth 1 "$REPO_URL" /opt/k8s-hosting-platform 2>/dev/null || true
-    repo_dir="/opt/k8s-hosting-platform"
+    git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+    repo_dir="/opt/insula"
   fi
 
   if [[ ! -d "${repo_dir}/k8s/base" ]]; then
@@ -6888,12 +6888,12 @@ run_post_install_smoke() {
   # Resolve smoke script location. In --remote mode the parent
   # bootstrap.sh is scp'd to /tmp/bootstrap.sh ALONE — the smoke script
   # is NOT included. But apply_platform_manifests git-clones the whole
-  # repo to /opt/k8s-hosting-platform/, so the smoke script is available
+  # repo to /opt/insula/, so the smoke script is available
   # there by the time this function runs. Prefer the cloned-repo path
   # over BASH_SOURCE-relative (which resolves to /tmp on remote runs).
   local smoke_script=""
   for candidate in \
-      "/opt/k8s-hosting-platform/scripts/smoke-test-cluster-network.sh" \
+      "/opt/insula/scripts/smoke-test-cluster-network.sh" \
       "${BASH_SOURCE[0]%/*}/smoke-test-cluster-network.sh"; do
     if [[ -f "$candidate" ]]; then
       smoke_script="$candidate"
@@ -6903,7 +6903,7 @@ run_post_install_smoke() {
   done
   if [[ -z "$smoke_script" || ! -x "$smoke_script" ]]; then
     warn "smoke script not found in the expected paths — skipping post-install smoke."
-    warn "  Looked in: /opt/k8s-hosting-platform/scripts/, ${BASH_SOURCE[0]%/*}/"
+    warn "  Looked in: /opt/insula/scripts/, ${BASH_SOURCE[0]%/*}/"
     return 0
   fi
 
