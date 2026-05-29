@@ -13,7 +13,9 @@
  *      once a target exists, and re-suspends when it's removed.
  *
  *   2. spec.schedule — SSA-asserted (default "*​/30 * * * *", or the
- *      operator override in system_settings.mail_snapshot_schedule)
+ *      operator value in backup_schedules.mail.cron_expression — the
+ *      same column applyMailSnapshotRetention reads, NOT the legacy
+ *      system_settings.mailSnapshotSchedule)
  *      under the SAME field manager the operator PATCH uses
  *      (platform-api.snapshot-settings). This CLAIMS SSA ownership of
  *      the field on startup so that the Flux Kustomization-CR patch
@@ -31,7 +33,7 @@ import { eq } from 'drizzle-orm';
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 
-import { backupConfigurations, backupTargetAssignments, systemSettings } from '../../db/schema.js';
+import { backupConfigurations, backupTargetAssignments, backupSchedules } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH, applyPatch } from '../../shared/k8s-patch.js';
 
@@ -47,8 +49,6 @@ export const DEFAULT_MAIL_SNAPSHOT_SCHEDULE = '*/30 * * * *';
 
 /** Same SSA field manager the operator PATCH uses for spec.schedule. */
 const CRON_SCHEDULE_FIELD_MANAGER = 'platform-api.snapshot-settings';
-
-const SETTINGS_ID = 'system';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -218,12 +218,23 @@ async function isMailTargetBound(db: Database): Promise<boolean> {
   return rows[0].enabled === 1;
 }
 
-/** Operator override (system_settings.mail_snapshot_schedule) or the default. */
+/**
+ * Operator schedule (backup_schedules.mail.cron_expression) or the default.
+ *
+ * MUST read the SAME column as applyMailSnapshotRetention
+ * (snapshot-settings.ts) — both SSA-assert spec.schedule under the
+ * identical field manager `platform-api.snapshot-settings`, so if they
+ * disagree on the source column they fight: this reconciler's periodic
+ * tick would revert the operator's PATCH /admin/backups/schedules/mail
+ * value. `backup_schedules.cron_expression` is the canonical operator
+ * source (the unified Backups → Mail schedule editor); the legacy
+ * system_settings.mailSnapshotSchedule column is NOT authoritative.
+ */
 async function resolveDesiredSchedule(db: Database): Promise<string> {
   const [row] = await db
-    .select({ v: systemSettings.mailSnapshotSchedule })
-    .from(systemSettings)
-    .where(eq(systemSettings.id, SETTINGS_ID))
+    .select({ v: backupSchedules.cronExpression })
+    .from(backupSchedules)
+    .where(eq(backupSchedules.subsystem, 'mail'))
     .limit(1);
   const v = row?.v?.trim();
   return v && v.length > 0 ? v : DEFAULT_MAIL_SNAPSHOT_SCHEDULE;

@@ -17,9 +17,9 @@ import {
 import type { Database } from '../../db/index.js';
 
 // Reconciler issues two selects per pass: (1) target binding,
-// (2) system_settings schedule. Return them in order.
-function fakeDb(targetRows: Array<{ enabled: number }>, settingsRows: Array<{ v: string | null }>): Database {
-  const results: unknown[][] = [targetRows, settingsRows];
+// (2) backup_schedules.mail.cron_expression schedule. Return in order.
+function fakeDb(targetRows: Array<{ enabled: number }>, scheduleRows: Array<{ v: string | null }>): Database {
+  const results: unknown[][] = [targetRows, scheduleRows];
   let i = 0;
   const makeChain = (rows: unknown[]): Record<string, unknown> => {
     const chain: Record<string, unknown> = {};
@@ -96,7 +96,7 @@ describe('reconcileMailSnapshotCronJob', () => {
     expect(suspendCalls(batch)).toHaveLength(0); // already running
   });
 
-  it('operator override is honoured (system_settings.mail_snapshot_schedule)', async () => {
+  it('operator override is honoured (backup_schedules.mail.cron_expression)', async () => {
     const db = fakeDb([{ enabled: 1 }], [{ v: '*/10 * * * *' }]);
     const batch = fakeBatch({ liveSuspend: false, liveSchedule: DEFAULT_MAIL_SNAPSHOT_SCHEDULE });
     const r = await reconcileMailSnapshotCronJob(db, { batch } as never, log());
