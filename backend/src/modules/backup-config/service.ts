@@ -6,6 +6,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@k8s-hosting/api-contracts';
 import { probeS3 } from './s3-probe.js';
 import { probeSsh } from './ssh-probe.js';
+import { notifyAdminBackupTargetUnreachable } from '../notifications/events.js';
 import { probeCifs } from './cifs-probe.js';
 import type { LonghornBackupTargetInput } from './longhorn-reconciler.js';
 
@@ -432,6 +433,24 @@ export async function testConnection(db: Database, id: string, encryptionKey: st
     lastTestedAt: new Date(),
     lastTestStatus: result.ok ? 'ok' : 'error',
   }).where(eq(backupConfigurations.id, id));
+
+  // Phase 6A: notify admins when a previously-OK target stops being
+  // reachable. Operator-initiated tests fail-then-pass during config
+  // edits so we dedupe by (target × day) — operators only get the
+  // bad news once per day per target while they're fixing it. We do
+  // NOT fire when the test passes — there's no admin.backup_target_recovered
+  // event yet (Phase 6+ candidate).
+  if (!result.ok) {
+    const [row] = await db.select({ name: backupConfigurations.name })
+      .from(backupConfigurations)
+      .where(eq(backupConfigurations.id, id))
+      .limit(1);
+    const dedupeKey = `backup-target-unreachable:${id}:${new Date().toISOString().slice(0, 10)}`;
+    await notifyAdminBackupTargetUnreachable(db, {
+      targetName: row?.name ?? id,
+      errorMessage: result.error?.message?.slice(0, 500),
+    }, dedupeKey);
+  }
 
   return result;
 }

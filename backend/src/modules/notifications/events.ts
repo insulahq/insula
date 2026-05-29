@@ -359,8 +359,9 @@ export interface AdminCertExpiringPayload {
 export async function notifyAdminCertExpiring(
   db: Database,
   payload: AdminCertExpiringPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.cert_expiring', { kind: 'admin' }, payload);
+  await dispatchSafe(db, 'admin.cert_expiring', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminCertRenewalFailedPayload {
@@ -370,8 +371,9 @@ export interface AdminCertRenewalFailedPayload {
 export async function notifyAdminCertRenewalFailed(
   db: Database,
   payload: AdminCertRenewalFailedPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.cert_renewal_failed', { kind: 'admin' }, payload);
+  await dispatchSafe(db, 'admin.cert_renewal_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminBackupFailedPayload {
@@ -381,8 +383,9 @@ export interface AdminBackupFailedPayload {
 export async function notifyAdminBackupFailed(
   db: Database,
   payload: AdminBackupFailedPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, payload);
+  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminBackupTargetUnreachablePayload {
@@ -392,8 +395,9 @@ export interface AdminBackupTargetUnreachablePayload {
 export async function notifyAdminBackupTargetUnreachable(
   db: Database,
   payload: AdminBackupTargetUnreachablePayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.backup_target_unreachable', { kind: 'admin' }, payload);
+  await dispatchSafe(db, 'admin.backup_target_unreachable', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminNodeDownPayload {
@@ -402,8 +406,9 @@ export interface AdminNodeDownPayload {
 export async function notifyAdminNodeDown(
   db: Database,
   payload: AdminNodeDownPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload);
+  await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminSecurityHardeningDriftPayload {
@@ -413,6 +418,7 @@ export interface AdminSecurityHardeningDriftPayload {
 export async function notifyAdminSecurityHardeningDrift(
   db: Database,
   payload: AdminSecurityHardeningDriftPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.security_hardening_drift', { kind: 'admin' }, payload);
+  await dispatchSafe(db, 'admin.security_hardening_drift', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }

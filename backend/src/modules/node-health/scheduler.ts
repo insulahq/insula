@@ -23,6 +23,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
+import { notifyAdminNodeDown } from '../notifications/events.js';
 import {
   buildEntry,
   computeClusterBaseline,
@@ -237,6 +238,17 @@ async function fanoutNotification(
     }).catch((err) => {
       console.error('[node-health-monitor] notification insert failed:', (err as Error).message);
     });
+  }
+
+  // Phase 6A: route critical node-down transitions through the
+  // categorised dispatcher. dedupeKey scoped to (node × day) so a
+  // node that flaps doesn't spam the admin inbox — the dispatcher
+  // suppresses identical-key emits within 30 days, so the operator
+  // sees one notification per node-down day even with 5-min reconciler
+  // ticks. We only fire for ready=false transitions (not warnings).
+  if (!entry.ready && entry.severity === 'critical') {
+    const dedupeKey = `node-down:${entry.name}:${new Date().toISOString().slice(0, 10)}`;
+    await notifyAdminNodeDown(db, { nodeName: entry.name }, dedupeKey);
   }
 }
 

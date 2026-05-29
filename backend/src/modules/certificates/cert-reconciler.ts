@@ -27,6 +27,7 @@ import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 import { domains, sslCertificates, tenants } from '../../db/schema.js';
 import { tlsSecretNameFor } from './service.js';
+import { notifyAdminCertExpiring, notifyAdminCertRenewalFailed } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -175,9 +176,32 @@ export async function reconcileCertificateStatuses(
         });
       }
       synced++;
+
+      // Phase 6A: emit `admin.cert_expiring` when this cert is within
+      // 15 days of expiry. The dispatcher's dedupeKey suppresses
+      // re-fires within the 30-day audit window, so the reconciler
+      // ticking every N minutes only sends each operator one warning
+      // per (cert, expiry-date).
+      if (expiresAt) {
+        const daysUntilExpiry = Math.floor((expiresAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+        if (daysUntilExpiry <= 15) {
+          const dedupeKey = `cert-expiring:${d.domainName}:${expiresAt.toISOString().slice(0, 10)}`;
+          await notifyAdminCertExpiring(db, {
+            certSubject: isWildcard ? `*.${d.domainName}` : (subject ?? d.domainName),
+            expiresAt: expiresAt.toISOString(),
+          }, dedupeKey);
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`${d.domainName}: ${msg}`);
+      // Phase 6A: cert sync failure → admin.cert_renewal_failed.
+      // Best-effort: dispatchSafe never throws so a notification path
+      // error doesn't compound the original failure.
+      await notifyAdminCertRenewalFailed(db, {
+        certSubject: d.domainName,
+        errorMessage: msg.slice(0, 500),
+      });
     }
   }
 

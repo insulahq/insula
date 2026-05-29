@@ -119,6 +119,33 @@ describe('ProvidersTable', () => {
     expect(call.fromAddress).toBe('ops@example.test');
   });
 
+  it('Phase 6: stalwart-internal hides auth username/password and shows the master-creds note', async () => {
+    const user = userEvent.setup();
+    render(<ProvidersTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('provider-create'));
+    // smtp is default; switch to stalwart-internal
+    await user.selectOptions(screen.getByTestId('provider-type'), 'stalwart-internal');
+    expect(screen.getByTestId('provider-stalwart-internal-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('provider-auth-username')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('provider-auth-password')).not.toBeInTheDocument();
+  });
+
+  it('Phase 6: stalwart-internal save omits authUsername/authPassword from payload', async () => {
+    const user = userEvent.setup();
+    render(<ProvidersTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('provider-create'));
+    await user.selectOptions(screen.getByTestId('provider-type'), 'stalwart-internal');
+    await user.type(screen.getByTestId('provider-name'), 'Stalwart');
+    await user.clear(screen.getByTestId('provider-smtp-host'));
+    await user.type(screen.getByTestId('provider-smtp-host'), 'stalwart-mail.mail.svc');
+    await user.type(screen.getByTestId('provider-from-address'), 'notifications@apex.test');
+    await user.click(screen.getByTestId('provider-save'));
+    await waitFor(() => expect(createMutate).toHaveBeenCalledTimes(1));
+    const payload = createMutate.mock.calls[0][0] as { authUsername: string | null; authPassword: string | undefined };
+    expect(payload.authUsername).toBeNull();
+    expect(payload.authPassword).toBeUndefined();
+  });
+
   it('opens test dialog and submits with operator-supplied recipient', async () => {
     const user = userEvent.setup();
     render(<ProvidersTable />, { wrapper: createWrapper() });
