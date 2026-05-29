@@ -1287,6 +1287,28 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const imapConcurrencyStop = startImapConcurrencyReverter(app.db);
         app.addHook('onClose', () => imapConcurrencyStop());
 
+        // Mail-task orphan reaper (2026-05-28): mark stale 'running'
+        // mail.migration / mail.port-exposure tasks as 'failed' on boot.
+        // Without this, an orphaned task from a previous pod's
+        // in-flight work blocks the next operator action (the
+        // port-exposure DB-level guard refuses for up to 24h). Runs
+        // BEFORE the port-exposure / placement reconcilers so they see
+        // the cleaned state.
+        try {
+          const { reapMailTaskOrphansOnBoot } = await import(
+            './modules/mail-admin/orphan-reaper.js'
+          );
+          const reaped = await reapMailTaskOrphansOnBoot(app.db);
+          if (reaped.tasksReaped > 0 || reaped.runsReaped > 0) {
+            app.log.warn(
+              { ...reaped },
+              'mail-task orphan reaper: cleared stale running rows on boot',
+            );
+          }
+        } catch (err) {
+          app.log.warn({ err }, 'mail-task orphan reaper failed on boot (non-fatal)');
+        }
+
         // Phase 2 streamline (2026-05-15): on first install the DB default is
         // mailPortExposureMode='allServerNodes' but nothing has applied the
         // haproxy DaemonSet yet. Drive cluster state to match the DB value

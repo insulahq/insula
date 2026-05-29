@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
-import { registerAuth, authenticate, requirePanel, requireRole, requireTenantRoleByMethod } from './auth.js';
+import { registerAuth, authenticate, requirePanel, requireRole, requireTenantAccess, requireTenantRoleByMethod } from './auth.js';
 import { errorHandler } from './error-handler.js';
 
 describe('auth middleware', () => {
@@ -273,6 +273,129 @@ describe('auth middleware', () => {
     it('rejects unauthenticated requests', async () => {
       const res = await app.inject({ method: 'POST', url: '/tenant-rsrc', payload: {} });
       expect(res.statusCode).toBe(401);
+    });
+  });
+
+  // 2026-05-28: regression guard for ADR-040 SYSTEM-tenant bypass.
+  // The createDomain + createDnsRecord guards skip the reserved-
+  // hostname check when tenant.isSystem===true. That's safe only if
+  // a NON-system tenant can never get past the auth middleware with a
+  // URL :tenantId pointing at the SYSTEM row. requireTenantAccess is
+  // the gate that enforces this; without these tests an accidental
+  // middleware regression would silently turn "skip reserved check
+  // for SYSTEM" into "skip reserved check for any tenant who passes
+  // the SYSTEM_TENANT_ID in the URL".
+  describe('requireTenantAccess SYSTEM-tenant smuggle guard', () => {
+    const SYSTEM_TENANT_ID = '00000000-0000-0000-0000-000000000000'; // arbitrary literal — represents the SYSTEM row's UUID
+    let tenantApp: FastifyInstance;
+    let regularTenantToken: string;
+    let adminToken: string;
+    let panellessToken: string;
+
+    beforeAll(async () => {
+      tenantApp = Fastify();
+      await tenantApp.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
+      registerAuth(tenantApp);
+      tenantApp.setErrorHandler(errorHandler);
+
+      tenantApp.post('/tenants/:tenantId/domains', {
+        preHandler: [authenticate, requireTenantAccess()],
+      }, async (request) => {
+        const params = request.params as { tenantId: string };
+        return { ok: true, tenantId: params.tenantId };
+      });
+
+      await tenantApp.ready();
+
+      // Regular tenant user, tenantId='tenant-regular'. The token says
+      // panel=tenant so requireTenantAccess WILL enforce match.
+      regularTenantToken = tenantApp.jwt.sign({
+        sub: 'user-1',
+        role: 'tenant_user',
+        panel: 'tenant',
+        tenantId: 'tenant-regular',
+        iat: Math.floor(Date.now() / 1000),
+      });
+
+      // Admin-panel token — requireTenantAccess MUST bypass for admin
+      // panel since RBAC is handled by requireRole.
+      adminToken = tenantApp.jwt.sign({
+        sub: 'admin-1',
+        role: 'super_admin',
+        panel: 'admin',
+        iat: Math.floor(Date.now() / 1000),
+      });
+
+      // Hand-crafted panel=tenant token with NO tenantId claim — fail
+      // closed (CLIENT_ACCESS_DENIED). Without this guard the smuggle
+      // attempt below would be allowed (request → tenant route → all
+      // tenants reachable). The middleware enforces "tenant-panel
+      // tokens must have a tenantId claim".
+      panellessToken = tenantApp.jwt.sign({
+        sub: 'forged-1',
+        role: 'tenant_user',
+        panel: 'tenant',
+        // intentionally no tenantId
+        iat: Math.floor(Date.now() / 1000),
+      });
+    });
+
+    afterAll(async () => {
+      await tenantApp.close();
+    });
+
+    it('REFUSES a tenant-panel JWT for tenant X to act on SYSTEM tenant', async () => {
+      const res = await tenantApp.inject({
+        method: 'POST',
+        url: `/tenants/${SYSTEM_TENANT_ID}/domains`,
+        headers: { Authorization: `Bearer ${regularTenantToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CLIENT_ACCESS_DENIED');
+    });
+
+    it('REFUSES a tenant-panel JWT for tenant X to act on tenant Y (general cross-tenant guard)', async () => {
+      const res = await tenantApp.inject({
+        method: 'POST',
+        url: '/tenants/tenant-different/domains',
+        headers: { Authorization: `Bearer ${regularTenantToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CLIENT_ACCESS_DENIED');
+    });
+
+    it('REFUSES a tenant-panel JWT with NO tenantId claim (forged token defense)', async () => {
+      const res = await tenantApp.inject({
+        method: 'POST',
+        url: `/tenants/${SYSTEM_TENANT_ID}/domains`,
+        headers: { Authorization: `Bearer ${panellessToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CLIENT_ACCESS_DENIED');
+    });
+
+    it('ALLOWS an admin-panel token to act on the SYSTEM tenant (the bypass is intentional for admins)', async () => {
+      const res = await tenantApp.inject({
+        method: 'POST',
+        url: `/tenants/${SYSTEM_TENANT_ID}/domains`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().tenantId).toBe(SYSTEM_TENANT_ID);
+    });
+
+    it('ALLOWS a tenant-panel JWT for tenant X to act on its OWN tenant (the happy path)', async () => {
+      const res = await tenantApp.inject({
+        method: 'POST',
+        url: '/tenants/tenant-regular/domains',
+        headers: { Authorization: `Bearer ${regularTenantToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
     });
   });
 });
