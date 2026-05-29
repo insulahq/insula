@@ -1,14 +1,20 @@
 /**
- * Platform → Notifications — top-level operator surface for the
- * notification-system Phase 1 feature.
+ * Platform → Notifications — top-level operator surface.
  *
- * Three tabs:
- *   - Categories    — taxonomy of notification kinds; channels + rate limit
- *   - Templates     — Handlebars sources keyed by (category, channel, locale)
- *   - Delivery Log  — per-channel outcomes for audit / triage
+ * The mental model is Sources × Providers:
+ *   - Sources       — what TRIGGERS a notification (one entry per event
+ *                     taxonomy, persisted in notification_categories;
+ *                     the table name stays for stability — internal IDs
+ *                     remain `category_id`, only the operator label
+ *                     changes).
+ *   - Templates     — Handlebars sources keyed by (source, channel, locale).
+ *   - Delivery Log  — per-channel delivery outcomes for audit + triage.
+ *   - Providers     — transport endpoints (today: SMTP relays; tomorrow:
+ *                     SMS providers, webhooks). Surfaced via the existing
+ *                     /admin/email/smtp-relays endpoints.
  *
- * Mirrors the WebDefensePage tab pattern (query-string-backed active tab,
- * panels keyed by id).
+ * The tab URL parameter stays `categories` so existing direct links keep
+ * working; the label that operators see is "Sources".
  */
 
 import { useMemo } from 'react';
@@ -18,16 +24,18 @@ import clsx from 'clsx';
 import CategoriesTable from '@/features/notifications/CategoriesTable';
 import TemplatesTable from '@/features/notifications/TemplatesTable';
 import DeliveryLogTable from '@/features/notifications/DeliveryLogTable';
+import ProvidersTable from '@/features/notifications/ProvidersTable';
 
-type TabId = 'categories' | 'templates' | 'deliveries';
+type TabId = 'categories' | 'providers' | 'templates' | 'deliveries';
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly hint: string }> = [
-  { id: 'categories', label: 'Categories', hint: 'Taxonomy of notification kinds + default channels' },
-  { id: 'templates', label: 'Templates', hint: 'Operator-editable Handlebars templates per (category, channel, locale)' },
+  { id: 'categories', label: 'Sources', hint: 'What triggers a notification: per-event source + default channels + rate limit' },
+  { id: 'providers', label: 'Providers', hint: 'SMTP transport endpoints used by the dispatcher (Stalwart, Postmark, Brevo, ...)' },
+  { id: 'templates', label: 'Templates', hint: 'Operator-editable Handlebars templates per (source, channel, locale)' },
   { id: 'deliveries', label: 'Delivery Log', hint: 'Per-channel delivery outcomes for audit + triage' },
 ];
 
-const VALID_TABS: ReadonlySet<TabId> = new Set<TabId>(['categories', 'templates', 'deliveries']);
+const VALID_TABS: ReadonlySet<TabId> = new Set<TabId>(['categories', 'providers', 'templates', 'deliveries']);
 
 export default function NotificationsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -50,9 +58,11 @@ export default function NotificationsPage() {
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Notifications</h1>
         </div>
         <p className="max-w-3xl text-sm text-gray-600 dark:text-gray-400">
-          Configure how and when the platform notifies tenants and operators. Categories define the
-          taxonomy + default channels; Templates are the Handlebars sources used by the renderer;
-          Delivery Log surfaces per-channel outcomes for audit + triage.
+          Configure how and when the platform notifies tenants and operators.{' '}
+          <strong>Sources</strong> are the events that trigger a notification (security, subscription,
+          tenant lifecycle, backups…). <strong>Providers</strong> are the transports that deliver
+          them (SMTP relays today). Templates render the body; the delivery log surfaces per-channel
+          outcomes for audit and triage.
         </p>
       </header>
 
@@ -89,6 +99,7 @@ export default function NotificationsPage() {
         aria-labelledby={`notifications-tab-${activeTab}`}
       >
         {activeTab === 'categories' && <CategoriesTable />}
+        {activeTab === 'providers' && <ProvidersTable />}
         {activeTab === 'templates' && <TemplatesTable />}
         {activeTab === 'deliveries' && <DeliveryLogTable />}
       </div>
