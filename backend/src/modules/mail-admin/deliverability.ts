@@ -156,7 +156,7 @@ export async function probeDeliverability(deps: DeliverabilityDeps): Promise<Mai
     return notImplementedComponent(
       hostname,
       [],
-      'No server-role node IPs found. Label cluster server nodes with platform.phoenix-host.net/node-role=server, ' +
+      'No server-role node IPs found. Label cluster server nodes with insula.host/node-role=server, ' +
       'or check that the cluster API is reachable from platform-api.',
     );
   }

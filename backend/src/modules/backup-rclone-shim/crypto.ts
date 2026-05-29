@@ -63,10 +63,10 @@ const RCLONE_OBSCURE_KEY = Buffer.from(
  *  unreadable). New consumers MUST pick a new label.
  */
 const HKDF_LABELS = {
-  shimAccessKey: 'platform.phoenix-host.net/backup-rclone-shim/s3-access',
-  shimSecretKey: 'platform.phoenix-host.net/backup-rclone-shim/s3-secret',
-  cryptPassword: 'platform.phoenix-host.net/backup-rclone-shim/crypt-password',
-  cryptSalt: 'platform.phoenix-host.net/backup-rclone-shim/crypt-salt',
+  shimAccessKey: 'insula.host/backup-rclone-shim/s3-access',
+  shimSecretKey: 'insula.host/backup-rclone-shim/s3-secret',
+  cryptPassword: 'insula.host/backup-rclone-shim/crypt-password',
+  cryptSalt: 'insula.host/backup-rclone-shim/crypt-salt',
 } as const;
 
 /** Zero-filled 32-byte salt for HKDF-Extract (matching SHA-256's

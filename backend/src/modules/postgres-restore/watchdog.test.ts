@@ -37,7 +37,7 @@ function makeJob(ageMs: number, opts: { active?: number; succeeded?: number; fai
       name: opts.name ?? `pitr-system-db-${Date.now()}`,
       namespace: 'platform',
       creationTimestamp: created,
-      labels: { 'platform.phoenix-host.net/pitr-restore': 'true' },
+      labels: { 'insula.host/pitr-restore': 'true' },
     },
     spec: {
       template: { spec: { containers: [{ env: opts.env ?? [{ name: 'PITR_ACTOR_USER_ID', value: 'user-1' }] }] } },

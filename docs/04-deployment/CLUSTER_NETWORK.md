@@ -33,7 +33,7 @@ reconciler net/netip).
 
 ## CRDs
 
-Two cluster-scoped `networking.platform.phoenix-host.net/v1alpha1`
+Two cluster-scoped `networking.insula.host/v1alpha1`
 resources, defined in `k8s/base/cluster-network/`:
 
 - `ClusterTrustedRange` (`ctr` / `trustedrange`) — permanent trust entry.
@@ -64,7 +64,7 @@ underlays and is mirrored into `--allow-source` as a convenience.
 
 ## PRIVATE NODE feature
 
-A node label `platform.phoenix-host.net/exposure=private` (set via the
+A node label `insula.host/exposure=private` (set via the
 admin API or `kubectl label`) drives:
 
 - **Scheduler isolation** — `ingress-nginx` controllers and

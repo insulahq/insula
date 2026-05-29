@@ -28,7 +28,7 @@
  * eventual consistency converges in 5s.
  *
  * NOTE on Phase 5 scope: the live cluster Ingress label scan
- * (`platform.phoenix-host.net/admin-ui=true`) is *deferred* to a
+ * (`insula.host/admin-ui=true`) is *deferred* to a
  * later phase. The operator-confirmed sources (config helpers +
  * platform_settings URL keys) cover every platform hostname today.
  * Adding the cluster scan later is purely additive — call sites only

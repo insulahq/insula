@@ -84,7 +84,7 @@ Three placement variables in `system_settings`:
 | `mailFailoverThresholdSeconds` | Seconds NotReady before auto-failover fires. Default 300s (5 min). |
 
 The `mail-stack-standby-replicate` DaemonSet runs on every node labelled
-`platform.phoenix-host.net/mail-standby=true`. Platform-api's
+`insula.host/mail-standby=true`. Platform-api's
 `ensureMailStackPlacementApplied` reconciler keeps that label aligned
 with `mailSecondaryNode + mailTertiaryNode` — operators never label
 nodes manually.
@@ -108,7 +108,7 @@ nodes manually.
    ```
 3. Wait one `dr-watcher` tick (~30s). The startup reconciler runs and:
    - Pins `stalwart-mail` + `bulwark` Deployments to `mailActiveNode`.
-   - Adds `platform.phoenix-host.net/mail-standby=true` label to
+   - Adds `insula.host/mail-standby=true` label to
      `mailSecondaryNode` + `mailTertiaryNode`.
    - DaemonSet schedules pods on labelled nodes; first restic pull
      populates `/var/lib/mail-stack-standby/{stalwart,bulwark}/` and
@@ -432,7 +432,7 @@ kubectl get pod -n mail -l 'app in (stalwart-mail,bulwark)' -o wide
 ### Standby data freshness on each candidate
 
 ```bash
-for node in $(kubectl get nodes -l platform.phoenix-host.net/mail-standby=true -o jsonpath='{.items[*].metadata.name}'); do
+for node in $(kubectl get nodes -l insula.host/mail-standby=true -o jsonpath='{.items[*].metadata.name}'); do
   echo "=== $node ==="
   ssh root@$node "cat /var/lib/mail-stack-standby/.standby-complete 2>&1; du -sh /var/lib/mail-stack-standby/"
 done

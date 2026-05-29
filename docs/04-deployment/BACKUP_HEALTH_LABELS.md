@@ -11,7 +11,7 @@ labels.
 ```yaml
 metadata:
   labels:
-    platform.phoenix-host.net/backup-health-watch: "true"
+    insula.host/backup-health-watch: "true"
 ```
 
 When this label is set on a `batch/v1.Job` or `batch/v1.CronJob`, the
@@ -21,7 +21,7 @@ includes it in the rollup returned by `GET /admin/backup-health`.
 ## Required label: category
 
 ```yaml
-platform.phoenix-host.net/backup-category: "dr"  # or "tenant" | "audit" | "custom"
+insula.host/backup-category: "dr"  # or "tenant" | "audit" | "custom"
 ```
 
 Drives:
@@ -36,7 +36,7 @@ Drives:
 ## Optional label: severity
 
 ```yaml
-platform.phoenix-host.net/backup-severity: "critical"  # or "warning" (default) | "info"
+insula.host/backup-severity: "critical"  # or "warning" (default) | "info"
 ```
 
 Maps to the existing notification.type taxonomy:
@@ -48,7 +48,7 @@ Maps to the existing notification.type taxonomy:
 ## Optional label: client routing
 
 ```yaml
-platform.phoenix-host.net/client-id: "<uuid>"
+insula.host/client-id: "<uuid>"
 ```
 
 When present, failure notifications route to that client's
@@ -60,7 +60,7 @@ the platform admin pool. Useful for tenant-initiated backup Jobs.
 ```yaml
 metadata:
   annotations:
-    platform.phoenix-host.net/backup-display-name: "Postgres logical dump"
+    insula.host/backup-display-name: "Postgres logical dump"
 ```
 
 Human-friendly label shown in the UI table. Defaults to the parent
@@ -69,7 +69,7 @@ CronJob name (or the Job's own name for one-off Jobs).
 ## Separate concern: suspend-on-deactivate
 
 ```yaml
-platform.phoenix-host.net/depends-on: "backup-credentials"
+insula.host/depends-on: "backup-credentials"
 ```
 
 CronJobs in the `platform` namespace carrying this label are managed
@@ -89,12 +89,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
-    platform.phoenix-host.net/backup-health-watch: "true"
-    platform.phoenix-host.net/backup-category: "dr"
-    platform.phoenix-host.net/backup-severity: "critical"
-    platform.phoenix-host.net/depends-on: "backup-credentials"
+    insula.host/backup-health-watch: "true"
+    insula.host/backup-category: "dr"
+    insula.host/backup-severity: "critical"
+    insula.host/depends-on: "backup-credentials"
   annotations:
-    platform.phoenix-host.net/backup-display-name: "Postgres logical dump"
+    insula.host/backup-display-name: "Postgres logical dump"
 spec:
   suspend: true     # default suspended — reconciler unsuspends on activate
   schedule: "45 2 * * *"

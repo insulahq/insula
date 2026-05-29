@@ -17,7 +17,7 @@
 #   labelled node, so EVERY standby refreshes on its OWN cadence.
 #
 # Node selection: any node with label
-#   platform.phoenix-host.net/mail-standby=true
+#   insula.host/mail-standby=true
 # Set by platform-api's ensureMailStackPlacementApplied reconciler.
 # A4 wired the failover hot-path to consume `/var/lib/mail-stack-standby/`
 # via the FAST PATH restore-state init containers on stalwart-mail +
@@ -54,9 +54,9 @@ spec:
       # DaemonSet schedules zero pods — that's the correct quiescent
       # state when HA hasn't been configured.
       nodeSelector:
-        platform.phoenix-host.net/mail-standby: "true"
+        insula.host/mail-standby: "true"
       tolerations:
-        - key: platform.phoenix-host.net/server-only
+        - key: insula.host/server-only
           operator: Equal
           value: "true"
           effect: NoSchedule

@@ -140,7 +140,7 @@ export async function createBackupNow(
     // (which are owned by ScheduledBackup CRs) and from pre-restore
     // backups (labelled `barman-pre-restore=true` by the restore
     // orchestrator). Useful for `kubectl get backups -l ...`.
-    'platform.phoenix-host.net/on-demand': 'true',
+    'insula.host/on-demand': 'true',
   };
   // Phase 7c (2026-05-24) — description goes in an ANNOTATION not a
   // label. Annotations have no charset/length restrictions so operators
@@ -148,7 +148,7 @@ export async function createBackupNow(
   // would have rejected spaces + colons.
   const annotations: Record<string, string> = {};
   if (input.description) {
-    annotations['platform.phoenix-host.net/description'] = input.description;
+    annotations['insula.host/description'] = input.description;
   }
   const body = {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,

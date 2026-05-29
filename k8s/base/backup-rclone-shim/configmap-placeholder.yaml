@@ -39,7 +39,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: backup
   annotations:
-    platform.phoenix-host.net/managed-by: backup-rclone-shim/config-renderer
+    insula.host/managed-by: backup-rclone-shim/config-renderer
     # Flux must use merge-patch (not full SSA) on this ConfigMap so
     # `data.classes.txt` isn't reset to "" each tick when the
     # reconciler has populated it. Without this annotation, every Flux

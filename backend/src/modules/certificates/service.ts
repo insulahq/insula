@@ -225,7 +225,7 @@ function buildCertificateResource(params: {
       namespace: params.namespace,
       labels: {
         'app.kubernetes.io/part-of': 'hosting-platform',
-        'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+        'app.kubernetes.io/managed-by': 'insula',
         'app.kubernetes.io/component': 'tls-cert',
       },
     },

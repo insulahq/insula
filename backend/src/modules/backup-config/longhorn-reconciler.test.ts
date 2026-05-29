@@ -28,7 +28,7 @@ function createMockTenants(discoveredCrons: string[] = DEFAULT_DISCOVERED_CRONS)
         metadata: {
           name,
           namespace: 'platform',
-          labels: { 'platform.phoenix-host.net/depends-on': 'backup-credentials' },
+          labels: { 'insula.host/depends-on': 'backup-credentials' },
         },
       })),
     }),

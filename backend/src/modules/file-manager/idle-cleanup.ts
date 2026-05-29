@@ -2,7 +2,7 @@ import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const LAST_ACCESS_ANNOTATION = 'platform.phoenix-host.net/file-manager-last-access';
+const LAST_ACCESS_ANNOTATION = 'insula.host/file-manager-last-access';
 
 // Per-process cache (reduces API server load between writes — we still
 // reconcile against the Deployment annotation for cross-pod truth).

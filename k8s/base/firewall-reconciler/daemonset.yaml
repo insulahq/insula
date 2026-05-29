@@ -12,7 +12,7 @@
 #   tenant-ports goroutine (node-scope):
 #     Pods on this node       → tenant_ports_{tcp,udp}  (hostPort + annotation)
 #       (filtered to namespaces with prefix "client-" or annotation
-#        platform.phoenix-host.net/tenant-namespace=true)
+#        insula.host/tenant-namespace=true)
 #
 # bootstrap.sh declares all six nft sets on every node; this DaemonSet
 # is the only writer at runtime. The container has NO `nft` binary —

@@ -39,7 +39,7 @@ export const WEBMAIL_ROUTER_FIELD_MANAGER = 'platform-api-webmail-router';
 // (set to "true"). Keep in sync with
 // modules/platform-storage-policy/service.ts:WEBMAIL_ENGINE_DISABLED_ANNOTATION.
 export const WEBMAIL_ENGINE_DISABLED_ANNOTATION =
-  'platform.phoenix-host.net/webmail-engine-disabled';
+  'insula.host/webmail-engine-disabled';
 const TRAEFIK_GROUP = 'traefik.io';
 const TRAEFIK_VERSION = 'v1alpha1';
 const TRAEFIK_PLURAL = 'ingressroutes';

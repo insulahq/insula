@@ -23,10 +23,10 @@ describe('setNodeExposure', () => {
     const callArg = (patchNode.mock.calls[0]?.[0] ?? {}) as { name?: string; body?: { metadata?: { labels?: Record<string, string | null>; annotations?: Record<string, string> } } };
     expect(callArg.name).toBe('worker-1');
     expect(callArg.body?.metadata?.labels).toEqual({
-      'platform.phoenix-host.net/exposure': 'private',
+      'insula.host/exposure': 'private',
     });
     expect(callArg.body?.metadata?.annotations).toBeDefined();
-    expect(callArg.body?.metadata?.annotations?.['platform.phoenix-host.net/exposure-audit']).toMatch(
+    expect(callArg.body?.metadata?.annotations?.['insula.host/exposure-audit']).toMatch(
       /^admin@x\|.*\|private$/,
     );
   });
@@ -42,7 +42,7 @@ describe('setNodeExposure', () => {
     );
     const callArg = (patchNode.mock.calls[0]?.[0] ?? {}) as { body?: { metadata?: { labels?: Record<string, string | null> } } };
     // null on the label key removes it via merge-patch semantics
-    expect(callArg.body?.metadata?.labels?.['platform.phoenix-host.net/exposure']).toBeNull();
+    expect(callArg.body?.metadata?.labels?.['insula.host/exposure']).toBeNull();
   });
 
   it('translates 404 into NODE_NOT_FOUND', async () => {

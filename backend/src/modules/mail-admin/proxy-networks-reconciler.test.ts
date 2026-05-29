@@ -78,7 +78,7 @@ describe('listServerNodeIps', () => {
         metadata: {
           name: 's1',
           labels: {
-            'platform.phoenix-host.net/node-role': 'server',
+            'insula.host/node-role': 'server',
             'kubernetes.io/hostname': 's1',
           },
         },
@@ -99,7 +99,7 @@ describe('listServerNodeIps', () => {
       {
         metadata: {
           name: 'w1',
-          labels: { 'platform.phoenix-host.net/node-role': 'worker' },
+          labels: { 'insula.host/node-role': 'worker' },
         },
         status: { addresses: [{ type: 'InternalIP', address: '10.10.0.20' }] },
       },
@@ -112,14 +112,14 @@ describe('listServerNodeIps', () => {
       {
         metadata: {
           name: 's3',
-          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 's3' },
+          labels: { 'insula.host/node-role': 'server', 'kubernetes.io/hostname': 's3' },
         },
         status: { addresses: [{ type: 'InternalIP', address: '10.0.0.3' }] },
       },
       {
         metadata: {
           name: 's1',
-          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 's1' },
+          labels: { 'insula.host/node-role': 'server', 'kubernetes.io/hostname': 's1' },
         },
         status: { addresses: [{ type: 'InternalIP', address: '10.0.0.1' }] },
       },
@@ -131,7 +131,7 @@ describe('listServerNodeIps', () => {
   it('skips nodes without an InternalIP', async () => {
     const core = makeCore([
       {
-        metadata: { name: 's1', labels: { 'platform.phoenix-host.net/node-role': 'server' } },
+        metadata: { name: 's1', labels: { 'insula.host/node-role': 'server' } },
         status: { addresses: [{ type: 'ExternalIP', address: '203.0.113.1' }] },
       },
     ]);
@@ -143,7 +143,7 @@ describe('listServerNodeIps', () => {
       ['127.0.0.1', '0.0.0.0', '::1'].map((ip, i) => ({
         metadata: {
           name: `n${i}`,
-          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': `n${i}` },
+          labels: { 'insula.host/node-role': 'server', 'kubernetes.io/hostname': `n${i}` },
         },
         status: { addresses: [{ type: 'InternalIP', address: ip }] },
       })),
@@ -156,14 +156,14 @@ describe('listServerNodeIps', () => {
       {
         metadata: {
           name: 'duplicate',
-          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 'dup' },
+          labels: { 'insula.host/node-role': 'server', 'kubernetes.io/hostname': 'dup' },
         },
         status: { addresses: [{ type: 'InternalIP', address: '10.0.0.5' }] },
       },
       {
         metadata: {
           name: 'duplicate2',
-          labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 'dup' },
+          labels: { 'insula.host/node-role': 'server', 'kubernetes.io/hostname': 'dup' },
         },
         status: { addresses: [{ type: 'InternalIP', address: '10.0.0.6' }] },
       },
@@ -183,7 +183,7 @@ describe('listServerNodeIps', () => {
     } as unknown as Parameters<typeof listServerNodeIps>[0];
     await listServerNodeIps(core);
     expect((receivedOpts as { labelSelector?: string }).labelSelector).toBe(
-      'platform.phoenix-host.net/node-role=server',
+      'insula.host/node-role=server',
     );
   });
 });
@@ -308,7 +308,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -359,7 +359,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -369,7 +369,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's2',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's2',
             },
           },
@@ -422,7 +422,7 @@ describe('runProxyNetworksReconcilerTick', () => {
         {
           metadata: {
             name: 's1',
-            labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 's1' },
+            labels: { 'insula.host/node-role': 'server', 'kubernetes.io/hostname': 's1' },
           },
           status: { addresses: [{ type: 'InternalIP', address: '10.0.0.1' }] },
         },
@@ -500,7 +500,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -568,7 +568,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -625,7 +625,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -653,7 +653,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -700,7 +700,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },
@@ -762,7 +762,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           metadata: {
             name: 's1',
             labels: {
-              'platform.phoenix-host.net/node-role': 'server',
+              'insula.host/node-role': 'server',
               'kubernetes.io/hostname': 's1',
             },
           },

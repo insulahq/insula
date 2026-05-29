@@ -15,11 +15,11 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
-                  - key: platform.phoenix-host.net/node-role
+                  - key: insula.host/node-role
                     operator: In
                     values: [server]
       tolerations:
-        - key: platform.phoenix-host.net/server-only
+        - key: insula.host/server-only
           operator: Equal
           value: "true"
           effect: NoSchedule

@@ -62,7 +62,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "${VERSION}"
+        insula.host/deploy-rev: "${VERSION}"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -73,7 +73,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "${VERSION}"
+        insula.host/deploy-rev: "${VERSION}"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -84,7 +84,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "${VERSION}"
+        insula.host/deploy-rev: "${VERSION}"
 ---
 # firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
@@ -98,7 +98,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "${VERSION}"
+        insula.host/deploy-rev: "${VERSION}"
 ---
 # mail-stack-standby-replicate — :latest-tagged DaemonSet
 # (mail-backup-tools image) — same rationale as above. New
@@ -114,7 +114,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "${VERSION}"
+        insula.host/deploy-rev: "${VERSION}"
 PATCH
 
 # ─── 3. Image tags in kustomization.yaml `images:` block ───

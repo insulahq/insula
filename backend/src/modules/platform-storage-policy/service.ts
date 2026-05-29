@@ -297,7 +297,7 @@ export async function readClusterState(
   // workloads instead of additional system replicas.
 
   // Count Ready server nodes by label
-  // (platform.phoenix-host.net/node-role=server) so workers don't
+  // (insula.host/node-role=server) so workers don't
   // bump the recommendation. A 3-server quorum is the threshold.
   //
   // `totalNodeCount` is named for the API field but means "total
@@ -312,7 +312,7 @@ export async function readClusterState(
   let totalNodeCount = 0;
   for (const node of nodes.items ?? []) {
     const labels = node.metadata?.labels ?? {};
-    const isServer = labels['platform.phoenix-host.net/node-role'] === 'server'
+    const isServer = labels['insula.host/node-role'] === 'server'
       || (node.spec?.taints ?? []).some((t) => t.key === 'node-role.kubernetes.io/control-plane');
     if (!isServer) continue;
     totalNodeCount++;
@@ -330,7 +330,7 @@ export async function readClusterState(
   // UI immediately reflects role flips even before Longhorn re-syncs.
   const systemNodes = new Set<string>();
   for (const node of nodes.items ?? []) {
-    if (node.metadata?.labels?.['platform.phoenix-host.net/node-role'] === 'server') {
+    if (node.metadata?.labels?.['insula.host/node-role'] === 'server') {
       systemNodes.add(node.metadata.name ?? '');
     }
   }
@@ -657,7 +657,7 @@ async function readLiveNodeSelectors(
 // deselected via the admin panel. Storage-policy treats the Deployment
 // as "already at the desired count of 0" and skips it, so the engine
 // stays scaled down between policy reconciles.
-export const WEBMAIL_ENGINE_DISABLED_ANNOTATION = 'platform.phoenix-host.net/webmail-engine-disabled';
+export const WEBMAIL_ENGINE_DISABLED_ANNOTATION = 'insula.host/webmail-engine-disabled';
 
 async function patchDeploymentsToReplicaCount(
   k8s: K8sClients,

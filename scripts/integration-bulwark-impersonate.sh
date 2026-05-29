@@ -370,7 +370,7 @@ if [[ $RUN_MUTEX -eq 1 ]]; then
     CURL_OPTS=(-sS)
     [[ "${CURL_INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
 
-    ENGINE_DISABLED_ANNOTATION="platform.phoenix-host.net/webmail-engine-disabled"
+    ENGINE_DISABLED_ANNOTATION="insula.host/webmail-engine-disabled"
 
     # Helpers — read IngressRoute target + Deployment state.
     ir_target() {

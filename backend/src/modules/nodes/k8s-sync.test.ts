@@ -11,11 +11,11 @@ describe('projectNode', () => {
     expect(observed.canHostTenantWorkloads).toBe(true);
   });
 
-  it('respects platform.phoenix-host.net/node-role=server label', () => {
+  it('respects insula.host/node-role=server label', () => {
     const observed = projectNode({
       metadata: {
         name: 'node-1',
-        labels: { 'platform.phoenix-host.net/node-role': 'server' },
+        labels: { 'insula.host/node-role': 'server' },
       },
     });
     expect(observed.role).toBe('server');
@@ -28,8 +28,8 @@ describe('projectNode', () => {
       metadata: {
         name: 'node-1',
         labels: {
-          'platform.phoenix-host.net/node-role': 'server',
-          'platform.phoenix-host.net/host-tenant-workloads': 'true',
+          'insula.host/node-role': 'server',
+          'insula.host/host-tenant-workloads': 'true',
         },
       },
     });
@@ -69,12 +69,12 @@ describe('projectNode', () => {
       metadata: { name: 'node-1', labels: {} },
       spec: {
         taints: [
-          { key: 'platform.phoenix-host.net/server-only', value: 'true', effect: 'NoSchedule' },
+          { key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' },
         ],
       },
     });
     expect(observed.taints).toEqual([
-      { key: 'platform.phoenix-host.net/server-only', value: 'true', effect: 'NoSchedule' },
+      { key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' },
     ]);
   });
 });
@@ -110,7 +110,7 @@ describe('applyNewServerDefault', () => {
   it('stamps host-tenant-workloads=true and removes server-only taint when default=true', async () => {
     const { k8s, patchSpy } = makeK8sStub();
     await applyNewServerDefault(k8s, 'server-1', true, [
-      { key: 'platform.phoenix-host.net/server-only', value: 'true', effect: 'NoSchedule' },
+      { key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' },
     ]);
 
     expect(patchSpy).toHaveBeenCalledOnce();
@@ -120,8 +120,8 @@ describe('applyNewServerDefault', () => {
       metadata: { labels: Record<string, string> };
       spec: { taints: Array<{ key: string }> };
     };
-    expect(body.metadata.labels['platform.phoenix-host.net/host-tenant-workloads']).toBe('true');
-    expect(body.spec.taints.find((t) => t.key === 'platform.phoenix-host.net/server-only')).toBeUndefined();
+    expect(body.metadata.labels['insula.host/host-tenant-workloads']).toBe('true');
+    expect(body.spec.taints.find((t) => t.key === 'insula.host/server-only')).toBeUndefined();
   });
 
   it('stamps host-tenant-workloads=false and applies server-only NoSchedule taint when default=false', async () => {
@@ -134,9 +134,9 @@ describe('applyNewServerDefault', () => {
       metadata: { labels: Record<string, string> };
       spec: { taints: Array<{ key: string; value?: string; effect: string }> };
     };
-    expect(body.metadata.labels['platform.phoenix-host.net/host-tenant-workloads']).toBe('false');
-    const ours = body.spec.taints.find((t) => t.key === 'platform.phoenix-host.net/server-only');
-    expect(ours).toEqual({ key: 'platform.phoenix-host.net/server-only', value: 'true', effect: 'NoSchedule' });
+    expect(body.metadata.labels['insula.host/host-tenant-workloads']).toBe('false');
+    const ours = body.spec.taints.find((t) => t.key === 'insula.host/server-only');
+    expect(ours).toEqual({ key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' });
   });
 
   it('preserves operator-set taints with other keys when default=false', async () => {
@@ -148,7 +148,7 @@ describe('applyNewServerDefault', () => {
     const arg = patchSpy.mock.calls[0][0] as { body: unknown };
     const body = arg.body as { spec: { taints: Array<{ key: string }> } };
     expect(body.spec.taints.map((t) => t.key)).toContain('team-isolation');
-    expect(body.spec.taints.map((t) => t.key)).toContain('platform.phoenix-host.net/server-only');
+    expect(body.spec.taints.map((t) => t.key)).toContain('insula.host/server-only');
   });
 });
 
@@ -161,7 +161,7 @@ describe('projectNode + applyNewServerDefault contract', () => {
     const observed = projectNode({
       metadata: {
         name: 'fresh-server',
-        labels: { 'platform.phoenix-host.net/node-role': 'server' },
+        labels: { 'insula.host/node-role': 'server' },
       },
     });
     expect(observed.role).toBe('server');
@@ -169,7 +169,7 @@ describe('projectNode + applyNewServerDefault contract', () => {
     // The labels object should NOT contain host-tenant-workloads — that
     // absence is what the syncNodesOnce branch checks.
     const labels = observed.labels;
-    expect(labels['platform.phoenix-host.net/host-tenant-workloads']).toBeUndefined();
+    expect(labels['insula.host/host-tenant-workloads']).toBeUndefined();
   });
 });
 

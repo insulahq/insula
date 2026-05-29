@@ -29,7 +29,7 @@ import type { Database } from '../../db/index.js';
 import { parseQuantity } from './mail-pvc.js';
 
 const MAIL_NAMESPACE = 'mail';
-const STANDBY_NODE_LABEL_KEY = 'platform.phoenix-host.net/mail-standby';
+const STANDBY_NODE_LABEL_KEY = 'insula.host/mail-standby';
 const STANDBY_NODE_LABEL_VALUE = 'true';
 
 export interface MailNodeStorage {

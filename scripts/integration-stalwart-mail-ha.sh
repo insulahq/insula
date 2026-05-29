@@ -195,7 +195,7 @@ declare -A PORT_STARTTLS=(
 MAIL_PORTS=(25 465 587 143 993 4190)
 
 # Server-role node label (matches placement.ts + reconciler).
-SERVER_ROLE_LABEL='platform.phoenix-host.net/node-role=server'
+SERVER_ROLE_LABEL='insula.host/node-role=server'
 
 # Flags
 RUN_MODE_FLIP=false
@@ -372,7 +372,7 @@ _ha_mail_ips() {
     printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u
   else
     # Fallback: server-role node InternalIPs from the cluster.
-    kctl get nodes -l platform.phoenix-host.net/node-role=server \
+    kctl get nodes -l insula.host/node-role=server \
       -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null \
       | tr -d '\r' | grep -vE '^$' | sort -u
   fi
@@ -585,7 +585,7 @@ print(' '.join(str(p) for p in sorted(ports)))" 2>/dev/null || echo '')"
     | grep -E ':' | sort -u)
   local dns_all
   dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
-  cluster_ips=$(kctl get nodes -l platform.phoenix-host.net/node-role=server \
+  cluster_ips=$(kctl get nodes -l insula.host/node-role=server \
     -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   if [[ -z "$dns_all" ]]; then

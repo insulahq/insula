@@ -24,7 +24,7 @@ export const cnpgCatalogueBackupSchema = z.object({
   parseError: z.string().nullable(),
   /**
    * 2026-05-24 (Phase 7b): operator-supplied description, read from
-   * the matching CNPG Backup CR's `platform.phoenix-host.net/description`
+   * the matching CNPG Backup CR's `insula.host/description`
    * label. Null when the label is absent (scheduled backups,
    * pre-Phase-7b on-demand backups). The frontend renders this verbatim
    * when present; otherwise it falls back to a name-pattern label

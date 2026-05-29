@@ -36,4 +36,4 @@ patches:
         name: admin-auth-cookie
         namespace: traefik
         annotations:
-          platform.phoenix-host.net/auth-gate: cookie
+          insula.host/auth-gate: cookie

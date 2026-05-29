@@ -178,7 +178,7 @@ describe('system-pvc.resizeSystemPvc — happy path', () => {
     expect(mockPatchPvc.mock.calls[1][0]).toMatchObject({
       name: 'system-db-1',
       namespace: 'platform',
-      body: { metadata: { annotations: { 'platform.phoenix-host.net/last-resized-at': expect.any(String) } } },
+      body: { metadata: { annotations: { 'insula.host/last-resized-at': expect.any(String) } } },
     });
 
     expect(result.pvcName).toBe('system-db-1');
@@ -217,7 +217,7 @@ describe('system-pvc.getSystemPvcStorage', () => {
       status: { capacity: { storage: '5Gi' } },
       metadata: {
         annotations: {
-          'platform.phoenix-host.net/last-resized-at': '2026-05-01T12:00:00.000Z',
+          'insula.host/last-resized-at': '2026-05-01T12:00:00.000Z',
         },
       },
     });

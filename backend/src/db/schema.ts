@@ -2380,7 +2380,7 @@ export const systemSettings = pgTable('system_settings', {
   allowHostPortsWorker: boolean('allow_host_ports_worker').notNull().default(false),
   // Node-defaults (migration 0063). Applied by the cluster-side node
   // reconciler (nodes/k8s-sync.ts) when a fresh SERVER node joins
-  // without an explicit `platform.phoenix-host.net/host-tenant-workloads`
+  // without an explicit `insula.host/host-tenant-workloads`
   // label. Default TRUE preserves the historical behaviour where every
   // server hosts tenant workloads. Operator-set bootstrap labels always
   // win — this only fills in the gap when bootstrap.sh ran with the
