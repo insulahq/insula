@@ -143,7 +143,7 @@ layer for forks.
       upstream repo, or use `workflow_run` for the push side. Tests stay in
       the pull_request trigger.
 - [ ] **GHCR package visibility**: confirm
-      `ghcr.io/insulahq/hosting-platform/*` packages are set to
+      `ghcr.io/insulahq/insula/*` packages are set to
       `public` in package settings. Required for "unmodified clone just
       works".
 

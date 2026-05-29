@@ -169,7 +169,7 @@ function buildListJob(name: string): Record<string, unknown> {
           containers: [
             {
               name: 'list',
-              image: 'ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest',
+              image: 'ghcr.io/insulahq/insula/mail-backup-tools:latest',
               imagePullPolicy: 'IfNotPresent',
               // restic snapshots --json prints a JSON array to stdout, one
               // entry per snapshot. --no-cache to avoid touching /root in

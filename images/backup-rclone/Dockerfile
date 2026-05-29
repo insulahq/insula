@@ -138,7 +138,7 @@ CMD ["/usr/local/bin/rclone", "version"]
 # Image metadata for runtime inspection + Flux reconciliation.
 LABEL org.opencontainers.image.title="backup-rclone"
 LABEL org.opencontainers.image.description="R-X19 backup mediator (rclone serve s3 + rclone client; no kernel mounts)"
-LABEL org.opencontainers.image.source="https://github.com/insulahq/k8s-hosting-platform"
+LABEL org.opencontainers.image.source="https://github.com/insulahq/insula"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="Insula"
 LABEL platform.example.test/role="backup-rclone-shim"

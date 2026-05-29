@@ -247,7 +247,7 @@ handler path you wire up):
 ```
 
 Steps 3+4 are what the
-[existing impersonator sidecar](https://github.com/insulahq/k8s-hosting-platform/blob/main/k8s/base/bulwark-impersonator/configmap.yaml#L160-L230)
+[existing impersonator sidecar](https://github.com/insulahq/insula/blob/main/k8s/base/bulwark-impersonator/configmap.yaml#L160-L230)
 does today — same flow, just outside Bulwark. Moving it inside Bulwark
 as a plugin is the proposal.
 

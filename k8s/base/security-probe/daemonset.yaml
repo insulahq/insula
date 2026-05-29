@@ -65,7 +65,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
         - name: probe
-          image: ghcr.io/insulahq/hosting-platform/security-probe:latest # {"$imagepolicy": "flux-system:security-probe"}
+          image: ghcr.io/insulahq/insula/security-probe:latest # {"$imagepolicy": "flux-system:security-probe"}
           imagePullPolicy: Always
           env:
             - name: NODE_NAME

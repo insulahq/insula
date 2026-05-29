@@ -99,7 +99,7 @@ If `wt0` / `tailscale0` is up with an IP in `100.64.0.0/10` when bootstrap runs,
 ssh root@<VPS_IP>
 
 # Either clone and run:
-git clone https://github.com/insulahq/k8s-hosting-platform.git
+git clone https://github.com/insulahq/insula.git
 cd k8s-hosting-platform
 ./scripts/bootstrap.sh --domain example.test --env production
 

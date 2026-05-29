@@ -118,7 +118,7 @@ spec:
         # of alpine — needed for the restic fallback. Init runs once
         # + exits so image size is irrelevant.
         - name: restore-state
-          image: ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+          image: ghcr.io/insulahq/insula/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
           imagePullPolicy: Always
           envFrom:
             - secretRef:

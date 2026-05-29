@@ -382,7 +382,7 @@ The admin panel provides full lifecycle control over catalog repos and container
 
 When a new container version is published (e.g., `apache-php` with a security patch):
 
-1. CI in the catalog repo (`https://github.com/insulahq/k8s-application-catalog`) builds and pushes the new image to GHCR
+1. CI in the catalog repo (`https://github.com/insulahq/application-catalog`) builds and pushes the new image to GHCR
 2. Management API marks old version as deprecated
 3. Notification sent to all affected clients
 4. Rolling update automatically migrates clients to new version (configurable per admin)

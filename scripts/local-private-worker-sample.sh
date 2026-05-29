@@ -18,7 +18,7 @@
 #   TENANT_BASE             k8s-platform.test
 #                             Wildcard apex routed via NPM on Unraid.
 #   TUNNEL_BASE             tunnels.k8s-platform.test
-#   AGENT_IMAGE             ghcr.io/insulahq/hosting-platform/private-worker-agent:latest
+#   AGENT_IMAGE             ghcr.io/insulahq/insula/private-worker-agent:latest
 #                             Override to a locally-built tag during iteration:
 #                             AGENT_IMAGE=private-worker-agent:dev ./local-...
 #   ECHO_IMAGE              hashicorp/http-echo:latest
@@ -55,7 +55,7 @@ SSH_KEY="${SSH_KEY:-/nonexistent-on-purpose}"
 SSH_OPTS="${SSH_OPTS:-}"
 CONTROL_HOST="${CONTROL_HOST:-localhost}"
 
-AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/insulahq/hosting-platform/private-worker-agent:latest}"
+AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/insulahq/insula/private-worker-agent:latest}"
 ECHO_IMAGE="${ECHO_IMAGE:-hashicorp/http-echo:latest}"
 PLAN_NAME="${PLAN_NAME:-Starter}"
 

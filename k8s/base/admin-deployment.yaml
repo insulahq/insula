@@ -34,7 +34,7 @@ spec:
               app: admin-panel
       containers:
         - name: admin
-          image: ghcr.io/insulahq/hosting-platform/admin-panel:latest
+          image: ghcr.io/insulahq/insula/admin-panel:latest
           ports:
             - containerPort: 80
               protocol: TCP

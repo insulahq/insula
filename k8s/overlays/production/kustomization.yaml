@@ -62,9 +62,9 @@ patches:
   # via the platform-cluster-config ConfigMap (Phase 2).
 
 images:
-  - name: ghcr.io/insulahq/hosting-platform/backend
+  - name: ghcr.io/insulahq/insula/backend
     newTag: "0.0.0"  # Updated by release.yml PR
-  - name: ghcr.io/insulahq/hosting-platform/admin-panel
+  - name: ghcr.io/insulahq/insula/admin-panel
     newTag: "0.0.0"  # Updated by release.yml PR
-  - name: ghcr.io/insulahq/hosting-platform/tenant-panel
+  - name: ghcr.io/insulahq/insula/tenant-panel
     newTag: "0.0.0"  # Updated by release.yml PR

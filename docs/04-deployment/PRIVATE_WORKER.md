@@ -98,7 +98,7 @@ The home agent is **stateless**. One credential lives in an environment variable
 
 ```bash
 docker run -e PRIVATE_WORKER_TOKEN=pwt_<base64url-blob> \
-  ghcr.io/insulahq/hosting-platform/private-worker-agent:latest
+  ghcr.io/insulahq/insula/private-worker-agent:latest
 ```
 
 The blob is base64url-encoded JSON:

@@ -16,8 +16,8 @@ describe('getFileManagerImage', () => {
   });
 
   it('returns the env var when set to a registry-qualified path', () => {
-    process.env.FILE_MANAGER_IMAGE = 'ghcr.io/insulahq/hosting-platform/file-manager:latest';
-    expect(getFileManagerImage()).toBe('ghcr.io/insulahq/hosting-platform/file-manager:latest');
+    process.env.FILE_MANAGER_IMAGE = 'ghcr.io/insulahq/insula/file-manager:latest';
+    expect(getFileManagerImage()).toBe('ghcr.io/insulahq/insula/file-manager:latest');
   });
 
   it('returns the env var verbatim — does not validate the form (defense lives at deploy time)', () => {

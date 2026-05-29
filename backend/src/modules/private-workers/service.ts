@@ -38,7 +38,7 @@ const DEFAULT_AUDIT_LIMIT = 50;
 function getAgentImage(): string {
   return (
     process.env.PRIVATE_WORKER_AGENT_IMAGE
-    ?? 'ghcr.io/insulahq/hosting-platform/private-worker-agent:latest'
+    ?? 'ghcr.io/insulahq/insula/private-worker-agent:latest'
   );
 }
 

@@ -51,7 +51,7 @@ docker run --rm backup-rclone:dev /usr/local/bin/rclone version
 
 `.github/workflows/ci-backup-rclone.yml` builds multi-arch
 (linux/amd64 + linux/arm64), pushes to
-`ghcr.io/insulahq/hosting-platform/backup-rclone:<git-sha>`,
+`ghcr.io/insulahq/insula/backup-rclone:<git-sha>`,
 and produces an SBOM + cosign signature.
 
 Flux pins by digest in

@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/hosting-platform/sftp-gateway
+  IMAGE: ghcr.io/insulahq/insula/sftp-gateway
 
 jobs:
   build:

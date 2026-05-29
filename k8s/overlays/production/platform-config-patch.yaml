@@ -20,7 +20,7 @@ data:
   # at cluster ingress (one-time DNS setup at install).
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.62.1"
-  private-worker-agent-image: "ghcr.io/insulahq/hosting-platform/private-worker-agent:latest"
+  private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
   # Admin node-terminal (ADR-041 — privileged root shell on cluster
   # nodes via nsenter into host PID 1). Default OFF in production
   # since the feature is a break-glass tool. Flip to "true" here when

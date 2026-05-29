@@ -145,7 +145,7 @@ Each catalog repo contains a `catalog.json` index and per-workload `manifest.jso
 └── ...
 ```
 
-The official catalog is `https://github.com/insulahq/k8s-application-catalog`. Image builds for entries with a `Dockerfile` are CI-published to `ghcr.io/insulahq/k8s-application-catalog/<entry>:<tag>` by `.github/workflows/build-images.yml` in that repo.
+The official catalog is `https://github.com/insulahq/application-catalog`. Image builds for entries with a `Dockerfile` are CI-published to `ghcr.io/insulahq/application-catalog/<entry>:<tag>` by `.github/workflows/build-images.yml` in that repo.
 
 ### Sync Flow
 

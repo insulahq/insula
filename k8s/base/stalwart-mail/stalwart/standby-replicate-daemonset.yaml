@@ -67,7 +67,7 @@ spec:
       # remains an independent optional offsite-backup CronJob.
       containers:
         - name: replicate
-          image: ghcr.io/insulahq/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+          image: ghcr.io/insulahq/insula/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
           imagePullPolicy: Always
           command: ["/usr/local/bin/standby-replicate.sh"]
           env:
