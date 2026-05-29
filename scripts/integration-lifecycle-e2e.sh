@@ -314,7 +314,7 @@ if [[ -z "$PG_POD" ]]; then
 fi
 PSQL() {
   local q="$1"
-  ssh_cp "kubectl -n platform exec $PG_POD -c postgres -- psql -U postgres -d hosting_platform -At -F'|' -c \"$q\"" 2>/dev/null || echo ""
+  ssh_cp "kubectl -n platform exec $PG_POD -c postgres -- psql -U postgres -d platform -At -F'|' -c \"$q\"" 2>/dev/null || echo ""
 }
 if [[ -z "$PG_POD" ]]; then
   fail "could not locate cnpg postgres pod for transitions probe"

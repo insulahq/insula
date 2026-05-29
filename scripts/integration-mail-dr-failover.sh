@@ -44,7 +44,7 @@ run_kubectl() {
 
 hdr "DR FAILOVER LIVE TEST"
 
-ACTIVE_NODE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT mail_active_node FROM system_settings;\" 2>/dev/null | head -1")
+ACTIVE_NODE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\" 2>/dev/null | head -1")
 echo "active_mail_node=$ACTIVE_NODE"
 
 if [ "$ACTIVE_NODE" = "$(echo $BASTION_HOST | sed 's/root@//;s/\.example-host\.net//')" ]; then
@@ -61,7 +61,7 @@ fi
 STANDBY_CANDIDATE=$(run_kubectl "kubectl get node -l 'insula.host/mail-standby=true,insula.host/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
 echo "standby_candidate=$STANDBY_CANDIDATE"
 
-THRESHOLD=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT mail_failover_threshold_seconds FROM system_settings;\" 2>/dev/null | head -1")
+THRESHOLD=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_failover_threshold_seconds FROM system_settings;\" 2>/dev/null | head -1")
 echo "failover_threshold=${THRESHOLD}s, total budget=${DR_FAILOVER_BUDGET}s"
 
 if [ -z "$STANDBY_CANDIDATE" ]; then
@@ -69,7 +69,7 @@ if [ -z "$STANDBY_CANDIDATE" ]; then
   exit 0
 fi
 
-PRE_RUNS=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT COUNT(*) FROM mail_migration_runs;\" 2>/dev/null" | head -1 | tr -d ' ')
+PRE_RUNS=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT COUNT(*) FROM mail_migration_runs;\" 2>/dev/null" | head -1 | tr -d ' ')
 echo "pre_migration_runs=$PRE_RUNS"
 
 # Stop k3s on the active node — kubelet stops, node goes NotReady after
@@ -89,9 +89,9 @@ END=$(( $(date +%s) + DR_FAILOVER_BUDGET ))
 NEW_RUN=""
 DEGRADED_OBSERVED=0
 while [ $(date +%s) -lt "$END" ]; do
-  NOW_RUNS=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT COUNT(*) FROM mail_migration_runs;\" 2>/dev/null" | head -1 | tr -d ' ')
+  NOW_RUNS=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT COUNT(*) FROM mail_migration_runs;\" 2>/dev/null" | head -1 | tr -d ' ')
   NODE_READY=$(run_kubectl "kubectl get node $ACTIVE_NODE -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null" | head -1)
-  DR_STATE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT mail_dr_state FROM system_settings;\" 2>/dev/null" | head -1)
+  DR_STATE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_dr_state FROM system_settings;\" 2>/dev/null" | head -1)
   echo "  [$(date -Iseconds)] node $ACTIVE_NODE Ready=$NODE_READY dr_state=$DR_STATE migrations=$NOW_RUNS (baseline $PRE_RUNS)"
 
   if [ "$DR_STATE" = "degraded" ] && [ "$DEGRADED_OBSERVED" = "0" ]; then
@@ -100,7 +100,7 @@ while [ $(date +%s) -lt "$END" ]; do
   fi
 
   if [ "$NOW_RUNS" -gt "$PRE_RUNS" ]; then
-    NEW_RUN=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT id FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;\" 2>/dev/null" | head -1 | tr -d ' ')
+    NEW_RUN=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;\" 2>/dev/null" | head -1 | tr -d ' ')
     green "  dr-watcher launched failover migration: $NEW_RUN"
     break
   fi
@@ -117,7 +117,7 @@ END=$(( $(date +%s) + 540 ))
 LAST_STEP=""
 FINAL=""
 while [ $(date +%s) -lt "$END" ]; do
-  R=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT state || ':' || COALESCE(current_step,'?') FROM mail_migration_runs WHERE id='$NEW_RUN';\" 2>/dev/null" | head -1 | tr -d ' ')
+  R=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT state || ':' || COALESCE(current_step,'?') FROM mail_migration_runs WHERE id='$NEW_RUN';\" 2>/dev/null" | head -1 | tr -d ' ')
   if [ "$R" != "$LAST_STEP" ]; then
     echo "  [$(date -Iseconds)] $R"
     LAST_STEP="$R"

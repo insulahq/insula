@@ -83,7 +83,7 @@ ssh_run() {
 }
 
 psql_q() {
-  ssh_run "kubectl -n platform exec -i postgres-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -F '|' -c \"$1\"" 2>/dev/null | tr -d '\r'
+  ssh_run "kubectl -n platform exec -i postgres-1 -c postgres -- psql -U postgres -d platform -t -A -F '|' -c \"$1\"" 2>/dev/null | tr -d '\r'
 }
 
 run_scenario() {

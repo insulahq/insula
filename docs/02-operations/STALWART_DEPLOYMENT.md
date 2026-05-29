@@ -20,7 +20,7 @@ kubectl get clusterissuers
 
 # Postgres reachable + stalwart schema + stalwart_reader role exist
 kubectl -n platform exec postgres-0 -- \
-  psql -U platform -d hosting_platform -c "\dt stalwart.*"
+  psql -U platform -d platform -c "\dt stalwart.*"
 
 # Platform DB password (needed for --db-password below)
 kubectl -n platform get secret platform-db-credentials \

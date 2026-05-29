@@ -170,7 +170,7 @@ PG_STALWART_PW="$(openssl rand -base64 32)"
 
 # 2) Set the password in Postgres
 kubectl exec -n platform statefulset/platform-postgres -- \
-  psql -U platform -d hosting_platform -c \
+  psql -U platform -d platform -c \
   "ALTER ROLE stalwart_reader WITH LOGIN PASSWORD '$PG_STALWART_PW';"
 
 # 3) Store the same value in the Stalwart secret

@@ -599,7 +599,7 @@ _bootstrap_stalwart_reader() {
   fi
   pg_pod="${pg_pod:-postgres-0}"
   k3s_exec kubectl exec -n platform "$pg_pod" -- \
-    psql -U platform -d hosting_platform \
+    psql -U platform -d platform \
     -c "ALTER ROLE stalwart_reader WITH LOGIN PASSWORD 'stalwart-dev-reader-pw';" \
     >/dev/null 2>&1 || true
 }
@@ -615,7 +615,7 @@ _generate_stalwart_secret() {
       --hostname="mail.${PLATFORM_BASE_DOMAIN}" \
       --db-password='stalwart-dev-reader-pw' \
       --db-host='platform-postgres.mail.svc.cluster.local' \
-      --db-name='hosting_platform' \
+      --db-name='platform' \
       --db-user='stalwart_reader'
 }
 
@@ -744,7 +744,7 @@ cmd_dev() {
   echo "    Dex OIDC:     ${DOCKER_HOST_NAME}:${PORT_DEX}"
   echo ""
   echo "  Run in separate terminals:"
-  echo "    cd backend && DATABASE_URL=postgresql://platform:local-dev-password@${DOCKER_HOST_NAME}:${PORT_DB}/hosting_platform \\"
+  echo "    cd backend && DATABASE_URL=postgresql://platform:local-dev-password@${DOCKER_HOST_NAME}:${PORT_DB}/platform \\"
   echo "      REDIS_URL=redis://${DOCKER_HOST_NAME}:${PORT_REDIS} \\"
   echo "      JWT_SECRET=local-dev-jwt-secret-not-for-production-use \\"
   echo "      PLATFORM_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \\"
