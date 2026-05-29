@@ -163,9 +163,24 @@ spec:
                 echo "protect-from-silent-data-loss: override annotation set — bypassing guard"
                 exit 0
               fi
-              DATA_FILES=$$(ls /var/lib/stalwart/data 2>/dev/null | wc -l)
-              if [ "$$DATA_FILES" -gt 2 ]; then
-                echo "protect-from-silent-data-loss: PVC has $$DATA_FILES entries — not empty, skip check"
+              # 2026-05-29 fix: the volumeMount uses subPath=stalwart so
+              # /var/lib/stalwart/data IS the RocksDB DataStore directory
+              # (not the consolidated PVC root which also hosts bulwark/).
+              # The canonical "RocksDB exists" sentinel is the CURRENT
+              # MANIFEST file; check it directly. Previous logic counted
+              # entries at the PVC root without subPath and saw exactly
+              # 2 dirs (bulwark+stalwart) on every healthy install — so
+              # the >2 threshold mis-fired and bricked staging1 with
+              # CrashLoopBackOff even though the DataStore was intact.
+              if [ -f /var/lib/stalwart/data/CURRENT ]; then
+                echo "protect-from-silent-data-loss: RocksDB CURRENT MANIFEST present — DataStore exists, skip check"
+                exit 0
+              fi
+              # Belt-and-braces: any *.sst file also implies a real
+              # DataStore (CURRENT may be momentarily absent during a
+              # RocksDB recovery flush).
+              if ls /var/lib/stalwart/data/*.sst >/dev/null 2>&1; then
+                echo "protect-from-silent-data-loss: SST files present — DataStore exists, skip check"
                 exit 0
               fi
               # PVC empty + no override. Check if DB has expected data.
@@ -213,6 +228,13 @@ spec:
           volumeMounts:
             - name: stalwart-data
               mountPath: /var/lib/stalwart/data
+              # 2026-05-29 fix: subPath:stalwart matches the main container
+              # and restore-state init. Without subPath, this container
+              # sees the consolidated PVC root (bulwark/+stalwart/) and
+              # the entry-count heuristic mis-fires on every healthy
+              # install — bricking the pod with the "REFUSING TO FRESH
+              # START" CrashLoop even though the DataStore is intact.
+              subPath: stalwart
             - name: pod-annotations
               mountPath: /podinfo
         # restore-state: download + import the latest Stalwart DataStore
