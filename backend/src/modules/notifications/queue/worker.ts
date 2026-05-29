@@ -30,10 +30,10 @@
  */
 import { eq } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
-import { notificationDeliveries, users } from '../../../db/schema.js';
+import { notificationCategories, notificationDeliveries, users } from '../../../db/schema.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
 import { getTemplate } from '../templates/service.js';
-import { getDefaultProviderRow } from '../providers/service.js';
+import { getProviderForCategoryEmail } from '../providers/service.js';
 import { decrypt } from '../../oidc/crypto.js';
 import { decideRetry } from './retry.js';
 import { enqueueDelivery } from './enqueue.js';
@@ -106,7 +106,11 @@ export async function processDelivery(
   const { db } = opts;
 
   // 1. Claim — load + verify status. Idempotent: skip if not queued/failed.
-  const [row] = await db.select({
+  // Drizzle's row inference returns string | null for the enum-typed
+  // `channel` column, but at the SQL layer the only legal values are
+  // 'in_app' | 'email' (channel_id_enum). We narrow with a runtime
+  // check below rather than an unsafe cast.
+  const rows = await db.select({
     id: notificationDeliveries.id,
     userId: notificationDeliveries.userId,
     categoryId: notificationDeliveries.categoryId,
@@ -120,7 +124,20 @@ export async function processDelivery(
   })
     .from(notificationDeliveries)
     .where(eq(notificationDeliveries.id, deliveryId))
-    .limit(1) as unknown as DeliveryRow[];
+    .limit(1);
+  const raw = rows[0];
+  const row: DeliveryRow | undefined = raw == null ? undefined : {
+    id: raw.id,
+    userId: raw.userId,
+    categoryId: raw.categoryId,
+    channel: raw.channel === 'email' ? 'email' : 'in_app',
+    templateId: raw.templateId,
+    locale: raw.locale,
+    status: raw.status,
+    attempt: raw.attempt,
+    maxAttempts: raw.maxAttempts,
+    eventVariables: raw.eventVariables ?? null,
+  };
 
   if (!row) {
     return { status: 'skipped', error: 'delivery_not_found' };
@@ -166,11 +183,27 @@ export async function processDelivery(
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'recipient_email_missing', opts);
     }
 
-    // 5. Look up the default notification provider (Phase 3B: dedicated
-    //    notification_providers table, separate from smtp_relay_configs).
-    const provider = await getDefaultProviderRow(db, 'email');
+    // 5. Look up the notification provider for this category. Phase 5
+    //    introduces a per-source override (notification_categories
+    //    .email_provider_id). If the override is set but disabled the
+    //    function returns null and we surface a distinct error reason
+    //    so the operator can see the override is the blocker (security
+    //    review 2026-05-29 MEDIUM-2: do NOT silently fall through).
+    const provider = await getProviderForCategoryEmail(db, row.categoryId);
     if (!provider) {
-      return await markFailedOrDlq(db, row.id, row.attempt + 1, 'no_default_notification_provider', opts);
+      // We need to distinguish "no default" vs "override disabled".
+      // Query the category to see if an override is set; that's the
+      // signal the operator routed this elsewhere.
+      const [cat] = await db.select({
+        emailProviderId: notificationCategories.emailProviderId,
+      })
+        .from(notificationCategories)
+        .where(eq(notificationCategories.id, row.categoryId))
+        .limit(1);
+      const reason = cat?.emailProviderId
+        ? 'override_provider_unavailable'
+        : 'no_default_notification_provider';
+      return await markFailedOrDlq(db, row.id, row.attempt + 1, reason, opts);
     }
     if (!provider.smtpHost) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'provider_smtp_host_missing', opts);

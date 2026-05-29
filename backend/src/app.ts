@@ -99,6 +99,7 @@ import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { stopBoss } from './modules/notifications/queue/bootstrap.js';
 import { startReenqueueScheduler } from './modules/notifications/queue/scanner.js';
+import { startExpiryWarningScheduler } from './modules/subscriptions/expiry-warning-scheduler.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
@@ -731,6 +732,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         warn: (msg, err) => app.log.warn({ err }, msg),
       });
       app.addHook('onClose', () => clearInterval(reenqueueTimer));
+
+      // Phase 4: subscription expiry-warning scheduler. Fires
+      // `subscription.expiry_warning` for tenants whose
+      // subscription_expires_at falls in the configured day windows
+      // (default 7/3/1 days out). Dedupe-keyed so re-runs of the
+      // scheduler don't flood inboxes.
+      const expiryWarningTimer = startExpiryWarningScheduler(app.db, {
+        info: (msg, extra) => app.log.info(extra ?? {}, msg),
+        warn: (msg, err) => app.log.warn({ err }, msg),
+      });
+      app.addHook('onClose', () => clearInterval(expiryWarningTimer));
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 

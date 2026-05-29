@@ -18,6 +18,7 @@ import {
   useNotificationCategories,
   useUpdateNotificationCategory,
 } from '@/hooks/use-notification-categories';
+import { useNotificationProviders } from '@/hooks/use-notification-providers';
 import {
   NOTIFICATION_CHANNEL_ID,
   type NotificationCategoryResponse,
@@ -173,6 +174,7 @@ interface CategoryEditDrawerProps {
 
 function CategoryEditDrawer({ category, onClose }: CategoryEditDrawerProps) {
   const update = useUpdateNotificationCategory();
+  const providers = useNotificationProviders();
   const [channels, setChannels] = useState<ReadonlyArray<NotificationChannelId>>(category.defaultChannels);
   const [rateLimitMax, setRateLimitMax] = useState<string>(
     category.rateLimitMax !== null ? String(category.rateLimitMax) : '',
@@ -181,6 +183,7 @@ function CategoryEditDrawer({ category, onClose }: CategoryEditDrawerProps) {
     category.rateLimitWindowS !== null ? String(category.rateLimitWindowS) : '',
   );
   const [isActive, setIsActive] = useState<boolean>(category.isActive);
+  const [emailProviderId, setEmailProviderId] = useState<string>(category.emailProviderId ?? '');
 
   const toggleChannel = (ch: NotificationChannelId): void => {
     setChannels((prev) =>
@@ -193,6 +196,8 @@ function CategoryEditDrawer({ category, onClose }: CategoryEditDrawerProps) {
     const input: UpdateNotificationCategoryInput = {
       defaultChannels: channels.slice(),
       isActive,
+      // Empty string in the select = "use default" → backend stores NULL.
+      emailProviderId: emailProviderId === '' ? null : emailProviderId,
     };
     if (rateLimitMax.trim() === '' && rateLimitWindowS.trim() === '') {
       input.rateLimitMax = null;
@@ -309,6 +314,32 @@ function CategoryEditDrawer({ category, onClose }: CategoryEditDrawerProps) {
                 />
               </label>
             </div>
+          </fieldset>
+
+          <fieldset className="space-y-1">
+            <legend className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+              Send Email via Provider
+            </legend>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              Override the default email provider for this source only. Useful for
+              high-priority transactional notifications (e.g. route security alerts
+              through a more reliable provider). Leave on "Default" for normal flow.
+            </p>
+            <select
+              value={emailProviderId}
+              onChange={(e) => setEmailProviderId(e.target.value)}
+              data-testid="category-email-provider"
+              className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+            >
+              <option value="">— Default platform email provider —</option>
+              {(providers.data?.data ?? [])
+                .filter((p) => p.channel === 'email' && p.enabled)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.providerType})
+                  </option>
+                ))}
+            </select>
           </fieldset>
 
           <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">

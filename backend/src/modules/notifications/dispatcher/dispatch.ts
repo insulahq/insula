@@ -22,7 +22,7 @@
  * worker; for Phase 1 it's synchronous so call-sites get clear feedback
  * during the request lifecycle.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import {
   users,
@@ -57,6 +57,18 @@ export interface EmitEventOptions {
   readonly localeOverride?: string;
   /** Override encryption key (tests). Production reads PLATFORM_ENCRYPTION_KEY. */
   readonly encryptionKey?: string;
+  /**
+   * Opaque per-recipient idempotency key. When set, the dispatcher
+   * checks for an existing notifications row with the same key in the
+   * last 30 days BEFORE writing — duplicates are silently skipped so
+   * a scheduler tick that fires the same warning twice in a row only
+   * persists one notification per user.
+   *
+   * Format the key as `<event-kind>:<scope-discriminator>:<bucket>`
+   * e.g. `subscription-expiry:tenant-X:7d:2026-06-05` for a 7-day-out
+   * warning about the 2026-06-05 expiry slot.
+   */
+  readonly dedupeKey?: string;
 }
 
 export interface PerChannelStatus {
@@ -90,6 +102,37 @@ async function getUserEmail(db: Database, userId: string): Promise<string | null
   return row?.email ?? null;
 }
 
+/**
+ * Returns true when a notification_deliveries row with this
+ * (user, dedupeKey) was written in the last 30 days.
+ *
+ * We query notification_deliveries — NOT notifications — because the
+ * deliveries table is written for every channel (in_app + email),
+ * whereas the notifications table is in_app only. An email-only
+ * category therefore wouldn't be deduplicated against the notifications
+ * table even though the prior delivery DID happen.
+ *
+ * 30 days matches the notification_deliveries retention window — we
+ * never dedupe against a row the GDPR purge has already deleted.
+ */
+async function findDedupedNotification(
+  db: Database,
+  userId: string,
+  dedupeKey: string,
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const [row] = await db
+    .select({ id: notificationDeliveries.id })
+    .from(notificationDeliveries)
+    .where(and(
+      eq(notificationDeliveries.userId, userId),
+      eq(notificationDeliveries.dedupeKey, dedupeKey),
+      gt(notificationDeliveries.queuedAt, cutoff),
+    ))
+    .limit(1);
+  return row != null;
+}
+
 async function writeDelivery(
   db: Database,
   input: {
@@ -109,6 +152,7 @@ async function writeDelivery(
     providerMessageId?: string;
     sentAt?: Date | null;
     eventVariables?: Record<string, unknown>;
+    dedupeKey?: string;
   },
 ): Promise<string> {
   const id = crypto.randomUUID();
@@ -133,6 +177,7 @@ async function writeDelivery(
     providerMessageId: input.providerMessageId ?? null,
     sentAt: input.status === 'sent' ? now : null,
     eventVariables: input.eventVariables ?? null,
+    dedupeKey: input.dedupeKey ?? null,
   });
   return id;
 }
@@ -189,6 +234,20 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     const userSettings = await getUserSettings(db, userId);
     const locale = opts.localeOverride ?? userSettings.locale ?? 'en';
 
+    // 3-pre. Idempotency check (when caller passed a dedupeKey). A
+    // previously-written notifications row with the same key for this
+    // user in the last 30 days means we already fired this warning —
+    // skip every channel for this recipient.
+    if (opts.dedupeKey) {
+      const existing = await findDedupedNotification(db, userId, opts.dedupeKey);
+      if (existing) {
+        for (const channel of category.defaultChannels) {
+          statuses.push({ userId, channel, status: 'skipped', error: 'duplicate' });
+        }
+        continue;
+      }
+    }
+
     for (const channel of category.defaultChannels) {
       // 3a. Preference gate.
       const allowed = await isCategoryAllowedForUser(db, userId, category.id, channel);
@@ -207,6 +266,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'muted',
           recipientHash: null,
           contentHash,
+          dedupeKey: opts.dedupeKey,
         });
         statuses.push({ userId, channel, status: 'muted' });
         continue;
@@ -228,6 +288,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'muted',
           recipientHash: null,
           contentHash,
+          dedupeKey: opts.dedupeKey,
         });
         statuses.push({ userId, channel, status: 'muted' });
         continue;
@@ -253,6 +314,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'skipped',
           recipientHash: null,
           contentHash,
+          dedupeKey: opts.dedupeKey,
           lastError: 'recipient_email_missing',
         });
         statuses.push({ userId, channel, status: 'skipped', error: 'recipient_email_missing' });
@@ -282,6 +344,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
             status: 'rate_limited',
             recipientHash: null,
             contentHash,
+            dedupeKey: opts.dedupeKey,
           });
           statuses.push({ userId, channel, status: 'rate_limited' });
           continue;
@@ -329,6 +392,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           eventId,
           locale,
           tenantId: opts.tenantId ?? null,
+          dedupeKey: opts.dedupeKey ?? null,
         });
         await writeDelivery(db, {
           notificationId,
@@ -343,6 +407,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'sent',
           recipientHash,
           contentHash,
+          dedupeKey: opts.dedupeKey,
         });
         statuses.push({ userId, channel, status: 'sent', notificationId });
         continue;
@@ -366,6 +431,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         status: 'queued',
         recipientHash,
         contentHash,
+        dedupeKey: opts.dedupeKey,
         eventVariables: opts.variables,
       });
 
