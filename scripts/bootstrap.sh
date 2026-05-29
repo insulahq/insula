@@ -1274,7 +1274,34 @@ install_packages() {
     rhel)   install_packages_dnf ;;
     *) error "install_packages: unknown OS_FAMILY='${OS_FAMILY}' — check_os should have set this." ;;
   esac
+  install_yq
   log "Base packages installed."
+}
+
+# yq (mikefarah, Go binary) — NOT the python 'yq' in distro repos, which
+# has incompatible syntax. Used by bundle_bootstrap_secrets to strip
+# server-side fields from Secret YAML and parse the audit-allowlist
+# ConfigMap. Without it the secrets bundle previously SIGPIPE'd the
+# bootstrap (rc=141) and left no offline bundle. Idempotent, multi-arch,
+# non-fatal (the bundle falls back to raw kubectl YAML if absent).
+install_yq() {
+  if command -v yq >/dev/null 2>&1 && yq --version 2>/dev/null | grep -qiE 'mikefarah|version v?[0-9]'; then
+    return 0
+  fi
+  local arch yq_arch
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64)  yq_arch=amd64 ;;
+    aarch64|arm64) yq_arch=arm64 ;;
+    *) warn "yq: unsupported arch '${arch}' — secrets bundle will fall back to raw kubectl YAML."; return 0 ;;
+  esac
+  local url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${yq_arch}"
+  if curl -fsSL "$url" -o /usr/local/bin/yq 2>/dev/null && chmod +x /usr/local/bin/yq; then
+    log "yq (mikefarah, ${yq_arch}) installed to /usr/local/bin/yq."
+  else
+    rm -f /usr/local/bin/yq 2>/dev/null || true
+    warn "yq download failed (${url}) — secrets bundle will fall back to raw kubectl YAML."
+  fi
 }
 
 # Package rationale (shared across families):
@@ -4406,14 +4433,14 @@ STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # master@mail.${PLATFORM_DOMAIN} so the principal lives in the same
 # Stalwart Domain Stalwart actually serves mail for.
 # 2026-05-28b (final): the rotation flow now consults
-# `platform_settings.mail_server_hostname` (Email → Settings → Server)
+# 'platform_settings.mail_server_hostname' (Email -> Settings -> Server)
 # as the source-of-truth for the principal's home Domain, with
-# `mail.<ingress_base_domain>` as the cascade default. Bootstrap only
+# 'mail.[ingress_base_domain]' as the cascade default. Bootstrap only
 # SEEDS this Secret — operator changes via the admin UI take precedence
 # afterwards (rotate-webmail-master will re-seed under the current
 # operator-set hostname automatically, even if it differs from the
 # bootstrap default). The seeded value here matches the default branch
-# of `getExplicitMailHostname` so a vanilla install round-trips cleanly.
+# of 'getExplicitMailHostname' so a vanilla install round-trips cleanly.
 STALWART_MASTER_USER=master@mail.${PLATFORM_DOMAIN}
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
@@ -4978,11 +5005,21 @@ bundle_bootstrap_secrets() {
 
   # Optional: read skip-at-restore from the in-cluster ConfigMap so
   # operator decisions ride along in MANIFEST.json. Absent CM → [].
-  local skip_at_restore_json
-  skip_at_restore_json=$(kctl get configmap -n platform-system secrets-audit-allowlist \
-      -o jsonpath='{.data.allowlist\.yaml}' 2>/dev/null \
-    | (command -v yq >/dev/null 2>&1 && yq -o=json '. // {entries:[]} | .entries // []' \
-        || echo '[]'))
+  # Read the audit-allowlist ConfigMap, then convert with yq ONLY if both
+  # the CM has content AND yq is present. Piping kubectl→yq directly is
+  # unsafe: when yq is absent the `|| echo '[]'` consumer exits before
+  # draining stdin, SIGPIPE'ing kubectl — which under `set -o pipefail`
+  # surfaces as rc=141 and aborts the whole bootstrap before the bundle is
+  # ever written (observed 2026-05-29). install_yq normally prevents this;
+  # this structure is defense-in-depth if the download fell back.
+  local skip_at_restore_json='[]'
+  local _allowlist_yaml
+  _allowlist_yaml=$(kctl get configmap -n platform-system secrets-audit-allowlist \
+      -o jsonpath='{.data.allowlist\.yaml}' 2>/dev/null || true)
+  if [[ -n "$_allowlist_yaml" ]] && command -v yq >/dev/null 2>&1; then
+    skip_at_restore_json=$(printf '%s' "$_allowlist_yaml" \
+      | yq -o=json '. // {entries:[]} | .entries // []' 2>/dev/null || echo '[]')
+  fi
   [[ -z "$skip_at_restore_json" ]] && skip_at_restore_json='[]'
 
   local count=0

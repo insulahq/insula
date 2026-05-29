@@ -185,6 +185,19 @@ describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + ha
     expect(resolveHaproxyNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
   });
 
+  it('returns [] on a single-node cluster for EVERY mode (single-server → Stalwart hostPort, no haproxy)', () => {
+    // Regression 2026-05-29: on a fresh single-node bootstrap activeNode is
+    // not yet recorded, so the active-node exclusion is a no-op and the sole
+    // node would get a haproxy DS that fights Stalwart's always-on hostPort.
+    const oneNode = [node('testing', { 'insula.host/node-role': 'server' })];
+    const unset: Settings = { primaryNode: null, secondaryNode: null, tertiaryNode: null, activeNode: null };
+    for (const mode of ['activeNodeOnly', 'assignedMailNodes', 'allServerNodes'] as const) {
+      expect(resolveHaproxyNodes(mode, unset, oneNode)).toEqual([]);
+      // Even once the sole node is recorded as active, still no haproxy.
+      expect(resolveHaproxyNodes(mode, { ...unset, activeNode: 'testing' }, oneNode)).toEqual([]);
+    }
+  });
+
   it('assignedMailNodes EXCLUDES active even when active is in the assigned set', () => {
     // active=staging1, assigned={staging1,staging2,staging3} → haproxy on staging2,staging3
     const r = resolveHaproxyNodes(
