@@ -3135,8 +3135,12 @@ scenario_mail_migration_fixes() {
   # ── Part A: CronJob schedule survives a Flux reconcile cycle ──────
   log "mail-migration-fixes: PART A — CronJob schedule SSA ownership"
 
+  # NB: strip only LEADING/TRAILING whitespace, not interior spaces.
+  # The cron string itself contains spaces between fields; a naive
+  # `tr -d '[:space:]'` would collapse `*/7 * * * *` to `*/7****` and
+  # break the equality check against the expected value below.
   local orig_sched
-  orig_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | tr -d '[:space:]')
+  orig_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   log "PART A: live schedule before = ${orig_sched}"
 
   # Pick a DIFFERENT schedule from the manifest default `*/2 * * * *`
@@ -3160,7 +3164,7 @@ scenario_mail_migration_fixes() {
   # Wait 5s for the apiserver to settle, then re-read.
   sleep 5
   local now_sched
-  now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | tr -d '[:space:]')
+  now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   if [[ "$now_sched" != "$probe_sched" ]]; then
     fail "PART A: live schedule after PATCH = '${now_sched}', expected '${probe_sched}' — applyPatch did not take effect"
     return 1
@@ -3183,7 +3187,7 @@ scenario_mail_migration_fixes() {
   ssh_cp "flux reconcile kustomization platform -n flux-system --with-source --timeout=60s" >/dev/null 2>&1 || true
   sleep 10
   local post_flux
-  post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | tr -d '[:space:]')
+  post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   if [[ "$post_flux" == "$probe_sched" ]]; then
     ok "PART A: schedule SURVIVED forced Flux reconcile (= ${post_flux})"
   else
