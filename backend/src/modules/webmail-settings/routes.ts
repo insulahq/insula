@@ -8,7 +8,7 @@ import {
   updateWebmailSettings,
   withMailHostnameLock,
 } from './service.js';
-import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
+import { updateWebmailSettingsSchema } from '@insula/api-contracts';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import {
   reconcileWebmailIngress,
@@ -19,7 +19,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs } from '../../db/schema.js';
 import * as tasks from '../tasks/service.js';
-import { toSafeText } from '@k8s-hosting/api-contracts';
+import { toSafeText } from '@insula/api-contracts';
 import type { JwtPayload } from '../../middleware/auth.js';
 import crypto from 'node:crypto';
 

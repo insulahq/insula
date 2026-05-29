@@ -2,7 +2,7 @@ import * as k8s from '@kubernetes/client-node';
 import { ensureFileManagerRunning, getFileManagerStatus } from './k8s-lifecycle.js';
 import { getFileManagerImage } from './image.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { FileManagerStatus } from '@k8s-hosting/api-contracts';
+import type { FileManagerStatus } from '@insula/api-contracts';
 
 const FM_SERVICE = 'file-manager';
 const FM_PORT = 8111;

@@ -9,7 +9,7 @@ import type {
   AvailableUpgradesResponse,
   AdminUpgradesGroup,
   DeploymentResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ─── GET /tenants/:cid/deployments/:id/available-upgrades ───────────────────
 

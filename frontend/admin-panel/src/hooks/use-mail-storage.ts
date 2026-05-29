@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { MailPvcStorageResponse } from '@k8s-hosting/api-contracts';
+import type { MailPvcStorageResponse } from '@insula/api-contracts';
 
 interface StorageEnvelope {
   readonly data: MailPvcStorageResponse;

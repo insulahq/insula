@@ -41,7 +41,7 @@ import { enqueueDelivery } from '../queue/enqueue.js';
 import type {
   NotificationCategoryResponse,
   NotificationDeliveryStatus,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import type { Database } from '../../../db/index.js';
 
 type Channel = 'in_app' | 'email';

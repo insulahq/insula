@@ -46,7 +46,7 @@ import {
   createAuthUserSchema,
   toggleAuthUserSchema,
   changeAuthUserPasswordSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   createExclusionForTenantRoute,
   deleteExclusionForTenantRoute,

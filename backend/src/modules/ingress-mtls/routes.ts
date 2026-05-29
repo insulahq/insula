@@ -15,7 +15,7 @@ import { eq, and } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { ingressMtlsConfigSchema } from '@k8s-hosting/api-contracts';
+import { ingressMtlsConfigSchema } from '@insula/api-contracts';
 import { ingressRoutes, domains, tenants } from '../../db/schema.js';
 import {
   getMtlsConfig,

@@ -25,7 +25,7 @@ import type {
   RestoreJobSummary,
   RestoreItemInfo,
   RestoreItemType,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';

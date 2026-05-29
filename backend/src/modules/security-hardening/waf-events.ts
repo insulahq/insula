@@ -33,7 +33,7 @@ import type {
   WafTopRule,
   WafTopHost,
   WafTopSourceIp,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;

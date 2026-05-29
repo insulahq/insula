@@ -12,7 +12,7 @@ import {
   useUpdateBlobStore,
   useBlobStoreJobStatus,
 } from '@/hooks/use-stalwart-blob-store';
-import type { BlobStoreType } from '@k8s-hosting/api-contracts';
+import type { BlobStoreType } from '@insula/api-contracts';
 
 /**
  * Email Management → Stalwart Blob Storage card.
@@ -697,7 +697,7 @@ function BlobStoreConfirmModal({
 // ── job status panel ──────────────────────────────────────────────
 
 interface JobStatusPanelProps {
-  readonly status: import('@k8s-hosting/api-contracts').BlobStoreJobStatusResponse;
+  readonly status: import('@insula/api-contracts').BlobStoreJobStatusResponse;
   readonly onClose: () => void;
 }
 function JobStatusPanel({ status, onClose }: JobStatusPanelProps) {

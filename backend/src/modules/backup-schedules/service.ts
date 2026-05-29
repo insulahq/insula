@@ -27,7 +27,7 @@ import type {
   BackupScheduleRow,
   BackupScheduleSubsystem,
   UpdateBackupScheduleInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ─── Gate map ─────────────────────────────────────────────────────────
 

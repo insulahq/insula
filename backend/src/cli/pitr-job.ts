@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     if (jobNameForChip && actorUserId) {
       try {
         const tasksMod = await import('../modules/tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         const label = isPromoteMode
           ? toSafeText(`Postgres barman-promote (${clusterNamespace}/${clusterName})`)
           : toSafeText(`Postgres PITR (${clusterNamespace}/${clusterName})`);
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     if (jobNameForChip && actorUserId) {
       try {
         const tasksMod = await import('../modules/tasks/service.js');
-        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const { toSafeText } = await import('@insula/api-contracts');
         const label = isPromoteMode
           ? toSafeText(`Postgres barman-promote (${clusterNamespace}/${clusterName})`)
           : toSafeText(`Postgres PITR (${clusterNamespace}/${clusterName})`);

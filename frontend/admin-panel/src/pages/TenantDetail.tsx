@@ -148,7 +148,7 @@ export default function TenantDetail() {
       // the PATCH body until `UpdateTenantInput` in api-contracts is
       // extended. Backend reads the field on every lifecycle PATCH.
       const res = await updateTenant.mutateAsync(
-        { status: 'suspended', suppressTenantNotification: !notifyTenant } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput,
+        { status: 'suspended', suppressTenantNotification: !notifyTenant } as unknown as import('@insula/api-contracts').UpdateTenantInput,
       );
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
@@ -177,7 +177,7 @@ export default function TenantDetail() {
           status: 'archived',
           archive_retention_days: retentionDays,
           suppressTenantNotification: !notifyTenant,
-        } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput,
+        } as unknown as import('@insula/api-contracts').UpdateTenantInput,
       );
       const opId = res?.data?.storageArchiveOperationId ?? null;
       if (opId) setStatusOpId(opId);
@@ -209,7 +209,7 @@ export default function TenantDetail() {
         since: Date.now(),
       });
       const res = await updateTenant.mutateAsync(
-        { status: 'active', suppressTenantNotification: !notifyTenant } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput,
+        { status: 'active', suppressTenantNotification: !notifyTenant } as unknown as import('@insula/api-contracts').UpdateTenantInput,
       );
       const opId = res?.data?.storageRestoreOperationId
         ?? res?.data?.storageArchiveOperationId
@@ -740,7 +740,7 @@ function LifecycleStatusControl({
     }
 
     try {
-      const payload: import('@k8s-hosting/api-contracts').UpdateTenantInput = { status: pending };
+      const payload: import('@insula/api-contracts').UpdateTenantInput = { status: pending };
       if (pending === 'archived' && tenant.status !== 'archived') {
         payload.archive_retention_days = retentionDays;
       }
@@ -759,7 +759,7 @@ function LifecycleStatusControl({
       const payloadWithFlag = {
         ...payload,
         suppressTenantNotification: !notifyTenant,
-      } as unknown as import('@k8s-hosting/api-contracts').UpdateTenantInput;
+      } as unknown as import('@insula/api-contracts').UpdateTenantInput;
       const res = await updateTenant.mutateAsync(payloadWithFlag);
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
@@ -1431,13 +1431,13 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
           // Try to parse lastError as the OperatorError envelope (JSON
           // produced by the status-reconciler since the error-standard
           // change). Fall back to plain string for legacy rows.
-          let envelope: import('@k8s-hosting/api-contracts').OperatorError | null = null;
+          let envelope: import('@insula/api-contracts').OperatorError | null = null;
           let plainDetail = '';
           if (d.lastError && d.lastError.trim()) {
             try {
               const parsed = JSON.parse(d.lastError);
               if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
-                envelope = parsed as import('@k8s-hosting/api-contracts').OperatorError;
+                envelope = parsed as import('@insula/api-contracts').OperatorError;
               } else {
                 plainDetail = d.lastError;
               }
@@ -2421,13 +2421,13 @@ function StorageLifecycleCard({ tenantId, tenant }: { readonly tenantId: string;
 
       {!activeOp && recentOp && recentOp.state === 'failed' && (() => {
         // Try to parse lastError as the structured OperatorError envelope.
-        let envelope: import('@k8s-hosting/api-contracts').OperatorError | null = null;
+        let envelope: import('@insula/api-contracts').OperatorError | null = null;
         let plainDetail = '';
         if (recentOp.lastError && recentOp.lastError.trim()) {
           try {
             const parsed = JSON.parse(recentOp.lastError);
             if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
-              envelope = parsed as import('@k8s-hosting/api-contracts').OperatorError;
+              envelope = parsed as import('@insula/api-contracts').OperatorError;
             } else {
               plainDetail = recentOp.lastError;
             }

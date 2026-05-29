@@ -14,7 +14,7 @@ import { gunzipSync } from 'node:zlib';
 import { extract as tarExtract } from 'tar-stream';
 import { wrapBundleAsDataExport } from './data-export.js';
 import type { BackupStore, BundleHandle, ArtifactRef, ArtifactStat } from './bundle-store.js';
-import type { BackupMetaV1 } from '@k8s-hosting/api-contracts';
+import type { BackupMetaV1 } from '@insula/api-contracts';
 
 function makeMockStore(opts: {
   meta: BackupMetaV1;

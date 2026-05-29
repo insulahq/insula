@@ -16,7 +16,7 @@
 
 import { useMemo, useState } from 'react';
 import { Info, RefreshCw, Shield, Plus, Trash2 } from 'lucide-react';
-import type { AuditedSecret, SecretCoverageCategory } from '@k8s-hosting/api-contracts';
+import type { AuditedSecret, SecretCoverageCategory } from '@insula/api-contracts';
 import {
   useAddAllowlistEntry,
   useRefreshSecretsAudit,

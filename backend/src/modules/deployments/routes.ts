@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
-import { triggerUpgradeSchema, batchUpgradeSchema } from '@k8s-hosting/api-contracts';
+import { triggerUpgradeSchema, batchUpgradeSchema } from '@insula/api-contracts';
 import * as service from './service.js';
 import * as upgradeVersion from './upgrade-version.js';
 import { success, paginated } from '../../shared/response.js';

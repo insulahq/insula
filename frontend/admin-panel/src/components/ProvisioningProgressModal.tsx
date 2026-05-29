@@ -3,7 +3,7 @@ import { X, CheckCircle2, XCircle, Loader2, Circle, AlertTriangle, Trash2, Refre
 import { useProvisioningStatus } from '@/hooks/use-provisioning';
 import type { ProvisioningStep } from '@/hooks/use-provisioning';
 import ErrorPanel from '@/components/ErrorPanel';
-import type { OperatorError } from '@k8s-hosting/api-contracts';
+import type { OperatorError } from '@insula/api-contracts';
 
 interface ProvisioningProgressModalProps {
   readonly tenantId: string;

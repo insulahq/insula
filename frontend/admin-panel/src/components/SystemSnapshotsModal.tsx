@@ -17,7 +17,7 @@ import {
   usePitrPrechecks,
   useRestoreStatus,
 } from '@/hooks/use-postgres-restore';
-import type { SystemPvcSnapshotSummary } from '@k8s-hosting/api-contracts';
+import type { SystemPvcSnapshotSummary } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import RestorationWizard, { type RestoreArtifact, type RestorationWizardPrecheck } from '@/components/backups/RestorationWizard';

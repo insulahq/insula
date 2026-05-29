@@ -1,4 +1,4 @@
-import { OPERATOR_ERROR_CODES, type OperatorError } from '@k8s-hosting/api-contracts';
+import { OPERATOR_ERROR_CODES, type OperatorError } from '@insula/api-contracts';
 
 /**
  * Translate a raw error message (k8s API, Longhorn, cert-manager,

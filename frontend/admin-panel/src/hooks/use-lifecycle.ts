@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { LifecycleHookErrorEnvelope } from '@k8s-hosting/api-contracts';
+import type { LifecycleHookErrorEnvelope } from '@insula/api-contracts';
 
 interface Envelope<T> { readonly data: T }
 

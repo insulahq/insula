@@ -1,4 +1,4 @@
-import type { AiProviderType } from '@k8s-hosting/api-contracts';
+import type { AiProviderType } from '@insula/api-contracts';
 import type { LlmProviderAdapter } from './types.js';
 import { createAnthropicAdapter } from './anthropic.js';
 import { createOpenAiAdapter } from './openai.js';

@@ -27,7 +27,7 @@ import {
   type NamespacePss,
   type PrivilegedPod,
   type PssLevel,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { auditLogs } from '../../db/schema.js';
 
 // Process-wide baseline for the audit-log row-count monotonicity

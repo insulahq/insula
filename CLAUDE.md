@@ -99,7 +99,7 @@ packages/api-contracts/src/
 ```
 
 **Rules:**
-1. ALL API input/output types MUST be defined in `@k8s-hosting/api-contracts`
+1. ALL API input/output types MUST be defined in `@insula/api-contracts`
 2. Backend validates with Zod schemas imported from this package
 3. Frontend uses `z.infer<typeof schema>` types from this package
 4. NEVER define API types locally in backend `schema.ts` or frontend `types/api.ts`

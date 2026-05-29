@@ -35,7 +35,7 @@ import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
 import { releasePitrLock } from './service.js';
 import { finalizeByRef } from '../tasks/service.js';
-import { toSafeText } from '@k8s-hosting/api-contracts';
+import { toSafeText } from '@insula/api-contracts';
 
 // Tunables — exported for testing.
 export const WATCHDOG_INTERVAL_MS = 60_000;

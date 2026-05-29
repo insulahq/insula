@@ -143,7 +143,7 @@ async function mirrorRunToTaskTracker(db: Database, runId: string): Promise<void
     : 'succeeded';
 
   const { start: startTask, finishByRef } = await import('../tasks/service.js');
-  const { toSafeText } = await import('@k8s-hosting/api-contracts');
+  const { toSafeText } = await import('@insula/api-contracts');
 
   await startTask(db, {
     kind: 'backup.run',

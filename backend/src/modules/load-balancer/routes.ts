@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
-import { updateLoadBalancerSchema } from '@k8s-hosting/api-contracts';
+import { updateLoadBalancerSchema } from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {

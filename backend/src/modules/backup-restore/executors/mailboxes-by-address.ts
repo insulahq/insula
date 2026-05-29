@@ -81,7 +81,7 @@ const mlog = mailLogger().child({ module: 'mailboxes-by-address-restore' });
 import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface Selector {
   kind: 'all' | 'addresses';

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { WebmailSettingsResponse } from '@k8s-hosting/api-contracts';
+import type { WebmailSettingsResponse } from '@insula/api-contracts';
 
 interface WebmailSettingsWrapped {
   readonly data: WebmailSettingsResponse;

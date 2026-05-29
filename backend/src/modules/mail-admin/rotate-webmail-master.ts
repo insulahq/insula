@@ -34,7 +34,7 @@
  */
 
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
-import { rotateWebmailMasterPasswordResponseSchema, type RotateWebmailMasterPasswordResponse } from '@k8s-hosting/api-contracts';
+import { rotateWebmailMasterPasswordResponseSchema, type RotateWebmailMasterPasswordResponse } from '@insula/api-contracts';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'mail-admin-rotate-webmail-master' });

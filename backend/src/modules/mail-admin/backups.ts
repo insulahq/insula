@@ -34,7 +34,7 @@ import type {
   MailBackupListResponse,
   MailBackupSnapshot,
   MailBackupRestoreResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
 const LIST_JOB_PREFIX = 'mail-backup-list-';

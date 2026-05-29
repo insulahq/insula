@@ -13,7 +13,7 @@ import {
   type BundleSummary,
   type BundleDetail,
   type BackupComponentInfo,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { S3BackupStore } from './s3-backup-store.js';
 import { resolveShimBackupStore, resolveShimFirstBackupStore } from './shim-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
@@ -436,7 +436,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
             if (orchInput.triggeredByUserId) {
               try {
                 const { finishByRef } = await import('./../tasks/service.js');
-                const { toSafeText } = await import('@k8s-hosting/api-contracts');
+                const { toSafeText } = await import('@insula/api-contracts');
                 await finishByRef(app.db, 'backup.bundle', reservedBundleId, {
                   status: 'failed',
                   text: toSafeText('aborted'),
@@ -1061,7 +1061,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         400,
       );
     }
-    const importMeta: import('@k8s-hosting/api-contracts').BackupMetaV1 = {
+    const importMeta: import('@insula/api-contracts').BackupMetaV1 = {
       schemaVersion: 2 as const,
       backupId: newBundleId,
       tenantId,
@@ -1075,9 +1075,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       expiresAt: null,
       retentionDays: sourceMeta.retentionDays ?? 30,
       description: sourceMeta.description ?? null,
-      tenant: sourceTenant as import('@k8s-hosting/api-contracts').BackupMetaTenant,
-      domainsSummary: sourceDomains as import('@k8s-hosting/api-contracts').BackupMetaDomainSummary[],
-      deploymentsSummary: sourceDeploys as import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary[],
+      tenant: sourceTenant as import('@insula/api-contracts').BackupMetaTenant,
+      domainsSummary: sourceDomains as import('@insula/api-contracts').BackupMetaDomainSummary[],
+      deploymentsSummary: sourceDeploys as import('@insula/api-contracts').BackupMetaDeploymentSummary[],
     };
     await store.putMeta(handle, importMeta);
 
@@ -1318,8 +1318,8 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         subscriptionExpiresAt: overrides.subscription_expires_at ?? null,
         counts: { mailboxes: 0, domains: 0, deployments: 0 }, // restore-cart will fill these
       },
-      domainsSummary: [...((sourceMeta.domainsSummary as Array<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary> | undefined) ?? [])],
-      deploymentsSummary: [...((sourceMeta.deploymentsSummary as Array<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary> | undefined) ?? [])],
+      domainsSummary: [...((sourceMeta.domainsSummary as Array<import('@insula/api-contracts').BackupMetaDomainSummary> | undefined) ?? [])],
+      deploymentsSummary: [...((sourceMeta.deploymentsSummary as Array<import('@insula/api-contracts').BackupMetaDeploymentSummary> | undefined) ?? [])],
     };
     await store.putMeta(handle, importMeta);
 
@@ -1697,7 +1697,7 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
  */
 function toBundleSummary(
   j: typeof backupJobs.$inferSelect,
-  tenant: { status: import('@k8s-hosting/api-contracts').BundleTenantStatus; name: string | null },
+  tenant: { status: import('@insula/api-contracts').BundleTenantStatus; name: string | null },
 ): BundleSummary {
   return {
     id: j.id,
@@ -1731,7 +1731,7 @@ function toBundleSummary(
  */
 export function tenantRowToBundleStatus(
   status: string | null | undefined,
-): import('@k8s-hosting/api-contracts').BundleTenantStatus {
+): import('@insula/api-contracts').BundleTenantStatus {
   if (!status) return 'missing';
   if (status === 'archived') return 'archived';
   if (status === 'suspended') return 'suspended';

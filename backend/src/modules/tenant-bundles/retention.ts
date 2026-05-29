@@ -29,7 +29,7 @@ import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { finishByRef as finishTaskByRef } from '../tasks/service.js';
 import { notifyUser } from '../notifications/service.js';
-import { toSafeText } from '@k8s-hosting/api-contracts';
+import { toSafeText } from '@insula/api-contracts';
 import { reapStaleInFlight } from './cluster-concurrency.js';
 
 // Lowered from the legacy 24h to 1h: the restic capture path's

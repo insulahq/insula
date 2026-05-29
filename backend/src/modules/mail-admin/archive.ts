@@ -73,7 +73,7 @@ import {
   mailArchiveRunSchema,
   mailArchiveStatusResponseSchema,
   toSafeText,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as taskCenter from '../tasks/service.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;

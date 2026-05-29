@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ClusterNodeResponse } from '@k8s-hosting/api-contracts';
+import type { ClusterNodeResponse } from '@insula/api-contracts';
 import type { NodeSubsystemReport } from '@/hooks/use-cluster-health';
 import ClusterNodes from '../pages/ClusterNodes';
 

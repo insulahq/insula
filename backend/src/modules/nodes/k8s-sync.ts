@@ -11,7 +11,7 @@ import {
 } from './service.js';
 import { getSettings } from '../system-settings/service.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
-import type { NodeRole, NodeIngressMode } from '@k8s-hosting/api-contracts';
+import type { NodeRole, NodeIngressMode } from '@insula/api-contracts';
 
 interface NodeUsageAggregate {
   pods: number;

@@ -3,7 +3,7 @@ import { AlertTriangle, RotateCcw, X, Loader2, CheckCircle2, ChevronDown, Extern
 import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
 import { useMailDrift, useDismissMailDrift, useRecreateMailDriftEmpty } from '@/hooks/use-mail-drift';
-import type { MailDriftItem } from '@k8s-hosting/api-contracts';
+import type { MailDriftItem } from '@insula/api-contracts';
 
 /**
  * Email → Data Drift.

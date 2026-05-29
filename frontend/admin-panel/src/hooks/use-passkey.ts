@@ -4,7 +4,7 @@ import {
   startAuthentication,
   browserSupportsWebAuthn,
 } from '@simplewebauthn/browser';
-import type { PasskeySummary, PasskeyMode } from '@k8s-hosting/api-contracts';
+import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 const PANEL = 'admin' as const;

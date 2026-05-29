@@ -24,7 +24,7 @@ import {
   type ListAllowlistResponse,
   type ListDrDrillRunsResponse,
   type DrDrillSummaryResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import {
   createSecretsBundleExport,
   readManifest,

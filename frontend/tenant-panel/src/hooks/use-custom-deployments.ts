@@ -10,7 +10,7 @@ import type {
   PullCredentialResponse,
   SubmitPullCredentialInput,
   CustomDeploymentSpec,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Server response row for a custom deployment. The backend's

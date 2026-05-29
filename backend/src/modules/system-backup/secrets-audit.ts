@@ -37,7 +37,7 @@ import {
   type AuditedSecret,
   type SecretCoverageCategory,
   type SecretsAuditResult,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isAutoManaged } from './secrets-denylist.js';

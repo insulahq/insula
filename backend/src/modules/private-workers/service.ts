@@ -28,7 +28,7 @@ import type {
   PrivateWorkerResponse,
   PrivateWorkerSecretResponse,
   UpdatePrivateWorkerInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 

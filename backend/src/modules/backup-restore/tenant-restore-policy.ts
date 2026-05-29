@@ -19,7 +19,7 @@
  * simpler and auditable.
  */
 
-import type { RestoreItemPayload, RestoreItemType } from '@k8s-hosting/api-contracts';
+import type { RestoreItemPayload, RestoreItemType } from '@insula/api-contracts';
 
 export interface TenantRestorePolicy {
   /** Item types tenants may submit to a cart. */

@@ -25,7 +25,7 @@ import type {
   NotificationTemplateResponse,
   NotificationTemplateVariable,
   NotificationBodyFormat,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { ApiError } from '../../../shared/errors.js';
 
 export interface RenderTemplateOptions {

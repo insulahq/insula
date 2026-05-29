@@ -15,7 +15,7 @@ import type {
   BarmanRestoreDeleteResponse,
   BarmanPromoteAccepted,
   BarmanPromoteRequest,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface Envelope<T> { readonly data: T; }
 

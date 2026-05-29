@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   DeploymentNetworkAccessInput,
   DeploymentNetworkAccessResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface ApiEnvelope<T> {
   readonly data: T;

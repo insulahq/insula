@@ -20,7 +20,7 @@ import { getPool } from '../../db/index.js';
 import {
   clearTasksRequestSchema,
   taskSseEventSchema,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import * as service from './service.js';
 
 interface JwtPayload {

@@ -21,7 +21,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Archive, Cloud, HardDrive } from 'lucide-react';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
-import type { BackupShimClass } from '@k8s-hosting/api-contracts';
+import type { BackupShimClass } from '@insula/api-contracts';
 import BackupRoutingTab from './BackupRoutingTab';
 
 type TabId = 'snapshots' | 'backups' | 'routing';

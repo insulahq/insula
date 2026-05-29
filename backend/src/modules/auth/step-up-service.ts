@@ -3,7 +3,7 @@ import type { Database } from '../../db/index.js';
 import { users } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { verifyPassword } from './service.js';
-import type { StepUpMethod } from '@k8s-hosting/api-contracts';
+import type { StepUpMethod } from '@insula/api-contracts';
 
 // Default freshness window for any step-up-gated operation. 30 minutes
 // matches typical session-step-up windows in IAM products and gives

@@ -148,8 +148,8 @@ docker compose up -d          # Start MariaDB + Redis
 
 ```bash
 npm run dev -w backend                    # API on port 3000
-npm run dev -w @k8s-hosting/admin-panel   # Admin UI on port 5173
-npm run dev -w @k8s-hosting/tenant-panel  # Tenant UI on port 5174
+npm run dev -w @insula/admin-panel   # Admin UI on port 5173
+npm run dev -w @insula/tenant-panel  # Tenant UI on port 5174
 ```
 
 ### Testing
@@ -157,8 +157,8 @@ npm run dev -w @k8s-hosting/tenant-panel  # Tenant UI on port 5174
 ```bash
 npm run test -w backend                    # Backend unit tests
 npm run test:integration -w backend        # Integration tests (requires DB)
-npm run test -w @k8s-hosting/admin-panel   # Admin panel tests
-npm run test -w @k8s-hosting/tenant-panel  # Tenant panel tests
+npm run test -w @insula/admin-panel   # Admin panel tests
+npm run test -w @insula/tenant-panel  # Tenant panel tests
 ```
 
 ### Linting & Type Checking
@@ -166,8 +166,8 @@ npm run test -w @k8s-hosting/tenant-panel  # Tenant panel tests
 ```bash
 npm run lint -w backend
 npm run typecheck -w backend
-npm run lint -w @k8s-hosting/admin-panel
-npm run typecheck -w @k8s-hosting/admin-panel
+npm run lint -w @insula/admin-panel
+npm run typecheck -w @insula/admin-panel
 ```
 
 ## Environments

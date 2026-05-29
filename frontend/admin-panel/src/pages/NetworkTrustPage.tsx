@@ -36,7 +36,7 @@ import {
   useDeletePendingPeer,
   fetchBootstrapCommand,
 } from '@/hooks/use-cluster-network';
-import type { TrustedRange, PendingPeer, BootstrapCommandResponse } from '@k8s-hosting/api-contracts';
+import type { TrustedRange, PendingPeer, BootstrapCommandResponse } from '@insula/api-contracts';
 import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 
 type TabId = 'trusted-ranges' | 'pending-peers' | 'trusted-proxies';

@@ -4,7 +4,7 @@ import type {
   SubUser,
   SubUserRole,
   UpdateSubUserInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export type {
@@ -12,7 +12,7 @@ export type {
   CreateSubUserInput,
   SubUserRole,
   UpdateSubUserInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /**
  * Phase 5: admin panel hooks for managing a specific tenant's

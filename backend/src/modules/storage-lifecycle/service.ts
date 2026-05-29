@@ -64,7 +64,7 @@ interface ServiceCtx {
    * 'tenant_snapshot' at the routes layer for tenant-PVC operations.
    * Stamped on `storage_snapshots.backup_class` at row creation.
    */
-  readonly backupClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
+  readonly backupClass?: import('@insula/api-contracts').SnapshotClass;
 }
 
 async function mustGetTenant(db: Database, tenantId: string) {
@@ -165,7 +165,7 @@ async function mirrorOpToTaskTracker(db: Database, opId: string): Promise<void> 
   };
 
   const { start: startTask, finishByRef } = await import('../tasks/service.js');
-  const { toSafeText } = await import('@k8s-hosting/api-contracts');
+  const { toSafeText } = await import('@insula/api-contracts');
 
   if (taskStatus === 'running') {
     await startTask(db, {
@@ -1501,7 +1501,7 @@ async function resolveRestoreStore(
     return ctx.store;
   }
   const { resolveSnapshotStoreByTargetId } = await import('./snapshot-store.js');
-  const cls = snap.backupClass as import('@k8s-hosting/api-contracts').SnapshotClass;
+  const cls = snap.backupClass as import('@insula/api-contracts').SnapshotClass;
   // Phase 11: pass k8s ctx so CIFS-backed restore can do stat/delete/sidecar.
   const store = await resolveSnapshotStoreByTargetId(ctx.db, snap.targetId, cls, {
     k8sCtx: { k8s: ctx.k8s, namespace: ctx.platformNamespace },

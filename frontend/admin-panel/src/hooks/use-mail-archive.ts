@@ -10,7 +10,7 @@ import type {
   MailArchiveRestoreResponse,
   MailArchiveScheduleResponse,
   MailArchiveScheduleUpdate,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 const STATUS_KEY = ['mail', 'archive', 'status'] as const;
 const LIST_KEY = ['mail', 'archive', 'list'] as const;

@@ -17,7 +17,7 @@ import type {
   TestNotificationProviderInput,
   TestNotificationProviderResponse,
   UpdateNotificationProviderInput,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 type Row = typeof notificationProviders.$inferSelect;
 

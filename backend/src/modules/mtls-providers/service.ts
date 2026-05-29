@@ -37,7 +37,7 @@ import type {
   ListCertificatesQuery,
   ListCertificatesResponse,
   CrlMetadataResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 /** Defaults for CRL generation. CRL validity 7d strikes a balance between
  *  ingress re-fetch frequency and propagation latency for new revocations. */

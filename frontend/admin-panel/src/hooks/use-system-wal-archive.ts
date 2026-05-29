@@ -13,7 +13,7 @@ import type {
   WalStreamingDisableRequest,
   ScheduledBackupsEnableRequest,
   ScheduledBackupsDisableRequest,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 interface ApiEnv<T> { data: T }
 

@@ -6,7 +6,7 @@ import type {
   PrivateWorkerSecretResponse,
   PrivateWorkerListResponse,
   PrivateWorkerAuditListResponse,
-} from '@k8s-hosting/api-contracts';
+} from '@insula/api-contracts';
 
 // All envelopes follow the platform `{ data, error }` convention. The
 // list / audit endpoints already return their own `{ items: [...] }`

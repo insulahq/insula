@@ -20,16 +20,16 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # discipline as api-contracts to defeat stale Docker layer-cache
 # tsbuildinfo (feedback_api_contracts_build_force).
 COPY packages/ui-restore-cart/ ./packages/ui-restore-cart/
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:../api-contracts"|' packages/ui-restore-cart/package.json \
-    && grep -q '"@k8s-hosting/api-contracts": "file:../api-contracts"' packages/ui-restore-cart/package.json \
+RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:../api-contracts"|' packages/ui-restore-cart/package.json \
+    && grep -q '"@insula/api-contracts": "file:../api-contracts"' packages/ui-restore-cart/package.json \
     || { echo "ERROR: sed rewrite of ui-restore-cart api-contracts ref failed — package.json formatting drifted"; exit 1; }
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps && npx tsc --build --force
 
 # Build admin panel
 COPY frontend/admin-panel/package.json ./package.json
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
-RUN sed -i 's|"@k8s-hosting/ui-restore-cart": "\*"|"@k8s-hosting/ui-restore-cart": "file:./packages/ui-restore-cart"|' package.json
+RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:./packages/api-contracts"|' package.json
+RUN sed -i 's|"@insula/ui-restore-cart": "\*"|"@insula/ui-restore-cart": "file:./packages/ui-restore-cart"|' package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
 COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/postcss.config.js ./
