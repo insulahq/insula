@@ -66,9 +66,41 @@ fi
 # ── Run restic backup ────────────────────────────────────────────────────────
 
 echo "=== snapshot-upload: backing up $DATA_DIR ==="
+# 2026-05-29: EXTRA_RESTIC_TAGS is set by the migration state machine
+# (and any future manual triggers from the admin UI) to mark snapshots
+# with their purpose — e.g. `pre-migration` and `run=<id>`. Tokens are
+# space-separated; each becomes a separate restic `--tag` arg so the
+# UI at /backups/mail?tab=backups can render a distinguishing badge.
+# When unset (the every-two-min CronJob path), only the routine
+# `stalwart-snapshot` + `auto` tags are written.
+EXTRA_TAG_ARGS=""
+if [ -n "${EXTRA_RESTIC_TAGS:-}" ]; then
+  echo "=== snapshot-upload: adding extra tags from EXTRA_RESTIC_TAGS: $EXTRA_RESTIC_TAGS ==="
+  for tok in $EXTRA_RESTIC_TAGS; do
+    # Skip empty tokens defensively (double space, leading/trailing).
+    [ -z "$tok" ] && continue
+    # Defence-in-depth: reject any token containing characters outside
+    # the label-safe set [A-Za-z0-9._-]. The TypeScript caller
+    # (snapshot.ts:assertLabelSafe) ALREADY enforces this at the API
+    # boundary, but a missing/broken validator there must not become
+    # arbitrary shell execution here. `case` with a glob negation is
+    # POSIX-portable and avoids regex tooling differences across busybox
+    # / Alpine / Debian containers.
+    case "$tok" in
+      *[!A-Za-z0-9._-]*)
+        echo "  skipping token with unsafe chars: '$tok'" >&2
+        continue
+        ;;
+    esac
+    EXTRA_TAG_ARGS="$EXTRA_TAG_ARGS --tag $tok"
+  done
+fi
+
+# shellcheck disable=SC2086 # EXTRA_TAG_ARGS intentionally word-split
 restic backup \
   --tag "stalwart-snapshot" \
   --tag "auto" \
+  $EXTRA_TAG_ARGS \
   --hostname "stalwart-mail" \
   --exclude "LOCK" \
   "$DATA_DIR"
