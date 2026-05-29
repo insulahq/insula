@@ -4086,6 +4086,14 @@ spec:
     - patch: |
         - op: remove
           path: /spec/schedule
+          # /spec/suspend is owned by the platform-api mail-snapshot
+          # reconciler (suspended until a mail backup target is bound).
+          # Strip it too so Flux never re-suspends an operator-enabled
+          # job. Unlike schedule, suspend is optional (defaults false),
+          # so removing it never trips the apiserver required-field
+          # validation on a fresh bootstrap.
+        - op: remove
+          path: /spec/suspend
       target:
         group: batch
         version: v1

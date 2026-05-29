@@ -32,6 +32,7 @@ import { applyPatch } from '../../shared/k8s-patch.js';
 // and STRATEGIC_MERGE_PATCH does not claim SSA ownership).
 const CRON_SCHEDULE_FIELD_MANAGER = 'platform-api.snapshot-settings';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { DEFAULT_MAIL_SNAPSHOT_SCHEDULE } from './snapshot-cronjob-reconciler.js';
 import {
   type MailSnapshotScheduleResponse,
   type MailSnapshotScheduleUpdate,
@@ -115,7 +116,7 @@ export async function getMailSnapshotSchedule(
       namespace: MAIL_NAMESPACE,
       name: SNAPSHOT_CRONJOB_NAME,
     }) as { spec?: { schedule?: string } };
-    const scheduleExpression = cronJob.spec?.schedule ?? '*/2 * * * *';
+    const scheduleExpression = cronJob.spec?.schedule ?? DEFAULT_MAIL_SNAPSHOT_SCHEDULE;
     return mailSnapshotScheduleResponseSchema.parse({ scheduleExpression });
   } catch {
     // CronJob absent or k8s unavailable — fall back to DB.
@@ -124,7 +125,7 @@ export async function getMailSnapshotSchedule(
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
   return mailSnapshotScheduleResponseSchema.parse({
-    scheduleExpression: row?.v ?? '*/2 * * * *',
+    scheduleExpression: row?.v ?? DEFAULT_MAIL_SNAPSHOT_SCHEDULE,
   });
 }
 
