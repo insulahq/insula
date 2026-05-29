@@ -171,33 +171,33 @@ hdr "Insert restore-target markers (WITH_WAL=${WITH_WAL:-0})"
 
 # Helper: force WAL flush so a freshly-inserted row is in archived WAL.
 flush_wal() {
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"SELECT pg_switch_wal();\"" >/dev/null 2>&1 || true
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"SELECT pg_switch_wal();\"" >/dev/null 2>&1 || true
 }
 
 MARKER_VALUE="e2e_pitr_$(date +%s)"
 if [[ "${WITH_WAL:-0}" == "1" ]]; then
   # Marker A: must be in WAL BEFORE target time.
   MARKER_A_VALUE="${MARKER_VALUE}_A"
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker_a', '$MARKER_A_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker_a', '$MARKER_A_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
   flush_wal
   pass "marker A '$MARKER_A_VALUE' inserted + WAL flushed"
 
   # Capture target time AFTER A's WAL is durable. Use postgres NOW()
   # to avoid clock-skew between harness host + cluster node.
   sleep 3
-  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
+  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
   info "recoveryTargetTime captured: $RECOVERY_TARGET_TIME"
 
   # Marker B: must be in WAL AFTER target time.
   sleep 3
   MARKER_B_VALUE="${MARKER_VALUE}_B"
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker_b', '$MARKER_B_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker_b', '$MARKER_B_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
   flush_wal
   pass "marker B '$MARKER_B_VALUE' inserted POST-target + WAL flushed"
 else
   # Default mode: single marker, will be GONE after restore-to-snapshot.
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
-  VERIFY_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker';\"")
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  VERIFY_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker';\"")
   if [[ "$VERIFY_MARKER" != "$MARKER_VALUE" ]]; then
     fail "marker insert verification failed (got: $VERIFY_MARKER)"
     exit 1
@@ -289,7 +289,7 @@ done
 # When it's null, the temp-cluster step MUST be SKIPPED. The /status
 # endpoint accumulates steps over time so check the chip's persisted
 # details for the final answer.
-CHIP_STEPS_RAW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT details->'steps' FROM tasks WHERE ref_id='$JOB_NAME';\"" 2>&1 || echo '')
+CHIP_STEPS_RAW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT details->'steps' FROM tasks WHERE ref_id='$JOB_NAME';\"" 2>&1 || echo '')
 if [[ "${WITH_WAL:-0}" == "1" ]]; then
   if printf '%s' "$CHIP_STEPS_RAW" | grep -q 'SKIPPED'; then
     fail "WAL mode took the fast-path (SKIPPED) — slow-path required for WAL replay"
@@ -337,8 +337,8 @@ pass "Cluster healthy at $POST_READY instance(s)"
 hdr "Marker assertions (WITH_WAL=${WITH_WAL:-0})"
 NEW_PRIMARY=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $CLUSTER_NAME -o jsonpath='{.status.currentPrimary}'")
 if [[ "${WITH_WAL:-0}" == "1" ]]; then
-  MARKER_A_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker_a'), 'GONE');\"" 2>/dev/null || echo 'GONE')
-  MARKER_B_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker_b'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  MARKER_A_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker_a'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  MARKER_B_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker_b'), 'GONE');\"" 2>/dev/null || echo 'GONE')
   info "marker A (pre-target): $MARKER_A_AFTER"
   info "marker B (post-target): $MARKER_B_AFTER"
   if [[ "$MARKER_A_AFTER" == "$MARKER_A_VALUE" ]]; then
@@ -352,7 +352,7 @@ if [[ "${WITH_WAL:-0}" == "1" ]]; then
     fail "marker B PRESENT — WAL replayed BEYOND target time"
   fi
 else
-  MARKER_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  MARKER_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
   info "marker after restore: '$MARKER_AFTER'"
   if [[ "$MARKER_AFTER" == "GONE" ]] || [[ "$MARKER_AFTER" != "$MARKER_VALUE" ]]; then
     pass "marker is gone — snapshot LSN restored correctly"
@@ -382,7 +382,7 @@ fi
 
 # ─── Task-center chip — terminal + steps persisted ───────────────────
 hdr "Task-center chip persistence (modal-reopen must show history)"
-CHIP_ROW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -F'|' -c \"SELECT status, jsonb_array_length(COALESCE(details->'steps', '[]'::jsonb)), details->>'mode', details->>'finishedAtIso' FROM tasks WHERE ref_id='$JOB_NAME';\"")
+CHIP_ROW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -F'|' -c \"SELECT status, jsonb_array_length(COALESCE(details->'steps', '[]'::jsonb)), details->>'mode', details->>'finishedAtIso' FROM tasks WHERE ref_id='$JOB_NAME';\"")
 info "chip row: $CHIP_ROW"
 CHIP_STATUS=$(printf '%s' "$CHIP_ROW" | awk -F'|' '{print $1}')
 CHIP_STEPS_LEN=$(printf '%s' "$CHIP_ROW" | awk -F'|' '{print $2}')
@@ -412,7 +412,7 @@ fi
 
 # ─── PITR lock cleared ───────────────────────────────────────────────
 hdr "PITR lock cleared"
-LOCK_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COUNT(*) FROM platform_settings WHERE setting_key='pg_pitr_in_progress';\"")
+LOCK_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $NEW_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COUNT(*) FROM platform_settings WHERE setting_key='pg_pitr_in_progress';\"")
 if [[ "$LOCK_AFTER" == "0" ]]; then
   pass "PITR lock cleared"
 else

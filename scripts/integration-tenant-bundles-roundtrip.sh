@@ -87,7 +87,7 @@ parse() {
 # Run a SQL command on staging system-db, return TSV row dump.
 psql_cmd() {
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$STAGING_NODE" \
-    "kubectl exec -n platform system-db-1 -c postgres -- psql -tAU postgres -d hosting_platform -c \"$1\""
+    "kubectl exec -n platform system-db-1 -c postgres -- psql -tAU postgres -d platform -c \"$1\""
 }
 
 # Wait for a bundle to reach a terminal state. Sets BUNDLE_STATUS.

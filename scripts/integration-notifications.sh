@@ -65,7 +65,7 @@ PHASES="${PHASES:-A,B,C,D,E,F,G,H,I,J,K}"
 
 # Use kubectl-via-docker to talk to the API service inside k3s.
 kx() { docker exec "$K3S_CONTAINER" kubectl -n platform "$@"; }
-psql_ro() { kx exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "$@"; }
+psql_ro() { kx exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "$@"; }
 
 pass_count=0
 fail_count=0

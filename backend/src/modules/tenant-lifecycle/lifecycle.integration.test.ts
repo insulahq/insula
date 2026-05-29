@@ -13,7 +13,7 @@
  *   ./scripts/local.sh up
  *   cd backend
  *   RUN_LIFECYCLE_INTEGRATION=1 \
- *   DATABASE_URL=postgresql://platform:local-dev-password@postgres.k8s-platform.test:2013/hosting_platform \
+ *   DATABASE_URL=postgresql://platform:local-dev-password@postgres.k8s-platform.test:2013/platform \
  *     npx vitest run src/modules/tenant-lifecycle/lifecycle.integration.test.ts
  *
  * The test creates a uniquely-named tenant, runs the full state

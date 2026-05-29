@@ -131,24 +131,24 @@ pass "catalogue has $(printf '%s' "$CAT_BODY" | grep -o '"backupId"' | wc -l) ba
 # WAL mode = two markers wrapping recoveryTargetTime; pg_switch_wal
 # forces a fresh WAL segment so the markers reach the offsite archive.
 flush_wal() {
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"SELECT pg_switch_wal();\"" >/dev/null 2>&1 || true
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"SELECT pg_switch_wal();\"" >/dev/null 2>&1 || true
 }
 
 MARKER_VALUE="e2e_barman_$(date +%s)"
 if [[ "${WITH_WAL:-0}" == "1" ]]; then
   # Marker A: pre-target
   MARKER_A_VALUE="${MARKER_VALUE}_A"
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker_a', '$MARKER_A_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker_a', '$MARKER_A_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
   flush_wal
   info "marker A '$MARKER_A_VALUE' inserted + WAL flushed"
 
   sleep 5
-  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
+  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
   info "recoveryTargetTime captured: $RECOVERY_TARGET_TIME"
 
   sleep 5
   MARKER_B_VALUE="${MARKER_VALUE}_B"
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker_b', '$MARKER_B_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker_b', '$MARKER_B_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
   flush_wal
   info "marker B '$MARKER_B_VALUE' inserted POST-target + WAL flushed"
 
@@ -156,7 +156,7 @@ if [[ "${WITH_WAL:-0}" == "1" ]]; then
   # CNPG's barman archiver runs every few seconds; give it time.
   sleep 10
 else
-  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
   info "marker '$MARKER_VALUE' inserted in source (POST-barman-backup)"
 fi
 
@@ -195,8 +195,8 @@ pass "$NEW_NAME healthy after ${i} polls (~$((i*15))s)"
 
 # Verify restored data matches the expected point-in-time.
 if [[ "${WITH_WAL:-0}" == "1" ]]; then
-  RESTORED_A=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker_a'), 'GONE');\"" 2>/dev/null || echo 'GONE')
-  RESTORED_B=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker_b'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  RESTORED_A=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker_a'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  RESTORED_B=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker_b'), 'GONE');\"" 2>/dev/null || echo 'GONE')
   info "restored A (pre-target): $RESTORED_A"
   info "restored B (post-target): $RESTORED_B"
   if [[ "$RESTORED_A" == "$MARKER_A_VALUE" ]]; then
@@ -210,7 +210,7 @@ if [[ "${WITH_WAL:-0}" == "1" ]]; then
     fail "marker B PRESENT — WAL replayed BEYOND target time"
   fi
 else
-  RESTORED_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+  RESTORED_MARKER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i ${NEW_NAME}-1 -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
   if [[ "$RESTORED_MARKER" == "GONE" ]] || [[ "$RESTORED_MARKER" != "$MARKER_VALUE" ]]; then
     pass "restored cluster does NOT have post-archive marker — bootstrapped from barman correctly"
   else
@@ -321,7 +321,7 @@ fi
 pass "source healthy at $POST_READY instance(s) (primary=$POST_PRIMARY)"
 
 # Marker must be gone — source now has the barman data.
-MARKER_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
+MARKER_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='e2e_barman_marker'), 'GONE');\"" 2>/dev/null || echo 'GONE')
 if [[ "$MARKER_AFTER" == "GONE" ]] || [[ "$MARKER_AFTER" != "$MARKER_VALUE" ]]; then
   pass "source marker gone — cutover replaced source data with barman archive"
 else
@@ -348,7 +348,7 @@ fi
 
 # ─── Task-center chip persistence (barman-promote modal reopen) ──────
 hdr "Task-center chip persistence for promote"
-CHIP_ROW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -F'|' -c \"SELECT status, jsonb_array_length(COALESCE(details->'steps', '[]'::jsonb)), details->>'mode' FROM tasks WHERE ref_id='$PROMOTE_JOB';\"")
+CHIP_ROW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -F'|' -c \"SELECT status, jsonb_array_length(COALESCE(details->'steps', '[]'::jsonb)), details->>'mode' FROM tasks WHERE ref_id='$PROMOTE_JOB';\"")
 info "chip row: $CHIP_ROW"
 CHIP_STATUS=$(printf '%s' "$CHIP_ROW" | awk -F'|' '{print $1}')
 CHIP_STEPS_LEN=$(printf '%s' "$CHIP_ROW" | awk -F'|' '{print $2}')
@@ -371,7 +371,7 @@ fi
 
 # ─── PITR lock cleared ───────────────────────────────────────────────
 hdr "PITR lock cleared"
-LOCK_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d hosting_platform -t -A -c \"SELECT COUNT(*) FROM platform_settings WHERE setting_key='pg_pitr_in_progress';\"")
+LOCK_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COUNT(*) FROM platform_settings WHERE setting_key='pg_pitr_in_progress';\"")
 if [[ "$LOCK_AFTER" == "0" ]]; then
   pass "PITR lock cleared"
 else

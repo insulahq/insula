@@ -4237,7 +4237,7 @@ generate_platform_secrets() {
       --namespace=platform \
       --from-literal=username="platform" \
       --from-literal=password="$db_password" \
-      --from-literal=url="postgresql://platform:${db_password}@postgres.platform.svc.cluster.local:5432/hosting_platform"
+      --from-literal=url="postgresql://platform:${db_password}@postgres.platform.svc.cluster.local:5432/platform"
     log "DB credentials secret created (username + password + url)."
   fi
 

@@ -139,13 +139,13 @@ if [[ -z "$PG_POD" ]]; then
 fi
 
 # DB user/db name conventions are stable: hardcoded in
-# k8s/base/database.yaml (CNPG initdb owner=platform, db=hosting_platform)
+# k8s/base/database.yaml (CNPG initdb owner=platform, db=platform)
 # and in pre-CNPG StatefulSet env. Read from the secret as the
 # single source of truth instead of inspecting the workload.
 PG_USER=$(kubectl -n "$PLATFORM_NS" get secret platform-db-credentials \
   -o jsonpath='{.data.username}' 2>/dev/null | base64 -d || true)
 PG_USER="${PG_USER:-platform}"
-PG_DB="${PLATFORM_DB:-hosting_platform}"
+PG_DB="${PLATFORM_DB:-platform}"
 if [[ -z "$PG_USER" ]]; then
   echo "ERROR: could not derive postgres username (Secret platform-db-credentials.username missing)" >&2
   exit 1
