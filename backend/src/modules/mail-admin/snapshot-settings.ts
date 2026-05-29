@@ -22,7 +22,15 @@ import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { systemSettings, backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { applyPatch } from '../../shared/k8s-patch.js';
+
+// Stable fieldManager — claims SSA ownership of spec.schedule so that
+// Flux's `kustomize.toolkit.fluxcd.io/ssa: merge` reconciler stops
+// reverting operator schedules back to the manifest default
+// (2026-05-29 — the operator-set "*/10" silently regressed to "*/2"
+// on every Flux reconcile because the manifest declares the field
+// and STRATEGIC_MERGE_PATCH does not claim SSA ownership).
+const CRON_SCHEDULE_FIELD_MANAGER = 'platform-api.snapshot-settings';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import {
   type MailSnapshotScheduleResponse,
@@ -136,9 +144,16 @@ export async function updateMailSnapshotSchedule(
       {
         namespace: MAIL_NAMESPACE,
         name: SNAPSHOT_CRONJOB_NAME,
-        body: { spec: { schedule: update.scheduleExpression } },
+        // Apply-patch body must include apiVersion + kind so the
+        // apiserver can resolve the GVK during SSA.
+        body: {
+          apiVersion: 'batch/v1',
+          kind: 'CronJob',
+          metadata: { name: SNAPSHOT_CRONJOB_NAME, namespace: MAIL_NAMESPACE },
+          spec: { schedule: update.scheduleExpression },
+        },
       } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
-      STRATEGIC_MERGE_PATCH,
+      applyPatch(CRON_SCHEDULE_FIELD_MANAGER, { force: true }),
     );
   } catch (err) {
     throw new ApiError(
@@ -432,9 +447,14 @@ export async function applyMailSnapshotRetention(
         {
           namespace: MAIL_NAMESPACE,
           name: SNAPSHOT_CRONJOB_NAME,
-          body: { spec: { schedule: cronExpression } },
+          body: {
+            apiVersion: 'batch/v1',
+            kind: 'CronJob',
+            metadata: { name: SNAPSHOT_CRONJOB_NAME, namespace: MAIL_NAMESPACE },
+            spec: { schedule: cronExpression },
+          },
         } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
-        STRATEGIC_MERGE_PATCH,
+        applyPatch(CRON_SCHEDULE_FIELD_MANAGER, { force: true }),
       );
     } catch (err) {
       // Don't fail the whole reconcile if the schedule patch fails —

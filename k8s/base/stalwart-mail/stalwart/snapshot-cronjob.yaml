@@ -44,6 +44,14 @@ metadata:
   annotations:
     # backup-coverage: excluded:cluster-infrastructure
     ttlSecondsAfterFinished: "3600"
+    # 2026-05-29: Flux SSA must MERGE, not REPLACE, so platform-api can
+    # own spec.schedule. Without this, operator-set schedules via
+    # /backups/mail?tab=routing were silently reverted to "*/2 * * * *"
+    # on every Flux reconcile (~5-10 min). The applyMailSnapshotRetention
+    # reconciler patches schedule from backup_schedules.cron_expression;
+    # under SSA Merge Flux now keeps the labels/template, but the
+    # platform-api manager owns spec.schedule and Flux won't revert it.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   schedule: "*/2 * * * *"
   concurrencyPolicy: Forbid
