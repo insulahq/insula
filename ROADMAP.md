@@ -134,7 +134,7 @@ layer for forks.
 - [ ] **CI fork-safety**: audit `.github/workflows/*.yml` for hardcoded
       `insulahq` strings (build-deploy.yml already uses
       `${{ github.repository_owner }}` — confirm). Add
-      `if: github.repository == 'insulahq/hosting-platform'` guards to
+      `if: github.repository == 'insulahq/insula'` guards to
       sync-staging.yml and any workflow that pushes to upstream
       infrastructure.
 - [ ] **PR-from-fork CI must run tests + lints WITHOUT push secrets**.

@@ -77,14 +77,14 @@ docs/                     # Architecture docs, ADRs, specs
 SSH into a fresh **Debian 12+** or **Ubuntu 22.04+** server and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/insulahq/k8s-hosting-platform/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/insulahq/insula/main/scripts/bootstrap.sh | bash
 ```
 
 Or clone first:
 
 ```bash
 git clone https://github.com/insulahq/insula.git
-cd k8s-hosting-platform
+cd insula
 ./scripts/bootstrap.sh
 ```
 
@@ -139,7 +139,7 @@ kubectl get nodes
 
 ```bash
 git clone https://github.com/insulahq/insula.git
-cd k8s-hosting-platform
+cd insula
 npm install
 docker compose up -d          # Start MariaDB + Redis
 ```
@@ -215,7 +215,7 @@ For infrastructure validation, integration testing, and pre-production E2E. Runs
 
 ```bash
 # Bootstrap a fresh server
-curl -fsSL https://raw.githubusercontent.com/insulahq/k8s-hosting-platform/main/scripts/bootstrap.sh | bash -s -- --env dev --skip-monitoring
+curl -fsSL https://raw.githubusercontent.com/insulahq/insula/main/scripts/bootstrap.sh | bash -s -- --env dev --skip-monitoring
 
 # Or after cloning:
 ./scripts/bootstrap.sh --env dev --skip-monitoring

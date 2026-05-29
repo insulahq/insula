@@ -83,7 +83,7 @@
 | ~~R5~~ | ~~Soften strict-gate; per-subsystem degradation badges~~ **OBSOLETE** — shim eliminates degradation states entirely | ~~4~~ 0 | n/a |
 | R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI affordance; global quotas | 6 | M |
 | **R-X0** | **Correct prior misleading docs commit** — follow-up commit flipping ADR-043 from WITHDRAWN → ACCEPTED-EXTENDED, rewriting §12/§13 for the shim path | 2 | L |
-| **R-X1** | **`backup-rclone` image** — alpine 3.20 + rclone v1.68.2 + tini; multi-arch; cosign-signed; `ghcr.io/insulahq/backup-rclone:<sha>` pinned by digest. ~25 MiB | 3 | L |
+| **R-X1** | **`backup-rclone` image** — alpine 3.20 + rclone v1.68.2 + tini; multi-arch; cosign-signed; `ghcr.io/insulahq/insula/backup-rclone:<sha>` pinned by digest. ~25 MiB | 3 | L |
 | **R-X2** | **`BACKUP_TARGET_KEY` lifecycle** — `bootstrap.sh` generates 32-byte key on first boot; Tier-1 in secrets bundle. `make backup-target-key-rotate` with 3-step confirm | 4 | M |
 | **R-X3** | **Shim DaemonSet manifests** — DaemonSet, Service (`internalTrafficPolicy: Local`), cert-manager Certificate, NetworkPolicy, PDB. Includes `smb.csi.k8s.io` driver install for CIFS support | 5 | L |
 | **R-X4** | **Multi-bucket config renderer + target schema** — supports S3 / SFTP / CIFS / NFS target rows; emits rclone.conf with per-class crypt + raw buckets; CIFS/NFS render as Pod-volume mounts + `type=local` | 7 | M |

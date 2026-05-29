@@ -155,7 +155,7 @@ The official catalog is `https://github.com/insulahq/application-catalog`. Image
 4. Unique constraint `(code, source_repo_id)` prevents collisions across repos
 5. Manual sync: `POST /api/v1/admin/workload-repos/:id/sync`; automatic sync on configured interval (default: 60 min)
 
-**Default catalog:** `https://github.com/insulahq/hosting-platform-workload-catalog`
+**Default catalog:** none pre-registered — operators add a workload catalog repo via the admin panel.
 
 ### Image Build Pipeline
 
