@@ -12,10 +12,14 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
 
 # Build the shared restore-cart UI workspace (packages/ui-restore-cart).
-# BundleProgressModal imports shared types from here.
+# Depends on api-contracts via a workspace ref ("*") which we rewrite to
+# a file: URL pointing at the sibling dir built above.
 COPY packages/ui-restore-cart/ ./packages/ui-restore-cart/
+RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:../api-contracts"|' packages/ui-restore-cart/package.json \
+    && grep -q '"@k8s-hosting/api-contracts": "file:../api-contracts"' packages/ui-restore-cart/package.json \
+    || { echo "ERROR: sed rewrite of ui-restore-cart api-contracts ref failed — package.json formatting drifted"; exit 1; }
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
+    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps && npx tsc --build --force
 
 # Build client panel
 COPY frontend/tenant-panel/package.json ./package.json

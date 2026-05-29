@@ -15,7 +15,19 @@
     "build": "tsc --build --force",
     "clean": "rm -rf dist"
   },
+  "dependencies": {
+    "@k8s-hosting/api-contracts": "*"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "lucide-react": "*",
+    "react": "^19.0.0"
+  },
   "devDependencies": {
+    "@tanstack/react-query": "^5.99.2",
+    "@types/react": "^19.0.0",
+    "lucide-react": "1.8",
+    "react": "^19.0.0",
     "typescript": "^6.0.3"
   }
 }
