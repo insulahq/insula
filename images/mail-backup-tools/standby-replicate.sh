@@ -2,7 +2,7 @@
 # standby-replicate.sh — pre-stages the latest mail data on standby
 # nodes so failover can promote a node WITHOUT paying restore latency
 # at takeover time. Runs as the DaemonSet `mail-stack-standby-replicate`
-# on every node labelled `platform.example.test/mail-standby=true`.
+# on every node labelled `insula.host/mail-standby=true`.
 #
 # A5 (2026-05-25): switched from restic restore to **rsync pull** from
 # the in-cluster mail-stack-rsyncd Service (sidecar on the active

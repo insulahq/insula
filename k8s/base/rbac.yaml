@@ -296,7 +296,7 @@ rules:
   # short-lived (TTL-enforced by the reconciler) so platform-api needs
   # only get/list/create/patch/delete (no /status — the reconciler
   # owns status and has its own service account).
-  - apiGroups: ["networking.platform.example.test"]
+  - apiGroups: ["networking.insula.host"]
     resources: ["clustertrustedranges", "clusterpendingpeers"]
     verbs: ["get", "list", "create", "patch", "delete"]
 ---

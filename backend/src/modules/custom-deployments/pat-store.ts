@@ -238,8 +238,8 @@ export async function materializePullSecret(
       name,
       namespace,
       labels: {
-        'platform.example.test/deployment-id': deploymentId,
-        'platform.example.test/owner': 'custom-deployments',
+        'insula.host/deployment-id': deploymentId,
+        'insula.host/owner': 'custom-deployments',
       },
     },
     type: 'kubernetes.io/dockerconfigjson',

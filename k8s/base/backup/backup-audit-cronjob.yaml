@@ -2,7 +2,7 @@
 # Warning event for every Longhorn PVC missing the
 # recurring-job-group.longhorn.io/default=enabled label — UNLESS the
 # PVC carries the opt-out annotation
-# platform.example.test/backup-excluded=true.
+# insula.host/backup-excluded=true.
 #
 # This closes the silent-footgun: without this, a tenant PVC provisioned
 # outside the backend path (kubectl apply, operator mistake) would be
@@ -60,12 +60,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-audit
-    platform.example.test/backup-health-watch: "true"
-    platform.example.test/backup-category: "audit"
-    platform.example.test/backup-severity: "warning"
-    platform.example.test/depends-on: "backup-credentials"
+    insula.host/backup-health-watch: "true"
+    insula.host/backup-category: "audit"
+    insula.host/backup-severity: "warning"
+    insula.host/depends-on: "backup-credentials"
   annotations:
-    platform.example.test/backup-display-name: "Backup coverage audit"
+    insula.host/backup-display-name: "Backup coverage audit"
 spec:
   # Suspended by default. The audit checks whether Longhorn PVCs carry
   # the backup-group label — pointless when no backup target is active.
@@ -99,7 +99,7 @@ spec:
                     | jq -r '.items[]
                              | select(.spec.storageClassName=="longhorn")
                              | select((.metadata.labels["recurring-job-group.longhorn.io/default"] // "") != "enabled")
-                             | select((.metadata.annotations["platform.example.test/backup-excluded"] // "false") != "true")
+                             | select((.metadata.annotations["insula.host/backup-excluded"] // "false") != "true")
                              | [.metadata.namespace, .metadata.name] | @tsv')
                   if [ -z "$${MISSING}" ]; then
                     echo "[backup-audit] all Longhorn PVCs are covered"
@@ -109,7 +109,7 @@ spec:
                     [ -z "$ns" ] && continue
                     echo "[backup-audit] UNLABELED: $${ns}/$${name}"
                     UID=$(kubectl get pvc "$name" -n "$ns" -o jsonpath='{.metadata.uid}')
-                    MESSAGE="PVC $${ns}/$${name} is not in the Longhorn default recurring-job group. Backups will skip it. Run scripts/apply-backup-labels.sh or add platform.example.test/backup-excluded=true to suppress."
+                    MESSAGE="PVC $${ns}/$${name} is not in the Longhorn default recurring-job group. Backups will skip it. Run scripts/apply-backup-labels.sh or add insula.host/backup-excluded=true to suppress."
                     kubectl create -f - <<EOF
                     apiVersion: v1
                     kind: Event

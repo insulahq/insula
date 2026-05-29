@@ -73,7 +73,7 @@ export interface CatalogueBackup {
   readonly parseError: string | null;
   /**
    * Phase 7b (2026-05-24): operator-supplied description from the
-   * matching Backup CR's `platform.example.test/description`
+   * matching Backup CR's `insula.host/description`
    * label. Null when label absent.
    */
   description?: string | null;
@@ -443,12 +443,12 @@ export async function listBackupsFromObjectStore(
         const annotations = item.metadata?.annotations ?? {};
         // Prefer annotation (no charset/length restriction); fall back
         // to label for back-compat with pre-Phase-7c-fix backups.
-        const description = annotations['platform.example.test/description']
-          ?? labels['platform.example.test/description']
+        const description = annotations['insula.host/description']
+          ?? labels['insula.host/description']
           ?? null;
         let kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' = 'unknown';
-        if (labels['platform.example.test/on-demand'] === 'true') kind = 'on-demand';
-        else if (labels['platform.example.test/barman-pre-restore'] === 'true') kind = 'pre-restore';
+        if (labels['insula.host/on-demand'] === 'true') kind = 'on-demand';
+        else if (labels['insula.host/barman-pre-restore'] === 'true') kind = 'pre-restore';
         else if ((item.metadata?.ownerReferences ?? []).some((o) => o.kind === 'ScheduledBackup')) kind = 'scheduled';
         return [[backupId, { kind, description }] as const];
       }));

@@ -98,7 +98,7 @@ for overlay in "${OVERLAYS[@]}"; do
       | .spec.template.spec.affinity.nodeAffinity
           .requiredDuringSchedulingIgnoredDuringExecution
           .nodeSelectorTerms[0].matchExpressions[]
-      | select(.key == \"platform.example.test/node-role\")
+      | select(.key == \"insula.host/node-role\")
       | .values[0]
     " - | head -n1)
 
@@ -129,7 +129,7 @@ for overlay in "${OVERLAYS[@]}"; do
         and .metadata.name == \"$name\"
         and (.metadata.namespace // \"default\") == \"$ns\"
       )
-      | .spec.affinity.nodeSelector[\"platform.example.test/node-role\"]
+      | .spec.affinity.nodeSelector[\"insula.host/node-role\"]
     " - | head -n1)
 
     if [[ "$value" == "server" ]]; then

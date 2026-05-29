@@ -55,7 +55,7 @@ function makeK8sMock(opts: {
   const nodes = (opts.nodes ?? []).map((n) => ({
     metadata: {
       name: n.name,
-      labels: { 'platform.example.test/node-role': n.role },
+      labels: { 'insula.host/node-role': n.role },
     },
     status: {
       conditions: [{ type: 'Ready', status: n.ready ? 'True' : 'False' }],

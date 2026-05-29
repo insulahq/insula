@@ -129,8 +129,8 @@ kubectl delete clusterpendingpeers --all
 
 The CRDs themselves can be deleted if you want to revert Phase 2:
 ```
-kubectl delete crd clustertrustedranges.networking.platform.example.test
-kubectl delete crd clusterpendingpeers.networking.platform.example.test
+kubectl delete crd clustertrustedranges.networking.insula.host
+kubectl delete crd clusterpendingpeers.networking.insula.host
 ```
 
 ## See also

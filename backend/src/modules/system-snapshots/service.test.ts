@@ -208,7 +208,7 @@ describe('takeSnapshot', () => {
     const result = await takeSnapshot(k8s, 'vol-x', 'pre-upgrade test/123!');
     expect(result.snapshotName).toMatch(/^manual-\d+-vol-x/);
     const call = spies.create.mock.calls[0][0] as { body: { metadata: { labels: Record<string, string> }; spec: { volume: string } } };
-    expect(call.body.metadata.labels['platform.example.test/user-label']).toBe('pre-upgrade_test_123_');
+    expect(call.body.metadata.labels['insula.host/user-label']).toBe('pre-upgrade_test_123_');
     expect(call.body.spec.volume).toBe('vol-x');
   });
 });

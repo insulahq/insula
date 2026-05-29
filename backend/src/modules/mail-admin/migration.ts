@@ -792,7 +792,7 @@ async function runMigrationStateMachine(
   // diagnostic and no cancel.
   //
   // We accept the migration only if AT LEAST ONE of these holds:
-  //   (a) target node is labelled platform.example.test/mail-standby=true
+  //   (a) target node is labelled insula.host/mail-standby=true
   //       AND has a fresh .standby-complete sentinel (FAST PATH ready)
   //   (b) backup-rclone-shim Service has ≥1 Endpoint reachable from
   //       the target node (restic fallback will work)
@@ -1008,7 +1008,7 @@ async function runMigrationStateMachine(
   // keeps haproxy on the target.
   try {
     const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
-    const STANDBY_LABEL = 'platform.example.test/mail-haproxy';
+    const STANDBY_LABEL = 'insula.host/mail-haproxy';
     const escaped = STANDBY_LABEL.replace(/~/g, '~0').replace(/\//g, '~1');
     await core.patchNode(
       {
@@ -2117,7 +2117,7 @@ function sleep(ms: number): Promise<void> {
 // the operational reasoning.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAIL_STANDBY_LABEL = 'platform.example.test/mail-standby';
+const MAIL_STANDBY_LABEL = 'insula.host/mail-standby';
 const RCLONE_SHIM_NAMESPACE = 'platform';
 const RCLONE_SHIM_SERVICE = 'backup-rclone-shim';
 

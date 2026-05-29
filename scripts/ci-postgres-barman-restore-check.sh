@@ -128,7 +128,7 @@ if [[ -f "$PITRJOB" ]]; then
 fi
 
 # (12) postgres-restore/service.ts MUST bypass the PVC-membership check
-# when the snapshot carries the `platform.example.test/barman-promote`
+# when the snapshot carries the `insula.host/barman-promote`
 # label. Without this, Phase 3.1 promote (which feeds a snapshot from a
 # DIFFERENT cluster) hits "Snapshot X does not belong to any PVC in
 # cluster Y" 409. Live-staging regression caught 2026-05-23 against
@@ -141,16 +141,16 @@ if [[ -f "$PG_RESTORE_SVC" ]]; then
     echo "FAIL: postgres-restore/service.ts must bypass membership check for barman-promote snapshots (Phase 3.1)"
     FAILED=1
   fi
-  if ! grep -q "platform.example.test/barman-promote" "$PG_RESTORE_SVC"; then
-    echo "FAIL: postgres-restore/service.ts must reference the 'platform.example.test/barman-promote' label (must match barman-restore/service.ts:takeLonghornSnapshotOfRestoredCluster spelling)"
+  if ! grep -q "insula.host/barman-promote" "$PG_RESTORE_SVC"; then
+    echo "FAIL: postgres-restore/service.ts must reference the 'insula.host/barman-promote' label (must match barman-restore/service.ts:takeLonghornSnapshotOfRestoredCluster spelling)"
     FAILED=1
   fi
 fi
 
 # Same label name must be set by barman-restore/service.ts when it takes
 # the snapshot (otherwise the bypass above never triggers).
-if ! grep -q "'platform.example.test/barman-promote': 'true'" "$SERVICE"; then
-  echo "FAIL: barman-restore/service.ts must label the Longhorn snapshot with platform.example.test/barman-promote=true (sets the bypass flag postgres-restore/service.ts checks)"
+if ! grep -q "'insula.host/barman-promote': 'true'" "$SERVICE"; then
+  echo "FAIL: barman-restore/service.ts must label the Longhorn snapshot with insula.host/barman-promote=true (sets the bypass flag postgres-restore/service.ts checks)"
   FAILED=1
 fi
 

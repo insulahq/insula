@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	crdGroup   = "networking.platform.example.test"
+	crdGroup   = "networking.insula.host"
 	crdVersion = "v1alpha1"
 )
 

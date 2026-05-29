@@ -56,7 +56,7 @@ export default function MailNodeStorageCards() {
         <p className="text-sm text-gray-500 dark:text-gray-400">
           No mail-relevant nodes configured — set a primary node under
           Placement & migration, or label a standby node with{' '}
-          <code className="font-mono">platform.example.test/mail-standby=&quot;true&quot;</code>.
+          <code className="font-mono">insula.host/mail-standby=&quot;true&quot;</code>.
         </p>
       </div>
     );

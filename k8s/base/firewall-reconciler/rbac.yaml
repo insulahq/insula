@@ -27,7 +27,7 @@ metadata:
 #                                     Filtered server-side by
 #                                     spec.nodeName == NODE_NAME.
 #   Namespaces             read     — annotation
-#                                     platform.example.test/tenant-namespace
+#                                     insula.host/tenant-namespace
 #                                     classifies which Pods the tenant
 #                                     reconciler considers.
 #
@@ -42,13 +42,13 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "namespaces", "pods"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["networking.platform.example.test"]
+  - apiGroups: ["networking.insula.host"]
     resources: ["clustertrustedranges", "clusterpendingpeers"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["networking.platform.example.test"]
+  - apiGroups: ["networking.insula.host"]
     resources: ["clustertrustedranges/status", "clusterpendingpeers/status"]
     verbs: ["get", "patch", "update"]
-  - apiGroups: ["networking.platform.example.test"]
+  - apiGroups: ["networking.insula.host"]
     resources: ["clusterpendingpeers"]
     verbs: ["delete"]
 ---

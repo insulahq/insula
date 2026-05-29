@@ -19,7 +19,7 @@ import { z } from 'zod';
  * when this is false.
  *
  * `lastResizedAt` is read from the PVC annotation
- * `platform.example.test/last-resized-at` set by every successful
+ * `insula.host/last-resized-at` set by every successful
  * grow. Null on a never-resized PVC.
  */
 export const systemPvcStorageResponseSchema = z.object({

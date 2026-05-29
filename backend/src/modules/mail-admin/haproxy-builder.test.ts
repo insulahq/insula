@@ -14,13 +14,13 @@ describe('mail-admin/haproxy-builder.buildHaproxyDaemonSet', () => {
 
   it('carries the managed-by=platform-api label so harness can identify it', () => {
     const ds = buildHaproxyDaemonSet() as Record<string, any>;
-    expect(ds.metadata.labels['platform.example.test/managed-by']).toBe('platform-api');
+    expect(ds.metadata.labels['insula.host/managed-by']).toBe('platform-api');
   });
 
   it('targets data-plane nodes via the mail-haproxy=true label (label-driven, set by port-exposure-modes reconciler)', () => {
     const ds = buildHaproxyDaemonSet() as Record<string, any>;
     const sel = ds.spec.template.spec.nodeSelector;
-    expect(sel).toEqual({ 'platform.example.test/mail-haproxy': 'true' });
+    expect(sel).toEqual({ 'insula.host/mail-haproxy': 'true' });
   });
 
   it('binds all six mail ports with hostPort=containerPort', () => {

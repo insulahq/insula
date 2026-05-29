@@ -92,7 +92,7 @@ export async function triggerProbeRefresh(opts: LoadOptions): Promise<number> {
     const annotations = ds.spec?.template?.metadata?.annotations ?? {};
     const newAnnotations = {
       ...annotations,
-      'security-probe.platform.example.test/refresh-trigger': ts,
+      'security-probe.insula.host/refresh-trigger': ts,
     };
     // Strategic merge for the DaemonSet — the @kubernetes/client-node
     // SDK defaults to RFC 6902 JSON patch which would reject this

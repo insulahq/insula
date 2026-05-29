@@ -12,7 +12,7 @@ kind: Namespace
 metadata:
   name: dev-minio
   labels:
-    platform.example.test/env: dev
+    insula.host/env: dev
 ---
 apiVersion: v1
 kind: Secret

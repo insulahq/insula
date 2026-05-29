@@ -27,12 +27,12 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: clusterpendingpeers.networking.platform.example.test
+  name: clusterpendingpeers.networking.insula.host
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: cluster-network
 spec:
-  group: networking.platform.example.test
+  group: networking.insula.host
   scope: Cluster
   names:
     plural: clusterpendingpeers

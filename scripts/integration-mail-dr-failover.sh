@@ -58,7 +58,7 @@ if [ "$ACTIVE_NODE" = "$(echo $BASTION_HOST | sed 's/root@//;s/\.example-host\.n
   done
 fi
 
-STANDBY_CANDIDATE=$(run_kubectl "kubectl get node -l 'platform.example.test/mail-standby=true,platform.example.test/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
+STANDBY_CANDIDATE=$(run_kubectl "kubectl get node -l 'insula.host/mail-standby=true,insula.host/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
 echo "standby_candidate=$STANDBY_CANDIDATE"
 
 THRESHOLD=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d hosting_platform -tA -c \"SELECT mail_failover_threshold_seconds FROM system_settings;\" 2>/dev/null | head -1")

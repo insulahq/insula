@@ -13,7 +13,7 @@
  *
  * Data plane = the set of node names that should be running haproxy
  * (or Stalwart's own hostPort, for activeNodeOnly). The haproxy DS
- * selects on `platform.example.test/mail-haproxy=true`; this
+ * selects on `insula.host/mail-haproxy=true`; this
  * module's reconcileMailHaproxyLabels keeps that label set in sync
  * with the data plane.
  */
@@ -22,8 +22,8 @@ import type { CoreV1Api } from '@kubernetes/client-node';
 import type { MailPortExposureMode } from '@insula/api-contracts';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
-export const MAIL_HAPROXY_LABEL_KEY = 'platform.example.test/mail-haproxy';
-const NODE_ROLE_LABEL_KEY = 'platform.example.test/node-role';
+export const MAIL_HAPROXY_LABEL_KEY = 'insula.host/mail-haproxy';
+const NODE_ROLE_LABEL_KEY = 'insula.host/node-role';
 
 export interface PlacementSettings {
   readonly primaryNode: string | null;

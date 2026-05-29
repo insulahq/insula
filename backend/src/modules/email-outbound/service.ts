@@ -155,10 +155,10 @@ export async function reconcileOutboundConfig(
       labels: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/component': 'stalwart-outbound-config',
-        'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+        'app.kubernetes.io/managed-by': 'insula',
       },
       annotations: {
-        'k8s-hosting-platform/rendered-at': new Date().toISOString(),
+        'insula.host/rendered-at': new Date().toISOString(),
       },
     },
     data: {

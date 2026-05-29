@@ -28,7 +28,7 @@ export const cnpgBackupNowRequestSchema = z.object({
   clusterName: dnsLabel,
   /**
    * Optional operator-supplied description, attached to the Backup CR
-   * as the `platform.example.test/description` ANNOTATION (not
+   * as the `insula.host/description` ANNOTATION (not
    * label — annotations have no charset/length restrictions, so the
    * operator can type spaces and natural-language descriptions like
    * "before tenant import: acme"). Surfaced in the catalogue list.

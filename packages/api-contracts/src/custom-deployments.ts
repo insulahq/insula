@@ -303,7 +303,7 @@ export const customServiceSchema = z.object({
    *  a ready endpoint, with a 60s timeout. Cycles rejected by validator. */
   dependsOn: z.array(z.string().regex(CUSTOM_NAME_RE)).max(10).default([]),
   /** Free-form labels applied to the Pod. Reserved-prefix labels
-   *  (`platform.example.test/...`) are stripped server-side. */
+   *  (`insula.host/...`) are stripped server-side. */
   labels: z.record(z.string(), z.string()).optional(),
 });
 

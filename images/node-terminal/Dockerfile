@@ -47,7 +47,7 @@ LABEL org.opencontainers.image.title="hosting-platform-node-terminal"
 LABEL org.opencontainers.image.description="Privileged-Pod harness for admin web-terminal (nsenter into k3s node host PID 1)"
 LABEL org.opencontainers.image.source="https://github.com/insulahq/insula"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL platform.example.test/role="node-terminal"
+LABEL insula.host/role="node-terminal"
 
 # Run as root inside the container — needed because nsenter into PID 1
 # host namespaces requires CAP_SYS_ADMIN, granted via the privileged

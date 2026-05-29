@@ -55,7 +55,7 @@ export default function DrDrillTab() {
               bash scripts/bootstrap.sh --join-as server --env staging --domain &lt;DOMAIN&gt; --secrets-bundle &lt;bundle&gt; --age-key &lt;key&gt;
             </code>
           </li>
-          <li>Tag the node: <code className="text-xs">kubectl label nodes --all platform.example.test/node-role=server --overwrite</code></li>
+          <li>Tag the node: <code className="text-xs">kubectl label nodes --all insula.host/node-role=server --overwrite</code></li>
           <li>Tag Longhorn node: <code className="text-xs">kubectl -n longhorn-system patch nodes.longhorn.io/&lt;name&gt; --type=merge -p '{`{"spec":{"tags":["system"]}}`}'</code></li>
           <li>Wait for CNPG clusters to reach <code>Cluster in healthy state</code> (≤15 min)</li>
           <li>Restore platform: <code className="text-xs">kubectl -n platform exec system-db-1 -c postgres -- pg_restore --clean --if-exists -d hosting_platform &lt; platform.pgdump</code></li>

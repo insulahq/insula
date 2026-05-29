@@ -31,7 +31,7 @@
 #     authorises the PROXY-v2 header and surfaces the real client IP.
 #
 # The toleration set is identical to the shared affinity-patch — the
-# `platform.example.test/server-only:NoSchedule` taint exists only
+# `insula.host/server-only:NoSchedule` taint exists only
 # on server nodes. Workers don't carry that taint, so the toleration
 # is a no-op there but harmless.
 apiVersion: apps/v1
@@ -46,11 +46,11 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
-                  - key: platform.example.test/node-role
+                  - key: insula.host/node-role
                     operator: In
                     values: [server, worker]
       tolerations:
-        - key: platform.example.test/server-only
+        - key: insula.host/server-only
           operator: Equal
           value: "true"
           effect: NoSchedule

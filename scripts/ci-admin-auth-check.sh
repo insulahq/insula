@@ -4,7 +4,7 @@
 #
 # In the Traefik model the contract is:
 #   - Every IngressRoute carrying label
-#     `platform.example.test/admin-ui: "true"` must reference the
+#     `insula.host/admin-ui: "true"` must reference the
 #     Middleware `admin-auth-cookie@traefik` in at least one of its
 #     routes[].middlewares[] entries.
 #   - The rendered overlay must contain a Middleware named
@@ -44,7 +44,7 @@ for overlay in "${OVERLAYS[@]}"; do
   # none because it skips longhorn/stalwart bring-up).
   admin_ui_count=$(echo "$built" | yq eval '
     select(.kind == "IngressRoute"
-      and (.metadata.labels // {})["platform.example.test/admin-ui"] == "true")
+      and (.metadata.labels // {})["insula.host/admin-ui"] == "true")
     | .metadata.name
   ' - | grep -c . || true)
 
@@ -79,7 +79,7 @@ for overlay in "${OVERLAYS[@]}"; do
   mapfile -t rows < <(
     echo "$built" | yq eval --no-doc '
       select(.kind == "IngressRoute"
-        and (.metadata.labels // {})["platform.example.test/admin-ui"] == "true")
+        and (.metadata.labels // {})["insula.host/admin-ui"] == "true")
       | .metadata.name + "|" + ([(.spec.routes // [])[].middlewares // [] | .[].name] | join(","))
     ' -
   )
@@ -104,7 +104,7 @@ if (( failures > 0 )); then
   echo "    components:"
   echo "      - ../../components/admin-auth-gate-cookie"
   echo "      - ../../components/admin-auth-gate-oauth2"
-  echo "  And every IngressRoute labelled platform.example.test/admin-ui=\"true\""
+  echo "  And every IngressRoute labelled insula.host/admin-ui=\"true\""
   echo "  must include admin-auth-cookie@traefik in routes[].middlewares[]."
   exit 1
 fi

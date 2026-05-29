@@ -131,8 +131,8 @@ wait_pod_ready() {
 }
 
 # Resolve cluster topology once
-NODES_SERVER=$(kubectl get node -l platform.example.test/node-role=server -o jsonpath='{.items[*].metadata.name}')
-NODES_WORKER=$(kubectl get node -l platform.example.test/node-role!=server -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+NODES_SERVER=$(kubectl get node -l insula.host/node-role=server -o jsonpath='{.items[*].metadata.name}')
+NODES_WORKER=$(kubectl get node -l insula.host/node-role!=server -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
 ACTIVE_NODE=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d hosting_platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
 OTHER_SERVER=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
 
@@ -569,7 +569,7 @@ phase_H() {
     return
   fi
   local standby_candidate
-  standby_candidate=$(kubectl get node -l 'platform.example.test/mail-standby=true,platform.example.test/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
+  standby_candidate=$(kubectl get node -l 'insula.host/mail-standby=true,insula.host/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
   if [ -z "$standby_candidate" ]; then
     amber "  PHASE H SKIP: no server-role mail-standby node other than active ($ACTIVE_NODE)"
     pass_phase H "skipped (no server-role standby)"

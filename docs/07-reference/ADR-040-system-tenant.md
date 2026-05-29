@@ -202,7 +202,7 @@ Given `PLATFORM_BASE_DOMAIN=cloud.example`:
 
 ## Future work
 
-* Cluster Ingress label scan (`platform.example.test/admin-ui=true`)
+* Cluster Ingress label scan (`insula.host/admin-ui=true`)
   as an *additional* source — picks up any future admin-only UI added
   via a Kustomize component without code changes here. Deferred
   because the four existing sources cover every platform-owned

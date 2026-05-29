@@ -344,7 +344,7 @@ _resolve_mail_ips() {
   # 2. Cluster node IPs (server-role nodes — haproxy targets) for the
   # intersection check + fallback.
   local cluster_ips
-  cluster_ips=$(ssh_cp "kubectl get nodes -l platform.example.test/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   # If DNS returned anything, use it. Otherwise fall back to cluster
   # node IPs (covers fresh clusters where DNS hasn't been wired yet
@@ -370,7 +370,7 @@ _assert_mail_forward_dns() {
     | grep -E ':' | sort -u)
   local dns_all
   dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
-  cluster_ips=$(ssh_cp "kubectl get nodes -l platform.example.test/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   if [[ -z "$dns_all" ]]; then
     fail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"

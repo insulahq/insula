@@ -2,7 +2,7 @@
  * CNPG backup-failure notification scheduler.
  *
  * Sister to the existing backup-health scheduler (which watches K8s
- * Jobs labelled platform.example.test/backup-health-watch — used
+ * Jobs labelled insula.host/backup-health-watch — used
  * for tenant-side backups). CNPG `Backup` CRs live in a separate API
  * group and are managed by the operator, not as Jobs, so this is a
  * dedicated tick.

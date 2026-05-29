@@ -57,7 +57,7 @@ const SYSTEM_NAMESPACES: ReadonlyArray<string> = [
   'hosting',
 ];
 
-const SERVER_LABEL_KEY = 'platform.example.test/node-role';
+const SERVER_LABEL_KEY = 'insula.host/node-role';
 const SERVER_LABEL_VAL = 'server';
 
 export interface ServerNodeFact {
