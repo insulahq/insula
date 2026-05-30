@@ -486,6 +486,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       );
       const result = await runStalwartDomainReconcilerTick({
         core: k8s.core,
+        // Wire `custom` so the operator "Re-provision Stalwart" button
+        // also reconciles the ACME HTTP-01 override IngressRoute
+        // (stalwart-mail-acme-override) — step 1b is skipped when custom
+        // is absent, which would otherwise leave a renamed mail host
+        // without its challenge route on a manual re-provision.
+        custom: k8s.custom,
         db: app.db,
         kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
         logger: {
