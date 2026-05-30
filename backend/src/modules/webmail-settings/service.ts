@@ -35,6 +35,11 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 const STALWART_MGMT_URL = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 const STALWART_JMAP_TIMEOUT_MS = 10_000;
 
+// Stalwart's built-in admin/superuser principal account id. Same value
+// the mail-admin reconcilers use (mail-admin/stalwart-domain-reconciler.ts,
+// imap-concurrency.ts, etc.). Required on `x:Domain/set` create calls.
+const ADMIN_ACCOUNT_ID = 'd333333';
+
 // JMAP method-response envelope. Each entry is a 3-tuple:
 // [methodName, payload, callId]. We only consume `payload`; the call
 // id and method name are echoed back as-is.
@@ -525,6 +530,127 @@ async function addHostnameToDomainSANs(
   }
 }
 
+/**
+ * Create the cert-anchor Domain row whose `name` is EXACTLY the full
+ * trimmed mail hostname (e.g. `mail.foo.com`), then resolve it to an
+ * `{ id, name }` pair the caller can use as `domainRow`.
+ *
+ * WHY full hostname (not the stripped apex) — this MUST match the
+ * reconciler's cert-anchor convention: stalwart-domain-reconciler.ts
+ * both creates AND matches (`findExactDomain`/`createCertAnchorDomain`)
+ * on the FULL hostname (`trimmedHost`). If we created the Domain named
+ * with the apex (`foo.com`) instead, the post-apply reconciler tick's
+ * `findExactDomain('mail.foo.com')` would miss it and create a SECOND,
+ * duplicate Domain. Creating with the full hostname keeps a single
+ * cert-anchor Domain. Downstream `addHostnameToDomainSANs` then sees
+ * Domain.name === hostname and derives SAN key `@` (root SAN), which is
+ * the CORRECT key for a cert covering `mail.foo.com` — do not "fix" it
+ * to `mail`. Concurrent renames can't race this create: the PATCH
+ * handler holds `withMailHostnameLock` (advisory xact lock) end-to-end.
+ *
+ * This is the inline self-heal for the rename-to-fresh-host flow: when
+ * the operator points the mail hostname at a value whose Stalwart
+ * Domain doesn't exist yet, we create it rather than failing with
+ * `No Domain row matches`. Mirrors `createCertAnchorDomain` in
+ * mail-admin/stalwart-domain-reconciler.ts (`x:Domain/set` create with
+ * `{ accountId, create: { <key>: { name: <hostname> } } }`), built
+ * inline on the same `postJmap` + `parseJmapBody` helpers this module
+ * already uses (matching `addHostnameToDomainSANs`'s `x:Domain/set`
+ * idiom).
+ *
+ * The new Domain's id comes straight from the create response when
+ * present; some Stalwart releases omit `id` in the `created` shape, so
+ * we fall back to a fresh `x:Domain/query`+`x:Domain/get` resolution.
+ */
+async function createCertAnchorDomainInline(
+  hostname: string,
+): Promise<{ id: string; name: string }> {
+  const createKey = 'newcertanchor';
+  const createBody = JSON.stringify({
+    using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
+    methodCalls: [
+      [
+        'x:Domain/set',
+        {
+          accountId: ADMIN_ACCOUNT_ID,
+          create: { [createKey]: { name: hostname } },
+        },
+        'c0',
+      ],
+    ],
+  });
+  const createRes = await postJmap(createBody);
+  if (createRes.status >= 400) {
+    throw new Error(
+      `Stalwart JMAP Domain/set (cert-anchor) failed (${createRes.status}): ${createRes.body.slice(0, 200)}`,
+    );
+  }
+  const createParsed = parseJmapBody(createRes.body, 'Domain/set (cert-anchor)');
+  const createPayload = createParsed.methodResponses[0][1] as {
+    created?: Record<string, { id?: unknown }>;
+    notCreated?: Record<string, { type?: unknown; description?: unknown }>;
+  };
+  if (createPayload.notCreated && createPayload.notCreated[createKey]) {
+    const err = createPayload.notCreated[createKey];
+    const errType = typeof err.type === 'string' ? err.type : 'unknown';
+    const errDesc =
+      typeof err.description === 'string' ? err.description.slice(0, 200) : 'no detail';
+    throw new Error(`Stalwart rejected cert-anchor Domain create: ${errType} — ${errDesc}`);
+  }
+
+  const newId = createPayload.created?.[createKey]?.id;
+  if (typeof newId === 'string' && newId.length > 0) {
+    return { id: newId, name: hostname };
+  }
+
+  // Defensive read-back — some Stalwart releases omit `id` in the
+  // created shape. Re-resolve the new Domain by exact name.
+  const queryBody = JSON.stringify({
+    using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
+    methodCalls: [['x:Domain/query', { accountId: ADMIN_ACCOUNT_ID }, 'q']],
+  });
+  const queryRes = await postJmap(queryBody);
+  if (queryRes.status >= 400) {
+    throw new Error(
+      `Stalwart JMAP Domain/query (cert-anchor read-back) failed (${queryRes.status}): ${queryRes.body.slice(0, 200)}`,
+    );
+  }
+  const queryParsed = parseJmapBody(queryRes.body, 'Domain/query (cert-anchor read-back)');
+  const ids = (queryParsed.methodResponses[0][1] as { ids?: unknown }).ids;
+  const domainIds = Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+  if (domainIds.length === 0) {
+    throw new Error('Cert-anchor Domain created but not found on read-back (empty Domain/query)');
+  }
+  const getBody = JSON.stringify({
+    using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
+    methodCalls: [
+      ['x:Domain/get', { accountId: ADMIN_ACCOUNT_ID, ids: domainIds, properties: ['id', 'name'] }, 'g'],
+    ],
+  });
+  const getRes = await postJmap(getBody);
+  if (getRes.status >= 400) {
+    throw new Error(
+      `Stalwart JMAP Domain/get (cert-anchor read-back) failed (${getRes.status}): ${getRes.body.slice(0, 200)}`,
+    );
+  }
+  const getParsed = parseJmapBody(getRes.body, 'Domain/get (cert-anchor read-back)');
+  const getList = (getParsed.methodResponses[0][1] as { list?: unknown }).list;
+  const lower = hostname.toLowerCase();
+  const found = Array.isArray(getList)
+    ? getList.find(
+        (row) =>
+          row && typeof row === 'object'
+          && typeof (row as { id?: unknown }).id === 'string'
+          && typeof (row as { name?: unknown }).name === 'string'
+          && (row as { name: string }).name.toLowerCase() === lower,
+      )
+    : undefined;
+  if (!found) {
+    throw new Error('Cert-anchor Domain created but not found on read-back (name mismatch)');
+  }
+  return { id: (found as { id: string }).id, name: (found as { name: string }).name };
+}
+
 export async function applyMailServerHostnameToStalwart(
   hostname: string,
   k8s?: K8sClients,
@@ -603,9 +729,17 @@ export async function applyMailServerHostnameToStalwart(
     domainRow = suffixMatches[0];
   }
   if (!domainRow) {
-    throw new Error(
-      `No Domain row matches '${exactApex}' — add it to Stalwart first via the email-domains UI.`,
-    );
+    // Self-heal: the rename target's cert-anchor Domain doesn't exist
+    // yet (the legitimate rename-to-fresh-host flow). Create it inline
+    // via JMAP — `name` is the FULL trimmed hostname (e.g.
+    // `mail.foo.com`), NOT the stripped apex. This mirrors
+    // `createCertAnchorDomain` in
+    // mail-admin/stalwart-domain-reconciler.ts. After creation, the
+    // suffix-fallback match below would match the new Domain via the
+    // `lower === name` branch, so we can construct `domainRow` directly
+    // from the create response's returned id (falling back to a
+    // re-query if Stalwart omitted the id in the create shape).
+    domainRow = await createCertAnchorDomainInline(trimmed);
   }
 
   // Step 2: read existing SystemSettings.defaultHostname so we can
