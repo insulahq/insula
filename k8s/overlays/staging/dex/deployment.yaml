@@ -49,17 +49,28 @@ spec:
           command:
             - sh
             - -c
+            # IMPORTANT: every shell `$` is escaped as `$$` because Flux's
+            # Kustomization postBuild.substituteFrom (platform-cluster-config)
+            # runs envsubst over this manifest before apply — un-escaped
+            # ${host}/${port}/${i}/$(seq …) get stripped to empty strings,
+            # producing `nc -z -w 2 "" ""` → `nc: bad port ''` → the
+            # initContainer crashloops, the new ReplicaSet never goes Ready,
+            # and the dex rollout wedges (old rev keeps serving, new rev stuck
+            # Init). Flux collapses `$$`→`$` at apply, leaving real shell refs.
+            # Same fix as oauth2-proxy's initContainer (k8s/base/oauth2-proxy).
+            # NOTE: ci-flux-escape-check.sh only scans Job/CronJob, so it did
+            # NOT catch this Deployment — see PR for the guard-coverage gap.
             - |
               set -eu
               host="postgres.platform.svc.cluster.local"
               port="5432"
-              echo "polling: ${host}:${port}"
-              for i in $(seq 1 60); do
-                if nc -z -w 2 "${host}" "${port}"; then
-                  echo "postgres reachable (attempt ${i})"
+              echo "polling: $${host}:$${port}"
+              for i in $$(seq 1 60); do
+                if nc -z -w 2 "$${host}" "$${port}"; then
+                  echo "postgres reachable (attempt $${i})"
                   exit 0
                 fi
-                echo "waiting for postgres... (${i}/60)"
+                echo "waiting for postgres... ($${i}/60)"
                 sleep 5
               done
               echo "postgres never became reachable after 5 min — main dex would crashloop too" >&2
