@@ -308,11 +308,25 @@ ok "admin auth token obtained"
 
 phase "Phase 1 — CrowdSec status reflects cluster reality"
 
-status=$(api_internal GET /admin/security/crowdsec/status)
-echo "$status" | python3 -m json.tool >/dev/null 2>&1 || {
-  fail "status endpoint returned non-JSON: $status"
+# Retry the status fetch. api_internal spawns an ephemeral curl pod per
+# call and intermittently returns an EMPTY body when that pod has a
+# transient scheduling hiccup (the endpoint itself is healthy — a direct
+# in-cluster curl returns valid JSON). Without this retry a single
+# dropped capture hard-fails the whole suite with "status endpoint
+# returned non-JSON:" (empty). This is the same flake-tolerance the
+# Phase 4 decision GET already applies.
+status=""
+for _try in 1 2 3 4 5; do
+  status=$(api_internal GET /admin/security/crowdsec/status)
+  if printf '%s' "$status" | python3 -m json.tool >/dev/null 2>&1; then
+    break
+  fi
+  sleep 3
+done
+if ! printf '%s' "$status" | python3 -m json.tool >/dev/null 2>&1; then
+  fail "status endpoint returned non-JSON after 5 tries: '$(printf '%s' "$status" | head -c 200)'"
   exit 1
-}
+fi
 
 lapi=$(printf '%s' "$status" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['lapiHealthy'])")
 if [[ "$lapi" == "True" ]]; then

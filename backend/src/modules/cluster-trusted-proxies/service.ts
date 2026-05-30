@@ -60,14 +60,45 @@ export async function createRange(
     if (!row) throw new Error('insert returned no row');
     return row;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/duplicate key|unique/i.test(msg)) {
+    if (isUniqueViolation(err)) {
       const e = new Error(`DUPLICATE_CIDR: ${input.cidr} already trusted`);
       (e as Error & { code?: string }).code = 'DUPLICATE_CIDR';
       throw e;
     }
     throw err;
   }
+}
+
+/** Postgres SQLSTATE for a unique-constraint violation. */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Detect a Postgres unique-constraint violation across the error-wrapper
+ * chain. Drizzle wraps the driver error in a `DrizzleQueryError` whose
+ * `.message` is just "Failed query: insert into …" — it does NOT contain
+ * "duplicate key"/"unique", so matching only the top-level message let a
+ * duplicate insert escape as a generic 500 instead of 409 DUPLICATE_CIDR.
+ *
+ * The real node-postgres error (carrying `.code === '23505'` and the
+ * "duplicate key value violates unique constraint" text) sits on
+ * `err.cause`. Walk the cause chain and check BOTH the SQLSTATE code and
+ * the message text at every level.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; cur && depth < 5; depth++) {
+    if (typeof cur === 'object') {
+      const e = cur as { code?: unknown; message?: unknown; cause?: unknown };
+      if (e.code === PG_UNIQUE_VIOLATION) return true;
+      if (typeof e.message === 'string' && /duplicate key|unique constraint/i.test(e.message)) {
+        return true;
+      }
+      cur = e.cause;
+    } else {
+      break;
+    }
+  }
+  return false;
 }
 
 /** Idempotent upsert used by the reconciler for bootstrap rows. */
