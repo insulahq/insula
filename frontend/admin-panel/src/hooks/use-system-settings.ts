@@ -9,7 +9,6 @@ export interface SystemSettings {
   readonly supportEmail: string | null;
   readonly supportUrl: string | null;
   readonly ingressBaseDomain: string | null;
-  readonly mailHostname: string | null;
   readonly webmailUrl: string | null;
   readonly apiRateLimit: number;
   readonly timezone: string;

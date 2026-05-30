@@ -61,6 +61,19 @@ if (ingressBaseDomain) {
     ON CONFLICT (setting_key) DO UPDATE
     SET setting_value = COALESCE(NULLIF(platform_settings.setting_value, ''), EXCLUDED.setting_value)
   `);
+  // Persist the canonical mail hostname (platform_settings.mail_server_hostname)
+  // as mail.<apex> so it's a concrete stored value, not just the computed
+  // default the resolver falls back to. This is the single source of truth
+  // surfaced in Admin → Email → Server (mailServerHostname) and consumed by
+  // the Stalwart cert-anchor reconciler. Only fills when unset — never
+  // clobbers an operator-chosen hostname.
+  const mailServerHostname = `mail.${ingressBaseDomain.replace(/\.+$/, '')}`;
+  await db.execute(sql`
+    INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+    VALUES ('mail_server_hostname', ${mailServerHostname}, NOW())
+    ON CONFLICT (setting_key) DO UPDATE
+    SET setting_value = COALESCE(NULLIF(platform_settings.setting_value, ''), EXCLUDED.setting_value)
+  `);
 }
 console.log('  Seeded system settings (fills NULL columns only)');
 

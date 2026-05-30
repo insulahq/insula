@@ -5,12 +5,14 @@
 # admin-auth-gate-oauth2 when oauth2-proxy is wired into the admin
 # panel's public ingress.
 #
-# This patch overrides the base Certificate's secretName + issuerRef so
-# staging gets its own per-environment TLS secret. The base IngressRoute
-# already references `longhorn-ui-tls`; we keep the same secretName
-# convention here and just swap the issuer to letsencrypt-prod-http01
-# (Flux postBuild substituteFrom doesn't populate CLUSTER_ISSUER_NAME on
-# staging — same gotcha as the webmail overlay).
+# This patch overrides ONLY the base Certificate's issuerRef so staging
+# uses letsencrypt-prod-http01 (Flux postBuild substituteFrom doesn't
+# populate CLUSTER_ISSUER_NAME on staging — same gotcha as the webmail
+# overlay). The secretName stays `longhorn-ui-tls` to match the base
+# IngressRoute + Certificate — the previous `longhorn-ui-staging-tls`
+# leaked the literal environment name onto every cluster that uses this
+# overlay (incl. testing) and diverged from the base secret the
+# IngressRoute reads.
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -18,15 +20,15 @@ metadata:
   name: longhorn-ui
   namespace: longhorn-system
 spec:
-  secretName: longhorn-ui-staging-tls
+  secretName: longhorn-ui-tls
   issuerRef:
     name: letsencrypt-prod-http01
     kind: ClusterIssuer
     group: cert-manager.io
 ---
-# Override the base IngressRoute's tls.secretName so it picks up the
-# staging-specific certificate above. Other fields (entryPoints, routes,
-# middlewares) come from k8s/base/longhorn/ui-ingress.yaml unchanged.
+# Re-assert the base IngressRoute's tls.secretName (unchanged from base)
+# so a strategic-merge patch doesn't drop it. Other fields (entryPoints,
+# routes, middlewares) come from k8s/base/longhorn/ui-ingress.yaml.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -34,4 +36,4 @@ metadata:
   namespace: longhorn-system
 spec:
   tls:
-    secretName: longhorn-ui-staging-tls
+    secretName: longhorn-ui-tls
