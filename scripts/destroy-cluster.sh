@@ -105,11 +105,31 @@ ip6tables -X 2>/dev/null || true
 nft flush ruleset 2>/dev/null || true
 conntrack -F 2>/dev/null || true
 
+# Lazy-unmount any lingering kubelet pod mounts first, so the rm below
+# doesn't hit "Device or resource busy" and silently leave PVC subpath
+# data behind (observed: a "fresh" re-bootstrap came up on stale CNPG
+# PGDATA → wrong/old database name → platform-api crash-loop).
+for m in $(awk '$2 ~ "/var/lib/kubelet" {print $2}' /proc/mounts 2>/dev/null | sort -r); do
+  umount -l "$m" 2>/dev/null || true
+done
+
 # Wipe K8s + Calico + Longhorn state directories
 rm -rf /var/lib/rancher /etc/rancher
 rm -rf /var/lib/calico /etc/cni /var/run/calico
 rm -rf /var/lib/longhorn /opt/longhorn
 rm -rf /var/lib/kubelet /etc/kubernetes
+# Persisted volume data + the platform install dir. These were the gap
+# behind a "fresh" re-bootstrap coming up on STALE data:
+#   - /opt/local-path-provisioner (+ /opt/local-path,
+#     /var/lib/rancher/k3s/storage): the default StorageClass backing
+#     CNPG system-db (and any local-path PVC) on single-node. Left
+#     behind, CNPG re-detects the existing PGDATA and SKIPS initdb,
+#     resurrecting the prior database (e.g. a pre-rename DB name).
+#   - /opt/insula (legacy /opt/k8s-hosting-platform): the platform
+#     checkout bootstrap.sh deploys; a copy from an earlier git rev
+#     otherwise survives the wipe.
+rm -rf /opt/local-path-provisioner /opt/local-path /var/lib/rancher/k3s/storage
+rm -rf /opt/insula /opt/k8s-hosting-platform
 
 # kill any lingering containerd/k3s processes (defensive)
 pkill -9 -f containerd-shim 2>/dev/null || true
