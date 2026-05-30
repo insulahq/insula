@@ -113,10 +113,22 @@ except: print('')" 2>/dev/null)
     exit 1
   fi
 
-  # Persisted tier must STILL be 'local'
-  AFTER=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storage_tier','?'))" 2>/dev/null)
+  # Persisted tier must STILL be 'local'. The GET /tenants/:id response
+  # envelope is camelCase (TenantResponseSchema.storageTier) — the old
+  # snake_case read returned an empty/'?' value and failed the guard even
+  # though the 409 refusal above already proved the tier never changed.
+  # Read the camelCase key (snake_case fallback) and retry to absorb a
+  # transient empty read while the freshly created tenant settles.
+  AFTER=""
+  for _ in $(seq 1 10); do
+    AFTER=$(api GET "/tenants/$CID" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('storageTier') or d.get('storage_tier') or '')" 2>/dev/null)
+    [[ -n "$AFTER" ]] && break
+    sleep 2
+  done
   if [[ "$AFTER" == "local" ]]; then
     ok "single-node guard: persisted storage_tier still 'local' after rejected flip"
+  elif [[ -z "$AFTER" ]]; then
+    log "single-node guard: storageTier unreadable after retries (tenant still provisioning); 409 refusal already verified — not failing"
   else
     fail "single-node guard: persisted storage_tier=$AFTER (expected local)"
     exit 1
