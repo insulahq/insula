@@ -226,9 +226,16 @@ run_serial_group() {
   log "Group [$group_label] (serial, ${#@} suite(s))"
   for entry in "$@"; do
     local name="${entry%%:*}" cmd="${entry#*:}"
+    # Split "script.sh arg1 arg2" into script + args ARRAY. read -a gives
+    # parts[0]=script, parts[1..]=args (empty array for a no-arg entry —
+    # passing "${args[@]}" then expands to zero words, NOT the script name).
+    local -a parts=()
+    read -r -a parts <<< "$cmd"
+    local script="${parts[0]}"
+    local args=("${parts[@]:1}")
     log "Suite: $name"
     set +e
-    ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* }
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
     set -e
     classify_rc "$name" "$rc"
@@ -252,8 +259,14 @@ run_parallel_group() {
   for entry in "$@"; do
     local name="${entry%%:*}" cmd="${entry#*:}"
     local logf="$tmpdir/$name.log" rcf="$tmpdir/$name.rc"
+    # Split "script.sh arg1 arg2" into script + args ARRAY (see
+    # run_serial_group for the no-arg rationale).
+    local -a parts=()
+    read -r -a parts <<< "$cmd"
+    local script="${parts[0]}"
+    local args=("${parts[@]:1}")
     (
-      ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* } >"$logf" 2>&1
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
       echo $? > "$rcf"
     ) &
     pids+=("$!")
