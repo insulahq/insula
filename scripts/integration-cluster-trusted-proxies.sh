@@ -37,6 +37,12 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 TEST_CIDR="${TEST_CIDR:-203.0.113.0/24}"
 TEST_DESC="${TEST_DESC:-integration test (Cloudflare-like edge)}"
+# Against a real cluster (staging/testing) the harness host has no
+# in-cluster kubeconfig, so kubectl must travel over SSH to a
+# control-plane node. Set SSH_HOST (and optionally SSH_KEY) to enable.
+SSH_HOST="${SSH_HOST:-}"
+SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
+SSH_KEY="${SSH_KEY/#\~/$HOME}"
 
 PASSED=0
 FAILED=0
@@ -49,6 +55,19 @@ phase() { echo -e "\n\033[1;35m── $* ──\033[0m"; }
 kctl() {
   if [[ "$ADMIN_HOST" == *"k8s-platform.test"* ]]; then
     docker exec "$K3S_CONTAINER" kubectl "$@"
+  elif [[ -n "$SSH_HOST" ]]; then
+    # Real cluster: tunnel kubectl to a control-plane node over SSH.
+    # Re-quote every arg with %q so the remote shell re-parses the exact
+    # tokens we got locally — critical for jsonpath args like
+    # '{.data.trusted-proxies\.conf}' where a lost backslash would make
+    # kubectl read the wrong (nested) key and silently return empty.
+    local remote_cmd="kubectl"
+    local a
+    for a in "$@"; do
+      remote_cmd+=" $(printf '%q' "$a")"
+    done
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+      -o ConnectTimeout=10 "$SSH_HOST" "$remote_cmd"
   else
     kubectl "$@"
   fi
