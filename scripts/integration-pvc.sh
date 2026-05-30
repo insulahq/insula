@@ -57,6 +57,23 @@ api() {
   fi
 }
 
+# Count tenant-capable nodes via the admin API. Same source of truth as
+# integration-tier-flip-e2e.sh ("need >=3 tenant nodes"). The HA tier-flip
+# scenario below needs >=3 so Longhorn can place 2 replicas; below that the
+# backend refuses the flip with HA_REQUIRES_MULTI_NODE. Used to skip just
+# that one scenario on smaller clusters.
+count_tenant_nodes() {
+  api GET "/admin/nodes" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    nodes = d.get('data') or []
+    print(sum(1 for n in nodes if n.get('canHostClientWorkloads')))
+except Exception:
+    print(0)
+" 2>/dev/null
+}
+
 # When invoked by integration-all.sh, the master runner exports
 # INTEGRATION_TOKEN so we skip the redundant per-suite /auth/login
 # round-trip. Standalone runs (no env) fall through to fresh login —
@@ -147,19 +164,29 @@ REPL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jso
 [[ "$REPL" == "1" ]] && ok "Volume replicas=1 (local tier)" || fail "Volume replicas=$REPL (expected 1)"
 
 # ─── scenario 2: tier flip local → ha live ───────────────────────────
-log "── scenario: tier flip local→ha live ──"
-FLIP=$(api PATCH "/tenants/$CID" '{"storage_tier":"ha"}')
-echo "$FLIP" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('data',{}).get('storageTier')=='ha'" 2>/dev/null \
-  && ok "client storageTier flipped to ha" || fail "tier flip failed: $(echo $FLIP | head -c 200)"
+# Needs ≥3 tenant-capable nodes — below that the backend refuses the flip
+# with HA_REQUIRES_MULTI_NODE (409) and Longhorn can never reach 2 replicas.
+# Skip just this scenario on smaller clusters (warn + continue); scenarios
+# 1/3/4 remain valid, so the suite still exits 0 rather than failing for a
+# reason that's purely "needs multiple nodes".
+TENANT_NODE_COUNT=$(count_tenant_nodes)
+if [[ "${TENANT_NODE_COUNT:-0}" -ge 3 ]]; then
+  log "── scenario: tier flip local→ha live ──"
+  FLIP=$(api PATCH "/tenants/$CID" '{"storage_tier":"ha"}')
+  echo "$FLIP" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('data',{}).get('storageTier')=='ha'" 2>/dev/null \
+    && ok "client storageTier flipped to ha" || fail "tier flip failed: $(echo $FLIP | head -c 200)"
 
-# Volume.spec.numberOfReplicas should reach 2 within ~30s (live patch).
-REPL=""
-for _ in $(seq 1 30); do
-  REPL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jsonpath='{.spec.numberOfReplicas}'" 2>/dev/null || echo "")
-  [[ "$REPL" == "2" ]] && break
-  sleep 2
-done
-[[ "$REPL" == "2" ]] && ok "Volume replicas=2 after live flip" || fail "Volume replicas=$REPL after 60s (expected 2)"
+  # Volume.spec.numberOfReplicas should reach 2 within ~30s (live patch).
+  REPL=""
+  for _ in $(seq 1 30); do
+    REPL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jsonpath='{.spec.numberOfReplicas}'" 2>/dev/null || echo "")
+    [[ "$REPL" == "2" ]] && break
+    sleep 2
+  done
+  [[ "$REPL" == "2" ]] && ok "Volume replicas=2 after live flip" || fail "Volume replicas=$REPL after 60s (expected 2)"
+else
+  log "── scenario: tier flip local→ha live — SKIPPED (need ≥3 tenant nodes; have ${TENANT_NODE_COUNT:-0}) ──"
+fi
 
 # ─── scenario 3: client delete cascade fires ─────────────────────────
 log "── scenario: cascade cleans tenant PV ──"
