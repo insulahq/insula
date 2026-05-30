@@ -797,8 +797,14 @@ else
   fail "F4: ConfigMap content missing the rendered exclusion: $(echo "$h_cm_data" | head -c 400)"
 fi
 
-# H5: modsec-crs Deployment was annotated with a hash
-h_annotation=$(kubectl_run "get deployment -n traefik modsec-crs -o jsonpath='{.spec.template.metadata.annotations.platform\\.example-host\\.net/waf-exclusion-hash}'" 2>&1)
+# H5: modsec-crs Deployment was annotated with a hash.
+# Annotation key is `insula.host/waf-exclusion-hash` — see
+# backend/src/modules/waf-rule-exclusions/reconciler.ts
+# (WAF_EXCLUSION_HASH_ANNOTATION). It was renamed from the old
+# `platform.example.test/...` domain during the insulahq rebrand
+# (2026-05-29) but this assertion was missed, so it kept reading an
+# annotation key that no longer exists → always-empty → guaranteed fail.
+h_annotation=$(kubectl_run "get deployment -n traefik modsec-crs -o jsonpath='{.spec.template.metadata.annotations.insula\\.host/waf-exclusion-hash}'" 2>&1)
 if [[ -n "$h_annotation" && "$h_annotation" =~ ^[a-f0-9]{64}$ ]]; then
   ok "F4: modsec-crs Deployment annotated with hash ($h_annotation)"
 else
