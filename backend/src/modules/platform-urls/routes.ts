@@ -130,6 +130,36 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
           'mail-server-hostname (platform-urls): audit_logs insert failed after successful Stalwart apply',
         );
       }
+
+      // Stalwart platform-infra self-heal after a hostname rename via
+      // this path — mirrors the inline reconcile in
+      // backend/src/modules/webmail-settings/routes.ts. The key bit
+      // for THIS path is the `stalwart-mail-acme-override` IngressRoute:
+      // a non-default mail hostname needs an ACME HTTP-01 route or
+      // Stalwart's cert never issues (the static route only covers
+      // mail.${DOMAIN}). Non-blocking — any failure is logged and the
+      // scheduled 30-min tick retries.
+      if (k8s) {
+        try {
+          const { runStalwartDomainReconcilerTick } = await import(
+            '../mail-admin/stalwart-domain-reconciler.js'
+          );
+          await runStalwartDomainReconcilerTick({
+            core: k8s.core,
+            custom: k8s.custom,
+            db: app.db,
+            logger: {
+              warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+              info: (...args: unknown[]) => app.log.info(args.join(' ')),
+            },
+          });
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'platform-urls: inline Stalwart domain reconcile failed (scheduler will retry)',
+          );
+        }
+      }
     }
 
     return success(result);
