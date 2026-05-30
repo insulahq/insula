@@ -21,7 +21,6 @@ const updateSchema = z.object({
   ingressBaseDomain: z.string().max(255).optional().nullable(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   timezone: z.string().min(1).max(50).optional(),
-  mailHostname: z.string().max(255).optional().nullable(),
   webmailUrl: z.string().url().max(500).optional().nullable(),
 });
 
