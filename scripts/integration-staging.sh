@@ -34,18 +34,40 @@
 set -euo pipefail
 
 # Runtime prerequisites — fail fast (not partway through scenario_mail)
-# when a tool is missing. Without this, a missing `nc` in the new mail
+# when a tool is missing. Without this, a missing `ncat` in the new mail
 # banner probes produces "no SMTP 220 banner from …" which reads like
 # a server-side problem and sends the operator down the wrong debug
-# path. dig + openssl + python3 are existing dependencies that were
-# never declared either; covered here in the same sweep.
-for _tool in openssl nc dig python3 curl jq; do
+# path. The mail connectivity probes now run FROM THE WORKSTATION (an
+# external-network vantage), so the tool set is the workstation's:
+# openssl (TLS handshakes), ncat (port-open + plain banner), python3
+# (dnspython SRV/TXT + PTR), curl (ACME path), jq. DNS A/AAAA uses
+# getent; SRV/TXT/PTR use dnspython (bootstrapped just below).
+for _tool in openssl ncat python3 curl jq; do
   command -v "$_tool" >/dev/null 2>&1 || {
     echo "ERROR: required tool '$_tool' not found in PATH — install it before running this harness" >&2
     exit 2
   }
 done
 unset _tool
+
+# dnspython bootstrap — SRV / TXT / DNSBL / autodiscover probes need a
+# real resolver library (getent only does A/AAAA). Try to import it;
+# if absent, attempt a best-effort --user pip install, then re-check.
+# If it still can't import, set DNSPYTHON=0 and downgrade every
+# SRV/TXT/DNSBL probe to advisory-skip (warn) rather than failing the
+# suite — A/AAAA + TLS + port + banner probes are unaffected. Every
+# step is guarded so `set -euo pipefail` never aborts here.
+if ! python3 -c 'import dns.resolver' 2>/dev/null; then
+  pip3 install --user dnspython >/dev/null 2>&1 || true
+fi
+if python3 -c 'import dns.resolver' 2>/dev/null; then
+  DNSPYTHON=1
+else
+  DNSPYTHON=0
+  # warn() isn't defined yet (it lives in the helpers block below), so
+  # emit a plain advisory here; the SRV/TXT/DNSBL call sites also warn.
+  echo "WARN: python dnspython not importable — SRV / TXT / DNSBL / autodiscover probes will advisory-skip" >&2
+fi
 
 # Connection settings — every default targets the historical phoenix-
 # host.net staging cluster, but every value is overridable so the
@@ -178,9 +200,101 @@ ssh_cp() {
 # Centralise the openssl/EHLO logic here so additions like cert-CN-match
 # and EHLO greeting checks land in every probe at once.
 
+# ─── workstation (external-vantage) probe primitives ──────────────────
+#
+# These run FROM THE WORKSTATION — the machine executing this harness —
+# against the cluster's PUBLIC IP/hostname, exactly as a real external
+# mail client / remote MTA would. They deliberately do NOT shell into
+# the cluster (no ssh_cp / kubectl exec / curl localhost) so the probes
+# reflect what the outside world sees.
+#
+# Every external command is guarded with `|| true` (or `|| echo`) so a
+# failed lookup / closed port never trips `set -euo pipefail`. Dynamic
+# values are passed to python via sys.argv (NEVER string-interpolated
+# into the python source) to avoid quoting/injection hazards.
+
+# A/AAAA resolution via the system resolver (public DNS). getent handles
+# both families and honours /etc/resolv.conf the way a real client does.
+_ws_resolve_a() {
+  local host="$1"
+  getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u || true
+}
+
+# IPv4-only: drop any address containing a colon (v6).
+_ws_resolve_a4() {
+  local host="$1"
+  _ws_resolve_a "$host" | grep -v ':' || true
+}
+
+# IPv6-only: keep only addresses containing a colon.
+_ws_resolve_a6() {
+  local host="$1"
+  _ws_resolve_a "$host" | grep ':' || true
+}
+
+# SRV target resolution via dnspython. Echoes one target host per line
+# (trailing dot stripped). Advisory-skip (echo nothing) if dnspython is
+# unavailable so callers can warn() and continue.
+_ws_resolve_srv() {
+  local name="$1"
+  if [[ "${DNSPYTHON:-0}" == "1" ]]; then
+    python3 -c 'import dns.resolver,sys
+for r in dns.resolver.resolve(sys.argv[1],"SRV"): print(str(r.target).rstrip("."))' "$name" 2>/dev/null || true
+  fi
+}
+
+# TXT record resolution via dnspython. Echoes one TXT string per line.
+# Advisory-skip (echo nothing) if dnspython is unavailable.
+_ws_resolve_txt() {
+  local name="$1"
+  if [[ "${DNSPYTHON:-0}" == "1" ]]; then
+    python3 -c 'import dns.resolver,sys
+for r in dns.resolver.resolve(sys.argv[1],"TXT"):
+    print(b"".join(r.strings).decode("utf-8","replace"))' "$name" 2>/dev/null || true
+  fi
+}
+
+# A/AAAA resolution via dnspython against a specific public resolver
+# (used by DNSBL lookups which query the blocklist zone directly).
+# rrtype defaults to A. Advisory-skip if dnspython is unavailable.
+_ws_resolve_a_via_resolver() {
+  local name="$1" rrtype="${2:-A}"
+  if [[ "${DNSPYTHON:-0}" == "1" ]]; then
+    python3 -c 'import dns.resolver,sys
+try:
+    for r in dns.resolver.resolve(sys.argv[1],sys.argv[2]): print(r.to_text())
+except Exception:
+    pass' "$name" "$rrtype" 2>/dev/null || true
+  fi
+}
+
+# Reverse DNS (PTR) for an IP via python socket. Echoes the hostname or
+# nothing. socket.gethostbyaddr handles both v4 and v6.
+_ws_resolve_ptr() {
+  local ip="$1"
+  python3 -c 'import socket,sys; print(socket.gethostbyaddr(sys.argv[1])[0])' "$ip" 2>/dev/null || true
+}
+
+# TCP port-open check from the workstation. ncat -z opens then closes;
+# its exit code IS the result (0 = open). Callers use it directly in
+# if / && — do NOT command-substitute, just test the return.
+_ws_port_open() {
+  local host="$1" port="$2"
+  ncat -z -w5 "$host" "$port" 2>/dev/null
+}
+
+# Plain (non-TLS) SMTP banner read from the workstation. Opens a raw TCP
+# socket via bash /dev/tcp and returns the first line (the 220 greeting).
+# For implicit-TLS (465/993) callers use the openssl path instead.
+_ws_smtp_banner() {
+  local host="$1" port="$2"
+  timeout 10 bash -c 'exec 3<>/dev/tcp/'"$host"'/'"$port"'; head -1 <&3' 2>/dev/null || true
+}
+
 # Resolve the cluster's externally-routable mail IP without hardcoding.
-# Strategy: dig the `mail.<apex>` A record (operators always set this DNS
-# entry, and `mail.${PLATFORM_DOMAIN}` is the canonical mail hostname the
+# Strategy: resolve the `mail.<apex>` A record from the WORKSTATION via
+# public DNS (operators always set this DNS entry, and
+# `mail.${PLATFORM_DOMAIN}` is the canonical mail hostname the
 # Stalwart-managed cert is issued for). Fallback to a kubectl query for
 # the stalwart-mail pod's hostIP — works during pod migration (drain /
 # rescheduling / mail-HA failover) because the pod's hostIP is whatever
@@ -205,8 +319,9 @@ _resolve_mail_host() {
   # cert against testing's expected hostname (guaranteed false failure).
   local mailhost; mailhost=$(_resolve_mail_hostname)
   local resolved
-  # 1. DNS — what an external SMTP client would see
-  resolved=$(dig +short "$mailhost" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  # 1. Public DNS from the workstation — what an external SMTP client
+  #    would see. First published IPv4.
+  resolved=$(_ws_resolve_a4 "$mailhost" | head -1)
   if [[ -n "$resolved" ]]; then
     echo "$resolved"
     return 0
@@ -352,12 +467,13 @@ except Exception:
 # Output: one IPv4/IPv6 per line, no duplicates, no trailing dots.
 _resolve_mail_ips() {
   local hostname="${1:-$(_resolve_mail_hostname)}"
-  # 1. DNS forward resolution — what external senders see
+  # 1. Forward DNS as seen FROM THE WORKSTATION (public resolver) — what
+  #    external senders see.
   local dns_v4 dns_v6
-  dns_v4=$(dig +short "$hostname" A 2>/dev/null \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
-  dns_v6=$(dig +short "$hostname" AAAA 2>/dev/null \
-    | grep -E ':' | sort -u)
+  dns_v4=$(_ws_resolve_a4 "$hostname" \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || true)
+  dns_v6=$(_ws_resolve_a6 "$hostname" \
+    | grep -E ':' | sort -u || true)
   # 2. Cluster node IPs (server-role nodes — haproxy targets) for the
   # intersection check + fallback.
   local cluster_ips
@@ -381,10 +497,11 @@ _resolve_mail_ips() {
 _assert_mail_forward_dns() {
   local hostname; hostname=$(_resolve_mail_hostname)
   local dns_v4 dns_v6 cluster_ips
-  dns_v4=$(dig +short "$hostname" A 2>/dev/null \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
-  dns_v6=$(dig +short "$hostname" AAAA 2>/dev/null \
-    | grep -E ':' | sort -u)
+  # Forward DNS as resolved FROM THE WORKSTATION (public resolver).
+  dns_v4=$(_ws_resolve_a4 "$hostname" \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || true)
+  dns_v6=$(_ws_resolve_a6 "$hostname" \
+    | grep -E ':' | sort -u || true)
   local dns_all
   dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
   cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
@@ -430,8 +547,9 @@ _assert_mail_forward_dns() {
 # — a missing or mismatched PTR is a primary cause of deliverability
 # regressions and is invisible to the cluster otherwise.
 #
-# For IPv6 the reverse zone is `.ip6.arpa`; `dig -x <addr>` handles
-# the nibble-reversal automatically.
+# Reverse DNS is resolved FROM THE WORKSTATION via python socket
+# (socket.gethostbyaddr), which handles both IPv4 in-addr.arpa and IPv6
+# .ip6.arpa nibble-reversal transparently.
 _assert_mail_reverse_dns() {
   local hostname; hostname=$(_resolve_mail_hostname)
   local ips; ips=$(_resolve_mail_ips "$hostname")
@@ -444,7 +562,7 @@ _assert_mail_reverse_dns() {
     [[ -z "$ip" ]] && continue
     checked=$((checked + 1))
     local ptr
-    ptr=$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')
+    ptr=$(_ws_resolve_ptr "$ip" | head -1 | sed 's/\.$//' || true)
     if [[ -z "$ptr" ]]; then
       fail "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)"
       continue
@@ -485,6 +603,13 @@ _assert_mail_not_blacklisted() {
     log "mail-dnsbl: skipped (SKIP_DNSBL=1)"
     return 0
   fi
+  # DNSBL lookups query blocklist zones directly — that needs dnspython.
+  # Advisory-skip (warn) the whole check when it's unavailable; A/AAAA +
+  # cert + port + banner probes are unaffected.
+  if [[ "${DNSPYTHON:-0}" != "1" ]]; then
+    warn "mail-dnsbl: dnspython unavailable — skipping DNSBL check (advisory)"
+    return 0
+  fi
   local hostname; hostname=$(_resolve_mail_hostname)
   local ips; ips=$(_resolve_mail_ips "$hostname")
   if [[ -z "$ips" ]]; then
@@ -505,14 +630,16 @@ _assert_mail_not_blacklisted() {
       for zone in $zones; do
         total_checks=$((total_checks + 1))
         local resp
-        resp=$(dig +short +time=3 +tries=2 "${revoct}.${zone}" A 2>/dev/null \
-          | grep -E '^127\.' | head -1)
+        # Query the blocklist zone from the workstation via dnspython.
+        resp=$(_ws_resolve_a_via_resolver "${revoct}.${zone}" A \
+          | grep -E '^127\.' | head -1 || true)
         if [[ -n "$resp" ]]; then
           total_hits=$((total_hits + 1))
-          # Try to pull the human-readable reason from the TXT record.
+          # Try to pull the human-readable reason from the TXT record
+          # (workstation dnspython lookup).
           local txt
-          txt=$(dig +short +time=3 +tries=2 "${revoct}.${zone}" TXT 2>/dev/null \
-            | head -1 | sed 's/^"//;s/"$//')
+          txt=$(_ws_resolve_txt "${revoct}.${zone}" \
+            | head -1 | sed 's/^"//;s/"$//' || true)
           local msg="${ip} listed on ${zone} (response=${resp}${txt:+ — ${txt}})"
           if [[ "$strict" == "1" ]]; then
             fail "mail-dnsbl: ${msg}"
@@ -542,7 +669,7 @@ _assert_smtp_banner_matches() {
       | timeout 10 openssl s_client -connect "${host}:${port}" -crlf -quiet -servername "$expected" 2>&1 || true)
   else
     out=$( ( sleep 0.4; printf "EHLO probe.local\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) \
-      | timeout 10 nc -w 8 "$host" "$port" 2>&1 || true)
+      | timeout 10 ncat -w 8 "$host" "$port" 2>&1 || true)
   fi
   # Parse `220 <hostname> ESMTP ...` greeting
   local banner_host
@@ -608,7 +735,7 @@ prereq_dns() {
   local probe
   probe="probe-$(date +%s).${HTTPS_TEST_DOMAIN_BASE}"
   local resolved
-  resolved=$(dig +short "$probe" 2>/dev/null | head -3)
+  resolved=$(_ws_resolve_a "$probe" | head -3)
   if echo "$resolved" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; then
     ok "wildcard *.${HTTPS_TEST_DOMAIN_BASE} resolves"
     return 0
@@ -696,7 +823,7 @@ scenario_fm() {
 #   2. POST domain with deployment_id (atomic create+link)
 #   3. Ingress resource present in tenant namespace with the host
 #   4. Cert-manager Certificate Ready=True
-#   5. dig resolves the domain
+#   5. workstation resolver resolves the domain
 #   6. openssl s_client returns a cert with CN == domain (NOT "Fake")
 #   7. curl HTTPS returns < 500 (or content match) — i.e. the request
 #      hit the workload, not nginx's default backend
@@ -770,7 +897,9 @@ scenario_https() {
 
   # 5. DNS — should already resolve thanks to the wildcard, but
   #    double-check rather than discover surprises during step 6/7.
-  local resolved; resolved=$(dig +short "$domain" 2>/dev/null)
+  #    Resolve FROM THE WORKSTATION (what a real browser / the ACME
+  #    HTTP-01 solver would see).
+  local resolved; resolved=$(_ws_resolve_a "$domain")
   if echo "$resolved" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; then
     ok "DNS resolves $domain"
   else
@@ -2640,19 +2769,51 @@ scenario_mail_tls() {
   _assert_smtp_banner_matches "mail-tls/587/banner" "$mail_host" 587 "$mail_hostname" "plain"
 
   # ── 3. SRV records target mail.${DOMAIN} (single-SAN cert match) ──
-  for rec in _imaps._tcp _submissions._tcp _submission._tcp _imap._tcp; do
-    # SRV target is the LAST whitespace-delimited token in the answer
-    local target
-    target=$(dig +short SRV "${rec}.${mail_domain_apex}" 2>/dev/null \
-      | awk '{print $NF}' | head -1 | sed 's/\.$//')
-    if [[ "$target" == "$mail_hostname" ]]; then
-      ok "mail-tls/srv: ${rec}.${mail_domain_apex} → ${target} (matches cert SAN)"
-    elif [[ -z "$target" ]]; then
-      log "mail-tls/srv: ${rec}.${mail_domain_apex} not yet provisioned (expected for the platform's own domain — only client domains get per-domain SRV)"
+  # SRV resolution needs dnspython; advisory-skip the whole block when
+  # it's unavailable (A/AAAA + TLS + port probes are unaffected).
+  if [[ "${DNSPYTHON:-0}" == "1" ]]; then
+    for rec in _imaps._tcp _submissions._tcp _submission._tcp _imap._tcp; do
+      local target
+      target=$(_ws_resolve_srv "${rec}.${mail_domain_apex}" | head -1)
+      if [[ "$target" == "$mail_hostname" ]]; then
+        ok "mail-tls/srv: ${rec}.${mail_domain_apex} → ${target} (matches cert SAN)"
+      elif [[ -z "$target" ]]; then
+        log "mail-tls/srv: ${rec}.${mail_domain_apex} not yet provisioned (expected for the platform's own domain — only client domains get per-domain SRV)"
+      else
+        fail "mail-tls/srv: ${rec}.${mail_domain_apex} → ${target} ≠ ${mail_hostname} (cert mismatch — re-provision DNS for client domains)"
+      fi
+    done
+  else
+    warn "mail-tls/srv: dnspython unavailable — skipping SRV checks (advisory)"
+  fi
+
+  # ── 3b. Port reachability FROM THE WORKSTATION ──
+  # An external mail client / remote MTA must be able to open these
+  # ports. Probe each from the workstation via ncat (-z connect-only):
+  # SMTP 25, SMTPS 465, submission 587, IMAP 143, IMAPS 993, ManageSieve
+  # 4190.
+  local mport
+  for mport in 25 465 587 143 993 4190; do
+    if _ws_port_open "$mail_host" "$mport"; then
+      ok "mail-tls/port: :$mport reachable from workstation ($mail_host)"
     else
-      fail "mail-tls/srv: ${rec}.${mail_domain_apex} → ${target} ≠ ${mail_hostname} (cert mismatch — re-provision DNS for client domains)"
+      fail "mail-tls/port: :$mport NOT reachable from workstation ($mail_host)"
     fi
   done
+
+  # ── 3c. ACME HTTP-01 challenge path reachable on the mail hostname ──
+  # Stalwart serves its own ACME challenges over :80; an external probe of
+  # /.well-known/acme-challenge/<token> must return 404 (no such token) or
+  # 200 — NOT a connection error / 5xx — proving the HTTP-01 path is
+  # externally reachable. Probe the HOSTNAME (the real external path) so
+  # virtual-host routing is exercised.
+  local acme_code
+  acme_code=$(curl -s -o /dev/null -m 8 -w '%{http_code}' "http://${mail_hostname}/.well-known/acme-challenge/ping" || echo 000)
+  if [[ "$acme_code" == "404" || "$acme_code" == "200" ]]; then
+    ok "mail-tls/acme: HTTP-01 path reachable on $mail_hostname (HTTP $acme_code)"
+  else
+    fail "mail-tls/acme: HTTP-01 path NOT reachable on $mail_hostname (HTTP $acme_code)"
+  fi
 
   # ── 4. admin SSL-status endpoint round-trip ──
   local resp; resp=$(api GET "/admin/email-settings/ssl-status")
@@ -3029,11 +3190,12 @@ except Exception as e:
   local attempt=0 banner_host=""
   while [[ $attempt -lt 30 ]]; do
     sleep 3
-    # Pick any node IP that has a stalwart-mail pod scheduled — read a
-    # banner from it. Multi-pod surge means the round-robin Service hits
-    # whichever pod won.
+    # Resolve the cluster's mail IP — public DNS first (what an external
+    # client sees), then kubectl node-IP fallback (the rename doesn't move
+    # the pod, and DNS for the new name may not have propagated yet). The
+    # 465 banner is then read FROM THE WORKSTATION via openssl implicit-TLS.
     local node_ip
-    node_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}' 2>/dev/null" | tr -d '[:space:]')
+    node_ip=$(MAIL_HOSTNAME="$test_host" _resolve_mail_host)
     [[ -z "$node_ip" ]] && { attempt=$((attempt + 1)); continue; }
     banner_host=$( ( sleep 0.4; printf "EHLO test\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -quiet -servername "$test_host" 2>/dev/null | grep -oE '^220 [^ ]+' | awk '{print $2}' | head -1)
     [[ "$banner_host" == "$test_host" ]] && break
