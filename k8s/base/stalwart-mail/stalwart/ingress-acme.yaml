@@ -57,11 +57,22 @@
 #   mail.${DOMAIN} would couple Flux's postBuild rendering to
 #   the platform-api's runtime config (which is the wrong layering —
 #   Flux re-renders manifests on every git change, not on every API
-#   write). When the operator overrides the hostname in admin Email
-#   Settings, the platform-api creates a SECOND IngressRoute with the
-#   override hostname (using the same backend/path) and triggers a
-#   Stalwart Bootstrap.serverHostname update. The default mail.${DOMAIN}
-#   route stays as a fallback for clients that haven't migrated.
+#   write).
+#
+# Non-default hostname override (NO LONGER A GAP):
+#   When the operator renames the mail hostname to a NON-default value
+#   (platform_settings.mail_server_hostname), the platform-api
+#   reconciles a SEPARATE IngressRoute named `stalwart-mail-acme-override`
+#   (this same backend/path, matching the override host) so LE's
+#   HTTP-01 challenge for the renamed host reaches Stalwart's http-acme
+#   listener. It is created when the hostname differs from
+#   mail.<ingress_base_domain> and deleted (absence-reconciled) when it
+#   matches the default — single-node and multi-node alike. Owned by
+#   the platform-api (label app.kubernetes.io/managed-by: platform-api),
+#   reconciled on every stalwart-domain-reconciler tick AND inline on
+#   every hostname-rename PATCH. Source:
+#   backend/src/modules/mail-admin/mail-acme-override-route.ts.
+#   This static mail.${DOMAIN} route stays as the default/fallback.
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

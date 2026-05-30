@@ -11,13 +11,19 @@ const httpsUrl = z.string().url().refine(
 
 // RFC 1123 hostname. Lowercase letters/digits/hyphens per label,
 // max 253 chars total, at least two labels (mail.example.com, not just
-// `mail`). Trailing dots tolerated — we strip before storage.
+// `mail`). This value is interpolated into a Traefik match rule
+// `Host(`<host>`) && …` by the mail-acme-override-route reconciler, so
+// it MUST reject anything that isn't a strict DNS hostname so a crafted
+// value with backticks/parentheses can never reach the reconciler
+// (match-rule injection). See
+// backend/src/modules/mail-admin/mail-acme-override-route.ts.
 const fqdn = z.string()
+  .trim()
   .min(3)
   .max(253)
   .regex(
-    /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\.?$/i,
-    { message: 'must be a valid fully-qualified domain name' },
+    /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i,
+    'must be a valid DNS hostname',
   );
 
 // Reset-to-default sentinel. Null on the wire means "delete the row, fall
