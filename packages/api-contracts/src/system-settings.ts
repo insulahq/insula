@@ -35,8 +35,10 @@ export const updateSystemSettingsSchema = z.object({
   timezone: z.string().min(1).max(50).optional(),
   currency: currencyCodeSchema.optional(),
   // Deprecated — moved to /admin/webmail-settings. Retained here so
-  // older callers don't break; the backend silently ignores them.
-  mailHostname: z.string().max(255).nullable().optional(),
+  // older callers don't break; the backend silently ignores it.
+  // (mailHostname removed — the canonical mail hostname is
+  // mailServerHostname under /admin/webmail-settings; the backing
+  // column is retired in code, physical drop deferred — see migration 0046.)
   webmailUrl: z.string().url().max(500).nullable().optional(),
   // Runtime-firewall toggles (migration 0062). When false, the catalog
   // deploy path rejects workloads that declare host-network ports on
@@ -78,7 +80,6 @@ export const systemSettingsResponseSchema = z.object({
   supportEmail: z.string().nullable(),
   supportUrl: z.string().nullable(),
   ingressBaseDomain: z.string().nullable(),
-  mailHostname: z.string().nullable(),
   webmailUrl: z.string().nullable(),
   apiRateLimit: z.number(),
   currencySymbol: z.string(),
