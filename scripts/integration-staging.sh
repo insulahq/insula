@@ -53,6 +53,15 @@ unset _tool
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+# Derive the platform apex from ADMIN_HOST (admin.<apex>) so DNS-level
+# probes (mail SRV records, FCrDNS) target the cluster actually under
+# test instead of defaulting to the historical `staging.example.test`.
+# An explicit MAIL_DOMAIN_APEX/PLATFORM_DOMAIN still wins. Running against
+# admin.testing.example.test now yields apex=testing.example.test.
+if [[ -z "${PLATFORM_DOMAIN:-}" && -z "${MAIL_DOMAIN_APEX:-}" ]]; then
+  _derived_apex="$(printf '%s' "$ADMIN_HOST" | sed -E 's#^https?://##; s#/.*$##; s#^admin\.##')"
+  [[ -n "$_derived_apex" ]] && PLATFORM_DOMAIN="$_derived_apex"
+fi
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 SSH_HOST="${SSH_HOST:-}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -q}"
@@ -186,10 +195,18 @@ _resolve_mail_host() {
     echo "$MAIL_HOST"
     return 0
   fi
-  local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-staging.example.test}}"
+  # Resolve the CONFIGURED mail hostname — the canonical source of truth
+  # (platform_settings.mail_server_hostname, surfaced via
+  # /admin/webmail-settings.mailServerHostname and computed as
+  # mail.<ingress_base_domain> when unset). We MUST probe the same host
+  # the cert SAN + banner are asserted against (_resolve_mail_hostname),
+  # NOT a `mail.${apex}` guess whose apex defaults to staging — that made
+  # a run against testing probe STAGING's mail server and compare its
+  # cert against testing's expected hostname (guaranteed false failure).
+  local mailhost; mailhost=$(_resolve_mail_hostname)
   local resolved
   # 1. DNS — what an external SMTP client would see
-  resolved=$(dig +short "mail.${apex}" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  resolved=$(dig +short "$mailhost" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
   if [[ -n "$resolved" ]]; then
     echo "$resolved"
     return 0
