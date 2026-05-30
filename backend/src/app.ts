@@ -1320,6 +1320,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
         const stalwartDomainStop = startStalwartDomainReconciler({
           core: k8sForImapsync.core,
+          custom: k8sForImapsync.custom,
           db: app.db,
           kubeconfigPath: kubePath,
           logger: {
