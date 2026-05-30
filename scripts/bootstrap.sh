@@ -5878,6 +5878,73 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "AcmeRenewal task fired (domainId=\${DOMAIN_ID})"
 
+          # 5d. ADVISORY: poll whether the first mail TLS cert actually
+          # issued, so a fresh bootstrap deterministically observes the
+          # outcome (and warns loudly) instead of silently moving on.
+          #
+          # NON-FATAL: the configure pod runs under "set -eu" (line ~5590),
+          # so every probe command below is guarded with "|| true" and the
+          # loop NEVER exits -- a failed/timed-out probe must not strand the
+          # rest of the configure step (AllowedIp, listeners, admin creds
+          # still need to run).
+          #
+          # Probe approach (Option 2, adapted to run in-pod): install openssl
+          # via the same apk path already proven above, then openssl s_client
+          # to the Stalwart pod's implicit-TLS submissions port (465) over the
+          # IN-CLUSTER Service DNS and assert the served leaf issuer is NOT the
+          # startup rcgen self-signed cert.
+          #
+          # Why this and not JMAP (Option 1): jmap_call (defined above) only
+          # reaches Stalwart's config surface (x:SystemSettings/get,
+          # x:Domain/get certificateManagement) -- nowhere in this repo does
+          # JMAP expose the SERVED runtime certificate, so it cannot tell a
+          # real CA-issued cert from the rcgen self-signed one. The served-leaf
+          # issuer check is the only "cert really issued" signal the codebase
+          # trusts (cf. scripts/integration-staging.sh scenario_mail_tls and
+          # scripts/integration-stalwart-mail-ha.sh). It stays INSIDE the
+          # cluster (stalwart-mail.mail.svc.cluster.local) -- we deliberately
+          # do NOT probe the node's own public IP:465, which fails on cloud
+          # hairpin NAT. kubectl is unavailable in this pod, so Option 2's
+          # one-shot "kubectl run" cannot apply here; an in-pod openssl probe
+          # is the in-pod-feasible equivalent.
+          # Poll budget is deliberately SHORT (4x20s ~= 80s): this whole
+          # configure pod is gated by an outer "kctl wait ...
+          # --timeout=180s" (see the wait after the pod is applied), so a
+          # multi-minute poll here would be cut off by that wait AND would
+          # add minutes to EVERY fresh install (mail DNS is frequently
+          # wired AFTER bootstrap). 80s catches the common fast-issue case
+          # (DNS already correct); the platform-api stalwart-domain
+          # reconciler's 30-min tick is the durable backstop for the
+          # slow-DNS case. Fits comfortably inside the 180s pod wait.
+          apk add -q --no-cache openssl 2>/dev/null || true
+          CERT_PROBE_HOST="stalwart-mail.mail.svc.cluster.local"
+          CERT_OK=""
+          echo "Polling for first mail TLS cert on \${CERT_PROBE_HOST}:465 (up to 4x20s ~= 80s; advisory, non-fatal)..."
+          for _cert_try in 1 2 3 4; do
+            CERT_ISSUER=\$( (echo | openssl s_client -connect "\${CERT_PROBE_HOST}:465" \
+              -servername "\${STALWART_HOSTNAME}" 2>/dev/null \
+              | openssl x509 -noout -issuer 2>/dev/null) || true )
+            case "\${CERT_ISSUER}" in
+              "")
+                echo "  cert poll \${_cert_try}/4: no TLS issuer readable yet on :465" ;;
+              *[Ss]talwart*|*[Ss]elf?[Ss]igned*|*rcgen*|*localhost*)
+                echo "  cert poll \${_cert_try}/4: still serving startup self-signed cert (\${CERT_ISSUER})" ;;
+              *)
+                echo "Mail TLS cert ISSUED for \${STALWART_HOSTNAME}: \${CERT_ISSUER}"
+                CERT_OK=yes
+                break ;;
+            esac
+            if [ "\${_cert_try}" -lt 4 ]; then sleep 20 || true; fi
+          done
+          if [ -z "\${CERT_OK}" ]; then
+            echo "WARN: mail TLS cert for \${STALWART_HOSTNAME} not yet issued (~80s elapsed)." >&2
+            echo "WARN:   Most common cause: DNS for \${STALWART_HOSTNAME} has not propagated yet," >&2
+            echo "WARN:   so Let's Encrypt cannot reach this host to validate the ACME challenge." >&2
+            echo "WARN:   This is EXPECTED if you set mail DNS after bootstrap. Stalwart + the" >&2
+            echo "WARN:   platform-api stalwart-domain reconciler keep retrying automatically." >&2
+            echo "WARN:   Verify later with:  scripts/integration-staging.sh mail_tls" >&2
+          fi
+
           # 6. AllowedIp — create missing entries
           EXISTING_IPS=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
