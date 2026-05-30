@@ -41,11 +41,12 @@
  * scheduled tick only exists to catch external drift.
  */
 
-import type { CoreV1Api } from '@kubernetes/client-node';
+import type { CoreV1Api, CustomObjectsApi } from '@kubernetes/client-node';
 
 import { eq } from 'drizzle-orm';
 
 import { readStalwartCredentials } from './credentials.js';
+import { ensureMailAcmeOverrideRoute, resolveDefaultMailHost } from './mail-acme-override-route.js';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -83,7 +84,12 @@ export async function getExplicitMailHostname(db: Database): Promise<string | nu
     .select()
     .from(platformSettings)
     .where(eq(platformSettings.key, 'mail_server_hostname'));
-  const stored = row?.value?.trim();
+  // Normalise the stored hostname the same way resolveDefaultMailHost +
+  // the override-route reconciler do: strip trailing dot(s) + lowercase.
+  // A stored `mx.foo.com.` (the platform-urls fqdn schema historically
+  // tolerated a trailing dot) would otherwise never match Traefik's
+  // Host(`...`) rule and silently fail HTTP-01.
+  const stored = row?.value?.trim().replace(/\.+$/, '').toLowerCase();
   if (stored && stored.length > 0) return stored;
 
   // 2 + 3. Env overrides.
@@ -165,6 +171,13 @@ const REQUIRED_LISTENERS: ReadonlyArray<RequiredListener> = [
 export interface StalwartDomainReconcilerDeps {
   readonly core: CoreV1Api;
   readonly db: Database;
+  /**
+   * CustomObjectsApi for reconciling the `stalwart-mail-acme-override`
+   * Traefik IngressRoute (ACME HTTP-01 route for a non-default mail
+   * hostname). Optional — when absent (test/dev contexts) the override
+   * route step is skipped silently.
+   */
+  readonly custom?: CustomObjectsApi;
   /** Override kubeconfig path for exec transport. */
   readonly kubeconfigPath?: string;
   readonly tickMs?: number;
@@ -292,6 +305,22 @@ export async function runStalwartDomainReconcilerTick(
     return empty({}, 'Mail hostname could not be resolved — both platform_settings.mail_server_hostname and platform_settings.ingress_base_domain are unset. Set the apex via Admin UI → Settings → Platform URLs (Ingress Base Domain), or override the mail hostname directly via Admin UI → Email → Settings → Server.');
   }
   const trimmedHost = mailHostname.toLowerCase();
+
+  // 1b. Reconcile the ACME HTTP-01 override IngressRoute. When the
+  //     mail hostname is a NON-default value (operator rename), the
+  //     static `stalwart-mail-acme` route (pinned to mail.${DOMAIN})
+  //     doesn't cover the override host's challenge path, so LE's
+  //     HTTP-01 validation 404s at Traefik and the renamed host's cert
+  //     never issues. The platform-api owns a SEPARATE
+  //     `stalwart-mail-acme-override` IngressRoute that routes the
+  //     override host's challenge path to stalwart-mail-acme:80. This
+  //     self-heals every tick; absence-reconciled when the hostname is
+  //     the default. Independent of Stalwart pod readiness — runs
+  //     before the JMAP transport. Skipped when `custom` isn't wired.
+  if (deps.custom) {
+    const defaultMailHost = await resolveDefaultMailHost(deps.db);
+    await ensureMailAcmeOverrideRoute(deps.custom, trimmedHost, defaultMailHost, log);
+  }
 
   // 2. JMAP transport (loopback inside Stalwart pod).
   const env = deps.env ?? process.env;

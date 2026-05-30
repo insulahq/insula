@@ -11,9 +11,18 @@ export const updateWebmailSettingsSchema = z.object({
   // All customer `mail.<domain>` records CNAME to this hostname.
   mailServerHostname: z
     .string()
+    .trim()
     .min(1)
     .max(253)
-    .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i, 'Invalid hostname')
+    // RFC-1123 DNS hostname. This value is interpolated into a Traefik
+    // match rule `Host(`<host>`) && …` by the mail-acme-override-route
+    // reconciler, so it MUST be constrained here so a crafted value with
+    // backticks/parentheses can never reach the reconciler (match-rule
+    // injection). See backend/src/modules/mail-admin/mail-acme-override-route.ts.
+    .regex(
+      /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i,
+      'must be a valid DNS hostname',
+    )
     .optional(),
   // Phase 3.B.3: global default per-customer email send rate limit
   // (messages per hour). null = no default (Stalwart uses its built-in

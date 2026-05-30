@@ -221,6 +221,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         );
         await runStalwartDomainReconcilerTick({
           core: k8s.core,
+          custom: k8s.custom,
           db: app.db,
           logger: {
             warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
