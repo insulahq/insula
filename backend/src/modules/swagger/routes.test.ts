@@ -16,7 +16,7 @@ describe('swagger documentation', () => {
     await app.register(fastifySwagger, {
       openapi: {
         info: {
-          title: 'K8s Hosting Platform API',
+          title: 'Hosting Platform API',
           description: 'Management API for the Kubernetes web hosting platform',
           version: '0.1.0',
         },
@@ -110,7 +110,7 @@ describe('swagger documentation', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.info.title).toBe('K8s Hosting Platform API');
+    expect(body.info.title).toBe('Hosting Platform API');
     expect(body.info.version).toBe('0.1.0');
     expect(body.info.description).toBe(
       'Management API for the Kubernetes web hosting platform',

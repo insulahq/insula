@@ -5,7 +5,7 @@ set -u
 BASE_URL="${BASE_URL:-http://admin.k8s-platform.test:2010}"
 ITERATIONS="${ITERATIONS:-50}"
 
-echo "=== K8s Hosting Platform API Benchmark ==="
+echo "=== Hosting Platform API Benchmark ==="
 echo "Target: $BASE_URL"
 echo "Iterations: $ITERATIONS per endpoint"
 echo ""
