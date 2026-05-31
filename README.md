@@ -1,4 +1,4 @@
-# K8s Hosting Platform
+# Hosting Platform
 
 Kubernetes-based, expandable web hosting platform. Runs on self-managed k3s clusters (VPS or bare metal).
 

@@ -7092,7 +7092,7 @@ main() {
   check_os
 
   log "════════════════════════════════════════════════"
-  log "  K8s Hosting Platform — Bootstrap (${NODE_ROLE}, ${PLATFORM_ENV})"
+  log "  Hosting Platform — Bootstrap (${NODE_ROLE}, ${PLATFORM_ENV})"
   log "  k3s ${K3S_VERSION} + Calico ${CALICO_VERSION}"
   log "════════════════════════════════════════════════"
   log ""
