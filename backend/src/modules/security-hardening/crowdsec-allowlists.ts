@@ -19,7 +19,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { createKubeConfig } from '../container-console/service.js';
-import { cscliExec, findCrowdsecPodName } from './cscli-exec.js';
+import { cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
 import type {
   CrowdsecAllowlistEntry,
   CrowdsecAddAllowlistRequest,
@@ -139,7 +139,7 @@ export async function listAllowlistEntries(
   // (cscli output format has shifted between releases).
   try {
     const { stdout } = await cscliExec(kc, podName, ['allowlists', 'inspect', ALLOWLIST_NAME, '-o', 'json']);
-    const parsed = JSON.parse(stdout) as CscliInspectOutput;
+    const parsed = parseCscliJson<CscliInspectOutput>(stdout);
     const items = parsed.items ?? parsed.Items ?? [];
     return items.map((row): CrowdsecAllowlistEntry => {
       const { addedBy, comment } = splitEntryComment(row.description);

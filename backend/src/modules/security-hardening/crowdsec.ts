@@ -20,7 +20,7 @@
 import * as k8s from '@kubernetes/client-node';
 import { Buffer } from 'node:buffer';
 import { createKubeConfig } from '../container-console/service.js';
-import { cscliExec, findCrowdsecPodName } from './cscli-exec.js';
+import { cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
 import type {
   CrowdsecAddBanRequest,
   CrowdsecBouncer,
@@ -518,7 +518,7 @@ export async function pruneStaleBouncers(
 async function countBouncers(kc: k8s.KubeConfig, podName: string): Promise<number> {
   try {
     const { stdout } = await cscliExec(kc, podName, ['bouncers', 'list', '-o', 'json']);
-    const parsed = JSON.parse(stdout) as unknown;
+    const parsed = parseCscliJson<unknown>(stdout);
     return Array.isArray(parsed) ? parsed.length : 0;
   } catch {
     return 0;
@@ -558,7 +558,7 @@ async function fetchMachinesAndBouncers(kc: k8s.KubeConfig, podName: string): Pr
   const bouncers: CrowdsecBouncer[] = [];
   if (machinesRes.status === 'fulfilled') {
     try {
-      const parsed = JSON.parse(machinesRes.value.stdout) as CscliMachineRow[];
+      const parsed = parseCscliJson<CscliMachineRow[]>(machinesRes.value.stdout);
       for (const m of parsed) {
         machines.push({
           name: String(m.machineId ?? ''),
@@ -571,7 +571,7 @@ async function fetchMachinesAndBouncers(kc: k8s.KubeConfig, podName: string): Pr
   }
   if (bouncersRes.status === 'fulfilled') {
     try {
-      const parsed = JSON.parse(bouncersRes.value.stdout) as CscliBouncerRow[];
+      const parsed = parseCscliJson<CscliBouncerRow[]>(bouncersRes.value.stdout);
       for (const b of parsed) {
         if (b.revoked) continue;
         bouncers.push({
@@ -619,7 +619,7 @@ async function fetchDecisionCounts(kc: k8s.KubeConfig, podName: string): Promise
 } | null> {
   try {
     const { stdout } = await cscliExec(kc, podName, ['metrics', 'show', 'decisions', '-o', 'json']);
-    const parsed = JSON.parse(stdout) as { decisions?: Record<string, Record<string, Record<string, number>>> };
+    const parsed = parseCscliJson<{ decisions?: Record<string, Record<string, Record<string, number>>> }>(stdout);
     const tree = parsed.decisions ?? {};
     let total = 0;
     const byOrigin: Record<string, number> = {};
@@ -648,7 +648,7 @@ async function fetchDecisionCounts(kc: k8s.KubeConfig, podName: string): Promise
 async function fetchScenariosCount(kc: k8s.KubeConfig, podName: string): Promise<number> {
   try {
     const { stdout } = await cscliExec(kc, podName, ['scenarios', 'list', '-o', 'json']);
-    const parsed = JSON.parse(stdout) as Record<string, unknown[]> | unknown[];
+    const parsed = parseCscliJson<Record<string, unknown[]> | unknown[]>(stdout);
     if (Array.isArray(parsed)) return parsed.length;
     // cscli sometimes wraps in { scenarios: [...] }
     const scen = (parsed as { scenarios?: unknown[] }).scenarios;
