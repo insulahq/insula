@@ -840,7 +840,20 @@ fi
 
 # H3: GET lists the new exclusion. Use `grep -F` (fixed-string) — the
 # regex contains ^ and $ anchors that don't match against inline JSON.
-h_list_after=$(api_internal GET /admin/security/waf-rule-exclusions)
+#
+# RETRY: same ephemeral-curl-pod empty-body flake as the other GETs in
+# this suite (and a brief read-after-write window across the 3-replica
+# platform-api pool right after the H2 create). Re-fetch up to 5× until
+# the just-created row is visible before declaring failure. The
+# assertion is unchanged.
+h_list_after=""
+for _i in 1 2 3 4 5; do
+  h_list_after=$(api_internal GET /admin/security/waf-rule-exclusions)
+  if echo "$h_list_after" | grep -qF "$F4_HOST_REGEX"; then
+    break
+  fi
+  sleep 2
+done
 if echo "$h_list_after" | grep -qF "$F4_HOST_REGEX"; then
   ok "F4: exclusion appears in GET list"
 else
