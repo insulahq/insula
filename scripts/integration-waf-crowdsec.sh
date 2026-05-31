@@ -908,11 +908,26 @@ fi
 
 # H7: GET with includeDisabled=true should show the disabled row.
 # Use `-F` to match the literal regex string in JSON (no anchor regex).
-h_with_disabled=$(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true")
+#
+# RETRY: the H6 PATCH and this GET can land on DIFFERENT replicas of the
+# 3-replica platform-api pool, so a read-after-write window can briefly
+# hide the row (same race H12 already retries for after DELETE). The GET
+# can also come back as an empty-body ephemeral-curl-pod flake. Re-fetch
+# up to 5x until the row appears before declaring failure. The row is
+# disabled (set by H6) but `includeDisabled=true` must surface it — the
+# assertion is unchanged.
+h_with_disabled=""
+for _i in 1 2 3 4 5; do
+  h_with_disabled=$(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true")
+  if echo "$h_with_disabled" | grep -qF "$F4_HOST_REGEX"; then
+    break
+  fi
+  sleep 2
+done
 if echo "$h_with_disabled" | grep -qF "$F4_HOST_REGEX"; then
   ok "F4: disabled row visible with includeDisabled=true"
 else
-  fail "F4: disabled row NOT visible with includeDisabled=true"
+  fail "F4: disabled row NOT visible with includeDisabled=true: $(echo "$h_with_disabled" | head -c 200)"
 fi
 
 # H8: Duplicate enabled row → 409 DUPLICATE
@@ -929,7 +944,28 @@ if [[ -n "${h_id:-}" ]]; then
   api_internal PATCH "/admin/security/waf-rule-exclusions/$h_id" '{"disabled":false}' >/dev/null
 fi
 # Now another POST with the same (rule, regex, scope) tuple should 409.
-dupe_rc=$(kubectl_run "run waf-cs-h-dupe-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+#
+# RETRY only on a NON-NUMERIC status: the `kubectl run` curl pod that
+# issues this POST occasionally returns an EMPTY/garbled status (a
+# scheduling hiccup) → `dupe_rc` is the empty string → the assertion
+# printed "duplicate got HTTP  (expected 409)". We retry up to 5x ONLY
+# while the captured value isn't a 3-digit HTTP code, so a flaky empty
+# capture is re-issued.
+#
+# CRITICAL — we must NOT keep POSTing once we get a concrete status:
+# a real 200 would mean a duplicate row was actually CREATED, and
+# re-POSTing past it would orphan extra rows that H12's "row gone" grep
+# (and cleanup_f4) keyed off $F4_HOST_REGEX would then trip over. So a
+# numeric status (whatever it is) ends the loop; the assertion below
+# still accepts ONLY 409, so a genuine 200/4xx still fails.
+dupe_rc=""
+for _i in 1 2 3 4 5; do
+  dupe_rc=$(kubectl_run "run waf-cs-h-dupe-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+  if [[ "$dupe_rc" =~ ^[0-9]{3}$ ]]; then
+    break
+  fi
+  sleep 2
+done
 if [[ "$dupe_rc" == "409" ]]; then
   ok "F4: duplicate enabled row rejected (409)"
 else
