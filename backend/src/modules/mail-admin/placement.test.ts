@@ -205,10 +205,15 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
   const mockReadDeployment = vi.fn(async () => ({}));
   const mockPatchNode = vi.fn(async () => undefined);
   const mockCreateNamespacedJob = vi.fn(async () => undefined);
+  // listNode handle for the sole-server primary-election path. Defaults
+  // to empty (most self-heal tests infer primary from the pod, not a
+  // node list); the election tests override it.
+  const mockSelfHealListNode = vi.fn(async () => ({ items: [] as unknown[] }));
 
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockSelfHealListNode.mockResolvedValue({ items: [] });
     // Re-mock k8s client to expose AppsV1Api + BatchV1Api for this
     // describe block (the file-level mock only handles CoreV1Api).
     vi.doMock('@kubernetes/client-node', () => ({
@@ -219,7 +224,7 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
           const name = (api as { name?: string })?.name ?? '';
           if (name === 'CoreV1Api') {
             return {
-              listNode: vi.fn(async () => ({ items: [] })),
+              listNode: mockSelfHealListNode,
               listNamespacedPod: mockListNamespacedPod,
               patchNode: mockPatchNode,
             };
@@ -310,5 +315,176 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
     await ensureMailStackPlacementApplied(db, { kubeconfigPath: undefined });
     const primaryWrite = writes.find((w) => 'mailPrimaryNode' in w.patch);
     expect(primaryWrite).toBeUndefined();
+  });
+
+  // First/sole cluster server self-assigns primary (2026-05-31).
+  // On a fresh single-server bootstrap there is no Stalwart pod and no
+  // mail_active_node yet — but the FIRST server must still become the
+  // mail primary automatically. When EXACTLY ONE Ready server-role node
+  // exists, elect it. >1 servers → ambiguous, leave NULL.
+  it('elects the sole Ready server-role node as primary when no pod + no active node', async () => {
+    mockListNamespacedPod.mockResolvedValue({ items: [] });
+    // Single Ready server-role node — sole-server primary election.
+    mockSelfHealListNode.mockResolvedValue({
+      items: [{
+        metadata: { name: 'server-1', labels: { 'insula.host/node-role': 'server' } },
+        status: { conditions: [{ type: 'Ready', status: 'True' }] },
+      }],
+    });
+    const { db, writes } = buildDbWithRow({
+      mailPrimaryNode: null,
+      mailSecondaryNode: null,
+      mailTertiaryNode: null,
+      mailActiveNode: null,
+    });
+    const { ensureMailStackPlacementApplied } = await import('./placement.js');
+    await ensureMailStackPlacementApplied(db, { kubeconfigPath: undefined });
+    const primaryWrite = writes.find((w) => 'mailPrimaryNode' in w.patch);
+    expect(primaryWrite).toBeDefined();
+    expect(primaryWrite!.patch.mailPrimaryNode).toBe('server-1');
+  });
+
+  it('does NOT elect a primary when more than one Ready server exists (ambiguous)', async () => {
+    mockListNamespacedPod.mockResolvedValue({ items: [] });
+    // Two Ready server-role nodes — ambiguous, no election.
+    mockSelfHealListNode.mockResolvedValue({
+      items: [
+        {
+          metadata: { name: 'server-1', labels: { 'insula.host/node-role': 'server' } },
+          status: { conditions: [{ type: 'Ready', status: 'True' }] },
+        },
+        {
+          metadata: { name: 'server-2', labels: { 'insula.host/node-role': 'server' } },
+          status: { conditions: [{ type: 'Ready', status: 'True' }] },
+        },
+      ],
+    });
+    const { db, writes } = buildDbWithRow({
+      mailPrimaryNode: null,
+      mailSecondaryNode: null,
+      mailTertiaryNode: null,
+      mailActiveNode: null,
+    });
+    const { ensureMailStackPlacementApplied } = await import('./placement.js');
+    await ensureMailStackPlacementApplied(db, { kubeconfigPath: undefined });
+    const primaryWrite = writes.find((w) => 'mailPrimaryNode' in w.patch);
+    expect(primaryWrite).toBeUndefined();
+  });
+});
+
+// ─── updateMailPlacement node-count gate (2026-05-31) ────────────────
+//
+// Secondary placement requires >=2 Ready candidate nodes ("2 active
+// nodes required"); tertiary requires >=3 ("3 active nodes required").
+// "Ready candidate node" = a Ready node with role in {server, worker}.
+// Setting primary alone on a single node is always allowed.
+
+describe('mail-admin/placement.updateMailPlacement node-count gate', () => {
+  const mockReadNode = vi.fn(async () => ({}));
+  const mockListNodeGate = vi.fn(async () => ({ items: [] as unknown[] }));
+
+  function buildGateDb() {
+    const setWhere = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn(() => ({ set: vi.fn(() => ({ where: setWhere })) }));
+    return {
+      db: {
+        update,
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([{}]) })),
+        })),
+      } as unknown as import('../../db/index.js').Database,
+      update,
+    };
+  }
+
+  function readyCandidates(n: number) {
+    // n Ready server-role candidate nodes.
+    return Array.from({ length: n }, (_, i) => ({
+      metadata: { name: `node-${i}`, labels: { 'insula.host/node-role': 'server' } },
+      status: { conditions: [{ type: 'Ready', status: 'True' }] },
+    }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doMock('@kubernetes/client-node', () => ({
+      KubeConfig: class {
+        loadFromCluster() {}
+        loadFromFile() {}
+        makeApiClient(api: unknown) {
+          const name = (api as { name?: string })?.name ?? '';
+          if (name === 'CoreV1Api') {
+            return { readNode: mockReadNode, listNode: mockListNodeGate };
+          }
+          return {};
+        }
+      },
+      CoreV1Api: { name: 'CoreV1Api' },
+    }));
+  });
+
+  it('rejects setting secondary on a single-node cluster with "2 active nodes required"', async () => {
+    mockListNodeGate.mockResolvedValue({ items: readyCandidates(1) });
+    const { db, update } = buildGateDb();
+    const { updateMailPlacement } = await import('./placement.js');
+    await expect(
+      updateMailPlacement(
+        { primaryNode: 'node-0', secondaryNode: 'node-x' },
+        db,
+        { kubeconfigPath: undefined },
+      ),
+    ).rejects.toMatchObject({ message: '2 active nodes required' });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects setting tertiary on a 2-node cluster with "3 active nodes required"', async () => {
+    mockListNodeGate.mockResolvedValue({ items: readyCandidates(2) });
+    const { db, update } = buildGateDb();
+    const { updateMailPlacement } = await import('./placement.js');
+    await expect(
+      updateMailPlacement(
+        { primaryNode: 'node-0', secondaryNode: 'node-1', tertiaryNode: 'node-x' },
+        db,
+        { kubeconfigPath: undefined },
+      ),
+    ).rejects.toMatchObject({ message: '3 active nodes required' });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows setting primary-only on a single-node cluster', async () => {
+    mockListNodeGate.mockResolvedValue({ items: readyCandidates(1) });
+    const { db, update } = buildGateDb();
+    const { updateMailPlacement } = await import('./placement.js');
+    await updateMailPlacement(
+      { primaryNode: 'node-0' },
+      db,
+      { kubeconfigPath: undefined },
+    );
+    expect(update).toHaveBeenCalled();
+  });
+
+  it('allows setting secondary when >=2 Ready candidate nodes exist', async () => {
+    mockListNodeGate.mockResolvedValue({ items: readyCandidates(2) });
+    const { db, update } = buildGateDb();
+    const { updateMailPlacement } = await import('./placement.js');
+    await updateMailPlacement(
+      { primaryNode: 'node-0', secondaryNode: 'node-1' },
+      db,
+      { kubeconfigPath: undefined },
+    );
+    expect(update).toHaveBeenCalled();
+  });
+
+  it('allows clearing secondary/tertiary (null) regardless of node count', async () => {
+    mockListNodeGate.mockResolvedValue({ items: readyCandidates(1) });
+    const { db, update } = buildGateDb();
+    const { updateMailPlacement } = await import('./placement.js');
+    await updateMailPlacement(
+      { primaryNode: 'node-0', secondaryNode: null, tertiaryNode: null },
+      db,
+      { kubeconfigPath: undefined },
+    );
+    expect(update).toHaveBeenCalled();
   });
 });

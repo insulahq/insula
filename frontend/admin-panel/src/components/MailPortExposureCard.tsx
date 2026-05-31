@@ -90,6 +90,16 @@ export default function MailPortExposureCard() {
   const hasChange = selected !== current.mode;
   const selectedOption = MODE_OPTIONS.find((o) => o.mode === selected)!;
 
+  // Node-count gate (server-side authoritative; mirrored here): the
+  // HA-proxy modes (assignedMailNodes + allServerNodes) require >=2
+  // Ready server-role nodes. Below the threshold those radios are
+  // disabled; activeNodeOnly is always selectable. The card still
+  // DISPLAYS the current mode regardless of the gate.
+  const haproxyModesDisabled = current.readyServerNodeCount < 2;
+  const HAPROXY_GATE_LABEL = '2 or more server nodes required';
+  const isModeGated = (mode: MailPortExposureMode) =>
+    mode !== 'activeNodeOnly' && haproxyModesDisabled;
+
   async function applyChange() {
     try {
       const resp = await update.mutateAsync({ mode: selected });
@@ -123,34 +133,49 @@ export default function MailPortExposureCard() {
       </p>
 
       <div className="space-y-2">
-        {MODE_OPTIONS.map((opt) => (
-          <label
-            key={opt.mode}
-            className={`flex items-start gap-3 rounded-lg border px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 ${
-              selected === opt.mode
-                ? 'border-brand-400 dark:border-brand-600 bg-brand-50/40 dark:bg-brand-900/10'
-                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
-            }`}
-          >
-            <input
-              type="radio"
-              name="mail-port-exposure-mode"
-              value={opt.mode}
-              checked={selected === opt.mode}
-              onChange={() => setDraft(opt.mode)}
-              data-testid={`mail-port-exposure-${opt.mode}`}
-              className="mt-1"
-            />
-            <div className="flex-1">
-              <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {opt.title}
+        {MODE_OPTIONS.map((opt) => {
+          const gated = isModeGated(opt.mode);
+          return (
+            <label
+              key={opt.mode}
+              className={`flex items-start gap-3 rounded-lg border px-4 py-3 ${
+                gated ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800'
+              } ${
+                selected === opt.mode
+                  ? 'border-brand-400 dark:border-brand-600 bg-brand-50/40 dark:bg-brand-900/10'
+                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
+              }`}
+            >
+              <input
+                type="radio"
+                name="mail-port-exposure-mode"
+                value={opt.mode}
+                checked={selected === opt.mode}
+                onChange={() => { if (!gated) setDraft(opt.mode); }}
+                disabled={gated}
+                aria-disabled={gated}
+                data-testid={`mail-port-exposure-${opt.mode}`}
+                className="mt-1"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {opt.title}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {opt.description}
+                </div>
+                {gated && (
+                  <div
+                    className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    data-testid={`mail-port-exposure-${opt.mode}-gate`}
+                  >
+                    {HAPROXY_GATE_LABEL}
+                  </div>
+                )}
               </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                {opt.description}
-              </div>
-            </div>
-          </label>
-        ))}
+            </label>
+          );
+        })}
       </div>
 
       {current.daemonSetStatus !== null && (() => {

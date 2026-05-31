@@ -120,6 +120,14 @@ export default function MailDrCard() {
   const drState = current.drState as DrState;
   const badge = DR_STATE_BADGE[drState] ?? DR_STATE_BADGE.healthy;
 
+  // Node-count gates (server-side authoritative; mirrored here so the
+  // controls disable BEFORE the operator submits an invalid change):
+  //   secondary slot → requires >=2 Ready candidate nodes
+  //   tertiary slot  → requires >=3 Ready candidate nodes
+  // The counts come from the placement response (readyNodeCount).
+  const secondaryDisabled = current.readyNodeCount < 2;
+  const tertiaryDisabled = current.readyNodeCount < 3;
+
   const d = draft ?? {
     primaryNode: current.primaryNode,
     secondaryNode: current.secondaryNode,
@@ -158,8 +166,9 @@ export default function MailDrCard() {
     try {
       await update.mutateAsync({
         primaryNode: d.primaryNode!,
-        secondaryNode: d.secondaryNode,
-        tertiaryNode: d.tertiaryNode,
+        // Never submit a value for a slot the node-count gate disables.
+        secondaryNode: secondaryDisabled ? null : d.secondaryNode,
+        tertiaryNode: tertiaryDisabled ? null : d.tertiaryNode,
         autoFailoverEnabled: d.autoFailoverEnabled,
         failoverThresholdSeconds: d.failoverThresholdSeconds,
       });
@@ -203,8 +212,9 @@ export default function MailDrCard() {
     try {
       await update.mutateAsync({
         primaryNode: d.primaryNode,
-        secondaryNode: d.secondaryNode,
-        tertiaryNode: d.tertiaryNode,
+        // Never submit a value for a slot the node-count gate disables.
+        secondaryNode: secondaryDisabled ? null : d.secondaryNode,
+        tertiaryNode: tertiaryDisabled ? null : d.tertiaryNode,
         autoFailoverEnabled: d.autoFailoverEnabled,
         failoverThresholdSeconds: d.failoverThresholdSeconds,
       });
@@ -409,6 +419,8 @@ export default function MailDrCard() {
           disabledValues={[d.primaryNode, d.tertiaryNode]}
           onChange={(v) => setDraft({ ...d, secondaryNode: v })}
           testId="mail-dr-secondary-node"
+          disabled={secondaryDisabled}
+          disabledReason="2 active nodes required"
         />
         <NodeDropdown
           label="Tertiary"
@@ -418,6 +430,8 @@ export default function MailDrCard() {
           disabledValues={[d.primaryNode, d.secondaryNode]}
           onChange={(v) => setDraft({ ...d, tertiaryNode: v })}
           testId="mail-dr-tertiary-node"
+          disabled={tertiaryDisabled}
+          disabledReason="3 active nodes required"
         />
       </div>
 
@@ -749,8 +763,17 @@ interface NodeDropdownProps {
    * affordance.
    */
   readonly required?: boolean;
+  /**
+   * Node-count gate (2026-05-31): when true the slot cannot be set
+   * because the cluster lacks enough Ready nodes. The <select> is
+   * disabled and forced to show "Not selected" so a disabled slot never
+   * submits a value; `disabledReason` renders the exact gate label
+   * ("2 active nodes required" / "3 active nodes required").
+   */
+  readonly disabled?: boolean;
+  readonly disabledReason?: string;
 }
-function NodeDropdown({ label, description, value, candidates, disabledValues, onChange, testId, required = false }: NodeDropdownProps) {
+function NodeDropdown({ label, description, value, candidates, disabledValues, onChange, testId, required = false, disabled = false, disabledReason }: NodeDropdownProps) {
   return (
     <div className="flex items-start gap-3">
       <div className="w-20 shrink-0">
@@ -761,10 +784,14 @@ function NodeDropdown({ label, description, value, candidates, disabledValues, o
       </div>
       <div className="flex-1">
         <select
-          value={value ?? ''}
-          onChange={(e) => onChange(e.target.value || null)}
+          // When disabled by the node-count gate, force the rendered
+          // value to empty so the slot never submits a stale selection.
+          value={disabled ? '' : (value ?? '')}
+          onChange={(e) => { if (!disabled) onChange(e.target.value || null); }}
           data-testid={testId}
-          className="w-full max-w-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          disabled={disabled}
+          aria-disabled={disabled}
+          className="w-full max-w-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {!required && <option value="">Not selected</option>}
           {required && !value && <option value="" disabled>Choose a node…</option>}
@@ -778,6 +805,14 @@ function NodeDropdown({ label, description, value, candidates, disabledValues, o
             </option>
           ))}
         </select>
+        {disabled && disabledReason && (
+          <p
+            className="mt-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+            data-testid={`${testId}-gate`}
+          >
+            {disabledReason}
+          </p>
+        )}
         <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{description}</p>
       </div>
     </div>

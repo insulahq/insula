@@ -101,6 +101,20 @@ export const mailPlacementResponseSchema = z.object({
   lastFailoverAt: z.string().nullable(),
   portExposureMode: mailPortExposureModeEnum,
   candidateNodes: z.array(nodeCandidateSchema),
+  // Node-count gates surfaced to the UI so the placement controls can be
+  // disabled BEFORE the operator submits an invalid change (the same gate
+  // is enforced server-side in updateMailPlacement — UI here is advisory).
+  //
+  //   readyNodeCount       — number of Ready candidate nodes (server OR
+  //                          worker role). Secondary placement requires >=2,
+  //                          tertiary requires >=3. Equals
+  //                          candidateNodes.filter(ready).length.
+  //   readyServerNodeCount — number of Ready candidate nodes with the
+  //                          server role ONLY (workers excluded). The mail
+  //                          HA-proxy port-exposure modes (assignedMailNodes
+  //                          + allServerNodes) require >=2.
+  readyNodeCount: z.number().int().nonnegative(),
+  readyServerNodeCount: z.number().int().nonnegative(),
   // Drift state: when operator changes mail_primary_node but doesn't
   // run a migration, primary ≠ active. The frontend surfaces a yellow
   // banner inviting the operator to migrate now; without this surface
@@ -190,6 +204,12 @@ export const mailPortExposureResponseSchema = z.object({
     ready: z.number(),
     desired: z.number(),
   }).nullable(),
+  // Number of Ready, server-role nodes in the cluster. The non-
+  // activeNodeOnly modes (assignedMailNodes + allServerNodes) require
+  // >=2 server-role nodes — the UI disables those radio options below
+  // the threshold; the same gate is enforced server-side in
+  // validateModeSwitchAgainstDb. Workers do NOT count toward this gate.
+  readyServerNodeCount: z.number().int().nonnegative(),
 });
 
 export type MailPlacementResponse = z.infer<typeof mailPlacementResponseSchema>;
