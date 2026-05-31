@@ -80,7 +80,29 @@ echo "[$(hostname)] starting wipe at $(date -u +%FT%TZ)"
 WTBEFORE=$(ip -4 -o addr show wt0 2>/dev/null | awk '{print $4}' | head -1)
 echo "[$(hostname)] wt0 before: ${WTBEFORE:-none}"
 
-# Stop k3s services (both server & agent variants)
+# Uninstall k3s the proper way FIRST (server & agent variants). This
+# stops the service, removes the /usr/local/bin/k3s binary, deletes the
+# systemd unit, and runs k3s-killall.sh — a genuine clean slate.
+#
+# Why this matters (regression fixed 2026-05-31): the old code only
+# `systemctl stop`ped k3s and rm-rf'd /var/lib/rancher, leaving the k3s
+# binary + systemd unit behind. On the next bootstrap, bootstrap.sh's
+# "k3s already installed → skip install" path then skipped straight to
+# `kubectl apply` Calico WITHOUT the API server ever starting (the unit
+# was stopped, data dir empty) → "dial tcp [::1]:8080: connect:
+# connection refused" → bootstrap exit 1. Running the uninstaller forces
+# bootstrap to do a real fresh install that actually starts k3s.
+#
+# The uninstaller flushes iptables/networking — NetBird's wt0 is
+# re-established by the `systemctl restart netbird` at the end of this
+# payload (its identity in /var/lib/netbird/ is never touched).
+for u in /usr/local/bin/k3s-uninstall.sh /usr/local/bin/k3s-agent-uninstall.sh; do
+  if [[ -x "$u" ]]; then
+    echo "[$(hostname)] running $u"
+    "$u" 2>&1 | tail -3 || true
+  fi
+done
+# Fallback for nodes where the uninstaller is absent (partial install):
 systemctl stop k3s 2>/dev/null || true
 systemctl stop k3s-agent 2>/dev/null || true
 sleep 2
