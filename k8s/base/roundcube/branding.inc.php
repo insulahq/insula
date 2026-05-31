@@ -12,7 +12,7 @@
  * which Roundcube loads after the singleton finishes building.
  */
 
-$config['product_name'] = 'K8s Hosting Platform Webmail';
+$config['product_name'] = 'Hosting Platform Webmail';
 
 // skin_logo accepts a string OR a state→url map. The state '*' covers
 // every screen that doesn't have a more specific entry.
