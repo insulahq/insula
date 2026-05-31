@@ -112,6 +112,64 @@ function parseMemQuantity(q: string): number {
   return Math.round(n * (multiplier[unit] ?? 1));
 }
 
+/** Minimal node shape for role/Ready inspection. */
+type NodeRoleReadyShape = {
+  metadata?: { labels?: Record<string, string> };
+  status?: { conditions?: Array<{ type: string; status: string }> };
+};
+
+function isNodeReady(n: NodeRoleReadyShape): boolean {
+  return n.status?.conditions?.find((c) => c.type === 'Ready')?.status === 'True';
+}
+
+function nodeRole(n: NodeRoleReadyShape): string {
+  return n.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
+}
+
+/**
+ * Count Ready candidate nodes (the same eligible set getMailPlacement
+ * exposes: Ready + role in ELIGIBLE_NODE_ROLES). Used by the
+ * secondary/tertiary placement gate. Best-effort: a failed listNode
+ * returns 0 so the gate fails closed (an operator setting a standby on
+ * an unreachable cluster is refused rather than silently allowed).
+ */
+async function countReadyCandidateNodes(
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<number> {
+  try {
+    const list = await core.listNode({}) as { items?: NodeRoleReadyShape[] };
+    return (list.items ?? []).filter(
+      (n) => isNodeReady(n) && ELIGIBLE_NODE_ROLES.has(nodeRole(n)),
+    ).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * List the names of Ready, server-role nodes. Used by the primary
+ * self-heal on a fresh cluster: when exactly one Ready server exists and
+ * no primary/active is recorded yet, that sole server is elected primary.
+ * Best-effort — a failed listNode returns [].
+ */
+async function listReadyServerNodeNames(
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<string[]> {
+  try {
+    const list = await core.listNode({}) as {
+      items?: Array<NodeRoleReadyShape & { metadata?: { name?: string } }>;
+    };
+    return (list.items ?? [])
+      .filter((n) => isNodeReady(n) && nodeRole(n) === 'server')
+      .map((n) =>
+        n.metadata?.labels?.['kubernetes.io/hostname'] ?? n.metadata?.name ?? '',
+      )
+      .filter((name): name is string => !!name);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Read the current placement policy from system_settings and list
  * candidate server-role nodes from the cluster.
@@ -280,6 +338,18 @@ export async function getMailPlacement(
     }
   }
 
+  // Node-count gates (surfaced to the UI; authoritatively re-checked in
+  // updateMailPlacement + validateModeSwitchAgainstDb):
+  //   readyNodeCount       — Ready candidate nodes of ANY eligible role
+  //                          (server OR worker). Drives secondary (>=2) +
+  //                          tertiary (>=3) placement gating.
+  //   readyServerNodeCount — Ready candidate nodes with role === 'server'
+  //                          ONLY. Drives the HA-proxy mode gating (>=2).
+  const readyNodeCount = candidates.filter((c) => c.ready).length;
+  const readyServerNodeCount = candidates.filter(
+    (c) => c.ready && c.role === 'server',
+  ).length;
+
   return mailPlacementResponseSchema.parse({
     primaryNode,
     secondaryNode: row?.mailSecondaryNode ?? null,
@@ -291,6 +361,8 @@ export async function getMailPlacement(
     lastFailoverAt: row?.mailLastFailoverAt?.toISOString() ?? null,
     portExposureMode: row?.mailPortExposureMode ?? 'thisNodeOnly',
     candidateNodes: candidates,
+    readyNodeCount,
+    readyServerNodeCount,
     drift,
     lastFailedMigration,
   });
@@ -338,6 +410,37 @@ export async function updateMailPlacement(
           500,
         );
       }
+    }
+  }
+
+  // Node-count gate (authoritative, server-side). Secondary/tertiary
+  // standby placement is only meaningful with enough Ready nodes to
+  // actually host a warm standby:
+  //   secondary → requires >=2 Ready candidate nodes ("2 active nodes required")
+  //   tertiary  → requires >=3 Ready candidate nodes ("3 active nodes required")
+  // "Ready candidate node" = the same set getMailPlacement surfaces:
+  // a Ready node whose role label is in ELIGIBLE_NODE_ROLES (server OR
+  // worker). The UI disables the slots below threshold; this check is the
+  // backstop for any caller that bypasses the UI. Only enforced when the
+  // operator is actually SETTING that slot (a non-null value) — clearing a
+  // slot is always allowed regardless of node count.
+  const settingSecondary = 'secondaryNode' in update && !!update.secondaryNode;
+  const settingTertiary = 'tertiaryNode' in update && !!update.tertiaryNode;
+  if (settingSecondary || settingTertiary) {
+    const readyCandidateCount = await countReadyCandidateNodes(core);
+    if (settingTertiary && readyCandidateCount < 3) {
+      throw new ApiError(
+        'MAIL_PLACEMENT_INSUFFICIENT_NODES',
+        '3 active nodes required',
+        400,
+      );
+    }
+    if (settingSecondary && readyCandidateCount < 2) {
+      throw new ApiError(
+        'MAIL_PLACEMENT_INSUFFICIENT_NODES',
+        '2 active nodes required',
+        400,
+      );
     }
   }
 
@@ -440,6 +543,25 @@ export async function ensureMailStackPlacementApplied(
     if (!inferredPrimary) {
       inferredPrimary = (row?.mailActiveNode ?? null) as string | null;
     }
+    // Fresh-cluster fallback: the very first cluster server has no
+    // Stalwart pod and no mail_active_node yet (both are written later by
+    // the first migration / pod schedule). To make "the FIRST cluster
+    // server sets the mail PRIMARY node to itself automatically" work as
+    // a backend self-heal, elect the sole Ready server-role node when
+    // EXACTLY ONE exists. >1 servers → ambiguous, leave NULL for the
+    // operator to choose (avoid guessing the wrong primary on an HA
+    // cluster). Still gated by the outer `!row?.mailPrimaryNode` guard so
+    // an operator-set primary is never overridden.
+    if (!inferredPrimary) {
+      const readyServers = await listReadyServerNodeNames(core);
+      if (readyServers.length === 1) {
+        inferredPrimary = readyServers[0];
+        opts.logger?.warn?.(
+          `placement self-heal: electing sole Ready server '${inferredPrimary}' as ` +
+          'mail_primary_node (first/only cluster server self-assigns primary)',
+        );
+      }
+    }
     if (inferredPrimary) {
       await db.update(systemSettings)
         .set({ mailPrimaryNode: inferredPrimary })
@@ -451,8 +573,7 @@ export async function ensureMailStackPlacementApplied(
           );
         });
       opts.logger?.warn?.(
-        `placement self-heal: backfilled mail_primary_node=${inferredPrimary} ` +
-        `(was NULL; source=${inferredPrimary === row?.mailActiveNode ? 'mail_active_node' : 'live-pod'})`,
+        `placement self-heal: backfilled mail_primary_node=${inferredPrimary} (was NULL)`,
       );
     } else {
       opts.logger?.warn?.(

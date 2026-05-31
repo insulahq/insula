@@ -64,6 +64,41 @@ import {
 
 const SETTINGS_ID = 'system';
 const DEPLOYMENT_NAME = 'stalwart-mail';
+const NODE_ROLE_LABEL_KEY = 'insula.host/node-role';
+
+/**
+ * Count Ready, server-role nodes in the cluster.
+ *
+ * Gate input for the HA-proxy port-exposure modes (assignedMailNodes +
+ * allServerNodes): they require >=2 server-role nodes because haproxy
+ * exists only to fan mail traffic across MULTIPLE publicly-reachable
+ * server nodes — with a single server there is nothing to load-balance
+ * and the haproxy DS would just fight Stalwart's always-on hostPort.
+ *
+ * Counts ONLY Ready nodes whose role label is exactly 'server' (workers
+ * are excluded — they are not part of the public server tier). This is a
+ * deliberately narrower set than loadPlacementAndNodes' NodeRef list,
+ * which (a) drops Ready status and (b) carries every node regardless of
+ * role. Best-effort: a failed listNode returns 0 so the gate fails closed.
+ */
+async function countReadyServerNodes(
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<number> {
+  type NodeShape = {
+    metadata?: { labels?: Record<string, string> };
+    status?: { conditions?: Array<{ type: string; status: string }> };
+  };
+  try {
+    const list = await core.listNode({}) as { items?: NodeShape[] };
+    return (list.items ?? []).filter((n) => {
+      const ready = n.status?.conditions?.find((c) => c.type === 'Ready')?.status === 'True';
+      const role = n.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
+      return ready && role === 'server';
+    }).length;
+  } catch {
+    return 0;
+  }
+}
 // Stalwart Deployment + haproxy DaemonSet both live in the `mail`
 // namespace; aliasing this constant here for readability — code that
 // patches the Stalwart Deployment shouldn't read as if it were
@@ -145,7 +180,7 @@ export async function getMailPortExposure(
   db: Database,
   opts: PortExposureOptions,
 ): Promise<MailPortExposureResponse> {
-  const { apps } = await loadK8sAppsTenant(opts.kubeconfigPath);
+  const { apps, core } = await loadK8sAppsTenant(opts.kubeconfigPath);
 
   const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
     .from(systemSettings)
@@ -179,6 +214,11 @@ export async function getMailPortExposure(
     // Non-404 errors are swallowed — mode is still readable from DB.
   }
 
+  // Surface the Ready server-node count so the UI can gate the HA-proxy
+  // mode radios (assignedMailNodes + allServerNodes require >=2). The same
+  // count is enforced authoritatively in validateModeSwitchAgainstDb.
+  const readyServerNodeCount = await countReadyServerNodes(core);
+
   return mailPortExposureResponseSchema.parse({
     mode,
     // PROXY-protocol is active whenever haproxy is in the data path —
@@ -186,6 +226,7 @@ export async function getMailPortExposure(
     // activeNodeOnly mode bypasses it (Stalwart binds hostPort directly).
     proxyProtocolActive: mode !== 'activeNodeOnly',
     daemonSetStatus,
+    readyServerNodeCount,
   });
 }
 
@@ -241,6 +282,21 @@ export async function validateModeSwitchAgainstDb(
   kubeconfigPath: string | undefined,
 ): Promise<string | null> {
   const { settings } = await loadPlacementAndNodes(db, kubeconfigPath);
+
+  // Node-count gate (authoritative, server-side): the HA-proxy modes —
+  // any non-activeNodeOnly mode (assignedMailNodes + allServerNodes) —
+  // require >=2 Ready SERVER-role nodes. With fewer there is nothing to
+  // load-balance across and the haproxy DS would only contend with
+  // Stalwart's always-on hostPort. Workers do NOT count toward this gate.
+  // activeNodeOnly is always permitted (Stalwart binds hostPort directly).
+  if (target !== 'activeNodeOnly') {
+    const { core } = await loadK8sAppsTenant(kubeconfigPath);
+    const readyServerNodeCount = await countReadyServerNodes(core);
+    if (readyServerNodeCount < 2) {
+      return 'Mail HA-Proxy requires 2 or more server nodes.';
+    }
+  }
+
   return validateModeSwitch(target, settings);
 }
 
