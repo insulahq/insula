@@ -144,6 +144,55 @@ const JMAP_TIMEOUT_MS = 10_000;
 const ACME_PROVIDER_KEY = 'letsencrypt';
 
 /**
+ * TLS port the served-cert probe handshakes against (submissions/465,
+ * implicit TLS). Any of Stalwart's TLS ports serves the same cert, but
+ * 465 is always bound (Stalwart 0.16 default) so it needs no listener
+ * self-heal first. Loopback bypasses the PROXY-v2 sniff — see
+ * health.ts:probeCert for the full rationale.
+ */
+const SELF_HEAL_PROBE_PORT = 465;
+
+/** Timeout for the in-pod openssl s_client handshake (seconds floor). */
+const SELF_HEAL_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Post-deadlock self-heal guard rails (module-local — deliberately NOT
+ * persisted; see header note 4 on the PR). The PRIMARY gate is
+ * "only-if-self-signed": once a forced order succeeds and Stalwart
+ * serves a real LE cert, the served-cert predicate is false on every
+ * subsequent tick AND on every HA replica, so the force auto-stops with
+ * zero further LE traffic. That makes module-local backoff acceptable
+ * across replicas — the worst case is each replica issuing at most
+ * MAX_FORCE_ATTEMPTS orders before the cert flips, which the LE
+ * rate-limit (5 certs/week/identifier) tolerates for a single mail
+ * hostname under normal recovery.
+ *
+ * A persistent CAS-claim (e.g. a `platform_settings` row written with a
+ * compare-and-swap) would tighten the cross-replica bound to exactly
+ * MAX_FORCE_ATTEMPTS cluster-wide; noted as optional future hardening,
+ * intentionally deferred to keep this PR migration-free.
+ */
+const MIN_FORCE_INTERVAL_MS = STALWART_DOMAIN_RECONCILER_TICK_MS; // ≥ one tick
+const MAX_FORCE_ATTEMPTS = 5;
+
+/**
+ * Module-local backoff state for the served-self-signed force path.
+ * Reset to a fresh object whenever the served cert is observed
+ * non-self-signed (the force succeeded, or an operator fixed it
+ * out-of-band).
+ */
+const forceState: { lastForcedAt: number; forceAttempts: number } = {
+  lastForcedAt: 0,
+  forceAttempts: 0,
+};
+
+/** Test-only: reset the module-local backoff between cases. */
+export function __resetStalwartForceStateForTest(): void {
+  forceState.lastForcedAt = 0;
+  forceState.forceAttempts = 0;
+}
+
+/**
  * Listeners the platform requires Stalwart to bind, beyond the
  * Stalwart 0.16 defaults (smtp/25, submissions/465, imaps/993,
  * pop3s/995, sieve/4190, https/443, http/8080).
@@ -189,6 +238,15 @@ export interface StalwartDomainReconcilerDeps {
   readonly jmapTransport?: JmapCall;
   /** Override for tests — defaults to process.env. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Tests inject the served-cert probe; production execs `openssl
+   * s_client` inside the Stalwart pod (mirrors health.ts:defaultCertExec).
+   * Given the resolved pod name, returns the cert Stalwart is ACTUALLY
+   * serving on its TLS listener. Never throws — any error ⇒
+   * `{ selfSigned: false, issuer: null, error }` (treated as "unknown,
+   * do not force").
+   */
+  readonly servedCertProbe?: ServedCertProbe;
 }
 
 /**
@@ -224,6 +282,17 @@ export interface StalwartReconcileResult {
   readonly listenersCreated: ReadonlyArray<string>;
   /** True when AcmeRenewal task was fired (Stalwart-side idempotent on cert freshness). */
   readonly acmeRenewalFired: boolean;
+  /**
+   * True when this tick detected Stalwart serving a SELF-SIGNED cert
+   * (the bootstrap `CN=rcgen self signed cert`) on a Ready, fully-wired
+   * pod and FORCED a fresh ACME order — an unconditional
+   * certificateManagement re-assert + AcmeRenewal task to reset
+   * Stalwart's per-Domain ACME backoff. Self-heals the
+   * "Pending-recovery left a dead ACME order ⇒ self-signed forever"
+   * failure mode. Gated by `servedCert.selfSigned` (primary, LE-safe)
+   * + module-local backoff/max-attempts. Counts as "acted" in noOp.
+   */
+  readonly acmeOrderForced: boolean;
   /** Free-form per-step notes for the UI. */
   readonly notes: ReadonlyArray<string>;
   /** True when no Stalwart state was changed this tick. */
@@ -272,6 +341,7 @@ export async function runStalwartDomainReconcilerTick(
       certManagementUpdated: false,
       listenersCreated: [],
       acmeRenewalFired: false,
+      acmeOrderForced: false,
       notes,
       noOp: true,
       ...overrides,
@@ -333,11 +403,16 @@ export async function runStalwartDomainReconcilerTick(
     return empty({ mailHostname: trimmedHost }, `admin creds unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // podName is hoisted: the served-cert self-heal probe (step 9) needs
+  // it to exec `openssl s_client` into the Stalwart container. When a
+  // jmapTransport stub is injected (tests), podName stays null and the
+  // probe relies on the injected servedCertProbe instead.
   let jmapCall: JmapCall;
+  let podName: string | null = null;
   if (deps.jmapTransport) {
     jmapCall = deps.jmapTransport;
   } else {
-    const podName = await findStalwartPodName(deps.core, log);
+    podName = await findStalwartPodName(deps.core, log);
     if (!podName) {
       return empty({ mailHostname: trimmedHost }, 'no Running Stalwart pod found');
     }
@@ -447,12 +522,62 @@ export async function runStalwartDomainReconcilerTick(
     log.warn('Stalwart AcmeRenewal fire failed:', err);
   }
 
+  // 9. Post-deadlock TLS-cert self-heal.
+  //
+  //    When stalwart-mail recovers from an unschedulable/Pending state,
+  //    its internal Let's Encrypt ACME order may already have FAILED
+  //    (HTTP-01 unreachable while the pod was Pending), leaving it
+  //    serving the bootstrap SELF-SIGNED cert (`CN=rcgen self signed
+  //    cert`, SAN: localhost) indefinitely. Steps 3-8 above re-assert
+  //    the Domain/AcmeProvider/certificateManagement/listeners CRs and
+  //    fire a renewal — but `ensureDomainCertManagement` (step 6)
+  //    NO-OPS when the config already looks correct (Automatic + right
+  //    provider + right SAN), so Stalwart's dead per-Domain ACME state
+  //    is never reset and it keeps serving self-signed forever.
+  //
+  //    This step closes that gap: probe the cert Stalwart is ACTUALLY
+  //    serving; if it's self-signed (and the pod is Ready — implied by
+  //    reaching here past findStalwartPodName — and the CRs are wired,
+  //    which they are by steps 3-7), FORCE a fresh order via
+  //    forceFreshAcmeOrder (unconditional certificateManagement
+  //    re-assert + AcmeRenewal task).
+  //
+  //    LE-safety: the served-self-signed predicate is the PRIMARY gate.
+  //    A real LE cert ⇒ predicate false ⇒ never force ⇒ steady state
+  //    issues ZERO LE traffic and the force auto-stops the moment the
+  //    cert flips. Module-local backoff + max-attempts cap the cold
+  //    recovery burst. See forceState + MIN_FORCE_INTERVAL_MS comments.
+  let acmeOrderForced = false;
+  if (acmeProviderId) {
+    try {
+      acmeOrderForced = await maybeForceFreshAcmeOrder({
+        jmapCall,
+        auth,
+        core: deps.core,
+        kubeconfigPath: deps.kubeconfigPath,
+        servedCertProbe: deps.servedCertProbe,
+        podName,
+        domainId: matchedDomain.id,
+        mailHostname: matchedDomain.name,
+        acmeProviderId,
+        notes,
+        log,
+      });
+    } catch (err) {
+      // Defence-in-depth: maybeForceFreshAcmeOrder is itself
+      // best-effort, but never let the self-heal throw out of the tick.
+      notes.push(`post-deadlock self-heal failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn('Stalwart post-deadlock self-heal failed:', err);
+    }
+  }
+
   const noOp =
     !certAnchorDomainCreated
     && !defaultHostnameUpdated
     && !acmeProviderCreated
     && !certManagementUpdated
-    && listenersCreated.length === 0;
+    && listenersCreated.length === 0
+    && !acmeOrderForced;
 
   return {
     mailHostname: trimmedHost,
@@ -464,6 +589,7 @@ export async function runStalwartDomainReconcilerTick(
     certManagementUpdated,
     listenersCreated,
     acmeRenewalFired,
+    acmeOrderForced,
     notes,
     noOp,
   };
@@ -716,6 +842,305 @@ async function fireAcmeRenewal(
   }
   log.info(`Stalwart AcmeRenewal fired (domainId=${domainId})`);
   return true;
+}
+
+// ── Post-deadlock TLS-cert self-heal ─────────────────────────────────
+
+/**
+ * Result of inspecting the cert Stalwart is ACTUALLY serving on its
+ * TLS listener. `selfSigned` is the load-bearing field — true ⇒ Stalwart
+ * never completed an ACME order and is serving its bootstrap rcgen cert.
+ */
+export interface ServedCertResult {
+  readonly selfSigned: boolean;
+  readonly issuer: string | null;
+  /** Set when the probe could not determine the served cert (treated as "do not force"). */
+  readonly error: string | null;
+}
+
+/**
+ * Probe the cert Stalwart is serving. Given the resolved pod name (or
+ * null when a JMAP stub is injected in tests), returns the served-cert
+ * verdict. MUST be best-effort: any failure ⇒ `{ selfSigned:false,
+ * issuer:null, error }`.
+ */
+export type ServedCertProbe = (
+  podName: string | null,
+  kubeconfigPath: string | undefined,
+) => Promise<ServedCertResult>;
+
+/**
+ * `selfSigned` predicate: Stalwart's bootstrap cert is issued
+ * `CN=rcgen self signed cert`. We also catch the generic "self signed"
+ * / "self-signed" wording in case the rcgen banner ever changes.
+ * Exported for unit coverage.
+ */
+export function issuerIsSelfSigned(issuer: string | null): boolean {
+  if (!issuer) return false;
+  return /rcgen|self[- ]signed/i.test(issuer);
+}
+
+interface ForceArgs {
+  readonly jmapCall: JmapCall;
+  readonly auth: string;
+  readonly core: CoreV1Api;
+  readonly kubeconfigPath?: string;
+  readonly servedCertProbe?: ServedCertProbe;
+  readonly podName: string | null;
+  readonly domainId: string;
+  readonly mailHostname: string;
+  readonly acmeProviderId: string;
+  readonly notes: string[];
+  readonly log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
+}
+
+/**
+ * Trigger gate + backoff for the post-deadlock self-heal.
+ *
+ * Forces a fresh ACME order ONLY when ALL of:
+ *   - the served cert is self-signed (PRIMARY, LE-safe gate), AND
+ *   - the module-local backoff permits (≥ MIN_FORCE_INTERVAL_MS since
+ *     the last force), AND
+ *   - we are under MAX_FORCE_ATTEMPTS.
+ *
+ * Best-effort throughout — probe/parse errors ⇒ "unknown, do not force"
+ * (logged + noted, never thrown). Resets the backoff counter the moment
+ * the served cert is observed non-self-signed (success / external fix).
+ *
+ * Returns true only when a fresh order was actually forced this tick.
+ */
+async function maybeForceFreshAcmeOrder(args: ForceArgs): Promise<boolean> {
+  const probe = args.servedCertProbe ?? defaultServedCertProbe;
+  const served = await probe(args.podName, args.kubeconfigPath);
+
+  if (served.error) {
+    // Probe failed — cannot confirm self-signed, so DO NOT force.
+    args.notes.push(`served-cert probe inconclusive (no force): ${served.error}`);
+    return false;
+  }
+
+  if (!served.selfSigned) {
+    // Healthy (or non-rcgen) cert ⇒ reset backoff so a future
+    // regression starts from a clean attempt count, and never force.
+    if (forceState.forceAttempts > 0) {
+      args.log.info(
+        `Stalwart now serving a non-self-signed cert (issuer=${served.issuer ?? 'unknown'}) — resetting self-heal backoff`,
+      );
+    }
+    forceState.lastForcedAt = 0;
+    forceState.forceAttempts = 0;
+    return false;
+  }
+
+  // ── served cert IS self-signed from here ──
+  const now = Date.now();
+  if (forceState.forceAttempts >= MAX_FORCE_ATTEMPTS) {
+    args.notes.push(
+      `served cert still self-signed after ${forceState.forceAttempts} forced ACME orders — `
+      + 'check HTTP-01 reachability / LE rate-limit; use LE-staging for teardown loops. '
+      + 'Auto-forcing stopped; manual intervention required.',
+    );
+    args.log.warn(
+      `Stalwart self-heal capped at MAX_FORCE_ATTEMPTS=${MAX_FORCE_ATTEMPTS} `
+      + `for ${args.mailHostname} — still self-signed (issuer=${served.issuer ?? 'unknown'})`,
+    );
+    return false;
+  }
+
+  const sinceLast = now - forceState.lastForcedAt;
+  if (forceState.lastForcedAt > 0 && sinceLast < MIN_FORCE_INTERVAL_MS) {
+    args.notes.push(
+      `served cert self-signed but self-heal backoff not elapsed `
+      + `(${Math.round(sinceLast / 1000)}s of ${Math.round(MIN_FORCE_INTERVAL_MS / 1000)}s) — deferring force`,
+    );
+    return false;
+  }
+
+  // Force a fresh order.
+  await forceFreshAcmeOrder(
+    args.jmapCall, args.auth, args.domainId, args.mailHostname, args.acmeProviderId, args.log,
+  );
+  forceState.lastForcedAt = now;
+  forceState.forceAttempts += 1;
+  args.notes.push(
+    `served cert was self-signed (issuer=${served.issuer ?? 'unknown'}) — forced a fresh ACME order `
+    + `(attempt ${forceState.forceAttempts}/${MAX_FORCE_ATTEMPTS})`,
+  );
+  return true;
+}
+
+/**
+ * Force Stalwart past its internal per-Domain ACME backoff.
+ *
+ * Two-step, both using ONLY JMAP methods proven to work in this codebase
+ * (the same primitives bootstrap.sh `configure_stalwart_full` and the
+ * existing `fireAcmeRenewal` rely on):
+ *   (1) UNCONDITIONALLY re-assert certificateManagement via `x:Domain/set`
+ *       — even when it already looks correct — to reset Stalwart's
+ *       per-Domain ACME order state (this is exactly the case
+ *       `ensureDomainCertManagement` no-ops on, which is why the
+ *       steady-state reconciler never self-heals). This is the
+ *       load-bearing reset.
+ *   (2) Fire a fresh ACME renewal via `fireAcmeRenewal`
+ *       (`x:Task/set { '@type': 'AcmeRenewal', domainId }`), the proven
+ *       renewal primitive that already inspects methodResponses for an
+ *       in-band notCreated error.
+ *
+ * NOTE: there are no longer any unverified/invented JMAP METHODS here —
+ * both steps use methods proven against live Stalwart 0.16 (`x:Domain/set`
+ * + `x:Task/set` AcmeRenewal). The remaining uncertainty is purely a
+ * Stalwart-side BEHAVIOR question (needs ONE live confirmation — see PR
+ * note): whether an unconditional reassert + AcmeRenewal actually forces
+ * past Stalwart's internal per-Domain ACME backoff, or is coalesced into
+ * the already-scheduled order. If it doesn't, step (1) alone still
+ * performs the load-bearing reset. A fresh staging re-bootstrap (Stalwart
+ * Pending → recover → self-signed) exercises it end-to-end and is the
+ * intended live validation.
+ */
+async function forceFreshAcmeOrder(
+  jmapCall: JmapCall,
+  auth: string,
+  domainId: string,
+  mailHostname: string,
+  acmeProviderId: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<void> {
+  // (1) Unconditional certificateManagement re-assert. Identical payload
+  //     to ensureDomainCertManagement's set branch, but issued WITHOUT
+  //     the "already correct?" guard — the write itself is what resets
+  //     Stalwart's per-Domain ACME order state.
+  await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      [
+        'x:Domain/set',
+        {
+          accountId: ADMIN_ACCOUNT_ID,
+          update: {
+            [domainId]: {
+              certificateManagement: {
+                '@type': 'Automatic',
+                acmeProviderId,
+                subjectAlternativeNames: { [mailHostname]: true },
+              },
+            },
+          },
+        },
+        'c0',
+      ],
+    ],
+  });
+  log.info(
+    `Stalwart self-heal: unconditional certificateManagement re-assert `
+    + `(domainId=${domainId}, acme=${acmeProviderId}, san=${mailHostname})`,
+  );
+
+  // (2) Fire a fresh ACME renewal via the PROVEN primitive. fireAcmeRenewal
+  //     issues x:Task/set { '@type': 'AcmeRenewal', domainId } and already
+  //     inspects methodResponses for an in-band notCreated error (returns
+  //     false rather than throwing on an unknown-method / in-band JMAP
+  //     error). This is the only renewal method proven against live
+  //     Stalwart 0.16 — no invented x:Server/* method is involved.
+  //
+  //     Defensive try/catch: a renewal-fire that fails AFTER a successful
+  //     reassert is non-fatal — the load-bearing reset (1) already
+  //     happened, so the attempt still counts. fireAcmeRenewal already
+  //     swallows in-band JMAP errors; the catch only guards against the
+  //     underlying jmapCall transport rejecting.
+  try {
+    const renewalFired = await fireAcmeRenewal(jmapCall, auth, domainId, log);
+    if (!renewalFired) {
+      log.warn('Stalwart self-heal: AcmeRenewal fire returned false (non-fatal; reassert already done)');
+    }
+  } catch (err) {
+    log.warn(
+      'Stalwart self-heal: AcmeRenewal fire threw (non-fatal; reassert already done):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/**
+ * Default served-cert probe — execs `openssl s_client | openssl x509
+ * -noout -issuer -subject` inside the Stalwart pod and parses the
+ * issuer. Mirrors health.ts:defaultCertExec (the proven path), pared to
+ * just the issuer/subject we need. Returns `error` (never throws) when
+ * no pod / no openssl / non-parseable output, so the caller treats it
+ * as "unknown, do not force".
+ */
+async function defaultServedCertProbe(
+  podName: string | null,
+  kubeconfigPath: string | undefined,
+): Promise<ServedCertResult> {
+  if (!podName) {
+    return { selfSigned: false, issuer: null, error: 'no Stalwart pod name for served-cert probe' };
+  }
+  try {
+    const { KubeConfig, Exec } = await import('@kubernetes/client-node');
+    const kc = new KubeConfig();
+    if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
+    else kc.loadFromCluster();
+    const exec = new Exec(kc);
+
+    const cmd = [
+      'sh', '-c',
+      `echo | timeout ${Math.floor(SELF_HEAL_PROBE_TIMEOUT_MS / 1000)} openssl s_client `
+      + `-connect 127.0.0.1:${SELF_HEAL_PROBE_PORT} 2>/dev/null `
+      + `| openssl x509 -noout -issuer -subject 2>&1 || echo "ERROR: cert probe failed"`,
+    ];
+
+    const { PassThrough, Writable } = await import('node:stream');
+    const chunks: Buffer[] = [];
+    const stdout = new PassThrough();
+    stdout.on('data', (c: Buffer) => chunks.push(c));
+    const stderr = new Writable({ write(_c, _e, cb) { cb(); } });
+
+    const status = await new Promise<{ failed: boolean; message?: string }>((resolve) => {
+      const timer = setTimeout(
+        () => resolve({ failed: true, message: 'served-cert probe timed out' }),
+        SELF_HEAL_PROBE_TIMEOUT_MS + 1000,
+      );
+      exec
+        .exec(
+          'mail', podName, 'stalwart', cmd, stdout, stderr, null, false,
+          (s) => {
+            clearTimeout(timer);
+            resolve({ failed: s.status === 'Failure', message: s.message });
+          },
+        )
+        .catch((err: unknown) => {
+          clearTimeout(timer);
+          resolve({ failed: true, message: err instanceof Error ? err.message : String(err) });
+        });
+    });
+
+    // Drain any trailing stdout buffered after the exec callback.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const out = Buffer.concat(chunks).toString('utf8');
+
+    if (status.failed) {
+      return { selfSigned: false, issuer: null, error: status.message ?? 'served-cert probe failed' };
+    }
+    if (out.includes('ERROR: cert probe failed')) {
+      return { selfSigned: false, issuer: null, error: 'openssl s_client returned no cert' };
+    }
+    // Output lines: `issuer=...` and `subject=...`.
+    const issuerLine = out
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.toLowerCase().startsWith('issuer='));
+    if (!issuerLine) {
+      return { selfSigned: false, issuer: null, error: `no issuer line in openssl output: ${out.slice(0, 120)}` };
+    }
+    const issuer = issuerLine.slice(issuerLine.indexOf('=') + 1).trim();
+    return { selfSigned: issuerIsSelfSigned(issuer), issuer, error: null };
+  } catch (err) {
+    return {
+      selfSigned: false,
+      issuer: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /**
