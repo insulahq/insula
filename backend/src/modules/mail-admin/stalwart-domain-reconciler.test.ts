@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runStalwartDomainReconcilerTick } from './stalwart-domain-reconciler.js';
+import {
+  runStalwartDomainReconcilerTick,
+  issuerIsSelfSigned,
+  __resetStalwartForceStateForTest,
+  STALWART_DOMAIN_RECONCILER_TICK_MS,
+  type ServedCertResult,
+} from './stalwart-domain-reconciler.js';
 
 // ── Fake DB ──────────────────────────────────────────────────────────
 
@@ -437,5 +443,246 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     const ssSet = calls.find((c) => c.method === 'x:SystemSettings/set');
     const upd = (ssSet!.args.update as Record<string, Record<string, unknown>>).singleton;
     expect(upd.defaultHostname).toBe('mail.example.net');
+  });
+});
+
+// ── Post-deadlock TLS-cert self-heal ─────────────────────────────────
+
+describe('issuerIsSelfSigned predicate', () => {
+  it('flags Stalwart bootstrap rcgen cert as self-signed', () => {
+    expect(issuerIsSelfSigned('CN=rcgen self signed cert')).toBe(true);
+    expect(issuerIsSelfSigned('CN = rcgen self signed cert')).toBe(true);
+  });
+  it('flags generic self-signed wording', () => {
+    expect(issuerIsSelfSigned('CN=self-signed')).toBe(true);
+    expect(issuerIsSelfSigned('O=Self Signed')).toBe(true);
+  });
+  it('does NOT flag a real Let\'s Encrypt issuer', () => {
+    expect(issuerIsSelfSigned("C=US, O=Let's Encrypt, CN=E8")).toBe(false);
+  });
+  it('does NOT flag a null/empty issuer', () => {
+    expect(issuerIsSelfSigned(null)).toBe(false);
+    expect(issuerIsSelfSigned('')).toBe(false);
+  });
+});
+
+describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () => {
+  // A fully-wired, fully-configured cluster (Domain + AcmeProvider +
+  // Automatic certMgmt + all listeners). Steps 3-7 are all no-ops, so
+  // the ONLY thing that can flip noOp/acmeOrderForced is the step-9
+  // served-cert self-heal — isolating it cleanly.
+  const fullyConfigured = () => buildJmapMock({
+    domains: [{
+      id: 'd1',
+      name: 'mail.example.net',
+      certificateManagement: {
+        '@type': 'Automatic',
+        acmeProviderId: 'ap1',
+        subjectAlternativeNames: { 'mail.example.net': true },
+      },
+    }],
+    acmeProviders: [{ id: 'ap1' }],
+    listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+    defaultHostname: 'mail.example.net',
+    defaultDomainId: 'd1',
+  });
+
+  const selfSignedProbe = (): ServedCertResult => ({
+    selfSigned: true,
+    issuer: 'CN=rcgen self signed cert',
+    error: null,
+  });
+  const leProbe = (): ServedCertResult => ({
+    selfSigned: false,
+    issuer: "C=US, O=Let's Encrypt, CN=E8",
+    error: null,
+  });
+
+  beforeEach(() => {
+    // Module-local backoff persists across calls by design — reset per case.
+    __resetStalwartForceStateForTest();
+  });
+
+  it('(a) self-signed + Ready + cfg-wired ⇒ forces order (unconditional Domain/set + Server/acmeRenew)', async () => {
+    const { transport, calls } = fullyConfigured();
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(result.acmeOrderForced).toBe(true);
+    expect(result.noOp).toBe(false); // forced order counts as "acted"
+
+    // The UNCONDITIONAL certificateManagement re-assert must fire even
+    // though step-6 ensureDomainCertManagement no-op'd (cfg already
+    // correct). That is the whole point — it's a Domain/set update on d1.
+    const domainUpdates = calls.filter(
+      (c) => c.method === 'x:Domain/set' && c.args.update !== undefined,
+    );
+    expect(domainUpdates.length).toBe(1); // ONLY the force re-assert (step-6 no-op'd)
+    const cm = ((domainUpdates[0].args.update as Record<string, Record<string, unknown>>).d1
+      .certificateManagement as Record<string, unknown>);
+    expect(cm['@type']).toBe('Automatic');
+    expect(cm.acmeProviderId).toBe('ap1');
+    expect(cm.subjectAlternativeNames).toEqual({ 'mail.example.net': true });
+
+    // Server/acmeRenew must fire as the second half of the force.
+    const renew = calls.filter((c) => c.method === 'x:Server/acmeRenew');
+    expect(renew.length).toBe(1);
+    expect(renew[0].args.domainId).toBe('d1');
+
+    const note = result.notes.find((n) => /forced a fresh ACME order/.test(n));
+    expect(note).toBeDefined();
+  });
+
+  it('(b) LE-issued cert ⇒ no force, noOp honoured, NO force JMAP calls', async () => {
+    const { transport, calls } = fullyConfigured();
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      servedCertProbe: async () => leProbe(),
+      logger,
+    });
+    expect(result.acmeOrderForced).toBe(false);
+    expect(result.noOp).toBe(true); // steady state — zero LE traffic
+    // No Domain/set update (step-6 no-op'd AND no force re-assert).
+    expect(calls.filter((c) => c.method === 'x:Domain/set' && c.args.update !== undefined)).toEqual([]);
+    // No Server/acmeRenew force call.
+    expect(calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+  });
+
+  it('(c) self-signed but backoff not elapsed ⇒ no second force', async () => {
+    // First tick forces (sets lastForcedAt = now). Second tick — same
+    // module-local state, < MIN_FORCE_INTERVAL_MS later — must defer.
+    const first = fullyConfigured();
+    const r1 = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: first.transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(r1.acmeOrderForced).toBe(true);
+
+    const second = fullyConfigured();
+    const r2 = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: second.transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(r2.acmeOrderForced).toBe(false);
+    expect(second.calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+    expect(r2.notes.find((n) => /backoff not elapsed/.test(n))).toBeDefined();
+  });
+
+  it('(d) self-signed past max-attempts ⇒ no force + operator note present', async () => {
+    // Drive 5 forces with the backoff window elapsed between each
+    // (advance the clock via Date.now mock), then a 6th tick must STOP.
+    const realNow = Date.now;
+    let clock = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        const m = fullyConfigured();
+        const r = await runStalwartDomainReconcilerTick({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          core: {} as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          db: dbStub('mail.example.net') as any,
+          jmapTransport: m.transport,
+          servedCertProbe: async () => selfSignedProbe(),
+          logger,
+        });
+        expect(r.acmeOrderForced).toBe(true);
+        clock += STALWART_DOMAIN_RECONCILER_TICK_MS + 1; // elapse backoff
+      }
+      // 6th tick: attempts cap reached → no force, operator note.
+      const capped = fullyConfigured();
+      const rCap = await runStalwartDomainReconcilerTick({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        core: {} as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        db: dbStub('mail.example.net') as any,
+        jmapTransport: capped.transport,
+        servedCertProbe: async () => selfSignedProbe(),
+        logger,
+      });
+      expect(rCap.acmeOrderForced).toBe(false);
+      expect(capped.calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+      expect(rCap.notes.find((n) => /still self-signed after 5 forced ACME orders/.test(n))).toBeDefined();
+    } finally {
+      (Date.now as unknown as { mockRestore?: () => void }).mockRestore?.();
+      Date.now = realNow;
+    }
+  });
+
+  it('(d2) backoff counter RESETS once the served cert is observed non-self-signed', async () => {
+    // Force once (attempts=1), then observe an LE cert (resets), then a
+    // self-signed observation forces AGAIN immediately (attempts back to 1,
+    // backoff cleared) rather than being deferred.
+    const r1 = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: fullyConfigured().transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(r1.acmeOrderForced).toBe(true);
+
+    // LE cert observed → resets lastForcedAt + forceAttempts.
+    const r2 = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: fullyConfigured().transport,
+      servedCertProbe: async () => leProbe(),
+      logger,
+    });
+    expect(r2.acmeOrderForced).toBe(false);
+
+    // Self-signed again — backoff was reset, so it forces immediately.
+    const r3 = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: fullyConfigured().transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(r3.acmeOrderForced).toBe(true);
+  });
+
+  it('(e) probe error ⇒ no force, no throw, inconclusive note', async () => {
+    const { transport, calls } = fullyConfigured();
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      servedCertProbe: async () => ({ selfSigned: false, issuer: null, error: 'openssl not found' }),
+      logger,
+    });
+    expect(result.acmeOrderForced).toBe(false);
+    expect(result.noOp).toBe(true);
+    expect(calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+    expect(result.notes.find((n) => /served-cert probe inconclusive/.test(n))).toBeDefined();
   });
 });
