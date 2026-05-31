@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./cscli-exec.js', () => ({
-  cscliExec: vi.fn(),
-  findCrowdsecPodName: vi.fn().mockResolvedValue('crowdsec-test-pod'),
-}));
+// Mock only the cluster-touching exports; keep the REAL parseCscliJson
+// (pure logic, no cluster) so the production parse path — including the
+// ANSI-escape stripping that fixes the GET allowlist 500 — is exercised.
+vi.mock('./cscli-exec.js', async (importActual) => {
+  const actual = await importActual<typeof import('./cscli-exec.js')>();
+  return {
+    cscliExec: vi.fn(),
+    findCrowdsecPodName: vi.fn().mockResolvedValue('crowdsec-test-pod'),
+    parseCscliJson: actual.parseCscliJson,
+  };
+});
 vi.mock('../container-console/service.js', () => ({
   createKubeConfig: vi.fn().mockReturnValue({}),
 }));
