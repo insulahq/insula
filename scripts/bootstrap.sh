@@ -7251,7 +7251,20 @@ main() {
     # exist in the cluster before we wait for them. Skips gracefully when the
     # stalwart-mail overlay was not applied (mail not deployed). Idempotent:
     # re-run is safe when stalwart-admin-creds already exists + full mode.
-    bootstrap_stalwart_v016
+    # bootstrap_stalwart_v016 is a CLUSTER-WIDE one-time operation owned
+    # by the FIRST server (it bootstraps the single stalwart-mail
+    # Deployment for the whole cluster). On a join-server (K3S_SERVER_IP
+    # set) re-running it is redundant AND harmful: it waits 300s for the
+    # rollout, then returns 1 on the auth probe when stalwart-mail isn't
+    # Ready from the joiner's vantage — which, under set -euo pipefail,
+    # aborts the otherwise-successful join with exit=1 even though the
+    # node joined fine (observed on the 2026-05-31 staging multi-node
+    # rebootstrap: staging2/staging3 BOOTSTRAP_EXIT=1). Skip on joiners.
+    if [[ -z "$K3S_SERVER_IP" ]]; then
+      bootstrap_stalwart_v016
+    else
+      log "  Skipping Stalwart bootstrap on join-server (first server owns it)."
+    fi
     # Cut 3 (2026-05-04): Roundcube webmail PG database+role provisioning.
     # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
     # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
