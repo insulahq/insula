@@ -278,12 +278,26 @@ ALLOW_SOURCE_LIST_V6=()
 #                  --pre-enroll-peer 10.1.0.2
 PRE_ENROLL_PEERS_V4=()
 PRE_ENROLL_PEERS_V6=()
-# CLUSTER_NETWORK_CIDR retained for k3s --node-ip pinning ONLY (selects
-# which interface k3s advertises on). No longer drives firewall trust;
-# pass --allow-source for that. Auto-detected from wt0/tailscale0 if
-# unset, same as before.
+# Two DISTINCT roles, deliberately split (regression fix 2026-05-31):
+#   CLUSTER_NETWORK_CIDR{,_V6} - FIREWALL mesh-whitelist only (mirrored
+#     into ALLOW_SOURCE_LIST_V*). Auto-detected from wt0/tailscale0 when
+#     unset; safe - it only widens the trust set, never changes how k3s
+#     binds/advertises.
+#   NODEIP_PIN_CIDR{,_V6}      - k3s --node-ip/--advertise-address PIN.
+#     Set ONLY by an explicit --cluster-network-cidr flag. When set, k3s
+#     binds+advertises the host IP inside this CIDR (e.g. the NetBird
+#     wt0 IP) instead of the public IP, and joins use that private IP.
+# Previously a single var drove both, and the firewall mesh auto-detect
+# SILENTLY also flipped on node-ip pinning - so merely having NetBird up
+# at bootstrap pinned the control plane to the mesh with no flag passed
+# (broke staging 2026-05-31: node InternalIPs became mesh 100.120.x
+# while DNS had public IPs -> mail/cert integration failures). Default
+# is now SET mode with a PUBLIC node-ip; mesh is firewall-whitelisted
+# but node-ip pinning requires the explicit flag.
 CLUSTER_NETWORK_CIDR=""
 CLUSTER_NETWORK_CIDR_V6=""
+NODEIP_PIN_CIDR=""
+NODEIP_PIN_CIDR_V6=""
 # Calico-managed WireGuard (UDP/51821): public by default. Public-key
 # auth makes the surface effectively zero. Operators on a real private
 # VLAN may opt-in to scope it to trusted_ranges via
@@ -611,11 +625,15 @@ FIREWALL TRUST (always-on set mode):
                          via the admin panel.
 
   --cluster-network-cidr <cidr>
-                         k3s --node-ip pinning. When set, k3s binds and
-                         advertises the node's IP from inside this CIDR
-                         (e.g. its NetBird wt0 IP) instead of the
-                         default-route IP. Auto-detected from wt0 /
-                         tailscale0 (100.64.0.0/10) if unset.
+                         EXPLICIT k3s --node-ip pinning. When passed, k3s
+                         binds and advertises the node's IP from inside
+                         this CIDR (e.g. its NetBird wt0 IP) instead of
+                         the default-route public IP, and joining nodes
+                         must use that private IP as --server.
+                         NOT auto-detected: a mesh (wt0/tailscale0) that
+                         is merely UP gets firewall-whitelisted but does
+                         NOT flip node-ip to private - pass this flag to
+                         opt into private-underlay pinning.
                          CONVENIENCE: also added to --allow-source so
                          the host trusts traffic from inside that CIDR.
                          Optional.
@@ -827,8 +845,11 @@ parse_args() {
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
       --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
-      --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; shift 2 ;;
-      --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
+      # Explicit flag drives BOTH roles: node-ip pin (NODEIP_PIN_CIDR)
+      # AND firewall whitelist (CLUSTER_NETWORK_CIDR). Auto-detect only
+      # ever sets the firewall var, never the pin var.
+      --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; NODEIP_PIN_CIDR="$2"; shift 2 ;;
+      --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; NODEIP_PIN_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --pre-enroll-peer) parse_pre_enroll_peer_arg "$2"; shift 2 ;;
       --ssh-via-mesh)    SSH_VIA_MESH_IFACE="$2"; shift 2 ;;
@@ -2033,7 +2054,7 @@ verify_underlay() {
   # an IP inside that CIDR. Verify the host actually has such an IP,
   # to fail loud rather than letting k3s pick a default-route IP and
   # silently advertise the public address.
-  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+  if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     local ip
     ip=$(resolve_cluster_network_ip)
     if [[ -z "$ip" ]]; then
@@ -2042,7 +2063,7 @@ verify_underlay() {
        or attach the host to its private VLAN BEFORE running bootstrap.
        This script does not install or enrol VPN tooling."
     fi
-    log "Underlay OK: host IP ${ip} is inside ${CLUSTER_NETWORK_CIDR}."
+    log "Underlay OK: host IP ${ip} is inside ${NODEIP_PIN_CIDR}."
   fi
 }
 
@@ -2689,7 +2710,8 @@ detect_local_ipv6() {
 }
 
 resolve_cluster_network_ip() {
-  if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
+  # Resolves the host IP inside the node-ip PIN CIDR (explicit flag only).
+  if [[ -z "$NODEIP_PIN_CIDR" ]]; then
     echo ""
     return 0
   fi
@@ -2701,7 +2723,7 @@ resolve_cluster_network_ip() {
   # python's ipaddress for portability across nft/awk/bash CIDR math.
   local ip_output
   ip_output=$(ip -4 -o addr show | awk '{print $4}')
-  CLUSTER_NETWORK_CIDR="$CLUSTER_NETWORK_CIDR" python3 - "$ip_output" <<'PYEOF'
+  CLUSTER_NETWORK_CIDR="$NODEIP_PIN_CIDR" python3 - "$ip_output" <<'PYEOF'
 import ipaddress, os, sys
 target = ipaddress.ip_network(os.environ['CLUSTER_NETWORK_CIDR'], strict=False)
 for line in sys.argv[1].splitlines():
@@ -2722,13 +2744,14 @@ PYEOF
 # advertise-IP isn't in the same CIDR as the existing cluster's peers.
 # Catches "server-2 forgot the flag" → mixed public/private etcd.
 validate_cluster_network_membership() {
-  if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
+  # Only meaningful when node-ip pinning is in force (explicit flag).
+  if [[ -z "$NODEIP_PIN_CIDR" ]]; then
     return 0
   fi
   if [[ -z "$K3S_SERVER_IP" ]]; then
     return 0  # First-server bootstrap; nothing to validate against.
   fi
-  CLUSTER_NETWORK_CIDR="$CLUSTER_NETWORK_CIDR" K3S_SERVER_IP="$K3S_SERVER_IP" python3 - <<'PYEOF'
+  CLUSTER_NETWORK_CIDR="$NODEIP_PIN_CIDR" K3S_SERVER_IP="$K3S_SERVER_IP" python3 - <<'PYEOF'
 import ipaddress, os, sys
 cidr_s = os.environ['CLUSTER_NETWORK_CIDR']
 peer_s = os.environ['K3S_SERVER_IP']
@@ -2800,12 +2823,14 @@ install_k3s_server() {
   local node_pin=""
   local cluster_cidr_arg="10.42.0.0/16"
   local service_cidr_arg="10.43.0.0/16"
-  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+  if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     # Private-underlay mode: pin to the host's IP inside the CIDR.
+    # Reached only via an EXPLICIT --cluster-network-cidr (mesh auto-
+    # detect whitelists the firewall but does NOT pin node-ip).
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
     if [[ -z "$private_ip" ]]; then
-      error "No host IP found inside --cluster-network-cidr ${CLUSTER_NETWORK_CIDR}. If using NetBird/Tailscale/etc, bring the overlay up first (or pass --netbird-management-url + --netbird-setup-key)."
+      error "No host IP found inside --cluster-network-cidr ${NODEIP_PIN_CIDR}. If using NetBird/Tailscale/etc, bring the overlay up first (or pass --netbird-management-url + --netbird-setup-key)."
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip}"
@@ -2929,11 +2954,11 @@ install_k3s_worker() {
   # left INTERNAL-IP=public on the Node object.)
   # Pin --node-ip explicitly (see install_k3s_server for rationale).
   local exec_args=""
-  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+  if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
     if [[ -z "$private_ip" ]]; then
-      error "No host IP found inside --cluster-network-cidr ${CLUSTER_NETWORK_CIDR}. If using NetBird/Tailscale/etc, bring the overlay up first (or pass --netbird-management-url + --netbird-setup-key)."
+      error "No host IP found inside --cluster-network-cidr ${NODEIP_PIN_CIDR}. If using NetBird/Tailscale/etc, bring the overlay up first (or pass --netbird-management-url + --netbird-setup-key)."
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
@@ -3140,10 +3165,10 @@ install_calico() {
   # IPv4-only path doesn't emit it.
   # shellcheck disable=SC2034
   local ipv6_pool=""
-  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+  if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     autodetect_block="    nodeAddressAutodetectionV4:
       cidrs:
-      - ${CLUSTER_NETWORK_CIDR}"
+      - ${NODEIP_PIN_CIDR}"
     # IPv4-only underlay → drop the IPv6 ipPool. Mixed v4/v6 with
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
@@ -3224,9 +3249,9 @@ EOF
   # is rolled. Empirically, a single rollout-restart of calico-node DS
   # forces Felix to converge on the autodetect cidrs setting and
   # populate the missing routes.
-  # Only run it when --cluster-network-cidr is set (the case where
-  # autodetect was reconfigured from the default first-found-iface).
-  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+  # Only run it when node-ip pinning is in force (explicit flag) - the
+  # case where the Calico autodetect block was reconfigured to cidrs.
+  if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     log "Forcing calico-node convergence on autodetect cidrs..."
     kubectl rollout restart daemonset/calico-node -n calico-system 2>/dev/null || true
     kubectl rollout status daemonset/calico-node -n calico-system --timeout=180s 2>/dev/null \
