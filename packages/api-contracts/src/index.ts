@@ -1,4 +1,4 @@
-// Shared API contracts for the K8s Hosting Platform
+// Shared API contracts for the Hosting Platform
 //
 // This package is the SINGLE SOURCE OF TRUTH for all API types.
 // Both backend and frontend import from here.

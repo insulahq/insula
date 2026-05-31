@@ -95,7 +95,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     await page.getByRole('link', { name: 'Settings' }).click();
     await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 2000 });
     await expect(page.getByTestId('platform-config-section')).toBeVisible();
-    await expect(page.getByText('K8s Hosting Platform')).toBeVisible();
+    await expect(page.getByText('Hosting Platform')).toBeVisible();
 
     // 11. Logout via user menu
     const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));

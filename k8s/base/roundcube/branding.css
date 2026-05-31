@@ -45,7 +45,7 @@ html.layout-phone {
 
 /* Login form — elastic centers a Roundcube logo block above the form.
    Replace the upstream image with a text wordmark in the platform's
-   primary color so the page reads as "K8s Hosting Platform Webmail"
+   primary color so the page reads as "Hosting Platform Webmail"
    even before a real logo asset lands. */
 #layout-login .box-inner > .header,
 .login-form > h1 {
@@ -62,7 +62,7 @@ html.layout-phone {
 }
 #layout-login .logo::before,
 .login-form .logo::before {
-  content: "K8s Hosting Platform";
+  content: "Hosting Platform";
   display: block;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 1.5rem;
