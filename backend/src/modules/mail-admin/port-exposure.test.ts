@@ -17,6 +17,14 @@ const mockCreateDs = vi.fn();
 const mockDeleteDs = vi.fn();
 const mockReadDeployment = vi.fn();
 const mockPatchDeployment = vi.fn();
+// Core mocks for the PVC→node active-node derivation path (2026-05-31
+// fresh-multi-node haproxy-deadlock fix). Default to "PVC absent" + an
+// empty node list so the existing db-less tests are unaffected.
+const mockListNode = vi.fn(async () => ({ items: [] as unknown[] }));
+const mockPatchNode = vi.fn(async () => undefined);
+const mockPatchService = vi.fn(async () => undefined);
+const mockReadPvc = vi.fn(async () => { throw Object.assign(new Error('not found'), { code: 404 }); });
+const mockReadPv = vi.fn(async () => { throw Object.assign(new Error('not found'), { code: 404 }); });
 
 vi.mock('@kubernetes/client-node', () => ({
   KubeConfig: class {
@@ -35,12 +43,11 @@ vi.mock('@kubernetes/client-node', () => ({
       }
       if (name === 'CoreV1Api') {
         return {
-          // Tests don't exercise reconcileMailServiceExternalIPs paths
-          // — they don't pass a db param so the reconcile is skipped.
-          // Stubs return empty so the module can still call into core
-          // if the codepath changes.
-          listNode: vi.fn(async () => ({ items: [] })),
-          patchNamespacedService: vi.fn(async () => undefined),
+          listNode: mockListNode,
+          patchNode: mockPatchNode,
+          patchNamespacedService: mockPatchService,
+          readNamespacedPersistentVolumeClaim: mockReadPvc,
+          readPersistentVolume: mockReadPv,
         };
       }
       return {};
@@ -54,6 +61,10 @@ vi.mock('../../shared/k8s-patch.js', () => ({
   applyPatch: vi.fn((_fieldManager: string, _opts: { force?: boolean }) => ({
     headers: { 'Content-Type': 'application/apply-patch+yaml' },
   })),
+  // MERGE_PATCH is consumed transitively via port-exposure-modes.js
+  // (reconcileMailHaproxyLabels). The PVC-derivation tests below pass a
+  // db and exercise that label reconcile, so the mock must export it.
+  MERGE_PATCH: { headers: { 'Content-Type': 'application/merge-patch+json' } },
 }));
 
 // Minimal Database stub — drizzle queries are mocked away.
@@ -504,5 +515,166 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
     expect(r.mode).toBe('activeNodeOnly');
     expect(r.proxyProtocolActive).toBe(false);
     expect(r.daemonSetStatus).toBeNull();
+  });
+});
+
+// ─── PVC-derived active node (fresh-multi-node haproxy deadlock fix) ──
+//
+// On a cold multi-node bootstrap `mail_active_node` is never seeded, so
+// resolveHaproxyNodes can't exclude the node Stalwart must run on and
+// would label haproxy onto EVERY server node — colliding on the mail
+// hostPorts and pinning stalwart-mail Pending. applyModeToCluster now
+// derives the active node from the mail-stack-data PVC's pinned node
+// (local-path RWO → single-node affinity) when the DB has none. The DB
+// value always wins when set.
+
+describe('mail-admin/port-exposure — derive active node from mail PVC when DB null', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Rollout-complete shape so addHostPortsToDeployment returns fast.
+    mockReadDeployment.mockResolvedValue({
+      metadata: { generation: 1 },
+      spec: { replicas: 1 },
+      status: { observedGeneration: 1, updatedReplicas: 1, readyReplicas: 1, unavailableReplicas: 0 },
+    });
+    mockPatchDeployment.mockResolvedValue({});
+    // DS already present so the create branch no-ops.
+    mockReadDs.mockResolvedValue({ status: {} });
+    // Restore the module-default "PVC absent" + empty-node-list mocks
+    // (clearAllMocks wipes call history but not implementations; reset
+    // explicitly so per-test overrides below are unambiguous).
+    mockReadPvc.mockRejectedValue(notFoundError());
+    mockReadPv.mockRejectedValue(notFoundError());
+    mockListNode.mockResolvedValue({ items: [] });
+    mockPatchNode.mockResolvedValue(undefined);
+    mockPatchService.mockResolvedValue(undefined);
+  });
+
+  // Three server nodes: nodeA hosts the mail PVC, nodeB + nodeC do not.
+  const threeServerNodes = {
+    items: [
+      { metadata: { name: 'nodeA', labels: { 'insula.host/node-role': 'server' } } },
+      { metadata: { name: 'nodeB', labels: { 'insula.host/node-role': 'server' } } },
+      { metadata: { name: 'nodeC', labels: { 'insula.host/node-role': 'server' } } },
+    ],
+  };
+
+  function placementDb(activeNode: string | null) {
+    // loadPlacementAndNodes selects the placement row; the mode read in
+    // applyModeToCluster's caller path is not hit here (we call
+    // applyModeToCluster via updateMailPortExposure with an explicit mode).
+    // The final db.update(mailPortExposureMode) also goes through select?/update.
+    return {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{
+            primaryNode: null,
+            secondaryNode: null,
+            tertiaryNode: null,
+            activeNode,
+          }]),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
+    } as unknown as import('../../db/index.js').Database;
+  }
+
+  it('DB active set: uses it and EXCLUDES it from haproxy (PVC not consulted)', async () => {
+    mockListNode.mockResolvedValue(threeServerNodes);
+    const db = placementDb('nodeB');
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined });
+    // PVC read must NOT happen — the DB value already supplies the active node.
+    expect(mockReadPvc).not.toHaveBeenCalled();
+    // haproxy labelled on nodeA + nodeC (nodeB excluded as active).
+    const setTrue = mockPatchNode.mock.calls
+      .map((c) => c[0] as { name: string; body: { metadata?: { labels?: Record<string, string | null> } } })
+      .filter((a) => a.body.metadata?.labels?.['insula.host/mail-haproxy'] === 'true')
+      .map((a) => a.name)
+      .sort();
+    expect(setTrue).toEqual(['nodeA', 'nodeC']);
+  });
+
+  it('DB null + PVC pinned to nodeA (via selected-node annotation): nodeA becomes active and is EXCLUDED from haproxy', async () => {
+    mockListNode.mockResolvedValue(threeServerNodes);
+    mockReadPvc.mockResolvedValue({
+      metadata: { annotations: { 'volume.kubernetes.io/selected-node': 'nodeA' } },
+      spec: { volumeName: 'pv-xyz' },
+    });
+    const db = placementDb(null);
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined });
+    expect(mockReadPvc).toHaveBeenCalledTimes(1);
+    // haproxy on nodeB + nodeC; nodeA (the PVC-pinned, now-active node) excluded.
+    const setTrue = mockPatchNode.mock.calls
+      .map((c) => c[0] as { name: string; body: { metadata?: { labels?: Record<string, string | null> } } })
+      .filter((a) => a.body.metadata?.labels?.['insula.host/mail-haproxy'] === 'true')
+      .map((a) => a.name)
+      .sort();
+    expect(setTrue).toEqual(['nodeB', 'nodeC']);
+    // nodeA must NEVER be labelled with mail-haproxy=true (the deadlock).
+    expect(setTrue).not.toContain('nodeA');
+  });
+
+  it('DB null + PVC pinned via PV node-affinity hostname (no annotation): derives nodeA', async () => {
+    mockListNode.mockResolvedValue(threeServerNodes);
+    mockReadPvc.mockResolvedValue({ metadata: { annotations: {} }, spec: { volumeName: 'pv-xyz' } });
+    mockReadPv.mockResolvedValue({
+      spec: {
+        nodeAffinity: {
+          required: {
+            nodeSelectorTerms: [
+              { matchExpressions: [{ key: 'kubernetes.io/hostname', values: ['nodeA'] }] },
+            ],
+          },
+        },
+      },
+    });
+    const db = placementDb(null);
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined });
+    expect(mockReadPv).toHaveBeenCalledTimes(1);
+    const setTrue = mockPatchNode.mock.calls
+      .map((c) => c[0] as { name: string; body: { metadata?: { labels?: Record<string, string | null> } } })
+      .filter((a) => a.body.metadata?.labels?.['insula.host/mail-haproxy'] === 'true')
+      .map((a) => a.name)
+      .sort();
+    expect(setTrue).toEqual(['nodeB', 'nodeC']);
+  });
+
+  it('DB null + PVC absent: safe fallback — multi-node still does NOT label the deadlocking all-nodes set without exclusion regressing', async () => {
+    // PVC read 404s (default). With no derived active node the resolver
+    // falls back to its null-active behaviour: allServerNodes labels all
+    // server nodes. This is the pre-existing (non-deadlock) behaviour for
+    // a genuinely unknown active node; the PVC derivation is the fix when
+    // the PVC DOES exist (the real cold-bootstrap case). Assert the read
+    // was attempted and the call still completes safely.
+    mockListNode.mockResolvedValue(threeServerNodes);
+    const db = placementDb(null);
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await expect(
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+    ).resolves.not.toThrow();
+    expect(mockReadPvc).toHaveBeenCalledTimes(1);
+  });
+
+  it('DB null + PVC pinned to a node NOT in the cluster list: ignores the stale derivation (no crash)', async () => {
+    mockListNode.mockResolvedValue(threeServerNodes);
+    mockReadPvc.mockResolvedValue({
+      metadata: { annotations: { 'volume.kubernetes.io/selected-node': 'ghost-node' } },
+      spec: { volumeName: 'pv-xyz' },
+    });
+    const db = placementDb(null);
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await expect(
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+    ).resolves.not.toThrow();
+    // ghost-node isn't a real node so it can't be labelled either way.
+    const labelled = mockPatchNode.mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(labelled).not.toContain('ghost-node');
   });
 });

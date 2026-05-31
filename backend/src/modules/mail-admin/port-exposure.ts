@@ -418,8 +418,25 @@ async function applyModeToClusterUnlocked(
   let allNodes: NodeRef[] = [];
   let activeNode: string | null = null;
   if (db) {
-    const { settings, nodes } = await loadPlacementAndNodes(db, opts.kubeconfigPath);
+    const { settings: dbSettings, nodes } = await loadPlacementAndNodes(db, opts.kubeconfigPath);
     allNodes = nodes;
+
+    // Fallback active-node derivation (fresh-multi-node deadlock fix).
+    // On a cold multi-node bootstrap `mail_active_node` is never seeded,
+    // so the haproxy resolver can't exclude the node Stalwart needs and
+    // would label haproxy onto EVERY server node — colliding on the mail
+    // hostPorts and pinning stalwart-mail Pending. The mail-stack PVC is
+    // pinned (local-path RWO) to exactly the node Stalwart must run on, so
+    // derive the active node from it when the DB has none yet. DB value
+    // always wins when set (current behaviour unchanged).
+    let settings = dbSettings;
+    if (!dbSettings.activeNode) {
+      const derived = await deriveActiveNodeFromMailPvc(core);
+      if (derived && nodes.some((n) => n.metadata.name === derived)) {
+        settings = { ...dbSettings, activeNode: derived };
+      }
+    }
+
     activeNode = settings.activeNode;
     haproxyNodes = resolveHaproxyNodes(mode, settings, nodes);
     externalIps = resolveExternalIpNodes(mode, settings, nodes);
@@ -841,4 +858,77 @@ function isConflict(err: unknown): boolean {
   const e = err as { code?: number; statusCode?: number; body?: { code?: number } };
   const code = e.code ?? e.statusCode ?? e.body?.code;
   return code === 409;
+}
+
+// Combined mail-stack PVC (Stalwart RocksDB + Bulwark data). A single
+// `local-path` RWO volume whose PV is pinned to exactly one node via
+// `spec.nodeAffinity` — and that pinned node is where Stalwart MUST run.
+const MAIL_PVC_NAME = 'mail-stack-data';
+
+/**
+ * Derive the node the mail-stack PVC is bound to, used as a FALLBACK for
+ * the active mail node when `system_settings.mail_active_node` is unset.
+ *
+ * On a fresh multi-node bootstrap the DB column is never seeded (it is
+ * only written on a migration run or by the placement self-heal once a
+ * Stalwart pod is Running). With activeNode=null the haproxy-placement
+ * resolver can't exclude the node Stalwart needs, so haproxy gets
+ * labelled onto EVERY server node — including the one Stalwart must
+ * schedule on — and the two fight for hostPort 25/465/587/143/993/4190.
+ * Stalwart then stays Pending (observed on the 2026-05-31 staging cold
+ * multi-node re-bootstrap: stalwart-mail Pending ~2h).
+ *
+ * The PVC is `local-path` RWO, so its bound PV is pinned to a single
+ * node via `kubernetes.io/hostname` node-affinity — exactly the node
+ * Stalwart runs on. Prefer the PVC's `volume.kubernetes.io/selected-node`
+ * annotation (set by the provisioner at bind time); fall back to the PV
+ * node-affinity hostname (mirrors migration.ts:readActualPvcBoundNode).
+ *
+ * Best-effort: returns null when the PVC/PV doesn't exist yet or carries
+ * no hostname affinity. Callers must treat null as "no active node
+ * derived" and stay safe (the single-node guard + null-active handling
+ * in the pure resolvers prevent any all-nodes-haproxy regression).
+ */
+async function deriveActiveNodeFromMailPvc(
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<string | null> {
+  try {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({
+      name: MAIL_PVC_NAME,
+      namespace: MAIL_NS,
+    }) as { metadata?: { annotations?: Record<string, string> }; spec?: { volumeName?: string } };
+    const selectedNode = pvc.metadata?.annotations?.['volume.kubernetes.io/selected-node'];
+    if (selectedNode) return selectedNode;
+    // Older PVCs without the annotation — read the bound PV's nodeAffinity.
+    const pvName = pvc.spec?.volumeName;
+    if (!pvName) return null;
+    const pv = await core.readPersistentVolume({ name: pvName }) as {
+      spec?: {
+        nodeAffinity?: {
+          required?: {
+            nodeSelectorTerms?: ReadonlyArray<{
+              matchExpressions?: ReadonlyArray<{ key?: string; values?: string[] }>;
+            }>;
+          };
+        };
+      };
+    };
+    // Scan ALL terms × ALL matchExpressions for key === 'kubernetes.io/hostname'.
+    // local-path always uses that key; scanning (rather than [0][0]) is
+    // defensive against PVs that also carry a zone matchExpression.
+    const terms = pv.spec?.nodeAffinity?.required?.nodeSelectorTerms ?? [];
+    for (const term of terms) {
+      for (const expr of term.matchExpressions ?? []) {
+        if (expr.key === 'kubernetes.io/hostname' && expr.values && expr.values.length > 0) {
+          return expr.values[0];
+        }
+      }
+    }
+    return null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    // Other read errors are non-fatal for the fallback — surface null and
+    // let the resolver's null-active safety handling take over.
+    return null;
+  }
 }
