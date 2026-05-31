@@ -557,13 +557,24 @@ else
         # list — if the decision id is gone, the DELETE succeeded
         # server-side regardless of what stdout said.
         #
-        # Retry the GET up to 3× — bare api_internal occasionally drops
-        # the response body when the ephemeral curl pod has a
-        # scheduling hiccup. The decision parse uses a try/except so
-        # an empty body produces empty stdout instead of a python
-        # traceback poisoning the variable.
+        # Retry the GET — TWO flakes are absorbed here:
+        #   1. bare api_internal occasionally drops the response body when
+        #      the ephemeral curl pod has a scheduling hiccup; and
+        #   2. the just-added ban is written via `cscli decisions add`
+        #      (DB-immediate) but listDecisions reads the
+        #      eventually-consistent LAPI bouncer /v1/decisions endpoint,
+        #      which can lag a few extra seconds beyond the fixed
+        #      ${BOUNCER_PULL_INTERVAL_S}s wait above — especially in the
+        #      window right after a crowdsec pod restart. (Same LAPI
+        #      list-propagation lag the Phase-G staticByOperator poll
+        #      handles.)
+        # Widened from 3×2s to ~10×3s so transient list lag doesn't trip
+        # the "ban not visible" fail. The decision parse uses a try/except
+        # so an empty body produces empty stdout instead of a python
+        # traceback poisoning the variable. The assertion is unchanged —
+        # it still requires the banned decision to surface via the API.
         decision_id=""
-        for _i in 1 2 3; do
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
           decision_id=$(api_internal GET "/admin/security/crowdsec/decisions?q=$BAN_TARGET" \
             | python3 -c "
 import sys, json
@@ -576,7 +587,7 @@ except Exception:
     pass
 " 2>/dev/null)
           if [[ -n "$decision_id" ]]; then break; fi
-          sleep 2
+          sleep 3
         done
         if [[ -n "$decision_id" ]]; then
           unban_resp=$(api_internal DELETE "/admin/security/crowdsec/decisions/$decision_id")
