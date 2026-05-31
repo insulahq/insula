@@ -4,7 +4,7 @@ import { loginAsAdmin } from './helpers';
 test.describe('Admin Panel Smoke Test', () => {
   test('login page loads', async ({ page }) => {
     await page.goto('/login');
-    await expect(page.getByText('K8s Hosting Platform')).toBeVisible();
+    await expect(page.getByText('Hosting Platform')).toBeVisible();
     await expect(page.getByTestId('email-input')).toBeVisible();
     await expect(page.getByTestId('password-input')).toBeVisible();
   });

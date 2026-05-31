@@ -129,7 +129,7 @@ function buildLegacyHtml(notification: NotificationRow): string {
         <p style="color: #333; line-height: 1.6;">${escapeHtml(notification.message)}</p>
         <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;" />
         <p style="color: #999; font-size: 12px;">
-          This is an automated notification from the K8s Hosting Platform.
+          This is an automated notification from the Hosting Platform.
         </p>
       </div>
     `.trim();

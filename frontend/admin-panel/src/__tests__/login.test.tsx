@@ -44,7 +44,7 @@ beforeEach(() => {
 describe('Login page', () => {
   it('renders platform title', () => {
     render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByText('K8s Hosting Platform')).toBeInTheDocument();
+    expect(screen.getByText('Hosting Platform')).toBeInTheDocument();
   });
 
   it('shows sign in subtitle', () => {
