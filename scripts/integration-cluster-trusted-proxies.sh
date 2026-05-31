@@ -126,13 +126,19 @@ if [[ "$STATUS" != "200" ]]; then
   echo "$BODY"; exit 2
 fi
 ok "GET returns 200"
-SYSTEM_COUNT=$(echo "$BODY" | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(sum(1 for r in d['ranges'] if r['source']=='system'))")
+SYSTEM_COUNT=$(echo "$BODY" | python3 -c "import sys,json,re
+m=re.search(r'(\{.*\})',sys.stdin.read(),re.S)
+if m is None: print(0); sys.exit(0)
+d=json.loads(m.group(1))['data']; print(sum(1 for r in d['ranges'] if r['source']=='system'))")
 [[ "$SYSTEM_COUNT" -ge 4 ]] && ok "system rows ($SYSTEM_COUNT) >= 4" || fail "expected ≥4 system rows, got $SYSTEM_COUNT"
 
 # ── Phase 3: POST — add CDN range ─────────────────────────────────────
 phase "Phase 3: POST a CDN-style range"
 # Pre-clean: delete any pre-existing operator row with this CIDR.
-EXISTING_ID=$(echo "$BODY" | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['cidr']=='$TEST_CIDR' and r['source']=='operator'), ''))")
+EXISTING_ID=$(echo "$BODY" | python3 -c "import sys,json,re
+m=re.search(r'(\{.*\})',sys.stdin.read(),re.S)
+if m is None: print(''); sys.exit(0)
+d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['cidr']=='$TEST_CIDR' and r['source']=='operator'), ''))")
 if [[ -n "$EXISTING_ID" ]]; then
   log "Pre-cleaning stale operator row id=$EXISTING_ID"
   api DELETE "/api/v1/admin/cluster-network/trusted-proxies/$EXISTING_ID" >/dev/null
@@ -200,7 +206,10 @@ LIST_RESP=$(api GET /api/v1/admin/cluster-network/trusted-proxies)
 # `extract_body "$LIST_RESP"`, not piped into. The old `echo … | extract_body`
 # form left $1 unset → `set -u` crash at line 117 + empty stdin to python
 # → NoneType.group traceback, failing Phase 8 even when DELETE itself works.
-NEW_ID=$(extract_body "$LIST_RESP" | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['cidr']=='$TEST_CIDR' and r['source']=='operator'), ''))")
+NEW_ID=$(extract_body "$LIST_RESP" | python3 -c "import sys,json,re
+m=re.search(r'(\{.*\})',sys.stdin.read(),re.S)
+if m is None: print(''); sys.exit(0)
+d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['cidr']=='$TEST_CIDR' and r['source']=='operator'), ''))")
 if [[ -z "$NEW_ID" ]]; then fail "could not find row id for delete"; exit 2; fi
 DEL_RESP=$(api DELETE "/api/v1/admin/cluster-network/trusted-proxies/$NEW_ID")
 DEL_STATUS=$(extract_status "$DEL_RESP")
@@ -231,9 +240,30 @@ fi
 phase "Phase 10: DELETE bootstrap-source row → 404 NOT_DELETABLE"
 # Same arg-not-stdin contract as Phase 8 — call extract_body with the
 # captured response as $1, never pipe into it (would crash under set -u).
-LIST3_RESP=$(api GET /api/v1/admin/cluster-network/trusted-proxies)
+#
+# RETRY the GET: against a real cluster the `api` helper goes over SSH /
+# an ephemeral in-cluster curl pod and intermittently returns an EMPTY
+# body on a transient hiccup. An empty LIST3_RESP → empty extract_body →
+# empty stdin to the python re.search → `m is None` → (pre-hardening) a
+# `'NoneType' object has no attribute 'group'` traceback that crashed the
+# whole suite at the very last phase. Re-fetch up to 5× until the body
+# parses as a JSON object before extracting. The BS_ID parse is ALSO
+# hardened below (prints '' instead of crashing when no object is found),
+# so a persistently-garbled body degrades to the "no bootstrap row →
+# skip" branch rather than a hard crash.
+LIST3_RESP=""
+for _try in 1 2 3 4 5; do
+  LIST3_RESP=$(api GET /api/v1/admin/cluster-network/trusted-proxies)
+  if extract_body "$LIST3_RESP" | python3 -c "import sys,re; sys.exit(0 if re.search(r'(\{.*\})', sys.stdin.read(), re.S) else 1)" 2>/dev/null; then
+    break
+  fi
+  sleep 2
+done
 LIST3_BODY=$(extract_body "$LIST3_RESP")
-BS_ID=$(echo "$LIST3_BODY" | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['source']=='bootstrap'), ''))")
+BS_ID=$(echo "$LIST3_BODY" | python3 -c "import sys,json,re
+m=re.search(r'(\{.*\})',sys.stdin.read(),re.S)
+if m is None: print(''); sys.exit(0)
+d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['source']=='bootstrap'), ''))")
 if [[ -z "$BS_ID" ]]; then
   log "No bootstrap-source row to test against — skipping (older cluster?)"
 else
