@@ -503,7 +503,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     __resetStalwartForceStateForTest();
   });
 
-  it('(a) self-signed + Ready + cfg-wired ⇒ forces order (unconditional Domain/set + Server/acmeRenew)', async () => {
+  it('(a) self-signed + Ready + cfg-wired ⇒ forces order (unconditional Domain/set + Task/set AcmeRenewal)', async () => {
     const { transport, calls } = fullyConfigured();
     const result = await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -530,10 +530,11 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     expect(cm.acmeProviderId).toBe('ap1');
     expect(cm.subjectAlternativeNames).toEqual({ 'mail.example.net': true });
 
-    // Server/acmeRenew must fire as the second half of the force.
-    const renew = calls.filter((c) => c.method === 'x:Server/acmeRenew');
-    expect(renew.length).toBe(1);
-    expect(renew[0].args.domainId).toBe('d1');
+    // The force's second half fires AcmeRenewal via the PROVEN x:Task/set
+    // primitive (fireAcmeRenewal). AcmeRenewal therefore fires TWICE here:
+    // step-8 (always) + the force.
+    const renew = calls.filter((c) => c.method === 'x:Task/set');
+    expect(renew.length).toBe(2);
 
     const note = result.notes.find((n) => /forced a fresh ACME order/.test(n));
     expect(note).toBeDefined();
@@ -554,8 +555,8 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     expect(result.noOp).toBe(true); // steady state — zero LE traffic
     // No Domain/set update (step-6 no-op'd AND no force re-assert).
     expect(calls.filter((c) => c.method === 'x:Domain/set' && c.args.update !== undefined)).toEqual([]);
-    // No Server/acmeRenew force call.
-    expect(calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+    // Not forced ⇒ only the step-8 AcmeRenewal fires (no force second-half).
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
   });
 
   it('(c) self-signed but backoff not elapsed ⇒ no second force', async () => {
@@ -584,7 +585,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
       logger,
     });
     expect(r2.acmeOrderForced).toBe(false);
-    expect(second.calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+    expect(second.calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
     expect(r2.notes.find((n) => /backoff not elapsed/.test(n))).toBeDefined();
   });
 
@@ -621,7 +622,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
         logger,
       });
       expect(rCap.acmeOrderForced).toBe(false);
-      expect(capped.calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+      expect(capped.calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
       expect(rCap.notes.find((n) => /still self-signed after 5 forced ACME orders/.test(n))).toBeDefined();
     } finally {
       (Date.now as unknown as { mockRestore?: () => void }).mockRestore?.();
@@ -682,7 +683,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     });
     expect(result.acmeOrderForced).toBe(false);
     expect(result.noOp).toBe(true);
-    expect(calls.filter((c) => c.method === 'x:Server/acmeRenew')).toEqual([]);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
     expect(result.notes.find((n) => /served-cert probe inconclusive/.test(n))).toBeDefined();
   });
 });
