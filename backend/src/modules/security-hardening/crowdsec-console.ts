@@ -17,7 +17,7 @@ import type {
   CrowdsecConsoleEnrollRequest,
   CrowdsecConsoleStatus,
 } from '@insula/api-contracts';
-import { cscliExec, findCrowdsecPodName } from './cscli-exec.js';
+import { cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
 import { createKubeConfig } from '../container-console/service.js';
 
 /** Default CrowdSec Console URL — operators with a self-hosted Console
@@ -53,7 +53,7 @@ const parseConsoleStatus = (
 
   let parsed: CscliConsoleStatusJson | null = null;
   try {
-    parsed = JSON.parse(trimmed) as CscliConsoleStatusJson;
+    parsed = parseCscliJson<CscliConsoleStatusJson>(trimmed);
   } catch {
     // Older cscli versions print human-readable text. Look for the word
     // "enrolled" with a positive verb nearby — falls back to "not enrolled"
