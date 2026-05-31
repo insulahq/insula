@@ -196,7 +196,11 @@ fi
 # ── Phase 8: DELETE → 200, then GET no longer shows it ────────────────
 phase "Phase 8: DELETE the operator row"
 LIST_RESP=$(api GET /api/v1/admin/cluster-network/trusted-proxies)
-NEW_ID=$(echo "$LIST_RESP" | extract_body | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['cidr']=='$TEST_CIDR' and r['source']=='operator'), ''))")
+# extract_body reads its FIRST ARG (not stdin) — must be called as
+# `extract_body "$LIST_RESP"`, not piped into. The old `echo … | extract_body`
+# form left $1 unset → `set -u` crash at line 117 + empty stdin to python
+# → NoneType.group traceback, failing Phase 8 even when DELETE itself works.
+NEW_ID=$(extract_body "$LIST_RESP" | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['cidr']=='$TEST_CIDR' and r['source']=='operator'), ''))")
 if [[ -z "$NEW_ID" ]]; then fail "could not find row id for delete"; exit 2; fi
 DEL_RESP=$(api DELETE "/api/v1/admin/cluster-network/trusted-proxies/$NEW_ID")
 DEL_STATUS=$(extract_status "$DEL_RESP")
@@ -225,7 +229,10 @@ fi
 
 # ── Phase 10: DELETE bootstrap-source row → 404 NOT_DELETABLE ────────
 phase "Phase 10: DELETE bootstrap-source row → 404 NOT_DELETABLE"
-LIST3_BODY=$(api GET /api/v1/admin/cluster-network/trusted-proxies | extract_body)
+# Same arg-not-stdin contract as Phase 8 — call extract_body with the
+# captured response as $1, never pipe into it (would crash under set -u).
+LIST3_RESP=$(api GET /api/v1/admin/cluster-network/trusted-proxies)
+LIST3_BODY=$(extract_body "$LIST3_RESP")
 BS_ID=$(echo "$LIST3_BODY" | python3 -c "import sys,json,re; m=re.search(r'(\{.*\})',sys.stdin.read(),re.S); d=json.loads(m.group(1))['data']; print(next((r['id'] for r in d['ranges'] if r['source']=='bootstrap'), ''))")
 if [[ -z "$BS_ID" ]]; then
   log "No bootstrap-source row to test against — skipping (older cluster?)"
