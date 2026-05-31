@@ -1967,7 +1967,7 @@ These services are **foundational infrastructure** that the hosting platform dep
    - DNS replication (AXFR/NOTIFY)
    - Certificate management for these services
 
-2. **K8s Hosting Platform** (this project) — Consumes external APIs:
+2. **Hosting Platform** (this project) — Consumes external APIs:
    - PowerDNS REST API for zone/record management (endpoint configurable in admin panel)
    - NetBird mesh for admin access (assumes mesh already running)
    - OIDC provider for authentication (issuer URL configurable in admin panel)

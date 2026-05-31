@@ -336,7 +336,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(fastifySwagger, {
     openapi: {
       info: {
-        title: 'K8s Hosting Platform API',
+        title: 'Hosting Platform API',
         description: 'Management API for the Kubernetes web hosting platform',
         version: '0.1.0',
       },
