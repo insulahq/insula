@@ -233,8 +233,8 @@ These are settled. Implementation MUST honour them. Changes require an amendment
 Numbered W0–W17. Independently shippable workstreams are marked; gating relationships are explicit.
 
 ### W0 — Decision lock (no code)
-**Goal**: ADR-042 captures all 20 decisions before any implementation PR.
-**Deliverables**: `docs/07-reference/ADR-042-versioning-release-cycle-and-upgrade.md`.
+**Goal**: ADR-045 captures all 21 decisions before any implementation PR.
+**Deliverables**: `docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md`.
 **Dependencies**: None.
 **Complexity**: L. **Risk**: L.
 **Shippable independently**: yes.
@@ -406,7 +406,7 @@ DR script does not exist as a standalone workstream; `platform-ops dr restore` s
 
 | # | PR title | Workstream | Complexity |
 |---|---|---|---|
-| **PR 1** | `docs(adr): ADR-042 — 20 versioning/release/upgrade/CLI decisions` | W0 | L |
+| **PR 1** | `docs(adr): ADR-045 — 21 versioning/release/upgrade/CLI decisions` | W0 | L |
 | **PR 1.5** | `chore: rename staging branch → development; staging cluster role unchanged` | W1 | M |
 | **PR 2** | `feat(oss): image-org preflight + CI fork-safety guards` | W2 | M |
 | **PR 3** | `docs(oss): LICENSE (AGPL-3.0), CONTRIBUTING, SECURITY, README rewrite, templates` | W3 | M |
@@ -478,7 +478,7 @@ Phase 4 of `CLUSTER_UPGRADE_ROADMAP.md` (ops-runner Job + `bootstrap.sh --upgrad
 
 | # | Risk | Severity | Mitigation |
 |---|---|---|---|
-| 1 | LICENSE choice irreversible | H | Locked in ADR-042 (W0) before any PR ships AGPL header |
+| 1 | LICENSE choice irreversible | H | Locked in ADR-045 (W0) before any PR ships AGPL header |
 | 2 | Fork-PR CI pushes to upstream GHCR | H | W2: audit 19 workflows; explicit repo-owner guards; prefer `pull_request` over `pull_request_target` |
 | 3 | Privileged host-config DS attack surface | H | W10: allow-listed paths; cosign-signed image; integration test asserts non-allow-listed paths unmodified; nightly diff alert |
 | 4 | Privileged platform-ops binary attack surface | M | No daemon (no idle attack surface); cosign signature on every self-upgrade; same posture as today's k3s admin kubeconfig + root SSH |
@@ -497,7 +497,7 @@ Phase 4 of `CLUSTER_UPGRADE_ROADMAP.md` (ops-runner Job + `bootstrap.sh --upgrad
 | 17 | Slow apt mirror stalls node-by-node rollout | M | SUC's per-node serialisation + per-node timeout + failure→halt with operator-resume |
 | 18 | DR script (now `platform-ops dr restore`) untested in real DR | H | `dr-drill.yml` extended to exercise the subcommand; quarterly DR drill |
 | 19 | Snapshot+upgrade race | M | Soft freeze 60-120s (locked decision #15) |
-| 20 | CalVer adoption confuses contributors used to SemVer | L | ADR-042 + CONTRIBUTING.md explain; cut-release.sh walks the operator through |
+| 20 | CalVer adoption confuses contributors used to SemVer | L | ADR-045 + CONTRIBUTING.md explain; cut-release.sh walks the operator through |
 
 ---
 
@@ -505,7 +505,7 @@ Phase 4 of `CLUSTER_UPGRADE_ROADMAP.md` (ops-runner Job + `bootstrap.sh --upgrad
 
 The holistic plan is delivered when:
 
-- [ ] ADR-042 captures all 20 locked decisions and is merged.
+- [ ] ADR-045 captures all 21 locked decisions and is merged.
 - [ ] `LICENSE` (AGPL-3.0), `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `RELEASING.md`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, and rewritten top-level `README.md` are present at the repo root.
 - [ ] Fresh clone of a fork on a clean machine runs `./scripts/local.sh up` successfully without manual overlay edits.
 - [ ] PR-from-fork CI runs the test gate on `pull_request` without `secrets.*` exposure; push-side jobs skip cleanly.
@@ -642,3 +642,4 @@ When `installed=2026.04.1` and `target=2026.08.3`, pre-flight reads CHANGELOG se
 - 2026-05-23 — Initial holistic plan committed after multi-round planning session that folded versioning, release cycle, CI/CD docs, OSS readiness, OS-level convergence, DR, and operator CLI into one umbrella covering and amending `CLUSTER_UPGRADE_ROADMAP.md`.
 - 2026-05-23 (revision) — Revised Decisions 17 + 18 from "Go binary + shared Go library" to "TypeScript binary (pkg/bun-compile) + direct module import". Triggered by parallel agent confirming orchestration logic lives canonically in TS modules (heavy work delegated to spawned Jobs); porting to Go would re-implement 4,000–8,000 LOC with perpetual maintenance overhead for mostly aesthetic gains. CLI moved to critical path (PR 9, was PR 9.5) so failure-mode/DR tooling exists from day-1 and parallel agent's snapshot primitives can be wrapped in PR 10. Controller+CLI pair PRs collapsed (W12/W13.5, W13/W11.5, W16/W16.5 each become single PRs since both surfaces import the same module). PR count: 22 → 20. Estimated calendar saving: ~3–4 weeks. Optional ~500-LOC Go wrapper for the self-upgrade + cosign-verify loop noted as deferred follow-up for static-binary purity on the security-critical bit.
 - 2026-05-25 — Added Decision 21 (upgrade compatibility model: skip-multiple ALLOWED). Added new §14 with operator-experience walkthrough, mechanism table, migration-author constraints (idempotent + self-contained + order-stable), BREAKING-walks-the-gap UX, failure-mode behaviour, and what the model rules out. Updated W9 + W10c with migration-discipline notes and `scripts/ci-migration-idempotency.sh` CI guard. Renumbered Change Log §14 → §15.
+- 2026-06-01 — Pre-implementation amendment. (1) **ADR renumber `ADR-042` → `ADR-045`**: the W0 deliverable collided with the already-merged `ADR-042-stalwart-logical-export.md` (ADR-043/044 also now taken — `rclone-s3-shim`, `mailbox-backup-engine`); ADR-045 is the next free slot. Renumbered in W0, PR 1 (§8), Risk Register #1 + #20, and Success Criteria. (2) **Decision-count reconciliation `20` → `21`**: W0/PR-1/Success-Criteria still said "20 decisions" while §5 has been titled "Locked Decisions (21)" since the 2026-05-25 revision. References to the *other* doc's count ("the 20 locked decisions therein" in the supersedes line + §9) are unchanged — those correctly point at `CLUSTER_UPGRADE_ROADMAP.md`. (3) **Insula rebrand**: already folded into the body by the rebrand docs sweep (PR #113, 2026-05-29) — `PLATFORM_RELEASES_REPO` default `insulahq/insula`, version label key `insula.host/version`, image-org guards on `insulahq/insula`; no further edits needed here. No decisions changed; numbering/identity only.
