@@ -55,6 +55,16 @@ jobs:
           # only on parse-level errors.
           shellcheck --severity=error scripts/*.sh
 
+  # Self-contained shell test harnesses — regression guards for the logic in
+  # scripts/ (image-org fork-safety, release cutting). No DinD / root needed.
+  shell-unit-tests:
+    name: Shell unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/test-image-org.sh
+      - run: ./scripts/test-cut-release.sh
+
   admin-auth-gate-check:
     name: Admin-auth gate guardrail
     runs-on: ubuntu-latest

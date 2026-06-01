@@ -9,7 +9,7 @@
 #
 # Rule
 # ----
-# `0.1.0-XXXXX` in k8s/overlays/staging/platform-version-patch.yaml
+# the `<version>-<sha>` pin in k8s/overlays/staging/platform-version-patch.yaml
 # MUST equal the short SHA of the most-recent commit on the ref whose
 # message does NOT start with `chore(staging):` (i.e. the last code /
 # infra / merge commit, ignoring auto-pin churn).
@@ -32,13 +32,16 @@ if [[ ! -f "$PIN_FILE" ]]; then
   exit 1
 fi
 
-# Extract the SHA after `0.1.0-` from `version: "0.1.0-XXXXXXX"`.
-PIN_SHA=$(grep -oE 'version: *"0\.1\.0-[0-9a-f]+"' "$PIN_FILE" \
+# Extract the short SHA suffix from `version: "<base>-XXXXXXX"`. The base is
+# whatever cut-release.sh / build-deploy.sh produced — CalVer (2026.6.1-<sha>)
+# since the version spine landed, or the legacy 0.1.0-<sha>. We only need the
+# trailing hex SHA, so match any `<base>-<7+hex>` shape.
+PIN_SHA=$(grep -oE 'version: *"[0-9A-Za-z.]+-[0-9a-f]{7,40}"' "$PIN_FILE" \
   | head -1 \
-  | sed -E 's/.*0\.1\.0-([0-9a-f]+)".*/\1/')
+  | sed -E 's/.*-([0-9a-f]{7,40})".*/\1/')
 
 if [[ -z "$PIN_SHA" ]]; then
-  echo "::error::could not extract '0.1.0-XXXXXXX' from $PIN_FILE — file shape changed?"
+  echo "::error::could not extract a '<version>-<sha>' pin from $PIN_FILE — file shape changed?"
   cat "$PIN_FILE"
   exit 1
 fi
