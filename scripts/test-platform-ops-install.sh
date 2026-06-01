@@ -33,21 +33,17 @@ yes() { if eval "$2"; then ok "$1"; else bad "$1 — predicate failed: $2"; fi; 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
-# A fake cosign that "verifies" iff the signature file content is the literal
-# token GOOD. Lets us drive both the success and the fail-closed branches
-# deterministically without real keys. Mirrors `cosign verify-blob`'s contract:
-# exit 0 = verified, non-zero = rejected.
-make_fake_cosign() {
-  local d="$1"
-  cat > "$d/cosign" <<'SHIM'
-#!/usr/bin/env bash
-# usage: cosign verify-blob --key K --signature S BLOB
-sig=""; while [ $# -gt 0 ]; do case "$1" in --signature) sig="$2"; shift 2;; --key) shift 2;; *) blob="$1"; shift;; esac; done
-[ -f "$sig" ] && [ "$(cat "$sig")" = "GOOD" ]
-SHIM
-  chmod +x "$d/cosign"
-  printf '%s/cosign' "$d"
-}
+# REAL crypto fixtures — verification is openssl-only (no cosign on nodes), so
+# the tests use real EC P-256 keys + real signatures. A cosign `sign-blob --key`
+# signature is exactly `base64(openssl dgst -sha256 -sign)`, so signing here with
+# openssl produces the same artifact a release would.
+KEYDIR=$(mktemp -d)
+openssl ecparam -genkey -name prime256v1 -noout -out "$KEYDIR/priv.pem"  2>/dev/null
+openssl ec -in "$KEYDIR/priv.pem" -pubout -out "$KEYDIR/pub.pem"         2>/dev/null
+openssl ecparam -genkey -name prime256v1 -noout -out "$KEYDIR/wrong.pem" 2>/dev/null  # mismatched key
+
+# base64 signature of file $2 with key $1 → stdout (== cosign .sig format).
+sign_b64() { openssl dgst -sha256 -sign "$1" "$2" | base64 -w0; }
 
 # A fake platform-ops binary that prints a given version for `version`.
 make_fake_binary() {
@@ -60,15 +56,15 @@ SHIM
   chmod +x "$path"
 }
 
-# Lay down a local "release" dir: binary + signature for both arches.
-# $1=release dir, $2=sig content (GOOD|BAD), $3=binary version.
-make_release() {
-  local rel="$1" sigval="$2" ver="$3"
+# Lay down a local "release" dir: binary + a real signature for both arches.
+# $1=release dir, $2=binary version, $3=signing key (priv.pem | wrong.pem).
+make_signed_release() {
+  local rel="$1" ver="$2" key="$3" a
   mkdir -p "$rel"
-  make_fake_binary "$rel/platform-ops-linux-amd64" "$ver"
-  make_fake_binary "$rel/platform-ops-linux-arm64" "$ver"
-  printf '%s' "$sigval" > "$rel/platform-ops-linux-amd64.sig"
-  printf '%s' "$sigval" > "$rel/platform-ops-linux-arm64.sig"
+  for a in amd64 arm64; do
+    make_fake_binary "$rel/platform-ops-linux-$a" "$ver"
+    sign_b64 "$key" "$rel/platform-ops-linux-$a" > "$rel/platform-ops-linux-$a.sig"
+  done
 }
 
 # ── 0. Library loads and exposes the contract ───────────────────────────────
@@ -97,12 +93,21 @@ yes "rejects missing VERSION" "! platform_ops_target_version '$NOROOT' >/dev/nul
 RCROOT=$(mktemp -d); mkdir -p "$RCROOT/platform"; printf '2026.6.2-rc.1\n' > "$RCROOT/platform/VERSION"
 yes "accepts -rc.N prerelease" "[ \"\$(platform_ops_target_version '$RCROOT')\" = 2026.6.2-rc.1 ]"; rm -rf "$RCROOT"
 
-# ── 3. verify_blob is fail-closed ───────────────────────────────────────────
-VDIR=$(mktemp -d); COSIGN=$(make_fake_cosign "$VDIR")
-echo bin > "$VDIR/b"; printf 'GOOD' > "$VDIR/g.sig"; printf 'BAD' > "$VDIR/b.sig"
-yes "verify GOOD sig → pass" "PLATFORM_OPS_COSIGN_BIN='$COSIGN' platform_ops_verify_blob '$VDIR/b' '$VDIR/g.sig' /dev/null"
-yes "verify BAD sig → fail"  "! PLATFORM_OPS_COSIGN_BIN='$COSIGN' platform_ops_verify_blob '$VDIR/b' '$VDIR/b.sig' /dev/null"
-yes "verify w/ no cosign on PATH → fail-closed" "! PLATFORM_OPS_COSIGN_BIN='/nonexistent/cosign' platform_ops_verify_blob '$VDIR/b' '$VDIR/g.sig' /dev/null"
+# ── 3. verify_blob is fail-closed (openssl, real signatures) ─────────────────
+VDIR=$(mktemp -d); echo "release bytes" > "$VDIR/b"
+sign_b64 "$KEYDIR/priv.pem"  "$VDIR/b" > "$VDIR/good.sig"      # correct key
+sign_b64 "$KEYDIR/wrong.pem" "$VDIR/b" > "$VDIR/wrongkey.sig"  # valid sig, wrong key
+printf 'not%%valid-base64' > "$VDIR/malformed.sig"
+: > "$VDIR/empty.sig"                       # zero bytes
+printf '   \n\t\n' > "$VDIR/whitespace.sig" # decodes to 0 bytes
+yes "verify valid sig → pass"            "platform_ops_verify_blob '$VDIR/b' '$VDIR/good.sig' '$KEYDIR/pub.pem'"
+yes "verify wrong-key sig → fail"        "! platform_ops_verify_blob '$VDIR/b' '$VDIR/wrongkey.sig' '$KEYDIR/pub.pem'"
+yes "verify malformed (non-base64) → fail" "! platform_ops_verify_blob '$VDIR/b' '$VDIR/malformed.sig' '$KEYDIR/pub.pem'"
+yes "verify empty sig → fail"            "! platform_ops_verify_blob '$VDIR/b' '$VDIR/empty.sig' '$KEYDIR/pub.pem'"
+yes "verify whitespace-only sig → fail"  "! platform_ops_verify_blob '$VDIR/b' '$VDIR/whitespace.sig' '$KEYDIR/pub.pem'"
+printf 'x' >> "$VDIR/b"   # tamper the blob after signing
+yes "verify tampered blob → fail"        "! platform_ops_verify_blob '$VDIR/b' '$VDIR/good.sig' '$KEYDIR/pub.pem'"
+yes "verify w/ no openssl → fail-closed"  "! PLATFORM_OPS_OPENSSL_BIN=/nonexistent/openssl platform_ops_verify_blob '$VDIR/b' '$VDIR/good.sig' '$KEYDIR/pub.pem'"
 rm -rf "$VDIR"
 
 # ── 4. phase_platform_ops orchestration ─────────────────────────────────────
@@ -116,9 +121,9 @@ sandbox() {
 # Common env for an install attempt against local release dir $1 in sandbox $2.
 # Exports nothing permanent; echoes via subshell in each predicate.
 
-# 4a. Signing key absent in repo → graceful no-op (TODAY'S REAL STATE).
-SB=$(sandbox); REL="$SB/rel"; mkdir -p "$REL"
-make_release "$REL" GOOD 2026.6.1
+# 4a. Trust anchor absent in repo → graceful no-op (dormancy gate).
+SB=$(sandbox); REL="$SB/rel"
+make_signed_release "$REL" 2026.6.1 "$KEYDIR/priv.pem"
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
   PLATFORM_OPS_COSIGN_PUB_SRC="$SB/repo/platform/cosign.pub" \
@@ -148,14 +153,12 @@ rm -rf "$SB"
 
 # 4c. FAIL-CLOSED: binary present, signature missing → refuse.
 SB=$(sandbox); REL="$SB/rel"; mkdir -p "$REL"
-printf 'PUBKEY\n' > "$SB/repo/platform/cosign.pub"
+cp "$KEYDIR/pub.pem" "$SB/repo/platform/cosign.pub"
 make_fake_binary "$REL/platform-ops-linux-amd64" 2026.6.1
 make_fake_binary "$REL/platform-ops-linux-arm64" 2026.6.1
 # (no .sig files written)
-COSIGN=$(make_fake_cosign "$SB")
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
-  PLATFORM_OPS_COSIGN_BIN="$COSIGN" \
   PLATFORM_OPS_COSIGN_PUB_SRC="$SB/repo/platform/cosign.pub" \
   PLATFORM_OPS_COSIGN_PUB_DST="$SB/etc/cosign.pub" \
   PLATFORM_OPS_RELEASE_BASE="$REL" \
@@ -166,17 +169,12 @@ yes "missing sig → returns 0 (non-fatal)" "[ $rc -eq 0 ]"
 yes "missing sig → binary NOT installed (fail-closed)" "[ ! -e '$SB/bin/platform-ops' ]"
 rm -rf "$SB"
 
-# 4d. FAIL-CLOSED: cosign verification fails → refuse.
-SB=$(sandbox); REL="$SB/rel"; mkdir -p "$REL"
-printf 'PUBKEY\n' > "$SB/repo/platform/cosign.pub"
-make_fake_binary "$REL/platform-ops-linux-amd64" 2026.6.1
-make_fake_binary "$REL/platform-ops-linux-arm64" 2026.6.1
-printf 'BAD' > "$REL/platform-ops-linux-amd64.sig"
-printf 'BAD' > "$REL/platform-ops-linux-arm64.sig"
-COSIGN=$(make_fake_cosign "$SB")
+# 4d. FAIL-CLOSED: signature is from the WRONG key → openssl refuses.
+SB=$(sandbox); REL="$SB/rel"
+cp "$KEYDIR/pub.pem" "$SB/repo/platform/cosign.pub"
+make_signed_release "$REL" 2026.6.1 "$KEYDIR/wrong.pem"
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
-  PLATFORM_OPS_COSIGN_BIN="$COSIGN" \
   PLATFORM_OPS_COSIGN_PUB_SRC="$SB/repo/platform/cosign.pub" \
   PLATFORM_OPS_COSIGN_PUB_DST="$SB/etc/cosign.pub" \
   PLATFORM_OPS_RELEASE_BASE="$REL" \
@@ -187,17 +185,12 @@ yes "verify fail → returns 0 (non-fatal)" "[ $rc -eq 0 ]"
 yes "verify fail → binary NOT installed (fail-closed)" "[ ! -e '$SB/bin/platform-ops' ]"
 rm -rf "$SB"
 
-# 4e. HAPPY PATH: key + asset + good sig → atomic install + key + timer.
-SB=$(sandbox); REL="$SB/rel"; mkdir -p "$REL"
-printf 'PUBKEY\n' > "$SB/repo/platform/cosign.pub"
-make_fake_binary "$REL/platform-ops-linux-amd64" 2026.6.1
-make_fake_binary "$REL/platform-ops-linux-arm64" 2026.6.1
-printf 'GOOD' > "$REL/platform-ops-linux-amd64.sig"
-printf 'GOOD' > "$REL/platform-ops-linux-arm64.sig"
-COSIGN=$(make_fake_cosign "$SB")
+# 4e. HAPPY PATH: key + asset + valid sig → atomic install + key + timer.
+SB=$(sandbox); REL="$SB/rel"
+cp "$KEYDIR/pub.pem" "$SB/repo/platform/cosign.pub"
+make_signed_release "$REL" 2026.6.1 "$KEYDIR/priv.pem"
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
-  PLATFORM_OPS_COSIGN_BIN="$COSIGN" \
   PLATFORM_OPS_COSIGN_PUB_SRC="$SB/repo/platform/cosign.pub" \
   PLATFORM_OPS_COSIGN_PUB_DST="$SB/etc/cosign.pub" \
   PLATFORM_OPS_RELEASE_BASE="$REL" \
@@ -208,7 +201,7 @@ yes "happy path → returns 0" "[ $rc -eq 0 ]"
 yes "happy path → binary installed" "[ -x '$SB/bin/platform-ops' ]"
 yes "happy path → binary is mode 755" "[ \"\$(stat -c '%a' '$SB/bin/platform-ops')\" = 755 ]"
 yes "happy path → installed binary reports target version" "[ \"\$('$SB/bin/platform-ops' version)\" = 2026.6.1 ]"
-yes "happy path → cosign pubkey persisted" "[ -f '$SB/etc/cosign.pub' ] && grep -q PUBKEY '$SB/etc/cosign.pub'"
+yes "happy path → pubkey persisted (matches source)" "[ -f '$SB/etc/cosign.pub' ] && cmp -s '$SB/etc/cosign.pub' '$KEYDIR/pub.pem'"
 yes "happy path → no temp turds left in bin dir" "[ -z \"\$(find '$SB/bin' -name 'platform-ops.*' 2>/dev/null)\" ]"
 yes "happy path → timer unit written" "[ -f '$SB/sysd/platform-ops-update.timer' ]"
 yes "happy path → service unit written" "[ -f '$SB/sysd/platform-ops-update.service' ]"
@@ -224,7 +217,6 @@ printf 'BAD' > "$REL/platform-ops-linux-arm64.sig"
 before=$(stat -c '%Y' "$SB/bin/platform-ops")
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
-  PLATFORM_OPS_COSIGN_BIN="$COSIGN" \
   PLATFORM_OPS_COSIGN_PUB_SRC="$SB/repo/platform/cosign.pub" \
   PLATFORM_OPS_COSIGN_PUB_DST="$SB/etc/cosign.pub" \
   PLATFORM_OPS_RELEASE_BASE="$REL" \
@@ -261,6 +253,7 @@ printf 'PUBKEY\n' > "$SBT/repo/platform/cosign.pub"; EMPTY2=$(mktemp -d)
 ) ; yes "no lingering RETURN trap after install path (caller return is clean)" "[ \$? -eq 0 ]"
 rm -rf "$SBT" "$EMPTY2"
 
+rm -rf "$KEYDIR"
 echo
 echo "platform-ops-install tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

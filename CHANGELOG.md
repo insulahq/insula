@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **platform-ops signature verification is now openssl-only on nodes** (no cosign
+  on hosts). A cosign `sign-blob --key` signature is plain base64-encoded
+  ECDSA-P256/SHA256, which `openssl dgst -verify` validates against the pinned
+  public key — so nodes need no 120 MB cosign binary; cosign is a CI-only
+  (signing) tool. Replaces the prior node-side `cosign verify-blob
+  --insecure-ignore-tlog` approach. `openssl` is now explicit in the bootstrap
+  package lists (it was already a transitive dependency).
+
 ## [2026.6.2] - 2026-06-01
 
 ### Added
