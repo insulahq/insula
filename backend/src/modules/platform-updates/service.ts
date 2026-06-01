@@ -23,8 +23,17 @@ type LatestSource = 'releases' | 'tags' | 'none' | 'unreachable';
 // which made the UI always show that regardless of reality; 'unknown'
 // is now an explicit sentinel so the UI can distinguish "no version
 // wired up" from "really running 0.1.0".
-const CURRENT_VERSION = process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown';
+// .trim() because the value is injected from the platform-version ConfigMap
+// and Kubernetes ConfigMap values commonly carry a trailing newline.
+const CURRENT_VERSION = (process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown').trim();
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
+
+// A "real" platform version is valid SemVer MAJOR.MINOR.PATCH with NO
+// leading-zero segments — CalVer `2026.6.1` qualifies (ADR-045 Decision 6),
+// `2026.06.1` does not — optionally with a `-<sha>` development suffix. Fully
+// anchored so a corrupted env (whitespace, four-part, leading-zero month) is
+// rejected before it can pollute the durable installed_platform_version.
+const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.]+)?$/;
 
 async function getSetting(db: Database, key: string): Promise<string | null> {
   const [row] = await db.select().from(platformSettings).where(eq(platformSettings.key, key));
@@ -33,6 +42,24 @@ async function getSetting(db: Database, key: string): Promise<string | null> {
 
 async function setSetting(db: Database, key: string, value: string): Promise<void> {
   await db.insert(platformSettings).values({ key, value }).onConflictDoUpdate({ target: platformSettings.key, set: { value } });
+}
+
+/**
+ * Record the running pod's version as the durable "installed" version.
+ *
+ * The version spine (ADR-045) makes `platform_settings.installed_platform_version`
+ * the source of truth for "what release is this cluster on" — read by upgrade
+ * pre-flight/gating independently of which image is currently up. The running
+ * pod (its PLATFORM_VERSION env, injected from the `platform-version` ConfigMap)
+ * is authoritative, so every startup persists it. No-op until the version is
+ * actually wired (`unknown`), so a misconfigured deploy never writes garbage.
+ *
+ * @returns the persisted version, or null if the running version isn't wired.
+ */
+export async function persistInstalledVersion(db: Database): Promise<string | null> {
+  if (!VERSION_RE.test(CURRENT_VERSION)) return null;
+  await setSetting(db, 'installed_platform_version', CURRENT_VERSION);
+  return CURRENT_VERSION;
 }
 
 async function resolveLatestVersion(): Promise<{ version: string | null; source: LatestSource }> {
@@ -98,11 +125,23 @@ export async function getVersionInfo(db: Database) {
 
   // "unknown" currentVersion means PLATFORM_VERSION isn't wired up —
   // we can't compare semver, so never claim an update is available.
-  const canCompare = CURRENT_VERSION !== 'unknown' && /^\d+\.\d+\.\d+/.test(CURRENT_VERSION);
+  const canCompare = VERSION_RE.test(CURRENT_VERSION);
   const updateAvailable = canCompare && latestVersion !== null && latestVersion !== CURRENT_VERSION && isNewer(latestVersion, CURRENT_VERSION);
 
   const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
   const pendingVersion = await getSetting(db, 'pending_update_version');
+
+  // Version spine (ADR-045): three coordinates the admin UI / upgrade flow read.
+  //   installed — durable DB record of the release the cluster is on
+  //   running   — the live pod's version (ConfigMap → PLATFORM_VERSION env)
+  //   available — newest upstream release the poller has seen
+  // installed falls back to running until persistInstalledVersion() has run.
+  // Re-validate the DB value on read so a hand-edited / restored-from-backup
+  // platform_settings row can never escape an unvalidated string through the
+  // API (the field feeds future upgrade gating). Mirrors `running`'s 'unknown'
+  // sentinel when nothing is wired.
+  const rawInstalled = await getSetting(db, 'installed_platform_version');
+  const installed = rawInstalled && VERSION_RE.test(rawInstalled) ? rawInstalled : CURRENT_VERSION;
 
   return {
     currentVersion: CURRENT_VERSION,
@@ -114,6 +153,9 @@ export async function getVersionInfo(db: Database) {
     imageUpdateStrategy,
     pendingVersion,
     lastCheckedAt: lastCheckedAt ?? null,
+    installed,
+    running: CURRENT_VERSION,
+    available: latestVersion,
   };
 }
 

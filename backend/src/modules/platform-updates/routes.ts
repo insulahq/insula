@@ -25,6 +25,9 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
             data: {
               type: 'object',
               properties: {
+                installed: { type: 'string' },
+                running: { type: 'string' },
+                available: { type: 'string', nullable: true },
                 currentVersion: { type: 'string' },
                 latestVersion: { type: 'string', nullable: true },
                 latestSource: { type: 'string', enum: ['releases', 'tags', 'none', 'unreachable'] },

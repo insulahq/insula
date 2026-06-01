@@ -263,13 +263,20 @@ jobs:
         run: |
           # Use short-sha of the commit that triggered this build.
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          # Pull the latest semver tag reachable from HEAD. When no tag
-          # exists yet (brand-new repo) git describe returns empty — the
-          # `|| echo` fallback doesn't fire on empty stdout, only on
-          # non-zero exit. Default via parameter expansion instead.
-          LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null | sed 's/^v//')
-          : "${LAST_TAG:=0.0.0}"
-          VERSION="${LAST_TAG}-${SHORT_SHA}"
+          # platform/VERSION is the canonical CalVer base (ADR-045 Decision 5);
+          # between tags CI appends the sha for the development cluster. Fall
+          # back to the latest tag, then 0.0.0, only if the file is absent.
+          if [ -f platform/VERSION ]; then
+            # tr -d strips the trailing newline ConfigMap-style files carry —
+            # load-bearing: it also neutralises any GITHUB_OUTPUT newline-
+            # injection from the file content. Don't remove.
+            BASE=$(tr -d '[:space:]' < platform/VERSION)
+          fi
+          if [ -z "${BASE:-}" ]; then
+            BASE=$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null | sed 's/^v//')
+            : "${BASE:=0.0.0}"
+          fi
+          VERSION="${BASE}-${SHORT_SHA}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Staging version → ${VERSION}"
 
