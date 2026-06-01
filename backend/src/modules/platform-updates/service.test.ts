@@ -74,6 +74,7 @@ let getVersionInfo: typeof import('./service.js').getVersionInfo;
 let updateSettings: typeof import('./service.js').updateSettings;
 let getCapacityCheck: typeof import('./service.js').getCapacityCheck;
 let triggerUpdate: typeof import('./service.js').triggerUpdate;
+let persistInstalledVersion: typeof import('./service.js').persistInstalledVersion;
 
 let originalFetch: typeof globalThis.fetch;
 
@@ -91,6 +92,7 @@ beforeEach(async () => {
   updateSettings = mod.updateSettings;
   getCapacityCheck = mod.getCapacityCheck;
   triggerUpdate = mod.triggerUpdate;
+  persistInstalledVersion = mod.persistInstalledVersion;
 });
 
 afterEach(() => {
@@ -186,6 +188,75 @@ describe('platform-updates service', () => {
       const result = await getVersionInfo(db);
 
       expect(result.latestVersion).toBe('1.5.0');
+    });
+  });
+
+  describe('version spine — installed / running / available', () => {
+    it('getVersionInfo exposes running (env), available (latest) and installed', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ tag_name: 'v2026.7.1' }),
+      });
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+
+      expect(result.running).toBe('0.1.0');          // = PLATFORM_VERSION env
+      expect(result.available).toBe('2026.7.1');      // = latestVersion
+      expect(result.installed).toBe('0.1.0');         // no DB row → running fallback
+    });
+
+    it('installed falls back to the running version when no DB row exists', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.installed).toBe('0.1.0');
+    });
+
+    it('installed reflects the persisted DB row over the running env', async () => {
+      settingsStore.set('installed_platform_version', '2026.5.3');
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.installed).toBe('2026.5.3');
+      expect(result.running).toBe('0.1.0');           // env unchanged
+    });
+
+    it('persistInstalledVersion writes the running version to platform_settings', async () => {
+      const db = createTrackedDb();
+      const written = await persistInstalledVersion(db);
+      expect(written).toBe('0.1.0');
+      expect(settingsStore.get('installed_platform_version')).toBe('0.1.0');
+    });
+
+    it('persistInstalledVersion is a no-op when the running version is unknown', async () => {
+      const saved = process.env.PLATFORM_VERSION;
+      try {
+        process.env.PLATFORM_VERSION = 'unknown';
+        vi.resetModules();
+        const mod = await import('./service.js');
+        const db = createTrackedDb();
+        const written = await mod.persistInstalledVersion(db);
+        expect(written).toBeNull();
+        expect(settingsStore.has('installed_platform_version')).toBe(false);
+      } finally {
+        process.env.PLATFORM_VERSION = saved;
+      }
+    });
+
+    it('persistInstalledVersion rejects a malformed (leading-zero / four-part) version', async () => {
+      for (const bad of ['2026.06.1', '1.2.3.4', '2026.6']) {
+        const saved = process.env.PLATFORM_VERSION;
+        try {
+          process.env.PLATFORM_VERSION = bad;
+          vi.resetModules();
+          const mod = await import('./service.js');
+          settingsStore.clear();
+          expect(await mod.persistInstalledVersion(createTrackedDb())).toBeNull();
+          expect(settingsStore.has('installed_platform_version')).toBe(false);
+        } finally {
+          process.env.PLATFORM_VERSION = saved;
+        }
+      }
     });
   });
 

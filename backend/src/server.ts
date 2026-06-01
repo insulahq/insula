@@ -5,6 +5,7 @@ import { suspendExpiredTenants } from './modules/subscriptions/expiry-checker.js
 import { runAutoUpgradePass } from './modules/deployments/auto-upgrade-cron.js';
 import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 import { bootstrapSystemTenant } from './modules/system-tenant/bootstrap.js';
+import { persistInstalledVersion } from './modules/platform-updates/service.js';
 
 const config = loadConfig();
 const db = getDb(config.DATABASE_URL);
@@ -55,6 +56,18 @@ console.log(`Server listening on port ${config.PORT}`);
     }
   } catch (err) {
     app.log.warn({ err }, '[system-tenant] startup bootstrap failed (continuing)');
+  }
+})();
+
+// Version spine (ADR-045): record the running pod's version as the durable
+// `installed_platform_version` so upgrade pre-flight/gating reads a value that
+// survives pod restarts. No-op until PLATFORM_VERSION is wired; non-fatal.
+(async () => {
+  try {
+    const v = await persistInstalledVersion(db);
+    if (v) app.log.info(`[version-spine] installed_platform_version = ${v}`);
+  } catch (err) {
+    app.log.warn({ err }, '[version-spine] failed to persist installed version (continuing)');
   }
 })();
 
