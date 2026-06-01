@@ -411,6 +411,32 @@ DR script does not exist as a standalone workstream; `platform-ops dr restore` s
 **Complexity**: H (umbrella).
 **Risk**: M (concentrated privilege but no worse than today's k3s admin kubeconfig + root SSH posture). TypeScript binary trades minor cold-start latency and binary size for zero code duplication.
 
+**As-built (PR 9 — scaffolding tranche)**:
+- **Toolchain: Node 22 SEA** (Single Executable Application), not the archived
+  `pkg` the plan mentioned and not Bun — the SAME runtime as the backend, so the
+  bundled Node-native deps (pg, Drizzle) carry zero compat risk.
+  `scripts/build-platform-ops.sh` esbuild-bundles `backend/src/cli/platform-ops.ts`
+  (+ the backend modules it imports) → SEA blob → postject into a host-or-
+  target-arch Node binary. ~120 MB; cross-arch by injecting the (arch-independent)
+  blob into a downloaded target-arch Node.
+- **Entrypoint** `backend/src/cli/platform-ops.ts` + `platform-ops/` (dispatch,
+  deps seam, commands). First tranche is **read-only**: `version` (offline-first,
+  enriches from the DB via the real `platform-updates` module when reachable —
+  proving the backend-graph bundling), `cluster status|diagnostics`,
+  `migrations list` (stub until W9), `shell`. Privileged subcommands land later.
+- **Signing: key-based + offline.** `release.yml` builds amd64+arm64, cosign-signs
+  with `--tlog-upload=false` (no Rekor), uploads binaries + `.sig` as Release
+  assets. `platform/cosign.pub` committed as the trust anchor. Operator provisions
+  `COSIGN_PRIVATE_KEY`/`COSIGN_PASSWORD` (RELEASING.md); unsigned ⇒ W8 install
+  stays dormant (fail-closed). **W8 verify amended to `--insecure-ignore-tlog`**
+  so offline key-based verification actually works (+ fixed a latent W8 RETURN-trap
+  leak, both surfaced by wiring real signatures).
+- **Tests**: Vitest unit suite (dispatch + commands, injected deps) +
+  `scripts/test-build-platform-ops.sh` (real build → sign → `phase_platform_ops`
+  verify+install roundtrip + tamper-reject), CI job `platform-ops binary build`.
+- **`migrations list` is a stub** (the W9 registry is PR 11); other privileged
+  subcommands (snapshot/dr/upgrade/drain/rollback/self-upgrade) ship in later PRs.
+
 ---
 
 ## 7. Independently Shippable vs Gating

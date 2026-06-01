@@ -215,6 +215,7 @@ yes "happy path → service unit written" "[ -f '$SB/sysd/platform-ops-update.se
 yes "timer is daily + persistent" "grep -q 'OnCalendar' '$SB/sysd/platform-ops-update.timer' && grep -q 'Persistent=true' '$SB/sysd/platform-ops-update.timer'"
 yes "service runs self-upgrade --check" "grep -q 'self-upgrade --check' '$SB/sysd/platform-ops-update.service'"
 yes "service ExecStart references the installed binary path" "grep -q 'ExecStart=$SB/bin/platform-ops self-upgrade --check' '$SB/sysd/platform-ops-update.service'"
+yes "service is hardened (NoNewPrivileges + ProtectSystem)" "grep -q 'NoNewPrivileges=yes' '$SB/sysd/platform-ops-update.service' && grep -q 'ProtectSystem=strict' '$SB/sysd/platform-ops-update.service'"
 
 # 4f. IDEMPOTENCY: re-run with the binary already at target version → skip.
 # Corrupt the release so a re-fetch would FAIL the verify; a true skip never refetches.
@@ -235,10 +236,30 @@ yes "idempotent re-run → returns 0" "[ $rc -eq 0 ]"
 yes "idempotent re-run → binary untouched (no refetch)" "[ '$before' = '$after' ] && [ \"\$('$SB/bin/platform-ops' version)\" = 2026.6.1 ]"
 rm -rf "$SB"
 
-# ── 5. Real-repo guard: phase_platform_ops on the actual checkout is a clean
-#      no-op today (no platform/cosign.pub yet) — proves fresh bootstrap is safe.
-yes "real repo → phase_platform_ops is a clean no-op (returns 0)" \
-  "PLATFORM_OPS_BIN=\"\$(mktemp -d)/platform-ops\" PLATFORM_OPS_SKIP_SYSTEMCTL=1 phase_platform_ops '$REPO_ROOT'"
+# ── 5. Real-repo guard: phase_platform_ops on the actual checkout returns 0
+#      without installing anything. platform/cosign.pub now ships in the repo, so
+#      the dormancy gate no longer applies; point RELEASE_BASE at an EMPTY local
+#      dir so the "no asset yet" path is exercised offline (no network in a unit
+#      test) — proves fresh bootstrap stays green until a signed asset ships.
+EMPTYREL=$(mktemp -d); RRBIN=$(mktemp -d)/platform-ops
+yes "real repo → phase_platform_ops is a clean no-op (returns 0, no install)" \
+  "PLATFORM_OPS_BIN='$RRBIN' PLATFORM_OPS_RELEASE_BASE='$EMPTYREL' PLATFORM_OPS_SKIP_SYSTEMCTL=1 phase_platform_ops '$REPO_ROOT' && [ ! -e '$RRBIN' ]"
+rm -rf "$EMPTYREL"
+
+# ── 6. Regression: the install path must NOT leave a lingering RETURN trap that
+#      re-fires (with out-of-scope $tmp/$staged) on a SUBSEQUENT function return.
+#      Run phase_platform_ops PAST the dormancy gate (asset 404 → skip), then
+#      return from another function under `set -u` — must not error "unbound".
+trap_canary() { return 0; }
+SBT=$(mktemp -d); mkdir -p "$SBT/repo/platform"; printf '2026.6.1\n' > "$SBT/repo/platform/VERSION"
+printf 'PUBKEY\n' > "$SBT/repo/platform/cosign.pub"; EMPTY2=$(mktemp -d)
+(
+  set -uo pipefail
+  PLATFORM_OPS_BIN="$SBT/bin/platform-ops" PLATFORM_OPS_RELEASE_BASE="$EMPTY2" \
+    PLATFORM_OPS_SKIP_SYSTEMCTL=1 phase_platform_ops "$SBT/repo" >/dev/null 2>&1
+  trap_canary    # would explode with "tmp: unbound variable" if the trap leaked
+) ; yes "no lingering RETURN trap after install path (caller return is clean)" "[ \$? -eq 0 ]"
+rm -rf "$SBT" "$EMPTY2"
 
 echo
 echo "platform-ops-install tests: $pass passed, $fail failed"
