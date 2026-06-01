@@ -69,9 +69,12 @@ platform_ops_installed_version() {
   "$bin" version 2>/dev/null | head -n1 | tr -d '[:space:]'
 }
 
-# Fetch src→dest. http(s):// via curl (bounded timeouts; redirects pinned to
-# https so a MitM can't downgrade to cleartext); anything else treated as a
-# local path (lets tests point RELEASE_BASE at a directory). Non-zero on failure.
+# Fetch src→dest. The production RELEASE_BASE is always https. http:// is only
+# reachable via an explicit PLATFORM_OPS_RELEASE_BASE override (local test use)
+# and is warned; cosign still gates integrity, but it must never be the prod
+# default. https redirects are pinned so a MitM can't downgrade to cleartext.
+# Anything non-URL is treated as a local path (tests point RELEASE_BASE at a
+# directory). Non-zero on failure.
 platform_ops_fetch() {
   local src="$1" dest="$2"
   case "$src" in
@@ -92,9 +95,17 @@ platform_ops_verify_blob() {
     warn "platform-ops: cosign not available ('${cosign}') — cannot verify; refusing install."
     return 1
   fi
+  # --insecure-ignore-tlog: this is OFFLINE, KEY-BASED verification. The pinned
+  # public key (/etc/platform/cosign.pub) IS the trust anchor; the Rekor
+  # transparency log is for keyless/identity-based trust + auditability, which
+  # we don't use. Releases are signed with `--tlog-upload=false`, so there is no
+  # log entry to find; without this flag verify-blob fails "signature not found
+  # in transparency log" — and the whole point of this path is to work when the
+  # cluster (and any network) is down. Integrity/authenticity is fully provided
+  # by the key signature.
   # Capture cosign's stderr (drop stdout) so a verify failure is diagnosable
   # in the bootstrap log rather than silently swallowed. Exit code is the gate.
-  if ! out="$("$cosign" verify-blob --key "$pubkey" --signature "$sig" "$blob" 2>&1 >/dev/null)"; then
+  if ! out="$("$cosign" verify-blob --key "$pubkey" --signature "$sig" --insecure-ignore-tlog "$blob" 2>&1 >/dev/null)"; then
     [ -n "$out" ] && warn "platform-ops: cosign verify-blob: ${out}"
     return 1
   fi
@@ -116,6 +127,12 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=${bin} self-upgrade --check
 Nice=10
+# Hardening: the check runs as root (to atomically replace the binary) but needs
+# write access to only the binary dir + the trust-anchor dir. Lock the rest down.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=$(dirname "$bin") /etc/platform
 UNIT
   cat > "${dir}/platform-ops-update.timer" <<'UNIT'
 [Unit]
@@ -176,22 +193,23 @@ phase_platform_ops() {
 
   tmp="$(mktemp -d)"
   tmp_bin="${tmp}/platform-ops"; tmp_sig="${tmp}/platform-ops.sig"
-  # Stage beside the final binary (same fs → atomic mv). Clean both the temp
-  # dir AND any staged turd if mv never happens (e.g. interrupted mid-install).
   staged="${bin}.new.$$"
-  trap 'rm -rf "$tmp"; rm -f "$staged"' RETURN
+  # NB: explicit cleanup at each return — NOT a `trap ... RETURN`. A RETURN trap
+  # set here is not function-scoped (no `set -o functrace`); it would linger and
+  # re-fire on the caller's return with $tmp/$staged out of scope (unbound under
+  # `set -u`).
 
   if ! platform_ops_fetch "$asset" "$tmp_bin"; then
     warn "platform-ops: no asset for v${version} (${asset}) yet — skipping install."
-    return 0
+    rm -rf "$tmp"; return 0
   fi
   if ! platform_ops_fetch "$sig_url" "$tmp_sig"; then
     warn "platform-ops: binary present but signature missing (${sig_url}) — refusing to install unverified binary."
-    return 0
+    rm -rf "$tmp"; return 0
   fi
   if ! platform_ops_verify_blob "$tmp_bin" "$tmp_sig" "$pub_src"; then
     warn "platform-ops: cosign verification FAILED — refusing to install unverified binary."
-    return 0
+    rm -rf "$tmp"; return 0
   fi
 
   # Verified. Persist the trust anchor, then atomically swap the binary into
@@ -202,7 +220,11 @@ phase_platform_ops() {
   install -m 644 "$pub_src" "$pub_dst"
   mkdir -p "$(dirname "$bin")"
   install -m 755 "$tmp_bin" "$staged"
-  mv -f "$staged" "$bin"
+  if ! mv -f "$staged" "$bin"; then
+    warn "platform-ops: failed to install ${bin} — leaving any existing binary untouched."
+    rm -f "$staged"; rm -rf "$tmp"; return 0
+  fi
+  rm -rf "$tmp"
   log "platform-ops: installed ${version} (${arch}) → ${bin}; pubkey → ${pub_dst}."
 
   platform_ops_install_timer || warn "platform-ops: self-upgrade timer install failed (non-fatal)."

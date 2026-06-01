@@ -65,6 +65,49 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/tenant-panel:${{ steps.version.outputs.version }}
 
+      # platform-ops operator CLI (ADR-045 / W17): build the self-contained Node
+      # SEA binary for both arches and cosign-sign each (key-based, OFFLINE — no
+      # Rekor upload, matching the bootstrap verify path). Uploaded as Release
+      # assets that bootstrap.sh fetches + verifies. If COSIGN_PRIVATE_KEY is not
+      # set the binaries ship UNSIGNED and the bootstrap auto-install stays
+      # dormant (fail-closed) — see scripts/lib/bootstrap-phases.sh.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - uses: sigstore/cosign-installer@v3
+      - name: Build & sign platform-ops binaries
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # arm64 cross-build: inject the (arch-independent) SEA blob into a
+          # downloaded target-arch Node runtime. That runtime IS the binary we
+          # ship + cosign-sign, so verify its integrity against Node's official
+          # SHA256 manifest (TLS-authenticated nodejs.org) BEFORE extracting —
+          # the cosign signature only attests the output, never its inputs.
+          # (Follow-up hardening: GPG-verify SHASUMS256.txt.asc against Node's
+          # release keyset for full provenance.)
+          NODE_VER="$(node -p 'process.version')"
+          TARBALL="node-${NODE_VER}-linux-arm64.tar.xz"
+          curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${TARBALL}" -o "/tmp/${TARBALL}"
+          curl -fsSL "https://nodejs.org/dist/${NODE_VER}/SHASUMS256.txt" -o /tmp/SHASUMS256.txt
+          ( cd /tmp && grep " ${TARBALL}\$" SHASUMS256.txt | sha256sum -c - )
+          mkdir -p /tmp/node-arm64 && tar -xJf "/tmp/${TARBALL}" -C /tmp/node-arm64 --strip-components=1
+          ./scripts/build-platform-ops.sh --version "$VERSION" --arch amd64
+          ./scripts/build-platform-ops.sh --version "$VERSION" --arch arm64 --node-binary /tmp/node-arm64/bin/node
+          if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
+            for a in amd64 arm64; do
+              cosign sign-blob --key env://COSIGN_PRIVATE_KEY --tlog-upload=false --yes \
+                "dist-platform-ops/platform-ops-linux-${a}" > "dist-platform-ops/platform-ops-linux-${a}.sig"
+            done
+            echo "platform-ops: signed amd64 + arm64"
+          else
+            echo "::warning::COSIGN_PRIVATE_KEY not set — uploading UNSIGNED platform-ops binaries; bootstrap auto-install stays dormant (fail-closed)."
+          fi
+
       # Release notes = the matching CHANGELOG section (curated by cut-release.sh),
       # not auto-generated commit logs.
       - name: Extract release notes from CHANGELOG
@@ -82,11 +125,18 @@ jobs:
             printf 'Release %s\n' "$GITHUB_REF_NAME" > RELEASE_NOTES.md
           fi
 
-      # Create GitHub Release
+      # Create GitHub Release (with the platform-ops binaries + signatures as
+      # assets; .sig files are absent when unsigned → don't fail on unmatched).
       - uses: softprops/action-gh-release@v2
         with:
           body_path: RELEASE_NOTES.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: |
+            dist-platform-ops/platform-ops-linux-amd64
+            dist-platform-ops/platform-ops-linux-amd64.sig
+            dist-platform-ops/platform-ops-linux-arm64
+            dist-platform-ops/platform-ops-linux-arm64.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -63,3 +63,6 @@ test-artifacts/
 shellcheck-v0.10.0/
 shellcheck-v0.10.0.linux.x86_64.tar.xz
 .local.k8s-rendered.yaml
+
+# platform-ops SEA build output (W17)
+dist-platform-ops/

@@ -67,6 +67,23 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
 
+  # platform-ops SEA build (Holistic plan W17): prove the binary build pipeline
+  # stays green on every PR — bundles the backend graph, the binary runs, and a
+  # real cosign sign→verify→install roundtrip succeeds through the bootstrap code.
+  platform-ops-binary:
+    name: platform-ops binary build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - uses: sigstore/cosign-installer@v3
+      - run: ./scripts/test-build-platform-ops.sh
+        env:
+          PLATFORM_OPS_COSIGN_BIN: cosign
+
   # No-push-to-cluster guard (Holistic plan W7): CI builds images + commits git
   # pins — it never mutates a live cluster (pull model).
   no-cluster-push:
