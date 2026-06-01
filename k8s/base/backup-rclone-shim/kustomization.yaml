@@ -26,6 +26,12 @@ resources:
   - daemonset.yaml
   - service.yaml
   - networkpolicy.yaml
-  - pdb.yaml
+  # NB: no PodDisruptionBudget. A PDB cannot protect DaemonSet pods — the
+  # disruption controller resolves the owning controller's `scale`
+  # subresource to compute "expected pods", and DaemonSets do not implement
+  # `scale`. The result is a perpetual `CalculateExpectedPodCountFailed`
+  # warning and a PDB that enforces nothing. One-at-a-time rolling restarts
+  # are already enforced by the DaemonSet's own
+  # updateStrategy.rollingUpdate.maxUnavailable=1 (see daemonset.yaml).
 
 namespace: platform

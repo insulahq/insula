@@ -30,21 +30,30 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      # PodDisruptionBudget enforces maxUnavailable=1; this matches.
-      # On a small cluster (3 control-plane nodes) a rolling restart
-      # walks one node at a time, ≤ ~30s per pod.
+      # One pod at a time. On a small cluster (3 control-plane nodes) a
+      # rolling restart walks node-by-node, ≤ ~30s per pod. maxSurge is
+      # left at its default 0 — this DaemonSet does NOT use hostPorts, so
+      # a surge replica would not collide, but there is no benefit to
+      # surging an idle backup mediator either.
       maxUnavailable: 1
   template:
     metadata:
       labels:
         app: backup-rclone-shim
         app.kubernetes.io/part-of: hosting-platform
-      annotations:
-        # platform-api R-X4 renderer bumps this annotation when the
-        # ConfigMap or backup-target-key Secret content changes. The
-        # rolling restart picks up the new config without us needing
-        # to touch the DaemonSet spec directly.
-        insula.host/config-hash: "placeholder-replace-via-renderer"
+      # NB: the pod-template `insula.host/config-hash` + `insula.host/input-hash`
+      # annotations are owned EXCLUSIVELY by the platform-api R-X4 reconciler
+      # (backend/src/modules/backup-rclone-shim/reconciler.ts), which
+      # merge-patches them when the rendered ConfigMap / backup-target-key
+      # changes — the annotation bump is what drives the rolling restart.
+      #
+      # DO NOT add a literal `config-hash` annotation here. A fixed value in
+      # git is one that Flux (kustomize-controller, SSA) will perpetually
+      # re-assert against the reconciler's live hash — the two managers then
+      # ping-pong on the same field, bumping the DaemonSet generation on every
+      # flip and rolling the pods forever (observed: gen 1000+ in 24h, idle
+      # shim never reaching Ready). Leaving the annotation absent from git lets
+      # the reconciler be the sole owner; Flux owns the rest of the template.
     spec:
       serviceAccountName: backup-rclone-shim
       automountServiceAccountToken: false

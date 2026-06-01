@@ -3369,6 +3369,17 @@ install_traefik() {
   # runs as UID 65532 by default), and client source IPs are preserved
   # (DNAT changes destination only).
   #
+  # updateStrategy override (maxUnavailable=1, maxSurge=0): the Traefik
+  # chart defaults a DaemonSet to maxUnavailable=0/maxSurge=1. That default
+  # DEADLOCKS a hostPort DaemonSet on rollout — the surge replica is pinned
+  # by nodeAffinity to the same node as the pod it replaces, and cannot bind
+  # the node's :80/:443 (still held by the old pod), so it stays Pending
+  # forever and the roll never advances past the first node. maxSurge=0 +
+  # maxUnavailable=1 deletes-then-recreates one pod at a time, which is the
+  # only correct strategy when the pods own a fixed host port. (Observed on
+  # staging 2026-06-01: a chart-default roll wedged for 22h with one Pending
+  # surge pod.)
+  #
   # HTTP→HTTPS redirect is handled at the EntryPoint level (permanent=true),
   # replacing the per-Ingress ssl-redirect annotation pattern. Per-route
   # overrides are still possible via a RedirectScheme Middleware.
@@ -3426,6 +3437,9 @@ install_traefik() {
     --create-namespace \
     --version "${TRAEFIK_CHART_VERSION}" \
     --set deployment.kind=DaemonSet \
+    --set updateStrategy.type=RollingUpdate \
+    --set updateStrategy.rollingUpdate.maxUnavailable=1 \
+    --set updateStrategy.rollingUpdate.maxSurge=0 \
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
     --set service.spec.type=ClusterIP \
