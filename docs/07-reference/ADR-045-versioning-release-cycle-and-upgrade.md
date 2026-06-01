@@ -3,6 +3,12 @@
 **Status:** Accepted (2026-06-01)
 **Author:** Sebastian Buchweitz
 
+**Amendments:** 2026-06-01 — Decision 6 CalVer dropped the leading-zero month
+(`YYYY.0M.PATCH` → `YYYY.M.PATCH`, e.g. `2026.6.1`) so the platform version is
+valid SemVer and stays in lockstep with `package.json`; version ordering must
+use semver-aware comparison, never raw string sort. Operator-approved; mirrored
+in the holistic plan §15 and `CONTRIBUTING.md`.
+
 **Amends:** `docs/04-deployment/CLUSTER_UPGRADE_ROADMAP.md` (carries forward 17
 of its 20 locked decisions; amends 3 — see §6).
 
@@ -77,13 +83,13 @@ amendment to this ADR (and a mirrored note in the holistic plan §15 change log)
 | 2 | Release cadence | **Ad-hoc.** No time-boxed schedule. Operator cuts a tag when accumulated changes warrant a release. Drift-tracker workflow explicitly skipped. |
 | 3 | Pre-release identifier | **`-rc.N`** only. No `-beta.N` distinction. |
 | 4 | `CICD_PIPELINE_REQUIREMENTS.md` disposition | **Rewrite in place.** Historical phase framing is not load-bearing; replace with as-built spec. |
-| 5 | `platform/VERSION` between tags | **Pinned to last released tag.** Between tags the file says e.g. `2026.05.1` while CI computes `2026.05.1-<sha>` for the development cluster. `cut-release.sh` is the only thing that edits the file. |
-| 6 | Versioning scheme | **CalVer `YYYY.0M.PATCH`** (e.g. `2026.05.1`). Leading-zero month for lexical sort stability. PATCH starts at `.1`. Breaking-change signal carried by a `### BREAKING` heading in CHANGELOG; auto-update refuses to auto-apply any release whose CHANGELOG section contains `BREAKING`. |
+| 5 | `platform/VERSION` between tags | **Pinned to last released tag.** Between tags the file says e.g. `2026.5.1` while CI computes `2026.5.1-<sha>` for the development cluster. `cut-release.sh` is the only thing that edits the file. |
+| 6 | Versioning scheme | **CalVer `YYYY.M.PATCH`** (e.g. `2026.6.1`). **No** leading-zero month, so the version is valid SemVer (npm / `semver` / `sort -V` compatible) and platform/VERSION stays in lockstep with `package.json`; version ordering MUST use semver-aware comparison, never a raw string sort. PATCH starts at `.1`. Breaking-change signal carried by a `### BREAKING` heading in CHANGELOG; auto-update refuses to auto-apply any release whose CHANGELOG section contains `BREAKING`. |
 | 7 | Auto-update defaults | **Staging ON, production OFF, local clusters N/A** (button hidden). Stored in `platform_settings.upgrade.auto_update_enabled`. |
 | 8 | Release feed source | **GitHub Releases API** of `PLATFORM_RELEASES_REPO` env (default `insulahq/insula`, fork-overridable). **Cosign signature** on release artifacts verified before any apply. Public key pinned in `platform/cosign.pub`. Fork operators MUST replace this key with their own. |
 | 9 | Release tagging | **Manual only** via `scripts/cut-release.sh`. No auto-promote from development/main. |
 | 10 | `stable` branch | **DROP.** `release.yml` stops opening PRs to stable. Production Flux pins `spec.ref.tag` directly; version-poller re-pins on operator click. |
-| 11 | Pre-releases | `cut-release.sh --prerelease` produces `YYYY.0M.PATCH-rc.N`. GitHub Release `prerelease=true`. Separate flag `auto_update_include_prereleases` (default ON staging / OFF prod). |
+| 11 | Pre-releases | `cut-release.sh --prerelease` produces `YYYY.M.PATCH-rc.N`. GitHub Release `prerelease=true`. Separate flag `auto_update_include_prereleases` (default ON staging / OFF prod). |
 | 12 | Staging cluster mode | **Mode A only, Phase 1.** Mode A = Flux watches `development` branch tip (every-commit bleeding-edge smoke). Mode B (Flux pins latest `-rc.N` tag) deferred. |
 | 13 | Branch naming | Rename `staging` → `development`. **No new `staging` branch.** "Staging cluster" survives as a cluster-role name only. Tags carry all release semantics. |
 | 14 | OS-level changes strategy | Three complementary mechanisms: (a) **continuous reconciler** for declarative drift (sysctls, modules, ulimits, declared apt/dnf packages); (b) **per-release host-migration runner** for one-shot imperative scripts; (c) **operator CLI** for failure-mode and ad-hoc work. Operator NEVER manually re-bootstraps for a non-BREAKING release. |
@@ -191,7 +197,7 @@ retention, super_admin-only rollback, Flux-pinning spike, 60–120s soft freeze,
 | Original | Amendment | Reason |
 |---|---|---|
 | **#2** per-cluster SSH key generated at bootstrap | **DROPPED.** No SSH fan-out in the pull model. SUC spawns per-node Jobs via RBAC; `platform-ops` runs on the node itself for operator-driven failure work. | Pull-model pivot |
-| **#4** `platform/VERSION` == git tag `vX.Y.Z` | **AMENDED:** matches git tag `vYYYY.0M.PATCH` (CalVer); between tags the file is the last tag while CI computes `<tag>-<sha>` for development. | CalVer (Decision 6) |
+| **#4** `platform/VERSION` == git tag `vX.Y.Z` | **AMENDED:** matches git tag `vYYYY.M.PATCH` (CalVer); between tags the file is the last tag while CI computes `<tag>-<sha>` for development. | CalVer (Decision 6) |
 | **#18** staging auto-trigger OFF by default | **REVERSED:** staging auto-update **ON**, production **OFF**. | Staging's role is to absorb upgrade risk; auto-update on staging IS the test loop (Decision 7) |
 
 `CLUSTER_UPGRADE_ROADMAP.md` Phase 4 (ops-runner + `bootstrap.sh --upgrade` +

@@ -6,7 +6,7 @@ the broader fork on-ramp are documented separately (`CONTRIBUTING.md`,
 `LICENSE`).
 
 > **Status:** image-org fork-safety landed in the W2 PR of the
-> [Holistic Release &amp; Upgrade Plan](HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md).
+> [Holistic Release & Upgrade Plan](HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md).
 > The remaining surface (§4) is tracked as a follow-up.
 
 ## 1. Local development — nothing to do
