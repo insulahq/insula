@@ -19,7 +19,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/insula/firewall-reconciler
+  IMAGE: ghcr.io/${{ github.repository }}/firewall-reconciler
 
 jobs:
   build:

@@ -27,7 +27,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/insula/node-terminal
+  IMAGE: ghcr.io/${{ github.repository }}/node-terminal
 
 jobs:
   build:

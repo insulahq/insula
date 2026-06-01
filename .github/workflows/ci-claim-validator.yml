@@ -20,7 +20,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/insulahq/insula/claim-validator
+  IMAGE: ghcr.io/${{ github.repository }}/claim-validator
 
 jobs:
   build:
