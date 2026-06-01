@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.1] - 2026-06-01
+
 ### Added
 - **Version spine** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)):
   `platform/VERSION` (CalVer) is the single source of truth, flowing through CI →
