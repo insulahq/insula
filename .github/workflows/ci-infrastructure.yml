@@ -292,6 +292,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: ./scripts/ci-mail-arch-regressions.sh
 
+  # Image-org fork-safety (Holistic plan W2): overlays stay canonical, workflows
+  # derive their push org from github.repository, preflight constant agrees.
+  image-org:
+    name: Image-org fork-safety guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci-image-org-check.sh
+
   # R-X5: universal backup-rclone-shim invariants. 8 checks: super_admin
   # gate, SHIM_CLASSES locked, STATE_ERROR self-heal, consumer-kind
   # coverage, migration 0016 CHECK constraint, registry-membership of
