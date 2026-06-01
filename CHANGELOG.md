@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.2] - 2026-06-01
+
 ### Added
 - **`platform-ops` operator CLI** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
   W17): a self-contained Node SEA binary (`scripts/build-platform-ops.sh`) that
