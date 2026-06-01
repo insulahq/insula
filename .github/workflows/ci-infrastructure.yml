@@ -64,6 +64,16 @@ jobs:
       - uses: actions/checkout@v4
       - run: ./scripts/test-image-org.sh
       - run: ./scripts/test-cut-release.sh
+      - run: ./scripts/test-ci-no-cluster-push.sh
+
+  # No-push-to-cluster guard (Holistic plan W7): CI builds images + commits git
+  # pins — it never mutates a live cluster (pull model).
+  no-cluster-push:
+    name: No push-to-cluster guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci-no-cluster-push.sh
 
   admin-auth-gate-check:
     name: Admin-auth gate guardrail
