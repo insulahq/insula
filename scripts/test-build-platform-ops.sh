@@ -44,7 +44,9 @@ yes "cluster status fails gracefully (no crash)" "'$BIN' cluster status >/dev/nu
 yes "DB graph bundled: enrich path degrades on unreachable DB" \
   "DATABASE_URL='postgres://x:x@127.0.0.1:1/none' '$BIN' version --json | grep -q '\"installed\"'"
 
-echo "=== crypto roundtrip (real cosign + W8 verify/install) ==="
+echo "=== crypto roundtrip (real cosign SIGN → openssl VERIFY → install) ==="
+# Proves a genuine cosign-signed release verifies through the node-side openssl
+# path (no cosign on the node) on a REAL SEA binary. cosign is signing-only.
 if command -v "$COSIGN" >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/bootstrap-phases.sh"
@@ -52,11 +54,11 @@ if command -v "$COSIGN" >/dev/null 2>&1; then
   ( cd "$K" && COSIGN_PASSWORD="$PW" "$COSIGN" generate-key-pair >/dev/null 2>&1 )
   # Sign offline (no Rekor), exactly as release.yml will.
   COSIGN_PASSWORD="$PW" "$COSIGN" sign-blob --key "$K/cosign.key" --tlog-upload=false --yes "$BIN" > "$K/sig" 2>/dev/null
-  yes "platform_ops_verify_blob accepts a valid signature" \
-    "PLATFORM_OPS_COSIGN_BIN='$COSIGN' platform_ops_verify_blob '$BIN' '$K/sig' '$K/cosign.pub'"
+  yes "openssl verify accepts a real cosign signature" \
+    "platform_ops_verify_blob '$BIN' '$K/sig' '$K/cosign.pub'"
   cp "$BIN" "$K/tampered"; printf 'x' >> "$K/tampered"
-  yes "platform_ops_verify_blob REJECTS a tampered binary (fail-closed)" \
-    "! PLATFORM_OPS_COSIGN_BIN='$COSIGN' platform_ops_verify_blob '$K/tampered' '$K/sig' '$K/cosign.pub'"
+  yes "openssl verify REJECTS a tampered binary (fail-closed)" \
+    "! platform_ops_verify_blob '$K/tampered' '$K/sig' '$K/cosign.pub'"
 
   # Full install via the real phase_platform_ops, from a local file:// release.
   REL="$K/rel"; mkdir -p "$REL"
@@ -65,13 +67,12 @@ if command -v "$COSIGN" >/dev/null 2>&1; then
   cp "$K/sig" "$REL/platform-ops-linux-${ARCHTOK}.sig"
   REPO="$K/repo"; mkdir -p "$REPO/platform"; echo 2026.6.1 > "$REPO/platform/VERSION"; cp "$K/cosign.pub" "$REPO/platform/cosign.pub"
   PLATFORM_OPS_BIN="$K/bin/platform-ops" \
-  PLATFORM_OPS_COSIGN_BIN="$COSIGN" \
   PLATFORM_OPS_RELEASE_BASE="$REL" \
   PLATFORM_OPS_COSIGN_PUB_DST="$K/etc/cosign.pub" \
   PLATFORM_OPS_SYSTEMD_DIR="$K/sysd" PLATFORM_OPS_SKIP_SYSTEMCTL=1 \
     phase_platform_ops "$REPO" >/dev/null 2>&1
-  yes "phase_platform_ops installs the cosign-verified binary"   "[ -x '$K/bin/platform-ops' ]"
-  yes "installed binary runs + reports its version"             "'$K/bin/platform-ops' version | grep -q 2026.6.1"
+  yes "phase_platform_ops installs the verified binary"   "[ -x '$K/bin/platform-ops' ]"
+  yes "installed binary runs + reports its version"       "'$K/bin/platform-ops' version | grep -q 2026.6.1"
   rm -rf "$K"
 else
   echo "  (cosign not found — skipping crypto roundtrip; set PLATFORM_OPS_COSIGN_BIN to enable)"

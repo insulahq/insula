@@ -20,7 +20,7 @@
 #   PLATFORM_OPS_REPO            GitHub owner/repo            (insulahq/insula)
 #   PLATFORM_OPS_RELEASE_BASE    release asset base URL/dir   (derived from repo+version)
 #   PLATFORM_OPS_BIN             install destination          (/usr/local/bin/platform-ops)
-#   PLATFORM_OPS_COSIGN_BIN      cosign executable            (cosign)
+#   PLATFORM_OPS_OPENSSL_BIN     openssl executable (verify)  (openssl)
 #   PLATFORM_OPS_COSIGN_PUB_SRC  in-repo trust anchor         (<root>/platform/cosign.pub)
 #   PLATFORM_OPS_COSIGN_PUB_DST  persisted pubkey             (/etc/platform/cosign.pub)
 #   PLATFORM_OPS_SYSTEMD_DIR     unit dir                     (/etc/systemd/system)
@@ -71,7 +71,7 @@ platform_ops_installed_version() {
 
 # Fetch src→dest. The production RELEASE_BASE is always https. http:// is only
 # reachable via an explicit PLATFORM_OPS_RELEASE_BASE override (local test use)
-# and is warned; cosign still gates integrity, but it must never be the prod
+# and is warned; the signature still gates integrity, but it must never be the prod
 # default. https redirects are pinned so a MitM can't downgrade to cleartext.
 # Anything non-URL is treated as a local path (tests point RELEASE_BASE at a
 # directory). Non-zero on failure.
@@ -79,36 +79,45 @@ platform_ops_fetch() {
   local src="$1" dest="$2"
   case "$src" in
     https://*) curl -fsSL --proto-redir '=https' --connect-timeout 15 --max-time 120 "$src" -o "$dest" 2>/dev/null ;;
-    http://*)  warn "platform-ops: fetching over plain HTTP (transport unencrypted; content is still cosign-verified): ${src}"
+    http://*)  warn "platform-ops: fetching over plain HTTP (transport unencrypted; content is still signature-verified): ${src}"
                curl -fsSL --connect-timeout 15 --max-time 120 "$src" -o "$dest" 2>/dev/null ;;
     file://*)  cp -f "${src#file://}" "$dest" 2>/dev/null ;;
     *)         cp -f "$src" "$dest" 2>/dev/null ;;
   esac
 }
 
-# Fail-closed cosign verification of a downloaded blob. Returns non-zero — i.e.
-# REFUSES — when cosign is unavailable or the signature does not verify. The
-# caller must treat any non-zero as "do not install".
+# Fail-closed signature verification of a downloaded blob, using ONLY openssl
+# (present on every node — no 120 MB cosign binary required on hosts). A cosign
+# `sign-blob --key` signature is just a base64-encoded ECDSA-P256-over-SHA256
+# signature, which openssl verifies against the pinned public key
+# (/etc/platform/cosign.pub). cosign is therefore a CI-only (signing-side) tool;
+# verification is offline + key-based + dependency-light. Returns non-zero —
+# i.e. REFUSES — when openssl is unavailable, the signature is malformed, or it
+# does not verify. The caller must treat any non-zero as "do not install".
 platform_ops_verify_blob() {
-  local blob="$1" sig="$2" pubkey="$3" cosign="${PLATFORM_OPS_COSIGN_BIN:-cosign}" out
-  if ! command -v "$cosign" >/dev/null 2>&1; then
-    warn "platform-ops: cosign not available ('${cosign}') — cannot verify; refusing install."
+  local blob="$1" sig="$2" pubkey="$3" openssl_bin="${PLATFORM_OPS_OPENSSL_BIN:-openssl}" der out
+  if ! command -v "$openssl_bin" >/dev/null 2>&1; then
+    warn "platform-ops: openssl not available ('${openssl_bin}') — cannot verify; refusing install."
     return 1
   fi
-  # --insecure-ignore-tlog: this is OFFLINE, KEY-BASED verification. The pinned
-  # public key (/etc/platform/cosign.pub) IS the trust anchor; the Rekor
-  # transparency log is for keyless/identity-based trust + auditability, which
-  # we don't use. Releases are signed with `--tlog-upload=false`, so there is no
-  # log entry to find; without this flag verify-blob fails "signature not found
-  # in transparency log" — and the whole point of this path is to work when the
-  # cluster (and any network) is down. Integrity/authenticity is fully provided
-  # by the key signature.
-  # Capture cosign's stderr (drop stdout) so a verify failure is diagnosable
-  # in the bootstrap log rather than silently swallowed. Exit code is the gate.
-  if ! out="$("$cosign" verify-blob --key "$pubkey" --signature "$sig" --insecure-ignore-tlog "$blob" 2>&1 >/dev/null)"; then
-    [ -n "$out" ] && warn "platform-ops: cosign verify-blob: ${out}"
+  if ! command -v base64 >/dev/null 2>&1; then
+    warn "platform-ops: base64 not available — cannot verify; refusing install."
     return 1
   fi
+  der="$(mktemp)"
+  # The .sig asset is cosign's base64 output; decode to the raw DER signature.
+  if ! base64 -d < "$sig" > "$der" 2>/dev/null; then
+    warn "platform-ops: signature is not valid base64 — refusing install."
+    rm -f "$der"; return 1
+  fi
+  # openssl recomputes sha256(blob) and verifies the ECDSA signature. Capture
+  # output so a failure is diagnosable; the exit code is the gate.
+  if ! out="$("$openssl_bin" dgst -sha256 -verify "$pubkey" -signature "$der" "$blob" 2>&1)"; then
+    warn "platform-ops: signature verification FAILED (${out})"
+    rm -f "$der"; return 1
+  fi
+  rm -f "$der"
+  return 0
 }
 
 # Lay down (and, unless skipped, enable) the daily self-upgrade systemd timer.
@@ -208,7 +217,7 @@ phase_platform_ops() {
     rm -rf "$tmp"; return 0
   fi
   if ! platform_ops_verify_blob "$tmp_bin" "$tmp_sig" "$pub_src"; then
-    warn "platform-ops: cosign verification FAILED — refusing to install unverified binary."
+    warn "platform-ops: signature verification FAILED — refusing to install unverified binary."
     rm -rf "$tmp"; return 0
   fi
 

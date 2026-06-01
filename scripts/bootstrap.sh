@@ -1373,7 +1373,7 @@ install_packages_apt() {
   # helm binary archive."). Pin it explicitly on both families so
   # the helm install step never depends on a base-image quirk.
   apt-get install -y -qq \
-    curl wget gnupg2 ca-certificates \
+    curl wget gnupg2 ca-certificates openssl \
     nftables fail2ban jq unzip tar git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
     wireguard-tools \
@@ -1421,7 +1421,7 @@ install_packages_dnf() {
   # falls back to the upstream static binary when the package isn't
   # available, which is also a safe no-op when dnf provides age.
   dnf install -y -q --allowerasing \
-    wget gnupg2 ca-certificates \
+    wget gnupg2 ca-certificates openssl \
     nftables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
