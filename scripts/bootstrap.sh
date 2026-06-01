@@ -62,6 +62,14 @@ if [[ -n "$REMOTE_HOST" ]]; then
     echo "Copying scripts/lib/ to $REMOTE_HOST..."
     scp -r "${SSH_OPTS[@]}" "${local_script_dir}/lib" "${SSH_USER}@${REMOTE_HOST}:/tmp/lib"
   fi
+  # Also carry platform/ (VERSION + cosign.pub) so the end-of-run platform-ops
+  # install phase can resolve its target version + trust anchor on the remote.
+  # The remote script lives flattened at /tmp/bootstrap.sh, so phase_platform_ops
+  # resolves the repo root as the dir BESIDE the script (/tmp/platform/VERSION).
+  if [[ -d "${local_script_dir}/../platform" ]]; then
+    echo "Copying platform/ to $REMOTE_HOST..."
+    scp -r "${SSH_OPTS[@]}" "${local_script_dir}/../platform" "${SSH_USER}@${REMOTE_HOST}:/tmp/platform"
+  fi
 
   # Pass the original args via a base64-encoded blob so spaces, quotes,
   # and shell metacharacters survive the SSH round-trip intact without
@@ -737,6 +745,20 @@ error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
 
 marker_exists() { [[ -f "${MARKER_DIR}/.${1}" ]]; }
 marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
+
+# Source the extractable phase library (platform-ops install; future phases).
+# scripts/lib/ travels with bootstrap.sh on every supported invocation: the
+# git-clone path (sibling on disk) and --remote (SCP'd alongside — see the
+# remote block near the top of this file). The standalone `curl | bash`
+# one-liner is intentionally no longer supported (clone the repo or use
+# --remote); a mandatory sibling lib cannot be satisfied by a single piped file.
+BOOTSTRAP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PHASES_LIB="${BOOTSTRAP_SCRIPT_DIR}/lib/bootstrap-phases.sh"
+if [[ ! -r "$PHASES_LIB" ]]; then
+  error "phase library missing at ${PHASES_LIB} — scripts/lib/ must accompany bootstrap.sh (clone the repo or use --remote; the 'curl | bash' one-liner is unsupported)."
+fi
+# shellcheck source=lib/bootstrap-phases.sh
+source "$PHASES_LIB"
 
 # Parse one --allow-source argument value (comma-tolerant). Each token is
 # normalized to a CIDR (/32 for bare IPv4, /128 for bare IPv6) and pushed
@@ -7317,6 +7339,21 @@ main() {
     # operator handles via the admin panel.
     configure_backup_target_s3 || true
     print_summary
+
+    # Install the platform-ops operator CLI (cosign-verified) + its daily
+    # self-upgrade timer. Best-effort + FAIL-CLOSED: a missing or unverified
+    # asset is skipped, never fatal — bootstrap's green path does not depend
+    # on it. Dormant (logged no-op) until the release pipeline publishes a
+    # signed binary + ships platform/cosign.pub (a later workstream). The
+    # repo root holding platform/VERSION sits at scripts/.. on the git-clone
+    # path and beside the flattened script on --remote (see lib copy above).
+    if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
+      phase_platform_ops "$(cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)" || true
+    elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
+      phase_platform_ops "${BOOTSTRAP_SCRIPT_DIR}" || true
+    else
+      warn "platform-ops: platform/VERSION not found near ${BOOTSTRAP_SCRIPT_DIR} — skipping CLI install."
+    fi
 
     # Phase 5: post-install cluster-network smoke. Advisory by default;
     # the operator can wire it into CI with --require-smoke-pass. Only
