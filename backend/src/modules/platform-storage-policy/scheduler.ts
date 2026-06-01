@@ -2,7 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { notifications, users, platformStoragePolicy } from '../../db/schema.js';
-import { getPolicy, readClusterState, applyPolicy, valkeyReplicasForSystemTier } from './service.js';
+import { getPolicy, readClusterState, applyPolicy, valkeyReplicasForSystemTier, detectDeploymentReplicaDrift } from './service.js';
 import { mirrorPvcLabelsToPvs } from './pvc-pv-mirror.js';
 
 // M13 Phase 6: emit a one-time admin notification when the cluster
@@ -66,8 +66,26 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
         }
       }
 
-      if (volumeDrift || valkeyDrift) {
-        console.log(`[storage-policy-advisor] drift detected (volume=${volumeDrift} valkey=${valkeyDrift}) — applying ${policy.systemTier} tier`);
+      // Also detect Deployment replica drift. The stateless tier
+      // (admin/tenant/platform-api/oauth2-proxy/dex/roundcube) and the
+      // leader-elect operators (cert-manager, Flux, CNPG operator,
+      // sealed-secrets, snapshot-controller) scale 1↔N with the tier.
+      // On a stable single-server cluster neither volumes nor valkey
+      // drift, so without this check applyPolicy never fired and those
+      // operators stayed at their bootstrap install default of 2
+      // replicas instead of the local-tier 1. detectDeploymentReplicaDrift
+      // is 404/annotation-tolerant and short-circuits on the first
+      // divergence. A probe failure is swallowed (treated as no-drift)
+      // so a flaky read can't trigger an apply storm.
+      let deploymentDrift = false;
+      try {
+        deploymentDrift = await detectDeploymentReplicaDrift(k8s, policy.systemTier, state.readyServerCount);
+      } catch (err) {
+        console.warn('[storage-policy-advisor] deployment drift probe failed:', (err as Error).message);
+      }
+
+      if (volumeDrift || valkeyDrift || deploymentDrift) {
+        console.log(`[storage-policy-advisor] drift detected (volume=${volumeDrift} valkey=${valkeyDrift} deployment=${deploymentDrift}) — applying ${policy.systemTier} tier`);
         try {
           const outcome = await applyPolicy(k8s, db);
           const patched = outcome.volumes.filter((v) => v.patched).length
