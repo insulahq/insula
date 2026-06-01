@@ -102,6 +102,7 @@ import { startReenqueueScheduler } from './modules/notifications/queue/scanner.j
 import { startExpiryWarningScheduler } from './modules/subscriptions/expiry-warning-scheduler.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
+import { startDataRetention } from './modules/data-retention/scheduler.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
@@ -691,6 +692,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // Task tracker retention — reap orphans + delete old terminal rows.
       const taskRetentionTimer = startTaskRetention(app.db);
       app.addHook('onClose', () => clearInterval(taskRetentionTimer));
+
+      // Data retention — prune the append-only tables that lack any other
+      // retention: audit_logs (180d), tenant_lifecycle_transitions (90d,
+      // cascades to tenant_lifecycle_hook_runs), storage_operations (90d),
+      // provisioning_tasks (90d). Runs once at startup then every 6h.
+      const dataRetentionTimer = startDataRetention(app.db);
+      app.addHook('onClose', () => clearInterval(dataRetentionTimer));
 
       // Notification system Phase 1: daily retention pass.
       //  - notification_deliveries: rows older than 30 days are dropped
