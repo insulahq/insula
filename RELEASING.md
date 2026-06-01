@@ -58,22 +58,28 @@ the private key signs releases in CI.
 
 Until the signing secret is set, releases ship the binaries **unsigned**, and
 bootstrap's auto-install stays **dormant** (it refuses to install an unverified
-binary — no security regression). To activate it:
+binary — no security regression). Signing uses a **password-less** key, so there
+is exactly **one** secret to manage:
 
 ```bash
-cosign generate-key-pair                       # writes cosign.key (encrypted) + cosign.pub
+COSIGN_PASSWORD="" cosign generate-key-pair    # password-less (cosign.key + cosign.pub)
 cp cosign.pub platform/cosign.pub              # commit the new trust anchor
-gh secret set COSIGN_PRIVATE_KEY < cosign.key  # repo Actions secret
-gh secret set COSIGN_PASSWORD                  # the password you chose
+gh secret set COSIGN_PRIVATE_KEY < cosign.key  # the ONLY secret needed
 ```
+
+No `COSIGN_PASSWORD` secret is required: `release.yml` passes an empty password,
+which matches the password-less key (`cosign sign-blob --key env://COSIGN_PRIVATE_KEY`).
+Setting it via the web UI instead: **repo → Settings → Secrets and variables →
+Actions → New repository secret**, name `COSIGN_PRIVATE_KEY`, value = the full
+contents of `cosign.key` (including the `-----BEGIN/END-----` lines).
 
 > **Key handling:** keep `cosign.key` out of the repo (it is not gitignored by
 > name — never `git add` it). The committed `platform/cosign.pub` that ships
 > today was generated during W17 bring-up; **rotate to an operator-generated key
-> before hardened production** (regenerate, re-commit the `.pub`, reset the
-> secret). Rotating the key only affects *future* releases — already-installed
-> binaries keep verifying against whatever `/etc/platform/cosign.pub` they were
-> installed with until the next upgrade.
+> before hardened production** (regenerate, re-commit the `.pub`, re-set the
+> secret). Rotating only affects *future* releases — already-installed binaries
+> keep verifying against whatever `/etc/platform/cosign.pub` they were installed
+> with until the next upgrade.
 
 ### Production deployment (transitional)
 
