@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Bootstrap phase library + platform-ops install** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
+  W8): `scripts/lib/bootstrap-phases.sh` now owns a `phase_platform_ops` step
+  that bootstrap.sh runs at end-of-run on the first server — it cosign-verifies
+  and atomically installs the `platform-ops` operator CLI to `/usr/local/bin`,
+  persists the trust anchor to `/etc/platform/cosign.pub`, and lays down a daily
+  `platform-ops-update.timer`. Best-effort + fail-closed (an unverified binary is
+  never installed); a dormant no-op until the release pipeline publishes a signed
+  binary. Covered by `scripts/test-platform-ops-install.sh` (CI `shell-unit-tests`).
+
+### Changed
+- `bootstrap.sh` now sources `scripts/lib/bootstrap-phases.sh`; the legacy
+  single-file `curl | bash` install one-liner is no longer supported (clone the
+  repo or use `--remote`, both of which already carry `scripts/lib/`).
+
 ## [2026.6.1] - 2026-06-01
 
 ### Added

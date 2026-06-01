@@ -295,6 +295,34 @@ Numbered W0–W17. Independently shippable workstreams are marked; gating relati
 **Complexity**: M-H. Risk of regressing fresh-install.
 **Risk**: M. Mitigation: re-run fresh-bootstrap on `testing.example.test` end-to-end.
 
+**As-built (PR 8)** — scope amended after surveying `bootstrap.sh` (7.3k lines,
+already cleanly factored into ~90 named `install_*` functions + a `main()`
+orchestrator, each carrying incident-derived ordering comments):
+- **`scripts/lib/bootstrap-phases.sh` created** holding the net-new
+  `phase_platform_ops` install path (cosign-verified binary fetch → atomic
+  install to `/usr/local/bin/platform-ops` → `/etc/platform/cosign.pub` →
+  daily `platform-ops-update.timer`). It is **best-effort + fail-closed**:
+  a missing/unverified asset is skipped (never aborts bootstrap), an
+  unverified binary is never placed on PATH. It is a deliberate logged
+  **no-op until the release pipeline publishes a signed binary + ships
+  `platform/cosign.pub`** (gated on that in-repo trust anchor) — so PR 8 is
+  safe to land before PR 9/PR 14.
+- **The full `install_*` → `phase_*` rename is deferred** as cosmetic. It
+  unblocks nothing concrete (W9 is a backend-startup registry, W10 a
+  DaemonSet, W17 needs only the install path) and would be pure regression
+  risk on the repo's most battle-tested script. The phase *library* now
+  exists as the substrate; future PRs grow it incrementally rather than
+  ripping the core out in one diff.
+- **`curl | bash` one-liner dropped** from `DEPLOYMENT_RUNBOOK.md`: a
+  mandatory sibling lib (`scripts/lib/`) cannot be satisfied by a single
+  piped file. The primary `git clone` + `./scripts/bootstrap.sh` and the
+  `--remote` (SCP) paths already carry `scripts/lib/`; `--remote` now also
+  carries `platform/` so the install phase can resolve VERSION + key.
+- **TDD**: `scripts/test-platform-ops-install.sh` (41 cases, wired into the
+  CI `shell-unit-tests` job) exercises arch mapping, VERSION validation,
+  fail-closed verify, the no-op gates, atomic happy-path install, idempotency,
+  and the real-repo clean no-op.
+
 ### W9 — Platform-migration registry
 **Goal**: Roadmap Phase 2. Drizzle-style declarative cluster migrations, run at backend startup. Supports skip-multiple by applying all pending migrations in version order on every startup (Locked decision #21).
 **Deliverables**: DB migration `0XXX_platform_migrations.sql`; `backend/src/modules/platform-upgrades/migrations/` directory; `runner.ts` with Postgres advisory lock + dry-run mode + checksum drift detection; wired into `backend/src/index.ts` startup after Drizzle, before HTTP listen; `PLATFORM_SKIP_MIGRATIONS=1` escape hatch; seed migration `0001_v2026_05_seed_host_config_reconciler.ts`; seed migration `0002_v2026_05_record_baseline.ts` (k3s/calico/longhorn versions to `platform_baselines` table). **Migration authoring discipline (enforced by `scripts/ci-migration-idempotency.sh`)**: every migration MUST be idempotent (re-run is a no-op), self-contained relative to ordering (depends only on previously-numbered migrations, never on a specific source version), and order-stable (a shipped migration's position is its contract — renaming/renumbering forbidden). CI guard parses each migration for forbidden patterns (e.g. `DROP COLUMN IF EXISTS` is OK; `DROP COLUMN` without guard is not).

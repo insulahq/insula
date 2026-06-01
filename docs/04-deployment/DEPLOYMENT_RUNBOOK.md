@@ -98,14 +98,11 @@ If `wt0` / `tailscale0` is up with an IP in `100.64.0.0/10` when bootstrap runs,
 ```bash
 ssh root@<VPS_IP>
 
-# Either clone and run:
+# Clone and run (bootstrap.sh sources scripts/lib/, so it must run from a
+# checkout — the legacy single-file `curl | bash` one-liner is unsupported):
 git clone https://github.com/insulahq/insula.git
 cd insula
 ./scripts/bootstrap.sh --domain example.test --env production
-
-# Or one-liner:
-curl -fsSL https://raw.githubusercontent.com/insulahq/insula/main/scripts/bootstrap.sh \
-  | bash -s -- --domain example.test --env production
 ```
 
 ### Option B: Run from your workstation (remote mode)

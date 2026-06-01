@@ -65,6 +65,7 @@ jobs:
       - run: ./scripts/test-image-org.sh
       - run: ./scripts/test-cut-release.sh
       - run: ./scripts/test-ci-no-cluster-push.sh
+      - run: ./scripts/test-platform-ops-install.sh
 
   # No-push-to-cluster guard (Holistic plan W7): CI builds images + commits git
   # pins — it never mutates a live cluster (pull model).
