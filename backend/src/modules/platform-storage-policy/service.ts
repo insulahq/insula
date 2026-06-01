@@ -739,6 +739,61 @@ async function patchLeaderElectDeployments(
 }
 
 /**
+ * Detect whether any tier-managed Deployment's live replica count
+ * diverges from the desired count for the given tier.
+ *
+ * The storage-policy scheduler only calls applyPolicy() when it sees
+ * drift, and historically it only looked at Longhorn volumes and the
+ * Valkey StatefulSet. On a stable single-server (local) cluster neither
+ * of those drifts — Longhorn volumes default to 1 replica and Valkey
+ * runs a single pod — so applyPolicy never fired, and the leader-elect
+ * operators (cert-manager, Flux controllers, CNPG operator, sealed-
+ * secrets, snapshot-controller) stayed at their bootstrap install
+ * default of 2 replicas forever instead of being scaled down to the
+ * local-tier target of 1. This helper closes that gap by reporting
+ * Deployment-replica drift to the scheduler.
+ *
+ * Honors the same skips as patchDeploymentsToReplicaCount(): a missing
+ * Deployment (404 — e.g. components absent from the production overlay)
+ * and the webmail-engine-disabled annotation are NOT counted as drift.
+ * A transient read error is treated as "no drift" so a flaky apiserver
+ * read can't trigger a reconcile storm — the next tick re-checks.
+ *
+ * Returns true on the FIRST divergence found (short-circuits the
+ * remaining reads).
+ */
+export async function detectDeploymentReplicaDrift(
+  k8s: K8sClients,
+  tier: 'local' | 'ha',
+  readyServerCount: number,
+): Promise<boolean> {
+  const groups: ReadonlyArray<{ deployments: ReadonlyArray<{ namespace: string; name: string }>; desired: number }> = [
+    { deployments: STATELESS_DEPLOYMENTS, desired: deploymentReplicasForSystemTier(tier, readyServerCount) },
+    { deployments: LEADER_ELECT_DEPLOYMENTS, desired: leaderElectReplicasForSystemTier(tier, readyServerCount) },
+  ];
+  for (const { deployments, desired } of groups) {
+    for (const d of deployments) {
+      try {
+        const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
+        const annotations = live.metadata?.annotations ?? {};
+        if (annotations[WEBMAIL_ENGINE_DISABLED_ANNOTATION] === 'true') continue;
+        if ((live.spec?.replicas ?? 0) !== desired) return true;
+      } catch (err) {
+        const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+        if (status !== 404) {
+          // Treat a non-404 read failure as no-drift: don't let a flaky
+          // read trigger an apply storm. The next tick re-evaluates.
+          continue;
+        }
+        // 404 — Deployment not present in this overlay; not drift.
+        continue;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Parse a Kubernetes resource quantity string like "10Gi", "500Mi",
  * "1G", "1024" into bytes. Supports binary (Ki/Mi/Gi/Ti) and decimal
  * (k/M/G/T) suffixes. Defaults to bytes if no suffix.

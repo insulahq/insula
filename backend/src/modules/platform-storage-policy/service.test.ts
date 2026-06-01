@@ -509,3 +509,70 @@ describe('patchValkey — drift-driven reconcile', () => {
     expect(k8s.core.patchNamespacedConfigMap).not.toHaveBeenCalled();
   });
 });
+
+describe('detectDeploymentReplicaDrift — scheduler trigger for deployment drift', () => {
+  const WEBMAIL_DISABLED = 'insula.host/webmail-engine-disabled';
+
+  // Build an apps mock whose readNamespacedDeployment returns a replica
+  // count per deployment name. `defaultReplicas` applies to any name not
+  // in `overrides`; an override of {throw404:true} simulates an absent
+  // Deployment, and {annotations} attaches pod-template-free metadata.
+  function makeAppsMock(opts: {
+    defaultReplicas: number;
+    overrides?: Record<string, { replicas?: number; throw404?: boolean; annotations?: Record<string, string> }>;
+  }): K8sClients {
+    const readNamespacedDeployment = vi.fn(async (args: { namespace: string; name: string }) => {
+      const o = opts.overrides?.[args.name];
+      if (o?.throw404) {
+        const err = new Error('not found');
+        (err as { code?: number }).code = 404;
+        throw err;
+      }
+      return {
+        metadata: { name: args.name, namespace: args.namespace, annotations: o?.annotations ?? {} },
+        spec: { replicas: o?.replicas ?? opts.defaultReplicas },
+      };
+    });
+    return { apps: { readNamespacedDeployment } } as unknown as K8sClients;
+  }
+
+  it('reports NO drift when every managed deployment already matches the local-tier target (1)', async () => {
+    const { detectDeploymentReplicaDrift } = await import('./service.js');
+    const k8s = makeAppsMock({ defaultReplicas: 1 });
+    expect(await detectDeploymentReplicaDrift(k8s, 'local', 1)).toBe(false);
+  });
+
+  it('reports drift when a leader-elect operator is still at 2 on a single-server (local) cluster', async () => {
+    const { detectDeploymentReplicaDrift } = await import('./service.js');
+    // cert-manager left at its bootstrap install default of 2; local target is 1.
+    const k8s = makeAppsMock({ defaultReplicas: 1, overrides: { 'cert-manager': { replicas: 2 } } });
+    expect(await detectDeploymentReplicaDrift(k8s, 'local', 1)).toBe(true);
+  });
+
+  it('does NOT count a missing (404) deployment as drift', async () => {
+    const { detectDeploymentReplicaDrift } = await import('./service.js');
+    // dex absent (e.g. production overlay); everything else at the local target.
+    const k8s = makeAppsMock({ defaultReplicas: 1, overrides: { dex: { throw404: true } } });
+    expect(await detectDeploymentReplicaDrift(k8s, 'local', 1)).toBe(false);
+  });
+
+  it('does NOT count a webmail-engine-disabled deployment as drift even at the "wrong" count', async () => {
+    const { detectDeploymentReplicaDrift } = await import('./service.js');
+    const k8s = makeAppsMock({
+      defaultReplicas: 1,
+      overrides: { roundcube: { replicas: 0, annotations: { [WEBMAIL_DISABLED]: 'true' } } },
+    });
+    expect(await detectDeploymentReplicaDrift(k8s, 'local', 1)).toBe(false);
+  });
+
+  it('reports NO drift in HA when leader-elect (cap 2) and stateless (cap 3) match a 3-server cluster', async () => {
+    const { detectDeploymentReplicaDrift } = await import('./service.js');
+    // HA, 3 servers: stateless target = min(3,3)=3, leader-elect target = min(3,2)=2.
+    const statelessNames = ['admin-panel', 'tenant-panel', 'platform-api', 'oauth2-proxy', 'dex', 'roundcube'];
+    const overrides: Record<string, { replicas: number }> = {};
+    for (const n of statelessNames) overrides[n] = { replicas: 3 };
+    // everything else (the leader-elect operators) defaults to 2
+    const k8s = makeAppsMock({ defaultReplicas: 2, overrides });
+    expect(await detectDeploymentReplicaDrift(k8s, 'ha', 3)).toBe(false);
+  });
+});
