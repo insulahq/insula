@@ -34,16 +34,16 @@ A single artefact, `platform/VERSION` at the repo root, is the canonical "what v
 
 ```
                                   platform/VERSION
-                                  (one line, e.g. 2026.05.1)
+                                  (one line, e.g. 2026.5.1)
                                           │
-                                          ├──── git tag v2026.05.1 ──┐
+                                          ├──── git tag v2026.5.1 ──┐
                                           │                          │
                 ┌─────────────────────────┼──────────────────────────┘
                 │                         │
             local dev               release.yml on tag
             (sha-suffixed:               • cosign-sign images
-             2026.05.1-a3f29bc)          • create GitHub Release
-                │                        • image tag = 2026.05.1
+             2026.5.1-a3f29bc)          • create GitHub Release
+                │                        • image tag = 2026.5.1
                 │                        │
                 │           ┌────────────┼────────────┐
                 │           │            │            │
@@ -116,7 +116,7 @@ Every cluster polls for new versions and applies them itself. No CI workflow pus
                           ▼
               ┌──────────────────────────────────────┐
               │ 1. PATCH Flux Kustomization          │
-              │    spec.ref.tag = "v2026.05.1"       │
+              │    spec.ref.tag = "v2026.5.1"       │
               │    → Flux pulls new manifests        │
               │                                      │
               │ 2. platform-migration registry runs  │
@@ -208,13 +208,13 @@ These are settled. Implementation MUST honour them. Changes require an amendment
 | 2 | Release cadence | **Ad-hoc**. No time-boxed schedule. Operator cuts a tag when accumulated changes warrant a release. Drift-tracker workflow explicitly skipped. |
 | 3 | Pre-release identifier | **`-rc.N`** only. No `-beta.N` distinction. |
 | 4 | `CICD_PIPELINE_REQUIREMENTS.md` disposition | **Rewrite in place**. Historical phase framing not load-bearing; replace with as-built spec. |
-| 5 | `platform/VERSION` between tags | **Pinned to last released tag**. Between tags the file says `2026.05.1` while CI computes `2026.05.1-<sha>` for staging. `cut-release.sh` is the only thing that edits the file. |
-| 6 | Versioning scheme | **CalVer `YYYY.0M.PATCH`** (e.g. `2026.05.1`). Leading-zero month for lexical sort stability. PATCH starts at `.1` per calver.org. Breaking-change signal preserved via `### BREAKING` heading in CHANGELOG; auto-update refuses to auto-apply any release whose CHANGELOG section contains `BREAKING`. |
+| 5 | `platform/VERSION` between tags | **Pinned to last released tag**. Between tags the file says `2026.5.1` while CI computes `2026.5.1-<sha>` for staging. `cut-release.sh` is the only thing that edits the file. |
+| 6 | Versioning scheme | **CalVer `YYYY.M.PATCH`** (e.g. `2026.6.1`). **No** leading-zero month, so the version is valid SemVer (npm / `semver` / `sort -V` compatible) and platform/VERSION can stay in lockstep with `package.json`; version ordering MUST use semver-aware comparison, never a raw string sort. PATCH starts at `.1`. Breaking-change signal preserved via `### BREAKING` heading in CHANGELOG; auto-update refuses to auto-apply any release whose CHANGELOG section contains `BREAKING`. |
 | 7 | Auto-update defaults | **Staging ON, production OFF, local clusters N/A** (button hidden). Stored in `platform_settings.upgrade.auto_update_enabled`. |
 | 8 | Release feed source | **GitHub Releases API** of `PLATFORM_RELEASES_REPO` env (default `insulahq/insula`, fork-overridable). **Cosign signature** on release artifacts verified before any apply. Public key pinned in `platform/cosign.pub` checked into the repo. Fork operators MUST replace this key with their own. |
 | 9 | Release tagging | **Manual only** via `scripts/cut-release.sh`. No auto-promote from staging/main. |
 | 10 | `stable` branch | **DROP**. `release.yml` stops opening PRs to stable. Production Flux pins `spec.ref.tag` directly; version-poller re-pins on operator click. |
-| 11 | Pre-releases | `cut-release.sh --prerelease` produces `YYYY.0M.PATCH-rc.N`. GitHub Release `prerelease=true`. Separate flag `auto_update_include_prereleases` (default ON staging / OFF prod). |
+| 11 | Pre-releases | `cut-release.sh --prerelease` produces `YYYY.M.PATCH-rc.N`. GitHub Release `prerelease=true`. Separate flag `auto_update_include_prereleases` (default ON staging / OFF prod). |
 | 12 | Staging cluster mode | **Mode A only Phase 1**. Mode A = Flux watches `development` branch tip (every-commit bleeding-edge smoke). Mode B (Flux pins latest `-rc.N` tag) is a deferred future option. |
 | 13 | Branch naming | Rename `staging` → `development`. **No new `staging` branch**. "Staging cluster" survives as a cluster-role name only. Tags carry all release semantics. |
 | 14 | OS-level changes strategy | Three complementary mechanisms: (a) **continuous reconciler** for declarative drift (sysctls, modules, ulimits, declared apt packages); (b) **per-release host-migration runner** for one-shot imperative scripts; (c) **operator CLI** for failure-mode and ad-hoc work. Operator NEVER manually re-bootstraps for a non-BREAKING release. |
@@ -467,7 +467,7 @@ The 2026-05-15 roadmap locked 20 decisions in its §3. This document **amends th
 | Original | Amendment | Reason |
 |---|---|---|
 | **#2** per-cluster SSH key, generated at bootstrap, distinct from operator key | **DROPPED**. No SSH fan-out in pull model. system-upgrade-controller spawns per-node Jobs via RBAC + ServiceAccount; `platform-ops` runs on the node itself for operator-driven failure-mode work. | Pull-model architectural pivot |
-| **#4** `platform/VERSION` same value as git tag `vX.Y.Z` | **AMENDED**: `platform/VERSION` matches git tag `vYYYY.0M.PATCH` (CalVer); between tags the file says e.g. `2026.05.1` while CI computes `2026.05.1-<sha>` for the development cluster. | Versioning scheme change |
+| **#4** `platform/VERSION` same value as git tag `vX.Y.Z` | **AMENDED**: `platform/VERSION` matches git tag `vYYYY.M.PATCH` (CalVer); between tags the file says e.g. `2026.5.1` while CI computes `2026.5.1-<sha>` for the development cluster. | Versioning scheme change |
 | **#18** Staging auto-trigger OFF by default | **REVERSED**: Staging auto-update **ON** by default; production **OFF**. | Staging's role is to absorb risk; auto-update on staging is the test loop |
 
 Phase 4 of `CLUSTER_UPGRADE_ROADMAP.md` (ops-runner Job + `bootstrap.sh --upgrade` + SSH fan-out) is **superseded** by W11 (version-poller) + W12 (SUC) + W13 (in-cluster Flux re-pin) + W17 (platform-ops CLI). The `bootstrap.sh` flags `--upgrade`, `--rollback`, `--in-cluster`, `--from-version`, `--to-version`, and the file `scripts/upgrade-paths.yaml` are no longer planned. bootstrap.sh stays scoped to fresh-install + node-add + platform-ops install.
@@ -486,7 +486,7 @@ Phase 4 of `CLUSTER_UPGRADE_ROADMAP.md` (ops-runner Job + `bootstrap.sh --upgrad
 | 6 | Auto-update applies BREAKING release on staging unnoticed | M | `### BREAKING` CHANGELOG heading short-circuits auto-update; UI banner persists; bell-icon notification per auto-applied run |
 | 7 | SUC blast radius (privileged Jobs per-node) | H | Same allow-list discipline as host-config DS; cosign-signed SUC image; RBAC limited to node-upgrade verbs; upstream battle-tested |
 | 8 | `platform-api` self-rollback chicken-and-egg | M | Sidecar with OLD image baked at upgrade-time (locked decision #16 in roadmap); validate in PR 15 spike |
-| 9 | First prod cutover has no battle-testing | H | Rehearse v2026.06→v2026.07 twice on prod-shaped staging clone; freeze upgrades 2 weeks after first prod cutover |
+| 9 | First prod cutover has no battle-testing | H | Rehearse v2026.6→v2026.7 twice on prod-shaped staging clone; freeze upgrades 2 weeks after first prod cutover |
 | 10 | Migration N+1 fails mid-fleet | H | Idempotent migrations; runner halts on failure; mandatory pre-snapshot; advisory lock |
 | 11 | Host-migration script bug bricks a node | H | Dry-run on control-plane first; halts on first failure; rescue snapshot still applies (W16) |
 | 12 | Ad-hoc cadence drifts to "never cut a release" | M | Mitigated by UI version banner showing commits-since-last-tag; no drift-tracker per operator preference |
@@ -522,9 +522,9 @@ The holistic plan is delivered when:
 - [ ] Host-packages-desired ConfigMap entry triggers apt install on every node; failure halts rollout with operator-resumable state.
 - [ ] Host-migration runner records per-node application; halts on first failure; resumable.
 - [ ] Version-poller fetches GH Releases hourly; cosign-verifies; writes `available_version`.
-- [ ] In-cluster Flux Kustomization re-pinning works for v2026.06→v2026.07 on the development cluster; PR 15 spike result documented.
+- [ ] In-cluster Flux Kustomization re-pinning works for v2026.6→v2026.7 on the development cluster; PR 15 spike result documented.
 - [ ] SUC Plans roll k3s version one node at a time; serial drain.
-- [ ] Super_admin triggers a v2026.06→v2026.07 upgrade run on staging from admin UI; pre-flight, snapshot, in-cluster Flux re-pin, post-flight, audit log all behave; tenant create returns `UPGRADE_IN_PROGRESS` during the run.
+- [ ] Super_admin triggers a v2026.6→v2026.7 upgrade run on staging from admin UI; pre-flight, snapshot, in-cluster Flux re-pin, post-flight, audit log all behave; tenant create returns `UPGRADE_IN_PROGRESS` during the run.
 - [ ] `platform-ops cluster status` works when the cluster is healthy AND when the API server is down.
 - [ ] `platform-ops dr restore` rebuilds a destroyed cluster from a snapshot in the `dr-drill.yml` harness.
 - [ ] Rollback API + UI button work for `succeeded`, `failed`, `partial_success` runs while snapshot exists; rescue snapshot always taken before destructive steps.
@@ -554,14 +554,14 @@ The holistic plan is delivered when:
 
 ## 14. Upgrade Compatibility Model
 
-Locked policy: **skip-multiple ALLOWED**. The operator on `installed_platform_version = 2026.04.1` can click "Upgrade to 2026.08.3" and the cluster jumps straight there, applying everything pending in version order during one upgrade run. No requirement to install intermediate versions one-by-one.
+Locked policy: **skip-multiple ALLOWED**. The operator on `installed_platform_version = 2026.4.1` can click "Upgrade to 2026.8.3" and the cluster jumps straight there, applying everything pending in version order during one upgrade run. No requirement to install intermediate versions one-by-one.
 
 ### What the operator sees
 
 When pre-flight runs for a multi-version gap, the UI enumerates exactly what will happen:
 
 ```
-Upgrading from 2026.04.1 → 2026.08.3
+Upgrading from 2026.4.1 → 2026.8.3
 
 Pending platform-migrations (12):
   m0207  Add platform_baselines table
@@ -580,8 +580,8 @@ k3s version: 1.30.2 → 1.32.1
     Plan B: 1.31.5 → 1.32.1 (drain one node at a time)
 
 ⚠ BREAKING changes in the gap (must be acknowledged):
-  ☐ 2026.05.2 — Stalwart RocksDB migration; requires 30min mail downtime
-  ☐ 2026.07.1 — Tenant API contract change in /api/v1/tenants/:id/quota
+  ☐ 2026.5.2 — Stalwart RocksDB migration; requires 30min mail downtime
+  ☐ 2026.7.1 — Tenant API contract change in /api/v1/tenants/:id/quota
 
 [Confirm BREAKING acknowledgments above to enable Apply]
 ```
@@ -606,7 +606,7 @@ Auto-update behaves identically: a release whose CHANGELOG has `### BREAKING` (o
 Every platform-migration AND host-migration MUST be:
 
 1. **Idempotent** — re-running on a node where it already applied is a no-op. Platform-migrations: use `IF NOT EXISTS` / `CREATE OR REPLACE` / guarded DDL. Host-migrations: marker files in `/var/lib/platform/host-migrations/<id>.applied`.
-2. **Self-contained relative to ordering** — depends only on the state left by previously-numbered migrations. Bad: "assumes 2026.06.1 has been running for 5 minutes." Good: "assumes migration `m0207` has been applied (asserts `SELECT 1 FROM platform_migrations WHERE version='m0207'`)."
+2. **Self-contained relative to ordering** — depends only on the state left by previously-numbered migrations. Bad: "assumes 2026.6.1 has been running for 5 minutes." Good: "assumes migration `m0207` has been applied (asserts `SELECT 1 FROM platform_migrations WHERE version='m0207'`)."
 3. **Order-stable** — its position in the sequence is the contract. Renaming or renumbering a shipped migration is forbidden. CI guard refuses PRs that rewrite history.
 4. **Self-validating where possible** — refuses to run if pre-conditions aren't met, with a clear operatorError. Allows the runner to halt cleanly and surface a real diagnostic.
 
@@ -614,7 +614,7 @@ Enforcement: `scripts/ci-migration-idempotency.sh` runs in PR CI. Parses every T
 
 ### BREAKING in the gap — UX detail
 
-When `installed=2026.04.1` and `target=2026.08.3`, pre-flight reads CHANGELOG sections for every release in the half-open range `(installed, target]`:
+When `installed=2026.4.1` and `target=2026.8.3`, pre-flight reads CHANGELOG sections for every release in the half-open range `(installed, target]`:
 
 - For each section containing `### BREAKING`, surface as a separate acknowledgment row.
 - Operator must check EVERY BREAKING checkbox before Apply enables.
@@ -643,3 +643,4 @@ When `installed=2026.04.1` and `target=2026.08.3`, pre-flight reads CHANGELOG se
 - 2026-05-23 (revision) — Revised Decisions 17 + 18 from "Go binary + shared Go library" to "TypeScript binary (pkg/bun-compile) + direct module import". Triggered by parallel agent confirming orchestration logic lives canonically in TS modules (heavy work delegated to spawned Jobs); porting to Go would re-implement 4,000–8,000 LOC with perpetual maintenance overhead for mostly aesthetic gains. CLI moved to critical path (PR 9, was PR 9.5) so failure-mode/DR tooling exists from day-1 and parallel agent's snapshot primitives can be wrapped in PR 10. Controller+CLI pair PRs collapsed (W12/W13.5, W13/W11.5, W16/W16.5 each become single PRs since both surfaces import the same module). PR count: 22 → 20. Estimated calendar saving: ~3–4 weeks. Optional ~500-LOC Go wrapper for the self-upgrade + cosign-verify loop noted as deferred follow-up for static-binary purity on the security-critical bit.
 - 2026-05-25 — Added Decision 21 (upgrade compatibility model: skip-multiple ALLOWED). Added new §14 with operator-experience walkthrough, mechanism table, migration-author constraints (idempotent + self-contained + order-stable), BREAKING-walks-the-gap UX, failure-mode behaviour, and what the model rules out. Updated W9 + W10c with migration-discipline notes and `scripts/ci-migration-idempotency.sh` CI guard. Renumbered Change Log §14 → §15.
 - 2026-06-01 — Pre-implementation amendment. (1) **ADR renumber `ADR-042` → `ADR-045`**: the W0 deliverable collided with the already-merged `ADR-042-stalwart-logical-export.md` (ADR-043/044 also now taken — `rclone-s3-shim`, `mailbox-backup-engine`); ADR-045 is the next free slot. Renumbered in W0, PR 1 (§8), Risk Register #1 + #20, and Success Criteria. (2) **Decision-count reconciliation `20` → `21`**: W0/PR-1/Success-Criteria still said "20 decisions" while §5 has been titled "Locked Decisions (21)" since the 2026-05-25 revision. References to the *other* doc's count ("the 20 locked decisions therein" in the supersedes line + §9) are unchanged — those correctly point at `CLUSTER_UPGRADE_ROADMAP.md`. (3) **Insula rebrand**: already folded into the body by the rebrand docs sweep (PR #113, 2026-05-29) — `PLATFORM_RELEASES_REPO` default `insulahq/insula`, version label key `insula.host/version`, image-org guards on `insulahq/insula`; no further edits needed here. No decisions changed; numbering/identity only.
+- 2026-06-01 — **Decision 6 amended: CalVer drops the leading-zero month** (`YYYY.0M.PATCH` → `YYYY.M.PATCH`, e.g. `2026.05.1` → `2026.6.1`). Rationale flipped from "leading-zero for lexical sort" to "valid SemVer (npm / `semver` / `sort -V` compatible) so platform/VERSION stays in lockstep with `package.json`"; the lexical-sort property is given up in exchange, mitigated by the rule that **version ordering must use semver-aware comparison, never raw string sort** (the W11 poller / W14 pre-flight do this anyway). Version literals throughout this doc and ADR-045 were normalized accordingly. Mirrored in ADR-045 Decision 6 and `CONTRIBUTING.md`. Operator-approved 2026-06-01.
