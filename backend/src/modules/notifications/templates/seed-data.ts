@@ -533,6 +533,69 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'nodeName', type: 'string', required: true },
     ],
   },
+  {
+    categoryId: 'admin.wal_archive_failing',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Database WAL archiving is failing ({{clusterName}})',
+    bodyTemplate: emailMjml(
+      'WAL archiving failing',
+      'Continuous WAL archiving for database {{clusterName}} is failing and pg_wal is at '
+        + '{{pressurePercent}}% of the data volume. Fix the backup target sink — if it keeps failing, '
+        + 'archiving will be auto-disabled to prevent a full volume. {{reason}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'clusterName', type: 'string', required: true },
+      { name: 'pressurePercent', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.wal_archive_failing',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'WAL archiving failing',
+    bodyTemplate: 'WAL archiving for {{clusterName}} is failing (pg_wal at {{pressurePercent}}%). Fix the backup target.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'clusterName', type: 'string', required: true },
+      { name: 'pressurePercent', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.wal_archive_auto_disabled',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'WAL archiving AUTO-DISABLED on {{clusterName}} — backups are off',
+    bodyTemplate: emailMjml(
+      'WAL archiving auto-disabled',
+      'WAL archiving for database {{clusterName}} was automatically DISABLED because it kept failing '
+        + 'and pg_wal was filling the data volume. The database is protected from a full-disk outage, '
+        + 'but there is NO point-in-time recovery until you fix the backup target and re-enable '
+        + 'archiving (Settings → Backups). {{reason}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'clusterName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.wal_archive_auto_disabled',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'WAL archiving auto-disabled',
+    bodyTemplate: 'WAL archiving for {{clusterName}} was auto-disabled (kept failing + filling disk). No PITR until you fix the target + re-enable.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'clusterName', type: 'string', required: true },
+    ],
+  },
 ];
 
 const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(

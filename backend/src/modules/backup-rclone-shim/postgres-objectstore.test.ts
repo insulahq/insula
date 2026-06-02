@@ -105,6 +105,7 @@ interface FakeRow {
 import {
   backupTargetAssignments,
   systemWalArchiveState,
+  platformSettings,
 } from '../../db/schema.js';
 
 interface WalArchiveStateRow {
@@ -114,6 +115,7 @@ interface WalArchiveStateRow {
 function fakeDb(
   rows: FakeRow[],
   walArchiveRows: WalArchiveStateRow[] = [],
+  breakerRows: Array<{ value: string }> = [],
 ): Database {
   // Each select() call produces its own chain instance so the
   // .from(table) argument can swap which dataset the chain resolves
@@ -127,6 +129,8 @@ function fakeDb(
     chain.from = vi.fn((table: unknown) => {
       if (table === systemWalArchiveState) dataset = walArchiveRows;
       else if (table === backupTargetAssignments) dataset = rows;
+      // WAL-archive circuit-breaker read: default = UNTRIPPED (empty).
+      else if (table === platformSettings) dataset = breakerRows;
       return chain;
     });
     for (const m of ['where', 'innerJoin', 'leftJoin', 'orderBy', 'limit']) {
@@ -249,6 +253,51 @@ describe('reconcilePostgresObjectStore — happy path', () => {
 
     // But shim creds Secret IS still materialised (harmless; same content).
     expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
+  });
+
+  it('keeps the barman plugin REMOVED when the circuit-breaker is TRIPPED (even with a target bound)', async () => {
+    // SYSTEM target IS bound, but the WAL-archive breaker tripped (archiving
+    // was auto-disabled). The reconciler must NOT re-add the failing archiver.
+    const tripped = [{ value: JSON.stringify({ tripped: true, reason: 'pg_wal at 80%', trippedAt: '2026-06-02T00:00:00Z', clusterName: 'system-db' }) }];
+    const db = fakeDb([{ targetId: 't-1', storageType: 's3', enabled: 1 }], [], tripped);
+    const clients = fakeClients();
+    clients.custom.getNamespacedCustomObject.mockImplementation(async (args: { plural?: string }) => {
+      if (args.plural === 'clusters') {
+        return { spec: { plugins: [{ name: 'barman-cloud.cloudnative-pg.io', isWALArchiver: true, parameters: { barmanObjectName: 'system-postgres-objectstore' } }] } };
+      }
+      throw { statusCode: 404 };
+    });
+    const r = await reconcilePostgresObjectStore(db, clients as never, silentLog());
+    expect(r.walArchiverEnabled).toBe(false);
+    const clusterPatchCall = clients.custom.patchNamespacedCustomObject.mock.calls.find(
+      (c) => (c[0] as { plural?: string }).plural === 'clusters',
+    );
+    expect(clusterPatchCall).toBeDefined();
+    const plugins = (clusterPatchCall![0] as { body: { spec: { plugins: Array<{ name: string }> } } }).body.spec.plugins;
+    expect(plugins.find((p) => p.name === 'barman-cloud.cloudnative-pg.io')).toBeUndefined();
+  });
+
+  it('ENFORCES plugin removal when the breaker is tripped EVEN IF wal-archive owns the entry', async () => {
+    // walArchiveOwns=true (systemWalArchiveState row) would normally make this
+    // reconciler skip — but a tripped breaker is a safety OVERRIDE: it must
+    // actively remove the plugin so the failing archiver can't stay attached.
+    const tripped = [{ value: JSON.stringify({ tripped: true, reason: 'pg_wal at 80%', trippedAt: '2026-06-02T00:00:00Z', clusterName: 'system-db' }) }];
+    const db = fakeDb([{ targetId: 't-1', storageType: 's3', enabled: 1 }], [{ ns: 'platform' }], tripped);
+    const clients = fakeClients();
+    clients.custom.getNamespacedCustomObject.mockImplementation(async (args: { plural?: string }) => {
+      if (args.plural === 'clusters') {
+        return { spec: { plugins: [{ name: 'barman-cloud.cloudnative-pg.io', isWALArchiver: true, parameters: { barmanObjectName: 'system-postgres-objectstore' } }] } };
+      }
+      throw { statusCode: 404 };
+    });
+    const r = await reconcilePostgresObjectStore(db, clients as never, silentLog());
+    expect(r.walArchiverEnabled).toBe(false);
+    const clusterPatchCall = clients.custom.patchNamespacedCustomObject.mock.calls.find(
+      (c) => (c[0] as { plural?: string }).plural === 'clusters',
+    );
+    expect(clusterPatchCall).toBeDefined();
+    const plugins = (clusterPatchCall![0] as { body: { spec: { plugins: Array<{ name: string }> } } }).body.spec.plugins;
+    expect(plugins.find((p) => p.name === 'barman-cloud.cloudnative-pg.io')).toBeUndefined();
   });
 
   it('preserves other plugins when ensuring the barman entry present', async () => {

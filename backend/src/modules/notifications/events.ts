@@ -400,6 +400,32 @@ export async function notifyAdminBackupTargetUnreachable(
   await dispatchSafe(db, 'admin.backup_target_unreachable', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminWalArchiveFailingPayload {
+  readonly clusterName: string;
+  /** pg_wal as a % of the data volume (e.g. "62"). */
+  readonly pressurePercent: string;
+  readonly reason?: string;
+}
+export async function notifyAdminWalArchiveFailing(
+  db: Database,
+  payload: AdminWalArchiveFailingPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.wal_archive_failing', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminWalArchiveAutoDisabledPayload {
+  readonly clusterName: string;
+  readonly reason?: string;
+}
+export async function notifyAdminWalArchiveAutoDisabled(
+  db: Database,
+  payload: AdminWalArchiveAutoDisabledPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.wal_archive_auto_disabled', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminNodeDownPayload {
   readonly nodeName: string;
 }
