@@ -87,6 +87,7 @@ import { buildClusterTrustedProxiesRoutes } from './modules/cluster-trusted-prox
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { backupRcloneShimRoutes } from './modules/backup-rclone-shim/routes.js';
+import { walArchiveHealthRoutes } from './modules/wal-archive-health/routes.js';
 import { backupSchedulesRoutes } from './modules/backup-schedules/routes.js';
 import { backupsOverviewRoutes } from './modules/backups-overview/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -503,6 +504,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(systemBackupDownloadRoutes, { prefix: '/api/v1' });
   await app.register(systemBackupPgDumpRoutes, { prefix: '/api/v1' });
   await app.register(systemBackupWalArchiveRoutes, { prefix: '/api/v1' });
+  await app.register(walArchiveHealthRoutes, { prefix: '/api/v1' });
   await app.register(systemPvcRoutes, { prefix: '/api/v1' });
   await app.register(clusterNetworkRoutes, { prefix: '/api/v1' });
   await app.register(buildSecurityHardeningRoutes({ db: deps.db }), { prefix: '/api/v1' });
@@ -1256,6 +1258,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           custom: k8sForImapsync.custom,
         });
         app.addHook('onClose', () => cnpgBackupHealthStop());
+
+        // WAL-archive health: detect CNPG continuous-archiving FAILURE (a
+        // configured backup target whose sink is unreachable → un-archived WAL
+        // fills the volume), alert, and — as a last-resort safety — auto-disable
+        // archiving (circuit-breaker) so the volume can never fill even if the
+        // alerts go unseen for days (project_wal_archive_runaway_2026_06_02).
+        const { startWalArchiveHealthScheduler } = await import('./modules/wal-archive-health/scheduler.js');
+        const walArchiveHealthStop = startWalArchiveHealthScheduler({
+          db: app.db,
+          custom: k8sForImapsync.custom,
+          log: app.log,
+        });
+        app.addHook('onClose', () => walArchiveHealthStop());
 
         // DR watcher: monitors active mail node health every 30s and triggers
         // restore-based auto-failover when auto_failover_enabled=true and the

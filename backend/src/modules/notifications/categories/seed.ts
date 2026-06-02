@@ -223,6 +223,31 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
   },
+  {
+    id: 'admin.wal_archive_failing',
+    displayName: 'Database WAL archiving failing',
+    description: 'PostgreSQL continuous WAL archiving to the configured backup target is failing. '
+      + 'Un-archived WAL accumulates on disk until the volume fills — fix the backup target sink.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 21600, // at most once / 6h while failing
+    rateLimitMax: 1,
+  },
+  {
+    id: 'admin.wal_archive_auto_disabled',
+    displayName: 'Database WAL archiving auto-disabled',
+    description: 'WAL archiving was AUTOMATICALLY disabled because it kept failing and pg_wal was '
+      + 'filling the data volume. Backups for this database are now OFF (no PITR) until an operator '
+      + 'fixes the sink and re-enables archiving.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: true, // safety-critical — operators cannot opt out
+    gdprBasis: 'legitimate_interest',
+  },
 ];
 
 /**

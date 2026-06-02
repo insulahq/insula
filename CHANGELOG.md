@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **WAL-archive health monitor + alerting + auto-disable circuit-breaker**
+  (`backend/src/modules/wal-archive-health/`; follow-up to the plugin-presence
+  fix). Covers the case the presence fix doesn't: a SYSTEM backup target IS
+  configured but its sink is unreachable, so CNPG's `wal-archive` fails every
+  segment and pg_wal climbs toward a full volume. A 5-min scheduler reads the
+  CNPG `ContinuousArchiving` condition + pg_wal pressure (`pg_ls_waldir()`; the
+  app role is a `pg_monitor` member) and: (1) **alerts** via the notifications
+  subsystem — new admin categories `admin.wal_archive_failing` (error) and
+  `admin.wal_archive_auto_disabled` (critical, mandatory); (2) as a last-resort
+  **circuit-breaker**, if archiving keeps failing AND pg_wal crosses 75 % of the
+  data volume, **auto-disables archiving** (removes the barman plugin →
+  `wal-archive` no-op-succeeds → WAL recycles) so the volume can never fill even
+  if the alerts go unseen for days. The disable is persisted in
+  `platform_settings` and ENFORCED by the `postgres-objectstore` reconciler
+  (overriding UI-WAL-streaming ownership); `enableWalArchive`/`enableWalStreaming`
+  refuse while tripped. Operators clear it via `POST /admin/wal-archive-health/
+  reset-breaker` (super_admin) after fixing the target. The 75 % threshold is the
+  sustained-failure guard (it takes many hours of failure to reach it — a brief
+  sidecar restart doesn't). E2E-proven on staging.
+
 ### Fixed
 - **CRITICAL: a targetless CNPG cluster no longer self-destructs by filling its
   volume with un-recyclable WAL.** A freshly-bootstrapped cluster with no backup

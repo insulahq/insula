@@ -56,6 +56,7 @@ import {
   loadBackupTargetKey,
   ShimKeyMissingError,
 } from './service.js';
+import { readCircuitBreaker } from '../wal-archive-health/breaker.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -196,6 +197,13 @@ export async function reconcilePostgresObjectStore(
   // ScheduledBackup step (5) and the Cluster.spec.plugins step (6).
   const walArchiveOwns = await walArchiveOwnsCluster(db);
 
+  // WAL-archive circuit-breaker (wal-archive-health). When tripped, the
+  // operator's SYSTEM target is still bound but archiving was auto-disabled
+  // because it was failing + pg_wal was filling the volume. Keep the plugin
+  // ABSENT until an operator resets the breaker — otherwise we'd re-attach
+  // the failing archiver every tick and the volume would fill again.
+  const breaker = await readCircuitBreaker(db);
+
   // ─── 3. Materialise the shim creds Secret in the cluster ns ─────
   let credentialsSecretApplied = false;
   try {
@@ -306,20 +314,33 @@ export async function reconcilePostgresObjectStore(
   // it when SYSTEM is unassigned. It is the sole owner of the entry (CI
   // guard ci-backup-rclone-shim-check.sh enforces no static one).
   //
+  // present ⟺ a SYSTEM target is bound AND the circuit-breaker hasn't
+  // auto-disabled archiving. The breaker gate is what makes an auto-disable
+  // persist across reconcile ticks.
+  //
   // Dual-reconciler guard (2026-05-24): when the operator enabled WAL
-  // streaming via the UI, system-backup/wal-archive.ts owns the Cluster
-  // plugin entry exclusively — skip here to avoid both reconcilers
-  // fighting over the array on every Flux reconvergence.
-  let walArchiverEnabled = false;
-  if (walArchiveOwns) {
+  // streaming via the UI, system-backup/wal-archive.ts owns the plugin entry
+  // exclusively — normally skip here to avoid both reconcilers fighting.
+  // EXCEPTION: a TRIPPED breaker overrides ownership — the breaker is a
+  // safety override, so we actively REMOVE the plugin even in the
+  // wal-archive-owned path (and even if the scheduler's immediate disable
+  // failed). Otherwise a tripped breaker with UI WAL-streaming on would leave
+  // the failing archiver attached and the volume would keep filling.
+  const walArchiverEnabled = !suspended && !breaker.tripped;
+  const breakerOverride = breaker.tripped && !suspended;
+  if (walArchiveOwns && !breakerOverride) {
     log.info(
       { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
       'postgres-objectstore: wal-archive owns Cluster plugin entry — skipping plugin reconcile',
     );
-    walArchiverEnabled = !suspended;
   } else {
     try {
-      walArchiverEnabled = !suspended; // present ⟺ a SYSTEM target is bound
+      if (breakerOverride) {
+        log.warn(
+          { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}`, reason: breaker.reason, walArchiveOwns },
+          'postgres-objectstore: WAL-archive circuit-breaker is TRIPPED — enforcing barman plugin removal (operator must reset to re-enable)',
+        );
+      }
       await ensureClusterBarmanPlugin(clients.custom, log, walArchiverEnabled);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -767,7 +788,7 @@ interface ClusterCRView {
  * desired state. A 404 (Cluster CR not yet applied) logs + returns — the
  * next reconciler tick converges.
  */
-async function ensureClusterBarmanPlugin(
+export async function ensureClusterBarmanPlugin(
   custom: k8s.CustomObjectsApi,
   log: Pick<Logger, 'info' | 'warn'>,
   present: boolean,

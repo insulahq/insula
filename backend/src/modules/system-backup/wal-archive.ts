@@ -58,6 +58,7 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
+import { readCircuitBreaker } from '../wal-archive-health/breaker.js';
 import {
   SHIM_S3_ENDPOINT_URL,
   SHIM_S3_CREDS_SECRET_NAME,
@@ -653,6 +654,24 @@ async function deleteScheduledBackupIfPresent(
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
+/**
+ * Refuse to re-attach the barman archiver while the WAL-archive circuit-breaker
+ * is tripped. The breaker auto-disabled archiving because it kept failing and
+ * pg_wal was filling the volume; re-enabling without first fixing the sink +
+ * resetting the breaker would re-create the runaway. The operator must POST
+ * /admin/wal-archive-health/reset-breaker (super_admin) after fixing the target.
+ */
+async function assertWalArchiveBreakerNotTripped(db: Database): Promise<void> {
+  const breaker = await readCircuitBreaker(db);
+  if (breaker.tripped) {
+    throw new Error(
+      'WAL-archive circuit-breaker is tripped'
+      + (breaker.reason ? ` (${breaker.reason})` : '')
+      + '. Fix the backup target, then reset the breaker (Settings → Backups) before re-enabling archiving.',
+    );
+  }
+}
+
 export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ destinationPath: string }> {
   const {
     db, k8s, clusterNamespace, clusterName,
@@ -660,6 +679,7 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
     archiveTimeout, baseBackupSchedule, baseBackupRetentionDays,
   } = input;
 
+  await assertWalArchiveBreakerNotTripped(db);
   const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
   if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
 
@@ -808,6 +828,7 @@ export async function enableWalStreaming(input: EnableWalStreamingInput): Promis
     retentionDays, archiveTimeout, operatorUserId, operatorIp,
   } = input;
 
+  await assertWalArchiveBreakerNotTripped(db);
   const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
   if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
 
