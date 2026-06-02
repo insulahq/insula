@@ -1,30 +1,19 @@
 #!/bin/sh
 set -eu
 
-# Resolve postgres host from DATABASE_URL or fall back to the conventional
-# in-cluster Service DNS name. We only do a TCP/DNS gate — actual auth
-# failures will surface from the migrate step itself.
-PG_HOST="${PG_HOST:-postgres.platform.svc.cluster.local}"
-PG_PORT="${PG_PORT:-5432}"
-PG_WAIT_SECONDS="${PG_WAIT_SECONDS:-120}"
-
-echo "Waiting for postgres at ${PG_HOST}:${PG_PORT} (max ${PG_WAIT_SECONDS}s)..."
-i=0
-while [ "$i" -lt "$PG_WAIT_SECONDS" ]; do
-  # busybox nc accepts -z for zero-IO scan; coreutils nc accepts the same.
-  # Fall back to /dev/tcp via bash if nc is missing — but the slim image
-  # ships busybox, so nc is always there.
-  if nc -z -w 2 "$PG_HOST" "$PG_PORT" >/dev/null 2>&1; then
-    echo "  postgres reachable after ${i}s"
-    break
-  fi
-  i=$((i + 2))
-  sleep 2
-done
-if [ "$i" -ge "$PG_WAIT_SECONDS" ]; then
-  echo "ERROR: postgres at ${PG_HOST}:${PG_PORT} did not become reachable within ${PG_WAIT_SECONDS}s." >&2
-  exit 1
-fi
+# Wait for postgres to accept QUERIES — not just TCP. A plain TCP gate passes
+# the moment the socket opens, but during a CNPG primary restart the postgres
+# pod accepts connections while still in recovery ("the database system is
+# starting up"); migrate.js would then connect too early, crash, and crashloop
+# every pod that (re)started during a system-db restart (which CNPG does on
+# every backup-target enable/disable). wait-for-db retries a real `SELECT 1`
+# (PG_WAIT_SECONDS, default 240) and exits non-zero — surfacing a genuinely
+# dead DB — only after the timeout. The startupProbe (backend-deployment.yaml)
+# protects this whole window so liveness can't kill the pod while it waits.
+PG_WAIT_SECONDS="${PG_WAIT_SECONDS:-240}"
+export PG_WAIT_SECONDS
+echo "Waiting for postgres to accept queries (max ${PG_WAIT_SECONDS}s)..."
+node dist/db/wait-for-db.js
 
 # Migrate. Hard-fail on errors — silently swallowing them was the source
 # of the 2026-04-25 staging incident where every backend table was

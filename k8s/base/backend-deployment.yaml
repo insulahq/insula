@@ -44,6 +44,14 @@ spec:
               value: "3000"
             - name: LOG_LEVEL
               value: info
+            # docker-entrypoint.sh blocks on a postgres TCP gate before the
+            # server opens :3000. CNPG rolling-restarts the system-db on every
+            # backup-target enable/disable (barman sidecar attach/detach), so a
+            # platform-api pod that (re)starts during one must wait out that
+            # restart. 240s gives ample headroom and stays under the
+            # startupProbe window so a genuinely-dead DB still surfaces.
+            - name: PG_WAIT_SECONDS
+              value: "240"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -367,18 +375,35 @@ spec:
               # not preemptively.
               cpu: 750m
               memory: 1Gi
-          livenessProbe:
-            httpGet:
-              path: /api/v1/healthz
-              port: 3000
-            initialDelaySeconds: 10
-            periodSeconds: 30
-          readinessProbe:
+          # startupProbe gates liveness+readiness: while it's failing the pod
+          # is NOT killed, so a slow boot (waiting out a CNPG restart on the
+          # postgres TCP gate, then migrations) can't trip liveness. 5s × 60 =
+          # 300s window — longer than PG_WAIT_SECONDS (240s) + migrate time.
+          # Before this, liveness (kills at ~10+3×30=100s) fired BEFORE the
+          # entrypoint's own 120s DB-wait, crashlooping every starting pod
+          # during a system-db restart (project_wal_archive_runaway flap).
+          startupProbe:
             httpGet:
               path: /api/v1/healthz
               port: 3000
             initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: 3000
+            # /healthz is shallow (no DB) so a RUNNING pod survives a brief DB
+            # blip; the 3s timeout tolerates a transient event-loop hiccup.
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: 3000
             periodSeconds: 10
+            timeoutSeconds: 3
           volumeMounts:
             # Snapshot store — the same hostPath the storage-lifecycle
             # snapshot Jobs mount in tenant namespaces. platform-api
