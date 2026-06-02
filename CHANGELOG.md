@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **`platform-ops dr` disaster-recovery subcommands** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
+  W17, PR 10): `dr verify` (read-only: age-decrypt + print a bundle's manifest —
+  no DB, no cluster, runs on a bare jump host) and `dr restore` (`--mode partial`
+  imports backup-config rows read-only; `--mode full` runs CNPG recovery + mail
+  restore). The host binary wraps the backend `dr-restore` `runDrRestore`
+  primitive DIRECTLY — the same module `scripts/dr-restore-bundle.sh` drives —
+  so it works when platform-api is down. `--mode full` keeps the per-cluster
+  type-to-confirm (`--confirm-cluster <name>`, value === cluster name) + a
+  required `--target-mail-node`. Failure output emits a stable error label only
+  on stdout `--json` (never the error body, which can carry the age key path or
+  a DSN); the full diagnostic goes to stderr with credentials scrubbed. Covered
+  by 29 Vitest cases (`dr.test.ts`).
+
 ### Changed
 - **platform-ops signature verification is now openssl-only on nodes** (no cosign
   on hosts). A cosign `sign-blob --key` signature is plain base64-encoded

@@ -13,6 +13,7 @@ import {
   shellCommand,
   selfUpgrade,
 } from './commands.js';
+import { drCommand } from './dr.js';
 
 const HELP = `platform-ops — Insula operator CLI
 
@@ -23,13 +24,16 @@ Commands:
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
   migrations list        List platform migrations (activates in a later release)
+  dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
+  dr restore             Restore from a DR bundle (partial rows | full recovery)
   self-upgrade [--check] Check for / apply a CLI self-upgrade (activates later)
   shell                  Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
 
-Runs on any cluster node. Read-only in this release; privileged operations
-(node drain, migrations apply, snapshot/dr, upgrade, rollback) land in later
-releases. See ADR-045.`;
+Runs on any cluster node. Mostly read-only; the one privileged operation in
+this release is \`dr restore\` (disaster recovery — works when platform-api is
+down). Other privileged ops (node drain, migrations apply, snapshot,
+upgrade, rollback) land in later releases. See ADR-045.`;
 
 function printHelp(deps: Deps): void {
   deps.out(HELP);
@@ -77,6 +81,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return clusterCommand(rest, deps);
     case 'migrations':
       return migrationsCommand(rest, deps);
+    case 'dr':
+      return drCommand(rest, deps);
     case 'self-upgrade':
       return selfUpgrade(rest, deps);
     case 'shell':

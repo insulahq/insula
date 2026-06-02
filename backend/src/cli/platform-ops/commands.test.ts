@@ -22,6 +22,10 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     versionFromDb: vi.fn(async () => null),
     readFile: vi.fn(() => null),
     buildVersion: '2026.6.1',
+    dr: {
+      verifyBundle: vi.fn(async () => { throw new Error('not used'); }),
+      runRestore: vi.fn(async () => ({ ok: true })),
+    },
     ...over,
   };
   return { deps, out, err };
