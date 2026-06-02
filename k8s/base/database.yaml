@@ -201,18 +201,20 @@ spec:
   # shim target binding.
   #
   # NO STATIC `spec.plugins` ENTRY HERE — intentional, and enforced by
-  # ci-backup-rclone-shim-check.sh (Invariant 10). CNPG keeps
-  # `archive_mode=on` for as long as the barman-cloud plugin entry is
-  # PRESENT, INDEPENDENT of `isWALArchiver`. If the entry shipped statically,
-  # a freshly-bootstrapped cluster with NO backup target would archive every
-  # WAL segment to the (unstarted) shim and fill `pg_wal/` until the volume
-  # ran out of disk and CNPG halted Postgres — a guaranteed self-destruct in
-  # ~2 days (project_wal_archive_runaway_2026_06_02). So a fresh cluster
-  # starts with NO barman plugin → archive_mode off → WAL recycles. The
-  # reconciler ADDS the entry (isWALArchiver:true) only once a SYSTEM target
-  # is bound — after it materialises the ObjectStore the entry references —
-  # and REMOVES it when SYSTEM is unassigned. The reconciler is the entry's
-  # sole owner (Flux ssa:merge leaves the absent field alone).
+  # ci-backup-rclone-shim-check.sh (Invariant 10). Real WAL archiving is gated
+  # by the barman-cloud plugin entry's PRESENCE, INDEPENDENT of `isWALArchiver`.
+  # If the entry shipped statically, a freshly-bootstrapped cluster with NO
+  # backup target would keep trying to archive every WAL segment to the
+  # (unstarted) shim — every attempt FAILS, Postgres can't recycle un-archived
+  # WAL, and `pg_wal/` fills until the volume runs out of disk and CNPG halts
+  # Postgres — a guaranteed self-destruct in ~2 days
+  # (project_wal_archive_runaway_2026_06_02). So a fresh cluster starts with NO
+  # barman plugin: with no archiver attached, CNPG's `wal-archive` no-op-succeeds
+  # (archive_mode stays on) and WAL recycles. The reconciler ADDS the entry
+  # (isWALArchiver:true) only once a SYSTEM target is bound — after it
+  # materialises the ObjectStore the entry references — and REMOVES it when
+  # SYSTEM is unassigned. The reconciler is the entry's sole owner (Flux
+  # ssa:merge leaves the absent field alone).
 ---
 # Stub ObjectStore CR + creds Secret — present so the plugin can be ADDED
 # cleanly once a SYSTEM backup target is bound.
@@ -238,8 +240,8 @@ spec:
 #
 # Lifecycle (no SYSTEM target — the common fresh-bootstrap case):
 #   1. Flux applies this stub → ObjectStore CR + empty Secret exist.
-#   2. Cluster starts with no barman plugin → archive_mode OFF → pg_wal
-#      recycles normally (no archive failures, no fill).
+#   2. Cluster starts with no barman plugin → CNPG's wal-archive no-op-
+#      succeeds → pg_wal recycles normally (no archive failures, no fill).
 #   3. platform-api boots; postgres-objectstore reconciler keeps the
 #      plugin ABSENT until a SYSTEM target is bound, then ADDS it
 #      (isWALArchiver:true) after merge-patching the Secret `data`.

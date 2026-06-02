@@ -26,12 +26,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `postgres-objectstore` reconciler now manages the plugin entry's PRESENCE (adds
   it when a SYSTEM target is bound, after materializing its ObjectStore; removes
   it otherwise), and `k8s/base/database.yaml` no longer ships a static entry. A
-  fresh cluster starts with no barman plugin → `archive_mode` off → WAL recycles.
+  fresh cluster starts with no barman plugin: with no archiver attached, CNPG's
+  `wal-archive` command no-op-succeeds (archive_mode itself stays on — CNPG owns
+  that GUC) so Postgres recycles WAL instead of failing against the dead sink.
   CI guard `ci-backup-rclone-shim-check.sh` Invariant 10 now *rejects* a static
-  plugin entry. **Operator note:** deploying this to an EXISTING cluster that has a
-  SYSTEM backup target bound triggers one CNPG-managed rolling Postgres restart
-  (the `archive_mode` flip), after which the reconciler re-adds the plugin and
-  archiving resumes — ~5–15 s on a single-instance cluster, a switchover on HA.
+  plugin entry. When a SYSTEM target IS bound the plugin is present + real
+  archiving and scheduled base backups run exactly as before (the UI WAL-streaming
+  path in `system-backup/wal-archive.ts` is unchanged). **Operator note:** deploying
+  this to an EXISTING cluster triggers a CNPG-managed rolling Postgres restart (the
+  plugin reconcile); a target-bound cluster ends with the plugin present (archiving
+  continues), a targetless one with it absent — ~5–15 s single-instance, a
+  switchover on HA. Verified on staging: removing the plugin drained pg_wal
+  9.6 GB → 641 MB, cluster healthy 3/3, archive failures stopped.
 
 ### Added
 - **`platform-ops dr` disaster-recovery subcommands** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
