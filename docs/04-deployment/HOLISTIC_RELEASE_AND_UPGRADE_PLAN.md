@@ -470,7 +470,8 @@ DR script does not exist as a standalone workstream; `platform-ops dr restore` s
 | **PR 7** | `docs(cicd): rewrite CICD_PIPELINE_REQUIREMENTS.md to match as-built pull-model` | W7 | M |
 | **PR 8** | `refactor(bootstrap): extract scripts/lib/bootstrap-phases.sh + install platform-ops TS binary on first run` | W8 | M-H |
 | **PR 9** | `feat(platform-ops): TS-binary scaffolding + status/version/shell/diagnostics/migrations-list subcommands; pkg-compile pipeline; cosign signing in release.yml` | W17 | M-H |
-| **PR 10** | `feat(platform-ops): snapshot capture/list/restore + dr restore/rescue subcommands wrapping parallel agent's primitives` | W17 | M |
+| **PR 10** | `feat(platform-ops): dr verify + dr restore subcommands wrapping the runDrRestore primitive directly` ✅ | W17 | M |
+| **PR 10b** | `feat(platform-ops): snapshot capture/list/restore + dr rescue subcommands` (deferred follow-up — each wraps a distinct heavy module: cnpg-backup-now for capture, cnpg-backup-catalogue for list, postgres-restore/barman for restore, with k8s-client ObjectStore enumeration) | W17 | M |
 | **PR 11** | `feat(upgrade-p2): platform-migration registry + runner + dry-run + advisory lock; controller invokes platform-ops migrations apply` | W9 | H |
 | **PR 12** | `feat(upgrade-p3): host-config-reconciler DaemonSet (sysctls/modules/ulimits) — seed migration` | W10 | H |
 | **PR 12b** | `feat(host-config): apt/dnf package convergence via host-packages-desired ConfigMap` | W10b | M |

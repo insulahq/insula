@@ -13,6 +13,10 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     versionFromDb: vi.fn(async () => null),
     readFile: vi.fn(() => null),
     buildVersion: '2026.6.1',
+    dr: {
+      verifyBundle: vi.fn(async () => { throw new Error('not used'); }),
+      runRestore: vi.fn(async () => ({ ok: true })),
+    },
     ...over,
   };
   return { deps, out, err };
@@ -73,5 +77,21 @@ describe('dispatch', () => {
     const { deps, out } = fakeDeps();
     expect(await dispatch(['self-upgrade', '--check'], deps)).toBe(0);
     expect(out.join('\n')).toMatch(/not implemented|no-op/i);
+  });
+
+  it('dr verify routes through to dr.verifyBundle', async () => {
+    const verifyBundle = vi.fn(async () => ({
+      apexDomain: 'a.example', clusterName: 'a', platformVersion: '2026.6.2',
+      createdAt: 't', bundleTopology: 'single', cnpgClusters: [], secretYamlCount: 0,
+    }));
+    const { deps } = fakeDeps({ dr: { verifyBundle, runRestore: vi.fn(async () => ({ ok: true })) } });
+    expect(await dispatch(['dr', 'verify', '--bundle', '/b', '--age-key', '/k'], deps)).toBe(0);
+    expect(verifyBundle).toHaveBeenCalledWith('/b', '/k', undefined);
+  });
+
+  it('dr with no subcommand → usage error, exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['dr'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/subcommand|verify|restore/i);
   });
 });

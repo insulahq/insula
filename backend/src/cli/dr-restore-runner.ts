@@ -1,11 +1,12 @@
 /**
  * DR restore CLI entrypoint (Units B + C).
  *
- * Invoked by `scripts/dr-restore-bundle.sh` (a thin throwaway shim
- * during the transition). Eventually wrapped by `platform-ops dr
- * restore` once PR 10 of the holistic upgrade plan ships, at which
- * point this file's argv parsing collapses to a single-line
- * delegation.
+ * Invoked by `scripts/dr-restore-bundle.sh` (the in-cluster tsx path).
+ * As of holistic-plan PR 10 the host binary `platform-ops dr restore`
+ * (backend/src/cli/platform-ops/dr.ts) ALSO wraps the same
+ * `runDrRestore` primitive — the two are parallel front-ends over one
+ * module (no logic duplication), this one for in-pod tsx, that one for
+ * the signed on-host binary that works when platform-api is down.
  *
  * Inputs via argv (mirrors the eventual platform-ops surface):
  *
