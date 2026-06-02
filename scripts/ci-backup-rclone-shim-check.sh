@@ -172,13 +172,15 @@ fi
 pass "Invariant 9: postgres-objectstore reconciler wired"
 
 # ─── 10. database.yaml does NOT statically declare the barman plugin ──
-# CNPG keeps archive_mode=on for as long as the barman-cloud plugin ENTRY
-# is present in spec.plugins — INDEPENDENT of isWALArchiver. A static entry
-# makes a freshly-bootstrapped, targetless cluster archive every WAL
-# segment to the unstarted shim and fill pg_wal until the volume runs out
-# of disk and CNPG halts Postgres (project_wal_archive_runaway_2026_06_02).
-# The reconciler owns plugin PRESENCE: it ADDS the entry when a SYSTEM
-# target is bound, REMOVES it otherwise (ensureClusterBarmanPlugin).
+# Real WAL archiving is gated by the barman-cloud plugin ENTRY's presence in
+# spec.plugins — INDEPENDENT of isWALArchiver. A static entry makes a
+# freshly-bootstrapped, targetless cluster keep archiving every WAL segment to
+# the unstarted shim; every attempt FAILS, Postgres can't recycle the WAL, and
+# pg_wal fills the volume until CNPG halts Postgres
+# (project_wal_archive_runaway_2026_06_02). The reconciler owns plugin PRESENCE:
+# ADDS the entry when a SYSTEM target is bound, REMOVES it otherwise (with no
+# archiver attached CNPG's wal-archive no-op-succeeds, so WAL recycles) —
+# ensureClusterBarmanPlugin.
 if grep -qE "name:\s*barman-cloud\.cloudnative-pg\.io" "$DATABASE_YAML"; then
   fail "Invariant 10: database.yaml must NOT statically declare the barman-cloud plugin in the Cluster spec.plugins — the reconciler owns plugin presence (a static entry archives WAL to a dead shim and fills pg_wal on a targetless cluster; see ensureClusterBarmanPlugin)"
 fi

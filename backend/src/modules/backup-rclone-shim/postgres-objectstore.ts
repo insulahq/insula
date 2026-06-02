@@ -127,10 +127,12 @@ export interface PostgresObjectStoreResult {
   readonly scheduledBackupSuspended: boolean;
   readonly credentialsSecretApplied: boolean;
   /** Whether the barman-cloud plugin ENTRY is present on the CNPG
-   *  Cluster CR (so CNPG runs archive_mode=on / WAL archiving). `false`
-   *  when SYSTEM is unassigned — the entry is REMOVED entirely, which is
-   *  the ONLY thing that makes CNPG drop archive_mode so pg_wal recycles
-   *  instead of filling the volume (project_wal_archive_runaway). */
+   *  Cluster CR (so WAL is really archived to the ObjectStore). `false`
+   *  when SYSTEM is unassigned — the entry is REMOVED entirely. With no
+   *  barman archiver attached, CNPG's `wal-archive` command no-op-succeeds
+   *  (nothing to upload → exit 0), so Postgres recycles WAL instead of
+   *  failing against the dead shim and filling the volume. (archive_mode
+   *  itself stays on — verified on staging; project_wal_archive_runaway.) */
   readonly walArchiverEnabled: boolean;
 }
 
@@ -285,20 +287,24 @@ export async function reconcilePostgresObjectStore(
   }
 
   // ─── 6. Reconcile the barman-cloud plugin's PRESENCE on the Cluster ─
-  // CNPG keeps `archive_mode=on` (+ archive_command → barman-cloud →
-  // ObjectStore) for as long as the plugin ENTRY is present in
-  // spec.plugins — INDEPENDENT of `isWALArchiver`. So a no-target
-  // cluster must have the entry REMOVED entirely, not merely flipped to
-  // isWALArchiver:false: the old toggle left CNPG archiving every WAL
-  // segment to the unreachable shim, and pg_wal grew until CNPG halted
-  // Postgres on a full volume (project_wal_archive_runaway_2026_06_02).
+  // WAL archiving is gated by the barman-cloud plugin ENTRY's presence in
+  // spec.plugins — NOT by `isWALArchiver`. With the entry present + a SYSTEM
+  // target, CNPG's archive_command (`/controller/manager wal-archive`)
+  // really uploads each segment to the ObjectStore (via the shim). The old
+  // isWALArchiver:false toggle left the entry present, so on a no-target
+  // cluster the shim was unreachable and every archive FAILED — Postgres
+  // can't recycle un-archived WAL, so pg_wal grew until CNPG halted Postgres
+  // on a full volume (project_wal_archive_runaway_2026_06_02).
   //
-  // The database.yaml manifest no longer ships the entry statically — a
-  // fresh cluster starts with NO barman plugin → archive_mode off → WAL
-  // recycles. This reconciler ADDS the entry only once a SYSTEM target is
-  // bound (after step 4 materialised the ObjectStore it references), and
-  // REMOVES it when SYSTEM is unassigned. It is the sole owner of the
-  // entry (CI guard ci-backup-rclone-shim-check.sh enforces no static one).
+  // So a no-target cluster must have the entry REMOVED entirely: with no
+  // archiver attached, `wal-archive` no-op-SUCCEEDS (nothing to upload →
+  // exit 0; archive_mode itself stays on — verified on staging), and
+  // Postgres recycles WAL normally. database.yaml no longer ships a static
+  // entry → a fresh cluster starts with no barman plugin → WAL recycles.
+  // This reconciler ADDS the entry only once a SYSTEM target is bound
+  // (after step 4 materialised the ObjectStore it references) and REMOVES
+  // it when SYSTEM is unassigned. It is the sole owner of the entry (CI
+  // guard ci-backup-rclone-shim-check.sh enforces no static one).
   //
   // Dual-reconciler guard (2026-05-24): when the operator enabled WAL
   // streaming via the UI, system-backup/wal-archive.ts owns the Cluster
@@ -741,17 +747,19 @@ interface ClusterCRView {
  * Reconcile whether the barman-cloud plugin ENTRY exists in the CNPG
  * Cluster's `spec.plugins[]`.
  *
- * This — not `isWALArchiver` — is what controls WAL archiving: CNPG keeps
- * `archive_mode=on` (+ archive_command → the plugin → ObjectStore → shim)
- * for as long as the entry is PRESENT. Flipping `isWALArchiver:false`
- * leaves archiving on; a no-target cluster then archives every segment to
- * the unreachable shim and pg_wal fills the volume until CNPG halts
- * Postgres (project_wal_archive_runaway_2026_06_02). So:
+ * The entry's PRESENCE — not `isWALArchiver` — is what gates real WAL
+ * archiving. With the entry present, CNPG's archive_command really uploads
+ * each segment to the ObjectStore (→ shim). Flipping `isWALArchiver:false`
+ * leaves the entry present, so a no-target cluster keeps trying to upload to
+ * the unreachable shim — every archive FAILS, Postgres can't recycle the
+ * un-archived WAL, and pg_wal fills the volume until CNPG halts Postgres
+ * (project_wal_archive_runaway_2026_06_02). So:
  *
  *   present=true  → ensure the entry exists (isWALArchiver:true,
  *                   barmanObjectName → the ObjectStore step 4 materialised).
- *   present=false → REMOVE the entry → CNPG drops archive_mode → Postgres
- *                   recycles WAL normally.
+ *   present=false → REMOVE the entry. With no archiver attached, CNPG's
+ *                   `wal-archive` no-op-SUCCEEDS (exit 0; archive_mode stays
+ *                   on) so Postgres recycles WAL normally. Verified on staging.
  *
  * Read-modify-write of the whole plugins array via merge-patch (mirrors
  * system-backup/wal-archive.ts) so any OTHER plugins the operator added
@@ -802,15 +810,15 @@ async function ensureClusterBarmanPlugin(
     return;
   }
 
-  // Removing an entry that's actually present flips archive_mode off,
-  // which CNPG can only apply via a rolling Postgres restart (archive_mode
-  // is a postmaster GUC). Warn so an operator who sees the restart knows
-  // it's expected. Any WAL segment mid-archive at this instant simply
-  // fails + stays local (no loss — there's no target to archive to anyway).
+  // Detaching the archiver triggers a CNPG-managed rolling Postgres restart
+  // (it reloads the plugin sidecar config). Warn so an operator who sees the
+  // restart knows it's expected. After it, `wal-archive` no-op-succeeds and
+  // pg_wal recycles. Any WAL segment mid-archive at this instant just fails +
+  // stays local (no loss — there's no target to archive to anyway).
   if (!present && current) {
     log.warn(
       { name: POSTGRES_CLUSTER_NAME },
-      'postgres-objectstore: removing barman-cloud plugin — CNPG will roll-restart Postgres to set archive_mode=off (expected; pg_wal recycles afterward)',
+      'postgres-objectstore: removing barman-cloud plugin — CNPG will roll-restart Postgres (expected); afterward wal-archive no-op-succeeds and pg_wal recycles',
     );
   }
 
@@ -840,7 +848,7 @@ async function ensureClusterBarmanPlugin(
     { name: POSTGRES_CLUSTER_NAME, present },
     present
       ? 'postgres-objectstore: barman-cloud plugin ensured present (WAL archiving on)'
-      : 'postgres-objectstore: barman-cloud plugin removed (no SYSTEM target — archive_mode off so pg_wal recycles)',
+      : 'postgres-objectstore: barman-cloud plugin removed (no SYSTEM target — wal-archive no-op-succeeds so pg_wal recycles)',
   );
 }
 
