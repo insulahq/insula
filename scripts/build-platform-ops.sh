@@ -46,6 +46,22 @@ fi
 
 command -v node >/dev/null 2>&1 || { echo "build-platform-ops: node is required" >&2; exit 2; }
 
+# The backend graph esbuild bundles imports `@insula/api-contracts`, whose
+# package "main" is ./dist/index.js. `npm ci` installs but does NOT build
+# workspace packages, so on a fresh checkout (CI, release.yml, a clean clone)
+# that dist is absent and esbuild fails "Could not resolve @insula/api-contracts".
+# Build it here so this script is self-contained — matching every other CI job
+# (ci-backend / ci-admin-panel / ci-api-contracts all run the same).
+if [ ! -f "${REPO_ROOT}/packages/api-contracts/dist/index.js" ]; then
+  echo "build-platform-ops: building @insula/api-contracts (dist missing)..."
+  # `--force` is required: a plain `tsc --build` honours the (gitignored)
+  # incremental tsconfig.tsbuildinfo and can emit 0 files when dist was
+  # removed but the cache lingers. --force always emits. Root-resolved npx so
+  # it works under a git worktree too.
+  ( cd "${REPO_ROOT}" && npx tsc --build packages/api-contracts --force ) \
+    || { echo "build-platform-ops: @insula/api-contracts build failed" >&2; exit 1; }
+fi
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$OUT_DIR"

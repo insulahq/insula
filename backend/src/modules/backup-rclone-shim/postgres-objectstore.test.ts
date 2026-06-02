@@ -151,20 +151,13 @@ function fakeClients() {
     custom: {
       // Default: ObjectStore + ScheduledBackup not present (404 → create).
       // The reconciler ALSO calls getNamespacedCustomObject for the
-      // Cluster CR in patchClusterWalArchiver. Caller can override
-      // this default via mockResolvedValueOnce ordering.
+      // Cluster CR in ensureClusterBarmanPlugin. A FRESH cluster ships
+      // with NO barman plugin (database.yaml no longer declares it) — the
+      // reconciler adds it only once a SYSTEM target is bound. Caller can
+      // override this default via mockResolvedValueOnce ordering.
       getNamespacedCustomObject: vi.fn().mockImplementation(async (args: { plural?: string }) => {
         if (args.plural === 'clusters') {
-          return {
-            spec: {
-              plugins: [
-                {
-                  name: 'barman-cloud.cloudnative-pg.io',
-                  parameters: { barmanObjectName: 'system-postgres-objectstore' },
-                },
-              ],
-            },
-          };
+          return { spec: { plugins: [] } };
         }
         const err: { statusCode: number } = { statusCode: 404 };
         throw err;
@@ -201,7 +194,7 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     expect(clients.custom.createNamespacedCustomObject).toHaveBeenCalledTimes(2);
   });
 
-  it('patches Cluster CR isWALArchiver to true when SYSTEM is bound', async () => {
+  it('adds the barman-cloud plugin entry (isWALArchiver:true) when SYSTEM is bound', async () => {
     const db = fakeDb([{ targetId: 't-1', storageType: 's3', enabled: 1 }]);
     const clients = fakeClients();
     await reconcilePostgresObjectStore(db, clients as never, silentLog());
@@ -210,14 +203,16 @@ describe('reconcilePostgresObjectStore — happy path', () => {
       (c) => (c[0] as { plural?: string }).plural === 'clusters',
     );
     expect(clusterPatchCall).toBeDefined();
-    const body = (clusterPatchCall![0] as { body: Array<{ op: string; path: string; value: unknown }> }).body;
-    // Reconciler tries `replace` first; mock returns 200 so no fallback
-    // to `add` happens here. The 422-fallback path is covered by the
-    // explicit test below.
-    expect(body[0]).toMatchObject({
-      op: 'replace',
-      path: '/spec/plugins/0/isWALArchiver',
-      value: true,
+    // Merge-patch of the whole plugins array (NOT a JSON-patch op list) —
+    // adding the entry is what turns CNPG archive_mode on.
+    const body = (clusterPatchCall![0] as {
+      body: { spec: { plugins: Array<{ name: string; isWALArchiver?: boolean; parameters?: Record<string, string> }> } };
+    }).body;
+    expect(Array.isArray(body)).toBe(false);
+    const barman = body.spec.plugins.find((p) => p.name === 'barman-cloud.cloudnative-pg.io');
+    expect(barman).toMatchObject({
+      isWALArchiver: true,
+      parameters: { barmanObjectName: 'system-postgres-objectstore' },
     });
   });
 
@@ -256,28 +251,25 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
   });
 
-  it('falls back to `add` op when Cluster patch returns 422 (path missing)', async () => {
+  it('preserves other plugins when ensuring the barman entry present', async () => {
     const db = fakeDb([{ targetId: 't-1', storageType: 's3', enabled: 1 }]);
     const clients = fakeClients();
-    let callIdx = 0;
-    clients.custom.patchNamespacedCustomObject.mockImplementation(async (args: { plural?: string }) => {
+    clients.custom.getNamespacedCustomObject.mockImplementation(async (args: { plural?: string }) => {
       if (args.plural === 'clusters') {
-        callIdx += 1;
-        if (callIdx === 1) throw { statusCode: 422 };
-        return {};
+        return { spec: { plugins: [{ name: 'some-other-plugin.example.io' }] } };
       }
-      return {};
+      throw { statusCode: 404 };
     });
     await reconcilePostgresObjectStore(db, clients as never, silentLog());
 
-    const clusterCalls = clients.custom.patchNamespacedCustomObject.mock.calls.filter(
+    const clusterPatchCall = clients.custom.patchNamespacedCustomObject.mock.calls.find(
       (c) => (c[0] as { plural?: string }).plural === 'clusters',
     );
-    expect(clusterCalls).toHaveLength(2);
-    // Second call: `add` retry.
-    const retryBody = (clusterCalls[1][0] as { body: Array<{ op: string; value: unknown }> }).body;
-    expect(retryBody[0].op).toBe('add');
-    expect(retryBody[0].value).toBe(true);
+    const plugins = (clusterPatchCall![0] as {
+      body: { spec: { plugins: Array<{ name: string }> } };
+    }).body.spec.plugins;
+    expect(plugins.find((p) => p.name === 'some-other-plugin.example.io')).toBeDefined();
+    expect(plugins.find((p) => p.name === 'barman-cloud.cloudnative-pg.io')).toBeDefined();
   });
 
   it('renders the ObjectStore CR with shim endpoint + secret refs', async () => {
@@ -365,17 +357,18 @@ describe('reconcilePostgresObjectStore — no SYSTEM target', () => {
     expect((body.spec as Record<string, unknown>).suspend).toBe(true);
   });
 
-  it('flips Cluster isWALArchiver to false when SYSTEM unassigned', async () => {
+  it('REMOVES the barman-cloud plugin entry when SYSTEM unassigned (drops archive_mode)', async () => {
     const db = fakeDb([]);
     const clients = fakeClients();
-    // Pretend the Cluster CR already has isWALArchiver=true (from a
-    // previous reconcile when SYSTEM was bound). Reconciler must
-    // patch it back to false.
+    // Cluster currently HAS the barman plugin (from a prior bind) + an
+    // unrelated plugin. Reconciler must remove ONLY the barman entry so
+    // CNPG turns archive_mode off and pg_wal recycles.
     clients.custom.getNamespacedCustomObject.mockImplementation(async (args: { plural?: string }) => {
       if (args.plural === 'clusters') {
         return {
           spec: {
             plugins: [
+              { name: 'some-other-plugin.example.io' },
               {
                 name: 'barman-cloud.cloudnative-pg.io',
                 isWALArchiver: true,
@@ -393,15 +386,28 @@ describe('reconcilePostgresObjectStore — no SYSTEM target', () => {
       (c) => (c[0] as { plural?: string }).plural === 'clusters',
     );
     expect(clusterPatchCall).toBeDefined();
-    const body = (clusterPatchCall![0] as { body: Array<{ op: string; value: unknown }> }).body;
-    expect(body[0].op).toBe('replace');
-    expect(body[0].value).toBe(false);
+    const plugins = (clusterPatchCall![0] as {
+      body: { spec: { plugins: Array<{ name: string }> } };
+    }).body.spec.plugins;
+    expect(plugins.find((p) => p.name === 'barman-cloud.cloudnative-pg.io')).toBeUndefined();
+    // Unrelated plugin survives.
+    expect(plugins.find((p) => p.name === 'some-other-plugin.example.io')).toBeDefined();
   });
 
-  it('skips Cluster patch when value is already at desired state (idempotent)', async () => {
+  it('skips the Cluster patch when SYSTEM unassigned and no barman plugin present (idempotent)', async () => {
     const db = fakeDb([]);
+    const clients = fakeClients(); // default cluster mock = fresh, no barman
+    await reconcilePostgresObjectStore(db, clients as never, silentLog());
+
+    const clusterPatchCall = clients.custom.patchNamespacedCustomObject.mock.calls.find(
+      (c) => (c[0] as { plural?: string }).plural === 'clusters',
+    );
+    expect(clusterPatchCall).toBeUndefined();
+  });
+
+  it('skips the Cluster patch when SYSTEM bound and barman already present + correct (idempotent)', async () => {
+    const db = fakeDb([{ targetId: 't-1', storageType: 's3', enabled: 1 }]);
     const clients = fakeClients();
-    // Cluster CR already shows isWALArchiver=false — should be a no-op.
     clients.custom.getNamespacedCustomObject.mockImplementation(async (args: { plural?: string }) => {
       if (args.plural === 'clusters') {
         return {
@@ -409,7 +415,7 @@ describe('reconcilePostgresObjectStore — no SYSTEM target', () => {
             plugins: [
               {
                 name: 'barman-cloud.cloudnative-pg.io',
-                isWALArchiver: false,
+                isWALArchiver: true,
                 parameters: { barmanObjectName: 'system-postgres-objectstore' },
               },
             ],
@@ -522,8 +528,8 @@ describe('reconcilePostgresObjectStore — idempotency', () => {
     expect(clients.core.createNamespacedSecret).not.toHaveBeenCalled();
     expect(clients.core.patchNamespacedSecret).toHaveBeenCalled();
     expect(clients.custom.createNamespacedCustomObject).not.toHaveBeenCalled();
-    // 3 patches: ObjectStore + ScheduledBackup + Cluster (the
-    // isWALArchiver toggle from absent → true).
+    // 3 patches: ObjectStore + ScheduledBackup + Cluster (the barman
+    // plugin ensure-present merge-patch — absent in the default mock → added).
     expect(clients.custom.patchNamespacedCustomObject).toHaveBeenCalledTimes(3);
   });
 });

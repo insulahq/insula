@@ -44,7 +44,7 @@ import {
   systemWalArchiveState,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { JSON_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import {
   deriveShimAccessKey,
   deriveShimSecretKey,
@@ -126,9 +126,11 @@ export interface PostgresObjectStoreResult {
   readonly scheduledBackupApplied: boolean;
   readonly scheduledBackupSuspended: boolean;
   readonly credentialsSecretApplied: boolean;
-  /** Whether spec.plugins[0].isWALArchiver was patched to `true` on
-   *  the CNPG Cluster CR. `false` when SYSTEM is unassigned (prevents
-   *  pg_wal accumulation on a no-target cluster). */
+  /** Whether the barman-cloud plugin ENTRY is present on the CNPG
+   *  Cluster CR (so CNPG runs archive_mode=on / WAL archiving). `false`
+   *  when SYSTEM is unassigned — the entry is REMOVED entirely, which is
+   *  the ONLY thing that makes CNPG drop archive_mode so pg_wal recycles
+   *  instead of filling the volume (project_wal_archive_runaway). */
   readonly walArchiverEnabled: boolean;
 }
 
@@ -149,9 +151,13 @@ interface SystemTargetView {
  *
  * Order matters: Secret first (creds the ObjectStore references must
  * exist before the plugin tries to use them), then ObjectStore, then
- * ScheduledBackup. The CNPG Cluster CR's spec.plugins[] entry is a
- * STATIC piece of the database.yaml manifest — Flux applies it. This
- * reconciler does NOT patch the Cluster.
+ * ScheduledBackup, then the Cluster's `spec.plugins[]` barman entry —
+ * which this reconciler now OWNS (step 6): it ADDS the entry when a
+ * SYSTEM target is bound (after the ObjectStore it references exists)
+ * and REMOVES it otherwise. database.yaml no longer ships a static
+ * entry — CNPG keeps archive_mode=on while the entry is present, so a
+ * static entry would fill pg_wal on a targetless cluster
+ * (project_wal_archive_runaway_2026_06_02).
  */
 export async function reconcilePostgresObjectStore(
   db: Database,
@@ -278,37 +284,40 @@ export async function reconcilePostgresObjectStore(
     }
   }
 
-  // ─── 6. Toggle isWALArchiver on the Cluster CR ──────────────────
-  // When SYSTEM is unassigned, isWALArchiver must be `false` (or
-  // absent) — otherwise the archive_command fails every checkpoint
-  // and pg_wal/ fills until the volume runs out of disk. The
-  // database.yaml manifest INTENTIONALLY omits isWALArchiver so the
-  // reconciler is the sole owner of the field. Flux ssa: merge
-  // preserves fields not in the source manifest.
+  // ─── 6. Reconcile the barman-cloud plugin's PRESENCE on the Cluster ─
+  // CNPG keeps `archive_mode=on` (+ archive_command → barman-cloud →
+  // ObjectStore) for as long as the plugin ENTRY is present in
+  // spec.plugins — INDEPENDENT of `isWALArchiver`. So a no-target
+  // cluster must have the entry REMOVED entirely, not merely flipped to
+  // isWALArchiver:false: the old toggle left CNPG archiving every WAL
+  // segment to the unreachable shim, and pg_wal grew until CNPG halted
+  // Postgres on a full volume (project_wal_archive_runaway_2026_06_02).
   //
-  // Phase 6 (2026-05-24) dual-reconciler guard: when an operator has
-  // enabled WAL streaming via the UI, system-backup/wal-archive.ts
-  // owns the Cluster.spec plugin entry exclusively. Skipping
-  // patchClusterWalArchiver here avoids the race where both
-  // reconcilers fight over `parameters.barmanObjectName` +
-  // `isWALArchiver` (each with different values) on every Flux
-  // reconvergence. The shim creds + ObjectStore + ScheduledBackup
-  // above remain reconciled because they're harmless additions; only
-  // the Cluster patch was contended.
+  // The database.yaml manifest no longer ships the entry statically — a
+  // fresh cluster starts with NO barman plugin → archive_mode off → WAL
+  // recycles. This reconciler ADDS the entry only once a SYSTEM target is
+  // bound (after step 4 materialised the ObjectStore it references), and
+  // REMOVES it when SYSTEM is unassigned. It is the sole owner of the
+  // entry (CI guard ci-backup-rclone-shim-check.sh enforces no static one).
+  //
+  // Dual-reconciler guard (2026-05-24): when the operator enabled WAL
+  // streaming via the UI, system-backup/wal-archive.ts owns the Cluster
+  // plugin entry exclusively — skip here to avoid both reconcilers
+  // fighting over the array on every Flux reconvergence.
   let walArchiverEnabled = false;
   if (walArchiveOwns) {
     log.info(
       { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
-      'postgres-objectstore: wal-archive owns Cluster plugin entry — skipping isWALArchiver patch',
+      'postgres-objectstore: wal-archive owns Cluster plugin entry — skipping plugin reconcile',
     );
     walArchiverEnabled = !suspended;
   } else {
     try {
-      walArchiverEnabled = !suspended;
-      await patchClusterWalArchiver(clients.custom, log, walArchiverEnabled);
+      walArchiverEnabled = !suspended; // present ⟺ a SYSTEM target is bound
+      await ensureClusterBarmanPlugin(clients.custom, log, walArchiverEnabled);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error({ err: msg }, 'postgres-objectstore: Cluster isWALArchiver patch failed');
+      log.error({ err: msg }, 'postgres-objectstore: Cluster barman-cloud plugin reconcile failed');
       return {
         state: 'STATE_ERROR',
         errorMessage: msg,
@@ -713,7 +722,7 @@ async function materializeScheduledBackup(
 }
 
 // ---------------------------------------------------------------------------
-// Cluster CR — dynamic isWALArchiver patch
+// Cluster CR — barman-cloud plugin PRESENCE reconcile
 // ---------------------------------------------------------------------------
 
 interface ClusterPluginEntry {
@@ -729,21 +738,31 @@ interface ClusterCRView {
 }
 
 /**
- * Patch the CNPG Cluster CR's `spec.plugins[].isWALArchiver` to
- * match the desired state (true when SYSTEM bound, false otherwise).
- * Uses JSON-Patch with array index addressing for atomic per-entry
- * mutation; merge-patch on an array would replace the whole array
- * which would clobber any other plugins the operator may have added.
+ * Reconcile whether the barman-cloud plugin ENTRY exists in the CNPG
+ * Cluster's `spec.plugins[]`.
  *
- * If the cluster's `spec.plugins[]` doesn't yet include the
- * barman-cloud entry (fresh install before Flux first-applies the
- * database.yaml manifest), this function logs + returns without
- * raising — the next reconciler tick converges once Flux applies.
+ * This — not `isWALArchiver` — is what controls WAL archiving: CNPG keeps
+ * `archive_mode=on` (+ archive_command → the plugin → ObjectStore → shim)
+ * for as long as the entry is PRESENT. Flipping `isWALArchiver:false`
+ * leaves archiving on; a no-target cluster then archives every segment to
+ * the unreachable shim and pg_wal fills the volume until CNPG halts
+ * Postgres (project_wal_archive_runaway_2026_06_02). So:
+ *
+ *   present=true  → ensure the entry exists (isWALArchiver:true,
+ *                   barmanObjectName → the ObjectStore step 4 materialised).
+ *   present=false → REMOVE the entry → CNPG drops archive_mode → Postgres
+ *                   recycles WAL normally.
+ *
+ * Read-modify-write of the whole plugins array via merge-patch (mirrors
+ * system-backup/wal-archive.ts) so any OTHER plugins the operator added
+ * survive. Idempotent: skips the apiserver call when already at the
+ * desired state. A 404 (Cluster CR not yet applied) logs + returns — the
+ * next reconciler tick converges.
  */
-export async function patchClusterWalArchiver(
+async function ensureClusterBarmanPlugin(
   custom: k8s.CustomObjectsApi,
   log: Pick<Logger, 'info' | 'warn'>,
-  enabled: boolean,
+  present: boolean,
 ): Promise<void> {
   let cluster: ClusterCRView;
   try {
@@ -759,88 +778,70 @@ export async function patchClusterWalArchiver(
       ?? (err as { code?: number })?.code;
     if (code === 404) {
       log.warn(
-        { name: POSTGRES_CLUSTER_NAME, enabled },
-        'postgres-objectstore: Cluster CR not yet applied — skipping isWALArchiver patch',
+        { name: POSTGRES_CLUSTER_NAME, present },
+        'postgres-objectstore: Cluster CR not yet applied — skipping plugin reconcile',
       );
       return;
     }
     throw err;
   }
 
-  const plugins = cluster.spec?.plugins ?? [];
-  const idx = plugins.findIndex((p) => p.name === BARMAN_PLUGIN_NAME);
-  if (idx < 0) {
+  const existing = cluster.spec?.plugins ?? [];
+  const current = existing.find((p) => p.name === BARMAN_PLUGIN_NAME);
+
+  // Idempotency: skip the apiserver call when already at desired state.
+  if (present) {
+    if (
+      current
+      && current.isWALArchiver === true
+      && current.parameters?.barmanObjectName === POSTGRES_OBJECT_STORE_NAME
+    ) {
+      return;
+    }
+  } else if (!current) {
+    return;
+  }
+
+  // Removing an entry that's actually present flips archive_mode off,
+  // which CNPG can only apply via a rolling Postgres restart (archive_mode
+  // is a postmaster GUC). Warn so an operator who sees the restart knows
+  // it's expected. Any WAL segment mid-archive at this instant simply
+  // fails + stays local (no loss — there's no target to archive to anyway).
+  if (!present && current) {
     log.warn(
-      { name: POSTGRES_CLUSTER_NAME, enabled },
-      'postgres-objectstore: Cluster CR has no barman-cloud plugin entry — skipping isWALArchiver patch (Flux not yet synced)',
+      { name: POSTGRES_CLUSTER_NAME },
+      'postgres-objectstore: removing barman-cloud plugin — CNPG will roll-restart Postgres to set archive_mode=off (expected; pg_wal recycles afterward)',
     );
-    return;
   }
 
-  // Skip the patch when already at the desired state — saves an
-  // apiserver round-trip and reduces the chance of the resourceVersion
-  // contention that JSON-Patch is sensitive to.
-  if (Boolean(plugins[idx].isWALArchiver) === enabled) {
-    return;
-  }
+  // Rebuild the array: preserve non-barman plugins, then append our entry
+  // (present) or omit it (absent). Merge-patch replaces the array wholesale.
+  const otherPlugins = existing.filter((p) => p.name !== BARMAN_PLUGIN_NAME);
+  const merged: ClusterPluginEntry[] = present
+    ? [...otherPlugins, {
+        name: BARMAN_PLUGIN_NAME,
+        isWALArchiver: true,
+        parameters: { barmanObjectName: POSTGRES_OBJECT_STORE_NAME },
+      }]
+    : otherPlugins;
 
-  const op = [
+  await custom.patchNamespacedCustomObject(
     {
-      op: 'replace' as const,
-      path: `/spec/plugins/${idx}/isWALArchiver`,
-      value: enabled,
-    },
-  ];
-  try {
-    await custom.patchNamespacedCustomObject(
-      {
-        group: CNPG_API_GROUP,
-        version: CNPG_API_VERSION,
-        namespace: POSTGRES_NAMESPACE,
-        plural: CLUSTER_PLURAL,
-        name: POSTGRES_CLUSTER_NAME,
-        body: op as unknown as object,
-      } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
-      JSON_PATCH,
-    );
-    log.info(
-      { name: POSTGRES_CLUSTER_NAME, enabled },
-      'postgres-objectstore: Cluster CR isWALArchiver toggled',
-    );
-  } catch (err) {
-    const code = (err as { statusCode?: number; code?: number })?.statusCode
-      ?? (err as { code?: number })?.code;
-    if (code === 422) {
-      // `replace` requires the path to exist. The path
-      // `/spec/plugins/${idx}/isWALArchiver` may not exist if Flux
-      // applied the manifest WITHOUT the field (intentional — we
-      // own it). Retry as add.
-      const addOp = [
-        {
-          op: 'add' as const,
-          path: `/spec/plugins/${idx}/isWALArchiver`,
-          value: enabled,
-        },
-      ];
-      await custom.patchNamespacedCustomObject(
-        {
-          group: CNPG_API_GROUP,
-          version: CNPG_API_VERSION,
-          namespace: POSTGRES_NAMESPACE,
-          plural: CLUSTER_PLURAL,
-          name: POSTGRES_CLUSTER_NAME,
-          body: addOp as unknown as object,
-        } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
-        JSON_PATCH,
-      );
-      log.info(
-        { name: POSTGRES_CLUSTER_NAME, enabled },
-        'postgres-objectstore: Cluster CR isWALArchiver added (path did not exist; retried as add)',
-      );
-      return;
-    }
-    throw err;
-  }
+      group: CNPG_API_GROUP,
+      version: CNPG_API_VERSION,
+      namespace: POSTGRES_NAMESPACE,
+      plural: CLUSTER_PLURAL,
+      name: POSTGRES_CLUSTER_NAME,
+      body: { spec: { plugins: merged } },
+    } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
+    MERGE_PATCH,
+  );
+  log.info(
+    { name: POSTGRES_CLUSTER_NAME, present },
+    present
+      ? 'postgres-objectstore: barman-cloud plugin ensured present (WAL archiving on)'
+      : 'postgres-objectstore: barman-cloud plugin removed (no SYSTEM target — archive_mode off so pg_wal recycles)',
+  );
 }
 
 // ---------------------------------------------------------------------------

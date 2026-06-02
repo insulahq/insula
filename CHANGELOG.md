@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **CRITICAL: a targetless CNPG cluster no longer self-destructs by filling its
+  volume with un-recyclable WAL.** A freshly-bootstrapped cluster with no backup
+  target shipped `archive_mode=on` pointed at the backup-rclone-shim S3 sink,
+  which doesn't start until a target is configured — so every WAL archive failed,
+  Postgres couldn't recycle WAL, `archive_timeout=5min` pumped ~192 MB/h, and
+  pg_wal filled the 10 GiB `system-db` volume in ~2 days → CNPG halted Postgres →
+  cluster failure (observed: 17 MB DB, 9.6 GB pg_wal, `pg_stat_archiver`
+  archived=0 / failed=6841). Root cause: the platform controlled
+  `spec.plugins[].isWALArchiver`, but CNPG keeps `archive_mode=on` for as long as
+  the barman-cloud plugin ENTRY is *present* — independent of `isWALArchiver`. The
+  `postgres-objectstore` reconciler now manages the plugin entry's PRESENCE (adds
+  it when a SYSTEM target is bound, after materializing its ObjectStore; removes
+  it otherwise), and `k8s/base/database.yaml` no longer ships a static entry. A
+  fresh cluster starts with no barman plugin → `archive_mode` off → WAL recycles.
+  CI guard `ci-backup-rclone-shim-check.sh` Invariant 10 now *rejects* a static
+  plugin entry. **Operator note:** deploying this to an EXISTING cluster that has a
+  SYSTEM backup target bound triggers one CNPG-managed rolling Postgres restart
+  (the `archive_mode` flip), after which the reconciler re-adds the plugin and
+  archiving resumes — ~5–15 s on a single-instance cluster, a switchover on HA.
+
 ### Added
 - **`platform-ops dr` disaster-recovery subcommands** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
   W17, PR 10): `dr verify` (read-only: age-decrypt + print a bundle's manifest —
