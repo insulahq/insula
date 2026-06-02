@@ -55,10 +55,17 @@ warn()  { printf '%b⚠%b %s\n' "$YELLOW" "$RESET" "$*"; }
 # because the cached INTEGRATION_TOKEN we issue below survives the
 # whole run — sub-scripts inherit it, no per-suite re-login.
 reset_admin_password() {
+  # ssh joins its trailing args into ONE string the REMOTE shell re-parses, so a
+  # quote/metachar in the credentials would break out of the quoting — a password
+  # like  it's; rm -rf …  would both fail auth and run on the node. printf %q
+  # shell-quotes each value safely for that remote re-parse.
+  local eq pq
+  eq=$(printf '%q' "${ADMIN_EMAIL:-}")
+  pq=$(printf '%q' "${ADMIN_PASSWORD:-}")
   ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" \
     -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
     "${SSH_HOST:-root@192.0.2.56}" \
-    "/tmp/admin-password-reset.sh --email '${ADMIN_EMAIL}' --password '$ADMIN_PASSWORD' >/dev/null 2>&1" \
+    "/tmp/admin-password-reset.sh --email $eq --password $pq >/dev/null 2>&1" \
     || warn "admin password reset failed — auth may fail in suite"
 }
 
@@ -70,9 +77,14 @@ reset_admin_password() {
 # that window. Sub-scripts that get a 401 fall back to fresh login
 # (their existing curl path is the else-branch of the cache check).
 mint_token() {
+  # Build the JSON body with json.dumps (env-passed) so a password containing a
+  # double-quote/backslash can't silently corrupt the body and fail login.
+  local body
+  body=$(ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" python3 -c \
+    'import json,os;print(json.dumps({"email":os.environ["ADMIN_EMAIL"],"password":os.environ["ADMIN_PASSWORD"]}))')
   curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    -d "$body" \
     | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null
 }
 reset_admin_password
@@ -162,6 +174,23 @@ SERIAL_POST=(
 if [[ "${INTEGRATION_INCLUDE_SNAPSHOTS:-}" == "1" ]]; then
   SERIAL_PRE+=("system-snapshots:integration-system-snapshots.sh")
   PARALLEL+=("lifecycle:integration-lifecycle-e2e.sh")
+fi
+
+# Failure-injection suites (opt-in via INTEGRATION_INCLUDE_FAILURE_SUITES=1).
+# Disruptive + must run serially, NEVER alongside the happy-path WAF suite:
+#   • wal-archive-failure binds a DEAD backup target → CNPG restarts the primary
+#     (platform-api flaps) → asserts the admin.wal_archive_failing alert fires and
+#     the circuit-breaker stays untripped (the 2026-06-02 runaway guardrail).
+#   • waf-failure briefly scales crowdsec + modsec-crs to 0 → asserts the API
+#     reports the outage (502 / modsecPodFound=false) instead of silently passing.
+# Prepended to SERIAL_POST so they run on a healthy cluster, before the terminal
+# postgres-pitr deletes + recreates it.
+if [[ "${INTEGRATION_INCLUDE_FAILURE_SUITES:-}" == "1" ]]; then
+  SERIAL_POST=(
+    "waf-failure:integration-waf-failure-e2e.sh"
+    "wal-archive-failure:integration-wal-archive-failure-e2e.sh"
+    "${SERIAL_POST[@]}"
+  )
 fi
 # Also skip the bundle + restore SCENARIOS inside the staging-all suite —
 # they exercise the same snapshot path through the tenant-backup-v2
