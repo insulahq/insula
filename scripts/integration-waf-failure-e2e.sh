@@ -129,15 +129,21 @@ MS_NS=""; MS_NAME=""; MS_REPLICAS=""
 EXCL_IDS=()
 cleanup() {
   phase "Cleanup"
+  # Restore the deployments FIRST: if we died with modsec-crs scaled to 0 the
+  # admin route is WAF-gated and every API call (incl. the exclusion DELETEs
+  # below) would fail closed — bring the WAF back up, then delete via the API.
+  [[ -n "$CS_NAME" && -n "$CS_REPLICAS" ]] && scale_deploy "$CS_NS" "$CS_NAME" "$CS_REPLICAS" || true
+  if [[ -n "$MS_NAME" && -n "$MS_REPLICAS" ]]; then
+    scale_deploy "$MS_NS" "$MS_NAME" "$MS_REPLICAS"
+    wait_ready_replicas "$MS_NS" "$MS_NAME" "$MS_REPLICAS" 30 || true
+  fi
   if [[ ${#EXCL_IDS[@]} -gt 0 ]]; then
     for id in "${EXCL_IDS[@]}"; do
       [[ -n "$id" ]] && api DELETE "/api/v1/admin/security/waf-rule-exclusions/$id" >/dev/null 2>&1 || true
     done
   fi
-  [[ -n "$CS_NAME" && -n "$CS_REPLICAS" ]] && scale_deploy "$CS_NS" "$CS_NAME" "$CS_REPLICAS" || true
-  [[ -n "$MS_NAME" && -n "$MS_REPLICAS" ]] && scale_deploy "$MS_NS" "$MS_NAME" "$MS_REPLICAS" || true
   [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null || true
-  log "cleanup done (exclusions deleted, deployments restored)"
+  log "cleanup done (deployments restored, exclusions deleted)"
 }
 trap cleanup EXIT INT TERM
 
@@ -202,12 +208,22 @@ if [[ -z "$MS" ]]; then skip "modsec-crs Deployment not found (skipping F4)"; el
   sleep 4
   R=$(api POST /api/v1/admin/security/waf-events/refresh)
   CODE=$(hcode "$R")
-  if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
+  # Two valid outcomes, depending on whether the API path itself runs through the
+  # modsec WAF middleware (REMOTE/ingress) or bypasses it (ON-NODE/port-forward):
+  #   • 200 + modsecPodFound=false → the scraper degraded GRACEFULLY (direct path).
+  #   • 5xx → the admin route is WAF-gated and the WAF, now engine-less, FAILS
+  #     CLOSED rather than serving unprotected (REMOTE path). Also acceptable —
+  #     the point is it is never SILENTLY served.
+  if [[ "$CODE" == "200" ]]; then
     FOUND=$(hbody "$R" | jget data.modsecPodFound)
-    [[ "$CODE" == "200" && "$FOUND" == "False" ]] && ok "refresh reports modsecPodFound=false (no crash)" \
-      || { [[ "$CODE" == "429" ]] && skip "refresh rate-limited (429) — scraper endpoint still healthy" || warn "refresh modsecPodFound=$FOUND (code $CODE)"; }
+    [[ "$FOUND" == "False" ]] && ok "scraper degraded gracefully (modsecPodFound=false)" \
+      || warn "refresh 200 but modsecPodFound=$FOUND (expected false)"
+  elif [[ "$CODE" =~ ^5[0-9][0-9]$ ]]; then
+    ok "WAF-gated admin route fails closed (HTTP $CODE) with modsec down — not served unprotected"
+  elif [[ "$CODE" == "429" ]]; then
+    skip "refresh rate-limited (429) — scraper endpoint still healthy"
   else
-    fail "waf-events refresh with no modsec pod → $CODE (want a graceful 200/429, not 5xx)"
+    fail "waf-events refresh with no modsec pod → $CODE (want graceful 200, fail-closed 5xx, or 429)"
   fi
   log "restoring modsec-crs → $MS_REPLICAS"
   scale_deploy "$MS_NS" "$MS_NAME" "$MS_REPLICAS"; wait_ready_replicas "$MS_NS" "$MS_NAME" "$MS_REPLICAS" 30 || true

@@ -60,8 +60,12 @@ fi
 NS="${PLATFORM_NS:-platform}"
 PG_POD="${PG_POD:-system-db-1}"
 CLUSTER="${CNPG_CLUSTER:-system-db}"
-# Unroutable RFC1918 host → archive uploads time out / refuse → archiving fails.
-DEAD_ENDPOINT="${DEAD_ENDPOINT:-http://10.255.255.1:9000}"
+# Non-resolving .invalid host (RFC 6761) → the shim's upstream forward fails →
+# archiving fails. Deliberately a normal-looking https hostname, NOT
+# http://<private-ip> — the latter trips the modsec CRS SSRF/RFI rules on the
+# public ingress (403) in REMOTE mode, while a real-looking s3 URL passes the WAF
+# just like an operator's genuine endpoint would.
+DEAD_ENDPOINT="${DEAD_ENDPOINT:-https://wal-archive-fail.invalid:9000}"
 TEST_CONFIG_NAME="wal-fail-itest"
 ALERT_CATEGORY="admin.wal_archive_failing"
 
