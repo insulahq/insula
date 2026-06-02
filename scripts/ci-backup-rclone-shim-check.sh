@@ -171,14 +171,21 @@ if ! grep -q "startPostgresObjectStoreReconciler" "$APP_TS"; then
 fi
 pass "Invariant 9: postgres-objectstore reconciler wired"
 
-# ─── 10. CNPG Cluster CR references barman-cloud plugin ───────────
-if ! grep -q "name: barman-cloud.cloudnative-pg.io" "$DATABASE_YAML"; then
-  fail "Invariant 10: CNPG Cluster system-db must reference barman-cloud plugin"
+# ─── 10. database.yaml does NOT statically declare the barman plugin ──
+# CNPG keeps archive_mode=on for as long as the barman-cloud plugin ENTRY
+# is present in spec.plugins — INDEPENDENT of isWALArchiver. A static entry
+# makes a freshly-bootstrapped, targetless cluster archive every WAL
+# segment to the unstarted shim and fill pg_wal until the volume runs out
+# of disk and CNPG halts Postgres (project_wal_archive_runaway_2026_06_02).
+# The reconciler owns plugin PRESENCE: it ADDS the entry when a SYSTEM
+# target is bound, REMOVES it otherwise (ensureClusterBarmanPlugin).
+if grep -qE "name:\s*barman-cloud\.cloudnative-pg\.io" "$DATABASE_YAML"; then
+  fail "Invariant 10: database.yaml must NOT statically declare the barman-cloud plugin in the Cluster spec.plugins — the reconciler owns plugin presence (a static entry archives WAL to a dead shim and fills pg_wal on a targetless cluster; see ensureClusterBarmanPlugin)"
 fi
-if ! grep -q "barmanObjectName: system-postgres-objectstore" "$DATABASE_YAML"; then
-  fail "Invariant 10: CNPG Cluster system-db must point at the system-postgres-objectstore CR (plugin-barman-cloud v0.12.0 parameter is barmanObjectName, not objectStoreName)"
+if grep -qE "^\s*barmanObjectName:" "$DATABASE_YAML"; then
+  fail "Invariant 10: database.yaml must NOT statically set a Cluster spec.plugins[].parameters.barmanObjectName — reconciler-owned"
 fi
-pass "Invariant 10: CNPG Cluster references barman-cloud plugin"
+pass "Invariant 10: barman-cloud plugin is reconciler-owned (no static spec.plugins entry)"
 
 # ─── 11. plugin-barman-cloud manifest is registered with Flux ─────
 if [[ ! -f "$CNPG_KUSTOMIZATION" ]]; then
@@ -192,19 +199,17 @@ if ! grep -q "cnpg-system/" "$ROOT/k8s/base/kustomization.yaml"; then
 fi
 pass "Invariant 11: plugin-barman-cloud applied via Flux"
 
-# ─── 12. database.yaml does NOT statically set isWALArchiver ──────
-# The reconciler owns this field — static `isWALArchiver: true` in
-# the manifest would cause pg_wal accumulation when SYSTEM is
-# unassigned (review HIGH #1). The reconciler patches it on/off based
-# on the SYSTEM target binding.
-if grep -E "^\s*isWALArchiver:\s*true" "$DATABASE_YAML" >/dev/null 2>&1; then
-  fail "Invariant 12: database.yaml must NOT set isWALArchiver: true statically — the reconciler owns this field (see postgres-objectstore.ts patchClusterWalArchiver). Remove the static line; it will be patched on at runtime when SYSTEM is bound."
+# ─── 12. reconciler manages plugin presence (not a static isWALArchiver) ──
+# Static `isWALArchiver` in the manifest is meaningless now (no static
+# plugin entry) AND was the old broken mitigation — reject it outright.
+if grep -E "^\s*isWALArchiver:" "$DATABASE_YAML" >/dev/null 2>&1; then
+  fail "Invariant 12: database.yaml must NOT set isWALArchiver statically — WAL archiving is controlled by the barman plugin's PRESENCE, which the reconciler owns (ensureClusterBarmanPlugin)."
 fi
-# The reconciler MUST call patchClusterWalArchiver.
-if ! grep -q "patchClusterWalArchiver" "$POSTGRES_OBJECTSTORE"; then
-  fail "Invariant 12: postgres-objectstore.ts must call patchClusterWalArchiver to toggle WAL archiving"
+# The reconciler MUST add/remove the plugin entry to control archiving.
+if ! grep -q "ensureClusterBarmanPlugin" "$POSTGRES_OBJECTSTORE"; then
+  fail "Invariant 12: postgres-objectstore.ts must call ensureClusterBarmanPlugin to add/remove the barman-cloud plugin entry (this — not isWALArchiver — is what turns CNPG WAL archiving on/off)"
 fi
-pass "Invariant 12: isWALArchiver is reconciler-owned (no static true)"
+pass "Invariant 12: WAL archiving is reconciler-owned via barman plugin presence"
 
 # ─── 13. etcd-snap-via-shim CronJob present + reconciler wired ────
 ETCD_CRONJOB_MANIFEST="$ROOT/k8s/base/backup/etcd-snap-via-shim-cronjob.yaml"

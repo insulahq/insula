@@ -194,62 +194,55 @@ spec:
   # (connects via the postgres Service like any client) and
   # provides logical backup coverage in parallel.
 
-  # R-X6: barman-cloud plugin wiring. The plugin Deployment lives
-  # in cnpg-system (k8s/base/cnpg-system/), the ObjectStore +
-  # ScheduledBackup CRs are materialised by platform-api's
-  # postgres-objectstore reconciler based on the SYSTEM-class shim
-  # target binding. The plugin entry below activates the plugin for
-  # this Cluster — without it, the plugin is installed but inactive.
+  # R-X6: barman-cloud plugin wiring. The plugin Deployment lives in
+  # cnpg-system (k8s/base/cnpg-system/); the ObjectStore + ScheduledBackup
+  # CRs + the Cluster `spec.plugins[]` barman entry are ALL materialised by
+  # platform-api's postgres-objectstore reconciler based on the SYSTEM-class
+  # shim target binding.
   #
-  # `isWALArchiver` is INTENTIONALLY ABSENT here. The reconciler
-  # patches the Cluster CR's `spec.plugins[0]` to add
-  # `isWALArchiver: true` when SYSTEM is assigned, and removes it
-  # when SYSTEM is unassigned. Without this, an unassigned SYSTEM
-  # class would leave WAL archive_command failing every checkpoint
-  # — silently filling `pg_wal/` until the volume runs out of disk
-  # (review HIGH #1). Flux is in `ssa: merge` mode so absent fields
-  # in this manifest don't override the reconciler's patch.
-  plugins:
-    - name: barman-cloud.cloudnative-pg.io
-      parameters:
-        barmanObjectName: system-postgres-objectstore
+  # NO STATIC `spec.plugins` ENTRY HERE — intentional, and enforced by
+  # ci-backup-rclone-shim-check.sh (Invariant 10). CNPG keeps
+  # `archive_mode=on` for as long as the barman-cloud plugin entry is
+  # PRESENT, INDEPENDENT of `isWALArchiver`. If the entry shipped statically,
+  # a freshly-bootstrapped cluster with NO backup target would archive every
+  # WAL segment to the (unstarted) shim and fill `pg_wal/` until the volume
+  # ran out of disk and CNPG halted Postgres — a guaranteed self-destruct in
+  # ~2 days (project_wal_archive_runaway_2026_06_02). So a fresh cluster
+  # starts with NO barman plugin → archive_mode off → WAL recycles. The
+  # reconciler ADDS the entry (isWALArchiver:true) only once a SYSTEM target
+  # is bound — after it materialises the ObjectStore the entry references —
+  # and REMOVES it when SYSTEM is unassigned. The reconciler is the entry's
+  # sole owner (Flux ssa:merge leaves the absent field alone).
 ---
-# Stub ObjectStore CR + creds Secret — bootstrap unblocker.
+# Stub ObjectStore CR + creds Secret — present so the plugin can be ADDED
+# cleanly once a SYSTEM backup target is bound.
 #
-# Problem (caught on testing.example.test fresh-bootstrap 2026-05-21):
-# the CNPG Cluster above references the `barman-cloud` plugin, whose
-# pre-reconcile hook stops the Cluster's reconcile loop until the
-# referenced ObjectStore CR exists. Without it the Cluster never
-# creates pods → `system-db-rw` Service has no endpoints → platform-api's
-# docker-entrypoint blocks 120s on the postgres TCP gate then crashloops
-# → the reconciler that would normally materialise the ObjectStore CR
-# never gets a chance to run. Classic chicken-and-egg.
+# The Cluster above ships with NO barman plugin (see the long note there),
+# so a fresh cluster has no archiving and no pre-reconcile-hook stall — it
+# just starts. When an operator binds a SYSTEM target, the reconciler ADDS
+# the plugin entry; the barman-cloud plugin's pre-reconcile hook then stops
+# the Cluster's reconcile until the referenced ObjectStore CR exists. By
+# shipping the stub ObjectStore here (and the reconciler also materialises
+# it in step 4 BEFORE patching the plugin), that hook is satisfied
+# immediately — no Cluster-reconcile stall on plugin-add.
 #
-# Fix: ship a static stub ObjectStore + creds Secret in this manifest.
 # The stub spec is byte-identical to what
 # `backend/src/modules/backup-rclone-shim/postgres-objectstore.ts`
 # (`buildObjectStoreSpec()` + `SHIM_S3_CREDS_SECRET_NAME`) produces, so
-# the reconciler's merge-patch is a no-op once it eventually runs.
+# the reconciler's merge-patch is a no-op once it runs.
 # Field-ownership note: the Secret intentionally has NO `data` block —
 # the reconciler ADDS `access_key` + `secret_key` fields once
 # BACKUP_TARGET_KEY is loaded. Because Flux's SSA manifest doesn't
 # include `data`, Flux doesn't claim ownership of those fields; the
 # reconciler-applied values stick across subsequent Flux reconciles.
 #
-# Lifecycle:
-#   1. Flux applies this stub → ObjectStore CR exists, Secret exists
-#      (empty data) → plugin pre-reconcile unblocks the Cluster.
-#   2. Cluster pods start → barman-cloud sidecar reads Secret keys →
-#      first scheduled backup logs "credentials missing" (recoverable).
-#   3. platform-api boots, postgres-objectstore reconciler runs on
-#      first tick → merge-patches Secret `data` with HKDF-derived
-#      `access_key`/`secret_key` → next scheduled backup succeeds.
-#
-# Why not have the reconciler also create the Cluster's plugin entry:
-# the plugin entry MUST be on the Cluster CR before the operator
-# considers backups for this Cluster at all (the operator reads
-# `spec.plugins` at Cluster reconciliation). The ObjectStore can be
-# stub-then-update; the plugin reference cannot.
+# Lifecycle (no SYSTEM target — the common fresh-bootstrap case):
+#   1. Flux applies this stub → ObjectStore CR + empty Secret exist.
+#   2. Cluster starts with no barman plugin → archive_mode OFF → pg_wal
+#      recycles normally (no archive failures, no fill).
+#   3. platform-api boots; postgres-objectstore reconciler keeps the
+#      plugin ABSENT until a SYSTEM target is bound, then ADDS it
+#      (isWALArchiver:true) after merge-patching the Secret `data`.
 apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
 metadata:
