@@ -385,10 +385,12 @@ orchestrator, each carrying incident-derived ordering comments):
 
 ### W13 — In-cluster Flux Kustomization tag re-pinning + auto-update reconciler
 **Goal**: The cluster updates its own Flux source revision in-cluster (no external push).
-**Deliverables**: reconciler that PATCHes `Kustomization.spec.ref.tag` when `auto_update_enabled=true` AND `available > installed` AND BREAKING-gate passes AND pre-flight passes; `platform-api` sidecar with OLD image baked in at upgrade-time (chicken-and-egg fix; matches `CLUSTER_UPGRADE_ROADMAP.md` locked decision #16).
-**Dependencies**: W11, W12.
+**Deliverables**: reconciler that PATCHes `GitRepository.spec.ref.tag` when `auto_update_enabled=true` AND `available > installed` AND BREAKING-gate passes AND pre-flight passes; ~~`platform-api` sidecar with OLD image baked in~~ (chicken-and-egg fix).
+**Dependencies**: W11, W12, **PR-18 spike (#14 — DONE, GO)**.
 **Complexity**: H.
-**Risk**: H (validated by W16 spike before merge).
+**Risk**: H.
+
+**SPIKE OUTCOME (PR-18, decision #14 — GO):** see [UPGRADE_FLUX_REPIN_SPIKE.md](./UPGRADE_FLUX_REPIN_SPIKE.md). In-cluster Flux re-pin (PATCH `GitRepository.spec.ref` branch↔tag) is proven + reversible on a real cluster. **Amends W13 deliverables:** (1) the re-pin target is `GitRepository.spec.ref.tag`, NOT `Kustomization.spec.ref.tag` (Kustomization has no `spec.ref`); (2) the re-pinner is **host-side `platform-ops upgrade apply`**, NOT an in-cluster pod — this makes the #16 old-image-bake **unnecessary** (a host process is never rolled by its own re-pin); (3) dev/staging track **branches** (auto-follow = #18 "staging auto-update ON", no reconciler needed), so the tag re-pin + `auto_update`-gated reconciler is a **production-only** concern (prod default OFF). Production bootstrap must seed its GitRepository with `ref.tag` (not `ref.branch`).
 
 ### W13.5 — platform-ops upgrade/node-drain subcommands
 **Goal**: CLI parity with admin UI for upgrade operations.
