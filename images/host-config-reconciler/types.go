@@ -25,3 +25,30 @@ type SysctlItem struct {
 	// "ok" | "drift" | "unreadable" | "not-allowed".
 	State string `json:"state"`
 }
+
+// AppliedSnapshot is the JSON document the CONVERGE-role pod writes to
+// host-config-applied-<node>.data.applied (W10 enforce mode). It records what
+// the privileged enforcer did (or, in dry-run, WOULD do) to converge the node
+// to the desired sysctls. The observe-only detector never produces this.
+type AppliedSnapshot struct {
+	Node        string `json:"node"`
+	CollectedAt string `json:"collectedAt"`
+	// "configmap" when host-config-desired was found, "absent" otherwise.
+	DesiredSource string `json:"desiredSource"`
+	// "enforce" (writes applied) | "dry-run" (reports would-apply, no writes).
+	Mode         string        `json:"mode"`
+	Items        []AppliedItem `json:"items"`
+	AppliedCount int           `json:"appliedCount"`
+	Errors       []string      `json:"errors,omitempty"`
+}
+
+// AppliedItem is one desired sysctl's convergence outcome.
+type AppliedItem struct {
+	Key     string `json:"key"`
+	Desired string `json:"desired"`
+	// Live value AFTER the loop (post-write when applied); empty when unreadable.
+	Actual string `json:"actual"`
+	// "applied" | "would-apply" | "ok" | "unreadable" | "not-allowed" | "write-failed".
+	State string `json:"state"`
+	Error string `json:"error,omitempty"`
+}

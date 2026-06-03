@@ -16,10 +16,12 @@ type healthState struct {
 
 func (h *healthState) markHealthy(t time.Time) { h.lastHealthyUnix.Store(t.Unix()) }
 
-// startHealthServer brings up /healthz and /readyz on :8083. healthz returns
-// 503 until the first loop completes, then 503 again if the last success was
-// more than 5×defaultInterval ago; readyz returns 200 once warmed up.
-func startHealthServer(ctx context.Context, hs *healthState) {
+// startHealthServer brings up /healthz and /readyz on addr (e.g. ":8083").
+// healthz returns 503 until the first loop completes, then 503 again if the last
+// success was more than 5×defaultInterval ago; readyz returns 200 once warmed up.
+// The address is parameterised so the hostNetwork CONVERGE pod can use a distinct
+// host port (:8084) from the observe detector's :8083.
+func startHealthServer(ctx context.Context, hs *healthState, addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		last := hs.lastHealthyUnix.Load()
@@ -45,7 +47,7 @@ func startHealthServer(ctx context.Context, hs *healthState) {
 	})
 
 	srv := &http.Server{
-		Addr:              ":8083",
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}

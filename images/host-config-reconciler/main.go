@@ -1,19 +1,19 @@
-// host-config-reconciler — OBSERVE-ONLY host-config drift detector (W10 / ADR-045).
+// host-config-reconciler — host-config drift detector + (opt-in) converger
+// (W10 / ADR-045). One binary, two roles selected by HOSTCONFIG_ROLE:
 //
-// One pod per node (DaemonSet). Every HOSTCONFIG_INTERVAL_SECONDS it:
-//   1. reads the operator-managed host-config-desired ConfigMap (sysctls),
-//   2. reads the live values from the READ-ONLY /host/proc/sys mount,
-//   3. classifies each desired key ok | drift | unreadable | not-allowed,
-//   4. WRITES one ConfigMap (host-config-drift-<node>) in platform-system with
-//      the JSON snapshot at data.snapshot.
+//   detect (default) — the OBSERVE-only drift detector. Every interval it reads
+//     host-config-desired + the READ-ONLY /host/proc/sys mount, classifies each
+//     desired key ok|drift|unreadable|not-allowed, and writes one
+//     host-config-drift-<node> ConfigMap. It NEVER writes host state. Security
+//     posture (k8s/base/host-config-reconciler/daemonset.yaml): drop ALL caps,
+//     no privileged, no host namespaces, read-only mounts. Mirrors security-probe.
 //
-// OBSERVE MODE: the reconciler NEVER writes host state — it only reports
-// desired-vs-actual. Write/enforce (converge) mode is a deliberate later PR.
-//
-// Security posture (see daemonset.yaml SecurityContext): readOnlyRootFilesystem,
-// capabilities drop ALL, no privileged, no hostNetwork, no hostPID, no hostIPC.
-// Every hostPath mount is readOnly. The only mutation is to its own ConfigMap
-// via the RBAC-scoped apiserver. Mirrors the security-probe DaemonSet.
+//   converge — the PRIVILEGED enforcer, shipped as an OPT-IN component
+//     (k8s/components/host-config-enforcer/) that is NOT in the default base. It
+//     writes the drifting, allow-listed sysctls to a RW /proc/sys mount ONLY when
+//     host-config-desired.data.mode == "enforce" (else it dry-runs), and records
+//     the outcome in host-config-applied-<node>. The write path re-checks the
+//     allow-list + /proc/sys containment (enforcer.go) — fail-closed.
 package main
 
 import (
@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,15 +75,37 @@ func main() {
 	}()
 
 	hs := &healthState{}
-	startHealthServer(ctx, hs)
+	// hostNetwork CONVERGE pods bind the host's loopback, so the enforcer uses a
+	// distinct port (HEALTH_PORT=8084) from the observe detector's :8083.
+	healthAddr := ":8083"
+	if p := strings.TrimSpace(os.Getenv("HEALTH_PORT")); p != "" {
+		healthAddr = ":" + p
+	}
+	startHealthServer(ctx, hs, healthAddr)
 
 	pub := newConfigMapPublisher(clientset, namespace, nodeName)
-	collector := newCollector("/host", nodeName)
 
-	slog.Info("host-config-reconciler starting (observe mode)",
-		"node", nodeName, "namespace", namespace, "intervalSeconds", interval.Seconds())
+	// HOSTCONFIG_ROLE selects the binary's behaviour:
+	//   "detect" (default) — the locked-down OBSERVE-only drift detector.
+	//   "converge"         — the PRIVILEGED enforcer (opt-in DaemonSet) that
+	//                        writes drifting sysctls when the desired policy's
+	//                        data.mode == "enforce" (else it dry-runs).
+	role := strings.ToLower(strings.TrimSpace(os.Getenv("HOSTCONFIG_ROLE")))
 
-	runOnce(ctx, clientset, namespace, collector, pub, hs)
+	var tick func()
+	if role == "converge" {
+		io := newRealSysctlIO("/host")
+		slog.Info("host-config-reconciler starting (CONVERGE mode — privileged enforcer)",
+			"node", nodeName, "namespace", namespace, "intervalSeconds", interval.Seconds())
+		tick = func() { convergeOnce(ctx, clientset, namespace, nodeName, io, pub, hs) }
+	} else {
+		collector := newCollector("/host", nodeName)
+		slog.Info("host-config-reconciler starting (observe mode)",
+			"node", nodeName, "namespace", namespace, "intervalSeconds", interval.Seconds())
+		tick = func() { runOnce(ctx, clientset, namespace, collector, pub, hs) }
+	}
+
+	tick()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -91,9 +114,35 @@ func main() {
 			slog.Info("host-config-reconciler exiting")
 			return
 		case <-t.C:
-			runOnce(ctx, clientset, namespace, collector, pub, hs)
+			tick()
 		}
 	}
+}
+
+// convergeOnce wraps one load+converge+publish cycle in recover() so a panic in
+// parsing/reading/writing never kills the pod. It writes host state ONLY when
+// the desired policy's data.mode == "enforce" (else dry-run).
+func convergeOnce(ctx context.Context, client kubernetes.Interface, namespace, nodeName string, io sysctlIO, pub *configMapPublisher, hs *healthState) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("converge loop panic", "recover", r, "stack", string(debug.Stack()))
+		}
+	}()
+	desired, err := loadDesired(ctx, client, namespace)
+	if err != nil {
+		slog.Warn("loadDesired", "err", err)
+	}
+	enforcing := desired != nil && strings.EqualFold(desired.Mode, "enforce")
+	snap := converge(desired, enforcing, io, sysctlAllowed, time.Now, nodeName)
+	if err != nil {
+		snap.Errors = append(snap.Errors, "loadDesired: "+err.Error())
+	}
+	if perr := pub.publishApplied(ctx, snap); perr != nil {
+		slog.Error("publishApplied", "err", perr)
+		return
+	}
+	slog.Info("converge cycle", "mode", snap.Mode, "appliedCount", snap.AppliedCount, "items", len(snap.Items))
+	hs.markHealthy(time.Now())
 }
 
 // runOnce wraps one load+collect+publish cycle in recover() so a panic in
