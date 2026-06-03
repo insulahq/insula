@@ -8,6 +8,7 @@ const healthy: PreflightFacts = {
   longhornMinReplicas: 3,
   inFlightTransitions: 0,
   maxDiskUsedPct: 40,
+  nodesWithDiskPressure: 0,
   freshestBackupAgeHours: 2,
 };
 
@@ -50,11 +51,29 @@ describe('evaluatePreflight', () => {
     expect(r.ok).toBe(true); // a warn doesn't block, but it's visible
   });
 
-  it('disk: <80 pass, 80–89 warn, ≥90 fail(prod), unknown warn', () => {
+  it('disk %: <80 pass, 80–89 warn, ≥90 fail(prod)', () => {
     expect(gate(evaluatePreflight({ ...healthy, maxDiskUsedPct: 79 }), 'disk-headroom').status).toBe('pass');
     expect(gate(evaluatePreflight({ ...healthy, maxDiskUsedPct: 85 }), 'disk-headroom').status).toBe('warn');
     expect(gate(evaluatePreflight({ ...healthy, maxDiskUsedPct: 95 }), 'disk-headroom').status).toBe('fail');
-    expect(gate(evaluatePreflight({ ...healthy, maxDiskUsedPct: null }), 'disk-headroom').status).toBe('warn');
+  });
+
+  it('disk: node-health reported, no pressure, no % → PASS (the cry-wolf fix)', () => {
+    // Phase-1 leaves maxDiskUsedPct null but the reconciler reports DiskPressure=0.
+    const r = evaluatePreflight({ ...healthy, maxDiskUsedPct: null, nodesWithDiskPressure: 0 });
+    expect(gate(r, 'disk-headroom').status).toBe('pass');
+    expect(gate(r, 'disk-headroom').detail).toMatch(/no node under disk pressure/);
+  });
+
+  it('disk: a node under kubelet DiskPressure → fail(prod), even with % unknown', () => {
+    expect(gate(evaluatePreflight({ ...healthy, maxDiskUsedPct: null, nodesWithDiskPressure: 1 }), 'disk-headroom').status).toBe('fail');
+    // …and a soft warn on staging
+    expect(gate(evaluatePreflight({ ...healthy, environment: 'staging', maxDiskUsedPct: null, nodesWithDiskPressure: 2 }), 'disk-headroom').status).toBe('warn');
+  });
+
+  it('disk: BOTH signals unknown (node-health has no data) → warn', () => {
+    const r = evaluatePreflight({ ...healthy, maxDiskUsedPct: null, nodesWithDiskPressure: null });
+    expect(gate(r, 'disk-headroom').status).toBe('warn');
+    expect(gate(r, 'disk-headroom').detail).toMatch(/has not reported yet/);
   });
 
   it('backup: fresh pass, stale warn, none warn — never blocks', () => {
@@ -78,6 +97,7 @@ describe('evaluatePreflight', () => {
       longhornMinReplicas: 0,
       inFlightTransitions: 3,
       maxDiskUsedPct: 99,
+      nodesWithDiskPressure: 2,
       freshestBackupAgeHours: null,
     });
     expect(r.failures).toBe(0);

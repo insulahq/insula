@@ -17,6 +17,7 @@ import { collectPreflightFacts } from './collect-preflight.js';
 import { evaluatePreflight } from './preflight.js';
 import { runUpgrade, dbSettings } from './orchestrate.js';
 import { captureUpgradeRescue, runRollback, realRollbackDeps } from './rollback.js';
+import { readPostflightState } from './collect-postflight.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 
@@ -43,6 +44,26 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     const facts = await collectPreflightFacts(app.db, k8s, Date.now());
     const result = evaluatePreflight(facts);
     return success({ ...result, environment: ENVIRONMENT });
+  });
+
+  // GET /api/v1/admin/platform/upgrade/postflight — read the last persisted
+  // post-flight convergence assessment (the streak is advanced by the scheduler,
+  // NOT by this read, so a fast UI poll can't inflate it toward abort).
+  app.get('/admin/platform/upgrade/postflight', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Read upgrade post-flight convergence state', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: {
+        type: 'object', properties: {
+          phase: { type: 'string' }, verdict: { type: 'string' }, consecutiveFailures: { type: 'number' },
+          abortThreshold: { type: 'number' }, pendingVersion: { type: 'string', nullable: true }, runningVersion: { type: 'string' },
+          gates: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' } } } },
+          ok: { type: 'boolean' }, failures: { type: 'number' }, warnings: { type: 'number' },
+          lastCheckedAt: { type: 'string', nullable: true }, environment: { type: 'string' },
+        },
+      } } } },
+    },
+  }, async () => {
+    return success(await readPostflightState(app.db));
   });
 
   // POST /api/v1/admin/platform/upgrade  { version?, apply? }

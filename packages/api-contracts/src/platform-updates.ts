@@ -94,6 +94,36 @@ export const rollbackRequestSchema = z.object({
 });
 export type RollbackRequest = z.infer<typeof rollbackRequestSchema>;
 
+// ── Upgrade post-flight (ADR-045 W14 follow-up) ──────────────────────────────
+// After an apply re-pins Flux, the cluster reconciles asynchronously. Post-flight
+// observes convergence (running==target, CNPG healthy, Deployments available, no
+// crashloops). A still-reconciling result right after the re-pin is EXPECTED; it
+// only becomes actionable once it persists for `abortThreshold` consecutive
+// observations (the scheduler's controlled cadence), at which point the verdict
+// flips to `abort-recommended` so the operator can roll back.
+export const upgradePostflightResponseSchema = z.object({
+  /** idle = no upgrade in flight; reconciling = applied, not yet converged; healthy = converged + clean. */
+  phase: z.enum(['idle', 'reconciling', 'healthy']),
+  /** Escalation verdict over the consecutive-failure streak. */
+  verdict: z.enum(['idle', 'healthy', 'reconciling', 'abort-recommended']),
+  /** How many consecutive non-healthy observations have accrued (reset to 0 on healthy/idle). */
+  consecutiveFailures: z.number(),
+  /** consecutiveFailures at/above this → verdict `abort-recommended`. */
+  abortThreshold: z.number(),
+  /** The in-flight target version (platform_settings pending_update_version), or null when idle. */
+  pendingVersion: z.string().nullable(),
+  /** The live pod's running version. */
+  runningVersion: z.string(),
+  gates: z.array(upgradeGateSchema),
+  ok: z.boolean(),
+  failures: z.number(),
+  warnings: z.number(),
+  /** ISO timestamp of the last observer run that advanced the streak, or null if never run. */
+  lastCheckedAt: z.string().nullable(),
+  environment: z.string(),
+});
+export type UpgradePostflightResponse = z.infer<typeof upgradePostflightResponseSchema>;
+
 export type PlatformVersionResponse = z.infer<typeof platformVersionResponseSchema>;
 export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
 export type TriggerUpdateResponse = z.infer<typeof triggerUpdateResponseSchema>;

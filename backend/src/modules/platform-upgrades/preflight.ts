@@ -36,8 +36,13 @@ export interface PreflightFacts {
   /** In-flight tenant lifecycle transitions, or null if the count is unknown
    *  (DB unreachable) — null is a soft warn, NEVER a fail-open pass. */
   readonly inFlightTransitions: number | null;
-  /** Highest disk-used % across nodes, or null if unknown. */
+  /** Highest disk-used % across nodes (node-health reconciler), or null if that
+   *  metric is not populated (Phase 1 leaves it null until kubelet stats land). */
   readonly maxDiskUsedPct: number | null;
+  /** Number of nodes the node-health reconciler reports under kubelet
+   *  DiskPressure, or null when node-health has no data yet (no rows / DB
+   *  unreachable). 0 = node-health reported and no node is under pressure. */
+  readonly nodesWithDiskPressure: number | null;
   /** Age of the freshest CNPG backup in hours, or null if none/unknown. */
   readonly freshestBackupAgeHours: number | null;
 }
@@ -91,15 +96,26 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
     });
   }
 
-  // 4. Disk headroom
-  if (facts.maxDiskUsedPct === null) {
-    gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: 'warn', detail: 'disk usage not collected (security-probe node data unavailable)' });
-  } else if (facts.maxDiskUsedPct >= DISK_FAIL_PCT) {
-    gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: sev(env, true), detail: `max disk used ${facts.maxDiskUsedPct}% (≥ ${DISK_FAIL_PCT}%)` });
-  } else if (facts.maxDiskUsedPct >= DISK_WARN_PCT) {
-    gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: 'warn', detail: `max disk used ${facts.maxDiskUsedPct}% (≥ ${DISK_WARN_PCT}%)` });
-  } else {
-    gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: 'pass', detail: `max disk used ${facts.maxDiskUsedPct}%` });
+  // 4. Disk headroom — driven by the node-health reconciler's per-node data:
+  //    a kubelet DiskPressure flag (collected today) plus an optional disk-used %
+  //    (lights up when kubelet /stats/summary is wired). "Unknown" requires BOTH
+  //    signals to be absent (node-health hasn't reported); otherwise a node fleet
+  //    with no pressure is a clean PASS — fixing the prior perpetual-warn cry-wolf.
+  {
+    const pct = facts.maxDiskUsedPct;
+    const pressured = facts.nodesWithDiskPressure;
+    if (pct === null && pressured === null) {
+      gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: 'warn', detail: 'node disk data unavailable (node-health reconciler has not reported yet)' });
+    } else if (pct !== null && pct >= DISK_FAIL_PCT) {
+      const also = (pressured ?? 0) > 0 ? ` + ${pressured} under DiskPressure` : '';
+      gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: sev(env, true), detail: `max disk used ${pct}% (≥ ${DISK_FAIL_PCT}%)${also}` });
+    } else if ((pressured ?? 0) > 0) {
+      gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: sev(env, true), detail: `${pressured} node(s) under kubelet DiskPressure` });
+    } else if (pct !== null && pct >= DISK_WARN_PCT) {
+      gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: 'warn', detail: `max disk used ${pct}% (≥ ${DISK_WARN_PCT}%)` });
+    } else {
+      gates.push({ id: 'disk-headroom', label: 'Disk headroom', status: 'pass', detail: pct !== null ? `max disk used ${pct}%` : 'no node under disk pressure' });
+    }
   }
 
   // 5. Recent backup (rollback safety net) — warn-only (the operator can take a fresh one)

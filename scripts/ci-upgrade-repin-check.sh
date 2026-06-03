@@ -66,5 +66,32 @@ fi
 # the rollback re-pin must validate the ref it restores (refValueValid charset)
 grep -qF 'refValueValid' "$REPIN" || fail "repinGitRepositoryRef must validate the restored ref value (refValueValid)"
 
+# (6) post-flight (W14 follow-up): the consecutive-failure streak is advanced ONLY
+#     by the observer (runPostflight) on a controlled cadence — the GET route must
+#     be a pure READ (readPostflightState), so a fast UI poll can't inflate the
+#     streak toward `abort-recommended`. Guard that read/observe split + the
+#     clear-only-on-healthy invariant.
+ROUTES="$REPO_ROOT/backend/src/modules/platform-upgrades/routes.ts"
+POSTFLIGHT="$REPO_ROOT/backend/src/modules/platform-upgrades/collect-postflight.ts"
+if [[ -f "$ROUTES" ]]; then
+  grep -q 'readPostflightState' "$ROUTES" || fail "the postflight GET route must call readPostflightState (read-only)"
+  # The GET handler must NOT advance the streak by calling the observer.
+  if grep -q 'runPostflight' "$ROUTES"; then
+    fail "routes.ts must NOT call runPostflight — the GET route is read-only; the observer runs on the scheduler's cadence"
+  fi
+else
+  fail "platform-upgrades/routes.ts is missing"
+fi
+if [[ -f "$POSTFLIGHT" ]]; then
+  # pending is cleared ONLY on a confirmed healthy convergence.
+  awk "/verdict === 'healthy'/{f=1} f&&/KEY_PENDING/{ok=1} END{exit !ok}" "$POSTFLIGHT" \
+    || fail "runPostflight must clear pending_update_version only inside the verdict==='healthy' branch"
+  # the '' cleared-sentinel must be normalised back to null (else a converged
+  # cluster re-accrues a streak forever).
+  grep -q 'normalizePending' "$POSTFLIGHT" || fail "collect-postflight must normalise the '' pending sentinel to null"
+else
+  fail "platform-upgrades/collect-postflight.ts is missing"
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then echo "ci-upgrade-repin-check: FAILED" >&2; exit 1; fi
 echo "ci-upgrade-repin-check: OK"
