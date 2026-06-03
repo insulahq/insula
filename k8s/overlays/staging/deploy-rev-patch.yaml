@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.6.2-96890d3"
+        insula.host/deploy-rev: "2026.6.2-a4acb21"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.6.2-96890d3"
+        insula.host/deploy-rev: "2026.6.2-a4acb21"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +34,7 @@ spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.6.2-96890d3"
+        insula.host/deploy-rev: "2026.6.2-a4acb21"
 ---
 # firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
@@ -48,7 +48,7 @@ spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.6.2-96890d3"
+        insula.host/deploy-rev: "2026.6.2-a4acb21"
 ---
 # mail-stack-standby-replicate — :latest-tagged DaemonSet
 # (mail-backup-tools image) — same rationale as above. New
@@ -64,4 +64,4 @@ spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.6.2-96890d3"
+        insula.host/deploy-rev: "2026.6.2-a4acb21"
