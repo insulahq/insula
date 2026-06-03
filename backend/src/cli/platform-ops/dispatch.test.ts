@@ -27,6 +27,9 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     selfUpgrade: {
       run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.1', target: '2026.6.1', source: 'configmap' as const, arch: 'amd64' })),
     },
+    hostConfig: {
+      run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
+    },
     ...over,
   };
   return { deps, out, err };
@@ -146,5 +149,12 @@ describe('dispatch', () => {
     const { deps, err } = fakeDeps();
     expect(await dispatch(['snapshot'], deps)).toBe(2);
     expect(err.join('\n')).toMatch(/subcommand|capture|list/i);
+  });
+
+  it('host-config apply routes through to hostConfig.run', async () => {
+    const run = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 }));
+    const { deps } = fakeDeps({ hostConfig: { run } });
+    expect(await dispatch(['host-config', 'apply'], deps)).toBe(0);
+    expect(run).toHaveBeenCalled();
   });
 });

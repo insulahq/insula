@@ -331,6 +331,17 @@ orchestrator, each carrying incident-derived ordering comments):
 **Risk**: M (startup-blocking; mitigated by dry-run + escape hatch + idempotency discipline).
 
 ### W10 — host-config-reconciler DS base (sysctls/modules/ulimits)
+
+> **AMENDED 2026-06-03 (host-side pull model).** The privileged converging
+> DaemonSet is RETIRED. Host-config ENFORCEMENT moved HOST-SIDE to
+> `platform-ops host-config apply` (root on the host, in the host namespaces — it
+> writes /proc/sys natively, no privileged pod, no caps). The in-cluster
+> DaemonSet is OBSERVE-ONLY (drift surfacing). Same allow-list + deny-list
+> (kernel.core_pattern etc.). Packages (W10b), ulimits/modules, and
+> host-migrations (W10c) extend the same host-side converger. Rationale: a root
+> host process already has the privilege; a cluster-scheduled privileged pod
+> needlessly exposed it to cluster-side attack. Fits the W11/W11.5 pull model.
+
 **Goal**: Roadmap Phase 3. Continuous convergence; delivered as the first platform-migration to dogfood W9.
 **Deliverables**: `k8s/base/host-config-reconciler/{daemonset,rbac,kustomization}.yaml`; shape modeled on `k8s/base/firewall-reconciler/`; privileged + hostPID + hostNetwork + mounts `/etc`, `/proc/sys`, `/lib/modules`. Desired state in `host-config-desired` ConfigMap (sysctls map, kernel modules list, ulimits map, fs.inotify caps, `/etc/security/limits.d/*`). 60s reconcile loop. Allow-list enforced in code; integration test asserts non-allow-listed paths untouched. Image cosign-signed. Nightly diff alert.
 **Dependencies**: W9 (delivered as a migration), W2 (image-org preflight).

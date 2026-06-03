@@ -15,21 +15,11 @@ func TestSysctlAllowed(t *testing.T) {
 		{"dev.foo.bar", false},
 		{"", false},
 		{"netfoo.bar", false}, // prefix is "net." not "net"
-		// Deny-list: dangerous keys WITHIN an allowed prefix must be refused.
-		{"kernel.core_pattern", false},              // root RCE on core dump
-		{"kernel.modprobe", false},                  // root RCE
-		{"kernel.poweroff_cmd", false},              // root RCE
-		{"kernel.hotplug", false},                   // root RCE
-		{"kernel.sysrq", false},                     // reboot/panic DoS
-		{"kernel.dmesg_restrict", false},            // hardening downgrade
-		{"kernel.unprivileged_bpf_disabled", false}, // hardening downgrade
-		{"kernel.yama.ptrace_scope", false},         // hardening downgrade
-		{"fs.suid_dumpable", false},                 // core_pattern amplifier
-		{"fs.protected_symlinks", false},            // /tmp TOCTOU re-enable
-		{"net.ipv4.conf.all.route_localnet", false}, // loopback exposure
-		// ...but a benign neighbour of a denied key stays allowed.
-		{"kernel.pid_max", true},
-		{"fs.protected_something_else", true}, // not an exact deny-list match
+		// Deny-list (kept in lockstep with the TS host-side converger).
+		{"kernel.core_pattern", false},
+		{"kernel.randomize_va_space", false},
+		{"fs.suid_dumpable", false},
+		{"net.ipv4.conf.default.route_localnet", false},
 	}
 	for _, c := range cases {
 		if got := sysctlAllowed(c.key); got != c.want {

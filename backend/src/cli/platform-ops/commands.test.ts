@@ -8,6 +8,7 @@ import {
   migrationsApply,
   shellCommand,
   selfUpgrade,
+  hostConfigCommand,
 } from './commands.js';
 
 // A fully-faked Deps so command handlers are tested in isolation (no real
@@ -36,6 +37,9 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     },
     selfUpgrade: {
       run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.1', target: '2026.6.1', source: 'configmap' as const, arch: 'amd64' })),
+    },
+    hostConfig: {
+      run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
     },
     ...over,
   };
@@ -352,5 +356,65 @@ describe('selfUpgrade', () => {
     expect(run).toHaveBeenCalledWith({ mode: 'apply', force: false, version: '2026.7.0' });
     const b = fakeDeps();
     expect(await selfUpgrade(['--version='], b.deps)).toBe(2);
+  });
+});
+
+describe('hostConfigCommand', () => {
+  const okResult = (over = {}) => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'configmap' as const, items: [], appliedCount: 0, ...over });
+
+  it('absent policy → no-op exit 0', async () => {
+    const { deps, out } = fakeDeps({ hostConfig: { run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })) } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(0);
+    expect(out.join('\n')).toMatch(/no policy|nothing to do/i);
+  });
+
+  it('apply success → exit 0', async () => {
+    const run = vi.fn(async () => okResult({ mode: 'enforce' as const, appliedCount: 1, items: [{ key: 'vm.max_map_count', desired: '262144', actual: '262144', state: 'applied' as const }] }));
+    const { deps } = fakeDeps({ hostConfig: { run } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ dryRun: false, apply: false });
+  });
+
+  it('status → dry-run', async () => {
+    const run = vi.fn(async () => okResult());
+    const { deps } = fakeDeps({ hostConfig: { run } });
+    await hostConfigCommand(['status'], deps);
+    expect(run).toHaveBeenCalledWith({ dryRun: true, apply: false });
+  });
+
+  it('--apply forces enforce', async () => {
+    const run = vi.fn(async () => okResult({ mode: 'enforce' as const }));
+    const { deps } = fakeDeps({ hostConfig: { run } });
+    await hostConfigCommand(['apply', '--apply'], deps);
+    expect(run).toHaveBeenCalledWith({ dryRun: false, apply: true });
+  });
+
+  it('write-failed → exit 1', async () => {
+    const { deps } = fakeDeps({ hostConfig: { run: vi.fn(async () => okResult({ ok: false, mode: 'enforce' as const, items: [{ key: 'vm.max_map_count', desired: '1', actual: '2', state: 'write-failed' as const, error: 'EACCES' }] })) } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+  });
+
+  it('unknown flag → exit 2', async () => {
+    const { deps } = fakeDeps();
+    expect(await hostConfigCommand(['apply', '--bogus'], deps)).toBe(2);
+  });
+
+  it('unknown subcommand → exit 2', async () => {
+    const { deps } = fakeDeps();
+    expect(await hostConfigCommand(['frob'], deps)).toBe(2);
+  });
+
+  it('--apply + --dry-run → exit 2 (mutually exclusive, no silent enforce)', async () => {
+    const run = vi.fn(async () => okResult());
+    const { deps } = fakeDeps({ hostConfig: { run } });
+    expect(await hostConfigCommand(['apply', '--dry-run', '--apply'], deps)).toBe(2);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('status --apply → exit 2 (status never writes)', async () => {
+    const run = vi.fn(async () => okResult());
+    const { deps } = fakeDeps({ hostConfig: { run } });
+    expect(await hostConfigCommand(['status', '--apply'], deps)).toBe(2);
+    expect(run).not.toHaveBeenCalled();
   });
 });

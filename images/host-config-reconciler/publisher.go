@@ -27,27 +27,12 @@ func newConfigMapPublisher(c kubernetes.Interface, namespace, nodeName string) *
 	return &configMapPublisher{client: c, namespace: namespace, nodeName: nodeName}
 }
 
-// publish writes the OBSERVE drift snapshot to host-config-drift-<node>.
 func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot) error {
 	payload, err := json.Marshal(snap)
 	if err != nil {
 		return fmt.Errorf("marshal snapshot: %w", err)
 	}
-	return p.upsert(ctx, configMapName(p.nodeName), "snapshot", string(payload))
-}
 
-// publishApplied writes the CONVERGE applied snapshot to host-config-applied-<node>.
-func (p *configMapPublisher) publishApplied(ctx context.Context, snap AppliedSnapshot) error {
-	payload, err := json.Marshal(snap)
-	if err != nil {
-		return fmt.Errorf("marshal applied snapshot: %w", err)
-	}
-	return p.upsert(ctx, appliedConfigMapName(p.nodeName), "applied", string(payload))
-}
-
-// upsert create-or-updates a single-key ConfigMap owned by the parent Node (so
-// it GCs with the node). Shared by the drift + applied publishers.
-func (p *configMapPublisher) upsert(ctx context.Context, name, dataKey, payload string) error {
 	node, err := p.client.CoreV1().Nodes().Get(ctx, p.nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get parent node %q: %w", p.nodeName, err)
@@ -62,6 +47,7 @@ func (p *configMapPublisher) upsert(ctx context.Context, name, dataKey, payload 
 		Controller:         &trueVal,
 	}
 
+	name := configMapName(p.nodeName)
 	desired := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -73,7 +59,9 @@ func (p *configMapPublisher) upsert(ctx context.Context, name, dataKey, payload 
 			},
 			OwnerReferences: []metav1.OwnerReference{owner},
 		},
-		Data: map[string]string{dataKey: payload},
+		Data: map[string]string{
+			"snapshot": string(payload),
+		},
 	}
 
 	existing, err := p.client.CoreV1().ConfigMaps(p.namespace).Get(ctx, name, metav1.GetOptions{})
@@ -110,20 +98,16 @@ func (p *configMapPublisher) update(ctx context.Context, name string, cm *corev1
 	return nil
 }
 
-// boundedName composes `<prefix><node>` bounded to k8s's 253-char object-name
-// limit (the node portion is truncated if a pathologically long node name would
-// overflow; real k3s node names are DNS labels ≤63 so it never fires — it just
-// guarantees a valid Create rather than a perpetual 422 on a degenerate name).
-func boundedName(prefix, nodeName string) string {
-	maxNode := 253 - len(prefix)
+// configMapName composes the deterministic per-node drift ConfigMap name.
+// The `host-config-drift-` prefix is 18 chars; k8s object names cap at 253, so
+// the node-name portion is truncated to 235 to keep the result valid even for
+// a pathologically long node name (real k3s node names are DNS labels ≤63, so
+// truncation never fires in practice — it just guarantees a valid Create
+// rather than a perpetual 422 on a degenerate name).
+func configMapName(nodeName string) string {
+	const maxNode = 253 - len("host-config-drift-")
 	if len(nodeName) > maxNode {
 		nodeName = nodeName[:maxNode]
 	}
-	return prefix + nodeName
+	return "host-config-drift-" + nodeName
 }
-
-// configMapName is the per-node OBSERVE drift ConfigMap name.
-func configMapName(nodeName string) string { return boundedName("host-config-drift-", nodeName) }
-
-// appliedConfigMapName is the per-node CONVERGE applied ConfigMap name.
-func appliedConfigMapName(nodeName string) string { return boundedName("host-config-applied-", nodeName) }
