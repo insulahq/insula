@@ -23,6 +23,7 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
     isLoading: false, isFetching: false, refetch: vi.fn(),
   }),
   useUpgradeApply: () => ({ mutateAsync: mockApplyMutateAsync, isPending: false, error: null }),
+  useRollback: () => ({ mutateAsync: vi.fn(async () => ({ data: { ok: false, dataRestored: false, reason: 'no manifest', summary: 'nothing to roll back', manifest: null } })), isPending: false, error: null }),
 }));
 
 function renderPage() {

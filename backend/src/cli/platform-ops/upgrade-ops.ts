@@ -16,17 +16,22 @@ export function realUpgradeOps(env: NodeJS.ProcessEnv): UpgradeOps {
       if (!url) {
         return { ok: false, errorCode: 'NO_DATABASE_URL', action: 'error', target: null, reason: 'DATABASE_URL is required', proceed: false, applied: false, gitRepository: null, summary: 'DATABASE_URL is required to plan an upgrade' };
       }
-      const [{ getDb, closeDb }, { createK8sClients }, { runUpgrade, dbSettings }, { existsSync }] = await Promise.all([
+      const [{ getDb, closeDb }, { createK8sClients }, { runUpgrade, dbSettings }, { captureUpgradeRescue, realRollbackDeps }, { existsSync }] = await Promise.all([
         import('../../db/index.js'),
         import('../../modules/k8s-provisioner/k8s-client.js'),
         import('../../modules/platform-upgrades/orchestrate.js'),
+        import('../../modules/platform-upgrades/rollback.js'),
         import('node:fs'),
       ]);
       const db = getDb(url);
       try {
         const kc = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
         const k8s = existsSync(kc) ? createK8sClients(kc) : createK8sClients();
-        const res = await runUpgrade(dbSettings(db), k8s, opts);
+        // On apply, capture the rescue snapshot + rollback manifest first (W16).
+        const rollback = opts.apply
+          ? { capture: (input: { fromVersion: string | null; toVersion: string }) => captureUpgradeRescue(realRollbackDeps(db, k8s), input).then((c) => ({ ok: c.ok, reason: c.reason })) }
+          : undefined;
+        const res = await runUpgrade(dbSettings(db), k8s, { ...opts, rollback });
         // A real failure = apply was requested AND the decision said proceed, but
         // the re-pin didn't land. A blocked/no-op decision is exit 0 (informational).
         const ok = !(opts.apply && res.decision.proceed && !res.applied);

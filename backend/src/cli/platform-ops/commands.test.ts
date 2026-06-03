@@ -12,6 +12,7 @@ import {
   clusterUpgrade,
   nodeCommand,
   upgradeCommand,
+  rollbackCommand,
 } from './commands.js';
 
 // A fully-faked Deps so command handlers are tested in isolation (no real
@@ -52,6 +53,7 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     },
     node: { cordon: vi.fn(async () => {}) },
     upgrade: { run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })) },
+    rollback: { run: vi.fn(async () => ({ ok: true, dataRestored: false, summary: 'nothing to roll back' })) },
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep the default `packages`
@@ -643,5 +645,42 @@ describe('upgradeCommand', () => {
   it('--version followed by another flag → exit 2 (no value swallowing)', async () => {
     const { deps } = fakeDeps();
     expect(await upgradeCommand(['--version', '--apply'], deps)).toBe(2);
+  });
+});
+
+describe('rollbackCommand', () => {
+  it('dry-run by default → run({apply:false}), prints preview', async () => {
+    const run = vi.fn(async () => ({ ok: true, dataRestored: false, summary: 'DRY-RUN: would re-pin back' }));
+    const { deps, out } = fakeDeps({ rollback: { run } });
+    expect(await rollbackCommand([], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ apply: false, restoreData: false });
+    expect(out.join('\n')).toMatch(/DRY-RUN/);
+  });
+  it('--apply re-pins back (revision only)', async () => {
+    const run = vi.fn(async () => ({ ok: true, dataRestored: false, summary: 'rolled back (revision only)' }));
+    const { deps } = fakeDeps({ rollback: { run } });
+    expect(await rollbackCommand(['--apply'], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ apply: true, restoreData: false });
+  });
+  it('--apply --restore-data reverts volumes too', async () => {
+    const run = vi.fn(async () => ({ ok: true, dataRestored: true, summary: 'rolled back + reverted' }));
+    const { deps } = fakeDeps({ rollback: { run } });
+    expect(await rollbackCommand(['--apply', '--restore-data'], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ apply: true, restoreData: true });
+  });
+  it('nothing to roll back → exit 1', async () => {
+    const run = vi.fn(async () => ({ ok: false, dataRestored: false, summary: 'nothing to roll back' }));
+    const { deps } = fakeDeps({ rollback: { run } });
+    expect(await rollbackCommand(['--apply'], deps)).toBe(1);
+  });
+  it('setup error (errorCode) → exit 1', async () => {
+    const run = vi.fn(async () => ({ ok: false, errorCode: 'NO_DATABASE_URL', dataRestored: false, summary: 'no db' }));
+    const { deps, err } = fakeDeps({ rollback: { run } });
+    expect(await rollbackCommand([], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/NO_DATABASE_URL/);
+  });
+  it('unknown arg → exit 2', async () => {
+    const { deps } = fakeDeps();
+    expect(await rollbackCommand(['--bogus'], deps)).toBe(2);
   });
 });

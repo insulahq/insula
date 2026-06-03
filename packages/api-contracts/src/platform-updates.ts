@@ -86,6 +86,14 @@ export const upgradeApplyResponseSchema = z.object({
   summary: z.string(),
 });
 
+export const rollbackRequestSchema = z.object({
+  /** false (default) = dry-run preview; true = perform the rollback re-pin. */
+  apply: z.boolean().optional(),
+  /** false (default) = revision only; true = ALSO revert Longhorn snapshots (destructive). */
+  restoreData: z.boolean().optional(),
+});
+export type RollbackRequest = z.infer<typeof rollbackRequestSchema>;
+
 export type PlatformVersionResponse = z.infer<typeof platformVersionResponseSchema>;
 export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
 export type TriggerUpdateResponse = z.infer<typeof triggerUpdateResponseSchema>;

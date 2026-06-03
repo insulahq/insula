@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Loader2, RefreshCw, CheckCircle, AlertTriangle, XCircle, ArrowRight, ShieldAlert } from 'lucide-react';
 import { usePlatformVersion } from '@/hooks/use-platform-updates';
-import { usePreflight, useUpgradeApply, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
+import { usePreflight, useUpgradeApply, useRollback, type UpgradeGate, type UpgradeApplyData, type RollbackData } from '@/hooks/use-platform-upgrade';
 
 /**
  * Platform → Upgrades (super_admin) — ADR-045 W14. Shows the version spine
@@ -29,9 +29,13 @@ export default function UpgradesPage() {
   const { data: versionRes, isLoading: versionLoading } = usePlatformVersion();
   const preflight = usePreflight();
   const apply = useUpgradeApply();
+  const rollback = useRollback();
   const [version, setVersion] = useState('');
   const [preview, setPreview] = useState<UpgradeApplyData | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [rbPreview, setRbPreview] = useState<RollbackData | null>(null);
+  const [rbConfirming, setRbConfirming] = useState(false);
+  const [restoreData, setRestoreData] = useState(false);
 
   const v = versionRes?.data;
   const pf = preflight.data?.data;
@@ -49,6 +53,18 @@ export default function UpgradesPage() {
   };
 
   const applyError = apply.error as Error | null;
+  const rbError = rollback.error as Error | null;
+
+  const onRbPreview = async () => {
+    setRbConfirming(false);
+    const res = await rollback.mutateAsync({ apply: false, restoreData });
+    setRbPreview(res.data);
+  };
+  const onRbApply = async () => {
+    const res = await rollback.mutateAsync({ apply: true, restoreData });
+    setRbPreview(res.data);
+    setRbConfirming(false);
+  };
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
@@ -156,6 +172,51 @@ export default function UpgradesPage() {
               className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Apply upgrade →
+            </button>
+          )
+        )}
+      </div>
+
+      {/* Rollback */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
+        <h2 className="text-sm font-semibold text-gray-900">Roll back the last upgrade</h2>
+        <p className="text-xs text-gray-500">
+          Re-pins the Flux source back to the ref recorded before the last upgrade. A rescue snapshot is taken before every upgrade.
+        </p>
+        <div className="flex items-center gap-3">
+          <button onClick={onRbPreview} disabled={rollback.isPending} className="text-sm px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+            {rollback.isPending && !rbConfirming ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Preview rollback'}
+          </button>
+          <label className="text-xs text-gray-600 flex items-center gap-1">
+            <input type="checkbox" checked={restoreData} onChange={(e) => setRestoreData(e.target.checked)} />
+            also restore data (revert volumes — destructive)
+          </label>
+        </div>
+
+        {rbPreview && (
+          <div className="text-xs rounded border border-gray-200 bg-gray-50 p-3 space-y-1">
+            <div className="text-gray-600">{rbPreview.summary}</div>
+            {rbPreview.manifest && <div className="text-gray-500">target was {rbPreview.manifest.toVersion}, {rbPreview.manifest.rescueSnapshots} rescue snapshot(s)</div>}
+          </div>
+        )}
+        {rbError && (
+          <div className="text-xs text-red-700 flex items-start gap-1">
+            <ShieldAlert className="h-4 w-4 mt-0.5 flex-shrink-0" /><span>{rbError.message}</span>
+          </div>
+        )}
+
+        {rbPreview?.ok && !rbPreview.dataRestored && rbPreview.manifest && (
+          rbConfirming ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-red-700 font-medium">Roll back to {JSON.stringify(rbPreview.manifest.previousRef)}{restoreData ? ' AND revert volumes (DESTRUCTIVE)' : ''}?</span>
+              <button onClick={onRbApply} disabled={rollback.isPending} className="text-sm px-3 py-1.5 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
+                {rollback.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Confirm rollback'}
+              </button>
+              <button onClick={() => setRbConfirming(false)} className="text-xs text-gray-500">cancel</button>
+            </div>
+          ) : (
+            <button onClick={() => setRbConfirming(true)} className="text-sm px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700">
+              Roll back →
             </button>
           )
         )}

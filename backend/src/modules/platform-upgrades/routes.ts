@@ -8,7 +8,7 @@
  * (per the PR-18 spike) — it does not need to survive its own re-pin.
  */
 import type { FastifyInstance } from 'fastify';
-import { upgradeApplyRequestSchema } from '@insula/api-contracts';
+import { upgradeApplyRequestSchema, rollbackRequestSchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -16,6 +16,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectPreflightFacts } from './collect-preflight.js';
 import { evaluatePreflight } from './preflight.js';
 import { runUpgrade, dbSettings } from './orchestrate.js';
+import { captureUpgradeRescue, runRollback, realRollbackDeps } from './rollback.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 
@@ -70,7 +71,10 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     }
 
     try {
-      const r = await runUpgrade(dbSettings(app.db), k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply });
+      // On an apply, a rescue snapshot + rollback manifest is captured before the
+      // re-pin (W16); a failed capture aborts the upgrade inside runUpgrade.
+      const rollback = apply ? { capture: (input: { fromVersion: string | null; toVersion: string }) => captureUpgradeRescue(realRollbackDeps(app.db, k8s), input).then((c) => ({ ok: c.ok, reason: c.reason })) } : undefined;
+      const r = await runUpgrade(dbSettings(app.db), k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply, rollback });
       return success({
         action: r.decision.action,
         target: r.decision.target,
@@ -86,6 +90,34 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       // internal topology) — log server-side, return a clean error.
       app.log.error({ err }, 'platform upgrade apply failed');
       throw new ApiError('UPGRADE_FAILED', 'the upgrade re-pin could not be applied (see server logs)', 502);
+    }
+  });
+
+  // POST /api/v1/admin/platform/rollback  { apply?, restoreData? }
+  // Undo the most recent applied upgrade: re-pin the Flux source back to the
+  // recorded pre-upgrade ref (revision rollback). With restoreData:true ALSO
+  // reverts the Longhorn rescue snapshots (DESTRUCTIVE — undoes data changes).
+  app.post('/admin/platform/rollback', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Roll back the most recent platform upgrade', security: [{ bearerAuth: [] }],
+      body: { type: 'object', properties: { apply: { type: 'boolean' }, restoreData: { type: 'boolean' } }, additionalProperties: false },
+    },
+  }, async (request) => {
+    const parsed = rollbackRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'invalid request', 400);
+    const k8s = createK8sClients(kubeconfigPath());
+    try {
+      const r = await runRollback(realRollbackDeps(app.db, k8s), { apply: parsed.data.apply === true, restoreData: parsed.data.restoreData === true });
+      return success({
+        ok: r.ok,
+        dataRestored: r.dataRestored,
+        reason: r.reason ?? null,
+        summary: r.summary,
+        manifest: r.manifest ? { toVersion: r.manifest.toVersion, fromVersion: r.manifest.fromVersion, gitRepository: r.manifest.gitRepository, previousRef: r.manifest.previousRef, rescueSnapshots: r.manifest.rescueSnapshots.length, status: r.manifest.status, createdAt: r.manifest.createdAt } : null,
+      });
+    } catch (err) {
+      app.log.error({ err }, 'platform rollback failed');
+      throw new ApiError('ROLLBACK_FAILED', 'the rollback could not be applied (see server logs)', 502);
     }
   });
 }

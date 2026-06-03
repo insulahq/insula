@@ -10,6 +10,7 @@ import {
   boolean,
   timestamp,
   jsonb,
+  uuid,
   inet,
   customType,
   uniqueIndex,
@@ -3555,3 +3556,24 @@ export const platformBaselines = pgTable('platform_baselines', {
 
 export type PlatformBaselineRow = typeof platformBaselines.$inferSelect;
 export type NewPlatformBaselineRow = typeof platformBaselines.$inferInsert;
+
+// Per-upgrade rollback manifest (ADR-045 W16). One row captured BEFORE each
+// applied platform upgrade: the Flux ref to roll back to + the Longhorn rescue
+// snapshots taken for the data-restore path. `platform-ops rollback` reads the
+// most recent `captured` row.
+export const platformUpgradeSnapshots = pgTable('platform_upgrade_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  fromVersion: text('from_version'), // installed version before the upgrade
+  toVersion: text('to_version').notNull(), // target version
+  gitRepository: text('git_repository').notNull(), // the Flux source re-pinned
+  // The ref to roll BACK to (the source's ref before the upgrade): {tag?|branch?|commit?}.
+  previousRef: jsonb('previous_ref').$type<Record<string, string>>().notNull(),
+  // Longhorn rescue snapshots for the destructive data-restore path:
+  //   [{ volumeName, namespace, pvcName, snapshotName }]
+  rescueSnapshots: jsonb('rescue_snapshots').$type<Array<Record<string, string>>>().notNull().default(sql`'[]'::jsonb`),
+  status: text('status').notNull().default('captured'), // captured | rolled-back
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type PlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inferSelect;
+export type NewPlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inferInsert;

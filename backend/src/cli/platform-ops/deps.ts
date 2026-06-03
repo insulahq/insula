@@ -17,6 +17,7 @@ import { realHostConfigOps, type HostConfigOps } from './host-config/index.js';
 import { realClusterUpgradeOps } from './cluster-upgrade-ops.js';
 import { realNodeOps } from './node-ops.js';
 import { realUpgradeOps } from './upgrade-ops.js';
+import { realRollbackOps } from './rollback-ops.js';
 import { scrubCreds } from './redact.js';
 import type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
 
@@ -320,6 +321,19 @@ export interface UpgradeOps {
   run: (opts: { mode: 'manual' | 'auto'; requestedVersion?: string; apply: boolean }) => Promise<UpgradeRunResult>;
 }
 
+export interface RollbackRunResult {
+  readonly ok: boolean;
+  readonly dataRestored: boolean;
+  readonly reason?: string;
+  readonly summary: string;
+  readonly errorCode?: string;
+}
+
+export interface RollbackOps {
+  /** Roll back the most recent applied upgrade (re-pin back; restoreData = revert volumes). */
+  run: (opts: { apply: boolean; restoreData: boolean }) => Promise<RollbackRunResult>;
+}
+
 export interface Deps {
   env: NodeJS.ProcessEnv;
   /** Write a line to stdout. */
@@ -365,6 +379,8 @@ export interface Deps {
   node: NodeOps;
   /** Platform upgrade: host-side Flux re-pin (W13). */
   upgrade: UpgradeOps;
+  /** Platform rollback: undo the most recent upgrade (W16). */
+  rollback: RollbackOps;
 }
 
 function realExec(
@@ -523,5 +539,6 @@ export function realDeps(): Deps {
     clusterUpgrade: realClusterUpgradeOps(env),
     node: realNodeOps(env),
     upgrade: realUpgradeOps(env),
+    rollback: realRollbackOps(env),
   };
 }
