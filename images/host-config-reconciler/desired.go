@@ -25,12 +25,6 @@ type DesiredSysctl struct {
 // DesiredConfig is the parsed host-config-desired policy.
 type DesiredConfig struct {
 	Sysctls []DesiredSysctl
-	// Mode is the operator's per-policy enforce gate, read from data.mode:
-	// "enforce" → the converge-role pod WRITES drifting sysctls; anything else
-	// (incl. "" / "dry-run" / "observe") → dry-run (report only, no writes).
-	// The observe-only detector ignores it. Defaults to dry-run so a freshly
-	// deployed enforcer never writes until the operator explicitly opts in.
-	Mode string
 }
 
 // loadDesired reads the host-config-desired ConfigMap. Returns (nil, nil) when
@@ -44,9 +38,7 @@ func loadDesired(ctx context.Context, client kubernetes.Interface, namespace str
 		}
 		return nil, fmt.Errorf("get %s: %w", desiredConfigMapName, err)
 	}
-	cfg := parseDesired(cm.Data["sysctls"])
-	cfg.Mode = strings.TrimSpace(cm.Data["mode"])
-	return cfg, nil
+	return parseDesired(cm.Data["sysctls"]), nil
 }
 
 // parseDesired parses sysctl.conf-style `key = value` lines: one per line,

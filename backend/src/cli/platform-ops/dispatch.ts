@@ -13,6 +13,7 @@ import {
   migrationsApply,
   shellCommand,
   selfUpgrade,
+  hostConfigCommand,
 } from './commands.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
@@ -34,6 +35,9 @@ Commands:
   dr rescue              Take Longhorn safety snapshots of the system volumes
   self-upgrade [--check] [--force] [--version X.Y.Z]
                          Update this binary: cosign-verified atomic replace
+  host-config apply [--dry-run] | host-config status
+                         Converge host sysctls to the host-config-desired policy
+                         (status = dry-run report; apply --apply forces enforce)
   shell                  Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
 
@@ -97,6 +101,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return snapshotCommand(rest, deps);
     case 'self-upgrade':
       return selfUpgrade(rest, deps);
+    case 'host-config':
+      return hostConfigCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     default:
