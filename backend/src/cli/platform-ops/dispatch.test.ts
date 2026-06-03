@@ -37,6 +37,7 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       applyPlans: vi.fn(async (plans: readonly Record<string, unknown>[]) => ({ applied: plans.map((p) => (p as { metadata: { name: string } }).metadata.name) })),
     },
     node: { cordon: vi.fn(async () => {}) },
+    upgrade: { run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })) },
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep default `packages` +

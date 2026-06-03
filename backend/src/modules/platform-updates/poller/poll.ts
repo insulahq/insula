@@ -126,6 +126,9 @@ export async function pollAvailableVersion(deps: PollDeps): Promise<PollResult> 
   await deps.setSetting(SETTING_KEYS.availableSource, 'verified-release');
   await deps.setSetting(SETTING_KEYS.availableVerifiedAt, nowIso);
   await deps.setSetting(SETTING_KEYS.availableVerifyStatus, 'verified');
+  // Carry the BREAKING flag from the verified manifest so W13's auto-upgrade
+  // short-circuit is live (default false when the manifest omits it).
+  await deps.setSetting(SETTING_KEYS.availableBreaking, String(manifest.breaking === true));
   await deps.setSetting(SETTING_KEYS.lastUpdateCheck, nowIso);
   deps.log('info', `[version-poller] verified release ${version} — available_version updated`);
   return { status: 'verified', selectedTag: tag, availableVersion: version };

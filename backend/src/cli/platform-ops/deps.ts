@@ -16,6 +16,7 @@ import { realSelfUpgradeOps } from './self-upgrade/index.js';
 import { realHostConfigOps, type HostConfigOps } from './host-config/index.js';
 import { realClusterUpgradeOps } from './cluster-upgrade-ops.js';
 import { realNodeOps } from './node-ops.js';
+import { realUpgradeOps } from './upgrade-ops.js';
 import { scrubCreds } from './redact.js';
 import type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
 
@@ -300,6 +301,25 @@ export interface NodeOps {
   cordon: (name: string, on: boolean) => Promise<void>;
 }
 
+// ── Platform upgrade (W13 / host-side Flux re-pin) ───────────────────────────
+export interface UpgradeRunResult {
+  /** false only on a real failure (apply requested + should-proceed but re-pin didn't land, or a setup error). */
+  readonly ok: boolean;
+  readonly action: string;
+  readonly target: string | null;
+  readonly reason: string;
+  readonly proceed: boolean;
+  readonly applied: boolean;
+  readonly gitRepository: string | null;
+  readonly summary: string;
+  readonly errorCode?: string;
+}
+
+export interface UpgradeOps {
+  /** Plan (+ optionally apply) a platform upgrade by re-pinning the Flux source. */
+  run: (opts: { mode: 'manual' | 'auto'; requestedVersion?: string; apply: boolean }) => Promise<UpgradeRunResult>;
+}
+
 export interface Deps {
   env: NodeJS.ProcessEnv;
   /** Write a line to stdout. */
@@ -343,6 +363,8 @@ export interface Deps {
   clusterUpgrade: ClusterUpgradeOps;
   /** Node operations: cordon/uncordon (W12). */
   node: NodeOps;
+  /** Platform upgrade: host-side Flux re-pin (W13). */
+  upgrade: UpgradeOps;
 }
 
 function realExec(
@@ -500,5 +522,6 @@ export function realDeps(): Deps {
     hostConfig: realHostConfigOps(env),
     clusterUpgrade: realClusterUpgradeOps(env),
     node: realNodeOps(env),
+    upgrade: realUpgradeOps(env),
   };
 }

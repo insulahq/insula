@@ -461,3 +461,49 @@ export async function nodeCommand(args: string[], deps: Deps): Promise<number> {
     return 1;
   }
 }
+
+/**
+ * `upgrade [--version X.Y.Z] [--apply]` (ADR-045 W13) — host-side platform
+ * upgrade by re-pinning the cluster's Flux GitRepository to a release tag
+ * (the PR-18 spike's validated mechanism). DRY-RUN BY DEFAULT: prints the plan +
+ * the re-pin it WOULD do; `--apply` performs the re-pin (Flux then rolls the
+ * cluster to the new tag). Operator-driven = manual mode (auto_update gating
+ * applies only to the backend reconciler). Exit 1 on a real failure.
+ */
+export async function upgradeCommand(args: string[], deps: Deps): Promise<number> {
+  let requestedVersion: string | undefined;
+  let apply = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--apply') apply = true;
+    else if (a === '--dry-run') apply = false;
+    else if (a === '--version') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('--')) {
+        deps.err('upgrade: --version requires a value (e.g. --version 2026.7.0)');
+        return 2;
+      }
+      requestedVersion = v;
+      i++;
+    } else {
+      deps.err(`upgrade: unknown arg '${a}'`);
+      return 2;
+    }
+  }
+
+  const r = await deps.upgrade.run({ mode: 'manual', requestedVersion, apply });
+  if (r.errorCode) {
+    deps.err(`upgrade: ${r.errorCode} — ${r.summary}`);
+    return 1;
+  }
+  if (!apply) {
+    deps.out(`# DRY-RUN — ${r.summary}`);
+    deps.out(`  decision: ${r.action}${r.target ? ` → ${r.target}` : ''} (${r.reason})`);
+    if (r.proceed) deps.out('  pass --apply to perform the re-pin (Flux then rolls the cluster).');
+    return 0;
+  }
+  deps.out(`upgrade: ${r.summary}`);
+  if (r.applied) deps.out('Watch: kubectl -n flux-system get gitrepository,kustomization');
+  // proceed-but-not-applied is a real failure; a blocked/no-op decision is exit 0.
+  return r.ok ? 0 : 1;
+}

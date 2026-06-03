@@ -86,6 +86,8 @@ describe('pollAvailableVersion — happy path', () => {
     expect(h.settings.get(SETTING_KEYS.availableSource)).toBe('verified-release');
     expect(h.settings.get(SETTING_KEYS.availableVerifiedAt)).toBe('2026-06-03T07:00:00.000Z');
     expect(h.settings.get(SETTING_KEYS.availableVerifyStatus)).toBe('verified');
+    // W13: the BREAKING flag is persisted (default 'false' when the manifest omits it).
+    expect(h.settings.get(SETTING_KEYS.availableBreaking)).toBe('false');
     expect(h.settings.get(SETTING_KEYS.lastUpdateCheck)).toBe('2026-06-03T07:00:00.000Z');
   });
 
