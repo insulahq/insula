@@ -143,7 +143,10 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
   const updateAvailable = canCompare && available !== null && available !== CURRENT_VERSION && isNewer(available, CURRENT_VERSION);
 
   const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
-  const pendingVersion = await getSetting(db, 'pending_update_version');
+  // Normalise the cleared sentinel: post-flight sets pending_update_version to ''
+  // once an upgrade converges, so '' (or whitespace) means "nothing pending".
+  const rawPending = await getSetting(db, 'pending_update_version');
+  const pendingVersion = rawPending && rawPending.trim() !== '' ? rawPending : null;
 
   // Version spine (ADR-045): three coordinates the admin UI / upgrade flow read.
   //   installed — durable DB record of the release the cluster is on

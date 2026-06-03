@@ -5,7 +5,7 @@
  * subsystem degrades that one gate instead of failing the whole check.
  */
 import { eq, sql } from 'drizzle-orm';
-import { tenantLifecycleTransitions } from '../../db/schema.js';
+import { tenantLifecycleTransitions, nodeHealthState } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { PreflightFacts } from './preflight.js';
@@ -19,7 +19,8 @@ const CNPG_CLUSTER = (() => {
   return v && /^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$/.test(v) ? v : 'system-db';
 })();
 
-async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; detail: string }> {
+/** CNPG primary health, shared by pre-flight + post-flight. Env-validated cluster name. */
+export async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; detail: string }> {
   try {
     const cr = (await k8s.custom.getNamespacedCustomObject({
       group: 'postgresql.cnpg.io', version: 'v1', namespace: CNPG_NS, plural: 'clusters', name: CNPG_CLUSTER,
@@ -69,6 +70,39 @@ async function inFlightTransitions(db: Database): Promise<number | null> {
   }
 }
 
+/**
+ * Disk facts from the node-health reconciler's persisted state (5-min tick):
+ *   maxDiskUsedPct        — highest disk-used % across nodes, or null if that
+ *                           column is unpopulated (Phase 1 leaves it null).
+ *   nodesWithDiskPressure — nodes flagged with the kubelet DiskPressure
+ *                           condition; null when node-health has NO rows yet
+ *                           (fresh boot before the first tick / DB unreachable).
+ * Reading the already-collected table (vs. a fresh kubelet /stats/summary probe)
+ * keeps pre-flight cheap and avoids new RBAC — DiskPressure is the exact signal
+ * node-health deemed sufficient for the high-impact case.
+ */
+async function nodeDiskFacts(db: Database): Promise<{ maxDiskUsedPct: number | null; nodesWithDiskPressure: number | null }> {
+  try {
+    const rows = await db
+      .select({ pressures: nodeHealthState.pressures, diskUsedPct: nodeHealthState.diskUsedPct })
+      .from(nodeHealthState);
+    if (rows.length === 0) return { maxDiskUsedPct: null, nodesWithDiskPressure: null };
+    let maxPct: number | null = null;
+    let pressured = 0;
+    for (const r of rows) {
+      if ((r.pressures as string[]).includes('disk')) pressured++;
+      if (r.diskUsedPct !== null) {
+        const pct = Number(r.diskUsedPct);
+        if (!Number.isNaN(pct) && (maxPct === null || pct > maxPct)) maxPct = pct;
+      }
+    }
+    return { maxDiskUsedPct: maxPct, nodesWithDiskPressure: pressured };
+  } catch {
+    // DB unreachable → unknown (both null), surfaced as the "unavailable" warn.
+    return { maxDiskUsedPct: null, nodesWithDiskPressure: null };
+  }
+}
+
 async function freshestBackupAgeHours(k8s: K8sClients, nowMs: number): Promise<number | null> {
   try {
     const list = (await k8s.custom.listNamespacedCustomObject({
@@ -89,10 +123,11 @@ async function freshestBackupAgeHours(k8s: K8sClients, nowMs: number): Promise<n
 }
 
 export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs: number): Promise<PreflightFacts> {
-  const [cnpg, lhMin, inFlight, backupAge] = await Promise.all([
+  const [cnpg, lhMin, inFlight, disk, backupAge] = await Promise.all([
     cnpgReady(k8s),
     longhornMinReplicas(k8s),
     inFlightTransitions(db),
+    nodeDiskFacts(db),
     freshestBackupAgeHours(k8s, nowMs),
   ]);
   return {
@@ -101,9 +136,8 @@ export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs
     cnpgDetail: cnpg.detail,
     longhornMinReplicas: lhMin,
     inFlightTransitions: inFlight,
-    // Disk-usage % requires the security-probe node data; wired as a follow-up.
-    // null → a soft "unknown" warning, never a false block.
-    maxDiskUsedPct: null,
+    maxDiskUsedPct: disk.maxDiskUsedPct,
+    nodesWithDiskPressure: disk.nodesWithDiskPressure,
     freshestBackupAgeHours: backupAge,
   };
 }
