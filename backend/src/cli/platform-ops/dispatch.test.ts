@@ -30,15 +30,17 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     hostConfig: {
       run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
+      hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
     },
     ...over,
   };
-  // A `hostConfig` override usually sets only `run`; keep a default `packages`
-  // so host-config dispatch (which converges both surfaces) never hits undefined.
-  if (over.hostConfig && !over.hostConfig.packages) {
+  // A `hostConfig` override usually sets only `run`; keep default `packages` +
+  // `hostMigrations` so host-config dispatch (all three surfaces) never hits undefined.
+  if (over.hostConfig) {
     deps.hostConfig = {
-      ...deps.hostConfig,
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
+      hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
+      ...deps.hostConfig,
     };
   }
   return { deps, out, err };

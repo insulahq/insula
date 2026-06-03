@@ -157,6 +157,16 @@ jobs:
       - name: Verify no privileged enforcer pod + observe stays locked + deny-list
         run: ./scripts/ci-host-config-check.sh
 
+  host-migrations-guard:
+    name: Host-migration runner + catalog discipline (ADR-045 W10c)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Verify runner validation + embedding + per-script authoring contract
+        run: ./scripts/ci-host-migrations-check.sh
+
   no-dex-in-production:
     name: Dex must not ship in production
     runs-on: ubuntu-latest

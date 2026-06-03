@@ -41,15 +41,18 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     hostConfig: {
       run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
+      hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
     },
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep the default `packages`
-  // so hostConfigCommand (which converges both surfaces) never hits an undefined.
-  if (over.hostConfig && !over.hostConfig.packages) {
+  // + `hostMigrations` so hostConfigCommand (which converges all three surfaces)
+  // never hits an undefined.
+  if (over.hostConfig) {
     deps.hostConfig = {
-      ...deps.hostConfig,
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
+      hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
+      ...deps.hostConfig,
     };
   }
   return { deps, out, err };
@@ -449,10 +452,11 @@ describe('hostConfigCommand', () => {
     expect(await hostConfigCommand(['apply'], deps)).toBe(1);
   });
 
-  it('both surfaces absent → "nothing to do", exit 0', async () => {
+  it('all three surfaces absent → "nothing to do", exit 0', async () => {
     const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
     const packages = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 }));
-    const { deps, out } = fakeDeps({ hostConfig: { run, packages } });
+    const hostMigrations = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, packages, hostMigrations } });
     expect(await hostConfigCommand(['status'], deps)).toBe(0);
     expect(out.join('\n')).toContain('nothing to do');
   });
@@ -466,5 +470,28 @@ describe('hostConfigCommand', () => {
     const { deps, out } = fakeDeps({ hostConfig: { run, packages } });
     expect(await hostConfigCommand(['apply'], deps)).toBe(1);
     expect(out.join('\n')).toMatch(/REFUSED/);
+  });
+
+  it('also runs host-migrations and reports applied', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const hostMigrations = vi.fn(async () => ({
+      ok: true, mode: 'enforce' as const, source: 'embedded' as const, appliedCount: 1,
+      items: [{ key: '2026.6.3/0001-x.sh', state: 'applied' as const }],
+    }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, hostMigrations } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(0);
+    expect(hostMigrations).toHaveBeenCalledWith({ dryRun: false, apply: false });
+    // a just-applied script is NOT also counted as pending
+    expect(out.join('\n')).toMatch(/host-migrations enforce \[embedded\]: 1 applied, 0 pending/);
+  });
+
+  it('a failed host-migration → exit 1', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const hostMigrations = vi.fn(async () => ({
+      ok: false, mode: 'enforce' as const, source: 'embedded' as const, appliedCount: 0,
+      items: [{ key: '2026.6.3/0001-x.sh', state: 'run-failed' as const, error: 'exit 3' }],
+    }));
+    const { deps } = fakeDeps({ hostConfig: { run, hostMigrations } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
   });
 });

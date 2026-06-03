@@ -109,3 +109,57 @@ export interface PackageDeps {
   /** Install a package (re-validates name+version; argv, no shell; `--` separator); throws on failure. */
   readonly installPackage: (family: PackageManagerFamily, name: string, version: string | null) => void;
 }
+
+// ── Host-migration runner (W10c) ─────────────────────────────────────────────
+// Per-release one-shot imperative shell scripts, shipped EMBEDDED in the
+// platform-ops binary so they travel with every self-upgrade (perfect
+// version-binding). Each node applies any pending scripts in (version, name)
+// order, records completion with a marker file, HALTS on the first failure, and
+// is opt-in gated (host-migrations-desired mode=enforce) exactly like sysctls +
+// packages. Scripts are platform-authored (not operator/ConfigMap input) and
+// must be idempotent + order-stable (see scripts/ci-host-migrations-check.sh).
+
+export type HostMigrationState =
+  | 'already-applied' // marker present → skipped
+  | 'applied' // ran successfully this pass (enforce)
+  | 'would-run' // pending, dry-run (no action)
+  | 'run-failed' // ran, non-zero exit → HALTS the pass
+  | 'blocked' // a prior script in this pass failed → not attempted
+  | 'invalid'; // failed catalog validation (bad version/name) → never run
+
+export interface HostMigrationItem {
+  readonly key: string; // "<version>/<name>" — marker + ordering key
+  readonly state: HostMigrationState;
+  readonly error?: string;
+}
+
+export interface HostMigrationResult {
+  readonly ok: boolean;
+  readonly mode: 'enforce' | 'dry-run';
+  readonly source: 'embedded' | 'filesystem' | 'absent';
+  readonly items: readonly HostMigrationItem[];
+  readonly appliedCount: number;
+  /** Set when the catalog was refused wholesale (e.g. exceeds the script cap). */
+  readonly reason?: string;
+}
+
+/** One shipped host-migration script discovered in the catalog. */
+export interface HostMigrationScript {
+  readonly version: string; // CalVer dir, e.g. "2026.6.3"
+  readonly name: string; // file name, e.g. "0001-bump-inotify.sh"
+  readonly key: string; // "<version>/<name>"
+  readonly body: string; // script contents
+}
+
+export interface HostMigrationDeps {
+  /** host-migrations-desired mode (enforce|observe|…); null = absent/unreachable. */
+  readonly readMode: () => Promise<string | null>;
+  /** Has this script already applied on this node (marker present)? */
+  readonly isApplied: (key: string) => boolean;
+  /** Record a script as applied (write its marker); throws on failure. */
+  readonly markApplied: (key: string) => void;
+  /** Run a script (bash, argv-only, timeout); throws on non-zero exit. */
+  readonly runScript: (script: HostMigrationScript) => void;
+  /** Where the catalog came from (for reporting). */
+  readonly source: 'embedded' | 'filesystem' | 'absent';
+}
