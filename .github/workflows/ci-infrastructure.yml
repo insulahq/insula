@@ -133,6 +133,14 @@ jobs:
       - name: Verify SYSTEM tenant scheduler filters + DB invariants
         run: ./scripts/ci-system-tenant-check.sh
 
+  platform-migration-guard:
+    name: Platform-migration registry discipline (ADR-045 W9)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify migration registry consistency + idempotency discipline
+        run: ./scripts/ci-migration-idempotency.sh
+
   no-dex-in-production:
     name: Dex must not ship in production
     runs-on: ubuntu-latest

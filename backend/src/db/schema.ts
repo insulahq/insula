@@ -3519,3 +3519,39 @@ export const mailDriftItems = pgTable('mail_drift_items', {
 
 export type MailDriftItem = typeof mailDriftItems.$inferSelect;
 export type NewMailDriftItem = typeof mailDriftItems.$inferInsert;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W9 / ADR-045 — platform-migration registry (migration 0047).
+//
+// CLUSTER-migration registry: TypeScript platform-migrations applied at backend
+// startup by platform-upgrades/registry/runner.ts. DISTINCT from the
+// __platform_migrations SQL schema tracker (db/migrate.ts). One row per applied
+// platform-migration; the runner reads this to compute the pending set.
+export const platformMigrations = pgTable('platform_migrations', {
+  // Stable, order-bearing id, e.g. '0001_record_baseline'. Renaming a shipped
+  // migration is forbidden (ci-migration-idempotency.sh).
+  id: text('id').primaryKey(),
+  // CalVer the migration first shipped in (e.g. '2026.6.1').
+  version: text('version').notNull(),
+  // sha256 of the migration source at apply time → drift detection (WARN).
+  checksum: text('checksum').notNull(),
+  appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
+  durationMs: integer('duration_ms').notNull().default(0),
+});
+
+export type PlatformMigrationRow = typeof platformMigrations.$inferSelect;
+export type NewPlatformMigrationRow = typeof platformMigrations.$inferInsert;
+
+// Versioned cluster facts (k3s/calico/longhorn/platform) recorded by the W9
+// baseline platform-migration. Key/value so new keys need no schema change.
+export const platformBaselines = pgTable('platform_baselines', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  // Where the value was read from (e.g. 'k8s-node', 'config'). Nullable.
+  source: text('source'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type PlatformBaselineRow = typeof platformBaselines.$inferSelect;
+export type NewPlatformBaselineRow = typeof platformBaselines.$inferInsert;

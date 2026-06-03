@@ -37,7 +37,13 @@ echo "=== smoke ==="
 yes "version prints baked build version"        "'$BIN' version | grep -q 2026.6.1"
 yes "version --json has binary field"           "'$BIN' version --json | grep -q '\"binary\":\"2026.6.1\"'"
 yes "help lists commands"                       "'$BIN' help | grep -qi 'cluster'"
-yes "migrations list is a graceful stub"        "'$BIN' migrations list | grep -qi 'no platform-migration registry'"
+# migrations list enumerates the compiled-in registry even with no DB (offline
+# view, every entry 'unknown'). `|| true` neutralises the binary's non-zero exit
+# under pipefail; we assert on the registry contents, not the exit code.
+yes "migrations list enumerates the registry offline" \
+  "{ '$BIN' migrations list 2>/dev/null || true; } | grep -qiE 'platform-migration|0001_record_baseline'"
+yes "migrations apply needs a DB (NO_DATABASE_URL, exit 1) offline" \
+  "{ env -u DATABASE_URL '$BIN' migrations apply --json 2>/dev/null || true; } | grep -q 'NO_DATABASE_URL'"
 yes "unknown command exits 2"                   "'$BIN' frobnicate >/dev/null 2>&1; [ \$? -eq 2 ]"
 yes "self-upgrade --check is a no-op (exit 0)"  "'$BIN' self-upgrade --check | grep -qi 'no-op'"
 yes "help lists snapshot + dr rescue"           "'$BIN' help | grep -qi 'snapshot capture' && '$BIN' help | grep -qi 'dr rescue'"

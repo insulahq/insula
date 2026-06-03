@@ -82,12 +82,71 @@ export async function clusterDiagnostics(_args: string[], deps: Deps): Promise<n
   return 0;
 }
 
-export async function migrationsList(_args: string[], deps: Deps): Promise<number> {
-  // The platform-migration registry (W9) is not shipped yet; surface that
-  // clearly rather than implying an empty registry.
-  deps.out('No platform-migration registry is present in this release.');
-  deps.out('(The migrations subcommand activates once the registry ships — ADR-045 W9.)');
-  return 0;
+export async function migrationsList(args: string[], deps: Deps): Promise<number> {
+  const json = args.includes('--json');
+  const { dbReachable, items } = await deps.migrationsStatus();
+  if (json) {
+    deps.out(JSON.stringify({ dbReachable, migrations: items }));
+    return 0;
+  }
+  if (items.length === 0) {
+    deps.out('No platform-migrations are defined in this release.');
+    return 0;
+  }
+  if (!dbReachable) {
+    deps.err('migrations: DB unreachable — showing the compiled-in registry only (applied-state unknown).');
+  }
+  const pending = items.filter((m) => m.status === 'pending').length;
+  const drift = items.filter((m) => m.status === 'drift').length;
+  deps.out(`${items.length} platform-migration(s)${dbReachable ? ` — ${pending} pending` + (drift ? `, ${drift} drift` : '') : ''}:`);
+  for (const m of items) {
+    const when = m.appliedAt ? ` (${m.appliedAt})` : '';
+    deps.out(`  ${m.status.padEnd(8)} ${m.id}  v${m.version}${when}  ${m.description}`);
+  }
+  // Drift is an order-stable-contract violation; exit non-zero so a CI/cron
+  // caller notices, but never throw.
+  return drift > 0 ? 1 : 0;
+}
+
+export async function migrationsApply(args: string[], deps: Deps): Promise<number> {
+  const json = args.includes('--json');
+  const dryRun = args.includes('--dry-run');
+  // --kubeconfig <path> (a held advisory lock or a missing kubeconfig are both
+  // handled by the runner; we just thread the flag through).
+  let kubeconfig: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--kubeconfig') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('--')) {
+        deps.err('migrations apply: --kubeconfig requires a value');
+        return 2;
+      }
+      kubeconfig = v;
+      i++;
+    }
+  }
+
+  const r = await deps.applyMigrations({ dryRun, kubeconfig });
+  if (!r.ok) {
+    if (json) deps.out(JSON.stringify({ ok: false, errorCode: r.errorCode ?? 'APPLY_ERROR' }));
+    deps.err(`migrations apply: ${r.errorCode ?? 'APPLY_ERROR'}${r.detail ? ` — ${r.detail}` : ''}`);
+    return 1;
+  }
+  if (json) {
+    deps.out(JSON.stringify({
+      ok: true, ran: r.ran, dryRun: r.dryRun, applied: r.applied, pending: r.pending,
+      failed: r.failed, skippedReason: r.skippedReason, outcomes: r.outcomes,
+    }));
+  } else if (!r.ran) {
+    deps.out(`migrations apply: skipped (${r.skippedReason ?? 'unknown'})`);
+  } else {
+    const tag = r.dryRun ? '[dry-run] ' : '';
+    deps.out(`${tag}${r.applied ?? 0} applied, ${r.pending ?? 0} pending${r.failed ? ' — a migration FAILED (sequence halted)' : ''}`);
+    for (const o of r.outcomes ?? []) {
+      deps.out(`  ${o.status.padEnd(12)} ${o.id}${o.error ? ` — ${o.error}` : ''}`);
+    }
+  }
+  return r.failed ? 1 : 0;
 }
 
 export async function shellCommand(_args: string[], deps: Deps): Promise<number> {
