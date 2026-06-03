@@ -6,7 +6,7 @@
  * host-config-desired ConfigMap via kubeconfig.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
@@ -17,10 +17,14 @@ import {
   MAX_SYSCTL_VALUE_LEN,
 } from './sysctls.js';
 import { convergePackages, packageNameValid, packageVersionValid } from './packages.js';
+import { runHostMigrations, hostMigrationValid } from './host-migrations.js';
 import type {
   ConvergeResult,
   HostConfigDeps,
   HostConfigOptions,
+  HostMigrationDeps,
+  HostMigrationResult,
+  HostMigrationScript,
   PackageConvergeResult,
   PackageDeps,
   PackageManagerFamily,
@@ -28,10 +32,11 @@ import type {
   SysctlSpec,
 } from './types.js';
 
-export type { ConvergeResult, HostConfigOptions, PackageConvergeResult } from './types.js';
+export type { ConvergeResult, HostConfigOptions, PackageConvergeResult, HostMigrationResult } from './types.js';
 
 const DESIRED_CM = 'host-config-desired';
 const PACKAGES_CM = 'host-packages-desired';
+const HOST_MIGRATIONS_CM = 'host-migrations-desired';
 const DESIRED_NS = 'platform-system';
 const PROC_SYS = '/proc/sys';
 
@@ -39,6 +44,13 @@ const PROC_SYS = '/proc/sys';
 // off a slow mirror — bounded so one stuck apt/dnf can't wedge the daily timer.
 const PKG_QUERY_TIMEOUT_MS = 30_000;
 const PKG_INSTALL_TIMEOUT_MS = 300_000;
+
+// Host-migration roots + budget. Markers are the per-node applied record; the
+// filesystem dir is the dev/escape-hatch catalog source (production is SEA-embedded).
+const HOST_MIGRATION_MARKER_ROOT = '/var/lib/platform/host-migrations';
+const DEFAULT_HOST_MIGRATIONS_DIR = '/usr/local/share/platform-ops/host-migrations';
+const HOST_MIGRATION_TIMEOUT_MS = 600_000;
+const HOST_MIGRATION_MAX_OUTPUT = 8 * 1024 * 1024;
 
 /** Parse sysctl.conf-style `key = value` lines (matches the Go observe parser). */
 export function parseSysctls(raw: string): SysctlSpec[] {
@@ -238,11 +250,165 @@ export function realPackageDeps(env: NodeJS.ProcessEnv): PackageDeps {
   };
 }
 
+// ── Host-migration runner (W10c) ─────────────────────────────────────────────
+
+function splitMigrationKey(key: string): { version: string; name: string } {
+  const slash = key.indexOf('/');
+  if (slash < 0) return { version: '', name: key };
+  return { version: key.slice(0, slash), name: key.slice(slash + 1) };
+}
+
+/** Build a contained marker path for a key, or null if it fails validation. */
+function migrationMarkerPath(key: string): string | null {
+  const { version, name } = splitMigrationKey(key);
+  if (!hostMigrationValid({ version, name })) return null; // re-guard before any FS path
+  const full = join(HOST_MIGRATION_MARKER_ROOT, version, `${name}.done`);
+  if (!full.startsWith(HOST_MIGRATION_MARKER_ROOT + '/')) return null;
+  return full;
+}
+
+function migrationIsApplied(key: string): boolean {
+  const p = migrationMarkerPath(key);
+  return p !== null && existsSync(p);
+}
+
+function migrationMarkApplied(key: string): void {
+  const p = migrationMarkerPath(key);
+  if (!p) throw new Error(`refusing marker for invalid key ${JSON.stringify(key)}`);
+  mkdirSync(join(p, '..'), { recursive: true });
+  // Marker presence is the only signal the runner reads; the body is advisory.
+  writeFileSync(p, `applied-by platform-ops host-migration runner\n`, { mode: 0o644 });
+}
+
+// Run a script via bash from STDIN (no temp file → no path/symlink race), argv-
+// only, with a clean minimal env and a hard timeout. Scripts are platform-
+// authored + shellcheck-gated; they must not rely on $0/$BASH_SOURCE (stdin).
+function migrationRunScript(script: HostMigrationScript): void {
+  try {
+    execFileSync('/bin/bash', ['-s'], {
+      input: script.body,
+      encoding: 'utf8',
+      timeout: HOST_MIGRATION_TIMEOUT_MS,
+      maxBuffer: HOST_MIGRATION_MAX_OUTPUT,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', HOME: '/root' },
+    });
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    const detail = (e.stderr || e.message || 'script failed').toString().trim().split('\n').slice(-4).join('; ');
+    throw new Error(detail);
+  }
+}
+
+/** Parse a catalog dir on disk: <root>/<version>/<NNNN-name.sh>. */
+function loadFilesystemCatalog(dir: string): HostMigrationScript[] {
+  const out: HostMigrationScript[] = [];
+  let versions: string[] = [];
+  try {
+    versions = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return out;
+  }
+  for (const version of versions) {
+    let files: string[] = [];
+    try {
+      files = readdirSync(join(dir, version)).filter((f) => f.endsWith('.sh'));
+    } catch {
+      continue;
+    }
+    for (const name of files) {
+      // Only read files that pass validation — never touch an odd path.
+      if (!hostMigrationValid({ version, name })) {
+        out.push({ version, name, key: `${version}/${name}`, body: '' });
+        continue; // surfaced as "invalid" by the runner; body unused
+      }
+      try {
+        const body = readFileSync(join(dir, version, name), 'utf8');
+        out.push({ version, name, key: `${version}/${name}`, body });
+      } catch {
+        // unreadable → skip; absence is benign
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Load the shipped catalog: SEA-embedded assets in production (so scripts travel
+ * with every self-upgrade), or a filesystem dir in dev / as an escape hatch.
+ */
+async function loadHostMigrationCatalog(
+  env: NodeJS.ProcessEnv,
+): Promise<{ source: 'embedded' | 'filesystem' | 'absent'; scripts: HostMigrationScript[] }> {
+  // 1. SEA-embedded (the production path). Distinguish "not a SEA" from "is a SEA
+  // but the assets won't load": a real SEA binary ALWAYS carries the manifest, so
+  // an asset failure means a CORRUPT binary — refuse outright rather than silently
+  // falling through to the lower-trust filesystem (which would let a node that
+  // self-upgraded into a bad binary execute env/dir-pointed scripts as root).
+  let sea: typeof import('node:sea') | null = null;
+  try {
+    sea = await import('node:sea');
+  } catch {
+    sea = null; // not a SEA runtime (dev / tests / plain node)
+  }
+  if (sea?.isSea()) {
+    try {
+      const manifestRaw = sea.getAsset('host-migrations/manifest.json', 'utf8') as string;
+      const manifest = JSON.parse(manifestRaw) as { scripts?: string[] };
+      const scripts: HostMigrationScript[] = [];
+      for (const key of manifest.scripts ?? []) {
+        const { version, name } = splitMigrationKey(key);
+        const body = sea.getAsset(`host-migrations/${key}`, 'utf8') as string;
+        scripts.push({ version, name, key, body });
+      }
+      return { source: 'embedded', scripts };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`host-config: embedded host-migration catalog unreadable (corrupt binary?) — refusing: ${msg}\n`);
+      return { source: 'absent', scripts: [] };
+    }
+  }
+  // 2. Filesystem — dev / non-SEA only (NEVER reached from a real node binary).
+  const dir = env.PLATFORM_OPS_HOST_MIGRATIONS_DIR?.trim() || DEFAULT_HOST_MIGRATIONS_DIR;
+  if (!existsSync(dir)) return { source: 'absent', scripts: [] };
+  return { source: 'filesystem', scripts: loadFilesystemCatalog(dir) };
+}
+
+async function readHostMigrationMode(env: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
+    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
+    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const cm = (await k8s.core.readNamespacedConfigMap({
+      name: HOST_MIGRATIONS_CM,
+      namespace: DESIRED_NS,
+    } as unknown as Parameters<typeof k8s.core.readNamespacedConfigMap>[0])) as { data?: Record<string, string> };
+    return (cm.data?.['mode'] ?? '').trim();
+  } catch {
+    return null;
+  }
+}
+
+export function realHostMigrationDeps(
+  env: NodeJS.ProcessEnv,
+  catalog: { source: 'embedded' | 'filesystem' | 'absent'; scripts: HostMigrationScript[] },
+): HostMigrationDeps {
+  return {
+    readMode: () => readHostMigrationMode(env),
+    isApplied: migrationIsApplied,
+    markApplied: migrationMarkApplied,
+    runScript: migrationRunScript,
+    source: catalog.source,
+  };
+}
+
 export interface HostConfigOps {
   /** Converge host sysctls to the host-config-desired policy. */
   run: (opts: HostConfigOptions) => Promise<ConvergeResult>;
   /** Converge declared OS packages to "present" (host-packages-desired policy). */
   packages: (opts: HostConfigOptions) => Promise<PackageConvergeResult>;
+  /** Apply pending host-migration scripts (host-migrations-desired policy). */
+  hostMigrations: (opts: HostConfigOptions) => Promise<HostMigrationResult>;
 }
 
 export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
@@ -264,6 +430,15 @@ export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
       // Same opt-in gating as sysctls, against the packages policy's own mode.
       const enforcing = opts.apply || (!opts.dryRun && desired.mode.toLowerCase() === 'enforce');
       return convergePackages(desired.packages, family, enforcing, pkgDeps);
+    },
+    async hostMigrations(opts) {
+      const catalog = await loadHostMigrationCatalog(env);
+      const hmDeps = realHostMigrationDeps(env, catalog);
+      if (catalog.source === 'absent') return runHostMigrations(null, false, hmDeps);
+      // Same opt-in gating, against the host-migrations policy's own mode.
+      const mode = await hmDeps.readMode();
+      const enforcing = opts.apply || (!opts.dryRun && (mode ?? '').toLowerCase() === 'enforce');
+      return runHostMigrations(catalog.scripts, enforcing, hmDeps);
     },
   };
 }

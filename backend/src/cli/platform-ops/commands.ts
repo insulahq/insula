@@ -242,11 +242,12 @@ export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
  *
  * Reads the cluster's desired policies and converges this node HOST-SIDE
  * (platform-ops is root on the host — no privileged pod): sysctls
- * (host-config-desired) then OS packages (host-packages-desired, additive-only).
- * Two gates per surface: the policy's `mode` must be `enforce` (opt-in) AND no
- * `--dry-run`; `--apply` forces enforce for a manual run. Default (no policy /
- * mode!=enforce) is a no-op dry-run, so the daily timer never mutates the host
- * until the operator opts in. Exit 1 only on a real write/install failure.
+ * (host-config-desired), OS packages (host-packages-desired, additive-only),
+ * then host-migration scripts (host-migrations-desired, shipped embedded in the
+ * binary). Two gates per surface: the policy's `mode` must be `enforce` (opt-in)
+ * AND no `--dry-run`; `--apply` forces enforce for a manual run. Default (no
+ * policy / mode!=enforce) is a no-op dry-run, so the daily timer never mutates
+ * the host until the operator opts in. Exit 1 only on a real failure.
  */
 export async function hostConfigCommand(args: string[], deps: Deps): Promise<number> {
   const sub = args[0];
@@ -304,10 +305,25 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
     }
   }
 
-  if (r.desiredSource === 'absent' && p.desiredSource === 'absent') {
+  // ── host-migrations (W10c) ──────────────────────────────────────────────────
+  const h = await deps.hostConfig.hostMigrations(opts);
+  if (h.source === 'absent') {
+    deps.out('host-config: no host-migration catalog shipped');
+  } else if (h.reason) {
+    deps.out(`host-config host-migrations: REFUSED — ${h.reason}`);
+  } else {
+    const pending = h.items.filter((i) => i.state === 'would-run' || i.state === 'run-failed' || i.state === 'blocked');
+    deps.out(`host-config host-migrations ${h.mode} [${h.source}]: ${h.appliedCount} applied, ${pending.length} pending, ${h.items.length} shipped`);
+    for (const i of h.items) {
+      if (i.state === 'already-applied') continue;
+      deps.out(`  ${i.state.padEnd(16)} ${i.key}${i.error ? ` — ${i.error}` : ''}`);
+    }
+  }
+
+  if (r.desiredSource === 'absent' && p.desiredSource === 'absent' && h.source === 'absent') {
     deps.out('host-config: nothing to do');
   }
-  // A write/install failure is a real problem (exit 1). not-allowed is a policy
-  // authoring issue, not a runtime failure — exit 0.
-  return r.ok && p.ok ? 0 : 1;
+  // A write/install/migration failure is a real problem (exit 1). not-allowed /
+  // invalid are policy-authoring issues, not runtime failures — exit 0.
+  return r.ok && p.ok && h.ok ? 0 : 1;
 }

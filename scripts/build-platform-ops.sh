@@ -85,10 +85,51 @@ npx --yes esbuild "${REPO_ROOT}/backend/src/cli/platform-ops.ts" \
   --external:pg-native \
   --log-level=warning
 
-# Generate the SEA preparation blob.
-cat > "${work}/sea-config.json" <<JSON
-{ "main": "${bundle}", "output": "${blob}", "disableExperimentalSEAWarning": true }
-JSON
+# Generate the SEA preparation blob. Host-migration scripts (W10c) are EMBEDDED
+# as SEA assets so they travel with every binary (and thus every self-upgrade):
+# platform/host-migrations/<version>/<NNNN-name.sh> → asset "host-migrations/<version>/<name>",
+# plus a generated "host-migrations/manifest.json" listing the keys (SEA has no
+# asset enumeration). The manifest is ALWAYS embedded, even when the dir is empty
+# (the runner then sees zero scripts — a clean dormant no-op).
+node - "$REPO_ROOT" "$work" "$bundle" "$blob" <<'NODEGEN'
+const fs = require('node:fs');
+const path = require('node:path');
+const [, , repoRoot, work, bundle, blob] = process.argv;
+const hmRoot = path.join(repoRoot, 'platform', 'host-migrations');
+const VER_RE = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]+$/;
+const NAME_RE = /^[0-9]{3,}-[a-z0-9][a-z0-9-]*\.sh$/;
+const assets = {};
+const scripts = [];
+if (fs.existsSync(hmRoot)) {
+  for (const version of fs.readdirSync(hmRoot, { withFileTypes: true })) {
+    if (!version.isDirectory()) continue;
+    if (!VER_RE.test(version.name)) {
+      console.error(`build-platform-ops: host-migration version dir '${version.name}' is not CalVer`);
+      process.exit(1); // fail the build loudly rather than embed an un-runnable script
+    }
+    const vdir = path.join(hmRoot, version.name);
+    for (const f of fs.readdirSync(vdir)) {
+      if (!f.endsWith('.sh')) continue;
+      if (!NAME_RE.test(f)) {
+        console.error(`build-platform-ops: host-migration '${version.name}/${f}' name must match ${NAME_RE}`);
+        process.exit(1);
+      }
+      const key = `${version.name}/${f}`;
+      assets[`host-migrations/${key}`] = path.join(vdir, f);
+      scripts.push(key);
+    }
+  }
+}
+// Sort for human readability only — the runner always re-sorts via compareVersions.
+// numeric: true gives CalVer ordering (2026.6.10 after 2026.6.3).
+scripts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+const manifestPath = path.join(work, 'host-migrations-manifest.json');
+fs.writeFileSync(manifestPath, JSON.stringify({ scripts }));
+assets['host-migrations/manifest.json'] = manifestPath;
+const cfg = { main: bundle, output: blob, disableExperimentalSEAWarning: true, assets };
+fs.writeFileSync(path.join(work, 'sea-config.json'), JSON.stringify(cfg));
+console.error(`build-platform-ops: embedding ${scripts.length} host-migration script(s)`);
+NODEGEN
 node --experimental-sea-config "${work}/sea-config.json"
 
 # Resolve the Node runtime to inject into (host node, or a passed target-arch one).
