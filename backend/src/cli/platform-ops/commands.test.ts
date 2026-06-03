@@ -11,6 +11,7 @@ import {
   hostConfigCommand,
   clusterUpgrade,
   nodeCommand,
+  upgradeCommand,
 } from './commands.js';
 
 // A fully-faked Deps so command handlers are tested in isolation (no real
@@ -50,6 +51,7 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       applyPlans: vi.fn(async (plans: readonly Record<string, unknown>[]) => ({ applied: plans.map((p) => (p as { metadata: { name: string } }).metadata.name) })),
     },
     node: { cordon: vi.fn(async () => {}) },
+    upgrade: { run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })) },
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep the default `packages`
@@ -601,5 +603,45 @@ describe('nodeCommand', () => {
   it('missing node name → exit 2', async () => {
     const { deps } = fakeDeps();
     expect(await nodeCommand(['cordon'], deps)).toBe(2);
+  });
+});
+
+describe('upgradeCommand', () => {
+  it('dry-run by default → prints plan, never applies', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'upgrade', target: '2026.7.0', reason: 'manual upgrade 2026.6.2 → 2026.7.0', proceed: true, applied: false, gitRepository: 'hosting-platform-production', summary: 'DRY-RUN: would re-pin hosting-platform-production → v2026.7.0' }));
+    const { deps, out } = fakeDeps({ upgrade: { run } });
+    expect(await upgradeCommand(['--version', '2026.7.0'], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: '2026.7.0', apply: false });
+    expect(out.join('\n')).toMatch(/DRY-RUN/);
+  });
+
+  it('--apply re-pins and reports success (exit 0)', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: true, gitRepository: 'hosting-platform-production', summary: 're-pinned hosting-platform-production → v2026.7.0' }));
+    const { deps, out } = fakeDeps({ upgrade: { run } });
+    expect(await upgradeCommand(['--version', '2026.7.0', '--apply'], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: '2026.7.0', apply: true });
+    expect(out.join('\n')).toMatch(/re-pinned/);
+  });
+
+  it('--apply but the re-pin did not land → exit 1', async () => {
+    const run = vi.fn(async () => ({ ok: false, action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: false, gitRepository: null, summary: 'could not resolve the platform Flux GitRepository' }));
+    const { deps } = fakeDeps({ upgrade: { run } });
+    expect(await upgradeCommand(['--version', '2026.7.0', '--apply'], deps)).toBe(1);
+  });
+
+  it('a setup error (errorCode) → exit 1', async () => {
+    const run = vi.fn(async () => ({ ok: false, errorCode: 'NO_DATABASE_URL', action: 'error', target: null, reason: '', proceed: false, applied: false, gitRepository: null, summary: 'DATABASE_URL is required' }));
+    const { deps, err } = fakeDeps({ upgrade: { run } });
+    expect(await upgradeCommand([], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/NO_DATABASE_URL/);
+  });
+
+  it('--version with no value → exit 2', async () => {
+    const { deps } = fakeDeps();
+    expect(await upgradeCommand(['--version'], deps)).toBe(2);
+  });
+  it('--version followed by another flag → exit 2 (no value swallowing)', async () => {
+    const { deps } = fakeDeps();
+    expect(await upgradeCommand(['--version', '--apply'], deps)).toBe(2);
   });
 });

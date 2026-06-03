@@ -16,6 +16,7 @@ import {
   selfUpgrade,
   hostConfigCommand,
   nodeCommand,
+  upgradeCommand,
 } from './commands.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
@@ -33,6 +34,9 @@ Commands:
                          dry-run prints them, --apply creates them (SUC rolls nodes)
   node cordon|uncordon <name>
                          Cordon / uncordon a node (operator maintenance)
+  upgrade [--version X.Y.Z] [--apply]
+                         Plan/apply a platform upgrade by re-pinning the Flux
+                         source tag (dry-run prints the plan; --apply re-pins)
   migrations list [--json] List platform-migrations + their applied status
   migrations apply [--dry-run] Apply pending platform-migrations (DB + cluster)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
@@ -116,6 +120,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return hostConfigCommand(rest, deps);
     case 'node':
       return nodeCommand(rest, deps);
+    case 'upgrade':
+      return upgradeCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     default:

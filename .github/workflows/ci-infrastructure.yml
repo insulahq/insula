@@ -175,6 +175,14 @@ jobs:
       - name: Verify no committed Plan + pinned+hardened SUC + skip-a-minor refusal
         run: ./scripts/ci-system-upgrade-check.sh
 
+  upgrade-repin-guard:
+    name: Platform upgrade re-pin invariants (ADR-045 W13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify dry-run-default + resolved-source + clean-tag + decision gates
+        run: ./scripts/ci-upgrade-repin-check.sh
+
   no-dex-in-production:
     name: Dex must not ship in production
     runs-on: ubuntu-latest

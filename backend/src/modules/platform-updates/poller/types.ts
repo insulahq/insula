@@ -22,6 +22,12 @@ export interface ReleaseManifest {
   readonly version: string;
   readonly images?: Record<string, string>;
   readonly releasedAt?: string;
+  /**
+   * True when the release CHANGELOG carries a `### BREAKING` heading. Drives the
+   * W13 auto-upgrade short-circuit: a BREAKING release is never auto-applied
+   * (operator must apply it manually). Defaults false when absent.
+   */
+  readonly breaking?: boolean;
 }
 
 /**
@@ -51,5 +57,6 @@ export const SETTING_KEYS = {
   availableSource: 'available_source',
   availableVerifiedAt: 'available_verified_at',
   availableVerifyStatus: 'available_verify_status',
+  availableBreaking: 'available_breaking',
   lastUpdateCheck: 'last_update_check',
 } as const;
