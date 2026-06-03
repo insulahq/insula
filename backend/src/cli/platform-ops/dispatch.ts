@@ -14,6 +14,7 @@ import {
   selfUpgrade,
 } from './commands.js';
 import { drCommand } from './dr.js';
+import { snapshotCommand } from './snapshot.js';
 
 const HELP = `platform-ops — Insula operator CLI
 
@@ -24,15 +25,19 @@ Commands:
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
   migrations list        List platform migrations (activates in a later release)
+  snapshot capture       Create an on-demand CNPG base backup (Backup CR)
+  snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
   dr restore             Restore from a DR bundle (partial rows | full recovery)
+  dr rescue              Take Longhorn safety snapshots of the system volumes
   self-upgrade [--check] Check for / apply a CLI self-upgrade (activates later)
   shell                  Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
 
-Runs on any cluster node. Mostly read-only; the one privileged operation in
-this release is \`dr restore\` (disaster recovery — works when platform-api is
-down). Other privileged ops (node drain, migrations apply, snapshot,
+Runs on any cluster node. Mostly read-only; the privileged operations in this
+release are \`dr restore\` / \`dr rescue\` (disaster recovery) and
+\`snapshot capture\` — all work when platform-api is down (they talk to the DB
++ k8s API directly). Other privileged ops (node drain, migrations apply,
 upgrade, rollback) land in later releases. See ADR-045.`;
 
 function printHelp(deps: Deps): void {
@@ -83,6 +88,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return migrationsCommand(rest, deps);
     case 'dr':
       return drCommand(rest, deps);
+    case 'snapshot':
+      return snapshotCommand(rest, deps);
     case 'self-upgrade':
       return selfUpgrade(rest, deps);
     case 'shell':

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Deps, DrBundleManifest, DrRestoreOutcome, DrRestoreRequest } from './deps.js';
+import type { Deps, DrBundleManifest, DrRescueOutcome, DrRestoreOutcome, DrRestoreRequest } from './deps.js';
 import { parseDrArgs, drCommand } from './dr.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -31,7 +31,12 @@ function fakeDeps(over: Partial<Deps> = {}, drOver: Partial<Deps['dr']> = {}): {
     dr: {
       verifyBundle: vi.fn(async () => MANIFEST),
       runRestore: vi.fn(async (): Promise<DrRestoreOutcome> => ({ ok: true, bundleInfo: MANIFEST, summary: ['done'] })),
+      rescue: vi.fn(async (): Promise<DrRescueOutcome> => ({ ok: true, snapshots: [] })),
       ...drOver,
+    },
+    snapshot: {
+      capture: vi.fn(async () => ({ ok: true })),
+      list: vi.fn(async () => ({ ok: true, backups: [] })),
     },
     ...over,
   };
@@ -295,5 +300,121 @@ describe('drCommand restore', () => {
     expect(code).toBe(2);
     expect(runRestore).not.toHaveBeenCalled();
     expect(err.join('\n')).toMatch(/--mode/);
+  });
+});
+
+// ── parseDrArgs: rescue ──────────────────────────────────────────────────────
+describe('parseDrArgs rescue', () => {
+  it('parses a bare rescue (snapshot all system volumes)', () => {
+    const r = parseDrArgs(['rescue']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'rescue') {
+      expect(r.req.volume).toBeUndefined();
+      expect(r.req.label).toBeUndefined();
+    }
+  });
+
+  it('parses --volume + --label + --kubeconfig', () => {
+    const r = parseDrArgs(['rescue', '--volume', 'pvc-abc', '--label', 'pre-upgrade', '--kubeconfig', '/kc']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'rescue') {
+      expect(r.req.volume).toBe('pvc-abc');
+      expect(r.req.label).toBe('pre-upgrade');
+      expect(r.req.kubeconfig).toBe('/kc');
+    }
+  });
+
+  it('ignores --json (consumed by the command layer)', () => {
+    const r = parseDrArgs(['rescue', '--json']);
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects an unknown flag', () => {
+    const r = parseDrArgs(['rescue', '--frob']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe(2);
+  });
+
+  it('rejects a value-flag with no value', () => {
+    const r = parseDrArgs(['rescue', '--volume']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toMatch(/requires a value/);
+  });
+});
+
+// ── drCommand: rescue ────────────────────────────────────────────────────────
+describe('drCommand rescue', () => {
+  it('snapshots system volumes and exits 0', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({
+      ok: true,
+      snapshots: [
+        { volumeName: 'pvc-1', namespace: 'platform-system', pvcName: 'system-db-1', snapshotName: 'manual-1-pvc-1' },
+        { volumeName: 'pvc-2', namespace: 'mail', pvcName: 'stalwart-data', snapshotName: 'manual-1-pvc-2' },
+      ],
+    }));
+    const { deps, out } = fakeDeps({}, { rescue });
+    const code = await drCommand(['rescue'], deps);
+    expect(code).toBe(0);
+    const text = out.join('\n');
+    expect(text).toContain('manual-1-pvc-1');
+    expect(text).toContain('stalwart-data');
+  });
+
+  it('passes --volume + --label through to the seam', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({ ok: true, snapshots: [] }));
+    const { deps } = fakeDeps({}, { rescue });
+    await drCommand(['rescue', '--volume', 'pvc-9', '--label', 'pre-restore'], deps);
+    expect(rescue).toHaveBeenCalledWith(expect.objectContaining({ volume: 'pvc-9', label: 'pre-restore' }));
+  });
+
+  it('emits machine JSON with --json', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({
+      ok: true, snapshots: [{ volumeName: 'pvc-1', namespace: 'platform-system', pvcName: 'system-db-1', snapshotName: 'manual-1-pvc-1' }],
+    }));
+    const { deps, out } = fakeDeps({}, { rescue });
+    const code = await drCommand(['rescue', '--json'], deps);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out.join('\n'));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.snapshots[0].snapshotName).toBe('manual-1-pvc-1');
+  });
+
+  it('reports per-volume failures as warnings and exits 1', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({
+      ok: true,
+      snapshots: [{ volumeName: 'pvc-1', namespace: 'platform-system', pvcName: 'system-db-1', snapshotName: 'manual-1-pvc-1' }],
+      failures: [{ volumeName: 'pvc-2', reason: 'timeout creating Snapshot CR' }],
+    }));
+    const { deps, err } = fakeDeps({}, { rescue });
+    const code = await drCommand(['rescue'], deps);
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/pvc-2/);
+    expect(err.join('\n')).toMatch(/timeout/);
+  });
+
+  it('maps an enumeration failure to errorCode + exit 1', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({ ok: false, errorCode: 'RESCUE_ERROR', detail: 'cluster unreachable' }));
+    const { deps, err } = fakeDeps({}, { rescue });
+    const code = await drCommand(['rescue'], deps);
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/RESCUE_ERROR/);
+  });
+
+  it('does NOT leak detail in --json on failure (label only)', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({ ok: false, errorCode: 'RESCUE_ERROR', detail: 'postgres://u:p@h/db unreachable' }));
+    const { deps, out } = fakeDeps({}, { rescue });
+    const code = await drCommand(['rescue', '--json'], deps);
+    expect(code).toBe(1);
+    const joined = out.join('\n');
+    expect(joined).not.toContain('u:p@h');
+    expect(JSON.parse(joined)).toEqual({ ok: false, errorCode: 'RESCUE_ERROR' });
+  });
+
+  it('reports "no system volumes" cleanly (exit 0)', async () => {
+    const rescue = vi.fn(async (): Promise<DrRescueOutcome> => ({ ok: true, snapshots: [] }));
+    const { deps, out } = fakeDeps({}, { rescue });
+    const code = await drCommand(['rescue'], deps);
+    expect(code).toBe(0);
+    expect(out.join('\n')).toMatch(/no system volumes|0 /i);
   });
 });

@@ -11,6 +11,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { realDrOps } from './dr-ops.js';
+import { realSnapshotOps } from './snapshot-ops.js';
 
 export interface VersionInfo {
   installed: string;
@@ -88,6 +89,47 @@ export interface DrRestoreOutcome {
   readonly driftNotes?: ReadonlyArray<string>;
 }
 
+/** Inputs for `dr rescue` — block-level Longhorn safety snapshots. */
+export interface DrRescueRequest {
+  /** Path to a kubeconfig; falls back to in-cluster / default resolution. */
+  readonly kubeconfig?: string;
+  /** Optional operator label stamped on every snapshot CR (≤63 chars). */
+  readonly label?: string;
+  /**
+   * Snapshot only this Longhorn volume. When unset, every system PVC's
+   * volume (platform / mail / longhorn-system / cnpg-system / monitoring)
+   * is snapshotted — a full safety net before a destructive restore.
+   */
+  readonly volume?: string;
+}
+
+/** One Longhorn snapshot created by `dr rescue`. */
+export interface DrRescueSnapshot {
+  readonly volumeName: string;
+  readonly namespace: string;
+  readonly pvcName: string;
+  readonly snapshotName: string;
+}
+
+/** One volume `dr rescue` could not snapshot (per-volume; non-fatal). */
+export interface DrRescueFailure {
+  readonly volumeName: string;
+  readonly reason: string;
+}
+
+/**
+ * Outcome of `dr rescue` — never thrown. `ok:false` means enumeration
+ * itself failed (cluster unreachable); per-volume snapshot failures are
+ * reported in `failures` with `ok:true` so partial success is visible.
+ */
+export interface DrRescueOutcome {
+  readonly ok: boolean;
+  readonly errorCode?: string;
+  readonly detail?: string;
+  readonly snapshots?: ReadonlyArray<DrRescueSnapshot>;
+  readonly failures?: ReadonlyArray<DrRescueFailure>;
+}
+
 /**
  * DR operations seam. The real implementation (`realDrOps`) imports the
  * backend `dr-restore` module DIRECTLY (ADR-045 / W17 — no logic
@@ -105,6 +147,79 @@ export interface DrOps {
    * NEVER throws — every failure is mapped into `DrRestoreOutcome.errorCode`.
    */
   runRestore: (req: DrRestoreRequest) => Promise<DrRestoreOutcome>;
+  /**
+   * Take block-level Longhorn rescue snapshots of the system volumes via
+   * the backend `system-snapshots` primitive. NEVER throws — failures map
+   * to `DrRescueOutcome.errorCode` / `failures`.
+   */
+  rescue: (req: DrRescueRequest) => Promise<DrRescueOutcome>;
+}
+
+// ── Snapshot (CNPG on-demand backup + object-store catalogue) ────────────────
+
+/** Inputs for `snapshot capture` — an on-demand CNPG base backup. */
+export interface SnapshotCaptureRequest {
+  readonly namespace: string;
+  readonly clusterName: string;
+  readonly description?: string;
+  readonly kubeconfig?: string;
+}
+
+/** Outcome of `snapshot capture` — never thrown; failures map to `errorCode`. */
+export interface SnapshotCaptureOutcome {
+  readonly ok: boolean;
+  readonly errorCode?: string;
+  readonly detail?: string;
+  readonly backup?: {
+    readonly backupName: string;
+    readonly namespace: string;
+    readonly clusterName: string;
+    readonly createdAt: string;
+  };
+}
+
+/** Inputs for `snapshot list` — read the object-store catalogue via the shim. */
+export interface SnapshotListRequest {
+  readonly namespace: string;
+  readonly objectStoreName: string;
+  readonly kubeconfig?: string;
+}
+
+/** One backup row in the object-store catalogue (subset of CatalogueBackup). */
+export interface SnapshotBackupInfo {
+  readonly backupId: string;
+  readonly status: string | null;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+  readonly dataSizeBytes: number | null;
+  readonly description?: string | null;
+  readonly kind?: string | null;
+}
+
+/**
+ * Outcome of `snapshot list`. The underlying catalogue never throws; an
+ * `'unavailable'` source (CR missing, shim down, LIST timeout) maps to
+ * `ok:false` so the CLI exits non-zero with the reason on stderr.
+ */
+export interface SnapshotListOutcome {
+  readonly ok: boolean;
+  readonly errorCode?: string;
+  readonly detail?: string;
+  readonly objectStoreName?: string;
+  readonly namespace?: string;
+  readonly backups?: ReadonlyArray<SnapshotBackupInfo>;
+}
+
+/**
+ * Snapshot/backup operations seam. The real implementation
+ * (`realSnapshotOps`) imports the backend `cnpg-backup-now` +
+ * `cnpg-backup-catalogue` modules DIRECTLY (ADR-045 / W17); tests inject a fake.
+ */
+export interface SnapshotOps {
+  /** Create a CNPG Backup CR (on-demand base backup). NEVER throws. */
+  capture: (req: SnapshotCaptureRequest) => Promise<SnapshotCaptureOutcome>;
+  /** List object-store backups via the backup-rclone-shim. NEVER throws. */
+  list: (req: SnapshotListRequest) => Promise<SnapshotListOutcome>;
 }
 
 export interface Deps {
@@ -127,8 +242,10 @@ export interface Deps {
   readFile: (path: string) => string | null;
   /** The version compiled into this binary at build time (PLATFORM_OPS_VERSION). */
   buildVersion: string;
-  /** Disaster-recovery operations (bundle verify + restore). */
+  /** Disaster-recovery operations (bundle verify + restore + rescue snapshot). */
   dr: DrOps;
+  /** Snapshot operations (CNPG on-demand backup + object-store catalogue). */
+  snapshot: SnapshotOps;
 }
 
 function realExec(
@@ -205,5 +322,6 @@ export function realDeps(): Deps {
     },
     buildVersion: (process.env.PLATFORM_OPS_VERSION ?? '').trim(),
     dr: realDrOps(),
+    snapshot: realSnapshotOps(),
   };
 }
