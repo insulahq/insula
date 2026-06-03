@@ -99,6 +99,59 @@ export interface RepinResult {
   readonly reason?: string;
 }
 
+/** A single git-ref component (tag/branch/commit) must be the git-ref charset. */
+function refValueValid(v: string): boolean {
+  return /^[A-Za-z0-9._/+-]{1,250}$/.test(v);
+}
+
+/** A GitRepository name must be a DNS-1123 label (defends against a poisoned manifest). */
+function k8sNameValid(name: string): boolean {
+  return /^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$/.test(name);
+}
+
+/**
+ * Re-pin a GitRepository's `spec.ref` to an arbitrary recorded ref (tag OR
+ * branch OR commit) — the ROLLBACK counterpart to repinGitRepositoryTag, which
+ * only writes a tag. Used to restore the exact pre-upgrade ref (which on
+ * dev/staging is a branch, on production a tag). Validates exactly one component
+ * with the git-ref charset; clears the others. Never throws.
+ */
+export async function repinGitRepositoryRef(
+  k8s: K8sClients,
+  name: string,
+  ref: GitRepoRef,
+  namespace = FLUX_NAMESPACE,
+): Promise<RepinResult> {
+  if (!k8sNameValid(name)) {
+    return { ok: false, name, previousRef: null, tag: '', reason: `refusing malformed GitRepository name ${JSON.stringify(name)}` };
+  }
+  const tag = ref.tag, branch = ref.branch, commit = ref.commit;
+  const present = [tag, branch, commit].filter((x): x is string => typeof x === 'string' && x.length > 0);
+  if (present.length !== 1) {
+    return { ok: false, name, previousRef: null, tag: '', reason: `refusing to restore an ambiguous/empty ref ${JSON.stringify(ref)}` };
+  }
+  if (!refValueValid(present[0])) {
+    return { ok: false, name, previousRef: null, tag: present[0], reason: `refusing malformed ref value ${JSON.stringify(present[0])}` };
+  }
+  const previousRef = await readGitRepositoryRef(k8s, name, namespace);
+  if (previousRef === null) {
+    return { ok: false, name, previousRef: null, tag: present[0], reason: `GitRepository ${namespace}/${name} not found` };
+  }
+  await (k8s.custom as unknown as {
+    patchNamespacedCustomObject: (
+      a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+      mw: typeof MERGE_PATCH,
+    ) => Promise<unknown>;
+  }).patchNamespacedCustomObject(
+    {
+      group: FLUX_SRC_GROUP, version: FLUX_SRC_VERSION, namespace, plural: FLUX_SRC_PLURAL, name,
+      body: { spec: { ref: { tag: tag ?? null, branch: branch ?? null, commit: commit ?? null } } },
+    },
+    MERGE_PATCH,
+  );
+  return { ok: true, name, previousRef, tag: present[0] };
+}
+
 /**
  * Re-pin a GitRepository's `spec.ref` to `tag`, clearing any `branch`/`commit`
  * (so a branch-tracking source switches cleanly to the tag). The tag is

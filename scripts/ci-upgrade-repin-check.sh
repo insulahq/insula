@@ -54,5 +54,17 @@ else
   fail "upgrade-planner.ts is missing"
 fi
 
+# (5) rollback (W16): mandatory rescue before apply + dry-run-default + ref-validated
+ROLLBACK="$REPO_ROOT/backend/src/modules/platform-upgrades/rollback.ts"
+if [[ -f "$ROLLBACK" ]]; then
+  grep -qF '0 volumes' "$ROLLBACK" || fail "captureUpgradeRescue must refuse a 0-volume rescue (no safety net → no upgrade)"
+  grep -qF 'if (!opts.apply)' "$ROLLBACK" || fail "runRollback must be dry-run unless apply is set"
+  grep -qF "status === 'rolled-back'" "$ROLLBACK" || fail "runRollback must refuse re-rolling an already-rolled-back upgrade"
+else
+  fail "rollback.ts is missing"
+fi
+# the rollback re-pin must validate the ref it restores (refValueValid charset)
+grep -qF 'refValueValid' "$REPIN" || fail "repinGitRepositoryRef must validate the restored ref value (refValueValid)"
+
 if [[ "$FAILED" -ne 0 ]]; then echo "ci-upgrade-repin-check: FAILED" >&2; exit 1; fi
 echo "ci-upgrade-repin-check: OK"

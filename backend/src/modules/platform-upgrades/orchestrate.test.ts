@@ -84,4 +84,24 @@ describe('runUpgrade', () => {
     expect(r.summary).toMatch(/could not resolve/);
     expect(patches).toHaveLength(0);
   });
+
+  it('apply ABORTS (no re-pin) when the rollback rescue capture fails (W16 safety net)', async () => {
+    const { io } = fakeSettings(seedReady);
+    const { k8s, patches } = fakeK8s({ source: 'hosting-platform-production' });
+    const capture = vi.fn(async () => ({ ok: false, reason: 'rescue captured 0 volumes' }));
+    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true, rollback: { capture } });
+    expect(capture).toHaveBeenCalledWith({ fromVersion: '2026.6.2', toVersion: '2026.7.0', gitRepository: 'hosting-platform-production' });
+    expect(r.applied).toBe(false);
+    expect(r.summary).toMatch(/aborted.*rescue/);
+    expect(patches).toHaveLength(0); // never re-pinned without a safety net
+  });
+
+  it('apply PROCEEDS (re-pins) when the rescue capture succeeds', async () => {
+    const { io } = fakeSettings(seedReady);
+    const { k8s, patches } = fakeK8s({ source: 'hosting-platform-production' });
+    const capture = vi.fn(async () => ({ ok: true }));
+    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true, rollback: { capture } });
+    expect(r.applied).toBe(true);
+    expect(patches).toHaveLength(1);
+  });
 });

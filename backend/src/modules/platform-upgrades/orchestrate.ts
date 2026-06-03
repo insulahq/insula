@@ -44,6 +44,15 @@ export interface RunUpgradeOpts {
   readonly requestedVersion?: string;
   /** false = dry-run plan only (default); true = actually re-pin. */
   readonly apply: boolean;
+  /**
+   * Optional rollback safety net (W16). When present, a rescue snapshot +
+   * manifest is captured BEFORE the apply re-pin; a failed capture ABORTS the
+   * upgrade. Decoupled (a thin seam) to avoid an orchestrate ↔ rollback cycle —
+   * the caller wires it to `captureUpgradeRescue(realRollbackDeps(db, k8s), …)`.
+   */
+  readonly rollback?: {
+    capture: (input: { fromVersion: string | null; toVersion: string; gitRepository: string }) => Promise<{ ok: boolean; reason?: string }>;
+  };
 }
 
 export interface RunUpgradeResult {
@@ -95,6 +104,17 @@ export async function runUpgrade(settings: SettingsIO, k8s: K8sClients, opts: Ru
   if (!tag) {
     return { decision, environment: ENVIRONMENT, gitRepository, applied: false, summary: `target ${decision.target} has no clean release tag` };
   }
+
+  // MANDATORY rollback safety net (W16, #15): capture rescue snapshots + record
+  // the pre-upgrade ref BEFORE re-pinning. If the rescue can't be taken, ABORT —
+  // never re-pin without a way back.
+  if (opts.rollback) {
+    const rescue = await opts.rollback.capture({ fromVersion: installed, toVersion: decision.target!, gitRepository });
+    if (!rescue.ok) {
+      return { decision, environment: ENVIRONMENT, gitRepository, applied: false, summary: `aborted — rollback rescue failed: ${rescue.reason ?? 'unknown'}` };
+    }
+  }
+
   const repin = await repinGitRepositoryTag(k8s, gitRepository, tag);
   if (repin.ok) {
     // Record the in-flight target so the UI/poller can show "upgrading → X".

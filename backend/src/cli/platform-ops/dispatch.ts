@@ -17,6 +17,7 @@ import {
   hostConfigCommand,
   nodeCommand,
   upgradeCommand,
+  rollbackCommand,
 } from './commands.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
@@ -37,6 +38,9 @@ Commands:
   upgrade [--version X.Y.Z] [--apply]
                          Plan/apply a platform upgrade by re-pinning the Flux
                          source tag (dry-run prints the plan; --apply re-pins)
+  rollback [--apply] [--restore-data]
+                         Undo the most recent upgrade (re-pin back; --restore-data
+                         also reverts Longhorn snapshots — DESTRUCTIVE)
   migrations list [--json] List platform-migrations + their applied status
   migrations apply [--dry-run] Apply pending platform-migrations (DB + cluster)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
@@ -54,11 +58,10 @@ Commands:
   shell                  Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
 
-Runs on any cluster node. Mostly read-only; the privileged operations in this
-release are \`dr restore\` / \`dr rescue\` (disaster recovery) and
-\`snapshot capture\` — all work when platform-api is down (they talk to the DB
-+ k8s API directly). Other privileged ops (node drain, migrations apply,
-upgrade, rollback) land in later releases. See ADR-045.`;
+Runs on any cluster node. Mostly read-only; the privileged operations
+(\`migrations apply\`, \`host-config apply\`, \`cluster upgrade\`, \`upgrade\`,
+\`rollback\`, \`dr restore\` / \`dr rescue\`, \`snapshot capture\`) all work when
+platform-api is down (they talk to the DB + k8s API directly). See ADR-045.`;
 
 function printHelp(deps: Deps): void {
   deps.out(HELP);
@@ -122,6 +125,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return nodeCommand(rest, deps);
     case 'upgrade':
       return upgradeCommand(rest, deps);
+    case 'rollback':
+      return rollbackCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     default:

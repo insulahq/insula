@@ -290,6 +290,13 @@ rules:
   - apiGroups: ["kustomize.toolkit.fluxcd.io"]
     resources: ["kustomizations"]
     verbs: ["get", "list", "patch"]
+  # ADR-045 W13/W16 — the in-cluster upgrade/rollback re-pins the Flux source by
+  # PATCHing its GitRepository.spec.ref (get/list to read the current ref +
+  # resolve the source; patch to re-pin forward / roll back). Host-side
+  # platform-ops uses the admin kubeconfig, but the backend pod route needs this.
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["gitrepositories"]
+    verbs: ["get", "list", "patch"]
   # Phase 4: cluster-network admin module — CRUD on the firewall-trust
   # CRDs that the firewall-reconciler converges into nft sets on
   # every node. ClusterTrustedRange is permanent; ClusterPendingPeer is

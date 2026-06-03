@@ -63,3 +63,28 @@ export function useUpgradeApply() {
     },
   });
 }
+
+interface RollbackResponse {
+  readonly data: {
+    readonly ok: boolean;
+    readonly dataRestored: boolean;
+    readonly reason: string | null;
+    readonly summary: string;
+    readonly manifest: { readonly toVersion: string; readonly previousRef: Record<string, string>; readonly rescueSnapshots: number } | null;
+  };
+}
+
+export type RollbackData = RollbackResponse['data'];
+
+/**
+ * Roll back the most recent upgrade. apply:false = dry-run preview;
+ * restoreData:true ALSO reverts the Longhorn rescue snapshots (destructive).
+ */
+export function useRollback() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { apply: boolean; restoreData: boolean }) =>
+      apiFetch<RollbackResponse>('/api/v1/admin/platform/rollback', { method: 'POST', body: JSON.stringify(vars) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['platform-version'] }),
+  });
+}

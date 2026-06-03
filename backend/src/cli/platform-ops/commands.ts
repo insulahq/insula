@@ -507,3 +507,30 @@ export async function upgradeCommand(args: string[], deps: Deps): Promise<number
   // proceed-but-not-applied is a real failure; a blocked/no-op decision is exit 0.
   return r.ok ? 0 : 1;
 }
+
+/**
+ * `rollback [--apply] [--restore-data]` (ADR-045 W16) — undo the most recent
+ * applied upgrade. DRY-RUN BY DEFAULT (prints what it would do); `--apply`
+ * re-pins the Flux source back to the recorded pre-upgrade ref. `--restore-data`
+ * ALSO reverts the Longhorn rescue snapshots (DESTRUCTIVE — undoes data changes).
+ */
+export async function rollbackCommand(args: string[], deps: Deps): Promise<number> {
+  let apply = false;
+  let restoreData = false;
+  for (const a of args) {
+    if (a === '--apply') apply = true;
+    else if (a === '--restore-data') restoreData = true;
+    else if (a === '--dry-run') apply = false;
+    else {
+      deps.err(`rollback: unknown arg '${a}'`);
+      return 2;
+    }
+  }
+  const r = await deps.rollback.run({ apply, restoreData });
+  if (r.errorCode) {
+    deps.err(`rollback: ${r.errorCode} — ${r.summary}`);
+    return 1;
+  }
+  deps.out(apply ? `rollback: ${r.summary}` : `# DRY-RUN — ${r.summary}\n  pass --apply to perform it${restoreData ? '' : ' (add --restore-data to also revert volumes)'}`);
+  return r.ok ? 0 : 1;
+}

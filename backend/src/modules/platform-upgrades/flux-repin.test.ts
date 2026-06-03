@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { gitTagForVersion, repinGitRepositoryTag } from './flux-repin.js';
+import { gitTagForVersion, repinGitRepositoryTag, repinGitRepositoryRef } from './flux-repin.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 describe('gitTagForVersion', () => {
@@ -49,6 +49,39 @@ describe('repinGitRepositoryTag', () => {
     const r = await repinGitRepositoryTag(k8s, 'nope', 'v2026.7.0');
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/not found/);
+    expect(patches).toHaveLength(0);
+  });
+});
+
+describe('repinGitRepositoryRef (rollback — restore any tag/branch/commit)', () => {
+  it('restores a branch, clearing tag + commit', async () => {
+    const { k8s, patches } = fakeK8s({ ref: { tag: 'v2026.7.0' } });
+    const r = await repinGitRepositoryRef(k8s, 'hosting-platform-production', { branch: 'staging' });
+    expect(r.ok).toBe(true);
+    expect((patches[0] as { body: { spec: { ref: unknown } } }).body.spec.ref).toEqual({ tag: null, branch: 'staging', commit: null });
+  });
+  it('restores a tag', async () => {
+    const { k8s, patches } = fakeK8s({ ref: { branch: 'staging' } });
+    const r = await repinGitRepositoryRef(k8s, 'x', { tag: 'v2026.6.2' });
+    expect(r.ok).toBe(true);
+    expect((patches[0] as { body: { spec: { ref: { tag: string } } } }).body.spec.ref.tag).toBe('v2026.6.2');
+  });
+  it('refuses an ambiguous (>1 component) or empty ref — no patch', async () => {
+    const { k8s, patches } = fakeK8s();
+    expect((await repinGitRepositoryRef(k8s, 'x', { tag: 'v1.0.0', branch: 'main' })).ok).toBe(false);
+    expect((await repinGitRepositoryRef(k8s, 'x', {})).ok).toBe(false);
+    expect(patches).toHaveLength(0);
+  });
+  it('refuses a malformed ref value / GitRepository name — no patch', async () => {
+    const { k8s, patches } = fakeK8s();
+    expect((await repinGitRepositoryRef(k8s, 'x', { branch: 'evil ; rm -rf' })).ok).toBe(false);
+    expect((await repinGitRepositoryRef(k8s, 'Bad_Name!', { branch: 'staging' })).ok).toBe(false);
+    expect(patches).toHaveLength(0);
+  });
+  it('returns ok:false when the GitRepository is absent (never throws)', async () => {
+    const { k8s, patches } = fakeK8s({ missing: true });
+    const r = await repinGitRepositoryRef(k8s, 'nope', { branch: 'staging' });
+    expect(r.ok).toBe(false);
     expect(patches).toHaveLength(0);
   });
 });
