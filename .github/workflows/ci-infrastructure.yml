@@ -149,6 +149,14 @@ jobs:
       - name: Verify cosign-signed manifest + baked key + hourly CronJob + no cosign binary
         run: ./scripts/ci-version-poller-check.sh
 
+  host-config-enforcer-guard:
+    name: Host-config enforcer safety (ADR-045 W10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify enforcer is opt-in + observe stays locked + allow-list write-gate
+        run: ./scripts/ci-host-config-enforcer-check.sh
+
   no-dex-in-production:
     name: Dex must not ship in production
     runs-on: ubuntu-latest

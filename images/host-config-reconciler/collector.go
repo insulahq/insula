@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -28,16 +27,10 @@ func normalizeSysctl(s string) string {
 }
 
 // readActualSysctl reads a sysctl's live value from the read-only /proc/sys
-// mount. Path-contained: even after the key guards in sysctlKeyToPath, the
-// cleaned absolute path must stay under <hostRoot>/proc/sys.
+// mount, via the shared hostProcSysPath chokepoint (key guards + containment).
 func (c *collector) readActualSysctl(key string) (string, bool) {
-	rel, ok := sysctlKeyToPath(key)
+	full, ok := hostProcSysPath(c.hostRoot, key)
 	if !ok {
-		return "", false
-	}
-	base := filepath.Join(c.hostRoot, "proc", "sys")
-	full := filepath.Join(base, rel)
-	if full != base && !strings.HasPrefix(full, base+string(os.PathSeparator)) {
 		return "", false
 	}
 	b, err := os.ReadFile(full)
