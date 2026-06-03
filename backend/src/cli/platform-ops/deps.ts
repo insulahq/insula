@@ -12,7 +12,21 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { realDrOps } from './dr-ops.js';
 import { realSnapshotOps } from './snapshot-ops.js';
+import { realSelfUpgradeOps } from './self-upgrade/index.js';
 import { scrubCreds } from './redact.js';
+import type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
+
+export type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
+
+/**
+ * Self-upgrade operations seam (ADR-045 W11.5). The real implementation
+ * (`realSelfUpgradeOps`) wires the pure `runSelfUpgrade` orchestrator to k8s /
+ * GitHub / filesystem I/O; tests inject a fake. NEVER throws.
+ */
+export interface SelfUpgradeOps {
+  /** Resolve target → cosign-verify → atomically replace the binary. */
+  run: (opts: SelfUpgradeOptions) => Promise<SelfUpgradeResult>;
+}
 
 export interface VersionInfo {
   installed: string;
@@ -298,6 +312,8 @@ export interface Deps {
   dr: DrOps;
   /** Snapshot operations (CNPG on-demand backup + object-store catalogue). */
   snapshot: SnapshotOps;
+  /** Self-upgrade: keep this binary current (cosign-verified atomic replace). */
+  selfUpgrade: SelfUpgradeOps;
 }
 
 function realExec(
@@ -448,5 +464,9 @@ export function realDeps(): Deps {
     buildVersion: (process.env.PLATFORM_OPS_VERSION ?? '').trim(),
     dr: realDrOps(),
     snapshot: realSnapshotOps(),
+    // Thread the LITERAL process.env.PLATFORM_OPS_VERSION (esbuild --define
+    // substitutes only that exact expression) so self-upgrade knows its own
+    // baked version — reading it via the `env` alias would not be substituted.
+    selfUpgrade: realSelfUpgradeOps(env, (process.env.PLATFORM_OPS_VERSION ?? '').trim()),
   };
 }

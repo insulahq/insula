@@ -163,11 +163,76 @@ export async function shellCommand(_args: string[], deps: Deps): Promise<number>
   return r.code;
 }
 
-export async function selfUpgrade(_args: string[], deps: Deps): Promise<number> {
-  // Stub: the daily platform-ops-update.timer (installed by bootstrap) calls
-  // `self-upgrade --check`. Until the self-upgrade loop ships (ADR-045 W11.5/W14)
-  // this must exit 0 so the timer is a clean no-op rather than a daily failure.
-  deps.out('platform-ops self-upgrade is not implemented in this release (no-op).');
-  deps.out('(The daily update timer activates once the self-upgrade loop ships — ADR-045 W11.5/W14.)');
-  return 0;
+interface SelfUpgradeArgs {
+  readonly mode: 'check' | 'apply';
+  readonly force: boolean;
+  readonly version?: string;
+}
+
+/** Parse `self-upgrade` flags; returns an error string on a usage problem. */
+export function parseSelfUpgradeArgs(args: string[]): SelfUpgradeArgs | { error: string } {
+  let mode: 'check' | 'apply' = 'apply';
+  let force = false;
+  let version: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--check') mode = 'check';
+    else if (a === '--force') force = true;
+    else if (a === '--version') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('--')) return { error: '--version requires a value (e.g. --version 2026.6.3)' };
+      version = v;
+      i++;
+    } else if (a.startsWith('--version=')) {
+      const v = a.slice('--version='.length);
+      if (!v) return { error: '--version= requires a value (e.g. --version=2026.6.3)' };
+      version = v;
+    } else {
+      return { error: `unknown flag: ${a}` };
+    }
+  }
+  return { mode, force, version };
+}
+
+/**
+ * `self-upgrade [--check] [--force] [--version X.Y.Z]` (ADR-045 W11.5).
+ *
+ * Keeps the binary current: resolve a target (explicit → cluster-up
+ * platform-version ConfigMap → cluster-down GitHub Releases), and if it's newer
+ * (or --force), download + cosign-verify + atomically replace. `--check` is the
+ * daily-timer mode — it APPLIES, but tolerates transient download failures so
+ * the unit doesn't flap on a network blip. A verify failure ALWAYS surfaces.
+ */
+export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
+  const parsed = parseSelfUpgradeArgs(args);
+  if ('error' in parsed) {
+    deps.err(`self-upgrade: ${parsed.error}`);
+    return 2;
+  }
+  const r = await deps.selfUpgrade.run(parsed);
+
+  switch (r.action) {
+    case 'upgraded':
+      deps.out(`platform-ops upgraded ${r.current} → ${r.target} (via ${r.source}, ${r.arch})`);
+      return 0;
+    case 'already-current':
+      deps.out(`platform-ops is current (${r.current}; target ${r.target ?? '—'} via ${r.source ?? '—'})`);
+      return 0;
+    case 'no-target':
+      deps.out(`platform-ops ${r.current}: no upgrade target (cluster unreachable + Releases offline)`);
+      return 0;
+    case 'invalid-version':
+      deps.err(`self-upgrade: ${r.reason ?? 'invalid version'}`);
+      return 2;
+    case 'download-failed':
+      deps.err(`self-upgrade: failed to download ${r.target} (${r.arch})`);
+      // Transient in the unattended timer — don't flap the unit; surface on a manual run.
+      return parsed.mode === 'check' ? 0 : 1;
+    case 'verify-failed':
+      deps.err(`self-upgrade: REFUSED ${r.target} — ${r.reason ?? 'signature did not verify'} (fail-closed)`);
+      return 1;
+    case 'replace-failed':
+      deps.err(`self-upgrade: verified ${r.target} but atomic replace failed (permissions?)`);
+      return 1;
+  }
 }

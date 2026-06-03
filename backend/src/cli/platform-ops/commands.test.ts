@@ -34,6 +34,9 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       capture: vi.fn(async () => ({ ok: true })),
       list: vi.fn(async () => ({ ok: true, backups: [] })),
     },
+    selfUpgrade: {
+      run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.1', target: '2026.6.1', source: 'configmap' as const, arch: 'amd64' })),
+    },
     ...over,
   };
   return { deps, out, err };
@@ -282,10 +285,72 @@ describe('shellCommand', () => {
 });
 
 describe('selfUpgrade', () => {
-  it('is a clean no-op stub (exit 0) so the daily timer never fails', async () => {
-    const { deps, out } = fakeDeps();
+  it('exit 0 + message on a successful upgrade', async () => {
+    const { deps, out } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '2026.6.2', target: '2026.6.3', source: 'configmap' as const, arch: 'amd64' })) },
+    });
     const code = await selfUpgrade(['--check'], deps);
     expect(code).toBe(0);
-    expect(out.join('\n')).toMatch(/not implemented|no-op/i);
+    expect(out.join('\n')).toMatch(/upgraded 2026\.6\.2 → 2026\.6\.3/);
+  });
+
+  it('exit 0 on already-current', async () => {
+    const { deps } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.3', target: '2026.6.3', source: 'releases' as const, arch: 'amd64' })) },
+    });
+    expect(await selfUpgrade([], deps)).toBe(0);
+  });
+
+  it('exit 0 on no-target (cluster down + offline) — timer never flaps', async () => {
+    const { deps } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'no-target' as const, current: '2026.6.2', target: null, source: null, arch: 'amd64' })) },
+    });
+    expect(await selfUpgrade(['--check'], deps)).toBe(0);
+  });
+
+  it('exit 1 on a verify failure (security — always surfaced)', async () => {
+    const { deps, err } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: false, action: 'verify-failed' as const, current: '2026.6.2', target: '2026.6.3', source: 'configmap' as const, arch: 'amd64', reason: 'cosign signature did not verify' })) },
+    });
+    const code = await selfUpgrade(['--check'], deps);
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/REFUSED.*fail-closed/);
+  });
+
+  it('download-failed: exit 0 under --check (transient), exit 1 on a manual run', async () => {
+    const mk = () => ({ run: vi.fn(async () => ({ ok: false, action: 'download-failed' as const, current: '2026.6.2', target: '2026.6.3', source: 'releases' as const, arch: 'amd64' })) });
+    const a = fakeDeps({ selfUpgrade: mk() });
+    expect(await selfUpgrade(['--check'], a.deps)).toBe(0);
+    const b = fakeDeps({ selfUpgrade: mk() });
+    expect(await selfUpgrade([], b.deps)).toBe(1);
+  });
+
+  it('exit 1 + stderr on replace-failed (verified but fs write failed)', async () => {
+    const { deps, err } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: false, action: 'replace-failed' as const, current: '2026.6.2', target: '2026.6.3', source: 'configmap' as const, arch: 'amd64' })) },
+    });
+    expect(await selfUpgrade(['--check'], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/atomic replace failed/);
+  });
+
+  it('exit 2 on a bad flag', async () => {
+    const { deps } = fakeDeps();
+    expect(await selfUpgrade(['--bogus'], deps)).toBe(2);
+  });
+
+  it('passes parsed flags (mode/force/version) through to the ops seam', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '1.0.0', target: '2026.7.0', source: 'explicit' as const, arch: 'amd64' }));
+    const { deps } = fakeDeps({ selfUpgrade: { run } });
+    await selfUpgrade(['--force', '--version', '2026.7.0'], deps);
+    expect(run).toHaveBeenCalledWith({ mode: 'apply', force: true, version: '2026.7.0' });
+  });
+
+  it('accepts the --version=X.Y.Z form and rejects an empty --version=', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '1.0.0', target: '2026.7.0', source: 'explicit' as const, arch: 'amd64' }));
+    const a = fakeDeps({ selfUpgrade: { run } });
+    await selfUpgrade(['--version=2026.7.0'], a.deps);
+    expect(run).toHaveBeenCalledWith({ mode: 'apply', force: false, version: '2026.7.0' });
+    const b = fakeDeps();
+    expect(await selfUpgrade(['--version='], b.deps)).toBe(2);
   });
 });
