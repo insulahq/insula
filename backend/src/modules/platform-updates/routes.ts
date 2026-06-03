@@ -37,6 +37,9 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
                 imageUpdateStrategy: { type: 'string', enum: ['auto', 'manual'] },
                 pendingVersion: { type: 'string', nullable: true },
                 lastCheckedAt: { type: 'string', nullable: true },
+                availableVerifiedAt: { type: 'string', nullable: true },
+                availableVerifyStatus: { type: 'string', nullable: true },
+                includePrereleases: { type: 'boolean' },
               },
             },
           },
@@ -59,6 +62,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
         required: ['autoUpdate'],
         properties: {
           autoUpdate: { type: 'boolean' },
+          includePrereleases: { type: 'boolean' },
         },
       },
       response: {
@@ -69,6 +73,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
               type: 'object',
               properties: {
                 autoUpdate: { type: 'boolean' },
+                includePrereleases: { type: 'boolean' },
               },
             },
           },
@@ -86,7 +91,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
         { field: firstError.path.join('.') },
       );
     }
-    const result = await service.updateSettings(app.db, parsed.data.autoUpdate);
+    const result = await service.updateSettings(app.db, parsed.data.autoUpdate, parsed.data.includePrereleases);
     return success(result);
   });
 

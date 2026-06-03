@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import type { PlatformVersionResponse } from '@insula/api-contracts';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
@@ -100,7 +101,7 @@ async function resolveLatestVersion(): Promise<{ version: string | null; source:
   return { version: null, source: 'none' };
 }
 
-export async function getVersionInfo(db: Database) {
+export async function getVersionInfo(db: Database): Promise<PlatformVersionResponse> {
   const autoUpdate = (await getSetting(db, 'auto_update')) === 'true';
   const lastCheckedAt = await getSetting(db, 'last_update_check');
   let latestVersion = await getSetting(db, 'latest_version');
@@ -123,10 +124,23 @@ export async function getVersionInfo(db: Database) {
     await setSetting(db, 'last_update_check', new Date().toISOString());
   }
 
+  // The cosign-VERIFIED available version (W11 poller) is authoritative for the
+  // spine + upgrade gating. Fall back to the lazy, UNVERIFIED latest_version only
+  // when nothing has been verified yet — so dev/staging (often unsigned) still
+  // show an available version, while production upgrade-gating (W13) consumes the
+  // verified value. availableVerifyStatus surfaces WHY there's no verified value
+  // (e.g. 'unsigned', 'verify-failed') so the UI can warn instead of silently
+  // showing the unverified fallback.
+  const verifiedAvailable = await getSetting(db, 'available_version');
+  const availableVerifiedAt = await getSetting(db, 'available_verified_at');
+  const availableVerifyStatus = await getSetting(db, 'available_verify_status');
+  const includePrereleases = (await getSetting(db, 'auto_update_include_prereleases')) === 'true';
+  const available = verifiedAvailable && VERSION_RE.test(verifiedAvailable) ? verifiedAvailable : latestVersion;
+
   // "unknown" currentVersion means PLATFORM_VERSION isn't wired up —
   // we can't compare semver, so never claim an update is available.
   const canCompare = VERSION_RE.test(CURRENT_VERSION);
-  const updateAvailable = canCompare && latestVersion !== null && latestVersion !== CURRENT_VERSION && isNewer(latestVersion, CURRENT_VERSION);
+  const updateAvailable = canCompare && available !== null && available !== CURRENT_VERSION && isNewer(available, CURRENT_VERSION);
 
   const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
   const pendingVersion = await getSetting(db, 'pending_update_version');
@@ -155,7 +169,11 @@ export async function getVersionInfo(db: Database) {
     lastCheckedAt: lastCheckedAt ?? null,
     installed,
     running: CURRENT_VERSION,
-    available: latestVersion,
+    available,
+    // W11 verified-poller surfaces:
+    availableVerifiedAt: availableVerifiedAt ?? null,
+    availableVerifyStatus: availableVerifyStatus ?? null,
+    includePrereleases,
   };
 }
 
@@ -170,9 +188,13 @@ function isNewer(latest: string, current: string): boolean {
   return lPat > cPat;
 }
 
-export async function updateSettings(db: Database, autoUpdate: boolean) {
+export async function updateSettings(db: Database, autoUpdate: boolean, includePrereleases?: boolean): Promise<{ autoUpdate: boolean; includePrereleases: boolean }> {
   await setSetting(db, 'auto_update', String(autoUpdate));
-  return { autoUpdate };
+  if (includePrereleases !== undefined) {
+    await setSetting(db, 'auto_update_include_prereleases', String(includePrereleases));
+  }
+  const effectivePrereleases = (await getSetting(db, 'auto_update_include_prereleases')) === 'true';
+  return { autoUpdate, includePrereleases: effectivePrereleases };
 }
 
 // ─── Capacity Check ─────────────────────────────────────────────────────────

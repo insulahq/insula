@@ -67,6 +67,11 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 COPY --from=builder /app/dist/ dist/
 COPY backend/src/db/migrations/ dist/db/migrations/
 COPY backend/docker-entrypoint.sh ./
+# Pinned cosign public key — the trust anchor for the W11 version-poller
+# (backend/src/cli/version-poll-job.ts reads /app/platform/cosign.pub). Baked
+# from the committed key so it's always in lockstep with the image's release;
+# no ConfigMap to drift. Verification is pure Node crypto — no cosign binary.
+COPY platform/cosign.pub ./platform/cosign.pub
 
 USER node
 EXPOSE 3000

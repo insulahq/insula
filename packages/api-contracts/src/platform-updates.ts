@@ -23,10 +23,22 @@ export const platformVersionResponseSchema = z.object({
   imageUpdateStrategy: z.enum(['auto', 'manual']),
   pendingVersion: z.string().nullable(),
   lastCheckedAt: z.string().nullable(),
+  // W11 verified version-poller (ADR-045): `available` prefers the cosign-VERIFIED
+  // value; these expose its provenance so the UI can distinguish a verified
+  // available version from the unverified `latestVersion` fallback.
+  //   availableVerifiedAt   — ISO timestamp of the last successful verify (null = none yet)
+  //   availableVerifyStatus — last poll outcome: 'verified' | 'unsigned' |
+  //                           'verify-failed' | 'invalid-manifest' | 'no-releases' (null = never polled)
+  //   includePrereleases    — whether the poller considers prerelease tags
+  availableVerifiedAt: z.string().nullable(),
+  availableVerifyStatus: z.string().nullable(),
+  includePrereleases: z.boolean(),
 });
 
 export const updateSettingsSchema = z.object({
   autoUpdate: z.boolean(),
+  // Optional: when present, persists the poller's prerelease-inclusion flag.
+  includePrereleases: z.boolean().optional(),
 });
 
 export const triggerUpdateResponseSchema = z.object({
