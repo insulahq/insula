@@ -13,6 +13,10 @@
 #   3. The host-side converger carries the deny-list (kernel.core_pattern etc. —
 #      root-RCE / hardening-downgrade sysctls are never writable) AND its write
 #      path re-checks the allow-list.
+#   4. Package convergence (W10b) is ADDITIVE-ONLY + injection-safe: the install
+#      path never removes/purges/autoremoves/auto-downgrades, validates package
+#      names + pinned versions (anti-flag charset), and shells out only via argv
+#      (execFile, NO shell) with a `--` end-of-options separator.
 
 set -euo pipefail
 
@@ -20,6 +24,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OBSERVE_DS="$REPO_ROOT/k8s/base/host-config-reconciler/daemonset.yaml"
 SYSCTLS_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/sysctls.ts"
 INDEX_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/index.ts"
+PACKAGES_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/packages.ts"
 
 fail() { echo "  ✗ $1" >&2; FAILED=1; }
 FAILED=0
@@ -61,6 +66,41 @@ if [[ -f "$INDEX_TS" ]]; then
     || fail "writeSysctl must re-check BOTH sysctlAllowed(key) AND procSysPath(key) before writing"
 else
   fail "host-config/index.ts is missing"
+fi
+
+# (4) package convergence: additive-only + injection-safe
+if [[ -f "$PACKAGES_TS" ]]; then
+  grep -q 'packageNameValid' "$PACKAGES_TS" || fail "packages.ts has no packageNameValid (anti-flag/charset guard on package names)"
+  grep -q 'packageVersionValid' "$PACKAGES_TS" || fail "packages.ts has no packageVersionValid (charset guard on pinned versions)"
+else
+  fail "host-config/packages.ts is missing"
+fi
+if [[ -f "$INDEX_TS" ]]; then
+  # ADDITIVE-ONLY: the host-side install path must NEVER carry a destructive verb
+  # or a downgrade flag. (apt/dnf `remove`/`purge`/`autoremove`, `--allow-downgrades`.)
+  for forbidden in "'remove'" "'purge'" "'autoremove'" '--allow-downgrades' '--allowerasing'; do
+    if grep -Fq -e "$forbidden" "$INDEX_TS"; then
+      fail "index.ts package path contains forbidden destructive/downgrade token: $forbidden (must stay additive-only)"
+    fi
+  done
+  # installPackage must re-validate the name AND pass apt/dnf an argv with a `--`
+  # end-of-options separator (execFile, never a shell string).
+  awk '/function installPackage/{f=1} f&&/packageNameValid\(name\)/{n=1} f&&/'"'"'--'"'"'/{s=1} f&&/^}/{exit} END{exit !(n&&s)}' "$INDEX_TS" \
+    || fail "installPackage must re-check packageNameValid(name) AND pass a '--' separator to apt/dnf"
+  # queryInstalled must re-validate the name AND pass `--` to dpkg-query/rpm.
+  awk '/function queryInstalled/{f=1} f&&/packageNameValid\(name\)/{n=1} f&&/'"'"'--'"'"'/{s=1} f&&/^}/{exit} END{exit !(n&&s)}' "$INDEX_TS" \
+    || fail "queryInstalled must re-check packageNameValid(name) AND pass a '--' separator to dpkg-query/rpm"
+  # The package binaries must be invoked by ABSOLUTE path (the one existsSync
+  # confirmed), never a bare name resolved through a possibly-hijacked PATH.
+  for bare in "execFileSync('apt-get'" "execFileSync('dnf'" "execFileSync('dpkg-query'" "execFileSync('rpm'" "run('apt-get'" "run('dnf'"; do
+    if grep -Fq -e "$bare" "$INDEX_TS"; then
+      fail "package manager invoked by bare name ($bare) — use the absolute /usr/bin path"
+    fi
+  done
+  # No shell execution anywhere in the host-config index (argv-only).
+  if grep -Eq 'shell:\s*true|execSync\(|child_process'\''\)\.exec\b' "$INDEX_TS"; then
+    fail "index.ts must not use a shell (shell:true / execSync / exec) — argv-only execFileSync"
+  fi
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then

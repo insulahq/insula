@@ -161,14 +161,15 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT
-  # Host-config converge timer (ADR-045 W10, amended — host-side convergence).
+  # Host-config converge timer (ADR-045 W10/W10b, amended — host-side convergence).
   # Runs `platform-ops host-config apply`, which is SAFE BY DEFAULT: it only
-  # writes host sysctls when the cluster's host-config-desired policy has
-  # mode=enforce (opt-in). With no policy / mode!=enforce it is a no-op dry-run,
-  # so enabling the timer on every node never writes until an operator opts in.
+  # writes host sysctls (host-config-desired) or installs OS packages
+  # (host-packages-desired, additive-only) when that policy has mode=enforce
+  # (opt-in). With no policy / mode!=enforce it is a no-op dry-run, so enabling
+  # the timer on every node never mutates the host until an operator opts in.
   cat > "${dir}/platform-ops-host-config.service" <<UNIT
 [Unit]
-Description=Insula platform-ops host-config converge (sysctls)
+Description=Insula platform-ops host-config converge (sysctls + packages)
 Documentation=https://github.com/${PLATFORM_OPS_REPO:-insulahq/insula}
 After=network-online.target
 Wants=network-online.target
@@ -177,6 +178,9 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=${bin} host-config apply
 Nice=10
+# Bound the whole run so a wedged apt/dnf mirror can never hang the node's timer
+# indefinitely (each package install also has its own in-process 5-min timeout).
+TimeoutStartSec=600
 # Hardening: runs as root (writes /proc/sys) but needs nothing from $HOME and
 # must not gain new privileges. ProtectSystem=strict is NOT usable (it would
 # mount /proc read-only and block the sysctl writes), so it is intentionally omitted.

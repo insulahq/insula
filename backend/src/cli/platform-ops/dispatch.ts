@@ -36,7 +36,8 @@ Commands:
   self-upgrade [--check] [--force] [--version X.Y.Z]
                          Update this binary: cosign-verified atomic replace
   host-config apply [--dry-run] | host-config status
-                         Converge host sysctls to the host-config-desired policy
+                         Converge host sysctls (host-config-desired) + OS packages
+                         (host-packages-desired, additive-only) to policy
                          (status = dry-run report; apply --apply forces enforce)
   shell                  Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
