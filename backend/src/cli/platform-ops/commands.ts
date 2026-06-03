@@ -5,7 +5,8 @@
  * a migrations-list stub (the platform-migration registry lands in a later
  * release). Each handler takes `Deps` and returns a process exit code.
  */
-import type { Deps, VersionInfo } from './deps.js';
+import type { Deps, NodeVersion, VersionInfo } from './deps.js';
+import { buildK3sUpgradePlans, parseK3sVersion } from './operations/k3s-plan.js';
 
 const KUBECTL = 'kubectl';
 
@@ -326,4 +327,137 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
   // A write/install/migration failure is a real problem (exit 1). not-allowed /
   // invalid are policy-authoring issues, not runtime failures — exit 0.
   return r.ok && p.ok && h.ok ? 0 : 1;
+}
+
+/** Pick the cluster's CURRENT floor version (lowest parseable kubelet version). */
+function currentClusterVersion(nodes: readonly NodeVersion[]): string | null {
+  let lowest: { v: ReturnType<typeof parseK3sVersion>; raw: string } | null = null;
+  for (const n of nodes) {
+    if (!n.kubeletVersion) continue;
+    const v = parseK3sVersion(n.kubeletVersion);
+    if (!v) continue;
+    if (
+      !lowest ||
+      v.minor < lowest.v!.minor ||
+      (v.minor === lowest.v!.minor && v.patch < lowest.v!.patch) ||
+      (v.minor === lowest.v!.minor && v.patch === lowest.v!.patch && v.k3s < lowest.v!.k3s)
+    ) {
+      lowest = { v, raw: n.kubeletVersion };
+    }
+  }
+  return lowest?.raw ?? null;
+}
+
+/**
+ * `cluster upgrade --version vX.Y.Z+k3sN [--apply] [--current V] [--upgrade-image I]`
+ * (ADR-045 W12). Generates the SUC server+agent k3s upgrade Plans (refusing
+ * skip-a-minor / downgrade / cross-major), and — DRY-RUN BY DEFAULT — prints
+ * them. `--apply` is required to actually create the CRs, at which point SUC
+ * rolls the nodes (cordon + drain agents, serial). Exit 1 on a refused/failed
+ * transition, 2 on usage error.
+ */
+export async function clusterUpgrade(args: string[], deps: Deps): Promise<number> {
+  let version: string | undefined;
+  let current: string | undefined;
+  let upgradeImage: string | undefined;
+  let apply = false;
+  // Flag-value reader that refuses to swallow a following flag / a missing value
+  // (so `--version --apply` errors rather than silently dropping --apply).
+  const valueFor = (i: number, flag: string): string | null => {
+    const v = args[i + 1];
+    if (v === undefined || v.startsWith('--')) {
+      deps.err(`cluster upgrade: ${flag} requires a value`);
+      return null;
+    }
+    return v;
+  };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--apply') apply = true;
+    else if (a === '--version') {
+      const v = valueFor(i, '--version');
+      if (v === null) return 2;
+      version = v;
+      i++;
+    } else if (a === '--current') {
+      const v = valueFor(i, '--current');
+      if (v === null) return 2;
+      current = v;
+      i++;
+    } else if (a === '--upgrade-image') {
+      const v = valueFor(i, '--upgrade-image');
+      if (v === null) return 2;
+      upgradeImage = v;
+      i++;
+    } else {
+      deps.err(`cluster upgrade: unknown arg '${a}'`);
+      return 2;
+    }
+  }
+  if (!version) {
+    deps.err('cluster upgrade: --version vX.Y.Z+k3sN is required');
+    return 2;
+  }
+
+  if (!current) {
+    let nodes: NodeVersion[];
+    try {
+      nodes = await deps.clusterUpgrade.readNodeVersions();
+    } catch (err) {
+      deps.err(`cluster upgrade: could not read node versions: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+    const floor = currentClusterVersion(nodes);
+    if (!floor) {
+      deps.err('cluster upgrade: could not determine the cluster current version (no parseable kubelet version); pass --current');
+      return 1;
+    }
+    current = floor;
+  }
+
+  const gen = buildK3sUpgradePlans(version, current, upgradeImage ? { upgradeImage } : {});
+  if (!gen.ok) {
+    deps.err(`cluster upgrade: REFUSED — ${gen.reason}`);
+    return 1;
+  }
+
+  if (!apply) {
+    deps.out(`# DRY-RUN — k3s upgrade ${current} → ${gen.target}. Pass --apply to create these Plans (SUC then rolls the nodes).`);
+    deps.out(JSON.stringify(gen.plans, null, 2));
+    return 0;
+  }
+
+  try {
+    const res = await deps.clusterUpgrade.applyPlans(gen.plans);
+    deps.out(`cluster upgrade: applied ${res.applied.length} Plan(s) [${res.applied.join(', ')}] → SUC is now rolling ${current} → ${gen.target}`);
+    deps.out('Watch: kubectl -n system-upgrade get plans,jobs');
+    return 0;
+  } catch (err) {
+    deps.err(`cluster upgrade: failed to apply Plans: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
+/**
+ * `node cordon <name>` | `node uncordon <name>` (ADR-045 W12) — operator
+ * maintenance via the k8s API (works when platform-api is down).
+ */
+export async function nodeCommand(args: string[], deps: Deps): Promise<number> {
+  const [sub, name] = args;
+  if (sub !== 'cordon' && sub !== 'uncordon') {
+    deps.err(`node: expected 'cordon' or 'uncordon', got ${sub ? `'${sub}'` : 'none'}`);
+    return 2;
+  }
+  if (!name) {
+    deps.err(`node ${sub}: a node name is required`);
+    return 2;
+  }
+  try {
+    await deps.node.cordon(name, sub === 'cordon');
+    deps.out(`node ${name}: ${sub === 'cordon' ? 'cordoned (unschedulable)' : 'uncordoned (schedulable)'}`);
+    return 0;
+  } catch (err) {
+    deps.err(`node ${sub}: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
 }

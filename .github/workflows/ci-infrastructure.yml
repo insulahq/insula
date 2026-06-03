@@ -167,6 +167,14 @@ jobs:
       - name: Verify runner validation + embedding + per-script authoring contract
         run: ./scripts/ci-host-migrations-check.sh
 
+  system-upgrade-guard:
+    name: system-upgrade-controller integration (ADR-045 W12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify no committed Plan + pinned+hardened SUC + skip-a-minor refusal
+        run: ./scripts/ci-system-upgrade-check.sh
+
   no-dex-in-production:
     name: Dex must not ship in production
     runs-on: ubuntu-latest
