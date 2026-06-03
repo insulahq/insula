@@ -221,6 +221,46 @@ describe('platform-updates service', () => {
       expect(result.running).toBe('0.1.0');           // env unchanged
     });
 
+    // W11 verified-poller surfaces — `available` prefers the cosign-VERIFIED value.
+    it('prefers the verified available_version over the unverified latestVersion', async () => {
+      // Lazy checker would see 2026.7.1; the poller has VERIFIED 2026.6.9.
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ tag_name: 'v2026.7.1' }) });
+      settingsStore.set('available_version', '2026.6.9');
+      settingsStore.set('available_verified_at', '2026-06-03T07:00:00.000Z');
+      settingsStore.set('available_verify_status', 'verified');
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.available).toBe('2026.6.9');               // verified wins
+      expect(result.availableVerifiedAt).toBe('2026-06-03T07:00:00.000Z');
+      expect(result.availableVerifyStatus).toBe('verified');
+      expect(result.updateAvailable).toBe(true);               // 2026.6.9 > 0.1.0
+    });
+
+    it('falls back to latestVersion when no verified available_version exists', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ tag_name: 'v2026.7.1' }) });
+      settingsStore.set('available_verify_status', 'unsigned'); // poller refused → no available_version
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.available).toBe('2026.7.1');               // unverified fallback
+      expect(result.availableVerifyStatus).toBe('unsigned');
+    });
+
+    it('ignores a malformed persisted available_version and falls back', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ tag_name: 'v2026.7.1' }) });
+      settingsStore.set('available_version', 'not-a-version');
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.available).toBe('2026.7.1');               // bad value rejected → fallback
+    });
+
+    it('surfaces includePrereleases from platform_settings', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      settingsStore.set('auto_update_include_prereleases', 'true');
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.includePrereleases).toBe(true);
+    });
+
     it('persistInstalledVersion writes the running version to platform_settings', async () => {
       const db = createTrackedDb();
       const written = await persistInstalledVersion(db);
@@ -265,7 +305,7 @@ describe('platform-updates service', () => {
       const db = createTrackedDb();
       const result = await updateSettings(db, true);
 
-      expect(result).toEqual({ autoUpdate: true });
+      expect(result).toEqual({ autoUpdate: true, includePrereleases: false });
       expect(settingsStore.get('auto_update')).toBe('true');
     });
 
@@ -273,8 +313,16 @@ describe('platform-updates service', () => {
       const db = createTrackedDb();
       const result = await updateSettings(db, false);
 
-      expect(result).toEqual({ autoUpdate: false });
+      expect(result).toEqual({ autoUpdate: false, includePrereleases: false });
       expect(settingsStore.get('auto_update')).toBe('false');
+    });
+
+    it('persists includePrereleases when provided and echoes it back', async () => {
+      const db = createTrackedDb();
+      const result = await updateSettings(db, true, true);
+
+      expect(result).toEqual({ autoUpdate: true, includePrereleases: true });
+      expect(settingsStore.get('auto_update_include_prereleases')).toBe('true');
     });
   });
 

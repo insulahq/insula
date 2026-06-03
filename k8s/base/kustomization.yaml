@@ -98,6 +98,10 @@ resources:
   # time by ci-job-ttl-check); catches Jobs we don't control directly
   # — Longhorn snapshot jobs, third-party operators, ad-hoc kubectl.
   - job-gc-cronjob.yaml
+  # Version-poller (W11) — hourly GitHub Releases fetch + cosign-verify →
+  # platform_settings.available_version. Fail-closed: an unsigned/tampered
+  # release is never surfaced. No k8s RBAC; reads GitHub, writes one DB table.
+  - version-poller-cronjob.yaml
   # Traefik v3 controller — IngressRoute + Middleware CRDs.
   # Installed imperatively by bootstrap.sh (helm upgrade --install traefik).
   # This directory holds the Kustomize-managed companion resources:

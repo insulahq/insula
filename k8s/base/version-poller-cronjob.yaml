@@ -1,0 +1,104 @@
+# Version-poller (W11 / ADR-045) — hourly check for a newer platform release.
+#
+# Fetches the upstream repo's GitHub Releases, selects the newest eligible one,
+# downloads its cosign-signed `release-manifest.json` (a few hundred bytes — NOT
+# the 120 MB binaries), verifies the signature with PURE NODE CRYPTO against the
+# pinned platform/cosign.pub baked into the backend image, and persists
+# `platform_settings.available_version` ONLY when verification passes. The cosign
+# verify is the single authenticity gate, so every other outcome is fail-closed:
+# an unsigned / tampered / mismatched release is refused and never surfaced.
+#
+# Privilege: this Job touches NEITHER the k8s API nor any mail/JWT secret — it
+# reads GitHub (egress) and writes ONE DB table. So its ServiceAccount has NO
+# RBAC at all (least privilege; far less than the API pod). It runs the backend
+# image but overrides the entrypoint to the one-shot poll job, so the server,
+# the postgres-wait gate, and JWT mounts never come into play.
+#
+# Cost: ~1 pod for a few seconds per hour; self-expires via ttlSecondsAfterFinished.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: version-poller
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: platform-upgrades
+  # No RoleBinding/ClusterRoleBinding — the poller needs no Kubernetes API access.
+automountServiceAccountToken: false
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: version-poller
+  namespace: platform
+  labels:
+    app: version-poller
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: platform-upgrades
+spec:
+  # :42 past the hour — off the :00 spike shared by other schedulers.
+  schedule: "42 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: version-poller
+            app.kubernetes.io/part-of: hosting-platform
+        spec:
+          serviceAccountName: version-poller
+          automountServiceAccountToken: false
+          # Never (not OnFailure): the poll is stateless, so a fresh Pod on the
+          # next hourly tick is cheaper + cleaner than resurrecting a failed one.
+          # backoffLimit:1 still gives one in-cycle retry.
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: poller
+              # Same image (and pinned tag) as platform-api so the baked-in
+              # cosign.pub + poller code always match the running release.
+              image: ghcr.io/insulahq/insula/backend:latest
+              imagePullPolicy: IfNotPresent
+              # Override the server entrypoint → run the one-shot poll job.
+              command: ["node", "dist/cli/version-poll-job.js"]
+              env:
+                - name: NODE_ENV
+                  value: production
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-db-credentials
+                      key: url
+                # PLATFORM_RELEASES_REPO is intentionally unset — the code
+                # defaults to insulahq/insula. Forks override it via an overlay
+                # patch (and the pinned key in their own image) to poll their
+                # own releases.
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 192Mi
+          volumes:
+            - name: tmp
+              emptyDir: {}

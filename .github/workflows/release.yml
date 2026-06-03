@@ -108,6 +108,47 @@ jobs:
             echo "::warning::COSIGN_PRIVATE_KEY not set — uploading UNSIGNED platform-ops binaries; bootstrap auto-install stays dormant (fail-closed)."
           fi
 
+      # W11 version-poller trust artifact: a tiny cosign-signed manifest naming
+      # the released version + image refs. The in-cluster poller downloads THIS
+      # (a few hundred bytes — never the 120 MB binaries) and verifies the
+      # signature with pure Node crypto against the pinned platform/cosign.pub
+      # before it will ever surface `available_version`. Signed ONLY when
+      # COSIGN_PRIVATE_KEY is set — same fail-closed posture as the binaries, so
+      # an unsigned release is refused by the poller (never auto-trusted).
+      - name: Build & sign release manifest (version-poller trust artifact)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          # Build the JSON with python (no heredoc-whitespace pitfalls). The
+          # `version` field MUST equal the tag (the poller binds them) — it's the
+          # tag-validated platform/VERSION, so they match by construction.
+          python3 - > dist-release/release-manifest.json <<'PY'
+          import json, os, datetime
+          v = os.environ["VERSION"]
+          pfx = os.environ["IMAGE_PREFIX"]
+          print(json.dumps({
+              "version": v,
+              "images": {
+                  "backend": f"{pfx}/backend:{v}",
+                  "adminPanel": f"{pfx}/admin-panel:{v}",
+                  "tenantPanel": f"{pfx}/tenant-panel:{v}",
+              },
+              "releasedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }, separators=(",", ":")))
+          PY
+          echo "manifest: $(cat dist-release/release-manifest.json)"
+          if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
+            cosign sign-blob --key env://COSIGN_PRIVATE_KEY --tlog-upload=false --yes \
+              dist-release/release-manifest.json > dist-release/release-manifest.json.sig
+            echo "release-manifest: signed"
+          else
+            echo "::warning::COSIGN_PRIVATE_KEY not set — release-manifest.json uploaded UNSIGNED; the version-poller will refuse it (fail-closed)."
+          fi
+
       # Release notes = the matching CHANGELOG section (curated by cut-release.sh),
       # not auto-generated commit logs.
       - name: Extract release notes from CHANGELOG
@@ -138,5 +179,7 @@ jobs:
             dist-platform-ops/platform-ops-linux-amd64.sig
             dist-platform-ops/platform-ops-linux-arm64
             dist-platform-ops/platform-ops-linux-arm64.sig
+            dist-release/release-manifest.json
+            dist-release/release-manifest.json.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
