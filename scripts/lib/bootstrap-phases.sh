@@ -134,6 +134,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# self-upgrade --check resolves the target version (cluster-up: platform-version
+# ConfigMap; cluster-down: GitHub Releases), and if newer applies a cosign-verified
+# atomic replace (ADR-045 W11.5). A concurrent manual run is benign — each writes a
+# same-dir temp + atomic rename, so the last valid signed binary simply wins.
+# Do NOT add an EnvironmentFile= here without security review: PLATFORM_OPS_COSIGN_PUB
+# / PLATFORM_OPS_BIN would then become attacker-influenceable trust-anchor seams.
 ExecStart=${bin} self-upgrade --check
 Nice=10
 # Hardening: the check runs as root (to atomically replace the binary) but needs

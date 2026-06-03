@@ -32,7 +32,8 @@ Commands:
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
   dr restore             Restore from a DR bundle (partial rows | full recovery)
   dr rescue              Take Longhorn safety snapshots of the system volumes
-  self-upgrade [--check] Check for / apply a CLI self-upgrade (activates later)
+  self-upgrade [--check] [--force] [--version X.Y.Z]
+                         Update this binary: cosign-verified atomic replace
   shell                  Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
 

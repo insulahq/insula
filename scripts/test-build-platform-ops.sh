@@ -45,7 +45,15 @@ yes "migrations list enumerates the registry offline" \
 yes "migrations apply needs a DB (NO_DATABASE_URL, exit 1) offline" \
   "{ env -u DATABASE_URL '$BIN' migrations apply --json 2>/dev/null || true; } | grep -q 'NO_DATABASE_URL'"
 yes "unknown command exits 2"                   "'$BIN' frobnicate >/dev/null 2>&1; [ \$? -eq 2 ]"
-yes "self-upgrade --check is a no-op (exit 0)"  "'$BIN' self-upgrade --check | grep -qi 'no-op'"
+# self-upgrade (W11.5): an explicit --version that is NOT newer than the baked
+# build short-circuits to 'already-current' BEFORE any network/k8s — a fully
+# offline, deterministic smoke that the real binary's resolve+gate path works.
+yes "self-upgrade --version <older> is already-current offline (exit 0, no net)" \
+  "KUBECONFIG=/nonexistent '$BIN' self-upgrade --version 2026.6.0 | grep -qi 'current'"
+yes "self-upgrade rejects a bad flag (exit 2)"  "'$BIN' self-upgrade --bogus >/dev/null 2>&1; [ \$? -eq 2 ]"
+yes "self-upgrade rejects an invalid --version (exit 2)" \
+  "'$BIN' self-upgrade --version not.a.version >/dev/null 2>&1; [ \$? -eq 2 ]"
+yes "help documents the self-upgrade flags"     "'$BIN' help | grep -qi 'cosign-verified atomic replace'"
 yes "help lists snapshot + dr rescue"           "'$BIN' help | grep -qi 'snapshot capture' && '$BIN' help | grep -qi 'dr rescue'"
 yes "snapshot (no sub) → usage error exit 2"    "'$BIN' snapshot >/dev/null 2>&1; [ \$? -eq 2 ]"
 yes "snapshot capture over-long --description → exit 2" \

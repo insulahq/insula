@@ -24,6 +24,9 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       capture: vi.fn(async () => ({ ok: true })),
       list: vi.fn(async () => ({ ok: true, backups: [] })),
     },
+    selfUpgrade: {
+      run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.1', target: '2026.6.1', source: 'configmap' as const, arch: 'amd64' })),
+    },
     ...over,
   };
   return { deps, out, err };
@@ -93,10 +96,11 @@ describe('dispatch', () => {
     expect(err.join('\n')).toMatch(/list|apply/i);
   });
 
-  it('self-upgrade --check routes to the stub and exits 0 (timer safety)', async () => {
-    const { deps, out } = fakeDeps();
+  it('self-upgrade --check routes to selfUpgrade and exits 0 (timer safety)', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.1', target: '2026.6.1', source: 'configmap' as const, arch: 'amd64' }));
+    const { deps } = fakeDeps({ selfUpgrade: { run } });
     expect(await dispatch(['self-upgrade', '--check'], deps)).toBe(0);
-    expect(out.join('\n')).toMatch(/not implemented|no-op/i);
+    expect(run).toHaveBeenCalledWith({ mode: 'check', force: false, version: undefined });
   });
 
   it('dr verify routes through to dr.verifyBundle', async () => {
