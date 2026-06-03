@@ -1,0 +1,110 @@
+# host-config-reconciler — OBSERVE-ONLY host-config drift detector (W10 / ADR-045).
+#
+# One pod per node. Every 60s it reads the host-config-desired ConfigMap +
+# the live /proc/sys values, classifies each desired sysctl
+# (ok|drift|unreadable|not-allowed), and WRITES one ConfigMap
+# (host-config-drift-<node>) in platform-system. It NEVER writes host state —
+# write/enforce (converge) mode is a deliberate later PR.
+#
+# Security posture (mirrors security-probe):
+#   * The ONLY host mount is /proc/sys, readOnly: true. NO /etc, NO /lib/modules.
+#   * capabilities.drop: [ALL]; nothing added. privileged: false.
+#   * hostNetwork/hostPID/hostIPC: false (unlike the write-mode design — observe
+#     needs none of them).
+#   * readOnlyRootFilesystem: true; allowPrivilegeEscalation: false;
+#     RuntimeDefault seccomp. Root (uid 0) only because some /proc/sys/kernel/*
+#     values are root-readable.
+#   * The only mutation is to its own host-config-drift-<node> ConfigMap via the
+#     RBAC-scoped apiserver.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: host-config-reconciler
+  namespace: platform-system
+  labels:
+    app: host-config-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    matchLabels:
+      app: host-config-reconciler
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: host-config-reconciler
+    spec:
+      serviceAccountName: host-config-reconciler
+      # Observe mode needs no host namespaces — keep them all off.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      # Cover every node, including control-plane + platform taints.
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      containers:
+        - name: reconciler
+          image: ghcr.io/insulahq/insula/host-config-reconciler:latest # {"$imagepolicy": "flux-system:host-config-reconciler"}
+          imagePullPolicy: Always
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HOSTCONFIG_INTERVAL_SECONDS
+              value: "60"
+          ports:
+            - name: healthz
+              containerPort: 8083
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8083
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8083
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 96Mi
+          volumeMounts:
+            # The ONLY host mount: /proc/sys, read-only. The reconciler reads
+            # the live sysctl values from here; it can write nothing back
+            # (readOnly + no caps).
+            - name: proc-sys
+              mountPath: /host/proc/sys
+              readOnly: true
+      volumes:
+        - name: proc-sys
+          hostPath:
+            path: /proc/sys
+            type: Directory

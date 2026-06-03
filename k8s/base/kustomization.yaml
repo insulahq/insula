@@ -58,6 +58,13 @@ resources:
   # /settings/security-hardening admin page. See
   # docs/04-deployment/SECURITY_HARDENING_ROADMAP.md.
   - security-probe/
+  # host-config-reconciler — OBSERVE-ONLY host-config drift detector (W10).
+  # Reads the host-config-desired ConfigMap + live /proc/sys, writes one
+  # ConfigMap per node (host-config-drift-<node>) classifying each desired
+  # sysctl ok|drift|unreadable|not-allowed. NEVER writes host state (mirrors
+  # security-probe's read-only posture). The desired policy is seeded by
+  # platform-migration 0002 (W9). See docs/04-deployment/SECURITY_HARDENING_ROADMAP.md.
+  - host-config-reconciler/
   # backup-rclone-shim — universal backup mediator DaemonSet. Every
   # backup caller (CNPG plugin-barman-cloud sidecar, etcd CronJob,
   # restic CronJobs, rclone-push jobs) speaks S3 to this shim, which
