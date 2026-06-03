@@ -32,6 +32,11 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
       hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
     },
+    clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
+      applyPlans: vi.fn(async (plans: readonly Record<string, unknown>[]) => ({ applied: plans.map((p) => (p as { metadata: { name: string } }).metadata.name) })),
+    },
+    node: { cordon: vi.fn(async () => {}) },
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep default `packages` +

@@ -14,6 +14,8 @@ import { realDrOps } from './dr-ops.js';
 import { realSnapshotOps } from './snapshot-ops.js';
 import { realSelfUpgradeOps } from './self-upgrade/index.js';
 import { realHostConfigOps, type HostConfigOps } from './host-config/index.js';
+import { realClusterUpgradeOps } from './cluster-upgrade-ops.js';
+import { realNodeOps } from './node-ops.js';
 import { scrubCreds } from './redact.js';
 import type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
 
@@ -279,6 +281,25 @@ export interface SnapshotOps {
   list: (req: SnapshotListRequest) => Promise<SnapshotListOutcome>;
 }
 
+// ── Cluster upgrade (W12 / SUC) ──────────────────────────────────────────────
+export interface NodeVersion {
+  readonly name: string;
+  readonly role: 'server' | 'agent';
+  readonly kubeletVersion: string | null;
+}
+
+export interface ClusterUpgradeOps {
+  /** Read every node's role + kubelet/k3s version (for current-min + validation). */
+  readNodeVersions: () => Promise<NodeVersion[]>;
+  /** Create/merge-patch the SUC Plan CRs in the system-upgrade namespace. */
+  applyPlans: (plans: readonly Record<string, unknown>[]) => Promise<{ applied: string[] }>;
+}
+
+export interface NodeOps {
+  /** Cordon (on=true) / uncordon (on=false) a node via the k8s API. */
+  cordon: (name: string, on: boolean) => Promise<void>;
+}
+
 export interface Deps {
   env: NodeJS.ProcessEnv;
   /** Write a line to stdout. */
@@ -318,6 +339,10 @@ export interface Deps {
   selfUpgrade: SelfUpgradeOps;
   /** Host-config: converge host sysctls (host-side, root; no privileged pod). */
   hostConfig: HostConfigOps;
+  /** Cluster upgrade: read node versions + apply SUC k3s upgrade Plans (W12). */
+  clusterUpgrade: ClusterUpgradeOps;
+  /** Node operations: cordon/uncordon (W12). */
+  node: NodeOps;
 }
 
 function realExec(
@@ -473,5 +498,7 @@ export function realDeps(): Deps {
     // baked version — reading it via the `env` alias would not be substituted.
     selfUpgrade: realSelfUpgradeOps(env, (process.env.PLATFORM_OPS_VERSION ?? '').trim()),
     hostConfig: realHostConfigOps(env),
+    clusterUpgrade: realClusterUpgradeOps(env),
+    node: realNodeOps(env),
   };
 }

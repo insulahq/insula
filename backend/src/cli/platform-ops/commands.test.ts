@@ -9,6 +9,8 @@ import {
   shellCommand,
   selfUpgrade,
   hostConfigCommand,
+  clusterUpgrade,
+  nodeCommand,
 } from './commands.js';
 
 // A fully-faked Deps so command handlers are tested in isolation (no real
@@ -43,6 +45,11 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
       hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
     },
+    clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
+      applyPlans: vi.fn(async (plans: readonly Record<string, unknown>[]) => ({ applied: plans.map((p) => (p as { metadata: { name: string } }).metadata.name) })),
+    },
+    node: { cordon: vi.fn(async () => {}) },
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep the default `packages`
@@ -493,5 +500,106 @@ describe('hostConfigCommand', () => {
     }));
     const { deps } = fakeDeps({ hostConfig: { run, hostMigrations } });
     expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+  });
+});
+
+describe('clusterUpgrade', () => {
+  it('--version required → exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await clusterUpgrade([], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/--version/);
+  });
+
+  it('dry-run by default → prints Plans, applies nothing', async () => {
+    const applyPlans = vi.fn(async () => ({ applied: [] }));
+    const { deps, out } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
+      applyPlans,
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.32.0+k3s1'], deps)).toBe(0);
+    expect(applyPlans).not.toHaveBeenCalled();
+    expect(out.join('\n')).toMatch(/DRY-RUN/);
+    expect(out.join('\n')).toMatch(/k3s-server-upgrade/);
+  });
+
+  it('--apply creates the Plans via SUC', async () => {
+    const applyPlans = vi.fn(async (plans: readonly Record<string, unknown>[]) => ({ applied: plans.map((p) => (p as any).metadata.name) }));
+    const { deps, out } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
+      applyPlans,
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.32.0+k3s1', '--apply'], deps)).toBe(0);
+    expect(applyPlans).toHaveBeenCalledOnce();
+    expect(out.join('\n')).toMatch(/applied 2 Plan/);
+  });
+
+  it('REFUSES skip-a-minor (reads cluster current) → exit 1, no apply', async () => {
+    const applyPlans = vi.fn(async () => ({ applied: [] }));
+    const { deps, err } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
+      applyPlans,
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.33.0+k3s1', '--apply'], deps)).toBe(1);
+    expect(applyPlans).not.toHaveBeenCalled();
+    expect(err.join('\n')).toMatch(/REFUSED.*skip-a-minor/);
+  });
+
+  it('uses the lowest node version as the cluster floor', async () => {
+    const { deps } = fakeDeps({ clusterUpgrade: {
+      // floor is 1.31.4; a jump to 1.33 must be refused as skip-a-minor
+      readNodeVersions: vi.fn(async () => [
+        { name: 's', role: 'server' as const, kubeletVersion: 'v1.32.0+k3s1' },
+        { name: 'a', role: 'agent' as const, kubeletVersion: 'v1.31.4+k3s1' },
+      ]),
+      applyPlans: vi.fn(async () => ({ applied: [] })),
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.33.0+k3s1'], deps)).toBe(1);
+  });
+
+  it('--current override skips node reads', async () => {
+    const readNodeVersions = vi.fn(async () => { throw new Error('should not be called'); });
+    const { deps } = fakeDeps({ clusterUpgrade: { readNodeVersions, applyPlans: vi.fn(async () => ({ applied: [] })) } });
+    expect(await clusterUpgrade(['--version', 'v1.32.0+k3s1', '--current', 'v1.31.5+k3s1'], deps)).toBe(0);
+    expect(readNodeVersions).not.toHaveBeenCalled();
+  });
+
+  it('does not swallow a following flag as the --version value', async () => {
+    const { deps, err } = fakeDeps();
+    // `--version --apply` must error (not set version="--apply" + drop --apply)
+    expect(await clusterUpgrade(['--version', '--apply'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/--version requires a value/);
+  });
+
+  it('exit 1 when the cluster API is unreachable at upgrade time', async () => {
+    const { deps, err } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => { throw new Error('connection refused'); }),
+      applyPlans: vi.fn(async () => ({ applied: [] })),
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.32.0+k3s1'], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/could not read node versions/);
+  });
+});
+
+describe('nodeCommand', () => {
+  it('cordon <name> calls node.cordon(name,true)', async () => {
+    const cordon = vi.fn(async () => {});
+    const { deps, out } = fakeDeps({ node: { cordon } });
+    expect(await nodeCommand(['cordon', 'node-1'], deps)).toBe(0);
+    expect(cordon).toHaveBeenCalledWith('node-1', true);
+    expect(out.join('\n')).toMatch(/cordoned/);
+  });
+  it('uncordon <name> calls node.cordon(name,false)', async () => {
+    const cordon = vi.fn(async () => {});
+    const { deps } = fakeDeps({ node: { cordon } });
+    expect(await nodeCommand(['uncordon', 'node-1'], deps)).toBe(0);
+    expect(cordon).toHaveBeenCalledWith('node-1', false);
+  });
+  it('unknown subcommand → exit 2', async () => {
+    const { deps } = fakeDeps();
+    expect(await nodeCommand(['frob', 'x'], deps)).toBe(2);
+  });
+  it('missing node name → exit 2', async () => {
+    const { deps } = fakeDeps();
+    expect(await nodeCommand(['cordon'], deps)).toBe(2);
   });
 });

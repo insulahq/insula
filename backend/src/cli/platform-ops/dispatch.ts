@@ -9,11 +9,13 @@ import {
   versionCommand,
   clusterStatus,
   clusterDiagnostics,
+  clusterUpgrade,
   migrationsList,
   migrationsApply,
   shellCommand,
   selfUpgrade,
   hostConfigCommand,
+  nodeCommand,
 } from './commands.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
@@ -26,6 +28,11 @@ Commands:
   version [--json]        Show installed / running / available platform version
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
+  cluster upgrade --version vX.Y.Z+k3sN [--apply]
+                         Generate SUC k3s upgrade Plans (skip-a-minor refused);
+                         dry-run prints them, --apply creates them (SUC rolls nodes)
+  node cordon|uncordon <name>
+                         Cordon / uncordon a node (operator maintenance)
   migrations list [--json] List platform-migrations + their applied status
   migrations apply [--dry-run] Apply pending platform-migrations (DB + cluster)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
@@ -60,8 +67,10 @@ async function clusterCommand(args: string[], deps: Deps): Promise<number> {
       return clusterStatus(rest, deps);
     case 'diagnostics':
       return clusterDiagnostics(rest, deps);
+    case 'upgrade':
+      return clusterUpgrade(rest, deps);
     default:
-      deps.err(`cluster: expected a subcommand (status | diagnostics), got ${sub ? `'${sub}'` : 'none'}`);
+      deps.err(`cluster: expected a subcommand (status | diagnostics | upgrade), got ${sub ? `'${sub}'` : 'none'}`);
       return 2;
   }
 }
@@ -105,6 +114,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return selfUpgrade(rest, deps);
     case 'host-config':
       return hostConfigCommand(rest, deps);
+    case 'node':
+      return nodeCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     default:

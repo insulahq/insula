@@ -65,6 +65,12 @@ resources:
   # security-probe's read-only posture). The desired policy is seeded by
   # platform-migration 0002 (W9). See docs/04-deployment/SECURITY_HARDENING_ROADMAP.md.
   - host-config-reconciler/
+  # system-upgrade-controller — no-SSH k3s/kernel/apt node upgrades via in-cluster
+  # Plan CRs (ADR-045 W12, vendored rancher SUC v0.19.2). INERT until a Plan
+  # exists; Plans are created only at runtime by `platform-ops cluster upgrade`
+  # (gated), never committed here. Controller runs non-root/drops-ALL-caps; only
+  # the per-node upgrade Jobs it spawns are privileged. CI: ci-system-upgrade-check.sh.
+  - system-upgrade-controller/
   # backup-rclone-shim — universal backup mediator DaemonSet. Every
   # backup caller (CNPG plugin-barman-cloud sidecar, etcd CronJob,
   # restic CronJobs, rclone-push jobs) speaks S3 to this shim, which

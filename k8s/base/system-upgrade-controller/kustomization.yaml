@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# system-upgrade-controller (SUC) — no-SSH k3s/kernel/apt node upgrades via
+# in-cluster Plan CRs (ADR-045 W12). Vendored upstream v0.19.2. The controller is
+# inert until a Plan exists; Plans are created ONLY at runtime by
+# `platform-ops cluster upgrade` (gated), never committed declaratively.
+resources:
+  - crd.yaml
+  - controller.yaml
+  - networkpolicy.yaml

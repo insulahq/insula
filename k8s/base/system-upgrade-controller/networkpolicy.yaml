@@ -1,0 +1,17 @@
+# The system-upgrade namespace runs with pod-security `enforce: privileged`
+# (the per-node upgrade Jobs need it). Neither the SUC controller nor the
+# upgrade Jobs serve ingress, so deny ALL ingress to the namespace — this keeps
+# the platform's highest-privilege namespace unreachable from other pods.
+# Egress is intentionally left open (upgrade Jobs pull images + reach the API).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: system-upgrade-default-deny-ingress
+  namespace: system-upgrade
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  # No ingress rules → deny all ingress.
