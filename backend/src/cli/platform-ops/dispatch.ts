@@ -10,6 +10,7 @@ import {
   clusterStatus,
   clusterDiagnostics,
   migrationsList,
+  migrationsApply,
   shellCommand,
   selfUpgrade,
 } from './commands.js';
@@ -24,7 +25,8 @@ Commands:
   version [--json]        Show installed / running / available platform version
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
-  migrations list        List platform migrations (activates in a later release)
+  migrations list [--json] List platform-migrations + their applied status
+  migrations apply [--dry-run] Apply pending platform-migrations (DB + cluster)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
   snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
@@ -63,8 +65,10 @@ async function migrationsCommand(args: string[], deps: Deps): Promise<number> {
     case undefined:
     case 'list':
       return migrationsList(rest, deps);
+    case 'apply':
+      return migrationsApply(rest, deps);
     default:
-      deps.err(`migrations: expected 'list', got '${sub}'`);
+      deps.err(`migrations: expected 'list' or 'apply', got '${sub}'`);
       return 2;
   }
 }

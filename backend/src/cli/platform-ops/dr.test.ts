@@ -26,6 +26,8 @@ function fakeDeps(over: Partial<Deps> = {}, drOver: Partial<Deps['dr']> = {}): {
     err: (s) => err.push(s),
     exec: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
     versionFromDb: vi.fn(async () => null),
+    migrationsStatus: vi.fn(async () => ({ dbReachable: true, items: [] })),
+    applyMigrations: vi.fn(async () => ({ ok: true, ran: true, dryRun: false, applied: 0, pending: 0, failed: false, outcomes: [] })),
     readFile: vi.fn(() => null),
     buildVersion: '2026.6.2',
     dr: {

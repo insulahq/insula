@@ -5,6 +5,7 @@ import {
   clusterStatus,
   clusterDiagnostics,
   migrationsList,
+  migrationsApply,
   shellCommand,
   selfUpgrade,
 } from './commands.js';
@@ -20,6 +21,8 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     err: (s) => err.push(s),
     exec: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
     versionFromDb: vi.fn(async () => null),
+    migrationsStatus: vi.fn(async () => ({ dbReachable: true, items: [] })),
+    applyMigrations: vi.fn(async () => ({ ok: true, ran: true, dryRun: false, applied: 0, pending: 0, failed: false, outcomes: [] })),
     readFile: vi.fn(() => null),
     buildVersion: '2026.6.1',
     dr: {
@@ -127,11 +130,128 @@ describe('clusterDiagnostics', () => {
 });
 
 describe('migrationsList', () => {
-  it('reports the registry is not present yet (lands in a later release) and exits 0', async () => {
+  it('reports "no migrations defined" cleanly on an empty registry (exit 0)', async () => {
     const { deps, out } = fakeDeps();
     const code = await migrationsList([], deps);
     expect(code).toBe(0);
-    expect(out.join('\n')).toMatch(/no .*migration|registry|not.*available|none/i);
+    expect(out.join('\n')).toMatch(/no platform-migrations/i);
+  });
+
+  it('lists registry migrations with status + applied date (exit 0)', async () => {
+    const { deps, out } = fakeDeps({
+      migrationsStatus: async () => ({
+        dbReachable: true,
+        items: [
+          { id: '0001_record_baseline', version: '2026.6.1', description: 'baseline', status: 'applied', appliedAt: '2026-06-03T00:00:00.000Z' },
+          { id: '0002_thing', version: '2026.6.2', description: 'thing', status: 'pending', appliedAt: null },
+        ],
+      }),
+    });
+    const code = await migrationsList([], deps);
+    expect(code).toBe(0);
+    const text = out.join('\n');
+    expect(text).toContain('0001_record_baseline');
+    expect(text).toContain('applied');
+    expect(text).toContain('pending');
+    expect(text).toContain('1 pending');
+  });
+
+  it('exits 1 when a migration has drifted (order-stable contract violation)', async () => {
+    const { deps } = fakeDeps({
+      migrationsStatus: async () => ({
+        dbReachable: true,
+        items: [{ id: '0001_x', version: '2026.6.1', description: 'x', status: 'drift', appliedAt: '2026-06-03T00:00:00.000Z' }],
+      }),
+    });
+    expect(await migrationsList([], deps)).toBe(1);
+  });
+
+  it('warns (stderr) but still lists the registry when the DB is unreachable', async () => {
+    const { deps, out, err } = fakeDeps({
+      migrationsStatus: async () => ({
+        dbReachable: false,
+        items: [{ id: '0001_x', version: '2026.6.1', description: 'x', status: 'unknown', appliedAt: null }],
+      }),
+    });
+    const code = await migrationsList([], deps);
+    expect(code).toBe(0);
+    expect(err.join('\n')).toMatch(/DB unreachable/i);
+    expect(out.join('\n')).toContain('0001_x');
+  });
+
+  it('--json emits a machine-readable envelope', async () => {
+    const { deps, out } = fakeDeps({
+      migrationsStatus: async () => ({
+        dbReachable: true,
+        items: [{ id: '0001_x', version: '2026.6.1', description: 'x', status: 'applied', appliedAt: '2026-06-03T00:00:00.000Z' }],
+      }),
+    });
+    const code = await migrationsList(['--json'], deps);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out.join('\n'));
+    expect(parsed.dbReachable).toBe(true);
+    expect(parsed.migrations[0].id).toBe('0001_x');
+  });
+});
+
+describe('migrationsApply', () => {
+  it('applies pending migrations and prints outcomes (exit 0)', async () => {
+    const apply = vi.fn(async () => ({
+      ok: true, ran: true, dryRun: false, applied: 1, pending: 1, failed: false,
+      outcomes: [{ id: '0001_record_baseline', status: 'applied', durationMs: 12 }],
+    }));
+    const { deps, out } = fakeDeps({ applyMigrations: apply });
+    const code = await migrationsApply([], deps);
+    expect(code).toBe(0);
+    expect(apply).toHaveBeenCalledWith({ dryRun: false, kubeconfig: undefined });
+    expect(out.join('\n')).toContain('1 applied');
+    expect(out.join('\n')).toContain('0001_record_baseline');
+  });
+
+  it('threads --dry-run + --kubeconfig through to the seam', async () => {
+    const apply = vi.fn(async () => ({ ok: true, ran: true, dryRun: true, applied: 0, pending: 1, failed: false, outcomes: [{ id: '0001_x', status: 'would-apply', durationMs: 3 }] }));
+    const { deps, out } = fakeDeps({ applyMigrations: apply });
+    const code = await migrationsApply(['--dry-run', '--kubeconfig', '/etc/rancher/k3s/k3s.yaml'], deps);
+    expect(code).toBe(0);
+    expect(apply).toHaveBeenCalledWith({ dryRun: true, kubeconfig: '/etc/rancher/k3s/k3s.yaml' });
+    expect(out.join('\n')).toContain('[dry-run]');
+  });
+
+  it('rejects --kubeconfig with no value (exit 2, no apply)', async () => {
+    const apply = vi.fn(async () => ({ ok: true }));
+    const { deps } = fakeDeps({ applyMigrations: apply });
+    expect(await migrationsApply(['--kubeconfig'], deps)).toBe(2);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('maps an infra failure to errorCode + exit 1 (no detail leak in --json)', async () => {
+    const apply = vi.fn(async () => ({ ok: false, errorCode: 'NO_DATABASE_URL', detail: 'postgres://u:p@h needed' }));
+    const { deps, out, err } = fakeDeps({ applyMigrations: apply });
+    const code = await migrationsApply(['--json'], deps);
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/NO_DATABASE_URL/);
+    const joined = out.join('\n');
+    expect(joined).not.toContain('u:p@h');
+    expect(JSON.parse(joined)).toEqual({ ok: false, errorCode: 'NO_DATABASE_URL' });
+  });
+
+  it('exits 1 when a migration failed during apply', async () => {
+    const apply = vi.fn(async () => ({
+      ok: true, ran: true, dryRun: false, applied: 0, pending: 1, failed: true,
+      outcomes: [{ id: '0001_x', status: 'failed', durationMs: 5, error: 'boom' }],
+    }));
+    const { deps, out } = fakeDeps({ applyMigrations: apply });
+    const code = await migrationsApply([], deps);
+    expect(code).toBe(1);
+    expect(out.join('\n')).toMatch(/FAILED|failed/);
+  });
+
+  it('reports a skipped pass (advisory lock held) cleanly', async () => {
+    const apply = vi.fn(async () => ({ ok: true, ran: false, skippedReason: 'lock-held-by-another-replica' }));
+    const { deps, out } = fakeDeps({ applyMigrations: apply });
+    const code = await migrationsApply([], deps);
+    expect(code).toBe(0);
+    expect(out.join('\n')).toMatch(/skipped/i);
   });
 });
 

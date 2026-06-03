@@ -11,6 +11,8 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     err: (s) => err.push(s),
     exec: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
     versionFromDb: vi.fn(async () => null),
+    migrationsStatus: vi.fn(async () => ({ dbReachable: true, items: [] })),
+    applyMigrations: vi.fn(async () => ({ ok: true, ran: true, dryRun: false, applied: 0, pending: 0, failed: false, outcomes: [] })),
     readFile: vi.fn(() => null),
     buildVersion: '2026.6.1',
     dr: {
@@ -72,10 +74,23 @@ describe('dispatch', () => {
     expect(err.join('\n')).toMatch(/cluster|subcommand|status|diagnostics/i);
   });
 
-  it('migrations list routes to the migrations stub', async () => {
+  it('migrations list routes to the list command', async () => {
     const { deps, out } = fakeDeps();
     expect(await dispatch(['migrations', 'list'], deps)).toBe(0);
     expect(out.join('\n')).toMatch(/migration|registry|none|not/i);
+  });
+
+  it('migrations apply routes to the apply command', async () => {
+    const applyMigrations = vi.fn(async () => ({ ok: true, ran: true, dryRun: false, applied: 0, pending: 0, failed: false, outcomes: [] }));
+    const { deps } = fakeDeps({ applyMigrations });
+    expect(await dispatch(['migrations', 'apply', '--dry-run'], deps)).toBe(0);
+    expect(applyMigrations).toHaveBeenCalledWith({ dryRun: true, kubeconfig: undefined });
+  });
+
+  it('migrations with an unknown subcommand → exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['migrations', 'frob'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/list|apply/i);
   });
 
   it('self-upgrade --check routes to the stub and exits 0 (timer safety)', async () => {

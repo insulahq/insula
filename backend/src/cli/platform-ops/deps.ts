@@ -12,11 +12,52 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { realDrOps } from './dr-ops.js';
 import { realSnapshotOps } from './snapshot-ops.js';
+import { scrubCreds } from './redact.js';
 
 export interface VersionInfo {
   installed: string;
   running: string;
   available: string | null;
+}
+
+/** One platform-migration's status for `migrations list`. */
+export interface MigrationStatusItem {
+  readonly id: string;
+  readonly version: string;
+  readonly description: string;
+  /** 'unknown' when the DB is unreachable (registry known, applied-state not). */
+  readonly status: 'applied' | 'pending' | 'drift' | 'unknown';
+  readonly appliedAt: string | null;
+}
+
+/** Result of reading the platform-migration registry status. */
+export interface MigrationsStatus {
+  /** True when the applied-state was read from the DB; false = offline view. */
+  readonly dbReachable: boolean;
+  readonly items: ReadonlyArray<MigrationStatusItem>;
+}
+
+/** One migration's outcome from `migrations apply`. */
+export interface MigrationApplyOutcome {
+  readonly id: string;
+  readonly status: string;
+  readonly durationMs: number;
+  readonly error?: string;
+}
+
+/** Outcome of `migrations apply` — never thrown; infra failures map to errorCode. */
+export interface MigrationApplyResult {
+  /** false on an infra failure (no DATABASE_URL, pool error). */
+  readonly ok: boolean;
+  readonly errorCode?: string;
+  readonly detail?: string;
+  readonly ran?: boolean;
+  readonly dryRun?: boolean;
+  readonly applied?: number;
+  readonly pending?: number;
+  readonly failed?: boolean;
+  readonly skippedReason?: string;
+  readonly outcomes?: ReadonlyArray<MigrationApplyOutcome>;
 }
 
 export interface ExecResult {
@@ -238,6 +279,17 @@ export interface Deps {
    * is unset or the DB is unreachable (the CLI must work when the cluster is down).
    */
   versionFromDb: () => Promise<VersionInfo | null>;
+  /**
+   * Platform-migration registry status. The registry is compiled in (always
+   * known); applied-state is read from the DB when reachable, else 'unknown'.
+   */
+  migrationsStatus: () => Promise<MigrationsStatus>;
+  /**
+   * Apply pending platform-migrations against the DB + cluster (the same
+   * runner the backend uses at startup). NEVER throws — infra failures map to
+   * `errorCode`. `dryRun` runs each migration's no-mutation path only.
+   */
+  applyMigrations: (opts: { dryRun: boolean; kubeconfig?: string }) => Promise<MigrationApplyResult>;
   /** Read a file's contents, or null if it can't be read. */
   readFile: (path: string) => string | null;
   /** The version compiled into this binary at build time (PLATFORM_OPS_VERSION). */
@@ -305,6 +357,77 @@ async function realVersionFromDb(env: NodeJS.ProcessEnv): Promise<VersionInfo | 
   }
 }
 
+async function realMigrationsStatus(env: NodeJS.ProcessEnv): Promise<MigrationsStatus> {
+  // The registry is compiled into the binary; applied-state needs the DB.
+  // Offline-first: the CLI must enumerate this release's migrations even when
+  // the DB is down (it just can't say which have applied).
+  const { registryStatusOffline, listMigrationStatus } = await import('../../modules/platform-upgrades/index.js');
+  const url = env.DATABASE_URL;
+  if (!url) return { dbReachable: false, items: registryStatusOffline() };
+  try {
+    const [{ getDb, closeDb }] = await Promise.all([import('../../db/index.js')]);
+    const db = getDb(url);
+    try {
+      const items = await listMigrationStatus(db);
+      return { dbReachable: true, items };
+    } finally {
+      await closeDb().catch(() => undefined);
+    }
+  } catch {
+    return { dbReachable: false, items: registryStatusOffline() };
+  }
+}
+
+async function realApplyMigrations(
+  env: NodeJS.ProcessEnv,
+  opts: { dryRun: boolean; kubeconfig?: string },
+): Promise<MigrationApplyResult> {
+  const url = env.DATABASE_URL;
+  if (!url) {
+    return { ok: false, errorCode: 'NO_DATABASE_URL', detail: 'DATABASE_URL is required to apply migrations' };
+  }
+  try {
+    const [{ getDb, getPool, closeDb }, { createK8sClients }, { runStartupMigrations }] = await Promise.all([
+      import('../../db/index.js'),
+      import('../../modules/k8s-provisioner/k8s-client.js'),
+      import('../../modules/platform-upgrades/index.js'),
+    ]);
+    const db = getDb(url);
+    try {
+      const k8s = (() => {
+        try { return createK8sClients(opts.kubeconfig); } catch { return null; }
+      })();
+      const result = await runStartupMigrations({
+        db,
+        pool: getPool(),
+        k8s,
+        config: { PLATFORM_VERSION: env.PLATFORM_VERSION, KUBECONFIG_PATH: opts.kubeconfig },
+        // Live runner logs go to stderr so --json stdout stays a clean envelope.
+        log: {
+          info: (m) => process.stderr.write(m + '\n'),
+          warn: (m) => process.stderr.write(m + '\n'),
+        },
+        dryRun: opts.dryRun,
+        skip: false,
+      });
+      return {
+        ok: true,
+        ran: result.ran,
+        dryRun: result.dryRun,
+        applied: result.applied,
+        pending: result.pending,
+        failed: result.failed,
+        skippedReason: result.skippedReason,
+        outcomes: result.outcomes.map((o) => ({ id: o.id, status: o.status, durationMs: o.durationMs, error: o.error })),
+      };
+    } finally {
+      await closeDb().catch(() => undefined);
+    }
+  } catch (err) {
+    return { ok: false, errorCode: 'APPLY_ERROR', detail: scrubCreds(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
 export function realDeps(): Deps {
   const env = process.env;
   return {
@@ -313,6 +436,8 @@ export function realDeps(): Deps {
     err: (s) => process.stderr.write(s + '\n'),
     exec: realExec,
     versionFromDb: () => realVersionFromDb(env),
+    migrationsStatus: () => realMigrationsStatus(env),
+    applyMigrations: (opts) => realApplyMigrations(env, opts),
     readFile: (path) => {
       try {
         return readFileSync(path, 'utf8');
