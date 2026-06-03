@@ -7,7 +7,9 @@
  */
 import type { PlatformMigration } from '../registry/types.js';
 import { recordBaseline } from './0001_record_baseline.js';
+import { seedHostConfigDesired } from './0002_seed_host_config_desired.js';
 
 export const PLATFORM_MIGRATIONS: readonly PlatformMigration[] = [
   recordBaseline,
+  seedHostConfigDesired,
 ];

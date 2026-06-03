@@ -1,0 +1,39 @@
+# NetworkPolicy locking down egress from the host-config-reconciler pods.
+# The reconciler needs exactly one destination — the Kubernetes apiserver
+# (:443 / :6443) — plus CoreDNS for in-cluster DNS resolution used by
+# client-go. Anything else is a data-exfiltration vector if the binary is
+# ever compromised (it reads live sysctl values). Mirrors security-probe.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: host-config-reconciler
+  namespace: platform-system
+  labels:
+    app: host-config-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: host-config-reconciler
+  policyTypes: [Egress]
+  egress:
+    # CoreDNS — client-go resolves the apiserver Service VIP via in-cluster DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Apiserver: in k3s the Service VIP (10.43.0.1) on :443 / :6443. Port-only
+    # egress — Calico matches the destination IP via the ServiceVIP routing.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
