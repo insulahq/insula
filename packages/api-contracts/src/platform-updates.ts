@@ -46,6 +46,50 @@ export const triggerUpdateResponseSchema = z.object({
   targetVersion: z.string(),
 });
 
+// ── Upgrade pre-flight + apply (ADR-045 W14) ─────────────────────────────────
+export const upgradeGateSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: z.enum(['pass', 'warn', 'fail']),
+  detail: z.string(),
+});
+
+export const upgradePreflightResponseSchema = z.object({
+  gates: z.array(upgradeGateSchema),
+  ok: z.boolean(),
+  failures: z.number(),
+  warnings: z.number(),
+  environment: z.string(),
+});
+
+export const upgradeApplyRequestSchema = z.object({
+  /** Explicit target version (CalVer); omitted → the verified available version.
+   *  Charset-pinned here (defence-in-depth + no log-injection) on top of the
+   *  downstream isValidVersion / gitTagForVersion / patch-time re-validation. */
+  version: z
+    .string()
+    .max(64)
+    .regex(/^\d+\.\d+\.\d+(-[A-Za-z0-9.-]{1,40})?$/, 'version must be CalVer X.Y.Z[-suffix]')
+    .optional(),
+  /** false (default) = dry-run plan only; true = perform the Flux re-pin. */
+  apply: z.boolean().optional(),
+});
+
+export const upgradeApplyResponseSchema = z.object({
+  action: z.string(),
+  target: z.string().nullable(),
+  reason: z.string(),
+  proceed: z.boolean(),
+  applied: z.boolean(),
+  gitRepository: z.string().nullable(),
+  environment: z.string(),
+  summary: z.string(),
+});
+
 export type PlatformVersionResponse = z.infer<typeof platformVersionResponseSchema>;
 export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
 export type TriggerUpdateResponse = z.infer<typeof triggerUpdateResponseSchema>;
+export type UpgradeGate = z.infer<typeof upgradeGateSchema>;
+export type UpgradePreflightResponse = z.infer<typeof upgradePreflightResponseSchema>;
+export type UpgradeApplyRequest = z.infer<typeof upgradeApplyRequestSchema>;
+export type UpgradeApplyResponse = z.infer<typeof upgradeApplyResponseSchema>;
