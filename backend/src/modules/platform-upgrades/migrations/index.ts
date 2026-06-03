@@ -10,10 +10,14 @@ import { recordBaseline } from './0001_record_baseline.js';
 import { seedHostConfigDesired } from './0002_seed_host_config_desired.js';
 import { seedHostPackagesDesired } from './0003_seed_host_packages_desired.js';
 import { seedHostMigrationsDesired } from './0004_seed_host_migrations_desired.js';
+import { seedHostUlimitsDesired } from './0005_seed_host_ulimits_desired.js';
+import { seedHostModulesDesired } from './0006_seed_host_modules_desired.js';
 
 export const PLATFORM_MIGRATIONS: readonly PlatformMigration[] = [
   recordBaseline,
   seedHostConfigDesired,
   seedHostPackagesDesired,
   seedHostMigrationsDesired,
+  seedHostUlimitsDesired,
+  seedHostModulesDesired,
 ];

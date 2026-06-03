@@ -163,3 +163,72 @@ export interface HostMigrationDeps {
   /** Where the catalog came from (for reporting). */
   readonly source: 'embedded' | 'filesystem' | 'absent';
 }
+
+// ── ulimits / limits.d (W10 follow-up) ───────────────────────────────────────
+// Render the platform's desired limits into a single managed drop-in,
+// /etc/security/limits.d/90-platform.conf. File-level converge (compare+write),
+// mode-gated like sysctls/packages.
+
+export type UlimitState =
+  | 'ok' // drop-in already matches desired
+  | 'would-write' // differs, dry-run
+  | 'written' // differs, written (enforce)
+  | 'write-failed'
+  | 'refused' // policy exceeds the line cap — never written
+  | 'absent'; // no policy
+
+export interface UlimitConvergeResult {
+  readonly ok: boolean;
+  readonly mode: 'enforce' | 'dry-run';
+  readonly desiredSource: 'configmap' | 'absent';
+  readonly state: UlimitState;
+  /** limits.conf lines that failed validation and were dropped. */
+  readonly invalidLines: readonly string[];
+  readonly detail: string;
+}
+
+export interface UlimitDeps {
+  readonly readDesired: () => Promise<{ lines: readonly string[]; mode: string } | null>;
+  /** Current managed drop-in content, or null if absent. */
+  readonly readCurrent: () => string | null;
+  /** Write the managed drop-in (validated content); throws on refusal. */
+  readonly writeDropIn: (content: string) => void;
+}
+
+// ── kernel modules (W10 follow-up) ───────────────────────────────────────────
+// Ensure declared kernel modules are loaded (and persisted via modules-load.d).
+// ADDITIVE-ONLY: load missing modules; never unload.
+
+export type ModuleState =
+  | 'loaded' // already loaded
+  | 'would-load' // not loaded, dry-run
+  | 'loaded-now' // loaded this pass (enforce)
+  | 'load-failed'
+  | 'not-allowed'; // invalid module name — never loaded
+
+export interface ModuleItem {
+  readonly name: string;
+  readonly state: ModuleState;
+  readonly error?: string;
+}
+
+export interface ModuleConvergeResult {
+  readonly ok: boolean;
+  readonly mode: 'enforce' | 'dry-run';
+  readonly desiredSource: 'configmap' | 'absent';
+  readonly items: readonly ModuleItem[];
+  readonly loadedCount: number;
+  /** Set when the policy was refused wholesale (e.g. exceeds the module cap). */
+  readonly reason?: string;
+}
+
+export interface ModuleSpec {
+  readonly name: string;
+}
+
+export interface ModuleDeps {
+  readonly readDesired: () => Promise<{ modules: readonly ModuleSpec[]; mode: string } | null>;
+  readonly isLoaded: (name: string) => boolean;
+  /** Load a module (re-validates name; modprobe argv-only) + persist; throws on failure. */
+  readonly loadModule: (name: string) => void;
+}

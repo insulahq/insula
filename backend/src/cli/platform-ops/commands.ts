@@ -321,12 +321,42 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
     }
   }
 
-  if (r.desiredSource === 'absent' && p.desiredSource === 'absent' && h.source === 'absent') {
+  // ── ulimits (W10 follow-up) ─────────────────────────────────────────────────
+  const u = await deps.hostConfig.ulimits(opts);
+  if (u.desiredSource === 'absent') {
+    deps.out('host-config: no ulimit policy (host-ulimits-desired absent or cluster unreachable)');
+  } else {
+    deps.out(`host-config ulimits ${u.mode}: ${u.state} — ${u.detail}`);
+    for (const bad of u.invalidLines) deps.out(`  invalid (dropped)  ${bad}`);
+  }
+
+  // ── kernel modules (W10 follow-up) ──────────────────────────────────────────
+  const m = await deps.hostConfig.modules(opts);
+  if (m.desiredSource === 'absent') {
+    deps.out('host-config: no kernel-module policy (host-modules-desired absent or cluster unreachable)');
+  } else if (m.reason) {
+    deps.out(`host-config modules: REFUSED — ${m.reason}`);
+  } else {
+    const pending = m.items.filter((i) => i.state === 'would-load' || i.state === 'load-failed');
+    deps.out(`host-config modules ${m.mode}: ${m.loadedCount} loaded, ${pending.length} pending, ${m.items.length} declared`);
+    for (const i of m.items) {
+      if (i.state === 'loaded') continue;
+      deps.out(`  ${i.state.padEnd(12)} ${i.name}${i.error ? ` — ${i.error}` : ''}`);
+    }
+  }
+
+  if (
+    r.desiredSource === 'absent' &&
+    p.desiredSource === 'absent' &&
+    h.source === 'absent' &&
+    u.desiredSource === 'absent' &&
+    m.desiredSource === 'absent'
+  ) {
     deps.out('host-config: nothing to do');
   }
-  // A write/install/migration failure is a real problem (exit 1). not-allowed /
-  // invalid are policy-authoring issues, not runtime failures — exit 0.
-  return r.ok && p.ok && h.ok ? 0 : 1;
+  // A write/install/migration/load failure is a real problem (exit 1). not-allowed
+  // / invalid are policy-authoring issues, not runtime failures — exit 0.
+  return r.ok && p.ok && h.ok && u.ok && m.ok ? 0 : 1;
 }
 
 /** Pick the cluster's CURRENT floor version (lowest parseable kubelet version). */

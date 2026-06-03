@@ -17,6 +17,13 @@
 #      path never removes/purges/autoremoves/auto-downgrades, validates package
 #      names + pinned versions (anti-flag charset), and shells out only via argv
 #      (execFile, NO shell) with a `--` end-of-options separator.
+#   5. ulimits convergence (W10 follow-up) validates every limits.conf line
+#      (anti-injection charset) in BOTH the converger AND the write path, and only
+#      ever writes the single managed drop-in (limits.d/90-platform.conf).
+#   6. Kernel-module convergence (W10 follow-up) is ADDITIVE-ONLY (never unloads:
+#      no rmmod / modprobe -r) + injection-safe: validates the module name in BOTH
+#      the converger AND the load path, and runs modprobe by absolute path, argv-
+#      only, with a `--` separator.
 
 set -euo pipefail
 
@@ -25,6 +32,8 @@ OBSERVE_DS="$REPO_ROOT/k8s/base/host-config-reconciler/daemonset.yaml"
 SYSCTLS_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/sysctls.ts"
 INDEX_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/index.ts"
 PACKAGES_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/packages.ts"
+ULIMITS_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/ulimits.ts"
+MODULES_TS="$REPO_ROOT/backend/src/cli/platform-ops/host-config/modules.ts"
 
 fail() { echo "  ✗ $1" >&2; FAILED=1; }
 FAILED=0
@@ -101,6 +110,46 @@ if [[ -f "$INDEX_TS" ]]; then
   if grep -Eq 'shell:\s*true|execSync\(|child_process'\''\)\.exec\b' "$INDEX_TS"; then
     fail "index.ts must not use a shell (shell:true / execSync / exec) — argv-only execFileSync"
   fi
+fi
+
+# (5) ulimits convergence: validated + drop-in-only
+if [[ -f "$ULIMITS_TS" ]]; then
+  grep -q 'ulimitLineValid' "$ULIMITS_TS" || fail "ulimits.ts has no ulimitLineValid (anti-injection charset guard on limits.conf lines)"
+else
+  fail "host-config/ulimits.ts is missing"
+fi
+if [[ -f "$INDEX_TS" ]]; then
+  # writeUlimitDropIn must re-validate each line (second gate) before writing.
+  awk '/function writeUlimitDropIn/{f=1} f&&/ulimitLineValid\(t\)/{v=1} f&&/^}/{exit} END{exit !v}' "$INDEX_TS" \
+    || fail "writeUlimitDropIn must re-check ulimitLineValid(...) on every line before writing"
+  # The converger must only ever write the single managed drop-in, never a
+  # path derived from operator/CM input.
+  grep -q "ULIMITS_DROP_IN = '/etc/security/limits.d/90-platform.conf'" "$INDEX_TS" \
+    || fail "index.ts must write the fixed managed drop-in /etc/security/limits.d/90-platform.conf"
+fi
+
+# (6) kernel-module convergence: additive-only + injection-safe
+if [[ -f "$MODULES_TS" ]]; then
+  grep -q 'moduleNameValid' "$MODULES_TS" || fail "modules.ts has no moduleNameValid (anti-flag/charset guard on module names)"
+else
+  fail "host-config/modules.ts is missing"
+fi
+if [[ -f "$INDEX_TS" ]]; then
+  # ADDITIVE-ONLY: the module path must NEVER unload a module.
+  for forbidden in "rmmod" "'-r'" "'--remove'" "modprobe -r"; do
+    if grep -Fq -e "$forbidden" "$INDEX_TS"; then
+      fail "index.ts module path contains a module-unload token: $forbidden (must stay additive-only)"
+    fi
+  done
+  # loadModule must re-validate the name AND pass modprobe a `--` separator.
+  awk '/function loadModule/{f=1} f&&/moduleNameValid\(name\)/{n=1} f&&/'"'"'--'"'"'/{s=1} f&&/^}/{exit} END{exit !(n&&s)}' "$INDEX_TS" \
+    || fail "loadModule must re-check moduleNameValid(name) AND pass a '--' separator to modprobe"
+  # modprobe must be invoked by absolute path, never a bare name.
+  if grep -Fq "execFileSync('modprobe'" "$INDEX_TS" || grep -Fq "execFileSync(\"modprobe\"" "$INDEX_TS"; then
+    fail "modprobe invoked by bare name — use the absolute /usr/sbin/modprobe path"
+  fi
+  grep -q "MODPROBE_BIN = '/usr/sbin/modprobe'" "$INDEX_TS" \
+    || fail "index.ts must invoke modprobe via the absolute /usr/sbin/modprobe path (MODPROBE_BIN)"
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then

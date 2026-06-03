@@ -18,6 +18,8 @@ import {
 } from './sysctls.js';
 import { convergePackages, packageNameValid, packageVersionValid } from './packages.js';
 import { runHostMigrations, hostMigrationValid } from './host-migrations.js';
+import { convergeUlimits, ulimitLineValid } from './ulimits.js';
+import { convergeModules, moduleNameValid } from './modules.js';
 import type {
   ConvergeResult,
   HostConfigDeps,
@@ -25,20 +27,42 @@ import type {
   HostMigrationDeps,
   HostMigrationResult,
   HostMigrationScript,
+  ModuleConvergeResult,
+  ModuleDeps,
+  ModuleSpec,
   PackageConvergeResult,
   PackageDeps,
   PackageManagerFamily,
   PackageSpec,
   SysctlSpec,
+  UlimitConvergeResult,
+  UlimitDeps,
 } from './types.js';
 
-export type { ConvergeResult, HostConfigOptions, PackageConvergeResult, HostMigrationResult } from './types.js';
+export type {
+  ConvergeResult,
+  HostConfigOptions,
+  PackageConvergeResult,
+  HostMigrationResult,
+  UlimitConvergeResult,
+  ModuleConvergeResult,
+} from './types.js';
 
 const DESIRED_CM = 'host-config-desired';
 const PACKAGES_CM = 'host-packages-desired';
 const HOST_MIGRATIONS_CM = 'host-migrations-desired';
+const ULIMITS_CM = 'host-ulimits-desired';
+const MODULES_CM = 'host-modules-desired';
 const DESIRED_NS = 'platform-system';
 const PROC_SYS = '/proc/sys';
+
+// Managed drop-in / persistence paths. Each is a single platform-owned file —
+// the converger overwrites it wholesale, so an operator edit is reverted on the
+// next pass (the file header says so).
+const ULIMITS_DROP_IN = '/etc/security/limits.d/90-platform.conf';
+const MODULES_LOAD_DROP_IN = '/etc/modules-load.d/90-platform.conf';
+const MODPROBE_BIN = '/usr/sbin/modprobe';
+const MODPROBE_TIMEOUT_MS = 30_000;
 
 // Per-package subprocess budgets. A query is fast; an install may pull a chain
 // off a slow mirror — bounded so one stuck apt/dnf can't wedge the daily timer.
@@ -402,6 +426,163 @@ export function realHostMigrationDeps(
   };
 }
 
+// ── ulimits / limits.d (W10 follow-up) ───────────────────────────────────────
+
+/** Split a CM `limits` block into lines (comments + blanks kept — renderUlimits drops them). */
+function parseUlimitLines(raw: string): string[] {
+  return raw.split('\n').map((l) => l.replace(/\r$/, ''));
+}
+
+function readUlimitDropIn(): string | null {
+  try {
+    return readFileSync(ULIMITS_DROP_IN, 'utf8');
+  } catch {
+    return null; // absent → drift vs any desired content
+  }
+}
+
+// The ONLY ulimit-mutating function. The content is platform-rendered (every
+// line already passed ulimitLineValid in renderUlimits); this re-guards each
+// non-comment line as a second gate before the file ever lands on disk, so a
+// rendering bug can't write an unvalidated line into limits.d.
+function writeUlimitDropIn(content: string): void {
+  for (const line of content.split('\n')) {
+    const t = line.trim();
+    if (t === '' || t.startsWith('#')) continue;
+    if (!ulimitLineValid(t)) throw new Error(`refusing to write invalid limits.conf line ${JSON.stringify(t)}`);
+  }
+  mkdirSync(join(ULIMITS_DROP_IN, '..'), { recursive: true });
+  writeFileSync(ULIMITS_DROP_IN, content, { mode: 0o644 });
+}
+
+async function readDesiredUlimits(env: NodeJS.ProcessEnv): Promise<{ lines: string[]; mode: string } | null> {
+  try {
+    const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
+    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
+    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const cm = (await k8s.core.readNamespacedConfigMap({
+      name: ULIMITS_CM,
+      namespace: DESIRED_NS,
+    } as unknown as Parameters<typeof k8s.core.readNamespacedConfigMap>[0])) as { data?: Record<string, string> };
+    return {
+      lines: parseUlimitLines(cm.data?.['limits'] ?? ''),
+      mode: (cm.data?.['mode'] ?? '').trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function realUlimitDeps(env: NodeJS.ProcessEnv): UlimitDeps {
+  return {
+    readDesired: () => readDesiredUlimits(env),
+    readCurrent: readUlimitDropIn,
+    writeDropIn: writeUlimitDropIn,
+  };
+}
+
+// ── kernel modules (W10 follow-up) ───────────────────────────────────────────
+
+/** Parse a CM `modules` block into specs (one name per line; comments + blanks skipped). */
+export function parseModules(raw: string): ModuleSpec[] {
+  const out: ModuleSpec[] = [];
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (t === '' || t.startsWith('#') || t.startsWith(';')) continue;
+    out.push({ name: t });
+  }
+  return out;
+}
+
+// A module is "loaded" iff it appears in /proc/modules (first column). Reading
+// the file (not `lsmod`) keeps this dependency-free + race-free. Names there use
+// underscores; modprobe accepts either, so we compare on the normalised form.
+function moduleIsLoaded(name: string): boolean {
+  if (!moduleNameValid(name)) return false;
+  let raw: string;
+  try {
+    raw = readFileSync('/proc/modules', 'utf8');
+  } catch {
+    return false;
+  }
+  const want = name.replace(/-/g, '_');
+  for (const line of raw.split('\n')) {
+    const first = line.split(' ', 1)[0];
+    if (first && first.replace(/-/g, '_') === want) return true;
+  }
+  return false;
+}
+
+// The ONLY module-mutating function. Re-validates the name (second gate behind
+// convergeModules), loads via modprobe (absolute path, argv-only, `--` separator
+// so a name can never be read as a flag), then persists to modules-load.d so the
+// module survives a reboot. ADDITIVE: append-if-absent, never rewrite/remove.
+function loadModule(name: string): void {
+  if (!moduleNameValid(name)) throw new Error(`refusing to load invalid module name ${JSON.stringify(name)}`);
+  try {
+    execFileSync(MODPROBE_BIN, ['--', name], {
+      encoding: 'utf8',
+      timeout: MODPROBE_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    const detail = (e.stderr || e.message || 'modprobe failed').toString().trim().split('\n').slice(-2).join('; ');
+    throw new Error(detail);
+  }
+  persistModule(name);
+}
+
+/** Append a module to /etc/modules-load.d/90-platform.conf if not already present. */
+function persistModule(name: string): void {
+  // Independent gate: persistModule is private (only loadModule calls it today),
+  // but guard defensively so any future caller cannot bypass the name validation.
+  if (!moduleNameValid(name)) throw new Error(`refusing to persist invalid module name ${JSON.stringify(name)}`);
+  let existing = '';
+  try {
+    existing = readFileSync(MODULES_LOAD_DROP_IN, 'utf8');
+  } catch {
+    existing = '';
+  }
+  // Dedup on the kernel-normalised form (hyphen ≡ underscore) so a name already
+  // persisted in either spelling is never appended a second time.
+  const want = name.replace(/-/g, '_');
+  const lines = existing.split('\n').map((l) => l.trim());
+  if (lines.some((l) => l.replace(/-/g, '_') === want)) return; // already persisted
+  const header = existing.startsWith('#')
+    ? ''
+    : '# Managed by platform-ops host-config (ADR-045 W10) — modules to load at boot.\n';
+  const body = existing.endsWith('\n') || existing === '' ? existing : existing + '\n';
+  mkdirSync(join(MODULES_LOAD_DROP_IN, '..'), { recursive: true });
+  writeFileSync(MODULES_LOAD_DROP_IN, `${header}${body}${name}\n`, { mode: 0o644 });
+}
+
+async function readDesiredModules(env: NodeJS.ProcessEnv): Promise<{ modules: ModuleSpec[]; mode: string } | null> {
+  try {
+    const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
+    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
+    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const cm = (await k8s.core.readNamespacedConfigMap({
+      name: MODULES_CM,
+      namespace: DESIRED_NS,
+    } as unknown as Parameters<typeof k8s.core.readNamespacedConfigMap>[0])) as { data?: Record<string, string> };
+    return {
+      modules: parseModules(cm.data?.['modules'] ?? ''),
+      mode: (cm.data?.['mode'] ?? '').trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function realModuleDeps(env: NodeJS.ProcessEnv): ModuleDeps {
+  return {
+    readDesired: () => readDesiredModules(env),
+    isLoaded: moduleIsLoaded,
+    loadModule,
+  };
+}
+
 export interface HostConfigOps {
   /** Converge host sysctls to the host-config-desired policy. */
   run: (opts: HostConfigOptions) => Promise<ConvergeResult>;
@@ -409,11 +590,17 @@ export interface HostConfigOps {
   packages: (opts: HostConfigOptions) => Promise<PackageConvergeResult>;
   /** Apply pending host-migration scripts (host-migrations-desired policy). */
   hostMigrations: (opts: HostConfigOptions) => Promise<HostMigrationResult>;
+  /** Converge the managed limits.d drop-in (host-ulimits-desired policy). */
+  ulimits: (opts: HostConfigOptions) => Promise<UlimitConvergeResult>;
+  /** Ensure declared kernel modules are loaded (host-modules-desired policy). */
+  modules: (opts: HostConfigOptions) => Promise<ModuleConvergeResult>;
 }
 
 export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
   const deps = realHostConfigDeps(env);
   const pkgDeps = realPackageDeps(env);
+  const ulimitDeps = realUlimitDeps(env);
+  const moduleDeps = realModuleDeps(env);
   return {
     async run(opts) {
       const desired = await deps.readDesired();
@@ -439,6 +626,20 @@ export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
       const mode = await hmDeps.readMode();
       const enforcing = opts.apply || (!opts.dryRun && (mode ?? '').toLowerCase() === 'enforce');
       return runHostMigrations(catalog.scripts, enforcing, hmDeps);
+    },
+    async ulimits(opts) {
+      const desired = await ulimitDeps.readDesired();
+      if (!desired) return convergeUlimits(null, false, ulimitDeps);
+      // Same opt-in gating as sysctls, against the ulimits policy's own mode.
+      const enforcing = opts.apply || (!opts.dryRun && desired.mode.toLowerCase() === 'enforce');
+      return convergeUlimits(desired.lines, enforcing, ulimitDeps);
+    },
+    async modules(opts) {
+      const desired = await moduleDeps.readDesired();
+      if (!desired) return convergeModules(null, false, moduleDeps);
+      // Same opt-in gating, against the modules policy's own mode.
+      const enforcing = opts.apply || (!opts.dryRun && desired.mode.toLowerCase() === 'enforce');
+      return convergeModules(desired.modules, enforcing, moduleDeps);
     },
   };
 }

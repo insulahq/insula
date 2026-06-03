@@ -46,6 +46,8 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
       hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
+      ulimits: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, state: 'absent' as const, invalidLines: [], detail: 'no ulimit policy' })),
+      modules: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], loadedCount: 0 })),
     },
     clusterUpgrade: {
       readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
@@ -57,12 +59,14 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep the default `packages`
-  // + `hostMigrations` so hostConfigCommand (which converges all three surfaces)
-  // never hits an undefined.
+  // + `hostMigrations` + `ulimits` + `modules` so hostConfigCommand (which
+  // converges all five surfaces) never hits an undefined.
   if (over.hostConfig) {
     deps.hostConfig = {
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
       hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
+      ulimits: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, state: 'absent' as const, invalidLines: [], detail: 'no ulimit policy' })),
+      modules: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], loadedCount: 0 })),
       ...deps.hostConfig,
     };
   }
@@ -463,11 +467,13 @@ describe('hostConfigCommand', () => {
     expect(await hostConfigCommand(['apply'], deps)).toBe(1);
   });
 
-  it('all three surfaces absent → "nothing to do", exit 0', async () => {
+  it('all five surfaces absent → "nothing to do", exit 0', async () => {
     const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
     const packages = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 }));
     const hostMigrations = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 }));
-    const { deps, out } = fakeDeps({ hostConfig: { run, packages, hostMigrations } });
+    const ulimits = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, state: 'absent' as const, invalidLines: [], detail: 'no ulimit policy' }));
+    const modules = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], loadedCount: 0 }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, packages, hostMigrations, ulimits, modules } });
     expect(await hostConfigCommand(['status'], deps)).toBe(0);
     expect(out.join('\n')).toContain('nothing to do');
   });
@@ -504,6 +510,65 @@ describe('hostConfigCommand', () => {
     }));
     const { deps } = fakeDeps({ hostConfig: { run, hostMigrations } });
     expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+  });
+
+  it('also converges ulimits and reports the drop-in write', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const ulimits = vi.fn(async () => ({
+      ok: true, mode: 'enforce' as const, desiredSource: 'configmap' as const, state: 'written' as const,
+      invalidLines: ['evil; rm'], detail: 'wrote 2 limit line(s)',
+    }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, ulimits } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(0);
+    expect(ulimits).toHaveBeenCalledWith({ dryRun: false, apply: false });
+    expect(out.join('\n')).toMatch(/ulimits enforce: written — wrote 2 limit line/);
+    expect(out.join('\n')).toMatch(/invalid \(dropped\)\s+evil; rm/);
+  });
+
+  it('a ulimit write failure → exit 1', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const ulimits = vi.fn(async () => ({
+      ok: false, mode: 'enforce' as const, desiredSource: 'configmap' as const, state: 'write-failed' as const,
+      invalidLines: [], detail: 'EACCES',
+    }));
+    const { deps } = fakeDeps({ hostConfig: { run, ulimits } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+  });
+
+  it('also loads kernel modules and reports loaded/pending', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const modules = vi.fn(async () => ({
+      ok: true, mode: 'enforce' as const, desiredSource: 'configmap' as const, loadedCount: 1,
+      items: [
+        { name: 'overlay', state: 'loaded' as const },
+        { name: 'br_netfilter', state: 'loaded-now' as const },
+      ],
+    }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, modules } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(0);
+    expect(modules).toHaveBeenCalledWith({ dryRun: false, apply: false });
+    expect(out.join('\n')).toMatch(/modules enforce: 1 loaded, 0 pending, 2 declared/);
+  });
+
+  it('a module load failure → exit 1', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const modules = vi.fn(async () => ({
+      ok: false, mode: 'enforce' as const, desiredSource: 'configmap' as const, loadedCount: 0,
+      items: [{ name: 'nf_tables', state: 'load-failed' as const, error: 'modprobe: FATAL' }],
+    }));
+    const { deps } = fakeDeps({ hostConfig: { run, modules } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+  });
+
+  it('a refused (over-cap) module policy → REFUSED line + exit 1', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const modules = vi.fn(async () => ({
+      ok: false, mode: 'dry-run' as const, desiredSource: 'configmap' as const, loadedCount: 0,
+      items: [], reason: 'host-modules-desired declares 150 modules (> 100 cap) — refusing',
+    }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, modules } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+    expect(out.join('\n')).toMatch(/modules: REFUSED/);
   });
 });
 

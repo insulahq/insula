@@ -31,6 +31,8 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
       hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
+      ulimits: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, state: 'absent' as const, invalidLines: [], detail: 'no ulimit policy' })),
+      modules: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], loadedCount: 0 })),
     },
     clusterUpgrade: {
       readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
@@ -42,11 +44,14 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep default `packages` +
-  // `hostMigrations` so host-config dispatch (all three surfaces) never hits undefined.
+  // `hostMigrations` + `ulimits` + `modules` so host-config dispatch (all five
+  // surfaces) never hits undefined.
   if (over.hostConfig) {
     deps.hostConfig = {
       packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
       hostMigrations: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, source: 'absent' as const, items: [], appliedCount: 0 })),
+      ulimits: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, state: 'absent' as const, invalidLines: [], detail: 'no ulimit policy' })),
+      modules: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], loadedCount: 0 })),
       ...deps.hostConfig,
     };
   }
