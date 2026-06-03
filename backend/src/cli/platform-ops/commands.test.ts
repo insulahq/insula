@@ -40,9 +40,18 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     },
     hostConfig: {
       run: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, items: [], appliedCount: 0 })),
+      packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
     },
     ...over,
   };
+  // A `hostConfig` override usually sets only `run`; keep the default `packages`
+  // so hostConfigCommand (which converges both surfaces) never hits an undefined.
+  if (over.hostConfig && !over.hostConfig.packages) {
+    deps.hostConfig = {
+      ...deps.hostConfig,
+      packages: vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 })),
+    };
+  }
   return { deps, out, err };
 }
 
@@ -416,5 +425,46 @@ describe('hostConfigCommand', () => {
     const { deps } = fakeDeps({ hostConfig: { run } });
     expect(await hostConfigCommand(['status', '--apply'], deps)).toBe(2);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('also converges packages and reports installs', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const packages = vi.fn(async () => ({
+      ok: true, mode: 'enforce' as const, desiredSource: 'configmap' as const, family: 'apt' as const,
+      installedCount: 1, items: [{ name: 'jq', desiredVersion: null, actualVersion: '1.6', state: 'installed' as const }],
+    }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, packages } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(0);
+    expect(packages).toHaveBeenCalledWith({ dryRun: false, apply: false });
+    expect(out.join('\n')).toMatch(/packages enforce \[apt\]: 1 installed/);
+  });
+
+  it('a package install failure → exit 1 (even when sysctls are clean)', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const packages = vi.fn(async () => ({
+      ok: false, mode: 'enforce' as const, desiredSource: 'configmap' as const, family: 'apt' as const,
+      installedCount: 0, items: [{ name: 'jq', desiredVersion: null, actualVersion: null, state: 'install-failed' as const, error: 'mirror down' }],
+    }));
+    const { deps } = fakeDeps({ hostConfig: { run, packages } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+  });
+
+  it('both surfaces absent → "nothing to do", exit 0', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const packages = vi.fn(async () => ({ ok: true, mode: 'dry-run' as const, desiredSource: 'absent' as const, family: null, items: [], installedCount: 0 }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, packages } });
+    expect(await hostConfigCommand(['status'], deps)).toBe(0);
+    expect(out.join('\n')).toContain('nothing to do');
+  });
+
+  it('a refused (over-cap) package policy → REFUSED line + exit 1', async () => {
+    const run = vi.fn(async () => okResult({ desiredSource: 'absent' as const }));
+    const packages = vi.fn(async () => ({
+      ok: false, mode: 'dry-run' as const, desiredSource: 'configmap' as const, family: 'apt' as const,
+      installedCount: 0, items: [], reason: 'host-packages-desired declares 999 packages (> 200 cap) — refusing',
+    }));
+    const { deps, out } = fakeDeps({ hostConfig: { run, packages } });
+    expect(await hostConfigCommand(['apply'], deps)).toBe(1);
+    expect(out.join('\n')).toMatch(/REFUSED/);
   });
 });

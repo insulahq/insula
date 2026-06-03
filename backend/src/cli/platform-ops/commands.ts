@@ -238,13 +238,15 @@ export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
 }
 
 /**
- * `host-config apply [--dry-run]` (ADR-045 W10, amended — host-side converge).
+ * `host-config apply [--dry-run]` (ADR-045 W10/W10b, amended — host-side converge).
  *
- * Reads the cluster's host-config-desired policy and converges this node's
- * sysctls HOST-SIDE (platform-ops is root on the host — no privileged pod). Two
- * gates: the policy's `mode` must be `enforce` (opt-in) AND no `--dry-run`;
- * `--apply` forces enforce for a manual run. Default (no policy / mode!=enforce)
- * is a no-op dry-run, so the daily timer never writes until the operator opts in.
+ * Reads the cluster's desired policies and converges this node HOST-SIDE
+ * (platform-ops is root on the host — no privileged pod): sysctls
+ * (host-config-desired) then OS packages (host-packages-desired, additive-only).
+ * Two gates per surface: the policy's `mode` must be `enforce` (opt-in) AND no
+ * `--dry-run`; `--apply` forces enforce for a manual run. Default (no policy /
+ * mode!=enforce) is a no-op dry-run, so the daily timer never mutates the host
+ * until the operator opts in. Exit 1 only on a real write/install failure.
  */
 export async function hostConfigCommand(args: string[], deps: Deps): Promise<number> {
   const sub = args[0];
@@ -273,18 +275,39 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
     return 2;
   }
 
-  const r = await deps.hostConfig.run({ dryRun, apply: wantApply });
+  const opts = { dryRun, apply: wantApply };
+
+  // ── sysctls ────────────────────────────────────────────────────────────────
+  const r = await deps.hostConfig.run(opts);
   if (r.desiredSource === 'absent') {
-    deps.out('host-config: no policy (host-config-desired absent or cluster unreachable) — nothing to do');
-    return 0;
+    deps.out('host-config: no sysctl policy (host-config-desired absent or cluster unreachable)');
+  } else {
+    const drift = r.items.filter((i) => i.state === 'would-apply' || i.state === 'applied' || i.state === 'write-failed');
+    deps.out(`host-config sysctls ${r.mode}: ${r.appliedCount} applied, ${drift.length} drift, ${r.items.length} keys`);
+    for (const i of r.items) {
+      if (i.state === 'ok') continue; // only surface the interesting ones
+      deps.out(`  ${i.state.padEnd(12)} ${i.key} desired=${i.desired}${i.actual !== null ? ` actual=${i.actual}` : ''}${i.error ? ` — ${i.error}` : ''}`);
+    }
   }
-  const drift = r.items.filter((i) => i.state === 'would-apply' || i.state === 'applied' || i.state === 'write-failed');
-  deps.out(`host-config ${r.mode}: ${r.appliedCount} applied, ${drift.length} drift, ${r.items.length} sysctls`);
-  for (const i of r.items) {
-    if (i.state === 'ok') continue; // only surface the interesting ones
-    deps.out(`  ${i.state.padEnd(12)} ${i.key} desired=${i.desired}${i.actual !== null ? ` actual=${i.actual}` : ''}${i.error ? ` — ${i.error}` : ''}`);
+
+  // ── packages (W10b) ─────────────────────────────────────────────────────────
+  const p = await deps.hostConfig.packages(opts);
+  if (p.desiredSource === 'absent') {
+    deps.out('host-config: no package policy (host-packages-desired absent or cluster unreachable)');
+  } else if (p.reason) {
+    deps.out(`host-config packages: REFUSED — ${p.reason}`);
+  } else {
+    deps.out(`host-config packages ${p.mode} [${p.family ?? 'no-pkg-mgr'}]: ${p.installedCount} installed, ${p.items.length} declared`);
+    for (const i of p.items) {
+      if (i.state === 'ok') continue;
+      deps.out(`  ${i.state.padEnd(16)} ${i.name}${i.desiredVersion ? `=${i.desiredVersion}` : ''}${i.actualVersion ? ` (have ${i.actualVersion})` : ''}${i.error ? ` — ${i.error}` : ''}`);
+    }
   }
-  // A write failure is a real problem; surface it (exit 1). not-allowed is a
-  // policy authoring issue but not a runtime failure — exit 0.
-  return r.ok ? 0 : 1;
+
+  if (r.desiredSource === 'absent' && p.desiredSource === 'absent') {
+    deps.out('host-config: nothing to do');
+  }
+  // A write/install failure is a real problem (exit 1). not-allowed is a policy
+  // authoring issue, not a runtime failure — exit 0.
+  return r.ok && p.ok ? 0 : 1;
 }

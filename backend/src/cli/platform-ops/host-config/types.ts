@@ -56,3 +56,56 @@ export interface HostConfigDeps {
   /** Write a sysctl (re-validates allow-list + deny-list + containment); throws on refusal. */
   readonly writeSysctl: (key: string, value: string) => void;
 }
+
+// ── Package convergence (W10b) ───────────────────────────────────────────────
+// Declared OS packages are kept PRESENT on every node. ADDITIVE-ONLY: the
+// converger installs missing packages (optionally at a pinned version) and
+// NEVER removes, purges, or auto-downgrades — a daily timer that churned live
+// package versions or removed undeclared packages would be a foot-cannon.
+
+export type PackageManagerFamily = 'apt' | 'dnf';
+
+export type PackageState =
+  | 'ok' // installed (and pin matches, if pinned)
+  | 'installed' // was missing, now installed (enforce)
+  | 'would-install' // missing, dry-run (no action)
+  | 'version-mismatch' // installed at a version other than the pin — REPORTED, never auto-changed
+  | 'not-allowed' // invalid package name / version — never acted on
+  | 'install-failed'
+  | 'unsupported'; // host has neither apt nor dnf
+
+export interface PackageItem {
+  readonly name: string;
+  readonly desiredVersion: string | null;
+  readonly actualVersion: string | null;
+  readonly state: PackageState;
+  readonly error?: string;
+}
+
+export interface PackageConvergeResult {
+  readonly ok: boolean;
+  readonly mode: 'enforce' | 'dry-run';
+  readonly desiredSource: 'configmap' | 'absent';
+  readonly family: PackageManagerFamily | null;
+  readonly items: readonly PackageItem[];
+  readonly installedCount: number;
+  /** Set when the run was refused wholesale (e.g. the policy exceeds the spec cap). */
+  readonly reason?: string;
+}
+
+/** One declared package: a name, with an optional pinned version. */
+export interface PackageSpec {
+  readonly name: string;
+  readonly version: string | null;
+}
+
+export interface PackageDeps {
+  /** Read host-packages-desired (packages + mode); null = absent/unreachable. */
+  readonly readDesiredPackages: () => Promise<{ packages: readonly PackageSpec[]; mode: string } | null>;
+  /** Which package manager this host uses, or null if neither apt nor dnf is present. */
+  readonly detectFamily: () => PackageManagerFamily | null;
+  /** Query the installed state of one package by exact name. */
+  readonly queryInstalled: (name: string) => { installed: boolean; version: string | null };
+  /** Install a package (re-validates name+version; argv, no shell; `--` separator); throws on failure. */
+  readonly installPackage: (family: PackageManagerFamily, name: string, version: string | null) => void;
+}
