@@ -14,7 +14,10 @@
  * and so the binary can run with no DATABASE_URL at all (verify is
  * bundle-only). esbuild bundles the dynamic-import targets into the SEA.
  */
-import type { DrBundleManifest, DrOps, DrRestoreOutcome, DrRestoreRequest } from './deps.js';
+import type {
+  DrBundleManifest, DrOps, DrRescueFailure, DrRescueOutcome, DrRescueRequest,
+  DrRescueSnapshot, DrRestoreOutcome, DrRestoreRequest,
+} from './deps.js';
 import { scrubCreds } from './redact.js';
 
 function messageOf(err: unknown): string {
@@ -128,6 +131,54 @@ export function realDrOps(): DrOps {
       } finally {
         // closeDb tears down the shared pool; a no-op if getDb never ran.
         await closeDb().catch(() => undefined);
+      }
+    },
+
+    async rescue(req: DrRescueRequest): Promise<DrRescueOutcome> {
+      // Block-level Longhorn snapshots of the system volumes — a safety net
+      // before a destructive `dr restore`. Wraps the same `system-snapshots`
+      // primitive the /nodes-and-storage UI uses. Enumeration failure
+      // (cluster unreachable) → ok:false; per-volume snapshot failures are
+      // collected into `failures` so a partial result is visible.
+      try {
+        const [{ createK8sClients }, snap] = await Promise.all([
+          import('../../modules/k8s-provisioner/k8s-client.js'),
+          import('../../modules/system-snapshots/service.js'),
+        ]);
+        const k8s = createK8sClients(req.kubeconfig);
+        // Liveness probe FIRST. listSystemPvcSnapshots swallows every per-call
+        // error and returns [] on a dead cluster — which for a *rescue* op
+        // would dangerously mask "cluster unreachable" as "0 volumes, all
+        // good". A cheap cluster-scoped read that throws on a connection
+        // failure makes "unreachable" surface as RESCUE_ERROR (outer catch).
+        await k8s.core.listNode();
+        const summaries = await snap.listSystemPvcSnapshots(k8s);
+
+        const targets = req.volume
+          ? summaries.filter((s) => s.longhornVolumeName === req.volume)
+          : summaries;
+        if (req.volume && targets.length === 0) {
+          return { ok: false, errorCode: 'VOLUME_NOT_FOUND', detail: `no system PVC maps to Longhorn volume '${req.volume}'` };
+        }
+
+        const snapshots: DrRescueSnapshot[] = [];
+        const failures: DrRescueFailure[] = [];
+        const seen = new Set<string>();
+        for (const s of targets) {
+          // Skip PVCs with no bound Longhorn volume + de-dup (a CNPG cluster
+          // can surface several PVC rows; one snapshot per volume is enough).
+          if (!s.longhornVolumeName || seen.has(s.longhornVolumeName)) continue;
+          seen.add(s.longhornVolumeName);
+          try {
+            const { snapshotName } = await snap.takeSnapshot(k8s, s.longhornVolumeName, req.label);
+            snapshots.push({ volumeName: s.longhornVolumeName, namespace: s.namespace, pvcName: s.pvcName, snapshotName });
+          } catch (err) {
+            failures.push({ volumeName: s.longhornVolumeName, reason: messageOf(err) });
+          }
+        }
+        return { ok: true, snapshots, failures };
+      } catch (err) {
+        return { ok: false, errorCode: 'RESCUE_ERROR', detail: messageOf(err) };
       }
     },
   };

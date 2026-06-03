@@ -16,12 +16,13 @@
  *
  * Exit codes: 0 = success, 1 = runtime failure, 2 = usage error.
  */
-import type { Deps, DrBundleManifest, DrRestoreRequest } from './deps.js';
+import type { Deps, DrBundleManifest, DrRescueRequest, DrRestoreRequest } from './deps.js';
 import { scrubCreds } from './redact.js';
 
 export type ParseDrResult =
   | { ok: true; sub: 'verify'; bundlePath: string; ageKeyPath: string; ageBinary?: string }
   | { ok: true; sub: 'restore'; req: DrRestoreRequest }
+  | { ok: true; sub: 'rescue'; req: DrRescueRequest }
   | { ok: false; code: number; message: string };
 
 type Fail = { ok: false; code: number; message: string };
@@ -132,15 +133,46 @@ function parseRestore(rest: string[]): ParseDrResult {
   return { ok: true, sub: 'restore', req: { ...base, mode: 'partial' } };
 }
 
+/**
+ * `dr rescue` — block-level Longhorn safety snapshots before a destructive
+ * recovery. No required args: a bare `dr rescue` snapshots every system PVC.
+ * `--volume` narrows to one Longhorn volume; `--label` stamps the snapshots.
+ */
+function parseRescue(rest: string[]): ParseDrResult {
+  let kubeconfig: string | undefined;
+  let label: string | undefined;
+  let volume: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    switch (a) {
+      case '--kubeconfig': case '--label': case '--volume': {
+        const t = takeValue(rest, i, a);
+        if (!t.ok) return t;
+        if (a === '--kubeconfig') kubeconfig = t.value;
+        else if (a === '--label') label = t.value;
+        else volume = t.value;
+        i++;
+        break;
+      }
+      case '--json':
+        break;
+      default:
+        return usage(`dr rescue: unknown argument '${a}'`);
+    }
+  }
+  return { ok: true, sub: 'rescue', req: { kubeconfig, label, volume } };
+}
+
 export function parseDrArgs(args: string[]): ParseDrResult {
   const [sub, ...rest] = args;
   switch (sub) {
     case 'verify': return parseVerify(rest);
     case 'restore': return parseRestore(rest);
+    case 'rescue': return parseRescue(rest);
     case undefined:
-      return usage('dr: expected a subcommand (verify | restore)');
+      return usage('dr: expected a subcommand (verify | restore | rescue)');
     default:
-      return usage(`dr: unknown subcommand '${sub}' (expected verify | restore)`);
+      return usage(`dr: unknown subcommand '${sub}' (expected verify | restore | rescue)`);
   }
 }
 
@@ -211,6 +243,36 @@ async function restoreCommand(parsed: Extract<ParseDrResult, { sub: 'restore' }>
   return 0;
 }
 
+async function rescueCommand(req: DrRescueRequest, json: boolean, deps: Deps): Promise<number> {
+  const outcome = await deps.dr.rescue(req);
+  if (!outcome.ok) {
+    // Label only in JSON — detail (scrubbed by the seam) goes to stderr.
+    if (json) deps.out(JSON.stringify({ ok: false, errorCode: outcome.errorCode ?? 'UNEXPECTED' }));
+    deps.err(`dr rescue: ${outcome.errorCode ?? 'UNEXPECTED'}${outcome.detail ? ` — ${outcome.detail}` : ''}`);
+    return 1;
+  }
+  const snapshots = outcome.snapshots ?? [];
+  const failures = outcome.failures ?? [];
+  if (json) {
+    deps.out(JSON.stringify({ ok: true, snapshots, failures: failures.length ? failures : undefined }));
+  } else if (snapshots.length === 0 && failures.length === 0) {
+    deps.out('No system volumes found to snapshot.');
+  } else {
+    deps.out(`Rescued ${snapshots.length} system volume(s):`);
+    for (const s of snapshots) {
+      deps.out(`  ${s.namespace}/${s.pvcName} (${s.volumeName}) → ${s.snapshotName}`);
+    }
+  }
+  // Per-volume failures are non-fatal but surface as warnings + a non-zero
+  // exit so an operator scripting `dr rescue` notices a partial result.
+  if (failures.length) {
+    deps.err(`dr rescue: WARN ${failures.length} volume(s) could not be snapshotted:`);
+    for (const f of failures) deps.err(`  - ${f.volumeName}: ${f.reason}`);
+    return 1;
+  }
+  return 0;
+}
+
 export async function drCommand(args: string[], deps: Deps): Promise<number> {
   const parsed = parseDrArgs(args);
   if (!parsed.ok) {
@@ -219,5 +281,6 @@ export async function drCommand(args: string[], deps: Deps): Promise<number> {
   }
   const json = args.includes('--json');
   if (parsed.sub === 'verify') return verifyCommand(parsed, json, deps);
-  return restoreCommand(parsed, json, deps);
+  if (parsed.sub === 'restore') return restoreCommand(parsed, json, deps);
+  return rescueCommand(parsed.req, json, deps);
 }

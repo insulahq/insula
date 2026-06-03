@@ -40,6 +40,21 @@ yes "help lists commands"                       "'$BIN' help | grep -qi 'cluster
 yes "migrations list is a graceful stub"        "'$BIN' migrations list | grep -qi 'no platform-migration registry'"
 yes "unknown command exits 2"                   "'$BIN' frobnicate >/dev/null 2>&1; [ \$? -eq 2 ]"
 yes "self-upgrade --check is a no-op (exit 0)"  "'$BIN' self-upgrade --check | grep -qi 'no-op'"
+yes "help lists snapshot + dr rescue"           "'$BIN' help | grep -qi 'snapshot capture' && '$BIN' help | grep -qi 'dr rescue'"
+yes "snapshot (no sub) → usage error exit 2"    "'$BIN' snapshot >/dev/null 2>&1; [ \$? -eq 2 ]"
+yes "snapshot capture over-long --description → exit 2" \
+  "'$BIN' snapshot capture --description \"\$(printf 'x%.0s' \$(seq 1 300))\" >/dev/null 2>&1; [ \$? -eq 2 ]"
+# These emit a parseable JSON envelope whether or not a cluster is reachable —
+# the build host may or may not reach a local cluster, so we assert "runs the
+# backend graph + returns a valid {ok:...} envelope (no crash)", NOT a specific
+# label. The fails-closed-on-unreachable proof lives in the E2E (controlled env).
+# `|| true` inside the brace group neutralises the binary's (correct) non-zero
+# exit so `set -o pipefail` doesn't poison the grep match — we assert on the
+# JSON envelope, not the exit code, since reachability varies by build host.
+yes "snapshot list --json bundles + returns a valid envelope (no crash)" \
+  "{ '$BIN' snapshot list --json 2>/dev/null || true; } | grep -qE '\"ok\":(true|false)'"
+yes "dr rescue --json bundles + returns a valid envelope (no crash)" \
+  "{ '$BIN' dr rescue --json 2>/dev/null || true; } | grep -qE '\"ok\":(true|false)'"
 yes "cluster status fails gracefully (no crash)" "'$BIN' cluster status >/dev/null 2>&1; rc=\$?; [ \$rc -ne 0 ]"
 yes "DB graph bundled: enrich path degrades on unreachable DB" \
   "DATABASE_URL='postgres://x:x@127.0.0.1:1/none' '$BIN' version --json | grep -q '\"installed\"'"

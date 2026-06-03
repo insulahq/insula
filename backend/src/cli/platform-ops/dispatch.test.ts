@@ -16,6 +16,11 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     dr: {
       verifyBundle: vi.fn(async () => { throw new Error('not used'); }),
       runRestore: vi.fn(async () => ({ ok: true })),
+      rescue: vi.fn(async () => ({ ok: true, snapshots: [] })),
+    },
+    snapshot: {
+      capture: vi.fn(async () => ({ ok: true })),
+      list: vi.fn(async () => ({ ok: true, backups: [] })),
     },
     ...over,
   };
@@ -93,5 +98,34 @@ describe('dispatch', () => {
     const { deps, err } = fakeDeps();
     expect(await dispatch(['dr'], deps)).toBe(2);
     expect(err.join('\n')).toMatch(/subcommand|verify|restore/i);
+  });
+
+  it('dr rescue routes through to dr.rescue', async () => {
+    const rescue = vi.fn(async () => ({ ok: true, snapshots: [] }));
+    const { deps } = fakeDeps({
+      dr: { verifyBundle: vi.fn(async () => { throw new Error('x'); }), runRestore: vi.fn(async () => ({ ok: true })), rescue },
+    });
+    expect(await dispatch(['dr', 'rescue'], deps)).toBe(0);
+    expect(rescue).toHaveBeenCalled();
+  });
+
+  it('snapshot capture routes through to snapshot.capture', async () => {
+    const capture = vi.fn(async () => ({ ok: true, backup: { backupName: 'on-demand-1', namespace: 'platform-system', clusterName: 'system-db', createdAt: 't' } }));
+    const { deps } = fakeDeps({ snapshot: { capture, list: vi.fn(async () => ({ ok: true, backups: [] })) } });
+    expect(await dispatch(['snapshot', 'capture'], deps)).toBe(0);
+    expect(capture).toHaveBeenCalled();
+  });
+
+  it('snapshot list routes through to snapshot.list', async () => {
+    const list = vi.fn(async () => ({ ok: true, backups: [] }));
+    const { deps } = fakeDeps({ snapshot: { capture: vi.fn(async () => ({ ok: true })), list } });
+    expect(await dispatch(['snapshot', 'list'], deps)).toBe(0);
+    expect(list).toHaveBeenCalled();
+  });
+
+  it('snapshot with no subcommand → usage error, exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['snapshot'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/subcommand|capture|list/i);
   });
 });
