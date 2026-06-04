@@ -135,7 +135,7 @@ layer for forks.
       `insulahq` strings (build-deploy.yml already uses
       `${{ github.repository_owner }}` — confirm). Add
       `if: github.repository == 'insulahq/insula'` guards to
-      sync-staging.yml and any workflow that pushes to upstream
+      sync-development.yml and any workflow that pushes to upstream
       infrastructure.
 - [ ] **PR-from-fork CI must run tests + lints WITHOUT push secrets**.
       GitHub Actions doesn't share `secrets.*` with fork PRs by default; the

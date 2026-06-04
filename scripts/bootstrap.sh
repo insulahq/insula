@@ -4071,20 +4071,31 @@ install_flux() {
   # that took out staging image promotion 2026-05-04 → 2026-05-09.
   flux install --kubeconfig="$KUBECONFIG" --timeout=300s
 
-  # Determine which branch Flux should watch
+  # Determine which branch Flux should watch. W1 / ADR-045 Decision 13:
+  # staging-role clusters track the `development` branch (the branch
+  # formerly named `staging` — "staging" remains the CLUSTER role name).
   local flux_branch="main"
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
-    flux_branch="staging"
+    flux_branch="development"
   elif [[ "$PLATFORM_ENV" == "production" ]]; then
     flux_branch="stable"
   fi
 
-  # Source name must match the declarative GitRepository YAML names
+  # Source name must match the declarative GitRepository YAML names.
+  # Role-derived — intentionally NOT renamed with the branch.
   local source_name="hosting-platform"
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
     source_name="hosting-platform-staging"
   elif [[ "$PLATFORM_ENV" == "production" ]]; then
     source_name="hosting-platform-stable"
+  fi
+
+  # Overlay directory: tracks the BRANCH role, not the cluster role —
+  # staging-role clusters consume k8s/overlays/development/ (which the
+  # auto-pin pipeline rewrites on every main push).
+  local overlay_dir="$PLATFORM_ENV"
+  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+    overlay_dir="development"
   fi
 
   log "Configuring Flux source and kustomization for ${PLATFORM_ENV} (branch=${flux_branch}, source=${source_name})..."
@@ -4108,7 +4119,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 1m
-  path: ./k8s/overlays/${PLATFORM_ENV}
+  path: ./k8s/overlays/${overlay_dir}
   prune: true
   sourceRef:
     kind: GitRepository
@@ -6389,7 +6400,13 @@ apply_platform_manifests() {
   # Generate the environment overlay with real hostnames.
   # For staging, preserve the checked-in kustomization.yaml (contains
   # Flux image policy markers) and only write an ingress patch file.
-  local overlay_dir="${repo_dir}/k8s/overlays/${PLATFORM_ENV}"
+  # W1: staging-role clusters consume the development overlay (the
+  # overlay tracks the branch role, not the cluster role).
+  local overlay_env="$PLATFORM_ENV"
+  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+    overlay_env="development"
+  fi
+  local overlay_dir="${repo_dir}/k8s/overlays/${overlay_env}"
   mkdir -p "$overlay_dir"
 
   # ── Unified overlay-apply flow (works for ALL environments) ──────────
@@ -6403,8 +6420,8 @@ apply_platform_manifests() {
   # No on-disk sed; no Flux/bootstrap tug-of-war. See
   # docs/04-deployment/CLUSTER_NETWORK.md (operator section).
   if [[ ! -f "${overlay_dir}/kustomization.yaml" ]]; then
-    error "Overlay ${PLATFORM_ENV} not found at ${overlay_dir}/kustomization.yaml — \
-expected k8s/overlays/${PLATFORM_ENV}/ to exist (dev | staging | production)."
+    error "Overlay ${overlay_env} not found at ${overlay_dir}/kustomization.yaml — \
+expected k8s/overlays/${overlay_env}/ to exist (dev | development | production)."
   fi
 
   # If the CM already exists, refuse to overwrite a mismatched DOMAIN

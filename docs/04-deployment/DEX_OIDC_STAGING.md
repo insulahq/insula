@@ -19,7 +19,7 @@ The production overlay does not include Dex. CI guard
 | Storage | postgres, shared with platform-api `app` database (since 2026-05-06) |
 | Replicas | owned by M14 storage-policy reconciler — HA-safe with shared storage |
 
-Manifests live in `k8s/overlays/staging/dex/`:
+Manifests live in `k8s/overlays/development/dex/`:
 - `config.yaml` — issuer, storage, staticClients, staticPasswords
 - `deployment.yaml` — pod spec + env-var wiring for postgres credentials
 - `service.yaml` — ClusterIP, sessionAffinity:ClientIP (defence in depth)
@@ -105,7 +105,7 @@ git. Treat them as documentation, not secrets — staging is not a
 production environment and these credentials don't grant access to
 anything beyond the test users above. To rotate:
 
-1. Edit the `secret:` value in `k8s/overlays/staging/dex/config.yaml`.
+1. Edit the `secret:` value in `k8s/overlays/development/dex/config.yaml`.
 2. Update the matching value wherever the platform stores it (admin
    UI → System Settings → OIDC Providers, or DB
    `oidc_providers.client_secret_encrypted`).

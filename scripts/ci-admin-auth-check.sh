@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-OVERLAYS=(dev staging production)
+OVERLAYS=(dev development production)
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 failures=0

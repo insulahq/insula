@@ -23,8 +23,8 @@ jobs:
           kubectl kustomize k8s/base
           echo "Building dev overlay..."
           kubectl kustomize k8s/overlays/dev
-          echo "Building staging overlay..."
-          kubectl kustomize k8s/overlays/staging
+          echo "Building development overlay..."
+          kubectl kustomize k8s/overlays/development
           echo "Building production overlay..."
           kubectl kustomize k8s/overlays/production
 

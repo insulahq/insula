@@ -31,10 +31,10 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 — predicate failed: $2"; fi;
 # Build a throwaway repo-shaped tree with canonical overlays + workflows.
 make_fixture() {
   local root; root=$(mktemp -d)
-  mkdir -p "$root/k8s/overlays/dev" "$root/k8s/overlays/staging" \
+  mkdir -p "$root/k8s/overlays/dev" "$root/k8s/overlays/development" \
            "$root/k8s/overlays/production" "$root/k8s/base/sidecar" \
            "$root/.github/workflows"
-  for ov in dev staging production; do
+  for ov in dev development production; do
     cat >"$root/k8s/overlays/$ov/kustomization.yaml" <<EOF
 images:
   - name: $CANONICAL/backend

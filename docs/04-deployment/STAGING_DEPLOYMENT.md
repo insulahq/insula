@@ -87,7 +87,7 @@ If anything is empty or wrong, fix DNS and wait for TTL before bootstrapping.
 
 `bootstrap.sh` installs two `ClusterIssuer` objects: `letsencrypt-staging-http01` (test CA, non-trusted certs, 50k req/hr rate limit) and `letsencrypt-prod-http01` (real trusted certs, 50/week rate limit per hostname).
 
-The `k8s/overlays/staging/` overlay pins ingresses to `letsencrypt-staging-http01` — you get working HTTPS but browsers will show a "not secure" warning. **This is intentional** for staging: it avoids burning the LE-prod rate-limit budget while iterating. Flip to `letsencrypt-prod-http01` in `ingress-patch.yaml` only once the setup is stable and you're ready to expose real users.
+The `k8s/overlays/development/` overlay pins ingresses to `letsencrypt-staging-http01` — you get working HTTPS but browsers will show a "not secure" warning. **This is intentional** for staging: it avoids burning the LE-prod rate-limit budget while iterating. Flip to `letsencrypt-prod-http01` in `ingress-patch.yaml` only once the setup is stable and you're ready to expose real users.
 
 ### SSH access
 
@@ -171,7 +171,7 @@ gh run list --workflow=build-deploy.yml --branch=main --limit=3  # confirm image
 Verify the three kustomize overlays build cleanly (local sanity):
 
 ```bash
-kubectl kustomize k8s/overlays/staging > /tmp/staging-manifests.yaml
+kubectl kustomize k8s/overlays/development > /tmp/staging-manifests.yaml
 wc -l /tmp/staging-manifests.yaml
 grep -c '^kind: ' /tmp/staging-manifests.yaml   # rough resource count
 ```
@@ -336,7 +336,7 @@ Gaps to fix before production rollout (not blocking staging):
 - [ ] DNS A records + wildcard pointing at server IP
 - [ ] SSH access verified (`ssh admin@server uptime`)
 - [ ] All GitHub Actions green on `main`, images exist in GHCR
-- [ ] Local `kubectl kustomize k8s/overlays/staging` succeeds
+- [ ] Local `kubectl kustomize k8s/overlays/development` succeeds
 - [ ] Run `bootstrap.sh --remote <ip> --domain <fqdn> --email <ops-email> --env staging`
 - [ ] Longhorn v1.11.1 running (`kubectl -n longhorn-system get pods`)
 - [ ] Flux reconciled the staging overlay (`flux get kustomizations`)

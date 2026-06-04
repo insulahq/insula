@@ -1,9 +1,9 @@
-# Staging overlay — manual image builds and testing.
+# Development overlay (consumed by staging-role clusters) — manual image builds and testing.
 #
 # Uses Longhorn storage, real domains with LE staging certs, Dex for OIDC.
 # Image tags are manually set or auto-updated by Flux Image Automation.
 #
-# To deploy: update image tags below, push to staging branch, Flux reconciles.
+# To deploy: update image tags below, push to the development branch, Flux reconciles.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

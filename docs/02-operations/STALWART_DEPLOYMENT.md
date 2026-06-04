@@ -53,7 +53,7 @@ Idempotent: re-runs are no-ops unless `--force` is set.
 
 - **Flux**: commit + push the overlay. Flux reconciles on the next poll
   (~1 min default interval).
-- **Manual**: `kubectl apply -k k8s/overlays/staging/stalwart/`
+- **Manual**: `kubectl apply -k k8s/overlays/development/stalwart/`
 
 ### 4 — Wait for pod Ready
 

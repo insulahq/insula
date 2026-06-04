@@ -12,7 +12,7 @@
 #      `stalwart-cli server backup <path>` subcommand (dropped in
 #      v0.15+). Must use `server database-maintenance` or equivalent.
 #
-# Verified via `kubectl kustomize k8s/overlays/staging | yq` — so we
+# Verified via `kubectl kustomize k8s/overlays/development | yq` — so we
 # assert on the real post-build manifest, not just the patch source.
 #
 # Run locally: bash scripts/tests/stalwart-staging-kustomize.sh
@@ -44,13 +44,13 @@ build_staging() {
       curl -sL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
         -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
     }
-    kubectl kustomize k8s/overlays/staging
+    kubectl kustomize k8s/overlays/development
   ' 2>&1
 }
 
 echo "Building staging overlay (docker + kustomize)..."
 if ! build_staging "$REPO_ROOT" > "$BUILD" 2>&1; then
-  echo "FATAL: kustomize build k8s/overlays/staging failed." >&2
+  echo "FATAL: kustomize build k8s/overlays/development failed." >&2
   head -20 "$BUILD" >&2
   exit 2
 fi

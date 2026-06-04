@@ -13,29 +13,29 @@ on:
       # the mail-stack-standby-replicate DaemonSet (which uses :latest
       # + Always, but Pods only restart when the deploy-rev annotation
       # bumps). Build-* jobs paths-filter to noop when only
-      # mail-backup-tools changed; only update-staging-version runs.
+      # mail-backup-tools changed; only update-development-version runs.
       - 'images/mail-backup-tools/**'
       - '.github/workflows/build-deploy.yml'
-      # Infra-only commits also need to reach staging via Flux. Without
+      # Infra-only commits also need to reach the staging cluster via Flux (through the development branch). Without
       # these paths, k8s/** changes (LimitRanges, manifests) and scripts/**
-      # changes never hit the update-staging-version job, so origin/staging
+      # changes never hit the update-development-version job, so origin/development
       # never fast-forwards and Flux can't see them. Build-* jobs gate on
       # their own dorny/paths-filter so this is cheap when no images need
-      # building — only update-staging-version actually runs to advance
-      # staging.
+      # building — only update-development-version actually runs to advance
+      # the development branch.
       - 'k8s/**'
       - 'scripts/**'
-      # Exclude the files that update-staging-version itself rewrites.
+      # Exclude the files that update-development-version itself rewrites.
       # Without these `!` patterns the auto-pin commit (which only
       # touches these three files) would re-trigger build-deploy →
       # rebuild → new auto-pin → infinite loop. Previously prevented by
       # `[skip ci]` in the auto-pin commit message, but that also skipped
-      # sync-staging, leaving the pin stranded on main. With these path
+      # sync-development, leaving the pin stranded on main. With these path
       # exclusions, the auto-pin commit no longer fires build-deploy and
-      # we can drop `[skip ci]`, so sync-staging propagates the pin.
-      - '!k8s/overlays/staging/kustomization.yaml'
-      - '!k8s/overlays/staging/platform-version-patch.yaml'
-      - '!k8s/overlays/staging/deploy-rev-patch.yaml'
+      # we can drop `[skip ci]`, so sync-development propagates the pin.
+      - '!k8s/overlays/development/kustomization.yaml'
+      - '!k8s/overlays/development/platform-version-patch.yaml'
+      - '!k8s/overlays/development/deploy-rev-patch.yaml'
   workflow_dispatch:
 
 permissions:
@@ -219,18 +219,18 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # Commit the resolved short-SHA into platform-version-patch.yaml on
-  # the staging overlay, so the backend's /api/v1/admin/platform/version
+  # the development overlay, so the backend's /api/v1/admin/platform/version
   # endpoint returns the real running version instead of "unknown".
   #
   # Runs after images are pushed, only on main. Loop prevention is now
   # the responsibility of the negative-path filter on the workflow's
   # `on.push.paths` (the auto-pin commit only modifies the three
-  # staging-overlay files, which are excluded). `[skip ci]` was removed
-  # from the commit message so sync-staging propagates the pin onto
-  # the staging branch — otherwise Flux keeps reconciling the previous
+  # development-overlay files, which are excluded). `[skip ci]` was removed
+  # from the commit message so sync-development propagates the pin onto
+  # the development branch — otherwise Flux keeps reconciling the previous
   # image tag.
-  update-staging-version:
-    name: Update staging platform-version
+  update-development-version:
+    name: Update development platform-version
     runs-on: ubuntu-latest
     needs: [build-backend, build-admin-panel, build-tenant-panel]
     # Serialize concurrent pin commits. Two main-branch pushes within
@@ -244,7 +244,7 @@ jobs:
     # See project_backups_real_bugs_fixed_2026_05_22 + the 2026-05-26
     # 2a3e9fd3 incident for the failure mode this prevents.
     concurrency:
-      group: pin-staging-${{ github.ref }}
+      group: pin-development-${{ github.ref }}
       cancel-in-progress: false
     if: |
       always() &&
@@ -278,9 +278,9 @@ jobs:
           fi
           VERSION="${BASE}-${SHORT_SHA}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Staging version → ${VERSION}"
+          echo "Development version → ${VERSION}"
 
-      - name: Apply staging pin
+      - name: Apply development pin
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BRANCH: ${{ github.ref_name }}
@@ -292,7 +292,7 @@ jobs:
           # so the Commit + push step can re-invoke it after a rebase
           # reset (see that step's recovery loop for why we don't try to
           # git-rebase the pin commit).
-          ./.github/scripts/apply-staging-pin.sh
+          ./.github/scripts/apply-development-pin.sh
 
       - name: Commit + push (with reset-and-reapply on race)
         env:
@@ -306,19 +306,19 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           stage_and_commit() {
-            if git diff --quiet k8s/overlays/staging/; then
+            if git diff --quiet k8s/overlays/development/; then
               echo "No change — skipping commit."
               return 1   # caller treats this as a clean exit-0 from the loop
             fi
             git add \
-              k8s/overlays/staging/platform-version-patch.yaml \
-              k8s/overlays/staging/deploy-rev-patch.yaml \
-              k8s/overlays/staging/kustomization.yaml
+              k8s/overlays/development/platform-version-patch.yaml \
+              k8s/overlays/development/deploy-rev-patch.yaml \
+              k8s/overlays/development/kustomization.yaml
             # No [skip ci] — loop prevention is on the workflow's path
             # filter (the auto-pin commit only touches the three excluded
-            # files). Dropping [skip ci] lets sync-staging fire and
-            # propagate the pin to the staging branch.
-            git commit -m "chore(staging): pin platform-version to ${VERSION}"
+            # files). Dropping [skip ci] lets sync-development fire and
+            # propagate the pin to the development branch.
+            git commit -m "chore(development): pin platform-version to ${VERSION}"
             return 0
           }
 
@@ -353,7 +353,7 @@ jobs:
             echo "push attempt $attempt rejected (rc=$push_rc) — reset to origin/main + re-apply pin"
             git fetch origin main
             git reset --hard origin/main
-            ./.github/scripts/apply-staging-pin.sh
+            ./.github/scripts/apply-development-pin.sh
             stage_and_commit
             had_changes=$?
             if [[ $had_changes -ne 0 ]]; then
@@ -367,7 +367,7 @@ jobs:
           done
           echo "::error::push failed after 4 attempts with reset-and-reapply — main is moving faster than we can land the auto-pin. Check for a build-deploy loop or a runaway pusher."
           exit 1
-          # main → staging propagation is owned by sync-staging.yml.
+          # main → development propagation is owned by sync-development.yml.
           # That workflow does a real merge (not fast-forward) and fails
           # loudly on conflict, so we don't silently drop infra-only
           # commits anymore. The previous `git push origin HEAD:staging

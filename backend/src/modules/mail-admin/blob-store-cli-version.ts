@@ -3,7 +3,7 @@
  * cli inside the cluster (throttle-override, blob-store-update, future).
  *
  * Bumping these is a coordinated change: also update the matching pins
- * in k8s/overlays/staging/stalwart-throttle-override-job.yaml and
+ * in k8s/overlays/development/stalwart-throttle-override-job.yaml and
  * k8s/base/stalwart-mail/stalwart/bootstrap-job.yaml.
  */
 export const STALWART_CLI_VERSION = 'v1.0.4';

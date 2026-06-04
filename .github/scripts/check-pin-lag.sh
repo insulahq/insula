@@ -1,5 +1,5 @@
 #!/bin/bash
-# Verify staging is pinned to the most-recent code commit.
+# Verify the development-branch pin points to the most-recent code commit.
 #
 # Detects "orphaned image" state: when an auto-pin commit failed to
 # land (e.g. cross-workflow race), the previous pin remains in place,
@@ -9,9 +9,9 @@
 #
 # Rule
 # ----
-# the `<version>-<sha>` pin in k8s/overlays/staging/platform-version-patch.yaml
+# the `<version>-<sha>` pin in k8s/overlays/development/platform-version-patch.yaml
 # MUST equal the short SHA of the most-recent commit on the ref whose
-# message does NOT start with `chore(staging):` (i.e. the last code /
+# message does NOT start with `chore(development):` (or legacy `chore(staging):`) (i.e. the last code /
 # infra / merge commit, ignoring auto-pin churn).
 #
 # A 2-commit slack absorbs the brief window where a code commit has
@@ -25,7 +25,7 @@
 #
 set -euo pipefail
 
-PIN_FILE=k8s/overlays/staging/platform-version-patch.yaml
+PIN_FILE=k8s/overlays/development/platform-version-patch.yaml
 
 if [[ ! -f "$PIN_FILE" ]]; then
   echo "::error::$PIN_FILE not found"
@@ -47,9 +47,9 @@ if [[ -z "$PIN_SHA" ]]; then
 fi
 
 # Collect up to SLACK_N+1 most-recent commits whose message does NOT
-# begin with `chore(staging):`. That filter excludes both bot
-# auto-pins ("chore(staging): pin platform-version to ...") and human
-# manual pins ("chore(staging): manual pin to ..."). Anything else —
+# begin with `chore(development):` (or legacy `chore(staging):`). That filter excludes both bot
+# auto-pins ("chore(development): pin platform-version to ...") and human
+# manual pins ("chore(development): manual pin to ..."). Anything else —
 # feat/fix/refactor/chore(other)/ci/merge commits — counts as a
 # "code commit" whose images should be represented in the pin.
 #
@@ -71,7 +71,9 @@ SLACK_N=2
 CODE_COMMITS=()
 while IFS=' ' read -r sha msg_rest; do
   case "$msg_rest" in
-    'chore(staging):'*) continue ;;
+    # Legacy 'chore(staging):' prefix kept — pre-rename pin commits
+    # remain in the last-100 window for a while (W1 branch rename).
+    'chore(development):'* | 'chore(staging):'*) continue ;;
     *)
       CODE_COMMITS+=("$sha")
       if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then
@@ -82,7 +84,7 @@ while IFS=' ' read -r sha msg_rest; do
 done < <(git log --pretty='%H %s' -n 100)
 
 if [[ ${#CODE_COMMITS[@]} -eq 0 ]]; then
-  echo "::error::no non-chore(staging) commit found in last 100 commits — fetch depth too shallow or branch is pure staging churn"
+  echo "::error::no non-pin commit found in last 100 commits — fetch depth too shallow or branch is pure pin churn"
   exit 1
 fi
 
@@ -110,7 +112,7 @@ for ((i = 1; i < ${#CODE_COMMITS[@]}; i++)); do
 done
 
 # Lag detected.
-echo "::error::PIN LAG DETECTED — staging image pin is stale"
+echo "::error::PIN LAG DETECTED — development-branch image pin is stale"
 echo ""
 echo "  pin file:           $PIN_FILE"
 echo "  pin SHA:            0.1.0-$PIN_SHA"
@@ -133,15 +135,15 @@ echo "Recovery:"
 echo "  1. List recent Build Images runs:"
 echo "       gh run list --branch main --workflow='Build Images' --limit 5"
 echo "  2. Find the failed run for short SHA $LAST_CODE_SHORT, view its"
-echo "     'Update staging platform-version → Pin image tags' step log,"
+echo "     'Update development platform-version → Pin image tags' step log,"
 echo "     and copy BACKEND_TAG / ADMIN_TAG / TENANT_TAG."
 echo "  3. Write the pin manually by updating these three files:"
-echo "       k8s/overlays/staging/platform-version-patch.yaml"
-echo "       k8s/overlays/staging/deploy-rev-patch.yaml"
-echo "       k8s/overlays/staging/kustomization.yaml"
-echo "     (the apply-staging-pin.sh helper does this idempotently)."
+echo "       k8s/overlays/development/platform-version-patch.yaml"
+echo "       k8s/overlays/development/deploy-rev-patch.yaml"
+echo "       k8s/overlays/development/kustomization.yaml"
+echo "     (the apply-development-pin.sh helper does this idempotently)."
 echo "  4. Commit + push to main (the manual-pin commit itself satisfies"
-echo "     the chore(staging): prefix filter so this guard won't fail again)."
+echo "     the chore(development): prefix filter so this guard won't fail again)."
 echo ""
 echo "Or, if the Build Images run for $LAST_CODE_SHORT failed entirely"
 echo "(no images pushed to GHCR), re-trigger a build with:"

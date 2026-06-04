@@ -22,8 +22,8 @@
 
 | Branch | Role |
 |--------|------|
-| `main` | Development trunk. CI builds images on merge. The development/test clusters track the **`staging`** branch, which receives `main` via `sync-staging.yml`. |
-| `staging` | Receives `main` via `sync-staging.yml` (`git merge --no-ff`, so it keeps its own merge history — not a byte-mirror), carrying the auto-pinned image tags + `platform-version`. The **staging and testing clusters' Flux** watch this branch. Not a manual promotion gate. |
+| `main` | Development trunk. CI builds images on merge. The staging/test clusters track the **`development`** branch, which receives `main` via `sync-development.yml`. |
+| `development` | Formerly named `staging` (W1 / ADR-045 Decision 13 — the CLUSTER role keeps the name "staging"; the branch is `development`). Receives `main` via `sync-development.yml` (`git merge --no-ff`, so it keeps its own merge history — not a byte-mirror), carrying the auto-pinned image tags + `platform-version`. The **staging and testing clusters' Flux** watch this branch. Not a manual promotion gate. |
 | ~~`stable`~~ | **Dropped** ([ADR-045](../07-reference/ADR-045-versioning-release-cycle-and-upgrade.md) Decision 10). Production no longer tracks a branch; it pins a release **tag** (the in-cluster version-poller re-pins on operator click — a later workstream). |
 
 Release tags `vYYYY.M.PATCH` carry production release semantics; see §6.
@@ -52,9 +52,9 @@ non-PR events (fork PRs build + scan but never push).
 **Platform image + deploy:**
 - `build-deploy.yml` — on `main` push (paths-filtered), builds **backend +
   admin-panel + tenant-panel**, computes the version from `platform/VERSION`
-  (`<version>-<sha>`), pins the staging overlay (`apply-staging-pin.sh`), and
-  commits `chore(staging): pin platform-version to <version>` to `main`.
-- `sync-staging.yml` — merges `main` → the `staging` branch (`--no-ff`).
+  (`<version>-<sha>`), pins the development overlay (`apply-development-pin.sh`), and
+  commits `chore(development): pin platform-version to <version>` to `main`.
+- `sync-development.yml` — merges `main` → the `development` branch (`--no-ff`).
 
 **Release:**
 - `release.yml` — on `v*.*.*` tag: validates the tag matches `platform/VERSION`,
@@ -66,7 +66,7 @@ non-PR events (fork PRs build + scan but never push).
   job (runs `scripts/test-*.sh` harnesses), the **`no-cluster-push`** guard, and
   ~30 invariant guards (`scripts/ci-*.sh`: firewall, admin-auth gate, image-org
   fork-safety, system-tenant, mail-arch, backup-shim, …).
-- `ci-pin-lag-check.yml` — verifies the staging pin isn't orphaned behind the
+- `ci-pin-lag-check.yml` — verifies the development pin isn't orphaned behind the
   last code commit.
 - `dr-drill.yml` — scheduled disaster-recovery rehearsal.
 
@@ -93,12 +93,12 @@ for the development build. Details: [ADR-045](../07-reference/ADR-045-versioning
 1. PR merged to `main` → green CI required (component tests + infra guards).
 2. `build-deploy.yml` + the relevant sidecar `ci-*.yml` build the changed
    images and push to `ghcr.io/insulahq/insula/*`.
-3. `build-deploy.yml` pins the staging overlay — `apply-staging-pin.sh`
+3. `build-deploy.yml` pins the development overlay — `apply-development-pin.sh`
    sed-rewrites the image `newTag`s (the `$imagepolicy` comments in the overlay
    are vestigial; there are no Flux `ImagePolicy` resources) and writes the
    `platform-version` ConfigMap — then commits to `main`.
-4. `sync-staging.yml` merges `main` → `staging` (`--no-ff`).
-5. The staging + testing clusters' **Flux** (watching `staging`) reconcile —
+4. `sync-development.yml` merges `main` → `development` (`--no-ff`).
+5. The staging + testing clusters' **Flux** (watching `development`) reconcile —
    pull the new images + ConfigMap, roll the Deployments. **CI does not touch
    the cluster.**
 
@@ -144,9 +144,9 @@ MariaDB/Redis containers).
 Because nothing is force-pushed to a cluster, rollback is git/snapshot-based, not
 a CI action:
 - **Development/staging:** revert the offending commit on `main`; the pin +
-  `sync-staging` carry it to `staging`; Flux reconciles.
+  `sync-development` carry it to `development`; Flux reconciles.
 - **A bad image tag:** re-pin the previous `<version>-<sha>` (revert the
-  `chore(staging): pin …` commit).
+  `chore(development): pin …` commit).
 - **Cluster/data-level:** Longhorn snapshot restore + the upgrade rollback path
   (later workstream, W16) — not a pipeline step.
 
