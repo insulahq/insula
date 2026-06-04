@@ -18,6 +18,7 @@ import { evaluatePreflight } from './preflight.js';
 import { runUpgrade, dbSettings } from './orchestrate.js';
 import { captureUpgradeRescue, runRollback, realRollbackDeps } from './rollback.js';
 import { readPostflightState } from './collect-postflight.js';
+import { readHostMigrationsPreview } from './host-migrations-preview.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 
@@ -64,6 +65,21 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     },
   }, async () => {
     return success(await readPostflightState(app.db));
+  });
+
+  // GET /api/v1/admin/platform/upgrade/host-migrations — whether host-migrations
+  // would run during an upgrade (the embedded scripts aren't backend-visible; the
+  // policy CM mode is). The UI links the operator to the full runbook.
+  app.get('/admin/platform/upgrade/host-migrations', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Preview host-migration policy for upgrades', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
+        mode: { type: 'string' }, willRun: { type: 'boolean' }, note: { type: 'string' },
+      } } } } },
+    },
+  }, async () => {
+    const k8s = createK8sClients(kubeconfigPath());
+    return success(await readHostMigrationsPreview(k8s));
   });
 
   // POST /api/v1/admin/platform/upgrade  { version?, apply? }

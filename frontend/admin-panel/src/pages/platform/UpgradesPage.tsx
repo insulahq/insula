@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Loader2, RefreshCw, CheckCircle, AlertTriangle, XCircle, ArrowRight, ShieldAlert } from 'lucide-react';
+import { Loader2, RefreshCw, CheckCircle, AlertTriangle, XCircle, ArrowRight, ShieldAlert, Activity, Server } from 'lucide-react';
 import { usePlatformVersion } from '@/hooks/use-platform-updates';
-import { usePreflight, useUpgradeApply, useRollback, type UpgradeGate, type UpgradeApplyData, type RollbackData } from '@/hooks/use-platform-upgrade';
+import { usePreflight, usePostflight, useHostMigrationsPreview, useUpgradeApply, useRollback, type UpgradeGate, type UpgradeApplyData, type RollbackData } from '@/hooks/use-platform-upgrade';
 
 /**
  * Platform → Upgrades (super_admin) — ADR-045 W14. Shows the version spine
@@ -28,6 +28,9 @@ function GateRow({ gate }: { gate: UpgradeGate }) {
 export default function UpgradesPage() {
   const { data: versionRes, isLoading: versionLoading } = usePlatformVersion();
   const preflight = usePreflight();
+  // Poll post-flight while an upgrade is pending so the panel auto-appears after Apply.
+  const postflight = usePostflight(Boolean(versionRes?.data?.pendingVersion));
+  const hostMigrations = useHostMigrationsPreview();
   const apply = useUpgradeApply();
   const rollback = useRollback();
   const [version, setVersion] = useState('');
@@ -39,6 +42,8 @@ export default function UpgradesPage() {
 
   const v = versionRes?.data;
   const pf = preflight.data?.data;
+  const post = postflight.data?.data;
+  const hm = hostMigrations.data?.data;
   const isProduction = (v?.environment ?? '') === 'production';
 
   const onPreview = async () => {
@@ -120,6 +125,26 @@ export default function UpgradesPage() {
         )}
       </div>
 
+      {/* Host-migration policy preview */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <div className="flex items-center gap-2">
+          <Server className="h-4 w-4 text-gray-400" />
+          <h2 className="text-sm font-semibold text-gray-900">Host migrations</h2>
+          {hm && (
+            <span className={`ml-auto text-xs px-2 py-1 rounded-full ${hm.willRun ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+              {hm.willRun ? 'will run' : hm.mode}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-gray-500 mt-2">
+          {hostMigrations.isLoading ? 'Loading…' : hm?.note ?? 'Could not read the host-migration policy.'}
+        </p>
+        <p className="text-xs text-gray-400 mt-1">
+          Scripts are embedded in the platform-ops binary and run per node. See the{' '}
+          <a href="https://github.com/insulahq/insula/blob/main/docs/02-operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md" target="_blank" rel="noreferrer" className="underline hover:text-gray-600">upgrades runbook</a>.
+        </p>
+      </div>
+
       {/* Upgrade action */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
         <h2 className="text-sm font-semibold text-gray-900">Run upgrade</h2>
@@ -176,6 +201,34 @@ export default function UpgradesPage() {
           )
         )}
       </div>
+
+      {/* Post-flight (convergence) — only meaningful while/after an upgrade rolls */}
+      {post && post.phase !== 'idle' && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Activity className="h-4 w-4 text-gray-400" />
+            <h2 className="text-sm font-semibold text-gray-900">Post-flight — converging to {post.pendingVersion}</h2>
+            <span className={`ml-auto text-xs px-2 py-1 rounded-full ${
+              post.verdict === 'healthy' ? 'bg-green-100 text-green-700' :
+              post.verdict === 'abort-recommended' ? 'bg-red-100 text-red-700' :
+              'bg-blue-100 text-blue-700'
+            }`}>
+              {post.verdict}
+            </span>
+          </div>
+          {post.gates.map((g) => <GateRow key={g.id} gate={g} />)}
+          <div className="mt-3 text-xs text-gray-500">
+            Convergence check {post.consecutiveFailures}/{post.abortThreshold} consecutive failures
+            {post.lastCheckedAt ? ` · last checked ${new Date(post.lastCheckedAt).toLocaleTimeString()}` : ''}
+          </div>
+          {post.verdict === 'abort-recommended' && (
+            <div className="mt-2 text-xs text-red-700 font-medium flex items-start gap-1">
+              <ShieldAlert className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>The upgrade is not converging after {post.consecutiveFailures} checks — consider rolling back below.</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Rollback */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">

@@ -124,6 +124,22 @@ export const upgradePostflightResponseSchema = z.object({
 });
 export type UpgradePostflightResponse = z.infer<typeof upgradePostflightResponseSchema>;
 
+// ── Host-migration preview (ADR-045 W14 follow-up) ───────────────────────────
+// Host-migration SCRIPTS are embedded in the platform-ops binary (they travel
+// with each release), so the backend cannot enumerate the actual pending scripts.
+// What it CAN surface is whether host-migrations would RUN during an upgrade —
+// the `host-migrations-desired` ConfigMap mode (observe = report-only, enforce =
+// applied by the daily host-config timer / on the next platform-ops run).
+export const hostMigrationsPreviewResponseSchema = z.object({
+  /** observe = report-only; enforce = applied; absent = no policy CM; unknown = unreadable. */
+  mode: z.enum(['observe', 'enforce', 'absent', 'unknown']),
+  /** True only when mode === enforce (host-migrations actually run). */
+  willRun: z.boolean(),
+  /** Operator-facing one-liner. */
+  note: z.string(),
+});
+export type HostMigrationsPreviewResponse = z.infer<typeof hostMigrationsPreviewResponseSchema>;
+
 export type PlatformVersionResponse = z.infer<typeof platformVersionResponseSchema>;
 export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
 export type TriggerUpdateResponse = z.infer<typeof triggerUpdateResponseSchema>;

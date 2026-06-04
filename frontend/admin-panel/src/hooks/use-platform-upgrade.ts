@@ -30,6 +30,62 @@ export function usePreflight(enabled = true) {
   });
 }
 
+interface PostflightResponse {
+  readonly data: {
+    readonly phase: 'idle' | 'reconciling' | 'healthy';
+    readonly verdict: 'idle' | 'healthy' | 'reconciling' | 'abort-recommended';
+    readonly consecutiveFailures: number;
+    readonly abortThreshold: number;
+    readonly pendingVersion: string | null;
+    readonly runningVersion: string;
+    readonly gates: UpgradeGate[];
+    readonly ok: boolean;
+    readonly failures: number;
+    readonly warnings: number;
+    readonly lastCheckedAt: string | null;
+    readonly environment: string;
+  };
+}
+
+export type PostflightData = PostflightResponse['data'];
+
+/**
+ * Read-only post-flight convergence state (super_admin). The streak is advanced
+ * by the backend reconciler on its own cadence — this is a pure read, so polling
+ * it never inflates the streak. Polls while reconciling, OR while an upgrade is
+ * pending (so the panel auto-appears once the reconciler produces its first state
+ * after an Apply, without a page reload).
+ */
+export function usePostflight(pollWhilePending = false) {
+  return useQuery({
+    queryKey: ['upgrade-postflight'],
+    queryFn: () => apiFetch<PostflightResponse>('/api/v1/admin/platform/upgrade/postflight'),
+    refetchInterval: (query) =>
+      query.state.data?.data.phase === 'reconciling' ? 15 * 1000 : pollWhilePending ? 30 * 1000 : false,
+    staleTime: 10 * 1000,
+  });
+}
+
+interface HostMigrationsPreviewResponse {
+  readonly data: {
+    readonly mode: 'observe' | 'enforce' | 'absent' | 'unknown';
+    readonly willRun: boolean;
+    readonly note: string;
+  };
+}
+
+export type HostMigrationsPreviewData = HostMigrationsPreviewResponse['data'];
+
+/** Whether host-migrations would run during an upgrade (host-migrations-desired CM mode). */
+export function useHostMigrationsPreview(enabled = true) {
+  return useQuery({
+    queryKey: ['upgrade-host-migrations'],
+    queryFn: () => apiFetch<HostMigrationsPreviewResponse>('/api/v1/admin/platform/upgrade/host-migrations'),
+    enabled,
+    staleTime: 60 * 1000,
+  });
+}
+
 interface UpgradeApplyResponse {
   readonly data: {
     readonly action: string;
@@ -60,6 +116,7 @@ export function useUpgradeApply() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['platform-version'] });
       queryClient.invalidateQueries({ queryKey: ['upgrade-preflight'] });
+      queryClient.invalidateQueries({ queryKey: ['upgrade-postflight'] });
     },
   });
 }

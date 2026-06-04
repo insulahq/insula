@@ -93,5 +93,22 @@ else
   fail "platform-upgrades/collect-postflight.ts is missing"
 fi
 
+# (7) upgrade reconciler (W14 follow-up) is MONITOR-ONLY + single-flight. The
+#     deliberate scope decision is that the scheduler NEVER auto-applies an upgrade
+#     (no runUpgrade / apply re-pin) — Apply stays operator-driven; it only advances
+#     the post-flight streak + notifies. It must also be single-flight across HA
+#     replicas (a DB lease) so the streak isn't advanced once-per-replica.
+SCHED="$REPO_ROOT/backend/src/modules/platform-upgrades/scheduler.ts"
+if [[ -f "$SCHED" ]]; then
+  if grep -qE 'runUpgrade|repinGitRepository|apply: true' "$SCHED"; then
+    fail "scheduler.ts must NOT auto-apply upgrades (monitor-only) — found a runUpgrade/re-pin/apply token"
+  fi
+  grep -q 'claimLease' "$SCHED" || fail "scheduler.ts must single-flight across replicas via a lease (claimLease)"
+  # Notify only on the TRANSITION into abort-recommended (not every tick).
+  grep -q "prevVerdict !== 'abort-recommended'" "$SCHED" || fail "scheduler must notify only on the transition into abort-recommended"
+else
+  fail "platform-upgrades/scheduler.ts is missing"
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then echo "ci-upgrade-repin-check: FAILED" >&2; exit 1; fi
 echo "ci-upgrade-repin-check: OK"

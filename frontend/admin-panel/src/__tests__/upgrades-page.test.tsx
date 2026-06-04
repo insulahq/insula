@@ -6,6 +6,8 @@ import UpgradesPage from '../pages/platform/UpgradesPage';
 
 const mockApplyMutateAsync = vi.fn();
 let preflightOk = true;
+// null = dormant (no upgrade in flight) — the panel must not render.
+let postflightData: Record<string, unknown> | null = null;
 
 vi.mock('../hooks/use-platform-updates', () => ({
   usePlatformVersion: () => ({ data: { data: { currentVersion: '2026.6.2', latestVersion: '2026.7.0', updateAvailable: true, environment: 'production' } }, isLoading: false }),
@@ -22,6 +24,11 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
     } },
     isLoading: false, isFetching: false, refetch: vi.fn(),
   }),
+  usePostflight: () => ({ data: postflightData ? { data: postflightData } : undefined, isLoading: false, isFetching: false, refetch: vi.fn() }),
+  useHostMigrationsPreview: () => ({
+    data: { data: { mode: 'observe', willRun: false, note: 'host-migrations policy is observe (report-only).' } },
+    isLoading: false,
+  }),
   useUpgradeApply: () => ({ mutateAsync: mockApplyMutateAsync, isPending: false, error: null }),
   useRollback: () => ({ mutateAsync: vi.fn(async () => ({ data: { ok: false, dataRestored: false, reason: 'no manifest', summary: 'nothing to roll back', manifest: null } })), isPending: false, error: null }),
 }));
@@ -36,7 +43,7 @@ function renderPage() {
 }
 
 describe('UpgradesPage', () => {
-  beforeEach(() => { mockApplyMutateAsync.mockReset(); preflightOk = true; });
+  beforeEach(() => { mockApplyMutateAsync.mockReset(); preflightOk = true; postflightData = null; });
 
   it('renders the version spine + pre-flight gates', () => {
     renderPage();
@@ -60,6 +67,34 @@ describe('UpgradesPage', () => {
     mockApplyMutateAsync.mockResolvedValueOnce({ data: { action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: true, gitRepository: 'x', environment: 'production', summary: 're-pinned' } });
     fireEvent.click(screen.getByText(/Confirm upgrade/));
     await waitFor(() => expect(mockApplyMutateAsync).toHaveBeenCalledWith({ version: undefined, apply: true }));
+  });
+
+  it('renders the host-migrations policy row (mode badge + note)', () => {
+    renderPage();
+    expect(screen.getByText('Host migrations')).toBeInTheDocument();
+    expect(screen.getByText('observe')).toBeInTheDocument(); // willRun:false → mode badge
+    expect(screen.getByText(/observe \(report-only\)/)).toBeInTheDocument();
+  });
+
+  it('post-flight panel is hidden when dormant, appears while converging, flags abort-recommended', () => {
+    const { unmount } = renderPage();
+    expect(screen.queryByText(/Post-flight/)).not.toBeInTheDocument(); // dormant
+    unmount();
+
+    postflightData = {
+      phase: 'reconciling',
+      verdict: 'abort-recommended',
+      pendingVersion: '2026.7.0',
+      gates: [{ id: 'nodes-ready', label: 'All nodes Ready', status: 'fail', detail: '1 of 2 NotReady' }],
+      consecutiveFailures: 3,
+      abortThreshold: 3,
+      lastCheckedAt: '2026-06-04T12:00:00.000Z',
+    };
+    renderPage();
+    expect(screen.getByText(/Post-flight — converging to 2026\.7\.0/)).toBeInTheDocument();
+    expect(screen.getByText('abort-recommended')).toBeInTheDocument();
+    expect(screen.getByText('All nodes Ready')).toBeInTheDocument();
+    expect(screen.getByText(/not converging after 3 checks/)).toBeInTheDocument();
   });
 
   it('Apply button is disabled when pre-flight has blocking failures', async () => {
