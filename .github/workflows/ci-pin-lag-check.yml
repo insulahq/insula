@@ -3,7 +3,7 @@ name: Pin Lag Check
 # Catch "orphaned image" state at PR time and via hourly cron instead
 # of at "where's my deploy?" time. The Build Images workflow's auto-pin
 # step has its own concurrency-group + reset-and-reapply recovery (see
-# .github/workflows/build-deploy.yml :: update-staging-version), but in
+# .github/workflows/build-deploy.yml :: update-development-version), but in
 # the rare case where a pin still doesn't land — e.g. cross-workflow
 # collision, a force-push, or a buggy future workflow that touches the
 # pin files — the previous pin lingers and the just-built image becomes
@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   check-pin-lag:
-    name: Verify staging pin is current
+    name: Verify development pin is current
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

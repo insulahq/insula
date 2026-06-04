@@ -32,7 +32,7 @@ set -euo pipefail
 
 OVERLAYS=(
   "k8s/overlays/dev"
-  "k8s/overlays/staging"
+  "k8s/overlays/development"
   "k8s/overlays/production"
 )
 

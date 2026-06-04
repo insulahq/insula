@@ -1,38 +1,43 @@
-name: Sync main → staging
+name: Sync main → development
 
-# Single owner of main → staging propagation. Runs on EVERY push to main
+# Single owner of main → development propagation. Runs on EVERY push to main
 # (no path filter) so infra-only, script-only, and docs-only commits all
-# reach the staging branch — and through it, Flux on the staging cluster.
+# reach the development branch — and through it, Flux on the staging cluster.
+#
+# (W1 / ADR-045 Decision 13: the branch formerly named `staging` is now
+# `development` — the branch role is "development integration", while
+# "staging" remains the CLUSTER role that tracks this branch.)
 #
 # Replaces the previous behavior where build-deploy.yml did
 #   git push origin HEAD:staging || true
-# which silently dropped any commit when staging had diverged from main
-# (which it always does, because of staging-only auto-pin merge commits).
+# which silently dropped any commit when the branch had diverged from main
+# (which it always does, because of branch-only auto-pin merge commits).
 #
 # DESIGN CHOICES:
 #
-#   - Merge, not fast-forward. Staging accumulates its own merge history
-#     (150+ "Merge main → staging" commits). A FF push fails the moment
-#     staging has any commit not on main. We use `git merge --no-ff` so
-#     each main → staging propagation is one explicit merge commit.
+#   - Merge, not fast-forward. The development branch accumulates its own
+#     merge history (150+ "Merge main → staging/development" commits). A FF
+#     push fails the moment the branch has any commit not on main. We use
+#     `git merge --no-ff` so each main → development propagation is one
+#     explicit merge commit.
 #
-#   - Fail loudly on conflict. No `|| true`. If main and staging touch
+#   - Fail loudly on conflict. No `|| true`. If main and development touch
 #     the same file in incompatible ways, the workflow fails and the
 #     conflict surfaces as an Action failure that needs human resolution.
 #     Silent failures are how we got 150+ accumulated manual merges.
 #
 #   - Concurrency group. Two main pushes in quick succession would race
-#     on the staging push. The `concurrency` block serializes them — the
+#     on the development push. The `concurrency` block serializes them — the
 #     second waits for the first to finish before merging onto the new
-#     staging tip.
+#     development tip.
 #
 #   - cancel-in-progress: false. We never want to skip a propagation:
-#     every main commit MUST reach staging, even if a newer commit lands
+#     every main commit MUST reach development, even if a newer commit lands
 #     while we're processing.
 
 on:
   # Primary trigger — fires on every main push, including the
-  # `chore(staging): pin platform-version` auto-pin commit. (The auto-pin
+  # `chore(development): pin platform-version` auto-pin commit. (The auto-pin
   # commit used to carry `[skip ci]` which stranded the pin on main; the
   # marker was dropped after build-deploy started excluding its own
   # auto-pin files via `!`-path patterns, so its own loop prevention no
@@ -46,7 +51,7 @@ on:
   #     the auto-pin push somehow doesn't reach the push trigger (e.g.,
   #     a temporarily failing pre-push hook gets retried by a bot).
   #   - The general "main has moved since this workflow started"
-  #     scenario — sync-staging always fetches the latest origin/main
+  #     scenario — sync-development always fetches the latest origin/main
   #     and the merge step is a no-op when already up to date, so a
   #     duplicate run under the concurrency group is cheap.
   workflow_run:
@@ -55,26 +60,28 @@ on:
     branches: [main]
 
   # Manual lever for operators. Use during incidents when an auto-pin
-  # commit got stranded on main and Flux on staging is reconciling a
-  # stale image tag — click "Run workflow" on the Actions page to
-  # force-propagate without crafting a manual merge.
+  # commit got stranded on main and Flux on the staging cluster is
+  # reconciling a stale image tag — click "Run workflow" on the Actions
+  # page to force-propagate without crafting a manual merge.
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: sync-staging
+  group: sync-development
   cancel-in-progress: false
 
 jobs:
   sync:
-    name: Merge main → staging
+    name: Merge main → development
     runs-on: ubuntu-latest
     # Skip when:
-    #   - Marker `[ci-skip-staging-sync]` is set in the commit message
+    #   - Marker `[ci-skip-development-sync]` is set in the commit message
     #     (kept as a non-prose token so documenting the feature in a
-    #     message can't accidentally self-skip).
+    #     message can't accidentally self-skip). The legacy
+    #     `[ci-skip-staging-sync]` marker is honoured too so muscle
+    #     memory / older tooling keeps working.
     #   - workflow_run fired but the upstream Build Images workflow
     #     failed; we don't want to propagate broken code/pins.
     #     (workflow_run also fires on failure, hence the explicit
@@ -82,12 +89,13 @@ jobs:
     if: |
       (github.event_name != 'workflow_run' ||
        github.event.workflow_run.conclusion == 'success') &&
+      !contains(github.event.head_commit.message, '[ci-skip-development-sync]') &&
       !contains(github.event.head_commit.message, '[ci-skip-staging-sync]')
     steps:
-      - name: Checkout staging
+      - name: Checkout development
         uses: actions/checkout@v4
         with:
-          ref: staging
+          ref: development
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -99,40 +107,40 @@ jobs:
       - name: Fetch main
         run: git fetch origin main
 
-      - name: Merge main → staging
+      - name: Merge main → development
         id: merge
         run: |
           set -e
           MAIN_SHA=$(git rev-parse origin/main)
-          STAGING_SHA=$(git rev-parse HEAD)
-          echo "main:    $MAIN_SHA"
-          echo "staging: $STAGING_SHA"
+          DEVELOPMENT_SHA=$(git rev-parse HEAD)
+          echo "main:        $MAIN_SHA"
+          echo "development: $DEVELOPMENT_SHA"
 
-          if git merge-base --is-ancestor "$MAIN_SHA" "$STAGING_SHA"; then
-            echo "Staging is already up-to-date with main — nothing to do."
+          if git merge-base --is-ancestor "$MAIN_SHA" "$DEVELOPMENT_SHA"; then
+            echo "Development is already up-to-date with main — nothing to do."
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Build a concise summary of new commits for the merge message.
-          SUMMARY=$(git log --pretty=format:'  - %h %s' "$STAGING_SHA..$MAIN_SHA" | head -10)
-          NEW_COUNT=$(git log --oneline "$STAGING_SHA..$MAIN_SHA" | wc -l)
+          SUMMARY=$(git log --pretty=format:'  - %h %s' "$DEVELOPMENT_SHA..$MAIN_SHA" | head -10)
+          NEW_COUNT=$(git log --oneline "$DEVELOPMENT_SHA..$MAIN_SHA" | wc -l)
 
           # --no-ff so every propagation is one explicit merge commit
-          # (matches the existing 150+ "Merge main → staging" history).
-          # No `|| true` — fail the workflow on conflict.
-          if ! git merge --no-ff origin/main -m "Merge main → staging: ${NEW_COUNT} commit(s) from main
+          # (matches the existing 150+ "Merge main → staging/development"
+          # history). No `|| true` — fail the workflow on conflict.
+          if ! git merge --no-ff origin/main -m "Merge main → development: ${NEW_COUNT} commit(s) from main
 
           ${SUMMARY}
           "; then
-            echo "::error::Merge conflict propagating main → staging. Resolve manually:"
-            echo "::error::  git fetch origin && git checkout staging && git merge origin/main"
+            echo "::error::Merge conflict propagating main → development. Resolve manually:"
+            echo "::error::  git fetch origin && git checkout development && git merge origin/main"
             echo "::error::Then push the resolved merge."
             git merge --abort || true
             exit 1
           fi
           echo "skipped=false" >> "$GITHUB_OUTPUT"
 
-      - name: Push staging
+      - name: Push development
         if: steps.merge.outputs.skipped != 'true'
-        run: git push origin staging
+        run: git push origin development

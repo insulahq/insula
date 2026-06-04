@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-OVERLAYS=(dev/roundcube dev/bulwark staging production)
+OVERLAYS=(dev/roundcube dev/bulwark development production)
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KUSTOMIZE="kubectl kustomize"
 

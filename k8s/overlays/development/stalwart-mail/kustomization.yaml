@@ -14,7 +14,7 @@
 #   3. Reloader annotation: also watch stalwart-webadmin-prod-tls so the
 #      Deployment rolls when the LE cert is renewed.
 #
-# 0.15 overlay (k8s/overlays/staging/stalwart/) MUST be removed from the
+# 0.15 overlay (k8s/overlays/development/stalwart/) MUST be removed from the
 # parent kustomization.yaml before applying this overlay — both share
 # the `mail` namespace and would race for the Stalwart Service name.
 apiVersion: kustomize.config.k8s.io/v1beta1

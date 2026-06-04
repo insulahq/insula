@@ -5,12 +5,12 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m
-  path: ./k8s/overlays/staging
+  path: ./k8s/overlays/development
   prune: true
   sourceRef:
     kind: GitRepository
     name: hosting-platform-staging
-  # Operator-domain templating. The staging overlay's checked-in YAML
+  # Operator-domain templating. The development overlay's checked-in YAML
   # uses literal ${DOMAIN} (and friends) wherever a per-cluster value
   # would otherwise be hardcoded. Flux's kustomize-controller runs
   # envsubst against the rendered output using values from the named

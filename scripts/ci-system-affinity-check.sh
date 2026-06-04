@@ -58,7 +58,7 @@ CNPG_CLUSTERS=(
   "platform|system-db|0"
 )
 
-OVERLAYS=(staging production)
+OVERLAYS=(development production)
 failures=0
 
 for overlay in "${OVERLAYS[@]}"; do

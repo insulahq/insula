@@ -9,7 +9,7 @@
 # ─────────────────────
 # In 2026-05-16 a re-bootstrap of testing.example.test surfaced a
 # hardcoded `externalIPs: - 192.0.2.56` (staging3's public IP) inside
-# k8s/overlays/staging/stalwart-mail/kustomization.yaml. The mail
+# k8s/overlays/development/stalwart-mail/kustomization.yaml. The mail
 # Service bound the wrong IP on every cluster except staging3 — silently
 # breaking inbound SMTP/IMAP for tenants. The IP wasn't visible to any
 # review because it lived inside an inline kustomize patch.

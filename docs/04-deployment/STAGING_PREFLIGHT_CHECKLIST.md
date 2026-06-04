@@ -46,8 +46,8 @@ done
 - [ ] `main` branch commit: `_______________` (git sha, 7 chars)
 - [ ] All CI workflows green on that commit (`gh run list --branch=main --limit=5`)
 - [ ] Images published to GHCR with that sha tag (`gh api /orgs/insulahq/packages?package_type=container | jq ...`)
-- [ ] `staging` branch is either pointing at same sha OR will be fast-forwarded as part of bootstrap
-- [ ] `kubectl kustomize k8s/overlays/staging` builds cleanly locally (no unresolved refs)
+- [ ] `development` branch is either pointing at same sha OR will be fast-forwarded as part of bootstrap
+- [ ] `kubectl kustomize k8s/overlays/development` builds cleanly locally (no unresolved refs)
 
 ## Operator readiness
 
@@ -99,6 +99,6 @@ Have these commands/URLs ready to run the second bootstrap finishes:
 
 - [ ] Record bootstrap runtime in `docs/05-infrastructure/MULTI_NODE_ROADMAP.md` benchmarks section
 - [ ] Note any deviations from this checklist in the runbook/session-summary
-- [ ] Flip TLS to LE-prod in `k8s/overlays/staging/ingress-patch.yaml` once the setup is proven stable
+- [ ] Flip TLS to LE-prod in `k8s/overlays/development/ingress-patch.yaml` once the setup is proven stable
 - [ ] Delete `/etc/platform/admin-credentials` after creating real admin users
 - [ ] Configure a proper backup target (S3/SSH) via Admin Panel → Settings → Backup

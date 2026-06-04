@@ -581,7 +581,7 @@ The holistic plan is delivered when:
 - [ ] `GET /api/admin/platform/version` returns `{ installed, available, running }`; admin UI version banner appears when `available > installed`.
 - [ ] `scripts/cut-release.sh` produces a clean tagged release end-to-end (CHANGELOG move + VERSION bump + tag + release.yml fires + GitHub Release with curated notes).
 - [ ] `release.yml` no longer opens a PR to `stable` branch; `stable` branch deprecated.
-- [ ] `staging` branch renamed to `development`; all CI references updated; live Flux GitRepository specs updated.
+- [x] `staging` branch renamed to `development`; all CI references updated; live Flux GitRepository specs updated. (W1, 2026-06-04)
 - [ ] `docs/04-deployment/CICD_PIPELINE_REQUIREMENTS.md` describes the actually-running pull-model 3-branch GitOps pipeline; no references to MariaDB, Harbor, NetBird-in-CI, or `stable` branch remain.
 - [ ] Fresh-bootstrap on a single-node Debian 13 host succeeds end-to-end with extracted `scripts/lib/bootstrap-phases.sh`; bootstrap.sh installs `platform-ops` binary + cosign key + systemd timer.
 - [ ] `platform-ops` binary statically links, ~30-50 MB, cosign-verifies on self-upgrade.
@@ -706,6 +706,8 @@ When `installed=2026.4.1` and `target=2026.8.3`, pre-flight reads CHANGELOG sect
 ---
 
 ## 15. Change Log
+
+- 2026-06-04 — **W1 delivered** (PR 1.5): branch `staging` → `development`; `sync-staging.yml` → `sync-development.yml` (legacy `[ci-skip-staging-sync]` marker still honoured); `apply-staging-pin.sh` → `apply-development-pin.sh`; pin commits now `chore(development):` (check-pin-lag accepts the legacy prefix during the transition window); `k8s/overlays/staging/` → `k8s/overlays/development/`; bootstrap.sh maps the staging CLUSTER role → development branch + overlay. GitRepository resource names (`hosting-platform-staging`) stay role-derived. Old `staging` branch kept as a frozen deprecation pointer ~2 weeks.
 
 - 2026-05-23 — Initial holistic plan committed after multi-round planning session that folded versioning, release cycle, CI/CD docs, OSS readiness, OS-level convergence, DR, and operator CLI into one umbrella covering and amending `CLUSTER_UPGRADE_ROADMAP.md`.
 - 2026-05-23 (revision) — Revised Decisions 17 + 18 from "Go binary + shared Go library" to "TypeScript binary (pkg/bun-compile) + direct module import". Triggered by parallel agent confirming orchestration logic lives canonically in TS modules (heavy work delegated to spawned Jobs); porting to Go would re-implement 4,000–8,000 LOC with perpetual maintenance overhead for mostly aesthetic gains. CLI moved to critical path (PR 9, was PR 9.5) so failure-mode/DR tooling exists from day-1 and parallel agent's snapshot primitives can be wrapped in PR 10. Controller+CLI pair PRs collapsed (W12/W13.5, W13/W11.5, W16/W16.5 each become single PRs since both surfaces import the same module). PR count: 22 → 20. Estimated calendar saving: ~3–4 weeks. Optional ~500-LOC Go wrapper for the self-upgrade + cosign-verify loop noted as deferred follow-up for static-binary purity on the security-critical bit.

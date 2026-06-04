@@ -142,7 +142,7 @@ export function translateOperatorError(
       remediation: [
         'Open the namespace\'s ResourceQuota and check used vs. hard.',
         'Either: raise the quota (admin) OR reduce the request.',
-        'For platform namespace, ensure staging quota patch (k8s/overlays/staging/resource-quotas-patch.yaml) is current.',
+        'For platform namespace, ensure staging quota patch (k8s/overlays/development/resource-quotas-patch.yaml) is current.',
       ],
       retryable: true,
       diagnostics: { raw },

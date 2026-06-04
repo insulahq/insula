@@ -7,7 +7,7 @@ spec:
   interval: 1m
   url: https://github.com/insulahq/insula
   ref:
-    branch: staging
+    branch: development
   # For private repos, uncomment and create the secret:
   # secretRef:
   #   name: flux-github-auth

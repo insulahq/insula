@@ -1,5 +1,5 @@
 #!/bin/bash
-# Apply the three staging-pin files in one shot. Idempotent — re-runnable
+# Apply the three development-pin files in one shot. Idempotent — re-runnable
 # against any origin/main HEAD because the output is a pure function of
 # the env vars below.
 #
@@ -23,7 +23,7 @@ set -euo pipefail
 : "${VERSION:?VERSION must be set}"
 : "${BRANCH:?BRANCH must be set}"
 
-OVERLAY=k8s/overlays/staging
+OVERLAY=k8s/overlays/development
 mkdir -p "$OVERLAY"
 
 # ─── 1. platform-version ConfigMap patch ───
