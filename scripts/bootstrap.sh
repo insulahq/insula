@@ -413,6 +413,7 @@ BACKUP_TARGET_NAME="primary"    # --backup-target-name         <name>    (defaul
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 REPO_URL="https://github.com/insulahq/insula.git"
+RELEASE_TAG=""
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -463,6 +464,8 @@ OPTIONS:
                          bootstrap stamps the label = true and removes
                          any pre-existing server-only taint.
   --env <dev|staging|production> Environment (default: production)
+  --release-tag <vYYYY.M.PATCH> Production only: release tag for the Flux source
+                         (default: v<platform/VERSION> of this checkout)
   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
   --with-monitoring      Install Prometheus + Loki
   --skip-flux            Skip Flux v2 GitOps
@@ -863,6 +866,7 @@ parse_args() {
       --join-as)         NODE_ROLE="$2"; shift 2 ;;
       --host-tenant-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
       --env)             PLATFORM_ENV="$2"; shift 2 ;;
+      --release-tag)     RELEASE_TAG="$2"; shift 2 ;;
       --domain)          PLATFORM_DOMAIN="$2"; shift 2 ;;
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
       --token)           K3S_TOKEN="$2"; shift 2 ;;
@@ -4071,23 +4075,51 @@ install_flux() {
   # that took out staging image promotion 2026-05-04 → 2026-05-09.
   flux install --kubeconfig="$KUBECONFIG" --timeout=300s
 
-  # Determine which branch Flux should watch. W1 / ADR-045 Decision 13:
-  # staging-role clusters track the `development` branch (the branch
-  # formerly named `staging` — "staging" remains the CLUSTER role name).
+  # Determine which git ref Flux should watch.
+  #   dev      → branch main
+  #   staging  → branch development (W1 / ADR-045 Decision 13: the branch
+  #              formerly named `staging` — "staging" remains the CLUSTER
+  #              role name)
+  #   production → a PINNED RELEASE TAG, never a branch (ADR-045
+  #              Decision 10: the `stable` branch is retired; production
+  #              pulls signed releases — the W11 version-poller surfaces
+  #              newer ones and the W13 upgrade flow re-pins spec.ref.tag
+  #              on operator approval).
   local flux_branch="main"
+  local flux_tag=""
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
     flux_branch="development"
   elif [[ "$PLATFORM_ENV" == "production" ]]; then
-    flux_branch="stable"
+    # Tag precedence: --release-tag override, else v<platform/VERSION>
+    # of THIS checkout (Decision: first prod bootstrap lands on the
+    # version whose scripts are doing the bootstrapping — no skew
+    # between the bootstrap logic and the manifests it applies).
+    flux_tag="$RELEASE_TAG"
+    if [[ -z "$flux_tag" && -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
+      flux_tag="v$(tr -d '[:space:]' < "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION")"
+    fi
+    if [[ ! "$flux_tag" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+      error "Production Flux source needs a CalVer release tag (got '${flux_tag:-<empty>}').
+Pass --release-tag vYYYY.M.PATCH or bootstrap from a release-tag checkout
+(git checkout vYYYY.M.PATCH) so platform/VERSION matches a published release."
+    fi
+    # Fail fast if the tag isn't on the remote — a typo'd tag would
+    # otherwise leave Flux Ready=False on a fresh production install.
+    if ! git ls-remote --tags "$REPO_URL" "refs/tags/${flux_tag}" 2>/dev/null | grep -q .; then
+      error "Release tag ${flux_tag} not found on ${REPO_URL}.
+Cut it first (scripts/cut-release.sh) or pass an existing tag via --release-tag."
+    fi
   fi
 
   # Source name must match the declarative GitRepository YAML names.
-  # Role-derived — intentionally NOT renamed with the branch.
+  # Role-derived — intentionally NOT renamed with the branch. (The W13
+  # upgrade flow is name-agnostic: it resolves the source via the
+  # platform Kustomization's sourceRef.)
   local source_name="hosting-platform"
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
     source_name="hosting-platform-staging"
   elif [[ "$PLATFORM_ENV" == "production" ]]; then
-    source_name="hosting-platform-stable"
+    source_name="hosting-platform-production"
   fi
 
   # Overlay directory: tracks the BRANCH role, not the cluster role —
@@ -4098,12 +4130,21 @@ install_flux() {
     overlay_dir="development"
   fi
 
-  log "Configuring Flux source and kustomization for ${PLATFORM_ENV} (branch=${flux_branch}, source=${source_name})..."
-  flux create source git "$source_name" \
-    --url="$REPO_URL" \
-    --branch="$flux_branch" \
-    --interval=1m \
-    --kubeconfig="$KUBECONFIG"
+  if [[ -n "$flux_tag" ]]; then
+    log "Configuring Flux source and kustomization for ${PLATFORM_ENV} (tag=${flux_tag}, source=${source_name})..."
+    flux create source git "$source_name" \
+      --url="$REPO_URL" \
+      --tag="$flux_tag" \
+      --interval=1m \
+      --kubeconfig="$KUBECONFIG"
+  else
+    log "Configuring Flux source and kustomization for ${PLATFORM_ENV} (branch=${flux_branch}, source=${source_name})..."
+    flux create source git "$source_name" \
+      --url="$REPO_URL" \
+      --branch="$flux_branch" \
+      --interval=1m \
+      --kubeconfig="$KUBECONFIG"
+  fi
 
   # Apply via YAML so we can include spec.patches: strip
   # spec.instances from the CNPG Cluster manifest before Flux SSA-
@@ -4188,14 +4229,18 @@ spec:
 KUSTYAML
 
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
-    warn "Image automation requires GitHub push credentials for the staging branch."
+    warn "Image automation requires GitHub push credentials for the development branch."
     warn "Create the flux-github-auth secret before enabling automation:"
     warn "  kubectl create secret generic flux-github-auth -n flux-system \\"
     warn "    --from-literal=username=x-access-token \\"
     warn "    --from-literal=password=<GITHUB_PAT>"
   fi
 
-  log "Flux v2 installed and configured for ${PLATFORM_ENV} (branch=${flux_branch})."
+  if [[ -n "$flux_tag" ]]; then
+    log "Flux v2 installed and configured for ${PLATFORM_ENV} (tag=${flux_tag})."
+  else
+    log "Flux v2 installed and configured for ${PLATFORM_ENV} (branch=${flux_branch})."
+  fi
 }
 
 # Tier-1 secrets-bundle import path. Runs BEFORE generate_platform_secrets

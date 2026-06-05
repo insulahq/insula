@@ -115,10 +115,14 @@ MariaDB/Redis containers).
 3. Push the tag → `release.yml` validates `tag == platform/VERSION`, builds +
    pushes `:<version>` images, and publishes a GitHub Release from the CHANGELOG
    section. Prereleases are `-rc.N`.
-4. **Production deploy (transitional):** there is no stable branch and no
-   automated production rollout yet; production is not yet provisioned. The
-   in-cluster version-poller that pins production to a release tag on operator
-   click is a later workstream (W11–W14).
+4. **Production deploy:** there is no stable branch. A production install
+   (`bootstrap.sh --env production`) pins its Flux GitRepository to a release
+   **tag** — `v<platform/VERSION>` of the bootstrapping checkout, or
+   `--release-tag vYYYY.M.PATCH` (the tag must exist on the remote;
+   bootstrap fails fast otherwise). From then on the in-cluster
+   version-poller (W11) surfaces newer signed releases and the upgrade flow
+   (W13/W14) re-pins the tag on operator approval. Production is not yet
+   provisioned.
 
 ## 7. Container registry & fork-safety
 
