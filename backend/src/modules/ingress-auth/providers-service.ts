@@ -179,8 +179,11 @@ export async function updateProvider(
 }
 
 /**
- * Delete a provider. Surfaces a 409 with the consumer count when
- * any ingress_auth_config still references it (FK RESTRICT).
+ * Delete a provider. Surfaces a 409 with the consumer count when any
+ * ingress_auth_config still references it. This API-level guard is the
+ * ONLY protection since migration 0049 — the FK is ON DELETE CASCADE
+ * so the tenant-deletion cascade can pass through (a RESTRICT made
+ * tenants with attached auth configs undeletable).
  */
 export async function deleteProvider(
   db: Database,

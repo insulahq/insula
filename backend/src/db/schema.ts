@@ -2075,9 +2075,15 @@ export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
   // FK to the reusable provider config. NOT NULL — every config must
   // resolve to a provider before it can be enabled. Set to NOT NULL
   // by migration 0057 after backfill.
+  //
+  // CASCADE (was RESTRICT until migration 0049): the RESTRICT made
+  // tenants with an attached auth config undeletable — the tenant
+  // cascade (tenants → tenant_oidc_providers) aborted on this FK.
+  // Direct provider deletion is still guarded at the API layer
+  // (providers-service.ts deleteProvider → PROVIDER_IN_USE 409).
   providerId: varchar('provider_id', { length: 36 })
     .notNull()
-    .references(() => tenantOidcProviders.id, { onDelete: 'restrict' }),
+    .references(() => tenantOidcProviders.id, { onDelete: 'cascade' }),
   // Optional override of the provider's default_scopes. NULL = use
   // provider's value. Allows one provider to serve ingresses with
   // different scope requirements (e.g. one ingress also wants

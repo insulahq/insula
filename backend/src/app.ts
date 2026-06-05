@@ -162,6 +162,7 @@ import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
+import { startDailyImagePrune } from './modules/storage/image-prune-scheduler.js';
 import { startKubeletGcReconciler } from './modules/cluster-settings/kubelet-gc-reconciler.js';
 import { startVerificationCron } from './modules/domains/verification-cron.js';
 import type { Config } from './config/index.js';
@@ -1641,6 +1642,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
         const pressureWatcher = startImagePressureWatcher(app.db, watcherK8s, app.log);
         app.addHook('onClose', () => pressureWatcher.stop());
+
+        // Daily unused-image prune — steady-state hygiene below the
+        // pressure thresholds (watcher 75%, kubelet GC 85%). See
+        // storage/image-prune-scheduler.ts (2026-06-05 audit).
+        const dailyImagePrune = startDailyImagePrune(watcherK8s, app.log);
+        app.addHook('onClose', () => dailyImagePrune.stop());
 
         const gcReconciler = startKubeletGcReconciler(app.db, watcherK8s, app.log);
         app.addHook('onClose', () => gcReconciler.stop());
