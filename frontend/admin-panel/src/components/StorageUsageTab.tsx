@@ -137,6 +137,11 @@ export default function StorageUsageTab() {
               </button>
             </div>
           </div>
+          <p className="px-5 py-2 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-800" data-testid="image-prune-note">
+            Unused, non-protected images are pruned automatically once per day. Additional automatic
+            pruning kicks in under disk pressure (platform watcher above 75% ephemeral-storage use;
+            kubelet garbage collection above 85% disk). In-use and protected images are never removed.
+          </p>
           <div className="max-h-[500px] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700/50 sticky top-0">
