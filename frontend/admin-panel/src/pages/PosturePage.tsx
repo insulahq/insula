@@ -359,6 +359,7 @@ function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
 
 function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
   const [openModalNode, setOpenModalNode] = useState<NodeSecuritySnapshot | null>(null);
+  const [bannedNode, setBannedNode] = useState<NodeSecuritySnapshot | null>(null);
   return (
     <section className="space-y-4">
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
@@ -371,6 +372,7 @@ function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
               <th className="px-4 py-2 text-left">PermitRootLogin</th>
               <th className="px-4 py-2 text-left">PasswordAuth</th>
               <th className="px-4 py-2 text-left">AllowUsers</th>
+              <th className="px-4 py-2 text-left">fail2ban (banned)</th>
               <th className="px-4 py-2 text-left">Action</th>
             </tr>
           </thead>
@@ -383,6 +385,7 @@ function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
                 <td className="px-4 py-2"><SshdFlagCell value={n.ssh.sshdFlags.permitRootLogin} good="no" /></td>
                 <td className="px-4 py-2"><SshdFlagCell value={n.ssh.sshdFlags.passwordAuthentication} good="no" /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.ssh.sshdFlags.allowUsers.join(', ') || <span className="text-gray-400">—</span>}</td>
+                <td className="px-4 py-2"><Fail2banCell node={n} onOpen={() => setBannedNode(n)} /></td>
                 <td className="px-4 py-2">
                   {n.ssh.restrictionMode === 'public' && (
                     <button
@@ -400,6 +403,8 @@ function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
           </tbody>
         </table>
       </div>
+
+      {bannedNode && <Fail2banModal node={bannedNode} onClose={() => setBannedNode(null)} />}
 
       {openModalNode && (
         <SshLockdownModal node={openModalNode} onClose={() => setOpenModalNode(null)} />
@@ -1062,3 +1067,88 @@ systemctl enable --now wg-quick@wg0`}</pre>
 
 // useDebouncedValue extracted to hooks/use-debounced-value.ts (2026-05-21).
 
+
+// ─── fail2ban (SSH brute-force bans) ────────────────────────────────────
+
+/** Compact cell: "N now · M/24h" linking to the banned-IP modal. */
+function Fail2banCell({ node, onOpen }: { node: NodeSecuritySnapshot; onOpen: () => void }) {
+  const f = node.fail2ban;
+  if (!f.dbPresent) {
+    return (
+      <span
+        className="text-xs text-gray-400"
+        title={f.readError ?? 'fail2ban data unavailable'}
+        data-testid={`fail2ban-na-${node.name}`}
+      >
+        n/a
+      </span>
+    );
+  }
+  if (f.bannedNowCount === 0) {
+    return <span className="text-xs text-gray-500" data-testid={`fail2ban-zero-${node.name}`}>0 now · {f.bansLast24h}/24h</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="inline-flex items-center gap-1 rounded-full bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40"
+      data-testid={`fail2ban-open-${node.name}`}
+    >
+      <Ban size={12} /> {f.bannedNowCount} now · {f.bansLast24h}/24h
+    </button>
+  );
+}
+
+/** Banned-IP list modal. The "Ban permanently (firewall)" action is wired
+ *  to the Network Trust blacklist endpoint in a follow-up PR; until then
+ *  the list is read-only. */
+function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose: () => void }) {
+  const f = node.fail2ban;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="fail2ban-modal">
+        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+            fail2ban bans on {node.name}
+            <span className="ml-2 text-xs font-normal text-gray-500">
+              {f.bannedNowCount} active · {f.bansLast24h} in 24h · {f.bansTotal} all-time
+            </span>
+          </h3>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+          {f.currentlyBanned.length === 0 ? (
+            <p className="text-sm text-gray-500">No IPs are currently banned.</p>
+          ) : (
+            <table className="min-w-full text-sm" data-testid="fail2ban-banned-table">
+              <thead className="text-gray-500 dark:text-gray-400 text-xs uppercase">
+                <tr>
+                  <th className="py-1 text-left">IP</th>
+                  <th className="py-1 text-left">Jail</th>
+                  <th className="py-1 text-left">Banned</th>
+                  <th className="py-1 text-left">Expires</th>
+                  <th className="py-1 text-right">Bans</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {f.currentlyBanned.map((b) => (
+                  <tr key={`${b.jail}:${b.ip}`}>
+                    <td className="py-1.5 font-mono text-gray-900 dark:text-gray-100">{b.ip}</td>
+                    <td className="py-1.5 text-gray-600 dark:text-gray-300">{b.jail}</td>
+                    <td className="py-1.5 text-gray-600 dark:text-gray-300">{b.bannedAt ? new Date(b.bannedAt).toLocaleString() : '—'}</td>
+                    <td className="py-1.5 text-gray-600 dark:text-gray-300">{b.expiresAt ? new Date(b.expiresAt).toLocaleString() : <span className="text-red-600 dark:text-red-400">permanent</span>}</td>
+                    <td className="py-1.5 text-right text-gray-600 dark:text-gray-300">{b.banCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3 text-xs text-gray-500">
+          fail2ban auto-expires these bans (default 1h). To block an IP or range permanently at the host
+          firewall, use <strong>Network Trust → Blacklist</strong>.
+        </div>
+      </div>
+    </div>
+  );
+}

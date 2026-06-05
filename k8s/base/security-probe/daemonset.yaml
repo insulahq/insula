@@ -163,7 +163,17 @@ spec:
             - name: etc-hosting-platform
               mountPath: /host/etc/hosting-platform
               readOnly: true
+            # fail2ban sqlite state — READ-ONLY; the probe opens it with
+            # mode=ro&immutable=1 (no locks, no -wal/-shm). We never mount
+            # the fail2ban control socket: that would be a write channel.
+            - name: var-lib-fail2ban
+              mountPath: /host/var/lib/fail2ban
+              readOnly: true
       volumes:
+        - name: var-lib-fail2ban
+          hostPath:
+            path: /var/lib/fail2ban
+            type: DirectoryOrCreate
         - name: etc-sshd-config
           hostPath:
             path: /etc/ssh/sshd_config
