@@ -1,0 +1,24 @@
+# Production Flux source — pinned to a RELEASE TAG, never a branch
+# (ADR-045 Decision 10: the `stable` branch is retired).
+#
+# bootstrap.sh creates this imperatively on a production install,
+# pinning v<platform/VERSION> of the bootstrapping checkout (override
+# via --release-tag). Afterwards the tag is owned by the upgrade flow:
+# the W11 version-poller surfaces newer signed releases and the W13
+# upgrade apply re-pins spec.ref.tag on operator approval (rollback
+# restores the previous ref). This file is the declarative REFERENCE
+# for that shape — the tag below is a placeholder, not a deployment
+# instruction.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: hosting-platform-production
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://github.com/insulahq/insula
+  ref:
+    tag: v2026.6.2  # placeholder — bootstrap pins the real release tag
+  # For private repos, uncomment and create the secret:
+  # secretRef:
+  #   name: flux-github-auth

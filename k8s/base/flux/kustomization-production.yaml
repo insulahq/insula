@@ -1,12 +1,18 @@
-# Production Flux Kustomization — watches the `stable` branch.
+# Production Flux Kustomization — tracks a TAG-PINNED GitRepository
+# (ADR-045 Decision 10: the `stable` branch is retired).
 #
-# Deployment flow:
-#   1. Developer creates tag v1.0.0 → release.yml builds images
-#   2. release.yml creates PR to `stable` branch with pinned semver tags
-#   3. Human reviews and merges the PR
-#   4. Flux detects the stable branch change → rolling update
+# Deployment flow (pull model):
+#   1. Operator cuts a release (scripts/cut-release.sh) → release.yml
+#      builds + cosign-signs images/binaries → GitHub Release vYYYY.M.PATCH.
+#   2. The W11 version-poller on each production cluster fetches Releases
+#      hourly, signature-verifies, and surfaces `available` in
+#      /platform/upgrades.
+#   3. Operator clicks Apply (or `platform-ops cluster upgrade`) →
+#      pre-flight gates → W13 re-pins the GitRepository spec.ref.tag →
+#      Flux rolls → post-flight convergence check (abort → rollback).
 #
-# The PR merge IS the gate — no suspend/unsuspend needed.
+# The operator approval IS the gate — no branch merge, no
+# suspend/unsuspend needed.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -18,7 +24,7 @@ spec:
   prune: true
   sourceRef:
     kind: GitRepository
-    name: hosting-platform-stable
+    name: hosting-platform-production
   # Operator-domain templating — same path staging uses (see
   # kustomization-staging.yaml). Production overlay's ingress-patch.yaml
   # and platform-config-patch.yaml already reference ${DOMAIN}, so the
