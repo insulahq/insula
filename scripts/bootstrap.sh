@@ -3880,6 +3880,7 @@ install_longhorn() {
     --set defaultSettings.replicaAutoBalance=best-effort \
     --set defaultSettings.storageMinimalAvailablePercentage=15 \
     --set defaultSettings.defaultDataLocality=best-effort \
+    --set defaultSettings.removeSnapshotsDuringFilesystemTrim=true \
     --set defaultSettings.guaranteedInstanceManagerCPU=8 \
     --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
     --set longhornUI.replicaCount=1 \

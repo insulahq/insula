@@ -104,6 +104,7 @@ import { startExpiryWarningScheduler } from './modules/subscriptions/expiry-warn
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
 import { startDataRetention } from './modules/data-retention/scheduler.js';
+import { startReleasedPvJanitor } from './modules/orphaned-volumes/janitor.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
@@ -1193,6 +1194,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startNodeHealthScheduler } = await import('./modules/node-health/scheduler.js');
         const nodeHealthMonitorHandle = startNodeHealthScheduler(app.db, k8sForImapsync);
         app.addHook('onClose', () => nodeHealthMonitorHandle.stop());
+
+        // Released-PV janitor — daily sweep reaping the CNPG-recreate
+        // leak class only (Released platform/system-db-N PV with a Bound
+        // successor; reclaimPolicy=Retain leaks one per instance
+        // recreate). Everything else stays operator-driven via the
+        // orphaned-volumes UI. See orphaned-volumes/janitor.ts.
+        const pvJanitorHandle = startReleasedPvJanitor(app.db, k8sForImapsync);
+        app.addHook('onClose', () => pvJanitorHandle.stop());
 
         // ADR-045 W14 follow-up: upgrade reconciler (MONITOR-ONLY). While an
         // upgrade is in flight (pending_update_version set) it advances the

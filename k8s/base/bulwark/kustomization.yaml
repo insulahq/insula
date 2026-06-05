@@ -16,7 +16,6 @@ kind: Kustomization
 namespace: mail
 
 resources:
-  - pvc.yaml
   - deployment.yaml
   - service.yaml
   - pdb.yaml
