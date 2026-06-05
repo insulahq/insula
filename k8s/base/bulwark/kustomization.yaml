@@ -2,7 +2,7 @@
 #
 # NOT included by k8s/base/kustomization.yaml — overlays opt-in.
 # Dev: k8s/overlays/dev/bulwark/
-# Staging: k8s/overlays/staging/bulwark/   (M+1 — once impersonator ships)
+# Staging: k8s/overlays/development/bulwark/   (M+1 — once impersonator ships)
 # Production: k8s/overlays/production/bulwark/ (M+2 — once Roundcube deprecation toggle is flipped)
 #
 # Operator-provided Secret `bulwark-secrets` must carry:

@@ -119,8 +119,8 @@ spec:
     #
     # Existing clusters with larger storage MUST be patched per-overlay
     # because CNPG's webhook rejects any spec.storage decrease — see
-    # k8s/overlays/staging/system-db-storage-patch.yaml for the
-    # 10Gi staging override. Operators can right-size at any time
+    # k8s/overlays/development/system-db-storage-patch.yaml for the
+    # 20Gi development-overlay override. Operators can right-size at any time
     # via Settings → System DB Storage or the SystemPvcResize endpoint.
     size: 2Gi
     # System PVCs MUST use longhorn-system-local (or -ha when policy

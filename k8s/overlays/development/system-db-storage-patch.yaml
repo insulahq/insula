@@ -1,13 +1,19 @@
-# Staging-only patch: keep system-db at 10Gi instead of the base 5Gi.
+# Development-overlay patch: keep system-db at 20Gi instead of the 2Gi base.
 #
-# Background: the staging cluster was bootstrapped pre-Phase-1 with the
-# 10Gi default that lived in the base manifest at the time. CNPG's
-# webhook rejects any spec.storage decrease, so the post-Phase-1 base
-# default of 5Gi can't apply to staging without manual snapshot+
-# recreate. This patch keeps the live size at 10Gi.
+# Background: CNPG's webhook rejects any spec.storage decrease, so this
+# overlay must declare the LARGEST live size among the clusters that
+# consume it (staging + testing). The staging cluster's system-db was
+# emergency-grown 10Gi → 20Gi during the 2026-06-02 WAL-archive-runaway
+# incident; Flux dry-run failed on every reconcile until git matched
+# (observed 2026-06-05 when the post-incident Kustomization suspension
+# was lifted). Growing the smaller clusters 10Gi → 20Gi is an ONLINE
+# zero-downtime expansion (CNPG + Longhorn volume resize, thin-
+# provisioned) — the documented right-size mechanism in
+# k8s/base/database.yaml.
 #
-# When staging is wiped + rebootstrapped fresh, this overlay can be
-# deleted — the new install will pick up the 5Gi base default.
+# When these clusters are wiped + rebootstrapped fresh, this overlay can
+# be deleted — a new install picks up the 2Gi base default and operators
+# grow via Settings → System DB Storage / SystemPvcResize as needed.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -15,4 +21,4 @@ metadata:
   namespace: platform
 spec:
   storage:
-    size: 10Gi
+    size: 20Gi
