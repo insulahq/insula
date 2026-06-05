@@ -72,3 +72,32 @@ spec:
   concurrency: 2
   groups:
     - default
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: daily-fstrim
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  # 01:30 — BEFORE the 02:00 daily-backup, so the backup captures the
+  # trimmed block set instead of carrying dead blocks off-cluster.
+  #
+  # Why this job exists (2026-06-05 audit): deleted-file blocks are
+  # never returned to Longhorn without an explicit trim — the staging
+  # system-db volume carried 10.8 GB of incident-era WAL blocks through
+  # every snapshot rotation for days (12.7 GB actualSize for an 18 MB
+  # database). FITRIM from inside the workload pod is not possible
+  # (needs CAP_SYS_ADMIN, which platform pods rightly drop) — Longhorn's
+  # filesystem-trim task runs through the engine instead. Pairs with the
+  # removeSnapshotsDuringFilesystemTrim default setting (bootstrap.sh)
+  # so trimmed blocks are also released from the snapshot chain.
+  cron: "30 1 * * *"
+  task: filesystem-trim
+  # retain is meaningless for filesystem-trim (nothing is created);
+  # 0 is the conventional value.
+  retain: 0
+  concurrency: 2
+  groups:
+    - default

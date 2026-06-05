@@ -165,6 +165,12 @@ re-run.
 
 ## Stage 3 cleanup criteria
 
+> **Stage 3 executed 2026-06-05** — `k8s/base/bulwark/pvc.yaml` removed from
+> git (Flux prune deletes the detached, empty `bulwark-data` PVCs on every
+> cluster; verified empty on staging + testing first). The consolidation
+> itself (A2.5) had shipped 2026-05-25; this cleanup step was simply never
+> executed — found by the 2026-06-05 storage audit.
+
 Wait at least **48-72h** with mail running on the consolidated layout
 before deleting legacy PVCs. Verify in this window:
 - At least one successful restic snapshot round-trip from the new

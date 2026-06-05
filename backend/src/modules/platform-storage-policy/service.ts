@@ -33,6 +33,12 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 // disk copies per pod's PVC).
 export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix: string }> = [
   { namespace: 'mail', pvcPrefix: 'data-stalwart-mail' },    // data-stalwart-mail-0
+  // crowdsec-data is a Deployment PVC, not a StatefulSet PVC, but the
+  // prefix-match enumeration below is identical. Added 2026-06-05: it
+  // was invisible to the policy, so a single-node install kept its
+  // creation-time numberOfReplicas=3 → volume permanently `degraded`
+  // (observed on testing; staging's 3-node copy was healthy by luck).
+  { namespace: 'crowdsec', pvcPrefix: 'crowdsec-data' },
 ];
 
 // HA tier replicates a system volume to one server up to MAX_HA_REPLICAS.
