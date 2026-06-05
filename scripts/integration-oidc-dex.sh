@@ -40,7 +40,7 @@
 #   - Staging admin reachable
 #   - Dex reachable at https://dex.<staging-domain>/dex
 #   - Dex staticClients include hosting-platform-admin + hosting-platform-tenant
-#     (see k8s/overlays/staging/dex/config.yaml)
+#     (see k8s/overlays/development/dex/config.yaml)
 #   - Dex staticPasswords include admin@k8s-platform.test / admin and
 #     user@k8s-platform.test / user
 #
@@ -57,7 +57,7 @@ DEX_HOST="${DEX_HOST:-$(echo "$ADMIN_HOST" | sed 's|//admin\.|//dex.|')}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
-# Dex static-password test users — see k8s/overlays/staging/dex/config.yaml.
+# Dex static-password test users — see k8s/overlays/development/dex/config.yaml.
 DEX_ADMIN_USER="${DEX_ADMIN_USER:-admin@k8s-platform.test}"
 DEX_ADMIN_PW="${DEX_ADMIN_PW:-admin}"
 DEX_TENANT_USER="${DEX_TENANT_USER:-user@k8s-platform.test}"

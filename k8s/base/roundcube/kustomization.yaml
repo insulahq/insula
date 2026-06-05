@@ -21,7 +21,7 @@ resources:
 # configmap-config.yaml (NOT a generator), so overlays cannot use
 # configMapGenerator behavior: merge against it. Overlays that need to
 # override jwt_auth.inc.php must use a strategic-merge ConfigMap patch
-# under `patches:` (see k8s/overlays/staging/roundcube/).
+# under `patches:` (see k8s/overlays/development/roundcube/).
 configMapGenerator:
   - name: roundcube-jwt-plugin
     files:
