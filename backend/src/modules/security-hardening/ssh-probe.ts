@@ -21,6 +21,9 @@
 import type { CoreV1Api } from '@kubernetes/client-node';
 import {
   type NodeSecuritySnapshot,
+  type NodeFail2ban,
+  type Fail2banBannedIp,
+  FAIL2BAN_ABSENT,
   type NodeMeshStatus,
   type NodeSshExposure,
   type NodeHardening,
@@ -64,6 +67,20 @@ interface ProbeSnapshotWire {
     };
     readonly parseSucceeded?: boolean;
     readonly parseError?: string | null;
+  };
+  readonly fail2ban?: {
+    readonly dbPresent?: boolean;
+    readonly readError?: string | null;
+    readonly currentlyBanned?: ReadonlyArray<{
+      readonly ip?: string;
+      readonly jail?: string;
+      readonly bannedAt?: string | null;
+      readonly expiresAt?: string | null;
+      readonly banCount?: number;
+    }>;
+    readonly bannedNowCount?: number;
+    readonly bansLast24h?: number;
+    readonly bansTotal?: number;
   };
   readonly hardening?: {
     readonly kernelVersion?: string;
@@ -284,6 +301,30 @@ export function decodeSnapshot(
 
   const stale = lastUpdatedAt === null || now.getTime() - new Date(lastUpdatedAt).getTime() > PROBE_STALE_AFTER_MS;
 
+  // fail2ban: absent on pre-upgrade probe payloads → explicit sentinel
+  // (UI shows "n/a", never a misleading "0 bans").
+  let fail2ban: NodeFail2ban = FAIL2BAN_ABSENT;
+  if (raw.fail2ban) {
+    const banned: Fail2banBannedIp[] = (raw.fail2ban.currentlyBanned ?? [])
+      .filter((b) => typeof b.ip === 'string' && b.ip.length > 0)
+      .slice(0, 200)
+      .map((b) => ({
+        ip: String(b.ip),
+        jail: typeof b.jail === 'string' && b.jail.length > 0 ? b.jail : 'sshd',
+        bannedAt: typeof b.bannedAt === 'string' ? b.bannedAt : null,
+        expiresAt: typeof b.expiresAt === 'string' ? b.expiresAt : null,
+        banCount: typeof b.banCount === 'number' && b.banCount >= 0 ? b.banCount : 0,
+      }));
+    fail2ban = {
+      dbPresent: Boolean(raw.fail2ban.dbPresent),
+      readError: typeof raw.fail2ban.readError === 'string' ? raw.fail2ban.readError : null,
+      currentlyBanned: banned,
+      bannedNowCount: typeof raw.fail2ban.bannedNowCount === 'number' ? raw.fail2ban.bannedNowCount : banned.length,
+      bansLast24h: typeof raw.fail2ban.bansLast24h === 'number' ? raw.fail2ban.bansLast24h : 0,
+      bansTotal: typeof raw.fail2ban.bansTotal === 'number' ? raw.fail2ban.bansTotal : 0,
+    };
+  }
+
   return {
     name: nodeName,
     lastUpdatedAt,
@@ -291,5 +332,6 @@ export function decodeSnapshot(
     mesh,
     ssh,
     hardening,
+    fail2ban,
   };
 }

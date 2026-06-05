@@ -74,6 +74,45 @@ export const nodeSshExposureSchema = z.object({
 });
 export type NodeSshExposure = z.infer<typeof nodeSshExposureSchema>;
 
+// ─── fail2ban (per-node SSH brute-force bans) ───────────────────────────
+
+export const fail2banBannedIpSchema = z.object({
+  ip: z.string().min(1).max(64),
+  jail: z.string().min(1).max(64),
+  /** When the (latest) ban was applied. Null when the DB row predates the timeofban column. */
+  bannedAt: z.string().datetime().nullable(),
+  /** Null = permanent ban (fail2ban bantime -1). */
+  expiresAt: z.string().datetime().nullable(),
+  /** fail2ban's incremental ban counter for this IP (bancount). */
+  banCount: z.number().int().min(0),
+});
+export type Fail2banBannedIp = z.infer<typeof fail2banBannedIpSchema>;
+
+export const nodeFail2banSchema = z.object({
+  /** fail2ban state DB (/var/lib/fail2ban/fail2ban.sqlite3) found AND readable.
+   *  False ⇒ the count fields are zero-valued and MUST NOT be shown as "0 bans" —
+   *  UI shows "n/a" with readError as the tooltip. */
+  dbPresent: z.boolean(),
+  readError: z.string().nullable(),
+  /** Probe caps the list at 200 entries (sorted newest ban first). */
+  currentlyBanned: z.array(fail2banBannedIpSchema).max(200),
+  bannedNowCount: z.number().int().min(0),
+  bansLast24h: z.number().int().min(0),
+  /** All-time bans across jails (fail2ban bips table). */
+  bansTotal: z.number().int().min(0),
+});
+export type NodeFail2ban = z.infer<typeof nodeFail2banSchema>;
+
+/** Default for nodes whose probe predates the fail2ban collector. */
+export const FAIL2BAN_ABSENT: NodeFail2ban = {
+  dbPresent: false,
+  readError: 'probe does not report fail2ban data yet (pre-upgrade probe image)',
+  currentlyBanned: [],
+  bannedNowCount: 0,
+  bansLast24h: 0,
+  bansTotal: 0,
+};
+
 // ─── Node hardening (CIS-style) ─────────────────────────────────────────
 
 export const cisSeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
@@ -280,6 +319,7 @@ export const nodeSecuritySnapshotSchema = z.object({
   mesh: nodeMeshStatusSchema,
   ssh: nodeSshExposureSchema,
   hardening: nodeHardeningSchema,
+  fail2ban: nodeFail2banSchema,
 });
 export type NodeSecuritySnapshot = z.infer<typeof nodeSecuritySnapshotSchema>;
 

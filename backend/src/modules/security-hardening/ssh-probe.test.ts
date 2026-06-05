@@ -100,4 +100,57 @@ describe('decodeSnapshot', () => {
     const snap = decodeSnapshot('node-a', raw, '2026-05-18T10:00:00Z', new Date('2026-05-18T10:00:30Z'));
     expect(snap.hardening.cisFindings[0].severity).toBe('info');
   });
+
+  it('parses fail2ban data when the probe reports it', () => {
+    const raw = {
+      ...baseRaw,
+      fail2ban: {
+        dbPresent: true,
+        readError: null,
+        currentlyBanned: [
+          { ip: '203.0.113.10', jail: 'sshd', bannedAt: '2026-06-05T10:00:00Z', expiresAt: '2026-06-05T11:00:00Z', banCount: 2 },
+          { ip: '198.51.100.7', jail: 'sshd', bannedAt: '2026-06-02T10:00:00Z', expiresAt: null, banCount: 9 },
+        ],
+        bannedNowCount: 2,
+        bansLast24h: 5,
+        bansTotal: 1949,
+      },
+    };
+    const snap = decodeSnapshot('node-a', raw, '2026-05-18T10:00:00Z', new Date('2026-05-18T10:01:00Z'));
+    expect(snap.fail2ban.dbPresent).toBe(true);
+    expect(snap.fail2ban.bannedNowCount).toBe(2);
+    expect(snap.fail2ban.bansLast24h).toBe(5);
+    expect(snap.fail2ban.bansTotal).toBe(1949);
+    expect(snap.fail2ban.currentlyBanned[0].ip).toBe('203.0.113.10');
+    expect(snap.fail2ban.currentlyBanned[1].expiresAt).toBeNull(); // permanent
+  });
+
+  it('falls back to the FAIL2BAN_ABSENT sentinel for pre-upgrade probe payloads', () => {
+    const snap = decodeSnapshot('node-a', baseRaw, '2026-05-18T10:00:00Z', new Date('2026-05-18T10:01:00Z'));
+    expect(snap.fail2ban.dbPresent).toBe(false);
+    expect(snap.fail2ban.readError).toMatch(/pre-upgrade probe/);
+    expect(snap.fail2ban.currentlyBanned).toEqual([]);
+  });
+
+  it('drops malformed banned entries and clamps negatives', () => {
+    const raw = {
+      ...baseRaw,
+      fail2ban: {
+        dbPresent: true,
+        readError: null,
+        currentlyBanned: [
+          { ip: '', jail: 'sshd', bannedAt: null, expiresAt: null, banCount: 1 },
+          { ip: '203.0.113.99', banCount: -4 },
+        ],
+        bannedNowCount: 1,
+        bansLast24h: 0,
+        bansTotal: 1,
+      },
+    };
+    const snap = decodeSnapshot('node-a', raw, '2026-05-18T10:00:00Z', new Date('2026-05-18T10:01:00Z'));
+    expect(snap.fail2ban.currentlyBanned).toHaveLength(1);
+    expect(snap.fail2ban.currentlyBanned[0]).toEqual({
+      ip: '203.0.113.99', jail: 'sshd', bannedAt: null, expiresAt: null, banCount: 0,
+    });
+  });
 });

@@ -46,14 +46,18 @@ func (c *collector) collect() (Snapshot, error) {
 
 	parseErrStr := errorString(sshView.parseError)
 	snap.SSH = SSHExposure{
-		RestrictionMode:    classifySSHRestriction(fw),
-		SSHViaMeshFlag:     fw.sshViaMesh,
-		EnforcedInterface:  fw.sshViaMeshInterface,
-		SSHDFlags:          sshView.flags,
-		ParseSucceeded:     sshView.parsed,
-		ParseError:         parseErrStr,
+		RestrictionMode:   classifySSHRestriction(fw),
+		SSHViaMeshFlag:    fw.sshViaMesh,
+		EnforcedInterface: fw.sshViaMeshInterface,
+		SSHDFlags:         sshView.flags,
+		ParseSucceeded:    sshView.parsed,
+		ParseError:        parseErrStr,
 	}
 	snap.Hardening = hardening
+	snap.Fail2ban = collectFail2ban(c.hostRoot, time.Now())
+	if snap.Fail2ban.ReadError != nil {
+		snap.CollectErrors = append(snap.CollectErrors, "fail2ban: "+*snap.Fail2ban.ReadError)
+	}
 	snap.Conntrack = conntrack
 	snap.PublicPortsV4 = PublicPorts{
 		TCP: fw.publicTCP,

@@ -13,15 +13,35 @@ type Snapshot struct {
 	PublicPortsV4 PublicPorts        `json:"publicPortsV4"`
 	Conntrack     ConntrackSnapshot  `json:"conntrack"`
 	TopDenied     []DeniedSourceWire `json:"topDenied"`
+	Fail2ban      Fail2banStatus     `json:"fail2ban"`
 	CollectErrors []string           `json:"collectErrors,omitempty"`
 }
 
+// Fail2banStatus mirrors nodeFail2banSchema in
+// packages/api-contracts/src/security-hardening.ts.
+type Fail2banStatus struct {
+	DbPresent       bool               `json:"dbPresent"`
+	ReadError       *string            `json:"readError"`
+	CurrentlyBanned []Fail2banBannedIP `json:"currentlyBanned"`
+	BannedNowCount  int                `json:"bannedNowCount"`
+	BansLast24h     int                `json:"bansLast24h"`
+	BansTotal       int                `json:"bansTotal"`
+}
+
+type Fail2banBannedIP struct {
+	IP        string  `json:"ip"`
+	Jail      string  `json:"jail"`
+	BannedAt  *string `json:"bannedAt"`
+	ExpiresAt *string `json:"expiresAt"`
+	BanCount  int     `json:"banCount"`
+}
+
 type MeshStatus struct {
-	Provider              string  `json:"provider"`
-	InterfaceName         *string `json:"interfaceName"`
-	InterfaceIP           *string `json:"interfaceIp"`
-	PeerCount             *int    `json:"peerCount"`
-	LastHandshakeAgeSecs  *int64  `json:"lastHandshakeAgeSeconds"`
+	Provider             string  `json:"provider"`
+	InterfaceName        *string `json:"interfaceName"`
+	InterfaceIP          *string `json:"interfaceIp"`
+	PeerCount            *int    `json:"peerCount"`
+	LastHandshakeAgeSecs *int64  `json:"lastHandshakeAgeSeconds"`
 }
 
 type SSHFlags struct {
@@ -34,12 +54,12 @@ type SSHFlags struct {
 }
 
 type SSHExposure struct {
-	RestrictionMode    string   `json:"restrictionMode"`
-	SSHViaMeshFlag     bool     `json:"sshViaMeshFlag"`
-	EnforcedInterface  *string  `json:"enforcedInterface"`
-	SSHDFlags          SSHFlags `json:"sshdFlags"`
-	ParseSucceeded     bool     `json:"parseSucceeded"`
-	ParseError         *string  `json:"parseError"`
+	RestrictionMode   string   `json:"restrictionMode"`
+	SSHViaMeshFlag    bool     `json:"sshViaMeshFlag"`
+	EnforcedInterface *string  `json:"enforcedInterface"`
+	SSHDFlags         SSHFlags `json:"sshdFlags"`
+	ParseSucceeded    bool     `json:"parseSucceeded"`
+	ParseError        *string  `json:"parseError"`
 }
 
 type CISFinding struct {
@@ -52,16 +72,16 @@ type CISFinding struct {
 }
 
 type Hardening struct {
-	KernelVersion             string       `json:"kernelVersion"`
-	KernelEOL                 bool         `json:"kernelEol"`
-	TimeSinceRebootSecs       int64        `json:"timeSinceRebootSeconds"`
-	PendingKernelUpdate       bool         `json:"pendingKernelUpdate"`
-	Fail2banPresent           bool         `json:"fail2banPresent"`
-	SshguardPresent           bool         `json:"sshguardPresent"`
-	UnattendedUpgradesActive  bool         `json:"unattendedUpgradesActive"`
-	AutomaticRebootWindow     *string      `json:"automaticRebootWindow"`
-	OSPretty                  string       `json:"osPretty"`
-	CISFindings               []CISFinding `json:"cisFindings"`
+	KernelVersion            string       `json:"kernelVersion"`
+	KernelEOL                bool         `json:"kernelEol"`
+	TimeSinceRebootSecs      int64        `json:"timeSinceRebootSeconds"`
+	PendingKernelUpdate      bool         `json:"pendingKernelUpdate"`
+	Fail2banPresent          bool         `json:"fail2banPresent"`
+	SshguardPresent          bool         `json:"sshguardPresent"`
+	UnattendedUpgradesActive bool         `json:"unattendedUpgradesActive"`
+	AutomaticRebootWindow    *string      `json:"automaticRebootWindow"`
+	OSPretty                 string       `json:"osPretty"`
+	CISFindings              []CISFinding `json:"cisFindings"`
 }
 
 type PublicPorts struct {
