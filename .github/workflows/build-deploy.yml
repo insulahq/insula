@@ -8,13 +8,11 @@ on:
       - 'frontend/admin-panel/**'
       - 'frontend/tenant-panel/**'
       - 'packages/api-contracts/**'
-      - 'images/firewall-reconciler/**'
-      # mail-backup-tools changes need to advance the deploy-rev for
-      # the mail-stack-standby-replicate DaemonSet (which uses :latest
-      # + Always, but Pods only restart when the deploy-rev annotation
-      # bumps). Build-* jobs paths-filter to noop when only
-      # mail-backup-tools changed; only update-development-version runs.
-      - 'images/mail-backup-tools/**'
+      # NOTE: images/firewall-reconciler/** and images/mail-backup-tools/** used
+      # to be listed here only to bump those DaemonSets' deploy-rev annotation.
+      # They are now pinned to immutable tags by their own ci-*.yml (via
+      # pin-image-tag.sh), which both rolls them and advances development, so
+      # build-deploy no longer needs to fire on them.
       - '.github/workflows/build-deploy.yml'
       # Infra-only commits also need to reach the staging cluster via Flux (through the development branch). Without
       # these paths, k8s/** changes (LimitRanges, manifests) and scripts/**

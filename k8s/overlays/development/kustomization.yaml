@@ -150,3 +150,22 @@ images:
     newTag: "20260606003437-74760f5" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
     newTag: "20260606003439-74760f5" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+  # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
+  # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
+  # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
+  # rolls to a tag that already exists. Replaces the old `:latest` + Always +
+  # deploy-rev-bump path, which raced the image push (2026-06-06 pull-race).
+  # "latest" here is the pre-first-pin placeholder (matches the base tag); the
+  # next build of each image rewrites it.
+  - name: ghcr.io/insulahq/insula/security-probe
+    newTag: "latest"
+  - name: ghcr.io/insulahq/insula/firewall-reconciler
+    newTag: "latest"
+  - name: ghcr.io/insulahq/insula/host-config-reconciler
+    newTag: "latest"
+  - name: ghcr.io/insulahq/insula/backup-rclone
+    newTag: "latest"
+  - name: ghcr.io/insulahq/insula/sftp-gateway
+    newTag: "latest"
+  - name: ghcr.io/insulahq/insula/mail-backup-tools
+    newTag: "latest"
