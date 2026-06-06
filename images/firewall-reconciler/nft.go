@@ -103,8 +103,8 @@ type applier interface {
 	applyCrowdsecBlocklist(s crowdsecBlocklist) error
 	// Operator blacklist — permanent CIDR DROP sets. Same shape as
 	// trusted_ranges but the bootstrap rule drops instead of accepts.
+	// Always-applied (no observe method) like applyCrowdsecBlocklist.
 	applyBlacklist(s blacklistNftSets) error
-	observeBlacklistFingerprint() (string, error)
 }
 
 // realApplier holds an open lasting netlink connection. Reused across
@@ -119,9 +119,10 @@ func newRealApplier() *realApplier {
 
 // applyPeerSets writes the four peer/trusted sets via one batched
 // netlink transaction. Two-phase commit:
-//   Phase 1: ensure each set exists; commit if any was created so the
-//            kernel populates *Set IDs before Phase 2 references them.
-//   Phase 2: re-fetch canonical handles, flush + add per set, commit.
+//
+//	Phase 1: ensure each set exists; commit if any was created so the
+//	         kernel populates *Set IDs before Phase 2 references them.
+//	Phase 2: re-fetch canonical handles, flush + add per set, commit.
 //
 // Atomicity is per-set, not cross-set — the kernel applies each "flush
 // set X" + "add element X" as a unit, but the four sets are sequenced.
@@ -246,11 +247,12 @@ func (r *realApplier) applyTenantPorts(s tenantPortSets) error {
 // applyCrowdsecBlocklist writes the v4 + v6 crowdsec_blocklist sets
 // via one batched netlink transaction. Two-phase commit matching
 // applyPeerSets:
-//   Phase 1: ensure each set exists (idempotent); commit if any was
-//            created so subsequent element writes can resolve the
-//            Set ID.
-//   Phase 2: flush + add per-element pairs with per-element Timeout
-//            sourced from LAPI's `duration` field, commit.
+//
+//	Phase 1: ensure each set exists (idempotent); commit if any was
+//	         created so subsequent element writes can resolve the
+//	         Set ID.
+//	Phase 2: flush + add per-element pairs with per-element Timeout
+//	         sourced from LAPI's `duration` field, commit.
 //
 // bootstrap.sh declares the sets with `flags interval,timeout`. We
 // rebuild that shape here in case the operator wiped the set (or

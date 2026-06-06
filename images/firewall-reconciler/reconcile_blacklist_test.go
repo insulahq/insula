@@ -69,3 +69,41 @@ func TestBlacklistProtectionEmpty(t *testing.T) {
 		t.Fatal("empty protection must block nothing")
 	}
 }
+
+// Regression: deleting the last CFB (desired empty) must STILL apply
+// (flush) the nft set — the old observe-diff skipped this, leaving
+// unbanned IPs stuck in the kernel. applyBlacklistOnce always applies.
+func TestApplyBlacklistOnce_alwaysApplies(t *testing.T) {
+	fa := &fakeApplier{}
+	r := &reconciler{applier: fa}
+
+	// First apply: one ban.
+	if _, err := r.applyBlacklistOnce(blacklistNftSets{V4: []string{"45.148.10.240/32"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Second apply: SAME desired → still applies (idempotent flush+add),
+	// but reports changed=false (no log spam).
+	changed, err := r.applyBlacklistOnce(blacklistNftSets{V4: []string{"45.148.10.240/32"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("re-applying identical desired must report changed=false")
+	}
+	// Third apply: EMPTY desired (last CFB deleted) → MUST apply the
+	// flush so the kernel set clears, and report changed=true.
+	changed, err = r.applyBlacklistOnce(blacklistNftSets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("clearing to empty must report changed=true")
+	}
+	if len(fa.blacklistCalls) != 3 {
+		t.Fatalf("expected 3 applies (always-apply), got %d", len(fa.blacklistCalls))
+	}
+	last := fa.blacklistCalls[2]
+	if len(last.V4) != 0 || len(last.V6) != 0 {
+		t.Fatalf("final apply must be empty (flush), got v4=%v v6=%v", last.V4, last.V6)
+	}
+}

@@ -25,16 +25,26 @@ func blacklistFingerprint(s blacklistNftSets) string {
 	return strings.Join(s.V4, ",") + "|" + strings.Join(s.V6, ",")
 }
 
-func (r *reconciler) applyBlacklistIfChanged(s blacklistNftSets) (changed bool, err error) {
+// applyBlacklistOnce ALWAYS writes the desired set to the kernel — same
+// pattern as applyCrowdsecBlocklist (no observe-diff). The apply is an
+// idempotent flush+add, so re-applying a tiny operator-curated set every
+// tick is negligible AND drift-proof: if the set is wiped out-of-band
+// (operator flush, manual nft), the bans reassert on the next tick.
+//
+// Crucially this fixes the EMPTY case: when the last CFB is deleted the
+// desired set is empty and the flush clears the kernel set. The previous
+// observe-diff skipped that flush whenever the kernel read under-reported
+// (interval-encoded /32 singletons read back empty), leaving UNBANNED
+// IPs stuck in nft. `changed` is computed against the last-applied
+// desired (in-memory) only so we LOG on a real change, not every tick.
+func (r *reconciler) applyBlacklistOnce(s blacklistNftSets) (changed bool, err error) {
 	want := blacklistFingerprint(s)
-	have, obsErr := r.applier.observeBlacklistFingerprint()
-	if obsErr == nil && have == want {
-		return false, nil
-	}
+	changed = want != r.lastBlacklistFP
 	if err := r.applier.applyBlacklist(s); err != nil {
 		return false, err
 	}
-	return true, nil
+	r.lastBlacklistFP = want
+	return changed, nil
 }
 
 // blacklistProtection is the exclusion set the blacklist must not catch.
@@ -148,7 +158,7 @@ func (r *reconciler) reconcileBlacklist(
 	}
 
 	desired := blacklistNftSets{V4: uniqueSorted(v4), V6: uniqueSorted(v6)}
-	changed, err := r.applyBlacklistIfChanged(desired)
+	changed, err := r.applyBlacklistOnce(desired)
 	if err != nil {
 		return desired, fmt.Errorf("apply blacklist nft: %w", err)
 	}

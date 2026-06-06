@@ -107,10 +107,9 @@ type fakeApplier struct {
 	// returns the fingerprint of the last applied state (or empty
 	// string if nothing applied yet). Tests use these to simulate
 	// out-of-band kernel-state divergence.
-	observePeerFP      *string
-	observeTenantFP    *string
-	observeBlacklistFP *string
-	observeErr         error
+	observePeerFP   *string
+	observeTenantFP *string
+	observeErr      error
 
 	blacklistCalls []blacklistNftSets
 }
@@ -139,19 +138,6 @@ func (f *fakeApplier) applyCrowdsecBlocklist(_ crowdsecBlocklist) error {
 func (f *fakeApplier) applyBlacklist(s blacklistNftSets) error {
 	f.blacklistCalls = append(f.blacklistCalls, s)
 	return nil
-}
-
-func (f *fakeApplier) observeBlacklistFingerprint() (string, error) {
-	if f.observeErr != nil {
-		return "", f.observeErr
-	}
-	if f.observeBlacklistFP != nil {
-		return *f.observeBlacklistFP, nil
-	}
-	if len(f.blacklistCalls) == 0 {
-		return "", nil
-	}
-	return blacklistFingerprint(f.blacklistCalls[len(f.blacklistCalls)-1]), nil
 }
 
 func (f *fakeApplier) observePeerFingerprint() (string, error) {
