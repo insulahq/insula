@@ -85,9 +85,11 @@ drop/accept rules) and compares it to the committed baseline
 1. add a host-migration here that idempotently backfills the change onto
    existing nodes, **and** refresh the baseline
    (`./scripts/ci-migration-coverage.sh --update-baseline`, commit the hash); or
-2. carry a `[no-host-migration]` token (with a reason) in a commit message —
-   only when existing nodes genuinely don't need the change — **and** refresh
-   the baseline.
+2. carry a `[no-host-migration]` waiver — the token at the **start of a
+   commit-message line** (optionally indented), followed by a reason — only when
+   existing nodes genuinely don't need the change — **and** refresh the baseline.
+   (A mid-sentence prose mention of the token, like this sentence, does not
+   count: the guard line-anchors the match.)
 
 Otherwise the build fails. This is why the firewall-blacklist gap (2026-06-06 —
 an nft rule that only fresh installs got) cannot recur silently.

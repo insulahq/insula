@@ -61,6 +61,26 @@ run "$D/changed.sh" "$D/baseline" 1 0 1; expect "changed + migration + baseline 
 run "$D/changed.sh" "$D/baseline" 0 1 1; expect "changed + waiver + baseline refreshed → OK" 0 $?
 run "$D/changed.sh" "$D/baseline" 0 1 0; expect "changed + waiver but baseline NOT refreshed → FAIL" 1 $?
 
+echo "== waiver must START a commit-message line — prose mention does NOT waive (git-derived) =="
+# Exercises the real git-log waiver grep (not the WAIVER env override): a
+# mid-sentence prose/markdown mention of the token must not count, only a line
+# that begins with it. Regression for the v2026.6.4 false "1 waiver" match.
+G=$(mktemp -d)
+git -C "$G" init -q
+git -C "$G" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "base"
+WBASE=$(git -C "$G" rev-parse HEAD)
+git -C "$G" -c user.email=t@t -c user.name=t commit -q --allow-empty \
+  -m "fix: document the [no-host-migration] token inline (prose, mid-line)"
+BASE_REF="$WBASE" REPO_ROOT="$G" FWSHAPE_BOOTSTRAP="$D/changed.sh" FWSHAPE_BASELINE="$D/baseline" \
+  MIGRATION_ADDED=0 BASELINE_UPDATED=1 bash "$GUARD" >/dev/null 2>&1
+expect "prose mention of token does NOT waive → FAIL" 1 $?
+git -C "$G" -c user.email=t@t -c user.name=t commit -q --allow-empty \
+  -m "$(printf 'fix: open port 9999\n\n[no-host-migration] only fresh installs need this rule')"
+BASE_REF="$WBASE" REPO_ROOT="$G" FWSHAPE_BOOTSTRAP="$D/changed.sh" FWSHAPE_BASELINE="$D/baseline" \
+  MIGRATION_ADDED=0 BASELINE_UPDATED=1 bash "$GUARD" >/dev/null 2>&1
+expect "line-anchored waiver → OK" 0 $?
+rm -rf "$G"
+
 echo "== removing a drop RULE is detected (HIGH: pattern must match @set_v4) =="
 fake_bootstrap "" | sed '/ip  saddr @blacklist_v4 drop/d' > "$D/nodrop.sh"
 run "$D/nodrop.sh" "$D/baseline" 0 0 0; expect "drop rule removed + no coverage → FAIL" 1 $?

@@ -12,7 +12,9 @@
 # HOW: fingerprint the firewall shape from bootstrap.sh and compare to the
 # committed baseline scripts/.firewall-shape.sha256. On a mismatch the PR MUST
 # either (a) add a host-migration AND refresh the baseline, or (b) carry a
-# `[no-host-migration]` waiver with a reason. Else the build fails.
+# `[no-host-migration]` waiver with a reason — the token at the START of a
+# commit-message line (a mid-sentence prose mention does not count). Else the
+# build fails.
 #
 # Modes:
 #   ci-migration-coverage.sh                  → check (CI)
@@ -78,7 +80,10 @@ done
 # Shape changed → require coverage. Signals are git-derived in CI, overridable
 # in tests.
 migration_added="${MIGRATION_ADDED:-$(git -C "$REPO_ROOT" diff --diff-filter=A --name-only "$BASE_REF"...HEAD -- 'platform/host-migrations/' 2>/dev/null | grep -E '/[0-9]+-[a-z0-9-]+\.sh$' | grep -vc '\.test\.sh$')}"
-waiver="${WAIVER:-$(git -C "$REPO_ROOT" log "$BASE_REF"..HEAD --format=%B 2>/dev/null | grep -c '\[no-host-migration\]')}"
+# Line-anchored: the waiver token must START a commit-message line (optionally
+# indented), so a prose/markdown mention mid-sentence (e.g. "... a
+# `[no-host-migration]` waiver") does NOT count as a waiver.
+waiver="${WAIVER:-$(git -C "$REPO_ROOT" log "$BASE_REF"..HEAD --format=%B 2>/dev/null | grep -cE '^[[:space:]]*\[no-host-migration\]')}"
 baseline_updated="${BASELINE_UPDATED:-$(git -C "$REPO_ROOT" diff --name-only "$BASE_REF"...HEAD -- "$BASELINE" 2>/dev/null | grep -c .)}"
 # Coerce to integers (now guaranteed numeric-or-empty; empty → 0).
 migration_added=$(( migration_added + 0 )) 2>/dev/null || migration_added=0
@@ -106,8 +111,8 @@ echo "  Do ONE of:" >&2
 echo "   1. Add platform/host-migrations/<next-version>/NNNN-name.sh that idempotently backfills the change," >&2
 echo "      then refresh the baseline:  ./scripts/ci-migration-coverage.sh --update-baseline" >&2
 echo "      and commit scripts/.firewall-shape.sha256." >&2
-echo "   2. If existing nodes genuinely don't need it, add '[no-host-migration]' (with a reason) to a commit" >&2
-echo "      message AND refresh the baseline as above." >&2
+echo "   2. If existing nodes genuinely don't need it, start a commit-message line with" >&2
+echo "      '[no-host-migration]' (followed by a reason) AND refresh the baseline as above." >&2
 (( migration_added == 0 )) && echo "  (detected: no new host-migration in the diff)" >&2
 (( baseline_updated == 0 )) && echo "  (detected: scripts/.firewall-shape.sha256 not refreshed in the diff)" >&2
 exit 1
