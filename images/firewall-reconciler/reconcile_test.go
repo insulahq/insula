@@ -111,7 +111,9 @@ type fakeApplier struct {
 	observeTenantFP *string
 	observeErr      error
 
-	blacklistCalls []blacklistNftSets
+	blacklistCalls       []blacklistNftSets
+	ensureDropRulesCalls int
+	ensureDropRulesErr   error
 }
 
 func (f *fakeApplier) applyPeerSets(s peerNftSets) error {
@@ -138,6 +140,11 @@ func (f *fakeApplier) applyCrowdsecBlocklist(_ crowdsecBlocklist) error {
 func (f *fakeApplier) applyBlacklist(s blacklistNftSets) error {
 	f.blacklistCalls = append(f.blacklistCalls, s)
 	return nil
+}
+
+func (f *fakeApplier) ensureBlacklistDropRules() error {
+	f.ensureDropRulesCalls++
+	return f.ensureDropRulesErr
 }
 
 func (f *fakeApplier) observePeerFingerprint() (string, error) {

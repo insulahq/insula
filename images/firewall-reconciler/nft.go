@@ -105,6 +105,11 @@ type applier interface {
 	// trusted_ranges but the bootstrap rule drops instead of accepts.
 	// Always-applied (no observe method) like applyCrowdsecBlocklist.
 	applyBlacklist(s blacklistNftSets) error
+	// ensureBlacklistDropRules self-heals the `@blacklist_v{4,6} drop`
+	// input-chain rules on clusters bootstrapped before the blacklist
+	// feature (Tier 2 — eliminates the one-shot host-migration). Idempotent
+	// no-op once present. MUST run after applyBlacklist (the sets must exist).
+	ensureBlacklistDropRules() error
 }
 
 // realApplier holds an open lasting netlink connection. Reused across
