@@ -304,7 +304,7 @@ rules:
   # only get/list/create/patch/delete (no /status — the reconciler
   # owns status and has its own service account).
   - apiGroups: ["networking.insula.host"]
-    resources: ["clustertrustedranges", "clusterpendingpeers"]
+    resources: ["clustertrustedranges", "clusterpendingpeers", "clusterfirewallblacklists"]
     verbs: ["get", "list", "create", "patch", "delete"]
 ---
 # ServiceAccount for the management API

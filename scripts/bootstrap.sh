@@ -1635,6 +1635,17 @@ configure_firewall() {
     type ipv6_addr
     flags interval,timeout
   }
+  # Operator blacklist (ClusterFirewallBlacklist CRs → firewall-reconciler).
+  # Permanent — no timeout. Self-protect belt (reconciler + platform-api)
+  # refuses entries overlapping node IPs / peers / trusted ranges.
+  set blacklist_v4 {
+    type ipv4_addr
+    flags interval
+  }
+  set blacklist_v6 {
+    type ipv6_addr
+    flags interval
+  }
 "
 
   cat > /etc/nftables.conf <<NFT
@@ -1649,6 +1660,13 @@ ${set_decls}
 
     iif "lo" accept
     ct state established,related accept
+
+    # Operator blacklist drop (permanent bans). Same placement rationale
+    # as the CrowdSec drop below: AFTER ct established (an operator who
+    # bans their own IP keeps the in-flight session) and BEFORE every
+    # accept (a banned IP reaches nothing). Empty set is a no-op.
+    ip  saddr @blacklist_v4 drop
+    ip6 saddr @blacklist_v6 drop
 
     # F1 — L4 CrowdSec blocklist drop. Placed AFTER ct established so an
     # in-flight SSH session for an operator who just got their own IP

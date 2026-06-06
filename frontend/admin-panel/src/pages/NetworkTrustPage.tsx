@@ -31,17 +31,20 @@ import {
   useTrustedRanges,
   useCreateTrustedRange,
   useDeleteTrustedRange,
+  useFirewallBlacklist,
+  useCreateFirewallBlacklist,
+  useDeleteFirewallBlacklist,
   usePendingPeers,
   useCreatePendingPeer,
   useDeletePendingPeer,
   fetchBootstrapCommand,
 } from '@/hooks/use-cluster-network';
-import type { TrustedRange, PendingPeer, BootstrapCommandResponse } from '@insula/api-contracts';
+import type { TrustedRange, PendingPeer, BootstrapCommandResponse, FirewallBlacklistEntry } from '@insula/api-contracts';
 import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 
-type TabId = 'trusted-ranges' | 'pending-peers' | 'trusted-proxies';
+type TabId = 'trusted-ranges' | 'pending-peers' | 'trusted-proxies' | 'blacklist';
 
-const VALID_TABS: ReadonlySet<TabId> = new Set(['trusted-ranges', 'pending-peers', 'trusted-proxies']);
+const VALID_TABS: ReadonlySet<TabId> = new Set(['trusted-ranges', 'pending-peers', 'trusted-proxies', 'blacklist']);
 
 export default function NetworkTrustPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -78,6 +81,7 @@ export default function NetworkTrustPage() {
               { id: 'trusted-ranges' as const, label: 'Trusted Ranges' },
               { id: 'pending-peers' as const, label: 'Pending Peers' },
               { id: 'trusted-proxies' as const, label: 'Trusted Proxies' },
+              { id: 'blacklist' as const, label: 'Blacklist' },
             ]
           ).map((t) => {
             const isActive = activeTab === t.id;
@@ -103,6 +107,7 @@ export default function NetworkTrustPage() {
       {activeTab === 'trusted-ranges' && <TrustedRangesTab />}
       {activeTab === 'pending-peers' && <PendingPeersTab />}
       {activeTab === 'trusted-proxies' && <TrustedProxiesCard />}
+      {activeTab === 'blacklist' && <BlacklistTab />}
     </div>
   );
 }
@@ -780,5 +785,179 @@ function CodeBlock({ text }: { text: string }) {
         {copied ? 'Copied' : 'Copy'}
       </button>
     </div>
+  );
+}
+
+// ─── Firewall blacklist tab ──────────────────────────────────────────────
+
+function BlacklistTab() {
+  const list = useFirewallBlacklist();
+  const create = useCreateFirewallBlacklist();
+  const del = useDeleteFirewallBlacklist();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [showAdd, setShowAdd] = useState(false);
+  const [cidr, setCidr] = useState('');
+  const [confirmCidr, setConfirmCidr] = useState('');
+  const [description, setDescription] = useState('');
+
+  const entries = list.data?.data?.data ?? [];
+
+  // Deep-link from the SSH Lockdown fail2ban modal: ?tab=blacklist&prefill=<ip>
+  // opens the Add form with the IP pre-filled (operator still type-to-confirms).
+  const prefill = searchParams.get('prefill');
+  useEffect(() => {
+    if (prefill) {
+      setCidr(prefill);
+      setShowAdd(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete('prefill');
+      setSearchParams(next, { replace: true });
+    }
+  }, [prefill]);
+
+  const handleAdd = async (): Promise<void> => {
+    try {
+      await create.mutateAsync({ cidr, confirmCidr, description, source: 'manual' });
+      setShowAdd(false);
+      setCidr('');
+      setConfirmCidr('');
+      setDescription('');
+    } catch {
+      // mutation error stays on the form (incl. self-lockout 422)
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">
+        Permanent host-firewall bans — the IP/CIDR is dropped on <strong>all ports</strong>, on every node,
+        before any accept rule. Bans that would catch a node IP, a cluster peer, a trusted range, or your
+        current IP are refused (you can't lock the cluster out). For automatic, expiring bans use Web Defense → CrowdSec.
+      </div>
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          {list.isLoading ? 'Loading…' : `${entries.length} blacklisted ${entries.length === 1 ? 'entry' : 'entries'}`}
+        </p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => list.refetch()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            <RefreshCw size={14} className={list.isFetching ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 px-3 py-1.5 text-sm font-medium text-white"
+            data-testid="add-blacklist"
+          >
+            <Plus size={14} />
+            Ban IP / CIDR
+          </button>
+        </div>
+      </div>
+
+      {list.error && (
+        <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300">
+          <div className="flex items-center gap-2"><AlertCircle size={16} /><span>{list.error.message}</span></div>
+        </div>
+      )}
+
+      <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+          <thead className="bg-gray-50 dark:bg-gray-900/40">
+            <tr><Th>CIDR</Th><Th>Family</Th><Th>Reason</Th><Th>Status</Th><Th>Source</Th><Th>Added By</Th><Th /></tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 dark:divide-gray-700 text-sm">
+            {entries.length === 0 && !list.isLoading ? (
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                No blacklisted IPs. Click <strong>Ban IP / CIDR</strong>, or promote a fail2ban offender from
+                Security → Posture → SSH Lockdown.
+              </td></tr>
+            ) : (
+              entries.map((e) => <BlacklistRow key={e.name} entry={e} onDelete={(name) => del.mutate(name)} />)
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {showAdd && (
+        <Modal title="Ban IP / CIDR at the host firewall" onClose={() => setShowAdd(false)}>
+          <div className="space-y-3">
+            <Field label="IP or CIDR" hint="bare IPv4/v6 implies /32 or /128. v4 prefix 8..32, v6 16..128.">
+              <input
+                value={cidr}
+                onChange={(e) => setCidr(e.target.value)}
+                placeholder="e.g. 45.148.10.240 or 45.148.0.0/16"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono"
+                data-testid="blacklist-cidr"
+              />
+            </Field>
+            <Field label="Re-type to confirm" hint="Must match exactly — guards against fat-fingered bans.">
+              <input
+                value={confirmCidr}
+                onChange={(e) => setConfirmCidr(e.target.value)}
+                placeholder="re-type the IP/CIDR"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono"
+                data-testid="blacklist-confirm"
+              />
+            </Field>
+            <Field label="Reason (optional)" hint="Why this is banned">
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. SSH brute-force from VPS farm"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm"
+              />
+            </Field>
+            {create.error && (
+              <div className="rounded border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/20 p-2 text-sm text-red-700 dark:text-red-300" data-testid="blacklist-error">
+                {create.error.message}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setShowAdd(false)} className="rounded-lg px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+              <button
+                type="button"
+                onClick={handleAdd}
+                disabled={create.isPending || !cidr || confirmCidr !== cidr}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 px-3 py-1.5 text-sm font-medium text-white"
+                data-testid="blacklist-submit"
+              >
+                {create.isPending && <Loader2 size={14} className="animate-spin" />}
+                Ban permanently
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function BlacklistRow({ entry, onDelete }: { entry: FirewallBlacklistEntry; onDelete: (name: string) => void }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  return (
+    <tr className="hover:bg-gray-50 dark:hover:bg-gray-700/40">
+      <Td><span className="font-mono text-xs">{entry.cidr}</span></Td>
+      <Td><FamilyBadge family={entry.family} /></Td>
+      <Td><span className="text-gray-600 dark:text-gray-400">{entry.description || '—'}</span></Td>
+      <Td><ReadyBadge ready={entry.ready} reason={entry.readyReason} message={entry.readyMessage} /></Td>
+      <Td><span className="text-xs text-gray-500 dark:text-gray-400">{entry.source === 'fail2ban-promote' ? 'fail2ban' : 'manual'}</span></Td>
+      <Td><span className="text-gray-500 dark:text-gray-400 text-xs">{entry.addedBy || '—'}</span></Td>
+      <Td>
+        {confirmDelete ? (
+          <div className="flex items-center gap-1">
+            <button type="button" onClick={() => { onDelete(entry.name); setConfirmDelete(false); }} className="rounded px-2 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/30">Confirm</button>
+            <button type="button" onClick={() => setConfirmDelete(false)} className="rounded px-2 py-1 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setConfirmDelete(true)} className="rounded px-2 py-1 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400" data-testid={`unban-${entry.name}`}>Remove</button>
+        )}
+      </Td>
+    </tr>
   );
 }

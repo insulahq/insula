@@ -16,6 +16,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
+  FirewallBlacklistEntry,
+  CreateFirewallBlacklistRequest,
   TrustedRange,
   PendingPeer,
   CreateTrustedRangeRequest,
@@ -29,6 +31,7 @@ interface Envelope<T> {
 }
 
 const TRUSTED_RANGES_KEY = ['cluster-network', 'trusted-ranges'] as const;
+const FIREWALL_BLACKLIST_KEY = ['cluster-network', 'firewall-blacklist'] as const;
 const PENDING_PEERS_KEY = ['cluster-network', 'pending-peers'] as const;
 
 // ─── Trusted ranges ────────────────────────────────────────────────────────
@@ -160,6 +163,44 @@ export function useToggleNodeExposure() {
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['cluster-nodes'] });
+    },
+  });
+}
+
+// ─── Firewall blacklist (permanent host-firewall IP/CIDR bans) ──────────────
+
+export function useFirewallBlacklist() {
+  return useQuery<Envelope<{ data: FirewallBlacklistEntry[] }>>({
+    queryKey: FIREWALL_BLACKLIST_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/cluster/firewall-blacklist'),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateFirewallBlacklist() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<FirewallBlacklistEntry>, Error, CreateFirewallBlacklistRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/cluster/firewall-blacklist', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: FIREWALL_BLACKLIST_KEY });
+    },
+  });
+}
+
+export function useDeleteFirewallBlacklist() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<{ deleted: string }>, Error, string>({
+    mutationFn: (name) =>
+      apiFetch(`/api/v1/admin/cluster/firewall-blacklist/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: FIREWALL_BLACKLIST_KEY });
     },
   });
 }
