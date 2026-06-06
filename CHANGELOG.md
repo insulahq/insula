@@ -34,6 +34,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   migration, and the rule re-asserts after a reboot or out-of-band flush. The
   v2026.6.3 one-shot backfill migration is now redundant (kept; idempotent).
 
+### Fixed
+- **Internal images pinned to immutable tags (kill the `:latest` pull-race).**
+  security-probe, firewall-reconciler, host-config-reconciler, backup-rclone,
+  sftp-gateway and mail-backup-tools are now pinned to immutable
+  `<timestamp>-<sha>` tags in the development overlay (rewritten by each image's
+  own build workflow *after* the push, via `pin-image-tag.sh`), instead of
+  `:latest` + a deploy-rev bump that raced the image push and could leave pods
+  on a stale digest. Flux now only ever rolls to a tag that already exists.
+- **Pin commits propagate to the development branch.** Added the six image-build
+  workflows to `sync-development`'s `workflow_run` triggers — a pin commit is
+  pushed with the workflow `GITHUB_TOKEN`, which does not fire the `push`
+  trigger, so without this the pins stranded on `main`.
+- **backup-rclone-shim is updatable when idle.** Its readiness is decoupled from
+  `:9000` (launcher writes a liveness marker in both the idle and serving
+  branches; probe is now `exec [ -f /var/run/backup-rclone/ready ]`). A
+  target-less shim correctly idles without binding `:9000`, so the old
+  `tcpSocket:9000` probe kept it NotReady and stalled a DaemonSet RollingUpdate
+  (e.g. an image-pin bump) forever. It now reports Ready (alive) so rollouts
+  complete, without serving a fake endpoint (no silent backup loss).
+
 ## [2026.6.3] - 2026-06-06
 
 ### Added
