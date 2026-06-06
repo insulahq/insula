@@ -13,6 +13,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Operator firewall blacklist — permanent IP/CIDR bans.** A super_admin
+  Network Trust → Blacklist tab (and a "Ban permanently" deep-link from the SSH
+  Lockdown fail2ban modal) drops an IP or CIDR on ALL ports, on every node, via
+  a new `ClusterFirewallBlacklist` CRD converged by the firewall-reconciler into
+  nft `blacklist_v{4,6}` sets — permanent, complementing CrowdSec L4's automatic
+  TTL'd bans. Two-layer self-lockout defense (backend + reconciler) refuses any
+  ban that would catch a node IP / cluster peer / trusted range / the operator's
+  own IP; type-to-confirm; audit-logged. The drop is placed after
+  `ct state established,related accept` (an operator who bans their own IP keeps
+  the live session) and before any port accept.
+- **fail2ban SSH-ban visibility in the SSH Lockdown table.** The read-only
+  security-probe now surfaces each node's persisted fail2ban bans (banned-now /
+  24h / all-time counts + a per-IP modal: jail, banned-at, expiry, count) read
+  from `/var/lib/fail2ban/fail2ban.sqlite3` (read-only, no control socket).
+- **Host-migration: firewall-blacklist nft backfill (ADR-045 W10c).** A one-shot
+  idempotent per-node migration backfills the blacklist nft sets + drop rules
+  onto clusters bootstrapped before the feature (fresh installs get them from
+  bootstrap). Applied surgically (never `nft -f`, which would flush the whole
+  ruleset and break CNI), persisted for reboot, self-healing on partial failure.
+- **CI migration-coverage forcing function (Tier 1).** `ci-migration-coverage.sh`
+  fails any PR that changes bootstrap.sh's firewall shape without shipping a
+  host-migration backfill (or an explicit `[no-host-migration]` waiver) — so the
+  "fresh-render reaches new installs but not existing nodes" gap can't recur
+  silently.
 - **WAL-archive health monitor + alerting + auto-disable circuit-breaker**
   (`backend/src/modules/wal-archive-health/`; follow-up to the plugin-presence
   fix). Covers the case the presence fix doesn't: a SYSTEM backup target IS

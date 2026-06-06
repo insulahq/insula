@@ -61,3 +61,22 @@ else
   rm -f "$dir/.platform-cap.new"
 fi
 ```
+
+## Forcing function — when a migration is REQUIRED
+
+`scripts/ci-migration-coverage.sh` (CI) fingerprints the host-firewall shape
+rendered by `scripts/bootstrap.sh` (nft set declarations + input-chain
+drop/accept rules) and compares it to the committed baseline
+`scripts/.firewall-shape.sha256`. **A PR that changes that shape MUST** either:
+
+1. add a host-migration here that idempotently backfills the change onto
+   existing nodes, **and** refresh the baseline
+   (`./scripts/ci-migration-coverage.sh --update-baseline`, commit the hash); or
+2. carry a `[no-host-migration]` token (with a reason) in a commit message —
+   only when existing nodes genuinely don't need the change — **and** refresh
+   the baseline.
+
+Otherwise the build fails. This is why the firewall-blacklist gap (2026-06-06 —
+an nft rule that only fresh installs got) cannot recur silently. It will become
+unnecessary once firewall rules are continuously converged (Tier 2); until
+then it is the guardrail.
