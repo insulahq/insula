@@ -80,6 +80,12 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # SLSA provenance + SBOM attestations — gated to non-PR: on a PR the
+          # build uses no registry exporter (push: false), and buildkit
+          # attestations require an OCI/registry exporter, so enabling them on a
+          # PR build fails. On main (push: true) they attach to the pushed image.
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
 
       # Cosign keyless-sign the pushed image by digest (main only). Mirrors
       # ci-backup-rclone.yml — a transparency-log attestation for the internal
