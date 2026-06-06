@@ -22,6 +22,11 @@ jobs:
   build:
     name: Build + Scan + Push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write   # Trivy SARIF upload
+      id-token: write          # cosign keyless image signing (sign step gated to main, non-PR)
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
@@ -54,6 +59,20 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Cosign keyless-sign the pushed image by digest (main only). Mirrors
+      # ci-backup-rclone.yml. Gated to non-PR (fork PRs get a read-only token).
+      - uses: sigstore/cosign-installer@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - name: Sign image (keyless, OCI 1.1 referrers)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            --registry-referrers-mode=oci-1-1 \
+            "${{ env.IMAGE }}@${DIGEST}"
 
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.35.0
