@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.4] - 2026-06-06
+
 ### Added
 - **`make new-host-migration` scaffolder (Tier 3).** Generates a
   contract-complete W10c host-migration stub at
