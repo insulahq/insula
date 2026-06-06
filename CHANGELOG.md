@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.3] - 2026-06-06
+
 ### Added
 - **Operator firewall blacklist — permanent IP/CIDR bans.** A super_admin
   Network Trust → Blacklist tab (and a "Ban permanently" deep-link from the SSH
