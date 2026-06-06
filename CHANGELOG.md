@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **`make new-host-migration` scaffolder (Tier 3).** Generates a
+  contract-complete W10c host-migration stub at
+  `platform/host-migrations/<next-version>/<NNNN>-<name>.sh` (next version from
+  `cut-release.sh --print-version`, next number auto-picked) — shebang,
+  `set -euo pipefail`, both `# idempotent:` / `# allow-paths:` headers, and a
+  body that fails loudly until implemented. Refuses to overwrite (order-stable).
+- **Release-time host-migration audit in `cut-release.sh` (Tier 3).** The
+  release plan now lists the host-migrations + `[no-host-migration]` waivers the
+  release contains and re-checks the firewall shape across the whole delta since
+  the previous tag; an uncovered shape change (changed, no migration, no waiver)
+  **blocks the cut** (override `--allow-uncovered-host-changes`) — defence in
+  depth behind the per-PR `ci-migration-coverage` guard.
+
+### Changed
+- **Firewall blacklist drop rule is now continuously converged (Tier 2).** The
+  `firewall-reconciler` ensures the `@blacklist_v{4,6} drop` input-chain rules
+  exist on every tick (netlink, distroless — no `nft` binary), so clusters
+  bootstrapped before the blacklist feature self-heal with no one-shot
+  migration, and the rule re-asserts after a reboot or out-of-band flush. The
+  v2026.6.3 one-shot backfill migration is now redundant (kept; idempotent).
+
 ## [2026.6.3] - 2026-06-06
 
 ### Added

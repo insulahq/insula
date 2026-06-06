@@ -10,7 +10,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
 
-.PHONY: help smoke smoke-public failover verdict diagnose secrets-fetch secrets-restore backup-target-key-status backup-target-key-rotate
+.PHONY: help smoke smoke-public failover verdict diagnose secrets-fetch secrets-restore backup-target-key-status backup-target-key-rotate new-host-migration
 
 # Default — list targets with one-line descriptions.
 help:
@@ -28,6 +28,10 @@ failover:     ## Induced-failure drills (DESTRUCTIVE — drains nodes)
 verdict:      ## Quick PASS/FAIL count summary (JSON-driven)
 	@scripts/smoke-test-cluster-network.sh --json 2>/dev/null \
 		| awk -F'"' '/"status":"PASS"/ {p++} /"status":"FAIL"/ {f++} END {printf "PASS=%d FAIL=%d\n", p+0, f+0}'
+
+new-host-migration: ## Scaffold a W10c host-migration (NAME=kebab-name [VERSION=YYYY.M.P])
+	@if [ -z "$(NAME)" ]; then echo "usage: make new-host-migration NAME=relabel-longhorn-mount [VERSION=2026.7.1]" >&2; exit 2; fi
+	@scripts/new-host-migration.sh "$(NAME)" $(if $(VERSION),--version "$(VERSION)",)
 
 secrets-fetch: ## Pull bootstrap secrets bundle + operator key off a server (HOST=root@<ip> required)
 	@if [ -z "$(HOST)" ]; then echo "usage: make secrets-fetch HOST=root@<server> [SSH_KEY=~/hosting-platform.key]" >&2; exit 2; fi
