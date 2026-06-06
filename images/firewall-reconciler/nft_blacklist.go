@@ -71,28 +71,3 @@ func (r *realApplier) applyBlacklist(s blacklistNftSets) error {
 	}
 	return nil
 }
-
-// observeBlacklistFingerprint reads the live blacklist set members and
-// returns a canonical fingerprint matching blacklistFingerprint, so the
-// reconcile diff can skip a no-op apply. On any read error returns
-// ("", err) → the caller force-applies.
-func (r *realApplier) observeBlacklistFingerprint() (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	conn, table, err := r.openAndPreflight()
-	if err != nil {
-		return "", err
-	}
-	defer conn.CloseLasting() //nolint:errcheck // close error not actionable
-
-	v4, err := r.readCidrSet(conn, table, setBlacklistV4, false)
-	if err != nil {
-		return "", err
-	}
-	v6, err := r.readCidrSet(conn, table, setBlacklistV6, true)
-	if err != nil {
-		return "", err
-	}
-	return blacklistFingerprint(blacklistNftSets{V4: v4, V6: v6}), nil
-}

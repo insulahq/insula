@@ -4,16 +4,16 @@
 // into a single binary running two independent reconcile goroutines
 // against the same libnftnl applier:
 //
-//   peer loop (cluster scope) — three kube-API sources, four nft sets:
-//     Node.status.addresses[InternalIP] → cluster_peers_v{4,6}    (peer)
-//     ClusterPendingPeer.spec.ip        → cluster_peers_v{4,6}    (peer)
-//                                          union with Node IPs;
-//                                          TTL-enforced; claimed on match
-//     ClusterTrustedRange.spec.cidr     → trusted_ranges_v{4,6}   (trust)
+//	peer loop (cluster scope) — three kube-API sources, four nft sets:
+//	  Node.status.addresses[InternalIP] → cluster_peers_v{4,6}    (peer)
+//	  ClusterPendingPeer.spec.ip        → cluster_peers_v{4,6}    (peer)
+//	                                       union with Node IPs;
+//	                                       TTL-enforced; claimed on match
+//	  ClusterTrustedRange.spec.cidr     → trusted_ranges_v{4,6}   (trust)
 //
-//   tenant-ports loop (node scope) — Pods scheduled to NODE_NAME:
-//     spec.containers[*].ports[*].hostPort + protocol  → tenant_ports_{tcp,udp}
-//     metadata.annotations["platform.io/firewall-{tcp,udp}-ports"]
+//	tenant-ports loop (node scope) — Pods scheduled to NODE_NAME:
+//	  spec.containers[*].ports[*].hostPort + protocol  → tenant_ports_{tcp,udp}
+//	  metadata.annotations["platform.io/firewall-{tcp,udp}-ports"]
 //
 // cluster_peers gates control-plane ports (6443/8443/10250/5473/2379-2380).
 // trusted_ranges gates full TCP/UDP for operator-blessed sources.
@@ -345,6 +345,10 @@ type reconciler struct {
 	ctrClient dynamic.NamespaceableResourceInterface
 	cppClient dynamic.NamespaceableResourceInterface
 	cfbClient dynamic.NamespaceableResourceInterface
+
+	// lastBlacklistFP — last desired blacklist set we applied, for
+	// log-on-change only (the apply itself is unconditional/idempotent).
+	lastBlacklistFP string
 
 	// cppGrace is the delay between setting status.claimedAt and
 	// deleting the CR. Lets ops/UI observe the claimed state before

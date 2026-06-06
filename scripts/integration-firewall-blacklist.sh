@@ -62,10 +62,9 @@ TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 ok "logged in"
 
-# Resource name the service derives for the safe IP (mirror blacklistNameForCidr).
-SAFE_NAME="cfb-$(echo "$SAFE_BAN_IP" | tr '.' '-')-32"
-# But the service slugs the RAW cidr; for a bare IP that's just dots → hyphens.
-SAFE_NAME="cfb-$(echo "$SAFE_BAN_IP" | sed 's/[^a-z0-9]/-/g')"
+# Resource name the service derives (blacklistNameForCidr on the CANONICAL
+# cidr — a bare IP normalises to <ip>/32, so the name carries the -32 suffix).
+SAFE_NAME="cfb-$(echo "${SAFE_BAN_IP}/32" | sed 's/[^a-z0-9]/-/g')"
 
 cleanup() {
   curl -sk -X DELETE "$ADMIN_HOST/api/v1/admin/cluster/firewall-blacklist/$SAFE_NAME" \
