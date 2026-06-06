@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Removed
+- **Stalwart blob-store switch UI + routes fenced (ADR-046)** — the platform
+  stays on Stalwart's Default (RocksDB) blob store. The admin-panel
+  "Blob store" card (Email → Operations → Storage) and the
+  `GET/PATCH /admin/mail/blob-store` + job-status routes were removed after a
+  live E2E found the switch inoperative as shipped (config only applies on
+  restart; schema-invalid S3 cli fields; self-verify false negatives; CIFS
+  host mount never provisioned; Flux strips the runtime Deployment patch).
+  The backend module + api-contracts schemas remain in-tree with STALE
+  banners. fs→S3 / fs→CIFS blob migrations were proven byte-lossless, so the
+  decision is reversible. See ADR-046 and the rewritten
+  STALWART_BLOB_STORE_MIGRATION.md.
+
+### Changed
+- **Stalwart memory limit raised 512Mi → 1536Mi** (requests 128Mi → 256Mi).
+  The 2026-06-05 20GB ingest stress test OOM-killed Stalwart at 512Mi
+  (~2GB into a bulk IMAP import; loaded RSS runs 600–850MB at 15GiB of
+  stored mail). At 1536Mi the same workload completed with zero restarts.
+
 ## [2026.6.4] - 2026-06-06
 
 ### Added

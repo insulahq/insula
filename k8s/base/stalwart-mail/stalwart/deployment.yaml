@@ -627,10 +627,13 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
+              memory: 256Mi
             limits:
               cpu: 1000m
-              memory: 512Mi
+              # 512Mi OOM-killed Stalwart during the 2026-06-05 20GB ingest
+              # stress test (loaded RSS runs 600-850MB at 15GiB of mail).
+              # Headroom per the stress report; see ADR-046 watch-items.
+              memory: 1536Mi
           startupProbe:
             # exec probe: Stalwart 0.16 management API restricts remote
             # connections by default. httpGet from the kubelet comes from

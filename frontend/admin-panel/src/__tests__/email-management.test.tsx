@@ -68,7 +68,6 @@ function setupMockApi(domains: unknown[] = [], relays: unknown[] = []) {
     if (url.includes('/mail/snapshot/backup-target')) return Promise.resolve({ data: { backupStoreId: null, backupStoreName: null, storageType: null } });
     if (url.includes('/mail/snapshot'))        return Promise.resolve({ data: { running: false } });
     if (url.includes('/mail/pvc/storage'))     return Promise.resolve({ data: { pvcName: 'stalwart-rocksdb-data', storageClass: 'local-path', capacityBytes: 21474836480, requestedBytes: 21474836480, usedBytes: 0, freeBytes: 21474836480, expansionAllowed: false, lastResizedAt: null } });
-    if (url.includes('/mail/blob-store'))      return Promise.resolve({ data: { type: 'local', config: {} } });
     if (url.includes('/mail/ssl-status'))      return Promise.resolve({ data: { listeners: [] } });
     if (url.includes('/mail/metrics'))         return Promise.resolve({ data: { totalMailboxes: 0, dkimConfigured: 0 } });
     if (url.includes('/admin/mail/'))          return Promise.resolve({ data: null });
