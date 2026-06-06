@@ -25,6 +25,10 @@ jobs:
   build:
     name: Build + Test + Push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # cosign keyless image signing (sign step gated to main, non-PR)
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
@@ -66,7 +70,8 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
 
-      - uses: docker/build-push-action@v5
+      - id: build
+        uses: docker/build-push-action@v5
         with:
           context: images/firewall-reconciler
           push: ${{ github.event_name != 'pull_request' }}
@@ -75,6 +80,21 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Cosign keyless-sign the pushed image by digest (main only). Mirrors
+      # ci-backup-rclone.yml — a transparency-log attestation for the internal
+      # image. Gated to non-PR (fork PRs get a read-only token anyway).
+      - uses: sigstore/cosign-installer@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - name: Sign image (keyless, OCI 1.1 referrers)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            --registry-referrers-mode=oci-1-1 \
+            "${{ env.IMAGE }}@${DIGEST}"
 
       - id: tag
         name: Extract immutable timestamp tag (for the dev-overlay pin)
