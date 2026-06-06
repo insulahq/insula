@@ -165,6 +165,15 @@ func (r *reconciler) reconcileBlacklist(
 	if changed {
 		slog.Info("blacklist nft sets reconciled", "v4", len(desired.V4), "v6", len(desired.V6))
 	}
+	// Tier 2 self-heal — ensure the DROP rule that references the sets
+	// exists. Existing clusters bootstrapped before the blacklist feature
+	// have the sets (the applier just created them) but no drop rule, so
+	// without this the bans never take effect. Idempotent no-op once the
+	// rule is present (the steady-state and new-cluster path). Runs after
+	// the set apply so the set the rule references is guaranteed to exist.
+	if err := r.applier.ensureBlacklistDropRules(); err != nil {
+		return desired, fmt.Errorf("ensure blacklist drop rules: %w", err)
+	}
 	return desired, nil
 }
 
