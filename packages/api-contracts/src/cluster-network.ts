@@ -161,3 +161,39 @@ export const bootstrapCommandResponseSchema = z.object({
   nodeIp: z.string(),
 });
 export type BootstrapCommandResponse = z.infer<typeof bootstrapCommandResponseSchema>;
+
+// ─── ClusterFirewallBlacklist (permanent host-firewall IP/CIDR ban) ──────
+
+export const firewallBlacklistEntrySchema = z.object({
+  name: z.string().min(1).max(63).regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/),
+  cidr: cidrOrIpString,
+  description: z.string().max(200).default(''),
+  addedBy: z.string().max(200).default(''),
+  /** "manual" or "fail2ban-promote". */
+  source: z.enum(['manual', 'fail2ban-promote']).default('manual'),
+  normalizedCidr: z.string().nullable(),
+  family: z.enum(['v4', 'v6']).nullable(),
+  lastSyncedAt: z.string().datetime().nullable(),
+  /** Reconciler "Ready" condition — surfaced as "Enforced" / "Refused: <reason>". */
+  ready: z.enum(['True', 'False', 'Unknown']),
+  readyReason: z.string().nullable(),
+  readyMessage: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export type FirewallBlacklistEntry = z.infer<typeof firewallBlacklistEntrySchema>;
+
+export const listFirewallBlacklistResponseSchema = z.object({
+  data: z.array(firewallBlacklistEntrySchema),
+});
+export type ListFirewallBlacklistResponse = z.infer<typeof listFirewallBlacklistResponseSchema>;
+
+export const createFirewallBlacklistRequestSchema = z.object({
+  cidr: cidrOrIpString,
+  description: z.string().max(200).default(''),
+  source: z.enum(['manual', 'fail2ban-promote']).default('manual'),
+  /** Required type-to-confirm of the literal CIDR — guards against fat-finger
+   *  bans (and against banning a range the operator didn't mean to). The
+   *  backend rejects when confirmCidr !== cidr. */
+  confirmCidr: z.string().min(1).max(64),
+});
+export type CreateFirewallBlacklistRequest = z.infer<typeof createFirewallBlacklistRequestSchema>;

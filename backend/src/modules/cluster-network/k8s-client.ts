@@ -15,6 +15,7 @@ import type { CoreV1Api, CustomObjectsApi } from '@kubernetes/client-node';
 export const CRD_GROUP = 'networking.insula.host';
 export const CRD_VERSION = 'v1alpha1';
 export const CTR_PLURAL = 'clustertrustedranges';
+export const CFB_PLURAL = 'clusterfirewallblacklists';
 export const CPP_PLURAL = 'clusterpendingpeers';
 
 /** Label key the platform writes onto Node objects to flag exposure. */

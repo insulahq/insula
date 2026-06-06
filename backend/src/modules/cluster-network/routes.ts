@@ -28,10 +28,13 @@
 
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
+import { auditLogs } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {
+  createFirewallBlacklistRequestSchema,
   createTrustedRangeRequestSchema,
   updateTrustedRangeRequestSchema,
   createPendingPeerRequestSchema,
@@ -42,6 +45,11 @@ import {
   updateTrustedRangeDescription,
   deleteTrustedRange,
 } from './cluster-trusted-ranges.js';
+import {
+  listFirewallBlacklist,
+  createFirewallBlacklist,
+  deleteFirewallBlacklist,
+} from './firewall-blacklist.js';
 import {
   listPendingPeers,
   createPendingPeer,
@@ -54,6 +62,10 @@ interface AuthedRequest {
   readonly body?: unknown;
   readonly params?: unknown;
   readonly user?: { readonly sub?: string };
+  /** Fastify resolves req.ip from X-Forwarded-For (trustProxy: true). */
+  readonly ip?: string;
+  readonly method?: string;
+  readonly url?: string;
 }
 
 function userOf(req: AuthedRequest): string {
@@ -81,6 +93,32 @@ function parseOrThrow<S extends z.ZodTypeAny>(schema: S, body: unknown): z.infer
     );
   }
   return parsed.data;
+}
+
+async function auditBlacklist(
+  app: FastifyInstance,
+  req: AuthedRequest,
+  action: string,
+  resourceId: string,
+  changes: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await app.db.insert(auditLogs).values({
+      id: randomUUID(),
+      tenantId: null,
+      actionType: action,
+      resourceType: 'firewall_blacklist',
+      resourceId: resourceId.slice(0, 36),
+      actorId: userOf(req),
+      actorType: 'user',
+      httpMethod: typeof req.method === 'string' ? req.method : null,
+      httpPath: typeof req.url === 'string' ? req.url.slice(0, 500) : null,
+      changes,
+      ipAddress: typeof req.ip === 'string' ? req.ip : null,
+    });
+  } catch (err) {
+    app.log.warn({ err: (err as Error).message }, 'firewall-blacklist: audit insert failed');
+  }
 }
 
 export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> {
@@ -132,6 +170,43 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
       const userId = userOf(req);
       app.log.warn({ userId, name }, 'cluster-network: trusted-range delete');
       await deleteTrustedRange(name, k8sOpts);
+      return success({ deleted: name });
+    },
+  );
+
+  // ─── Firewall blacklist (permanent host-firewall IP/CIDR bans) ──────
+  app.get(
+    '/admin/cluster/firewall-blacklist',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const data = await listFirewallBlacklist(k8sOpts);
+      return success({ data });
+    },
+  );
+
+  app.post(
+    '/admin/cluster/firewall-blacklist',
+    { preHandler: requireRole('super_admin') },
+    async (req: AuthedRequest) => {
+      const body = parseOrThrow(createFirewallBlacklistRequestSchema, req.body);
+      const userId = userOf(req);
+      const adminIp = typeof req.ip === 'string' ? req.ip : null;
+      app.log.warn({ userId, cidr: body.cidr, source: body.source, adminIp }, 'cluster-network: firewall-blacklist create');
+      const entry = await createFirewallBlacklist(body, userId, adminIp, k8sOpts);
+      await auditBlacklist(app, req, 'firewall_blacklist.create', entry.name, { cidr: body.cidr, source: body.source });
+      return success(entry);
+    },
+  );
+
+  app.delete<{ Params: { name: string } }>(
+    '/admin/cluster/firewall-blacklist/:name',
+    { preHandler: requireRole('super_admin') },
+    async (req: AuthedRequest) => {
+      const name = paramName(req);
+      const userId = userOf(req);
+      app.log.warn({ userId, name }, 'cluster-network: firewall-blacklist delete');
+      await deleteFirewallBlacklist(name, k8sOpts);
+      await auditBlacklist(app, req, 'firewall_blacklist.delete', name, { name });
       return success({ deleted: name });
     },
   );

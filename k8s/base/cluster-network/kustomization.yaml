@@ -17,4 +17,5 @@ kind: Kustomization
 
 resources:
   - crd-clustertrustedrange.yaml
+  - crd-clusterfirewallblacklist.yaml
   - crd-clusterpendingpeer.yaml

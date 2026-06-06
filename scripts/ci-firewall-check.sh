@@ -142,10 +142,37 @@ elif [[ -n "$first_accept_line" ]] && ( (( v4_drop_line > first_accept_line )) |
   failures=$((failures + 1))
 fi
 
+# Invariant 5 (F7): operator blacklist drop rules MUST appear AFTER
+# `ct state established,related accept` (so an operator who bans their
+# own IP keeps the in-flight session) and BEFORE any port accept (so a
+# banned IP reaches nothing) — same lockout reasoning as Invariant 4.
+# The blacklist drop should precede the crowdsec drop (permanent before
+# TTL'd) but the only hard ordering requirement is the ct/accept window.
+bl_v4_drop_line=$(grep -nE '^\s*ip\s+saddr @blacklist_v4 drop' "$SCRIPT" | head -1 | cut -d: -f1)
+bl_v6_drop_line=$(grep -nE '^\s*ip6 saddr @blacklist_v6 drop' "$SCRIPT" | head -1 | cut -d: -f1)
+
+if [[ -z "$bl_v4_drop_line" || -z "$bl_v6_drop_line" ]]; then
+  echo "FAIL F7: blacklist drop rules missing from input chain"
+  echo "      Expected: 'ip  saddr @blacklist_v4 drop' + 'ip6 saddr @blacklist_v6 drop'"
+  failures=$((failures + 1))
+elif [[ -z "$ct_line" ]] || (( bl_v4_drop_line < ct_line )) || (( bl_v6_drop_line < ct_line )); then
+  echo "FAIL F7: blacklist drop must appear AFTER 'ct state established,related accept'"
+  failures=$((failures + 1))
+elif [[ -n "$first_accept_line" ]] && ( (( bl_v4_drop_line > first_accept_line )) || (( bl_v6_drop_line > first_accept_line )) ); then
+  echo "FAIL F7: blacklist drop must appear BEFORE any 'tcp dport NNN accept'"
+  failures=$((failures + 1))
+fi
+
+# Invariant 5b: dual-stack set declarations exist for the blacklist.
+if ! grep -qE '^\s*set blacklist_v4 \{' "$SCRIPT" || ! grep -qE '^\s*set blacklist_v6 \{' "$SCRIPT"; then
+  echo "FAIL F7: blacklist_v4/blacklist_v6 set declarations missing"
+  failures=$((failures + 1))
+fi
+
 if (( failures > 0 )); then
   echo
   echo "✗ $failures firewall-rule violation(s) in $SCRIPT"
   exit 1
 fi
 
-echo "✓ bootstrap.sh firewall rules: $v4_count v4 / $v6_count v6 scoped, all public ports documented, --ssh-via-mesh paths verified, F1 crowdsec_blocklist drop ordered correctly."
+echo "✓ bootstrap.sh firewall rules: $v4_count v4 / $v6_count v6 scoped, all public ports documented, --ssh-via-mesh paths verified, F1 crowdsec_blocklist + F7 operator-blacklist drops ordered correctly."

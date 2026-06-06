@@ -115,6 +115,10 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list clusterpendingpeers: %w", err)
 	}
+	cfbObjs, err := r.cfbLister.List(labels.Everything())
+	if err != nil {
+		return fmt.Errorf("list clusterfirewallblacklists: %w", err)
+	}
 
 	// 2. Compute set memberships.
 	peerV4, peerV6 := splitInternalIPs(nodes)
@@ -260,6 +264,18 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 	// for them avoids a double-patch race where MergePatchType replaces
 	// the conditions array wholesale and the second writer overwrites
 	// the first's fields.
+	// 4b. Operator blacklist — permanent DROP sets. Self-protect uses the
+	// node/peer/trusted IPs already computed above, so no extra API reads.
+	prot := buildBlacklistProtection(
+		append(append([]string{}, peerV4...), peerV6...),
+		cppV4, cppV6, trustedV4, trustedV6,
+	)
+	if _, err := r.reconcileBlacklist(ctx, cfbObjs, prot, now); err != nil {
+		// Don't abort the whole reconcile on a blacklist apply error —
+		// peer/trusted sets already applied; the next tick retries.
+		slog.Error("blacklist reconcile failed", "err", err)
+	}
+
 	toClaimNames := make(map[string]struct{}, len(cppToClaim))
 	for _, cpp := range cppToClaim {
 		toClaimNames[cpp.GetName()] = struct{}{}

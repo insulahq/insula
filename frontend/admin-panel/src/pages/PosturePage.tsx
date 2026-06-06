@@ -1128,6 +1128,7 @@ function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose:
                   <th className="py-1 text-left">Banned</th>
                   <th className="py-1 text-left">Expires</th>
                   <th className="py-1 text-right">Bans</th>
+                  <th className="py-1 text-right" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -1138,6 +1139,15 @@ function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose:
                     <td className="py-1.5 text-gray-600 dark:text-gray-300">{b.bannedAt ? new Date(b.bannedAt).toLocaleString() : '—'}</td>
                     <td className="py-1.5 text-gray-600 dark:text-gray-300">{b.expiresAt ? new Date(b.expiresAt).toLocaleString() : <span className="text-red-600 dark:text-red-400">permanent</span>}</td>
                     <td className="py-1.5 text-right text-gray-600 dark:text-gray-300">{b.banCount}</td>
+                    <td className="py-1.5 text-right">
+                      <Link
+                        to={`/security/network-trust?tab=blacklist&prefill=${encodeURIComponent(b.ip)}`}
+                        className="text-xs text-red-600 hover:underline dark:text-red-400"
+                        data-testid={`ban-permanently-${b.ip}`}
+                      >
+                        Ban permanently
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>

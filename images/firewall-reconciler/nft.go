@@ -101,6 +101,10 @@ type applier interface {
 	// path is unreachable until Stage C lands the operator toggle +
 	// removes the downgrade.
 	applyCrowdsecBlocklist(s crowdsecBlocklist) error
+	// Operator blacklist — permanent CIDR DROP sets. Same shape as
+	// trusted_ranges but the bootstrap rule drops instead of accepts.
+	applyBlacklist(s blacklistNftSets) error
+	observeBlacklistFingerprint() (string, error)
 }
 
 // realApplier holds an open lasting netlink connection. Reused across

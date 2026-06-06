@@ -27,7 +27,31 @@ var (
 		Version:  crdVersion,
 		Resource: "clusterpendingpeers",
 	}
+	cfbGVR = schema.GroupVersionResource{
+		Group:    crdGroup,
+		Version:  crdVersion,
+		Resource: "clusterfirewallblacklists",
+	}
 )
+
+// cfbSpec — minimal projection of ClusterFirewallBlacklist.spec.
+type cfbSpec struct {
+	Cidr        string
+	Description string
+}
+
+// readCFBSpec extracts spec.cidr (+ description). ok=false when cidr absent.
+func readCFBSpec(u *unstructured.Unstructured) (cfbSpec, bool) {
+	if u == nil {
+		return cfbSpec{}, false
+	}
+	cidr, found, _ := unstructured.NestedString(u.Object, "spec", "cidr")
+	if !found || cidr == "" {
+		return cfbSpec{}, false
+	}
+	desc, _, _ := unstructured.NestedString(u.Object, "spec", "description")
+	return cfbSpec{Cidr: cidr, Description: desc}, true
+}
 
 // defaultCppPostClaimGrace — delay between setting status.claimedAt and
 // deleting the CR. 5 minutes lets the admin UI render the "Claimed"

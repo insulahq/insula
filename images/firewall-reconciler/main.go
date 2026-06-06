@@ -143,14 +143,18 @@ func main() {
 	ctrLister := dynFactory.ForResource(ctrGVR).Lister()
 	cppInformer := dynFactory.ForResource(cppGVR).Informer()
 	cppLister := dynFactory.ForResource(cppGVR).Lister()
+	cfbInformer := dynFactory.ForResource(cfbGVR).Informer()
+	cfbLister := dynFactory.ForResource(cfbGVR).Lister()
 
 	hs := &healthState{}
 	r := &reconciler{
 		nodes:     nodeLister,
 		ctrLister: ctrLister,
 		cppLister: cppLister,
+		cfbLister: cfbLister,
 		ctrClient: dynClient.Resource(ctrGVR),
 		cppClient: dynClient.Resource(cppGVR),
+		cfbClient: dynClient.Resource(cfbGVR),
 		cppGrace:  defaultCppPostClaimGrace,
 		now:       time.Now,
 		applier:   newRealApplier(),
@@ -161,7 +165,7 @@ func main() {
 	tpr.health = hs
 
 	// Peer loop event handlers — Node + the two CRDs.
-	for _, inf := range []cache.SharedIndexInformer{nodeInformer, ctrInformer, cppInformer} {
+	for _, inf := range []cache.SharedIndexInformer{nodeInformer, ctrInformer, cppInformer, cfbInformer} {
 		if _, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    func(any) { r.kick() },
 			UpdateFunc: func(any, any) { r.kick() },
@@ -189,7 +193,7 @@ func main() {
 	podFactory.Start(ctx.Done())
 	dynFactory.Start(ctx.Done())
 	if !cache.WaitForCacheSync(ctx.Done(),
-		nodeInformer.HasSynced, ctrInformer.HasSynced, cppInformer.HasSynced,
+		nodeInformer.HasSynced, ctrInformer.HasSynced, cppInformer.HasSynced, cfbInformer.HasSynced,
 		podInformer.HasSynced, nsInformer.HasSynced) {
 		slog.Error("informer cache sync timed out")
 		os.Exit(1)
@@ -337,8 +341,10 @@ type reconciler struct {
 	nodes     nodeLister
 	ctrLister cache.GenericLister
 	cppLister cache.GenericLister
+	cfbLister cache.GenericLister
 	ctrClient dynamic.NamespaceableResourceInterface
 	cppClient dynamic.NamespaceableResourceInterface
+	cfbClient dynamic.NamespaceableResourceInterface
 
 	// cppGrace is the delay between setting status.claimedAt and
 	// deleting the CR. Lets ops/UI observe the claimed state before

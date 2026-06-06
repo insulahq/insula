@@ -25,7 +25,7 @@ func fakeReconcilerSetup(
 	t *testing.T,
 	now time.Time,
 	nodes []*corev1.Node,
-	ctrs, cpps []*unstructured.Unstructured,
+	ctrs, cpps, cfbs []*unstructured.Unstructured,
 ) (*reconciler, *fakeApplier, *dynamicfake.FakeDynamicClient) {
 	t.Helper()
 
@@ -34,10 +34,13 @@ func fakeReconcilerSetup(
 	scheme.AddKnownTypeWithName(ctrGVR.GroupVersion().WithKind("ClusterTrustedRangeList"), &unstructured.UnstructuredList{})
 	scheme.AddKnownTypeWithName(cppGVR.GroupVersion().WithKind("ClusterPendingPeer"), &unstructured.Unstructured{})
 	scheme.AddKnownTypeWithName(cppGVR.GroupVersion().WithKind("ClusterPendingPeerList"), &unstructured.UnstructuredList{})
+	scheme.AddKnownTypeWithName(cfbGVR.GroupVersion().WithKind("ClusterFirewallBlacklist"), &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(cfbGVR.GroupVersion().WithKind("ClusterFirewallBlacklistList"), &unstructured.UnstructuredList{})
 
 	gvrToListKind := map[schema.GroupVersionResource]string{
 		ctrGVR: "ClusterTrustedRangeList",
 		cppGVR: "ClusterPendingPeerList",
+		cfbGVR: "ClusterFirewallBlacklistList",
 	}
 
 	objs := []runtime.Object{}
@@ -45,6 +48,9 @@ func fakeReconcilerSetup(
 		objs = append(objs, c)
 	}
 	for _, c := range cpps {
+		objs = append(objs, c)
+	}
+	for _, c := range cfbs {
 		objs = append(objs, c)
 	}
 	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, objs...)
@@ -68,8 +74,10 @@ func fakeReconcilerSetup(
 		nodes:     staticLister{items: nodes},
 		ctrLister: mkLister(ctrs, ctrGVR),
 		cppLister: mkLister(cpps, cppGVR),
+		cfbLister: mkLister(cfbs, cfbGVR),
 		ctrClient: dynClient.Resource(ctrGVR),
 		cppClient: dynClient.Resource(cppGVR),
+		cfbClient: dynClient.Resource(cfbGVR),
 		cppGrace:  defaultCppPostClaimGrace,
 		now:       func() time.Time { return now },
 		applier:   fa,
@@ -99,9 +107,12 @@ type fakeApplier struct {
 	// returns the fingerprint of the last applied state (or empty
 	// string if nothing applied yet). Tests use these to simulate
 	// out-of-band kernel-state divergence.
-	observePeerFP   *string
-	observeTenantFP *string
-	observeErr      error
+	observePeerFP      *string
+	observeTenantFP    *string
+	observeBlacklistFP *string
+	observeErr         error
+
+	blacklistCalls []blacklistNftSets
 }
 
 func (f *fakeApplier) applyPeerSets(s peerNftSets) error {
@@ -123,6 +134,24 @@ func (f *fakeApplier) applyTenantPorts(s tenantPortSets) error {
 // it needs to assert on apply calls.
 func (f *fakeApplier) applyCrowdsecBlocklist(_ crowdsecBlocklist) error {
 	return nil
+}
+
+func (f *fakeApplier) applyBlacklist(s blacklistNftSets) error {
+	f.blacklistCalls = append(f.blacklistCalls, s)
+	return nil
+}
+
+func (f *fakeApplier) observeBlacklistFingerprint() (string, error) {
+	if f.observeErr != nil {
+		return "", f.observeErr
+	}
+	if f.observeBlacklistFP != nil {
+		return *f.observeBlacklistFP, nil
+	}
+	if len(f.blacklistCalls) == 0 {
+		return "", nil
+	}
+	return blacklistFingerprint(f.blacklistCalls[len(f.blacklistCalls)-1]), nil
 }
 
 func (f *fakeApplier) observePeerFingerprint() (string, error) {
@@ -161,6 +190,16 @@ func mkCTR(name, cidr string, gen int64) *unstructured.Unstructured {
 	return u
 }
 
+func mkCFB(name, cidr string, gen int64) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetAPIVersion("networking.insula.host/v1alpha1")
+	u.SetKind("ClusterFirewallBlacklist")
+	u.SetName(name)
+	u.SetGeneration(gen)
+	_ = unstructured.SetNestedField(u.Object, cidr, "spec", "cidr")
+	return u
+}
+
 func mkCPP(name, ip, role string, ttlSec int64, ageSec int64, now time.Time, gen int64) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion("networking.insula.host/v1alpha1")
@@ -186,10 +225,10 @@ func TestReconcileOnce_happyPath(t *testing.T) {
 		mkCTR("private-lan", "10.99.0.0/16", 1),
 	}
 	cpps := []*unstructured.Unstructured{
-		mkCPP("new-worker", "10.0.0.5", "worker", 1800, 60, now, 1),         // active, age=60s, ttl=1800
+		mkCPP("new-worker", "10.0.0.5", "worker", 1800, 60, now, 1),        // active, age=60s, ttl=1800
 		mkCPP("expired-server", "10.0.0.99", "server", 1800, 3600, now, 1), // expired, age=3600s > ttl=1800
 	}
-	r, fa, dyn := fakeReconcilerSetup(t, now, nodes, ctrs, cpps)
+	r, fa, dyn := fakeReconcilerSetup(t, now, nodes, ctrs, cpps, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -251,7 +290,7 @@ func TestReconcileOnce_claimDetection(t *testing.T) {
 	cpps := []*unstructured.Unstructured{
 		mkCPP("new-worker", "10.0.0.5", "worker", 1800, 60, now, 1),
 	}
-	r, _, dyn := fakeReconcilerSetup(t, now, nodes, nil, cpps)
+	r, _, dyn := fakeReconcilerSetup(t, now, nodes, nil, cpps, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -295,7 +334,7 @@ func TestReconcileOnce_claimDetectionSinglePatch(t *testing.T) {
 	cpps := []*unstructured.Unstructured{
 		mkCPP("worker-1", "10.0.0.5", "worker", 1800, 60, now, 1),
 	}
-	r, _, dyn := fakeReconcilerSetup(t, now, nodes, nil, cpps)
+	r, _, dyn := fakeReconcilerSetup(t, now, nodes, nil, cpps, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -351,7 +390,7 @@ func TestReconcileOnce_zeroCreationTimestampGuarded(t *testing.T) {
 	_ = unstructured.SetNestedField(cpp.Object, "worker", "spec", "role")
 	_ = unstructured.SetNestedField(cpp.Object, int64(1800), "spec", "ttlSeconds")
 
-	r, _, dyn := fakeReconcilerSetup(t, now, nil, nil, []*unstructured.Unstructured{cpp})
+	r, _, dyn := fakeReconcilerSetup(t, now, nil, nil, []*unstructured.Unstructured{cpp}, nil)
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
@@ -367,7 +406,7 @@ func TestReconcileOnce_invalidCidrPatchesFailedCondition(t *testing.T) {
 	ctrs := []*unstructured.Unstructured{
 		mkCTR("bogus", "not-a-cidr", 1),
 	}
-	r, fa, dyn := fakeReconcilerSetup(t, now, nil, ctrs, nil)
+	r, fa, dyn := fakeReconcilerSetup(t, now, nil, ctrs, nil, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -405,7 +444,7 @@ func TestReconcileOnce_invalidCidrPatchesFailedCondition(t *testing.T) {
 
 func TestReconcileOnce_noOpWhenScriptUnchanged(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	r, fa, _ := fakeReconcilerSetup(t, now, nil, nil, nil)
+	r, fa, _ := fakeReconcilerSetup(t, now, nil, nil, nil, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("first reconcileOnce: %v", err)
@@ -438,7 +477,7 @@ func equalSorted(a, b []string) bool {
 
 func TestReconcileOnce_propagatesNftError(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	r, _, _ := fakeReconcilerSetup(t, now, nil, nil, nil)
+	r, _, _ := fakeReconcilerSetup(t, now, nil, nil, nil, nil)
 	r.applier = &fakeApplier{failNth: 1, failErr: errReconcile}
 
 	if err := r.reconcileOnce(context.Background()); err == nil {
@@ -448,11 +487,51 @@ func TestReconcileOnce_propagatesNftError(t *testing.T) {
 
 // TestListersAreNotNil — sanity check the mkLister helper above.
 func TestListersAreNotNil(t *testing.T) {
-	r, _, _ := fakeReconcilerSetup(t, time.Now(), nil, nil, nil)
+	r, _, _ := fakeReconcilerSetup(t, time.Now(), nil, nil, nil, nil)
 	if _, err := r.ctrLister.List(labels.Everything()); err != nil {
 		t.Errorf("ctrLister.List: %v", err)
 	}
 	if _, err := r.cppLister.List(labels.Everything()); err != nil {
 		t.Errorf("cppLister.List: %v", err)
+	}
+}
+
+// H2 — CFB CRs flow through reconcileOnce: a hostile IP lands in the
+// blacklist nft set; a CIDR that catches a node IP / peer / trusted range
+// is filtered by self-protect and NEVER reaches nft.
+func TestReconcileOnce_blacklistSelfProtect(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	nodes := []*corev1.Node{
+		node("n1", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.0.1"}),
+	}
+	ctrs := []*unstructured.Unstructured{mkCTR("office", "198.51.100.0/24", 1)}
+	cpps := []*unstructured.Unstructured{mkCPP("peer", "10.0.0.5", "worker", 1800, 60, now, 1)}
+	cfbs := []*unstructured.Unstructured{
+		mkCFB("hostile", "45.148.10.240", 1),       // safe → enforced
+		mkCFB("hostile-range", "45.148.0.0/16", 1), // safe → enforced
+		mkCFB("self-node", "10.0.0.0/16", 1),       // contains node IP 10.0.0.1 → refused
+		mkCFB("self-peer", "10.0.0.5", 1),          // equals peer IP → refused
+		mkCFB("self-trusted", "198.51.100.50", 1),  // inside trusted range → refused
+	}
+	r, fa, _ := fakeReconcilerSetup(t, now, nodes, ctrs, cpps, cfbs)
+
+	if err := r.reconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if len(fa.blacklistCalls) != 1 {
+		t.Fatalf("expected 1 blacklist apply, got %d", len(fa.blacklistCalls))
+	}
+	got := fa.blacklistCalls[0]
+	want := []string{"45.148.0.0/16", "45.148.10.240/32"}
+	if !equalSorted(got.V4, want) {
+		t.Errorf("blacklist v4 = %v, want %v (self-protect must filter node/peer/trusted overlaps)", got.V4, want)
+	}
+	// None of the self-* entries may appear.
+	for _, bad := range []string{"10.0.0.0/16", "10.0.0.5/32", "198.51.100.50/32"} {
+		for _, g := range got.V4 {
+			if g == bad {
+				t.Errorf("self-protect FAILED: %s reached the blacklist nft set", bad)
+			}
+		}
 	}
 }
