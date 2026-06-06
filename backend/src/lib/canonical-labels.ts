@@ -47,6 +47,9 @@ export const PLATFORM_API_MANAGER = 'platform-api';
 export type PvcRole =
   | 'system-db'
   | 'tenant-storage'
+  // 'mail-blob-store' has no live label-assignment site — it belongs to the
+  // STALE blob-store switch module (fenced 2026-06-05, ADR-046) and is kept
+  // only so that module + its tests keep compiling.
   | 'mail-blob-store';
 // 'mail-db' was a PvcRole pre-2026-05-12 when Stalwart ran on a CNPG
 // PostgreSQL cluster. Stalwart migrated to RocksDB on a local-path

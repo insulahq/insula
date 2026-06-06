@@ -6,7 +6,6 @@ import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
 import MailNodeStorageCards from '@/components/email/MailNodeStorageCards';
-import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
 
 type OpsTab = 'placement' | 'backups' | 'storage';
 
@@ -98,14 +97,11 @@ export default function EmailOperationsPage() {
         {tab === 'storage' && (
           <div className="space-y-4">
             <MailNodeStorageCards />
-            <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-              <summary className="cursor-pointer px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
-                Blob store (S3-compatible, for large attachments)
-              </summary>
-              <div className="border-t border-gray-200 dark:border-gray-700 p-4">
-                <StalwartBlobStoreCard />
-              </div>
-            </details>
+            {/* Blob-store switch UI removed (ADR-046): the platform stays on
+                Stalwart's Default (RocksDB) blob store. The switch feature was
+                fenced after live E2E found it inoperative (config only applies
+                on restart, schema-invalid S3 cli fields, Flux strips the CIFS
+                Deployment patch). Backend module retained as STALE reference. */}
           </div>
         )}
       </MailSectionCard>

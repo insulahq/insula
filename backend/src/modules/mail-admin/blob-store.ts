@@ -1,4 +1,37 @@
 /**
+ * ============================================================================
+ * STALE / NOT IN USE — fenced 2026-06-05 (ADR-046). No routes reference this
+ * module; the admin-panel card was removed. The platform stays on Stalwart's
+ * Default (RocksDB) blob store.
+ *
+ * Live E2E on testing (Stalwart v0.16.5, stalwart-cli v1.0.4) found this
+ * implementation inoperative as shipped:
+ *   1. `update BlobStore` persists config but the RUNNING server keeps the
+ *      old store — /api/reload is 404; only a pod restart applies it. The
+ *      "no Stalwart restart" claim below is wrong.
+ *   2. The S3 field shapes are schema-invalid: `region` is an OBJECT
+ *      ({"@type":"Custom","customEndpoint":…,"customRegion":…}), `secretKey`
+ *      is an OBJECT ({"@type":"Value","secret":…}), and there is NO top-level
+ *      `endpoint` field — the cli rejects the rendered command.
+ *   3. The self-verify grep reads the FIRST "@type" in the JSON — for
+ *      S3-with-Custom-region that is the nested region object ("Custom"),
+ *      so even a successful switch would be marked failed.
+ *   4. Nothing provisions the CIFS host kernel mount (the bootstrap.sh claim
+ *      below is false), and the SECURITY NOTE's "runs as root" is wrong —
+ *      the container runs as uid 2000(stalwart).
+ *   5. The runtime Deployment patch does not survive GitOps: the Flux
+ *      `platform` Kustomization (1m interval) strips the cifs-blobstore
+ *      hostPath volume on reconcile, rolling the pod mid-traffic. Any revival
+ *      must declare the volume in git manifests, not patch at runtime.
+ *
+ * fs→S3 and fs→CIFS blob migrations were proven byte-lossless during the
+ * same E2E, so staying on Default is not lock-in. Before reviving any of
+ * this, read docs/06-features/STALWART_BLOB_STORE_MIGRATION.md (rewritten
+ * with the findings) and ADR-046.
+ * ============================================================================
+ *
+ * ORIGINAL HEADER (claims above supersede where they conflict):
+ *
  * Stalwart 0.16 BlobStore singleton — read + switch the backend.
  *
  * The cli describes BlobStore as a singleton (id `singleton`) with

@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
 /**
+ * @deprecated STALE / NOT IN USE — fenced 2026-06-05 (ADR-046). The
+ * blob-store switch routes + admin-panel card were removed; the platform
+ * stays on Stalwart's Default (RocksDB) blob store. Schemas retained only
+ * so the stale backend module (backend/src/modules/mail-admin/blob-store.ts)
+ * keeps compiling. Do not build new features on these.
+ *
  * Stalwart 0.16 BlobStore — singleton (id `singleton`) that holds
  * tenant message bodies.
  *

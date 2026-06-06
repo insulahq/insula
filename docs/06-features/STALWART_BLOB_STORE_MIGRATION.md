@@ -1,129 +1,74 @@
-# Stalwart BlobStore Backend Migration
+# Stalwart BlobStore — FENCED (stays on Default/RocksDB)
 
-This doc covers what happens when an operator switches the Stalwart 0.16
-BlobStore singleton between backends via the **Email Management →
-Stalwart Blob Storage** card in the admin panel.
+> **Status: STALE FEATURE / REFERENCE ONLY — see [ADR-046](../07-reference/ADR-046-stalwart-blob-store-stays-rocksdb.md).**
+> The admin-panel blob-store card and the `/admin/mail/blob-store*` routes were
+> removed on 2026-06-05. The platform stays on Stalwart's **Default (RocksDB)**
+> blob store. The backend module is retained with a STALE banner at
+> `backend/src/modules/mail-admin/blob-store.ts`.
+>
+> This document was rewritten from the live 2026-06-05 evaluation. The previous
+> revision contained false claims (corrected below) — do not resurrect it from
+> git history without reading the corrections.
 
-**One-line takeaway:** existing blobs DO NOT migrate automatically. The
-switch is online and applies to all NEW mail; the OLD mail stays in the
-previous store and may become unreachable until you run an external
-migrator.
+## Why Default/RocksDB (summary — full reasoning in ADR-046)
 
----
+- Stalwart's RocksDB backend already runs **BlobDB key-value separation**
+  (`blobSize` default 16834): blobs ≥16 KiB live in large append-once `.blob`
+  files outside SST compaction. Blob data stays in O(hundreds) of files —
+  rsync-standby walks and restic scans stay fast at any message count.
+- One restic snapshot captures metadata + blobs as a **single consistent
+  unit**. External blob stores split the backup story and create a
+  silent-data-loss mode: ingest dedups blobs by content hash, so if blob
+  files diverge from the data store, identical re-imports link to missing
+  blobs without any error.
+- Measured (clean runs, 4 IMAP workers): S3 import 19 msg/s / cold export
+  35–42 vs FileSystem 38–43 / 320–480 — too slow for daily tenant bundles.
+  CIFS (26 / 101–106) sits between but adds a host kernel mount that must
+  exist on every mail-failover candidate node.
 
-## Backends
+## Corrections to the previous revision (all verified live, v0.16.5)
 
-| Backend | Storage location | HA-compatible | Recommended for |
-|---|---|---|---|
-| `Default` | mail-pg PG (the configured DataStore) | yes | shipped default; small clusters (<5 GiB blob volume) |
-| `S3` | external S3-compatible bucket | **yes (required for HA)** | production HA + any cluster expected to grow >5 GiB |
-| `FileSystem` | per-Pod local emptyDir | **no** | single-replica only; useful for spike or air-gapped dev |
+| Previous claim | Reality |
+|---|---|
+| "Default = mail-pg PG (the configured DataStore)" | The DataStore has been RocksDB since the mail-PG removal. Default = blobs inside RocksDB. |
+| "FileSystem = per-Pod local emptyDir" | The path is operator-supplied. On the mail-stack PVC it is durable and exactly as failover-compatible as RocksDB-on-PVC. |
+| "The cli UPDATE applies to the in-memory store immediately. No Stalwart restart." | **False.** The update persists to the data store but the running server keeps the old store; `/api/reload` is 404. Only a pod restart applies it. |
+| "Stalwart's blob hash is `sha256(uncompressed)` … a 1:1 copy" (migration sketch) | Correct in spirit; precisely: key = base32(blob hash); bytes are LZ4-framed identically on every backend, so byte-copies migrate losslessly (proven: 802/802 sha256-identical fs→S3 and fs→CIFS). |
+| CIFS "platform manages credentials + systemd mount" / "provisioned by bootstrap.sh" (code comment) | **Nothing provisions the host mount.** With `hostPath: DirectoryOrCreate` and no mount, blobs land silently on the node's root disk. |
+| "Stalwart container runs as root (binds port 25)" (code comment) | It runs as **uid 2000 (stalwart)**. A root-only-writable share mount → `Permission denied`. Working mount opts: `uid=2000,gid=2000,file_mode=0660,dir_mode=0770,vers=3.0`. |
 
-The platform UI deliberately exposes only these three. Stalwart's
-schema also supports `Sharded`, `Azure`, `FoundationDb`, `PostgreSql`,
-`MySql` — those can be configured directly via `stalwart-cli update
-BlobStore --field @type=...` from a cluster shell, but the admin panel
-hides them because we don't ship the supporting infra (separate Azure
-account, FoundationDB cluster, etc.).
+Additional defects found in the switch implementation (kept for whoever
+revives it): S3 `region`/`secretKey` are tagged JSON objects
+(`{"@type":"Custom","customEndpoint":…,"customRegion":…}` /
+`{"@type":"Value","secret":…}`) and there is **no** top-level `endpoint`
+field; the Job's self-verify `grep | head -1` reads the nested region
+`@type` ("Custom") and fails successful switches; and the runtime CIFS
+Deployment patch is stripped by the Flux `platform` Kustomization within
+its 1-minute interval — volumes must be declared in git manifests.
 
-## What "switching" actually does
+## Migration mechanics (validated, for future use)
 
-The admin panel `Apply backend switch` button:
+Blobs are content-addressed and LZ4-framed identically on every backend, so
+migrations are byte-copies with a key-layout transform:
 
-1. (S3 only) Writes/patches Secret `stalwart-blob-credentials` in the
-   `mail` namespace with `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
-2. Spawns a one-shot Job named `stalwart-blob-store-update-<id>` in the
-   `mail` namespace. The Job:
-   - Downloads sha256-pinned `stalwart-cli v1.0.4`.
-   - Logs the BEFORE state (`stalwart-cli get BlobStore`).
-   - Runs `stalwart-cli update BlobStore --field @type=...` (with field
-     values for the chosen backend; for S3 the keys flow via env from
-     the Secret, **never** argv).
-   - Logs the AFTER state.
-   - Self-verifies that `@type` actually changed; non-match exits
-     non-zero so K8s marks the Job Failed.
-3. The cli's UPDATE call is in-flight against the running Stalwart
-   process — Stalwart applies the new BlobStore config to its in-memory
-   store immediately. **No Stalwart restart**.
+| Direction | Transform |
+|---|---|
+| RocksDB (Default) → anything | **No file-level path.** Blobs live inside RocksDB; extraction requires IMAP/JMAP re-export or `stalwart -e` (ADR-042). This is the one direction without a cheap copy — switching away later means a re-export, which is why the decision was made deliberately now (ADR-046). |
+| FileSystem → S3 | Flatten: each file's **basename** (base32 of the full hash) becomes the S3 object key, prefixed by `keyPrefix` verbatim. Fan-out dirs (`<hex>/<hex>/`, non-zero-padded `{:x}` bytes, `depth` levels) are dropped. |
+| FileSystem → CIFS/FileSystem | Structure-preserving `cp -a` of the tree; `depth` must match on both sides. |
+| S3 ↔ CIFS | Compose the two transforms above. |
 
-The admin panel polls the Job until terminal and surfaces the cli
-BEFORE / AFTER output via the Pod log. Job retains for 86400 s
-(1 day) for forensics; after that K8s GCs it.
+Procedure that was proven lossless (802/802 messages byte-identical, twice):
+copy blobs → switch BlobStore config → **restart Stalwart** → verify a
+fresh APPEND lands on the new backend → sha256-compare a full IMAP export
+against the pre-migration export. Never delete the source blobs until the
+comparison passes, and never let blob files and the data store diverge
+(content-dedup makes divergence silent).
 
-## What does NOT happen
+## Operational notes that remain true on Default
 
-- **Existing blobs are not copied.** An IMAP fetch for an old message
-  hits the new backend, the new backend has no record of the blob, and
-  Stalwart returns a `BlobNotFound` error to the IMAP client. From the
-  user's perspective the message body looks empty / missing.
-- **Stalwart does not auto-migrate.** Stalwart 0.16 has no built-in
-  blob-mover. The `stalwart-cli` does not ship a `move-blobs` command.
-- **The Secret persists across switches.** Switching from S3 to
-  Default leaves `stalwart-blob-credentials` in place. That's fine —
-  the Secret is harmless when not referenced. To remove it:
-  `kubectl delete secret stalwart-blob-credentials -n mail` after the
-  switch.
-
-## Recovery if you switched by accident
-
-If you flipped the backend without running a migrator and now need
-historical mail back:
-
-1. **Don't panic** — the old blobs are still there in the previous
-   backend. Stalwart just isn't looking at them.
-2. Switch back via the same admin panel card. New mail since the
-   accident lands in the original backend; mail received during the
-   accident-window stays in the wrongly-flipped backend.
-3. If you need both windows visible, you need a manual migration
-   (next section).
-
-## Manual migration tools
-
-There is no platform-shipped migration tool. The community options:
-
-- **For Default → S3 (or vice versa)**: `pgdump` mail-pg's blob table
-  and bulk-PUT into S3 (or pipe S3 GETs into psql), preserving the
-  blob hash IDs. Stalwart's blob hash is content-addressed
-  (`sha256(uncompressed)`), so the same blob keeps the same key on
-  either backend — a 1:1 copy.
-- **For S3 → S3 (provider migration)**: any standard S3 sync tool
-  works. `rclone sync src: dst:` is the most common.
-- **For FileSystem migrations**: walk the directory tree, hash-rename
-  the same content into the target store, point Stalwart at the new
-  location. A FileSystem layout's directory depth (default 2 = `xx/yy/`)
-  must match between source + target.
-
-For platforms expecting heavy migration traffic, build a one-shot
-Kubernetes Job that:
-1. Reads from the source store directly (mount mail-pg PG, or use
-   AWS SDK against S3, etc.)
-2. Writes to the target store at the same content-addressed key
-3. Verifies SHA256 of round-tripped blobs.
-
-That Job is out of scope for the admin-panel surface. File a feature
-request if it becomes a recurring need.
-
-## When is the switch the right call?
-
-- **Default → S3**: when blob volume crosses ~3-5 GiB and PG-side
-  costs (CNPG instance disk pressure, snapshot bloat) outweigh
-  external-bucket complexity. Required before turning on HA stateless
-  Stalwart.
-- **S3 → Default**: never reversibly. If you need to wind back, you're
-  almost always migrating to a new cluster.
-- **Default → FileSystem**: only for single-replica spikes or
-  air-gapped dev. Will explicitly fail Apply HA.
-- **FileSystem → anything**: as soon as you need multi-replica.
-
-## Operator checklist before switching
-
-- [ ] Read this doc (the confirm modal links here).
-- [ ] Type `MIGRATE` in the confirm modal — explicit acknowledgement
-      that you understand existing blobs will not move.
-- [ ] (S3) Have bucket created + access keys ready. Cleartext keys are
-      sent ONCE to the API; the admin panel zeroes the form fields on
-      submit; Stalwart reads from the Secret thereafter.
-- [ ] (FileSystem) Confirm you're on a single-replica Stalwart and
-      will stay that way. Apply HA will fail otherwise.
-- [ ] Capture the cli BEFORE/AFTER Pod log from the admin panel — it's
-      the only auditable record of the switch's wire-level details.
+- `pvc-mail-stack.yaml`'s 30Gi request is informational — local-path does
+  not enforce it; the real limit is the node's disk.
+- BlobDB garbage collection is **not enabled** by Stalwart: deleted mail
+  reclaims `.blob` space only when no surviving key references a blob file.
+  Watch mail-PVC growth under heavy delete patterns (ADR-046 watch-item).
