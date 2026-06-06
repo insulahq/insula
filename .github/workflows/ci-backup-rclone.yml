@@ -80,6 +80,8 @@ jobs:
       contents: read
       packages: write       # push to GHCR
       id-token: write       # cosign keyless OIDC
+    outputs:
+      timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,6 +137,7 @@ jobs:
             type=sha,prefix=
             type=ref,event=branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
 
       - id: build_push
         uses: docker/build-push-action@v5
@@ -166,3 +169,35 @@ jobs:
         run: |
           echo "Image: ${{ env.IMAGE }}@${{ steps.build_push.outputs.digest }}"
           echo "Tags: ${{ steps.meta.outputs.tags }}"
+
+      - id: tag
+        name: Extract immutable timestamp tag (for the dev-overlay pin)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          ALL_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
+          [ -n "$ts_tag" ] || { echo "::error::no timestamp tag in $ALL_TAGS"; exit 1; }
+          echo "timestamp_tag=$ts_tag" >> "$GITHUB_OUTPUT"
+          echo "backup-rclone → $ts_tag"
+
+  # Pin the dev overlay to the immutable tag just pushed + signed (no `:latest`
+  # pull-race). Pinning a signed image by its immutable tag also keeps the
+  # deployed tag aligned with the cosign signature.
+  pin:
+    name: Pin dev image tag
+    needs: build-push-sign
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build-push-sign.outputs.timestamp_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: pin-development-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: .github/scripts/pin-image-tag.sh backup-rclone "${{ needs.build-push-sign.outputs.timestamp_tag }}"

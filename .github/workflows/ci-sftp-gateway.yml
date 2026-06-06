@@ -22,6 +22,8 @@ jobs:
   build:
     name: Build + Scan + Push
     runs-on: ubuntu-latest
+    outputs:
+      timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,3 +77,33 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: sftp-gateway
+
+      - id: tag
+        name: Extract immutable timestamp tag (for the dev-overlay pin)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          ALL_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
+          [ -n "$ts_tag" ] || { echo "::error::no timestamp tag in $ALL_TAGS"; exit 1; }
+          echo "timestamp_tag=$ts_tag" >> "$GITHUB_OUTPUT"
+          echo "sftp-gateway → $ts_tag"
+
+  # Pin the dev overlay to the immutable tag just pushed (no `:latest` pull-race).
+  pin:
+    name: Pin dev image tag
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.outputs.timestamp_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: pin-development-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: .github/scripts/pin-image-tag.sh sftp-gateway "${{ needs.build.outputs.timestamp_tag }}"
