@@ -196,7 +196,11 @@ host_migration_audit() {
     changed=1
   fi
   migs="${AUDIT_MIGRATIONS:-$(git -C "$ROOT" diff --diff-filter=A --name-only "${last}..HEAD" -- 'platform/host-migrations/' 2>/dev/null | grep -cE '/[0-9]+-[a-z0-9-]+\.sh$' || true)}"
-  waivers="${AUDIT_WAIVERS:-$(git -C "$ROOT" log "${last}..HEAD" --format=%B 2>/dev/null | grep -c '\[no-host-migration\]' || true)}"
+  # Line-anchored: a waiver is the token at the START of a commit-message line
+  # (optionally indented), NOT a prose/markdown mention mid-sentence — e.g. a
+  # CHANGELOG bullet "... or a `[no-host-migration]` waiver" must not count, or it
+  # could falsely "waive" a real uncovered firewall-shape change.
+  waivers="${AUDIT_WAIVERS:-$(git -C "$ROOT" log "${last}..HEAD" --format=%B 2>/dev/null | grep -cE '^[[:space:]]*\[no-host-migration\]' || true)}"
   changed=$(( changed + 0 )); migs=$(( migs + 0 )); waivers=$(( waivers + 0 ))
 
   echo "  host-migration audit (since ${last}):"
@@ -286,7 +290,8 @@ if [ "$AUDIT_RC" -ne 0 ]; then
   echo "cut-release: firewall shape changed since the last tag with no host-migration and no [no-host-migration] waiver." >&2
   echo "  Existing clusters render the firewall ONCE at bootstrap — a change here will NOT reach them." >&2
   echo "  Add a backfill:  make new-host-migration NAME=<change>   (then refresh the baseline)," >&2
-  echo "  or, if existing nodes genuinely don't need it, add a '[no-host-migration]' waiver commit." >&2
+  echo "  or, if existing nodes genuinely don't need it, start a commit-message line with" >&2
+  echo "  '[no-host-migration]' (plus a reason); a prose mention of the token does not count." >&2
   echo "  To cut anyway:   re-run with --allow-uncovered-host-changes" >&2
   exit 1
 fi
