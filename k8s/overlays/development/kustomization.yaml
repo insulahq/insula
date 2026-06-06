@@ -158,14 +158,14 @@ images:
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "latest"
+    newTag: "20260606133309-8de6b51"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "latest"
+    newTag: "20260606133427-8de6b51"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "latest"
+    newTag: "20260606133353-8de6b51"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "latest"
+    newTag: "20260606133323-8de6b51"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "latest"
+    newTag: "20260606133510-8de6b51"
   - name: ghcr.io/insulahq/insula/mail-backup-tools
-    newTag: "latest"
+    newTag: "20260606133252-8de6b51"
