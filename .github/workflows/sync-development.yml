@@ -45,17 +45,30 @@ on:
   push:
     branches: [main]
 
-  # Belt-and-suspenders: also fire when Build Images finishes on main.
-  # Catches:
-  #   - A future case where build-deploy modifies a file under main but
-  #     the auto-pin push somehow doesn't reach the push trigger (e.g.,
-  #     a temporarily failing pre-push hook gets retried by a bot).
-  #   - The general "main has moved since this workflow started"
-  #     scenario — sync-development always fetches the latest origin/main
-  #     and the merge step is a no-op when already up to date, so a
-  #     duplicate run under the concurrency group is cheap.
+  # Belt-and-suspenders: also fire when an image-build workflow finishes on
+  # main. This is the PRIMARY (not just backup) propagation path for the
+  # in-CI auto-pin commits: those commits are pushed with the workflow's
+  # GITHUB_TOKEN, and GitHub does NOT start a new workflow run from a
+  # GITHUB_TOKEN push — so the `push:` trigger above never sees them. The
+  # pinning workflows below each commit a `chore(development): pin <image>`
+  # to main as their last step, then complete → this workflow_run trigger
+  # fires → we fetch the latest origin/main (with the pin) and merge it to
+  # development. ANY workflow that runs apply-development-pin.sh or
+  # pin-image-tag.sh MUST be listed here, or its pin strands on main.
+  # Catches too:
+  #   - The general "main has moved since this workflow started" scenario —
+  #     sync-development always fetches the latest origin/main and the merge
+  #     step is a no-op when already up to date, so a duplicate run under the
+  #     concurrency group is cheap.
   workflow_run:
-    workflows: ['Build Images']
+    workflows:
+      - 'Build Images'             # backend/admin/tenant pin (apply-development-pin.sh)
+      - 'Firewall-Reconciler CI'   # the six internal-image pins (pin-image-tag.sh)
+      - 'Security-Probe CI'
+      - 'Host-Config-Reconciler CI'
+      - 'Backup-rclone CI'
+      - 'SFTP Gateway CI'
+      - 'Mail-Backup-Tools CI'
     types: [completed]
     branches: [main]
 
