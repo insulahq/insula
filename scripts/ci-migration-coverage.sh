@@ -65,12 +65,22 @@ if [[ "$cur" == "$base" ]]; then
   exit 0
 fi
 
+# Validate the test-override env seams BEFORE any arithmetic: a non-integer
+# value like `a[$(cmd)]` would execute inside `$(( ))` (bash evaluates array
+# subscripts). Empty = unset → the git-derived fallback below is used.
+for _v in MIGRATION_ADDED WAIVER BASELINE_UPDATED; do
+  case "${!_v-}" in
+    '') ;;
+    *[!0-9]*) echo "ci-migration-coverage: $_v must be a non-negative integer" >&2; exit 2 ;;
+  esac
+done
+
 # Shape changed → require coverage. Signals are git-derived in CI, overridable
 # in tests.
 migration_added="${MIGRATION_ADDED:-$(git -C "$REPO_ROOT" diff --diff-filter=A --name-only "$BASE_REF"...HEAD -- 'platform/host-migrations/' 2>/dev/null | grep -E '/[0-9]+-[a-z0-9-]+\.sh$' | grep -vc '\.test\.sh$')}"
 waiver="${WAIVER:-$(git -C "$REPO_ROOT" log "$BASE_REF"..HEAD --format=%B 2>/dev/null | grep -c '\[no-host-migration\]')}"
 baseline_updated="${BASELINE_UPDATED:-$(git -C "$REPO_ROOT" diff --name-only "$BASE_REF"...HEAD -- "$BASELINE" 2>/dev/null | grep -c .)}"
-# Coerce to integers (empty/non-numeric → 0).
+# Coerce to integers (now guaranteed numeric-or-empty; empty → 0).
 migration_added=$(( migration_added + 0 )) 2>/dev/null || migration_added=0
 waiver=$(( waiver + 0 )) 2>/dev/null || waiver=0
 baseline_updated=$(( baseline_updated + 0 )) 2>/dev/null || baseline_updated=0

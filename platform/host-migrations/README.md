@@ -21,6 +21,19 @@ config file, relabelling a mount, a one-time data move.
   operator-resumable (fix + re-run continues where it stopped).
 - **Skip-multiple**: a node N releases behind walks the whole backlog in order.
 
+## Scaffolding a new migration
+
+```bash
+make new-host-migration NAME=relabel-longhorn-mount   # [VERSION=2026.7.1]
+```
+
+`scripts/new-host-migration.sh` creates a contract-complete stub at
+`platform/host-migrations/<next-release-version>/<NNNN>-<name>.sh` (next
+version from `cut-release.sh --print-version`, next `NNNN` auto-picked). The
+stub already has the shebang, `set -euo pipefail`, and both header contracts,
+and **fails loudly until implemented** (an un-edited stub must never silently
+no-op). It refuses to overwrite an existing migration (order-stable).
+
 ## Authoring contract (enforced by `scripts/ci-host-migrations-check.sh`)
 
 Every script MUST:
@@ -77,6 +90,18 @@ drop/accept rules) and compares it to the committed baseline
    the baseline.
 
 Otherwise the build fails. This is why the firewall-blacklist gap (2026-06-06 —
-an nft rule that only fresh installs got) cannot recur silently. It will become
-unnecessary once firewall rules are continuously converged (Tier 2); until
-then it is the guardrail.
+an nft rule that only fresh installs got) cannot recur silently.
+
+**Defence-in-depth at release time:** `scripts/cut-release.sh` re-runs the same
+shape comparison across the whole delta since the previous tag and prints a
+**host-migration audit** in the release plan (the migrations + `[no-host-migration]`
+waivers the release will contain). If the shape changed since the last tag with
+neither a migration nor a waiver, the cut is **blocked** (override:
+`--allow-uncovered-host-changes`).
+
+**Relationship to Tier 2 (continuous rule convergence):** the `firewall-reconciler`
+now self-heals the drop rules for the sets it manages (blacklist + crowdsec) on
+every tick, so *those* no longer need a one-shot migration on existing nodes.
+This guard + the release audit remain the guardrail for firewall-shape changes
+the reconciler does **not** converge — new port-accept rules, new sets, chain
+re-ordering — and for non-firewall host-rendering changes generally.
