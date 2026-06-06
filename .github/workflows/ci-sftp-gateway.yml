@@ -59,6 +59,11 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # SLSA provenance + SBOM attestations — gated to non-PR: PR builds use
+          # `load: true` (docker exporter), which is incompatible with buildkit
+          # attestations, so they'd fail. On main (push: true) they attach.
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
 
       # Cosign keyless-sign the pushed image by digest (main only). Mirrors
       # ci-backup-rclone.yml. Gated to non-PR (fork PRs get a read-only token).
