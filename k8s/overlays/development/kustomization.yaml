@@ -168,4 +168,4 @@ images:
   - name: ghcr.io/insulahq/insula/sftp-gateway
     newTag: "latest"
   - name: ghcr.io/insulahq/insula/mail-backup-tools
-    newTag: "latest"
+    newTag: "20260606133252-8de6b51"
