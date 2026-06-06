@@ -51,9 +51,11 @@ data:
   # with one line per bound class (system, tenant, mail).
 
   # The shim's entrypoint. Reads classes.txt + upstream.env + the
-  # rendered rclone.conf; if any is missing / empty, sleeps so the pod
-  # stays Ready=false (Service routes nothing to it; clients get
-  # connection-refused).
+  # rendered rclone.conf; if any is missing / empty it sleeps (does not
+  # bind :9000), but STILL reports Ready via the readiness marker so a
+  # DaemonSet RollingUpdate can complete on a target-less cluster. When a
+  # target is configured it serves :9000; an idle pod serves nothing and
+  # no client connects without a target.
   launcher.sh: |
     #!/bin/sh
     set -eu
@@ -65,14 +67,31 @@ data:
 
     log() { printf '[backup-rclone-shim] %s\n' "$*" >&2; }
 
+    # ─── Readiness marker (rollout-decoupling) ───────────────────────
+    # The readinessProbe checks THIS FILE, not tcp :9000. A shim with no
+    # backup target legitimately sleeps without binding :9000 — but the pod
+    # is ALIVE and must report Ready so a DaemonSet RollingUpdate (e.g. an
+    # image-pin bump) completes instead of stalling forever on an idle node
+    # (the :9000-gated probe made a target-less shim un-updatable). We mark
+    # ready in BOTH the idle (sleep) and serving branches; the Service only
+    # carries real backup traffic once a target is configured (all pods then
+    # serve :9000), so an idle-but-Ready pod is harmless — it serves nothing
+    # and no client runs without a target. The `rm` clears a stale marker
+    # left in the pod-lifetime emptyDir by a prior crashed container instance.
+    READY=/var/run/backup-rclone/ready
+    rm -f "$READY"
+    ready() { : > "$READY"; }
+    # idle: report Ready (alive, not serving) then park.
+    idle() { ready; while :; do sleep 30; done; }
+
     # ─── Pre-flight: env file + rclone.conf + classes.txt must exist ─
     if [ ! -f "$UPSTREAM_ENV" ]; then
       log "$UPSTREAM_ENV missing — reconciler has not rendered yet."
-      while :; do sleep 30; done
+      idle
     fi
     if [ ! -f "$RCLONE_CONF" ]; then
       log "$RCLONE_CONF missing — reconciler has not rendered yet."
-      while :; do sleep 30; done
+      idle
     fi
     # Validate that the conf has actual content (a [combined] section).
     # A comment-only placeholder would let the launcher proceed to
@@ -80,11 +99,11 @@ data:
     # found), crashlooping the pod. Sleep on partial-materialise.
     if ! grep -q '^\[combined\]' "$RCLONE_CONF"; then
       log "$RCLONE_CONF has no [combined] section — partial materialise. Sleeping."
-      while :; do sleep 30; done
+      idle
     fi
     if [ ! -s "$CLASSES_FILE" ]; then
       log "$CLASSES_FILE empty — no class-target assignments."
-      while :; do sleep 30; done
+      idle
     fi
 
     # ─── Validate classes.txt against strict allowlist ────────────────
@@ -108,7 +127,7 @@ data:
     done < "$CLASSES_FILE"
     if [ -z "$CLASSES_OK" ]; then
       log "$CLASSES_FILE present but yielded zero valid classes — sleeping."
-      while :; do sleep 30; done
+      idle
     fi
 
     # ─── Load shim creds from env file (HKDF-derived ROOT_*) ──────────
@@ -121,7 +140,7 @@ data:
 
     if [ -z "$${ROOT_ACCESS_KEY:-}" ] || [ -z "$${ROOT_SECRET_KEY:-}" ]; then
       log "FATAL: ROOT_ACCESS_KEY / ROOT_SECRET_KEY missing from upstream.env"
-      while :; do sleep 30; done
+      idle
     fi
 
     log "shim launcher: classes='$${CLASSES_OK}' rendering rclone.conf-driven combined: remote"
@@ -154,6 +173,11 @@ data:
     # the cache is effectively unused (vfs-write-back 0s flushes
     # immediately; cache files are evicted within seconds).
     log "launching rclone serve s3 combined:"
+    # Mark Ready just before exec. There's a sub-millisecond window where the
+    # pod is Ready but rclone hasn't bound :9000 yet; backup clients (barman /
+    # restic) retry, so a first-attempt connection-refused mid-rollout is
+    # absorbed — never silent data loss.
+    ready
     exec rclone serve s3 \
       --config "$RCLONE_CONF" \
       --addr "$ADDR" \

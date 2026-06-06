@@ -491,4 +491,25 @@ if ! grep -q "name: backup-rclone-shim-creds" "$DB_YAML"; then
 fi
 pass "Invariant 23: bootstrap chicken-and-egg unblocker (static ObjectStore + creds Secret) present"
 
-echo "[ci-backup-rclone-shim] All 23 invariants pass."
+# ─── 24. Readiness decoupled from :9000 (rollout-safety) ─────────────
+# A target-less shim sleeps and never binds :9000. A tcpSocket:9000
+# readiness probe therefore kept it NotReady forever, STALLING a
+# DaemonSet RollingUpdate (e.g. an image-pin bump) on the idle node —
+# making the shim un-updatable on a cluster with no backup target
+# (2026-06-06). Readiness must instead reflect a launcher-written marker
+# (alive == Ready), written in BOTH the idle and serving branches.
+if grep -qE '^\s*tcpSocket:' "$DS_MANIFEST"; then
+  fail "Invariant 24: backup-rclone-shim uses a tcpSocket probe — a target-less shim never binds :9000, so this stalls RollingUpdate. Use the exec readiness marker."
+fi
+if ! grep -qF '[ -f /var/run/backup-rclone/ready ]' "$DS_MANIFEST"; then
+  fail "Invariant 24: readinessProbe must exec-check the launcher marker '/var/run/backup-rclone/ready' (decoupled from :9000)"
+fi
+if ! grep -qE 'ready\(\) *\{' "$CONFIGMAP" || ! grep -qE 'idle\(\) *\{ *ready;' "$CONFIGMAP"; then
+  fail "Invariant 24: launcher.sh must define ready()/idle() and mark Ready in the idle (sleep) branch so rollouts complete when target-less"
+fi
+if ! grep -qE '^\s*ready\s*$' "$CONFIGMAP"; then
+  fail "Invariant 24: launcher.sh must mark Ready immediately before exec'ing rclone serve s3 (serving branch)"
+fi
+pass "Invariant 24: readiness decoupled from :9000 via launcher marker (rollout-safe when target-less)"
+
+echo "[ci-backup-rclone-shim] All 24 invariants pass."

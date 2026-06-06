@@ -207,29 +207,31 @@ spec:
             # check for non-local upstream types.
 
           # No livenessProbe. Two states this pod can be in:
-          #   1. buckets.txt empty → launcher.sh enters a sleep loop;
-          #      port 9000 never binds. We DO NOT want kubelet to
-          #      crashloop-restart this pod — it's correctly idle.
+          #   1. no target configured → launcher.sh sleeps; port 9000
+          #      never binds. We DO NOT want kubelet to crashloop-restart
+          #      it — it's correctly idle.
           #   2. rclone serve s3 running → port 9000 binds.
-          # The readinessProbe (TCP 9000) handles both: idle pods stay
-          # NotReady and are dropped from Service routing without
-          # being killed. tini (PID 1 in the image) cleanly reaps any
-          # crashed child. Kubelet's existing mechanisms (OOM kill on
-          # memory-limit breach, image-pull failures, etc.) cover the
-          # genuine "something is wrong" cases.
+          # tini (PID 1) cleanly reaps any crashed child; kubelet's OOM
+          # kill / image-pull handling cover the genuine "something is
+          # wrong" cases.
           #
-          # When R-X4 populates buckets.txt the launcher's sleep loop
-          # is broken by the SIGTERM from the DaemonSet rollingUpdate
-          # (annotation-hash change), and the next pod starts rclone.
-
-          # Readiness: TCP-connect to the S3 port. When buckets.txt is
-          # empty the launcher sleeps; the port never binds; readiness
-          # fails; Service routing skips this pod (which is what we
-          # want — clients on this node get connection-refused on
-          # their next attempt rather than a half-broken response).
+          # Readiness is decoupled from :9000 (was a tcpSocket:9000 probe).
+          # WHY: a target-less shim sleeps and never binds :9000, so a
+          # :9000 probe kept it NotReady forever — which STALLED a
+          # DaemonSet RollingUpdate (e.g. an image-pin bump) on the idle
+          # node, making the shim un-updatable on a cluster with no backup
+          # target. The launcher now writes /var/run/backup-rclone/ready in
+          # BOTH the idle and serving branches (alive == Ready), so rollouts
+          # always complete. Trade-off: an idle pod is now a Service
+          # endpoint but isn't serving — harmless, because no backup client
+          # runs without a target, and once a target is configured every
+          # pod serves :9000 (config is cluster-wide, so pods are never
+          # split serving/idle except briefly mid-rollout). A serving pod
+          # whose rclone dies exits the container (exec'd PID) → kubelet
+          # restarts it → the marker is rm'd at relaunch until it re-readies.
           readinessProbe:
-            tcpSocket:
-              port: 9000
+            exec:
+              command: ["/bin/sh", "-c", "[ -f /var/run/backup-rclone/ready ]"]
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
