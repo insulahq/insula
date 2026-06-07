@@ -186,11 +186,17 @@ export function useMailboxes(tenantId?: string, emailDomainId?: string) {
   });
 }
 
+// Create returns the mailbox + the auto-issued first login password
+// (secret shown ONCE), or null when the domain isn't provisioned yet.
+export interface CreateMailboxResult extends Mailbox {
+  readonly initialLoginPassword: CreateLoginPasswordResult | null;
+}
+
 export function useCreateMailbox(tenantId: string, emailDomainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: Record<string, unknown>) =>
-      apiFetch<MailboxResponse>(`/api/v1/tenants/${tenantId}/email/domains/${emailDomainId}/mailboxes`, { method: 'POST', body: JSON.stringify(input) }),
+      apiFetch<{ data: CreateMailboxResult }>(`/api/v1/tenants/${tenantId}/email/domains/${emailDomainId}/mailboxes`, { method: 'POST', body: JSON.stringify(input) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] });
       qc.invalidateQueries({ queryKey: ['mailbox-usage', tenantId] });
@@ -215,6 +221,69 @@ export function useDeleteMailbox(tenantId: string) {
       qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] });
       qc.invalidateQueries({ queryKey: ['mailbox-usage', tenantId] });
     },
+  });
+}
+
+// ─── Login passwords (Stalwart app passwords) — per mailbox ──────────
+//
+// The human-facing credential set for a mailbox (ADR-049). The secret is
+// server-generated and shown ONCE in the create response; the list never
+// carries it.
+
+export interface LoginPassword {
+  readonly id: string;
+  readonly label: string;
+  readonly createdAt: string | null;
+  readonly expiresAt: string | null;
+  readonly allowedIps: readonly string[];
+}
+
+export interface CreateLoginPasswordResult {
+  readonly id: string;
+  readonly label: string;
+  readonly secret: string;
+  readonly expiresAt: string | null;
+  readonly allowedIps: readonly string[];
+}
+
+export interface CreateLoginPasswordInput {
+  readonly label: string;
+  readonly expiresAt?: string | null;
+  readonly allowedIps?: readonly string[];
+}
+
+export function useLoginPasswords(tenantId: string, mailboxId?: string) {
+  return useQuery({
+    queryKey: ['login-passwords', tenantId, mailboxId],
+    queryFn: () =>
+      apiFetch<{ data: LoginPassword[] }>(
+        `/api/v1/tenants/${tenantId}/mailboxes/${mailboxId}/login-passwords`,
+      ),
+    enabled: !!tenantId && !!mailboxId,
+  });
+}
+
+export function useCreateLoginPassword(tenantId: string, mailboxId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateLoginPasswordInput) =>
+      apiFetch<{ data: CreateLoginPasswordResult }>(
+        `/api/v1/tenants/${tenantId}/mailboxes/${mailboxId}/login-passwords`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['login-passwords', tenantId, mailboxId] }),
+  });
+}
+
+export function useRevokeLoginPassword(tenantId: string, mailboxId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (credentialId: string) =>
+      apiFetch<void>(
+        `/api/v1/tenants/${tenantId}/mailboxes/${mailboxId}/login-passwords/${credentialId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['login-passwords', tenantId, mailboxId] }),
   });
 }
 

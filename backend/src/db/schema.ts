@@ -1450,7 +1450,10 @@ export const mailboxes = pgTable('mailboxes', {
     .references(() => tenants.id, { onDelete: 'cascade' }),
   localPart: varchar('local_part', { length: 64 }).notNull(),
   fullAddress: varchar('full_address', { length: 255 }).notNull(),
-  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  // Nullable since migration 0052 (Login Passwords / ADR-049): new
+  // mailboxes mint a hidden random primary in Stalwart and store nothing
+  // here. Existing rows keep their legacy hash.
+  passwordHash: varchar('password_hash', { length: 255 }),
   displayName: varchar('display_name', { length: 255 }),
   quotaMb: integer('quota_mb').notNull().default(1024),
   usedMb: integer('used_mb').notNull().default(0),

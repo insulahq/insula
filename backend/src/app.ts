@@ -130,6 +130,7 @@ import { emailAutodiscoverRoutes } from './modules/email-autodiscover/routes.js'
 import { emailSslStatusRoutes } from './modules/email-ssl-status/routes.js';
 import { mailStatsRoutes } from './modules/mail-stats/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
+import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
@@ -546,6 +547,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailSslStatusRoutes, { prefix: '/api/v1' });
   await app.register(mailStatsRoutes, { prefix: '/api/v1' });
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
+  await app.register(loginPasswordRoutes, { prefix: '/api/v1' }); // login passwords (Stalwart app passwords)
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayTenantRoutes, { prefix: '/api/v1' });

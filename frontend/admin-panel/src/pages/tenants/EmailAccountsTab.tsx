@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Loader2, Mail } from 'lucide-react';
+import { Search, Loader2, Mail, Key } from 'lucide-react';
 import clsx from 'clsx';
 import PaginationBar from '@/components/ui/PaginationBar';
+import { AdminMailboxLoginPasswordsModal } from '@/components/email/AdminMailboxLoginPasswords';
 import { useAdminMailboxes } from '@/hooks/use-admin-mailboxes';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
@@ -55,6 +56,8 @@ export default function EmailAccountsTab() {
     limit: pagination.limit,
     cursor: pagination.cursor,
   });
+
+  const [pwTarget, setPwTarget] = useState<{ id: string; fullAddress: string } | null>(null);
 
   const mailboxes = data?.data ?? [];
   const totalCount = data?.pagination?.total_count ?? 0;
@@ -112,6 +115,7 @@ export default function EmailAccountsTab() {
                     <SortableHeader label="Quota" sortKey="quotaMb" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                     <SortableHeader label="Used" sortKey="usedMb" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                     <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+                    <th className="px-5 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -151,11 +155,21 @@ export default function EmailAccountsTab() {
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                         {mb.createdAt ? new Date(mb.createdAt).toLocaleDateString() : '—'}
                       </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setPwTarget({ id: mb.id, fullAddress: mb.fullAddress }); }}
+                          className="inline-flex items-center gap-1 rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50"
+                          data-testid={`admin-login-passwords-${mb.id}`}
+                        >
+                          <Key size={12} /> Passwords
+                        </button>
+                      </td>
                     </tr>
                   ))}
                   {mailboxes.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={8} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No mailboxes found matching your search.'
                           : 'No mailboxes found.'}
@@ -178,6 +192,14 @@ export default function EmailAccountsTab() {
           </>
         )}
       </div>
+
+      {pwTarget && (
+        <AdminMailboxLoginPasswordsModal
+          mailboxId={pwTarget.id}
+          fullAddress={pwTarget.fullAddress}
+          onClose={() => setPwTarget(null)}
+        />
+      )}
     </div>
   );
 }

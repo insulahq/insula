@@ -54,7 +54,9 @@ import {
   type DkimRotateResult,
   type MailSubmitRotateResult,
   type ImapSyncJob,
+  type CreateLoginPasswordResult,
 } from '@/hooks/use-email';
+import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -621,7 +623,10 @@ function MailboxesTab({
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [editingMailbox, setEditingMailbox] = useState<Mailbox | null>(null);
-  const [form, setForm] = useState({ local_part: '', password: '', display_name: '', quota_mb: '1024' });
+  // Login-passwords modal target. `initial` carries the one-time secret
+  // to reveal straight after a mailbox is created.
+  const [pwTarget, setPwTarget] = useState<{ mailbox: Mailbox; initial?: CreateLoginPasswordResult | null } | null>(null);
+  const [form, setForm] = useState({ local_part: '', display_name: '', quota_mb: '1024' });
 
   const mailboxesRaw = res?.data ?? [];
   const { sortedData: mailboxes, sortKey, sortDirection, onSort } = useSortable(mailboxesRaw, 'fullAddress');
@@ -630,9 +635,12 @@ function MailboxesTab({
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await createMailbox.mutateAsync({ local_part: form.local_part, password: form.password, display_name: form.display_name || undefined, quota_mb: Number(form.quota_mb) });
-      setForm({ local_part: '', password: '', display_name: '', quota_mb: '1024' });
+      const res = await createMailbox.mutateAsync({ local_part: form.local_part, display_name: form.display_name || undefined, quota_mb: Number(form.quota_mb) });
+      setForm({ local_part: '', display_name: '', quota_mb: '1024' });
       setShowForm(false);
+      // Open the Login passwords modal straight onto the "Initial"
+      // password reveal so the operator can hand it to the user.
+      setPwTarget({ mailbox: res.data as Mailbox, initial: res.data.initialLoginPassword });
     } catch { /* error shown */ }
   };
 
@@ -702,10 +710,6 @@ function MailboxesTab({
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
-              <input type="password" className={INPUT_CLASS + ' mt-1'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required minLength={8} data-testid="mailbox-password" />
-            </div>
-            <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Display Name</label>
               <input className={INPUT_CLASS + ' mt-1'} value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })} placeholder="John Doe" data-testid="mailbox-display-name" />
             </div>
@@ -714,6 +718,9 @@ function MailboxesTab({
               <input type="number" className={INPUT_CLASS + ' mt-1'} value={form.quota_mb} onChange={e => setForm({ ...form, quota_mb: e.target.value })} data-testid="mailbox-quota" />
             </div>
           </div>
+          <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+            <Key size={12} className="text-amber-500" /> A first login password is generated automatically and shown once — give it to the user for webmail and mail apps.
+          </p>
           {createMailbox.error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{createMailbox.error instanceof Error ? createMailbox.error.message : 'Failed'}</div>}
           <div className="flex justify-end">
             <button type="submit" disabled={createMailbox.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-mailbox">
@@ -773,6 +780,9 @@ function MailboxesTab({
                         )}
                         Webmail
                       </button>
+                      <button type="button" onClick={() => setPwTarget({ mailbox: mb as Mailbox })} className="inline-flex items-center gap-1 rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50" data-testid={`login-passwords-${mb.id}`}>
+                        <Key size={12} /> Passwords
+                      </button>
                       <button type="button" onClick={() => setEditingMailbox(mb as Mailbox)} className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700" data-testid={`edit-mailbox-${mb.id}`}>
                         <Edit2 size={12} /> Edit
                       </button>
@@ -812,6 +822,16 @@ function MailboxesTab({
           onClose={() => setEditingMailbox(null)}
         />
       )}
+
+      {pwTarget && (
+        <MailboxLoginPasswordsModal
+          tenantId={tenantId}
+          mailboxId={pwTarget.mailbox.id}
+          fullAddress={pwTarget.mailbox.fullAddress}
+          initialReveal={pwTarget.initial ?? null}
+          onClose={() => setPwTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -835,7 +855,6 @@ function EditMailboxModal({
 }) {
   const updateMailbox = useUpdateMailbox(tenantId);
   const [displayName, setDisplayName] = useState(mailbox.displayName ?? '');
-  const [password, setPassword] = useState('');
   const [quotaMb, setQuotaMb] = useState(String(mailbox.quotaMb));
   const [status, setStatus] = useState<'active' | 'disabled'>(
     mailbox.status === 'disabled' ? 'disabled' : 'active',
@@ -849,9 +868,6 @@ function EditMailboxModal({
     const input: Record<string, unknown> = {};
     if (displayName !== (mailbox.displayName ?? '')) {
       input.display_name = displayName;
-    }
-    if (password.length > 0) {
-      input.password = password;
     }
     const parsedQuota = Number(quotaMb);
     if (Number.isFinite(parsedQuota) && parsedQuota !== mailbox.quotaMb) {
@@ -930,19 +946,6 @@ function EditMailboxModal({
                 value={quotaMb}
                 onChange={(e) => setQuotaMb(e.target.value)}
                 data-testid="edit-mailbox-quota"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                New Password <span className="text-xs text-gray-500 dark:text-gray-400">(leave blank to keep current)</span>
-              </label>
-              <input
-                type="password"
-                className={INPUT_CLASS + ' mt-1'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                data-testid="edit-mailbox-password"
-                autoComplete="new-password"
               />
             </div>
             <div>

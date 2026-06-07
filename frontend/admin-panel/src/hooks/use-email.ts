@@ -481,3 +481,63 @@ export function useCancelImapSyncJob(tenantId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', tenantId] }),
   });
 }
+
+// ─── Login passwords (Stalwart app passwords) — admin/support, cross-tenant ──
+//
+// Backed by /admin/mailboxes/:mailboxId/login-passwords (ADR-049). The
+// secret is server-generated, shown ONCE in the create response.
+
+export interface AdminLoginPassword {
+  readonly id: string;
+  readonly label: string;
+  readonly createdAt: string | null;
+  readonly expiresAt: string | null;
+  readonly allowedIps: readonly string[];
+}
+
+export interface AdminCreateLoginPasswordResult {
+  readonly id: string;
+  readonly label: string;
+  readonly secret: string;
+  readonly expiresAt: string | null;
+  readonly allowedIps: readonly string[];
+}
+
+export interface AdminCreateLoginPasswordInput {
+  readonly label: string;
+  readonly expiresAt?: string | null;
+  readonly allowedIps?: readonly string[];
+}
+
+export function useAdminLoginPasswords(mailboxId?: string) {
+  return useQuery({
+    queryKey: ['admin-login-passwords', mailboxId],
+    queryFn: () =>
+      apiFetch<{ data: AdminLoginPassword[] }>(`/api/v1/admin/mailboxes/${mailboxId}/login-passwords`),
+    enabled: !!mailboxId,
+  });
+}
+
+export function useAdminCreateLoginPassword(mailboxId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: AdminCreateLoginPasswordInput) =>
+      apiFetch<{ data: AdminCreateLoginPasswordResult }>(
+        `/api/v1/admin/mailboxes/${mailboxId}/login-passwords`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-login-passwords', mailboxId] }),
+  });
+}
+
+export function useAdminRevokeLoginPassword(mailboxId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (credentialId: string) =>
+      apiFetch<void>(
+        `/api/v1/admin/mailboxes/${mailboxId}/login-passwords/${credentialId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-login-passwords', mailboxId] }),
+  });
+}

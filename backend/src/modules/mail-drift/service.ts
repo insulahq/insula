@@ -16,7 +16,7 @@
  * mail-stack-consolidate.sh or HA failback workflow out-of-band.
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { mailDriftItems, emailDomains, mailboxes, domains } from '../../db/schema.js';
@@ -271,7 +271,6 @@ export async function recreateDriftItemEmpty(
       .select({
         id: mailboxes.id,
         fullAddress: mailboxes.fullAddress,
-        passwordHash: mailboxes.passwordHash,
         emailDomainId: mailboxes.emailDomainId,
       })
       .from(mailboxes)
@@ -290,13 +289,13 @@ export async function recreateDriftItemEmpty(
         409,
       );
     }
-    if (!mbRow.passwordHash) {
-      throw new ApiError(
-        'MAILBOX_PASSWORD_HASH_MISSING',
-        `Mailbox ${mbRow.fullAddress} has no stored password hash — cannot recreate without password reset`,
-        409,
-      );
-    }
+    // ADR-049: the platform no longer stores a primary password
+    // (generate-and-forget). Recreating a drifted mailbox mints a FRESH
+    // hidden primary — the old one was unrecoverable once Stalwart lost
+    // the account, and no human used it anyway. The user's login
+    // passwords were lost with the account; the operator issues new ones
+    // from the mailbox's Login passwords section after recovery.
+    const recreatedPrimarySecret = randomBytes(24).toString('base64url');
 
     // Resolve the parent Domain's Stalwart ID — `x:Account/set` needs
     // `domainId` to bind the User to a domain, and rejects payloads
@@ -351,7 +350,7 @@ export async function recreateDriftItemEmpty(
             credentials: {
               '0': {
                 '@type': 'Password',
-                secret: mbRow.passwordHash,
+                secret: recreatedPrimarySecret,
                 allowedIps: {},
                 expiresAt: null,
               },
