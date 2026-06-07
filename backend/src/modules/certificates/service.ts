@@ -11,7 +11,7 @@
  *   - ingress-routes/routes.ts createRoute/deleteRoute
  *   - email-domains/service.ts enableEmail/disableEmail (for webmail)
  *
- * Strategy — see docs/06-features/TLS_CERTIFICATE_STRATEGY.md for the
+ * Strategy — see docs/architecture/TLS_CERTIFICATE_STRATEGY.md for the
  * full write-up. Summary:
  *
  *   - dnsMode=primary + PowerDNS + production → wildcard DNS-01 cert
@@ -556,7 +556,7 @@ export interface EnsureMailServerCertificateResult {
  * operators know exactly which Secret to mount into the Stalwart
  * StatefulSet via their production overlay. See
  * `k8s/overlays/production/stalwart/` for the overlay patch pattern
- * and `docs/04-deployment/MAIL_SERVER_OPERATIONS.md` for the manual
+ * and `docs/operations/MAIL_SERVER_OPERATIONS.md` for the manual
  * bootstrap steps.
  */
 export async function ensureMailServerCertificate(

@@ -918,7 +918,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // a super_admin-only operator tool for PG-major-version migrations
       // (curl POST /api/v1/system-backup/pg-dump). Scheduled exports are
       // no longer offered — barman-cloud base + WAL is the supported
-      // day-to-day backup pathway. See docs/02-operations/PG_MAJOR_UPGRADE.md.
+      // day-to-day backup pathway. See docs/operations/PG_MAJOR_UPGRADE.md.
 
 
       // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM

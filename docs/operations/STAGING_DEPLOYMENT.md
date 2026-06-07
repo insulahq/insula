@@ -1,0 +1,400 @@
+# Staging Deployment — First Real Server
+
+**Status:** 2026-04-21 — first staging bootstrap procedure.
+
+> **Related:**
+> - [STAGING_PREFLIGHT_CHECKLIST.md](./STAGING_PREFLIGHT_CHECKLIST.md) — one-page operator checklist for go/no-go
+> - [MULTI_NODE_ROADMAP.md](../history/05-infrastructure/MULTI_NODE_ROADMAP.md) — Phase 0 baseline
+> - [LOCAL_MULTINODE_VM_SETUP.md](../development/LOCAL_MULTINODE_VM_SETUP.md) — future local mirror of staging (deferred)
+> - [HA_MIGRATION_RUNBOOK.md](HA_MIGRATION_RUNBOOK.md) — how to add workers / go HA later
+> - [ADR-022](../architecture/adr/ARCHITECTURE_DECISION_RECORDS.md) — external services split
+> - `scripts/bootstrap.sh` — the actual runner
+
+---
+
+## Goal
+
+Bring up the first real (non-DinD) server as the staging environment. Single-node k3s + Longhorn + platform stack + Flux reconciling from the `staging` branch.
+
+This document is the end-to-end procedure. It assumes no prior deployment — the server is fresh, the DB has no data, and destructive provisioning is acceptable.
+
+---
+
+## Prerequisites
+
+### Server specs (minimum)
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| vCPU | 4 | 8 |
+| RAM | 8 GB | 16 GB |
+| Disk | 80 GB SSD | 200 GB SSD |
+| Kernel | Linux 5.10+ with `iscsi_tcp`, `nfs` modules | 6.x |
+| Ports | 22/tcp (SSH), 80/tcp, 443/tcp, 6443/tcp (k3s API) | Plus 51820/udp (WireGuard) if mesh |
+
+Longhorn requires iSCSI + NFS kernel support. Most Debian/Ubuntu/Rocky/AlmaLinux cloud images have both. Check with:
+
+```bash
+lsmod | grep -E 'iscsi|nfs'
+apt-get install -y open-iscsi nfs-common  # Debian/Ubuntu — bootstrap.sh installs this but ensure no SELinux blocks
+```
+
+### Mesh / VPN underlay (sysadmin step BEFORE bootstrap)
+
+`bootstrap.sh` does NOT install or enrol VPN/mesh **clients**. It DOES install kernel `wireguard-tools` (Calico needs it). Bring up your underlay first, then bootstrap auto-detects it:
+
+```bash
+# NetBird (sysadmin installs the client + enrols)
+curl -fsSL https://pkgs.netbird.io/install.sh | sh
+netbird up --management-url https://vpn.example.com --setup-key <UUID>
+
+# OR Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --auth-key tskey-...
+```
+
+When `wt0` (NetBird) or `tailscale0` is up at install time with an IP in `100.64.0.0/10`, bootstrap defaults `--cluster-network-cidr=100.64.0.0/10` and pins k3s `--node-ip` to the mesh IP — no flag required. For non-mesh underlays (Hetzner Cloud VLAN, AWS VPC, raw WireGuard, ZeroTier), pass `--cluster-network-cidr <CIDR>` explicitly. See [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md) for the three-mode firewall design.
+
+### DNS
+
+Point your apex domain (e.g. `staging.example.com`) and wildcards at the server's public IP:
+
+```
+staging.example.com.       A     <server-public-ip>
+*.staging.example.com.     A     <server-public-ip>
+admin.staging.example.com. A     <server-public-ip>
+client.staging.example.com. A    <server-public-ip>
+```
+
+The platform uses `admin.<base>`, `client.<base>`, `dex.<base>`, `webmail.<base>`, `mail.<base>`, `stalwart.<base>` — a wildcard plus explicit A records is the cleanest setup.
+
+**Verify DNS propagation before running bootstrap** — cert-manager's HTTP-01 solver will hang for up to 5 minutes if any hostname doesn't resolve:
+
+```bash
+# From your workstation — all should return the server IP
+for host in staging.example.com admin.staging.example.com \
+            client.staging.example.com dex.staging.example.com \
+            mail.staging.example.com webmail.staging.example.com \
+            stalwart.staging.example.com some-wildcard-test.staging.example.com; do
+  echo -n "$host → "
+  dig +short "$host" @1.1.1.1 | head -1
+done
+```
+
+If anything is empty or wrong, fix DNS and wait for TTL before bootstrapping.
+
+### TLS (Let's Encrypt via cert-manager)
+
+`bootstrap.sh` installs two `ClusterIssuer` objects: `letsencrypt-staging-http01` (test CA, non-trusted certs, 50k req/hr rate limit) and `letsencrypt-prod-http01` (real trusted certs, 50/week rate limit per hostname).
+
+The `k8s/overlays/development/` overlay pins ingresses to `letsencrypt-staging-http01` — you get working HTTPS but browsers will show a "not secure" warning. **This is intentional** for staging: it avoids burning the LE-prod rate-limit budget while iterating. Flip to `letsencrypt-prod-http01` in `ingress-patch.yaml` only once the setup is stable and you're ready to expose real users.
+
+### SSH access
+
+- A non-root user with `sudo` (the bootstrap runs most steps as root internally but expects `sudo` to be passwordless for the invoking user if remote)
+- SSH key in `~/.ssh/authorized_keys` for the operator
+
+### GitHub / image access
+
+- Images are public on `ghcr.io/insulahq/insula/...` — no auth needed for pulls
+- Flux needs HTTPS access to GitHub to watch the `staging` branch
+- GitHub repo is public — no PAT required. If the repo later goes private, `bootstrap.sh` will need to be extended to accept a `--flux-github-token` argument that gets written to a `flux-system-git-auth` secret before Flux is installed.
+
+### Secrets (all auto-generated by `bootstrap.sh`)
+
+**The operator does NOT need to pre-generate or supply any secrets.** `bootstrap.sh` creates all platform secrets with `openssl rand` if they don't already exist. This includes:
+
+| Secret | Namespace / Name | Used by |
+|---|---|---|
+| DB password | `platform/platform-db-credentials` | Backend ↔ Postgres |
+| JWT signing key | `platform/platform-jwt-secret` | Auth middleware |
+| OIDC encryption key | `platform/platform-secrets` (`platform-encryption-key`) | Storage-lifecycle + OIDC state encryption |
+| Platform internal secret | `platform/platform-secrets` (`internal-secret`) | Service-to-service auth |
+| OAuth2 proxy client secret + cookie secret | `platform/oauth2-proxy-config` | oauth2-proxy ↔ Dex |
+| Dex storage credentials | `platform/dex-*` | Dex OIDC provider |
+| Admin seed credentials | printed at end of bootstrap + `/etc/platform/admin-credentials` on the server | First admin login |
+
+**Retrieve generated secrets after bootstrap** (if you need them for CLI tooling or debugging):
+
+```bash
+# Full map of generated secrets
+kubectl -n platform get secrets
+
+# Read one (rare — stick to kubectl port-forward + API for normal ops)
+kubectl -n platform get secret platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d
+```
+
+**Do not export these into Git.** Sealed-Secrets is installed to support committing encrypted overrides later, but the default bootstrap doesn't commit anything — everything lives cluster-local. The Sealed-Secrets **public cert** is extracted and printed post-install for use with `kubeseal` if you want to commit overrides later.
+
+### Backup target (mandatory for archive-to-* flows, optional for snapshot-only)
+
+The platform's storage-lifecycle supports three backup backends: `hostpath` (default, local disk on the node — fine for initial staging), `s3`, `ssh`. Until a backup target is configured, archive flows remain local-only. See [`ADR-028`](../architecture/adr/ADR-028-backup-architecture.md) for the full model.
+
+For the first staging bootstrap, **hostpath is acceptable** — archives land at `/var/lib/platform/snapshots/`. Configure S3 or SSH later via Admin Panel → Settings → Backup.
+
+---
+
+## Pipeline overview
+
+```
+  Developer push to main
+    └─> ci-backend / ci-admin-panel / ci-tenant-panel / ci-infrastructure
+    └─> build-deploy.yml — builds + pushes images to GHCR with tags:
+          SHA, latest, YYYYMMDDHHmmss-SHA
+    └─> Flux on DEV cluster picks up `latest`
+
+  Merge main → staging  (manual or automated QA gate)
+    └─> Flux on STAGING cluster picks up YYYYMMDDHHmmss-SHA pattern
+    └─> Auto-reconciles new images onto staging
+
+  Tag release (v1.2.3)
+    └─> release.yml publishes semver-tagged images
+    └─> release.yml opens PR to `stable` branch with pinned versions
+    └─> Merge to `stable` → Flux on PRODUCTION reconciles
+```
+
+---
+
+## Step-by-step bootstrap
+
+### 1. Pre-flight locally
+
+Run CI checks against the branch you're about to deploy:
+
+```bash
+# From your workstation
+git fetch origin
+git log origin/main..origin/staging --oneline   # what will land?
+gh run list --workflow=build-deploy.yml --branch=main --limit=3  # confirm images exist
+```
+
+Verify the three kustomize overlays build cleanly (local sanity):
+
+```bash
+kubectl kustomize k8s/overlays/development > /tmp/staging-manifests.yaml
+wc -l /tmp/staging-manifests.yaml
+grep -c '^kind: ' /tmp/staging-manifests.yaml   # rough resource count
+```
+
+If CI is green (all `ci-*` workflows succeeded for the last commit on `main`) and `build-deploy.yml` published images, you're safe to proceed.
+
+### 2. Bootstrap the server
+
+From your workstation:
+
+```bash
+# Remote (SSH-driven) bootstrap
+./scripts/bootstrap.sh \
+  --remote <server-public-ip> \
+  --ssh-user <admin-user> \
+  --ssh-key ~/.ssh/id_ed25519 \
+  --domain staging.example.com \
+  --email ops@example.com \
+  --env staging
+```
+
+What this does:
+
+1. Copies `bootstrap.sh` to `/tmp/` and executes it on the remote
+2. **Phase 1** — hardens SSH, installs nftables/fail2ban, sets up WireGuard + NetBird (if mesh required)
+3. **Phase 2** — installs **k3s `v1.33.10+k3s1`** server + **Calico `v3.31.5`** CNI
+4. **Phase 3** — installs Helm, **NGINX Ingress chart `4.15.1`**, **cert-manager `v1.20.2`** (with both LE-staging and LE-prod ClusterIssuers), **Sealed Secrets chart `2.17.4`**, **Longhorn `v1.11.1`** (pinned), Flux v2 watching the `staging` branch, and generates + applies all platform secrets (see [Secrets](#secrets-all-auto-generated-by-bootstrapsh))
+5. **Phase 4** — verifies everything is up, applies the staging overlay, prints a summary including seeded admin credentials
+
+All version pins above come from `scripts/bootstrap.sh`. If that file ever drifts from this doc, **`bootstrap.sh` is the source of truth** — update this doc to match.
+
+Typical runtime: ~10–15 minutes.
+
+### 3. Verify Longhorn
+
+```bash
+# On the server (or via kubectl from your laptop with fetched kubeconfig)
+kubectl -n longhorn-system get pods
+kubectl get storageclass
+# Expected: longhorn (default), local-path (non-default fallback)
+
+# Longhorn UI (optional — exposed via ingress only if you opt in)
+kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
+# Open http://localhost:8080
+```
+
+### 4. Verify Flux reconciliation
+
+```bash
+flux get kustomizations -A
+# platform-staging — status should be Ready=True, last reconciled recently
+
+flux get sources git -A
+# flux-system — pulling from https://github.com/insulahq/insula branch=staging
+
+flux get images all -A
+# shows image policies + repositories Flux is tracking
+```
+
+Force an immediate reconcile if needed:
+
+```bash
+flux reconcile source git flux-system
+flux reconcile kustomization platform-staging
+```
+
+### 5. Smoke test
+
+```bash
+# Platform API should respond at its ingress — `-k` tolerates the LE-staging
+# (non-trusted) cert on first run; drop `-k` once you flip to LE-prod
+curl -fsSLk https://admin.staging.example.com/api/v1/healthz
+# {"status":"ok","version":"..."}
+
+# Login to admin panel in a browser
+open https://admin.staging.example.com/
+```
+
+First-time login uses the seeded admin credentials printed at the end of `bootstrap.sh` (also written to `/etc/platform/admin-credentials` on the server — chmod 600, **remove after setting up a real admin user**).
+
+#### Extended post-bootstrap sanity
+
+Run these from your workstation after fetching the kubeconfig. **Important:** `:6443` is scoped to the cluster's private/mesh CIDR (see [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md)) — your laptop must reach the cluster via the mesh (NetBird/Tailscale) or be on the same VPC/VLAN. Substitute `<mesh-or-private-ip>` (e.g. the node's `wt0` IP) for the public address:
+
+```bash
+scp <user>@<server>:/etc/rancher/k3s/k3s.yaml ~/.kube/staging-config
+sed -i.bak "s/127.0.0.1/<mesh-or-private-ip>/" ~/.kube/staging-config
+export KUBECONFIG=~/.kube/staging-config
+```
+
+If your laptop isn't on the cluster's network, SSH-tunnel and use the in-server kubeconfig instead:
+```bash
+ssh -L 6443:127.0.0.1:6443 root@<server>      # in one shell
+KUBECONFIG=~/.kube/staging-config kubectl get nodes
+```
+
+```bash
+# 1. Cluster health
+kubectl get nodes
+kubectl get pods -A | grep -vE 'Running|Completed'  # should be empty
+
+# 2. Storage is Longhorn
+kubectl get storageclass
+# longhorn should be marked (default)
+
+# 3. Certificates issued
+kubectl get certificates -A
+# All Ready=True within a few minutes
+
+# 4. Flux reconciled
+flux get kustomizations -A
+flux get sources git -A
+
+# 5. Smoke test against the deployed API
+./scripts/smoke-test.sh
+# Set API_URL=https://admin.staging.example.com to point at staging
+API_URL=https://admin.staging.example.com ./scripts/smoke-test.sh
+```
+
+Expected smoke result for real staging (mail server running): **all 37 pass**. If mail TCP tests fail, check the Stalwart mail pod logs — unlike DinD where mail is optional, on real staging mail should be reachable on the configured NodePorts.
+
+### 6. Take your first client through the lifecycle
+
+Exercise the platform to confirm the full storage path works with Longhorn:
+
+```
+Admin Panel → Clients → Add Client
+  → provision a test client
+  → deploy a small catalog workload (e.g. static-nginx)
+  → verify PVC bound (kubectl get pvc -n client-...)
+  → verify Longhorn volume has 1 replica (Longhorn UI or `kubectl -n longhorn-system get volumes.longhorn.io`)
+  → suspend, resume, snapshot, restore, delete
+```
+
+If every state transition works and the snapshot tarball lands at `/var/lib/platform/snapshots/` on the node, staging is fully functional.
+
+---
+
+## CI verification checklist
+
+Before the first deploy, confirm:
+
+- [x] `ci-backend.yml` — lint + typecheck + test with postgres+redis services
+- [x] `ci-admin-panel.yml`, `ci-tenant-panel.yml` — lint + typecheck + test + build
+- [x] `ci-api-contracts.yml` — build + typecheck
+- [x] `ci-infrastructure.yml` — **now builds all three overlays (base, dev, staging, production)** + shellcheck + catalog image builds
+- [x] `build-deploy.yml` — publishes backend, admin-panel, tenant-panel to GHCR with `<sha>`, `latest`, and `<timestamp>-<sha>` tags on `main`
+- [x] `ci-sftp-gateway.yml` + `ci-file-manager.yml` — publish their own images with Trivy scans
+- [x] `release.yml` — on `v*.*.*` tag: publishes semver-tagged images, creates GitHub Release, opens PR to `stable` branch
+
+Gaps to fix before production rollout (not blocking staging):
+
+- [ ] No image signing (cosign / SLSA provenance) — acceptable for staging, should be added before production
+- [ ] No automated security scan on backend/panel images (only sftp-gateway + file-manager have Trivy)
+- [ ] No integration test that exercises the Longhorn storage path end-to-end in CI (the platform test suite skips anything requiring a live k3s + Longhorn)
+
+---
+
+## First-staging rollout checklist
+
+- [ ] Server provisioned with specs ≥ minimum
+- [ ] DNS A records + wildcard pointing at server IP
+- [ ] SSH access verified (`ssh admin@server uptime`)
+- [ ] All GitHub Actions green on `main`, images exist in GHCR
+- [ ] Local `kubectl kustomize k8s/overlays/development` succeeds
+- [ ] Run `bootstrap.sh --remote <ip> --domain <fqdn> --email <ops-email> --env staging`
+- [ ] Longhorn v1.11.1 running (`kubectl -n longhorn-system get pods`)
+- [ ] Flux reconciled the staging overlay (`flux get kustomizations`)
+- [ ] Platform API responds at `https://admin.<domain>/api/v1/healthz`
+- [ ] Admin login works; first seed user created
+- [ ] Provision one test client end-to-end
+- [ ] Take one snapshot, verify archive lands on disk + DB row `status=ready`
+- [ ] Suspend + resume the test client; verify ingress redirect then restore
+- [ ] Remove the `/etc/platform/admin-credentials` file after seeding real admins
+
+---
+
+## Known limitations of single-node staging
+
+- Longhorn runs with `replicaCount=1` (HA requires ≥2 nodes)
+- Platform services (backend, panels, redis) run with single replicas — no pod-anti-affinity effect until workers join
+- A node reboot takes the whole staging env down for ~30 s–2 min
+- Backups at this stage are hostpath-local; add an S3/SSH backup target before considering this "production-equivalent"
+
+Adding workers or going HA → see `HA_MIGRATION_RUNBOOK.md`.
+
+---
+
+## Real-server gotchas (differences from DinD local dev)
+
+Behaviors that differ from `./scripts/local.sh`:
+
+| Area | DinD | Real staging |
+|---|---|---|
+| StorageClass | `local-path` (default) | `longhorn` (default), `local-path` fallback |
+| Snapshot storage | PVC-local on node | Longhorn volume snapshots (real RWX) |
+| Mail TCP ports | Usually refuse (mail pod off) — smoke 33/37 OK | Must respond — smoke 37/37 |
+| TLS certs | Self-signed via mkcert, trusted locally | LE-staging (non-trusted) by default, LE-prod after flip |
+| DNS | `/etc/hosts` entries like `admin.k8s-platform.test` | Real DNS must resolve from public internet |
+| Ingress ports | Mapped to host ports `:2010`/`:2011` | Standard `:80`/`:443` |
+| k3s API access | `dind:6443` inside DinD, proxied to host `:2016` | Direct `:6443` on server IP |
+| iSCSI / NFS kernel modules | Host provides them, DinD inherits via privileged | Native — ensure `open-iscsi` and `nfs-common` packages installed |
+| `DOCKER_HOST=tcp://dind:2375` | Relevant (integration tests use it) | Not relevant — standard docker socket |
+| `--skip-longhorn` flag | Often used for fast local iteration | Do **not** use on staging — Longhorn is the whole point |
+
+If you find a script that assumes one environment over the other, fix it to branch on `$PLATFORM_ENV` rather than inferring from context.
+
+---
+
+## Rollback procedure
+
+If the bootstrap misbehaves and you need to reset:
+
+```bash
+# On the server, as root
+/usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
+rm -rf /var/lib/rancher /etc/rancher /var/lib/platform /etc/platform
+# Optional: wipe Longhorn state on disk
+rm -rf /var/lib/longhorn
+# Optional: clean up iptables/nftables
+nft flush ruleset 2>/dev/null || true
+
+# Then re-run bootstrap.sh
+```
+
+Destructive migration is acceptable on staging (no production data).

@@ -1,6 +1,6 @@
 # Releasing Insula
 
-Releases are **ad-hoc** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
+Releases are **ad-hoc** ([ADR-045](docs/architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
 Decision 2) — cut one when accumulated changes warrant it, not on a fixed
 schedule. Versioning is **CalVer `YYYY.M.PATCH`** (no leading-zero month, so it
 stays valid SemVer). The next version is derived from existing git tags, not a

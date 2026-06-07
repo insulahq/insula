@@ -1,7 +1,7 @@
 /**
  * Cluster-wide concurrency gate for tenant-bundle restic streams.
  *
- * Implements ADR-036 "Locked decisions" #5 — the dormant
+ * Implements ADR-047 "Locked decisions" #5 — the dormant
  * `global_max_in_flight` cap that existed in the schema since
  * migration 0093 but had no runtime enforcement.
  *

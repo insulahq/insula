@@ -1,5 +1,5 @@
 /**
- * tenant_restic_repo_state upsert helpers (Phase 1 piece #6, ADR-036).
+ * tenant_restic_repo_state upsert helpers (Phase 1 piece #6, ADR-047).
  *
  * After a successful `restic backup` snapshot, the orchestrator
  * upserts a row that records:

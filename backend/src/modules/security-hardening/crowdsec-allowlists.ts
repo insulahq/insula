@@ -211,7 +211,7 @@ export async function removeAllowlistEntry(
  * (e.g. operator needs to flip L4 off but isIpInAllowlist fails-closed
  * → refuses the toggle), operator can delete the platform_setting key
  * directly via psql, or restart the CrowdSec pod to recover LAPI. See
- * docs/02-operations/CROWDSEC_CONSOLE.md.
+ * docs/operations/CROWDSEC_CONSOLE.md.
  */
 export async function isIpInAllowlist(
   kubeconfigPath: string | undefined,

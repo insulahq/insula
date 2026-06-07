@@ -14,7 +14,7 @@
 #      fields.
 #
 # Lock-out drill: a real `--ssh-via-mesh` test against a live host
-# is documented in docs/04-deployment/SECURITY_HARDENING.md — that's
+# is documented in docs/operations/SECURITY_HARDENING.md — that's
 # the integration verification an operator runs WITH console
 # access.
 

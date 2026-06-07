@@ -1,5 +1,5 @@
 /**
- * Restore executor: `mailboxes-by-address` (Phase 2 of ADR-036 rewrite,
+ * Restore executor: `mailboxes-by-address` (Phase 2 of ADR-047 rewrite,
  * 2026-05-11).
  *
  * Switched from IMAP APPEND (`restore-mailbox.py`) to JMAP Blob/upload +

@@ -141,7 +141,7 @@ export default function UpgradesPage() {
         </p>
         <p className="text-xs text-gray-400 mt-1">
           Scripts are embedded in the platform-ops binary and run per node. See the{' '}
-          <a href="https://github.com/insulahq/insula/blob/main/docs/02-operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md" target="_blank" rel="noreferrer" className="underline hover:text-gray-600">upgrades runbook</a>.
+          <a href="https://github.com/insulahq/insula/blob/main/docs/operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md" target="_blank" rel="noreferrer" className="underline hover:text-gray-600">upgrades runbook</a>.
         </p>
       </div>
 

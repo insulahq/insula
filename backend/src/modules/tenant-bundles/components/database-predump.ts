@@ -1,5 +1,5 @@
 /**
- * Pre-capture database dump hook (Phase 1 of tenant-backup-v2, ADR-036).
+ * Pre-capture database dump hook (Phase 1 of tenant-backup-v2, ADR-047).
  *
  * Runs BEFORE the files-component restic capture. For every tenant
  * deployment whose catalog entry is type='database', it asks SQL

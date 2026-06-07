@@ -8,7 +8,7 @@
  * agent via the `PRIVATE_WORKER_TOKEN` env var. The platform persists
  * only the SHA-256 hash of the inner secret, never the plaintext.
  *
- * See docs/04-deployment/PRIVATE_WORKER.md for the design in full.
+ * See docs/operations/PRIVATE_WORKER.md for the design in full.
  */
 
 import crypto from 'crypto';

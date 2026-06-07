@@ -559,7 +559,7 @@ describe('deriveRegionId', () => {
 });
 
 describe('buildSnapshotTags', () => {
-  it('encodes the full multi-region tag set per ADR-036', () => {
+  it('encodes the full multi-region tag set per ADR-047', () => {
     const tags = buildSnapshotTags({
       bundleId: 'bk-123',
       tenantId: 'tenant-abc',

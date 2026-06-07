@@ -20,7 +20,7 @@ resources:
   #
   # Requires a one-time operator step to generate stalwart-admin-creds
   # (the bcrypt-hashed admin password Secret consumed by the Deployment).
-  # See docs/02-operations/STALWART_DEPLOYMENT.md.
+  # See docs/operations/STALWART_DEPLOYMENT.md.
   - stalwart-mail/
   # Cut 3 (2026-05-04): Roundcube webmail is always deployed alongside
   # Stalwart on staging+production. Operator-bootstrap step creates the
@@ -96,7 +96,7 @@ components:
   # nodes labelled insula.host/node-role=server. The
   # component excludes dex because dex is overlay-only (not in base /
   # not in production); its matching patch is wired inline below.
-  # See docs/07-reference/NODE_ROLE_TAXONOMY.md for apply-order notes.
+  # See docs/architecture/NODE_ROLE_TAXONOMY.md for apply-order notes.
   - ../../components/system-node-affinity
 
 patches:

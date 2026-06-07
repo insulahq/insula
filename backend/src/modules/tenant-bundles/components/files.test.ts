@@ -1,5 +1,5 @@
 /**
- * Files component Job-spec tests (Phase 1 tenant-backup-v2 / ADR-036).
+ * Files component Job-spec tests (Phase 1 tenant-backup-v2 / ADR-047).
  *
  * Pipeline: tar | curl --upload-file - to platform-api restic-stream.
  * No gzip (restic dedups raw blocks). No tree.jsonl.gz (replaced by

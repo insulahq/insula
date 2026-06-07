@@ -162,7 +162,7 @@ export async function fetchExpiringCerts(
 // ─── Backup target health (Phase 2.5.4) ─────────────────────────────────
 //
 // The platform's backup target table lives in `backup_configurations`
-// (see docs/02-operations/TENANT_BACKUP.md). We query a narrow set of
+// (see docs/operations/TENANT_BACKUP.md). We query a narrow set of
 // columns + the most-recent storage_snapshots row per target to
 // surface "last-successful-snapshot age". The exact column names are
 // resolved via raw SQL because the security-hardening module is

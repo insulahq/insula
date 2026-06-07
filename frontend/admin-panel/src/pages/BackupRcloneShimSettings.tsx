@@ -78,7 +78,7 @@ export default function BackupRcloneShimSettings(): React.ReactElement {
           DaemonSet that translates S3 → the operator-selected
           upstream backend per class. See{' '}
           <code className="rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-800">
-            docs/02-operations/BACKUP_RCLONE_SHIM.md
+            docs/operations/BACKUP_RCLONE_SHIM.md
           </code>
           .
         </p>

@@ -3,7 +3,7 @@
 All notable changes to Insula are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
-is **CalVer `YYYY.M.PATCH`** (no leading-zero month — valid SemVer; [ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)).
+is **CalVer `YYYY.M.PATCH`** (no leading-zero month — valid SemVer; [ADR-045](docs/architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)).
 Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEASING.md)).
 
 > A `### BREAKING` subsection in a release marks changes that break operators or
@@ -57,7 +57,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   history.
 
 ### Added
-- **Operator runbook `docs/02-operations/MAIL_STORE_SPACE_RECLAIM.md`** —
+- **Operator runbook `docs/operations/MAIL_STORE_SPACE_RECLAIM.md`** —
   reclaiming disk after bulk mail deletion (measured: zero reclaim after
   11.5h idle; purge→flush→compaction→blob-unref chain; offline `ldb
   compact` procedure; upstream blob-GC contribution note).
@@ -200,7 +200,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   9.6 GB → 641 MB, cluster healthy 3/3, archive failures stopped.
 
 ### Added
-- **`platform-ops dr` disaster-recovery subcommands** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
+- **`platform-ops dr` disaster-recovery subcommands** ([ADR-045](docs/architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
   W17, PR 10): `dr verify` (read-only: age-decrypt + print a bundle's manifest —
   no DB, no cluster, runs on a bare jump host) and `dr restore` (`--mode partial`
   imports backup-config rows read-only; `--mode full` runs CNPG recovery + mail
@@ -225,7 +225,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.6.2] - 2026-06-01
 
 ### Added
-- **`platform-ops` operator CLI** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
+- **`platform-ops` operator CLI** ([ADR-045](docs/architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
   W17): a self-contained Node SEA binary (`scripts/build-platform-ops.sh`) that
   imports the backend TS modules directly — no logic duplication. First tranche
   of read-only subcommands: `version` (offline-first; enriches from the DB when
@@ -235,7 +235,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   bootstrap installs + verifies them (see W8). Covered by Vitest unit tests +
   `scripts/test-build-platform-ops.sh` (real build + sign→verify→install
   roundtrip, CI job `platform-ops binary build`).
-- **Bootstrap phase library + platform-ops install** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)
+- **Bootstrap phase library + platform-ops install** ([ADR-045](docs/architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
   W8): `scripts/lib/bootstrap-phases.sh` now owns a `phase_platform_ops` step
   that bootstrap.sh runs at end-of-run on the first server — it cosign-verifies
   and atomically installs the `platform-ops` operator CLI to `/usr/local/bin`,
@@ -263,7 +263,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.6.1] - 2026-06-01
 
 ### Added
-- **Version spine** ([ADR-045](docs/07-reference/ADR-045-versioning-release-cycle-and-upgrade.md)):
+- **Version spine** ([ADR-045](docs/architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)):
   `platform/VERSION` (CalVer) is the single source of truth, flowing through CI →
   the `platform-version` ConfigMap → backend → DB → `GET /api/v1/admin/platform/version`,
   which now returns `{ installed, running, available }`. The backend persists

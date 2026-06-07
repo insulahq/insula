@@ -5,7 +5,7 @@ import { z } from 'zod';
 // Opens an ephemeral privileged Pod on the target k3s node and exec's
 // `nsenter -t 1 ...` to break into PID 1 host namespaces. See
 // backend/src/modules/node-terminal/* for the implementation and
-// docs/02-operations/NODE_TERMINAL.md for the operator runbook.
+// docs/operations/NODE_TERMINAL.md for the operator runbook.
 //
 // Authorization:
 //   • super_admin role ONLY (defence in depth via requirePanel('admin')

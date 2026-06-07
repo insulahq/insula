@@ -13,7 +13,7 @@
 # IF NOT EXISTS guards.
 #
 # For production: duplicate this SQL into a migration or manual
-# bootstrap step. See docs/04-deployment/MAIL_SERVER_OPERATIONS.md.
+# bootstrap step. See docs/operations/MAIL_SERVER_OPERATIONS.md.
 
 set -eu
 

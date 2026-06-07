@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 // Per-tenant tunnel agents that let a service running outside the cluster
 // (home box, NAS, on-prem VPS) be exposed under the platform's ingress.
-// See docs/04-deployment/PRIVATE_WORKER.md for the full design.
+// See docs/operations/PRIVATE_WORKER.md for the full design.
 
 // ─── Input Schemas ──────────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ export const privateWorkerResponseSchema = z.object({
 export const privateWorkerSecretResponseSchema = z.object({
   workerId: z.string(),
   // Base64url-encoded JSON blob the agent reads from the
-  // PRIVATE_WORKER_TOKEN env var. See docs/04-deployment/PRIVATE_WORKER.md
+  // PRIVATE_WORKER_TOKEN env var. See docs/operations/PRIVATE_WORKER.md
   // for the inner format.
   token: z.string(),
   // Convenience copy-paste artefacts for the tenant UI.

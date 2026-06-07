@@ -26,7 +26,7 @@
 # Stalwart DAV endpoints (CardDAV / CalDAV / WebDAV) are NOT affected
 # by this — native DAV clients (Thunderbird, iOS, macOS Contacts/
 # Calendar) keep working regardless of the toggles. See ADR-039 +
-# docs/06-features/BULWARK_WEBMAIL.md for the visibility contract.
+# docs/features/BULWARK_WEBMAIL.md for the visibility contract.
 apiVersion: v1
 kind: ConfigMap
 metadata:

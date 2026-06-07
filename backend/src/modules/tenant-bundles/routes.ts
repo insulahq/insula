@@ -370,7 +370,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       platformVersion,
       secretsKeyHex,
       platformApiUrl,
-      // Phase 1.5+ (ADR-036): orchestrator derives the snapshot-tag
+      // Phase 1.5+ (ADR-047): orchestrator derives the snapshot-tag
       // region id from PLATFORM_BASE_DOMAIN and persists
       // tenant_restic_repo_state with it.
       platformBaseDomain: app.config.PLATFORM_BASE_DOMAIN ?? app.config.INGRESS_BASE_DOMAIN,

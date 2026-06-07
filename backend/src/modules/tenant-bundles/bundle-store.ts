@@ -3,7 +3,7 @@
  * component-oriented backup bundles.
  *
  * See ADR-032 for the contract this interface locks down, and
- * docs/06-features/BACKUP_COMPONENT_MODEL.md for the bundle layout.
+ * docs/architecture/BACKUP_COMPONENT_MODEL.md for the bundle layout.
  *
  * Concrete implementations live next to this file:
  *   - local-hostpath-backup-store.ts  → 'hostpath'

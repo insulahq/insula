@@ -113,7 +113,7 @@ cluster (so it pulls images your CI built), repoint the image org once:
 ./scripts/preflight-image-org.sh        # detects your fork from `git remote`
 ```
 
-Full details: [docs/04-deployment/FORK-AND-DEPLOY.md](docs/04-deployment/FORK-AND-DEPLOY.md).
+Full details: [docs/development/FORK-AND-DEPLOY.md](docs/development/FORK-AND-DEPLOY.md).
 
 ## Repository layout
 
@@ -138,12 +138,12 @@ Nextcloud, …) come from the
 
 | Topic | Location |
 |-------|----------|
-| Platform architecture | `docs/01-core/PLATFORM_ARCHITECTURE.md` |
-| Database schema | `docs/01-core/DATABASE_SCHEMA.md` |
-| Management API spec | `docs/04-deployment/MANAGEMENT_API_SPEC.md` |
+| Platform architecture | `docs/architecture/PLATFORM_ARCHITECTURE.md` |
+| Database schema | `docs/architecture/DATABASE_SCHEMA.md` |
+| Management API spec | `docs/architecture/MANAGEMENT_API_SPEC.md` |
 | Release & upgrade plan | `docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md` |
-| Fork & deploy | `docs/04-deployment/FORK-AND-DEPLOY.md` |
-| Architecture decisions | `docs/07-reference/` (ADRs) |
+| Fork & deploy | `docs/development/FORK-AND-DEPLOY.md` |
+| Architecture decisions | `docs/architecture/adr/` |
 
 ## Contributing & security
 

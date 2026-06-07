@@ -1,6 +1,6 @@
 # rclone-serve-s3 shim evaluation
 
-Empirical evaluator for the `rclone serve s3` shim documented in [ADR-043](../../docs/07-reference/ADR-043-rclone-s3-shim.md). The ADR defers shipping the shim for v1; this harness produces numbers that either confirm that decision or trigger a revisit.
+Empirical evaluator for the `rclone serve s3` shim documented in [ADR-043](../../docs/architecture/adr/ADR-043-rclone-s3-shim.md). The ADR defers shipping the shim for v1; this harness produces numbers that either confirm that decision or trigger a revisit.
 
 ## What it measures
 

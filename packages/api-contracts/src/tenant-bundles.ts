@@ -36,7 +36,7 @@ export type BackupTargetKind = z.infer<typeof backupTargetKindSchema>;
 
 // ─── meta.json (canonical bundle manifest, schemaVersion=2) ──────────────────
 //
-// See docs/06-features/BACKUP_COMPONENT_MODEL.md and ADR-032.
+// See docs/architecture/BACKUP_COMPONENT_MODEL.md and ADR-032.
 // Restore code MUST reject schemaVersion values it does not recognize.
 //
 // v2 adds enough information for the import flow to fully restore a
