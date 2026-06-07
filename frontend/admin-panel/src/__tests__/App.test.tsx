@@ -64,7 +64,7 @@ describe('Layout', () => {
 
   it('shows brand name', () => {
     renderWithProviders(<Layout />);
-    expect(screen.getByText('K8s Hosting')).toBeInTheDocument();
+    expect(screen.getByText('Insula')).toBeInTheDocument();
   });
 });
 

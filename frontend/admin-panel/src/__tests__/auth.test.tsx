@@ -26,7 +26,7 @@ describe('Login page', () => {
 
   it('shows platform name', () => {
     renderWithProviders(<Login />);
-    expect(screen.getByText('Hosting Platform')).toBeInTheDocument();
+    expect(screen.getByText('Insula')).toBeInTheDocument();
     expect(screen.getByText('Sign in to admin panel')).toBeInTheDocument();
   });
 

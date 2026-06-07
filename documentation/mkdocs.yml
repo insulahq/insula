@@ -15,7 +15,7 @@ edit_uri: edit/main/documentation/docs/
 theme:
   name: material
   logo: assets/logo.svg
-  favicon: assets/logo.svg
+  favicon: assets/favicon.svg
   font: false # system fonts — no Google Fonts request
   icon:
     repo: fontawesome/brands/github
