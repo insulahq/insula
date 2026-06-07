@@ -73,10 +73,7 @@ These are the **starting templates with recommended pricing** for premium positi
 | **WAF** | Available (off by default) | Available (off by default) | Enabled |
 | **Cron Jobs** | Unlimited | Unlimited | Unlimited |
 | **Backup Retention** | Per global backup strategy | Per global backup strategy | Per global backup strategy |
-| **AI Website Editor** | ✅ (50k tokens/mo) | ✅ (200k tokens/mo) | ✅ (500k tokens/mo) |
-| **AI Default Model** | `gemini-2.0-flash` | `claude-haiku-3-5` | `claude-haiku-3-5` |
-| **AI Editor Max Pages** | 5 per domain | 15 per domain | Unlimited |
-| **AI Contact Forms** | 1 per domain | 3 per domain | Unlimited |
+| **AI-assisted file editing** | ✅ (weekly AI budget per plan) | ✅ (weekly AI budget per plan) | ✅ (weekly AI budget per plan) |
 | **Price (USD)** | **$5.99/mo** | **$19.99/mo** | **$49.99/mo** |
 
 > **Note on backup retention:** Automated cluster backups follow the global backup strategy (see `BACKUP_STRATEGY.md`). Retention is not restricted by plan — all customers benefit from the same backup schedule and retention policy. Customer-created on-demand backups count against storage quota.
@@ -85,7 +82,7 @@ These are the **starting templates with recommended pricing** for premium positi
 
 > **Note on cron jobs:** Cron jobs are **unlimited on all plans**. Resource limits per job execution (CPU, memory, timeout) are configurable per-customer. See `CUSTOMER_CRON_JOBS.md`.
 
-> **Note on AI Website Editor:** Available on all plans. Produces static HTML/CSS + vanilla JavaScript websites with contact-form-to-email. No frameworks, databases, or server-side applications in customer mode. Each plan has a default AI model; admins can override the model and token budget per customer, or disable the feature entirely per customer. Token budgets reset monthly. Admins can grant one-time top-ups. Admins editing customer sites via the Admin Panel have no restrictions and no token budget. See `../history/06-features/AI_WEBSITE_EDITOR.md`.
+> **Note on AI-assisted editing:** The platform ships AI-assisted **file editing** in the tenant File Manager (`backend/src/modules/ai-editor/` — provider adapters for Anthropic/OpenAI, weekly per-plan budget via `hosting_plans.weekly_ai_budget_cents`, per-tenant token-usage tracking, output scanning). The full no-code "AI Website Editor" described in earlier plans was **descoped on 2026-06-07** — see `../history/06-features/AI_WEBSITE_EDITOR.md` and `../roadmap/ROADMAP.md`.
 
 ### Pricing Rationale
 
@@ -142,11 +139,7 @@ Every parameter below is set at the **plan level** (global default) and can be *
 | `sftp_enabled` | Enable SFTP access | `true` / `false` |
 | `git_deploy_enabled` | Enable Git-based deployments | `true` / `false` |
 | `file_manager_enabled` | Enable web file manager | `true` / `false` |
-| `ai_editor_enabled` | Enable AI Website Editor (null = inherit from plan) | `true` / `false` / `null` |
-| `ai_editor_model_id` | AI model to use for this customer (null = use plan default) | e.g. `"gemini-flash"` / `null` |
-| `ai_editor_token_budget` | Monthly AI token budget (null = use plan default) | `50000` / `200000` / `null` |
-| `ai_editor_max_pages` | Max pages per domain in AI editor | `5` / `15` / `0` (unlimited) |
-| `ai_editor_max_contact_forms` | Max contact forms per domain | `1` / `3` / `0` (unlimited) |
+| `weekly_ai_budget_cents` | Weekly AI-assisted-editing budget (plan column; cents) | `100` (default $1/week) |
 | `php_version` | PHP version override (if applicable) | `8.3` / `8.4` |
 | `php_memory_limit` | PHP memory_limit ini setting | `128M` / `256M` / `512M` |
 | `php_max_upload` | PHP upload_max_filesize | `64M` / `128M` / `256M` |

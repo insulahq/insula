@@ -20,7 +20,7 @@
  *
  * Follow-up: a Kubernetes Job that mounts the bulwark-data PVC and
  * deletes the files is the long-term fix. Tracked in
- * docs/06-features/BULWARK_DEFERRED_WORK.md.
+ * docs/roadmap/BULWARK_DEFERRED_WORK.md.
  *
  * Behaviour now: ALWAYS returns `noop`. Kept in the registry so
  * existing audit/run-log queries don't break on a missing hook name.

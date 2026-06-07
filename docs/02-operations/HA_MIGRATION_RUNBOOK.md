@@ -1520,7 +1520,7 @@ If both nodes are on Hetzner, you can optionally use Hetzner's private network f
 
 #### Providers with IPv6-only public IPs
 
-If the provider only gives a public IPv6 address (no IPv4), the NGINX Ingress DaemonSet can still serve customer traffic over IPv6 — but all existing customer DNS records must also have AAAA records. The DNS Ingress Controller must be extended to handle IPv6 A record sets. This is a documented gap — see `IPV4_IPV6_REQUIREMENTS.md` if available, otherwise raise as a task before adding an IPv6-only node.
+If the provider only gives a public IPv6 address (no IPv4), the NGINX Ingress DaemonSet can still serve customer traffic over IPv6 — but all existing customer DNS records must also have AAAA records. The DNS Ingress Controller must be extended to handle IPv6 A record sets. This is a documented gap — see `docs/roadmap/IPV4_IPV6_REQUIREMENTS.md`, otherwise raise as a task before adding an IPv6-only node.
 
 ---
 

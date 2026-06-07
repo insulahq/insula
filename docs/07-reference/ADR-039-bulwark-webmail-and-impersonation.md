@@ -153,7 +153,7 @@ matches what the SPA already expected (`jmap_session`,
 - A Kubernetes Job for orphan-`.enc`-file cleanup when a tenant is
   archived (the retired `bulwark-settings-purge` hook used to do this
   via the sidecar; the files are inert without a matching tenant but
-  may accumulate over time). Tracked in `BULWARK_DEFERRED_WORK.md`.
+  may accumulate over time). Tracked in `docs/roadmap/BULWARK_DEFERRED_WORK.md`.
 
 ### Production-readiness
 

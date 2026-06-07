@@ -910,7 +910,7 @@ The migration process extracts cron jobs from legacy platforms and converts them
 
 ### Automated Migration
 
-**MIGRATION_PLAN.md**, line 123 specifies "cron jobs (extracted as scripts)". The automated migration service extracts jobs using:
+**MIGRATION_PLAN.md** (now docs/history/07-reference/, see roadmap R1), line 123 specifies "cron jobs (extracted as scripts)". The automated migration service extracts jobs using:
 
 #### Plesk
 
@@ -1358,7 +1358,7 @@ Admin notified of:
 - **MANAGEMENT_API_SPEC.md**: Complete REST API specification
 - **TENANT_PANEL_FEATURES.md**: Customer-facing features
 - **ADMIN_PANEL_REQUIREMENTS.md**: Admin-only features
-- **MIGRATION_PLAN.md**: Data migration from legacy panels
+- **MIGRATION_PLAN.md** (now docs/history/07-reference/, see roadmap R1): Data migration from legacy panels
 - **DISASTER_RECOVERY.md**: Backup and recovery for cron job configurations
 - **MONITORING_OBSERVABILITY.md**: Monitoring cron job execution
 - **SECURITY_ARCHITECTURE.md**: Security policies for cron jobs

@@ -18,7 +18,7 @@
  *   - unclassified    → in bundle, applied by `full` profile
  *                      (third-party / operator-installed namespaces).
  *
- * See docs/04-deployment/DR_BUNDLE_ROADMAP.md.
+ * See docs/history/04-deployment/DR_BUNDLE_ROADMAP.md.
  */
 
 import { z } from 'zod';

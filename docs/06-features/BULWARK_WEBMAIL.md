@@ -274,12 +274,12 @@ E2E: `./scripts/integration-webmail-feature-toggle.sh`.
   draft auto-save) are not currently captured by tenant-backup-v2.
   Mailbox content (emails, calendars, contacts, Sieve) IS captured
   via JMAP — Bulwark is just a UI layer over Stalwart's data.
-  See `docs/06-features/BULWARK_DEFERRED_WORK.md`.
+  See `docs/roadmap/BULWARK_DEFERRED_WORK.md`.
 
 ## Cross-references
 
 - ADR-039 — architecture decision
-- `docs/06-features/BULWARK_DEFERRED_WORK.md` — Phase 7/8 deferrals
+- `docs/roadmap/BULWARK_DEFERRED_WORK.md` — Phase 7/8 deferrals
 - `scripts/integration-bulwark-e2e.sh` — E2E harness
 - `scripts/ci-stalwart-hostname-check.sh` — post-deploy guard
 - `k8s/base/bulwark/` — production manifest
