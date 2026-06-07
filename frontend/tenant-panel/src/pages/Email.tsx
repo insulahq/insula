@@ -1552,10 +1552,15 @@ function DkimKeysCard({
             <span className="text-gray-500 dark:text-gray-400">Value</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.txtRecordValue}</code>
           </div>
           <p className="mt-2 text-gray-600 dark:text-gray-400">
-            Old key stays active during the dual-signing window (recommended retire-old:{' '}
-            <strong>{new Date(lastRotation.recommendedRetireOldAt).toLocaleDateString()}</strong>).
-            Existing emails sitting in receivers' queues continue to verify against the
-            old DNS record until that DNS TTL expires.
+            Selectors alternate between <code>dkim-1</code> and <code>dkim-2</code> on each
+            rotation, so if your DNS is hosted externally you only ever need these two TXT
+            records — set them up once and future rotations need no DNS changes.
+            {lastRotation.previousSelector && (
+              <>
+                {' '}The previous selector (<code>{lastRotation.previousSelector}</code>) stays
+                published and keeps verifying mail already in transit — nothing to retire.
+              </>
+            )}
           </p>
         </div>
       )}

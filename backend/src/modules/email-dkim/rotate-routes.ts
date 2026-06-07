@@ -8,9 +8,13 @@
  * Audit: each rotation logs to the existing audit_log via the
  * standard request lifecycle hook.
  *
- * Idempotency: NOT idempotent — re-running creates a NEW DkimSignature
- * row each time. The tenant-panel UI requires a confirmation modal
- * to prevent accidental fan-out.
+ * Idempotency: NOT idempotent — each call flips the active selector
+ * (dkim-1 ⇄ dkim-2) and mints a fresh key under it. Selector count is
+ * bounded at two by design (A/B scheme, see ./selectors.ts), so
+ * repeated clicks can't fan out — but rotating twice within the mail
+ * retry horizon (~5 days) narrows the in-flight verification safety
+ * of the reused selector. The tenant-panel UI requires a confirmation
+ * modal.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -110,9 +114,14 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
           changes: {
             tenantId,
             domainName: row.domainName,
+            // Record the actor ROLE too: admin/support can rotate any
+            // tenant's keys, so actorId alone doesn't tell a forensic
+            // reader whether this was the tenant or platform staff.
+            actorRole: userRole ?? 'unknown',
             newSelector: result.newSelector,
+            previousSelector: result.previousSelector,
+            destroyedSelectors: result.destroyedSelectors,
             stalwartDkimSignatureId: result.stalwartDkimSignatureId,
-            recommendedRetireOldAt: result.recommendedRetireOldAt,
           } as unknown as Record<string, unknown>,
         });
 

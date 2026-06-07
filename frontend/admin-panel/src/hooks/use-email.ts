@@ -280,13 +280,15 @@ export interface DkimKey {
 interface DkimKeysResponse { readonly data: readonly DkimKey[] }
 
 export interface DkimRotateResult {
-  readonly keyId: string;
+  /** 'dkim-1' | 'dkim-2' — selectors alternate on each rotation (A/B scheme). */
   readonly newSelector: string;
-  readonly mode: 'primary' | 'cname' | 'secondary';
-  readonly status: 'pending' | 'active';
-  readonly manualDnsRequired: boolean;
-  readonly dnsRecordName: string;
-  readonly dnsRecordValue: string;
+  /** Stays published + signing for in-flight mail; nothing to retire. Null on legacy domains. */
+  readonly previousSelector: string | null;
+  readonly newPublicKey: string;
+  readonly txtRecordName: string;
+  readonly txtRecordValue: string;
+  readonly stalwartDkimSignatureId: string;
+  readonly destroyedSelectors: readonly string[];
 }
 
 interface DkimRotateResponse { readonly data: DkimRotateResult }
@@ -303,7 +305,9 @@ export function useRotateDkimKey(tenantId: string, domainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      apiFetch<DkimRotateResponse>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/dkim/rotate`, {
+      // Route lives at /email-domains/ (hyphenated) — the old
+      // /email/domains/ rotate path was retired with M12/M13.
+      apiFetch<DkimRotateResponse>(`/api/v1/tenants/${tenantId}/email-domains/${domainId}/dkim/rotate`, {
         method: 'POST',
         body: JSON.stringify({}),
       }),

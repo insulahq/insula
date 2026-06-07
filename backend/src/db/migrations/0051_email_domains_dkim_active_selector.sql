@@ -1,0 +1,20 @@
+-- 0051: email_domains.dkim_active_selector — A/B DKIM selector scheme
+--
+-- Rotation moves from per-rotation timestamped selectors
+-- (dkim-<yyyymmddHHMMSS>) to a fixed alternating pair (dkim-1/dkim-2,
+-- the Microsoft 365 selector1/selector2 pattern): external-DNS tenants
+-- configure two TXT records once and never touch DNS again, and
+-- rotation needs no retirement bookkeeping — the previous selector's
+-- key + TXT stay live until that selector is reused two rotations
+-- later, far beyond the ~5-day mail retry horizon.
+--
+-- This column is the platform-authoritative record of which selector
+-- currently signs new mail. It can't be derived from Stalwart rows
+-- (both selectors have active signatures in steady state and Stalwart
+-- exposes no creation timestamp) nor from audit_logs (180-day
+-- retention < multi-year rotation cadence).
+--
+-- NULL = legacy domain still on a Stalwart auto-created selector
+-- (v1-rsa-<date>); its first rotation targets dkim-1 and converges it.
+-- No backfill needed — intentionally left NULL for existing rows.
+ALTER TABLE email_domains ADD COLUMN dkim_active_selector varchar(63);
