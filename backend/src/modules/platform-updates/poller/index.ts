@@ -27,14 +27,20 @@ const GITHUB_API = 'https://api.github.com';
 // Release assets MUST come from GitHub. The asset URLs are taken from the API
 // response (attacker-influenceable if the API channel is MITM'd), so pin the
 // host: a `browser_download_url` pointing at an internal address (SSRF) is
-// refused. fetch() follows github.com → objects.githubusercontent.com redirects.
-const ASSET_HOST_ALLOWLIST = ['github.com', 'objects.githubusercontent.com'];
+// refused. fetch() follows the github.com → pre-signed CDN redirect; GitHub
+// migrated that CDN from objects.* to release-assets.githubusercontent.com
+// (2025), so allow both — without release-assets.* every asset fetch fails.
+const ASSET_HOST_ALLOWLIST = [
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+];
 const FETCH_TIMEOUT_MS = 15_000;
 // The signed manifest is a few hundred bytes; cap downloads hard so a malicious
 // release can't make the poller pull a huge "asset" into memory.
 const MAX_ASSET_BYTES = 1024 * 1024; // 1 MiB
 
-function isAllowedAssetHost(rawUrl: string): boolean {
+export function isAllowedAssetHost(rawUrl: string): boolean {
   let u: URL;
   try {
     u = new URL(rawUrl);
