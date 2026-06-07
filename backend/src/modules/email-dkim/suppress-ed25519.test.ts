@@ -4,7 +4,7 @@
  * (enable domain → assert RSA-only signatures).
  */
 import { describe, it, expect } from 'vitest';
-import { selectEd25519SignatureIds, ED25519_SIGNATURE_TYPE } from './suppress-ed25519.js';
+import { selectEd25519SignatureIds, selectAllSignatureIds, ED25519_SIGNATURE_TYPE } from './suppress-ed25519.js';
 import type { StalwartDkimSignatureRow } from '../stalwart-jmap/client.js';
 
 const rows: readonly StalwartDkimSignatureRow[] = [
@@ -35,5 +35,15 @@ describe('email-dkim/suppress-ed25519: selectEd25519SignatureIds', () => {
   it('returns empty for unknown domains and empty input', () => {
     expect(selectEd25519SignatureIds(rows, 'd9')).toEqual([]);
     expect(selectEd25519SignatureIds([], 'd1')).toEqual([]);
+  });
+});
+
+describe('email-dkim/suppress-ed25519: selectAllSignatureIds', () => {
+  it('selects every signature for the domain regardless of algorithm', () => {
+    expect(selectAllSignatureIds(rows, 'd2')).toEqual(['b1', 'b2', 'b3']);
+  });
+
+  it('returns empty for unknown domains', () => {
+    expect(selectAllSignatureIds(rows, 'nope')).toEqual([]);
   });
 });

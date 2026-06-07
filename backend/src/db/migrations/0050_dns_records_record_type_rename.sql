@@ -1,0 +1,12 @@
+-- 0050: dns_records."recordType" → record_type (naming-convention repair)
+--
+-- The dns_records table mixed column conventions: record_name /
+-- record_value are snake_case but the type column was created as the
+-- camelCase "recordType" — an artifact of the Drizzle enum column being
+-- declared without an explicit name (dnsRecordTypeEnum() defaults to the
+-- TS property name). Every hand-written SQL query against this table
+-- trips over it (observed twice during the 2026-06-07 DKIM E2E).
+--
+-- Pure rename — no type/data change; Drizzle schema updated in the same
+-- commit so ORM property `recordType` now maps to record_type.
+ALTER TABLE dns_records RENAME COLUMN "recordType" TO record_type;

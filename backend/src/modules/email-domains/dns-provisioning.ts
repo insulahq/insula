@@ -201,14 +201,22 @@ function buildBaseRecords(
       priority: null,
       purpose: 'spf',
     },
-    {
-      recordType: 'TXT',
-      recordName: `${dkimSelector}._domainkey.${domainName}`,
-      recordValue: formatDkimDnsValue(dkimPublicKey),
-      ttl: 3600,
-      priority: null,
-      purpose: 'dkim',
-    },
+    // DKIM TXT — only when a selector is actually provided. Since M13
+    // the enable flow passes dkimSelector='' (Stalwart owns key
+    // generation; dns-sync publishes the real selector records from
+    // Stalwart's zone expectation), which used to produce a junk
+    // "._domainkey.<domain>" row with an empty selector on every
+    // email-domain enable. Rotation inserts its own record directly.
+    ...(dkimSelector
+      ? [{
+          recordType: 'TXT' as const,
+          recordName: `${dkimSelector}._domainkey.${domainName}`,
+          recordValue: formatDkimDnsValue(dkimPublicKey),
+          ttl: 3600,
+          priority: null,
+          purpose: 'dkim' as const,
+        }]
+      : []),
     {
       recordType: 'TXT',
       recordName: `_dmarc.${domainName}`,

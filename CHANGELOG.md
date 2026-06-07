@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **DKIM/DNS hygiene follow-ups** (2026-06-07 E2E findings): the email-domain
+  enable flow no longer inserts a junk `._domainkey.<domain>` TXT record with
+  an empty selector (M13-era stub); the disable flow now destroys the
+  domain's Stalwart `DkimSignature` rows before destroying the principal
+  (previously they orphaned in the registry); migration 0050 renames
+  `dns_records."recordType"` → `record_type` to end the table's mixed
+  column-naming (snake + camel) that broke hand-written SQL.
+
 ## [2026.6.6] - 2026-06-07
 
 ## [2026.6.5] - 2026-06-07
