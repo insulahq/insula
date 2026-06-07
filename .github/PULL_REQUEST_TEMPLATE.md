@@ -14,6 +14,7 @@ What this changes and why.
 - [ ] Tests added/updated and passing (unit / integration)
 - [ ] `shellcheck` clean (if shell touched) and infra guards pass (if `k8s/` or `scripts/` touched)
 - [ ] Manually verified: <!-- how -->
+- [ ] User-visible change? → manual updated under `documentation/docs/` (or `Manual-Impact: none` trailer)
 
 ## Breaking changes
 

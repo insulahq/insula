@@ -66,3 +66,5 @@ shellcheck-v0.10.0.linux.x86_64.tar.xz
 
 # platform-ops SEA build output (W17)
 dist-platform-ops/
+documentation/docs/.changelog-body.md
+documentation/site/

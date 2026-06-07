@@ -1,0 +1,58 @@
+name: Documentation Site
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'documentation/**'
+      - '.github/workflows/docs-site.yml'
+      - 'CHANGELOG.md' # transcluded into the manual's changelog page
+  push:
+    branches: [main]
+    paths:
+      - 'documentation/**'
+      - '.github/workflows/docs-site.yml'
+      - 'CHANGELOG.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build manual (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: documentation/requirements.txt
+      - run: pip install -r documentation/requirements.txt
+      - name: Generate changelog body
+        run: python3 documentation/gen/changelog.py
+      - name: Build (broken nav/links fail)
+        run: mkdocs build --strict -f documentation/mkdocs.yml
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push'
+        with:
+          path: documentation/site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

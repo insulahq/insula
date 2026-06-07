@@ -151,7 +151,7 @@ in `docs/history/` where useful. **Completing this unlocks deletion of
 `docs/history/`** (see its README).
 
 **Plan locked 2026-06-07** — see [USER_MANUAL_WEBSITE.md](USER_MANUAL_WEBSITE.md):
-monorepo `website/`, Material for MkDocs now (Zensical-compatible authoring,
+monorepo `documentation/`, Material for MkDocs now (Zensical-compatible authoring,
 migrate post-alpha), GitHub Pages at `insulahq.github.io/insula`, v1 = all
 three guides, accuracy via manual-impact CI guard + generated reference +
 strict builds + freshness stamps.
