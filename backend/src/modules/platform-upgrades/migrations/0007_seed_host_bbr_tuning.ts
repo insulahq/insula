@@ -34,18 +34,21 @@ const MODULES_CM = 'host-modules-desired';
 // the converger's writeSysctl simply reports `write-failed` for this one key
 // (it never bricks the node); the operator resolves it by setting the key to
 // `cubic` in the ConfigMap, which this migration will not clobber.
-const BBR_SYSCTLS: ReadonlyArray<readonly [key: string, value: string]> = [
+// Exported so the every-boot self-heal reconcile (host-desired-state.ts) can
+// compose the SAME canonical BBR content it restores a deleted CM with — one
+// source of truth for the BBR keys/module.
+export const BBR_SYSCTLS: ReadonlyArray<readonly [key: string, value: string]> = [
   ['net.ipv4.tcp_rmem', '4096 87380 16777216'],
   ['net.ipv4.tcp_wmem', '4096 65536 16777216'],
   ['net.ipv4.tcp_congestion_control', 'bbr'],
   ['net.core.default_qdisc', 'fq'],
 ];
 
-const BBR_MODULE = 'tcp_bbr';
+export const BBR_MODULE = 'tcp_bbr';
 
-const BBR_SYSCTL_HEADER =
+export const BBR_SYSCTL_HEADER =
   '# --- BBR congestion control (added by platform-migration 0007) ---';
-const BBR_MODULE_HEADER =
+export const BBR_MODULE_HEADER =
   '# --- tcp_bbr (added by platform-migration 0007; required for tcp_congestion_control=bbr) ---';
 
 /** Keys already declared in a `key = value` sysctl block (comments ignored). */

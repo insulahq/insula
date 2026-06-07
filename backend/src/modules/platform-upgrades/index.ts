@@ -10,6 +10,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { runPlatformMigrations, migrationChecksum } from './registry/runner.js';
 import { realMigrationStore } from './registry/store.js';
+import { ensureHostDesiredConfigMaps } from './host-desired-state.js';
 import { PLATFORM_MIGRATIONS } from './migrations/index.js';
 import { platformMigrations } from '../../db/schema.js';
 import type { MigrationLogger, RunMigrationsResult } from './registry/types.js';
@@ -27,7 +28,7 @@ export interface RunStartupMigrationsOpts {
 /** Apply pending platform-migrations (startup + `migrations apply`). */
 export async function runStartupMigrations(opts: RunStartupMigrationsOpts): Promise<RunMigrationsResult> {
   const store = realMigrationStore(opts.db, opts.pool);
-  return runPlatformMigrations({
+  const result = await runPlatformMigrations({
     store,
     migrations: PLATFORM_MIGRATIONS,
     ctx: { db: opts.db, k8s: opts.k8s, config: opts.config, log: opts.log },
@@ -35,6 +36,27 @@ export async function runStartupMigrations(opts: RunStartupMigrationsOpts): Prom
     skip: opts.skip ?? false,
     log: opts.log,
   });
+
+  // Self-heal: the seed migrations create the host desired-state ConfigMaps
+  // exactly once, so a deleted CM was never restored. This create-if-absent
+  // pass runs every boot (both callers) to recreate any that went missing —
+  // never overwriting an existing (operator-edited) CM. Honours the same skip
+  // escape hatch + dry-run; isolated so it can never fail the migration run.
+  if (!(opts.skip ?? false)) {
+    try {
+      const healed = await ensureHostDesiredConfigMaps(opts.k8s, opts.log, { dryRun: opts.dryRun ?? false });
+      if (healed.created.length > 0) {
+        opts.log.info(
+          `[host-desired-state] ${opts.dryRun ? 'would recreate' : 'recreated'} `
+          + `${healed.created.length} absent desired ConfigMap(s): ${healed.created.join(', ')}`,
+        );
+      }
+    } catch (err) {
+      opts.log.warn('[host-desired-state] self-heal reconcile errored (continuing)', err);
+    }
+  }
+
+  return result;
 }
 
 export type MigrationListStatus = 'applied' | 'pending' | 'drift' | 'unknown';
