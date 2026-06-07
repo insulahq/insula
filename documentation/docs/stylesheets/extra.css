@@ -6,3 +6,14 @@
 .md-header {
   background-color: #373737;
 }
+
+/* Enlarge the header logo and drop the button's default padding so the mark
+   fills the header bar. Targets both the img (raster) and svg variants. */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 2.2rem !important;
+}
+
+.md-header__button.md-logo {
+  padding: 0 !important;
+}
