@@ -29,8 +29,7 @@ const log = mailLogger().child({ module: 'email-dkim-suppress' });
 export const ED25519_SIGNATURE_TYPE = 'Dkim1Ed25519Sha256';
 
 /**
- * Pure filter — exported for unit tests.
- * Returns the ids of Ed25519 signatures belonging to `stalwartDomainId`.
+ * Pure filters — exported for unit tests.
  */
 export function selectEd25519SignatureIds(
   rows: readonly StalwartDkimSignatureRow[],
@@ -39,6 +38,14 @@ export function selectEd25519SignatureIds(
   return rows
     .filter((r) => r['@type'] === ED25519_SIGNATURE_TYPE && r.domainId === stalwartDomainId)
     .map((r) => r.id);
+}
+
+/** All signature ids for a domain, any algorithm (disable-flow cleanup). */
+export function selectAllSignatureIds(
+  rows: readonly StalwartDkimSignatureRow[],
+  stalwartDomainId: string,
+): readonly string[] {
+  return rows.filter((r) => r.domainId === stalwartDomainId).map((r) => r.id);
 }
 
 export interface SuppressResult {
@@ -59,10 +66,33 @@ export async function removeAutoCreatedEd25519Signatures(params: {
   stalwartDomainId: string;
   baseUrl?: string;
 }): Promise<SuppressResult> {
+  return removeSignatures(params, selectEd25519SignatureIds, 'ed25519');
+}
+
+/**
+ * Destroy EVERY DkimSignature attached to the given Stalwart domain —
+ * used by the email-domain DISABLE flow so destroying the domain
+ * principal does not strand orphaned signature rows in Stalwart's
+ * registry (observed during the 2026-06-07 DKIM E2E: deleted test
+ * domains left their RSA + rotation signatures behind).
+ */
+export async function removeAllDkimSignaturesForDomain(params: {
+  accountId: JmapAccountId;
+  stalwartDomainId: string;
+  baseUrl?: string;
+}): Promise<SuppressResult> {
+  return removeSignatures(params, selectAllSignatureIds, 'all');
+}
+
+async function removeSignatures(
+  params: { accountId: JmapAccountId; stalwartDomainId: string; baseUrl?: string },
+  select: (rows: readonly StalwartDkimSignatureRow[], domainId: string) => readonly string[],
+  scope: 'ed25519' | 'all',
+): Promise<SuppressResult> {
   const { accountId, stalwartDomainId, baseUrl } = params;
 
   const rows = await dkimSignatureGet({ accountId, baseUrl });
-  const ids = selectEd25519SignatureIds(rows, stalwartDomainId);
+  const ids = select(rows, stalwartDomainId);
   if (ids.length === 0) {
     return { destroyed: [], failed: [] };
   }
@@ -73,11 +103,11 @@ export async function removeAutoCreatedEd25519Signatures(params: {
   const failed = ids.filter((id) => !destroyedSet.has(id));
   if (failed.length > 0) {
     log.warn(
-      { stalwartDomainId, failed, notDestroyed: res.notDestroyed },
-      'ed25519 DKIM suppression: some signatures were not destroyed',
+      { stalwartDomainId, scope, failed, notDestroyed: res.notDestroyed },
+      'DKIM signature cleanup: some signatures were not destroyed',
     );
   } else {
-    log.info({ stalwartDomainId, destroyed }, 'ed25519 DKIM signatures destroyed (RSA-only policy)');
+    log.info({ stalwartDomainId, scope, destroyed }, 'DKIM signatures destroyed');
   }
   return { destroyed, failed };
 }

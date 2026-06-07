@@ -21,7 +21,7 @@ import type { EmailDomainDisablePreview, WebmailStatus } from '@insula/api-contr
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { removeAutoCreatedEd25519Signatures } from '../email-dkim/suppress-ed25519.js';
+import { removeAutoCreatedEd25519Signatures, removeAllDkimSignaturesForDomain } from '../email-dkim/suppress-ed25519.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ── Stalwart JMAP helper ──────────────────────────────────────────────────────
@@ -236,6 +236,21 @@ export async function disableEmailForDomain(
     const accountId = await getDomainJmapAccountId();
     if (accountId) {
       try {
+        // Destroy the domain's DkimSignature rows FIRST — destroying the
+        // principal alone strands them as registry orphans (observed in
+        // the 2026-06-07 DKIM E2E). Soft-fail: orphans are inert.
+        try {
+          await removeAllDkimSignaturesForDomain({
+            accountId,
+            stalwartDomainId: existing.stalwartDomainId,
+            baseUrl: process.env.STALWART_MGMT_URL,
+          });
+        } catch (err) {
+          log.warn(
+            { err, stalwartDomainId: existing.stalwartDomainId },
+            'DkimSignature cleanup on disable failed — rows will orphan',
+          );
+        }
         await jmapDestroyPrincipal({
           accountId,
           id: existing.stalwartDomainId,

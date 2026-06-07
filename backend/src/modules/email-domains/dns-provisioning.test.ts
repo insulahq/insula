@@ -23,6 +23,24 @@ describe('buildEmailDnsRecordsForDisplay', () => {
     expect(records.some((r) => r.purpose === 'webmail')).toBe(false);
   });
 
+  it('omits the DKIM record entirely when dkimSelector is empty (M13 production path)', () => {
+    const records = buildEmailDnsRecordsForDisplay(
+      'example.com',
+      '', // dkimSelector — the enable flow passes empty since M13
+      '',
+      MOCK_MAIL_HOSTNAME,
+    );
+
+    // No DKIM record — and specifically no junk "._domainkey.<domain>"
+    // row with an empty selector (regression: was inserted on every
+    // email-domain enable until 2026-06-07).
+    expect(records.some((r) => r.purpose === 'dkim')).toBe(false);
+    expect(records.some((r) => r.recordName?.includes('._domainkey.'))).toBe(false);
+    // Core records unaffected
+    expect(records.some((r) => r.purpose === 'mx')).toBe(true);
+    expect(records.some((r) => r.purpose === 'spf')).toBe(true);
+  });
+
   it('adds a webmail.<domain> A record when webmailEnabled is true', () => {
     const records = buildEmailDnsRecordsForDisplay(
       'example.com',

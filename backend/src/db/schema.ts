@@ -1071,7 +1071,10 @@ export const dnsRecords = pgTable('dns_records', {
   domainId: varchar('domain_id', { length: 36 })
     .notNull()
     .references(() => domains.id, { onDelete: 'cascade' }),
-  recordType: dnsRecordTypeEnum().notNull(),
+  // Migration 0050 renamed the DB column "recordType" → record_type
+  // (the enum column was originally declared without an explicit name,
+  // so Drizzle used the camelCase TS property as the column name).
+  recordType: dnsRecordTypeEnum('record_type').notNull(),
   recordName: varchar('record_name', { length: 253 }),
   recordValue: varchar('record_value', { length: 1000 }),
   ttl: integer('ttl').notNull().default(3600),
