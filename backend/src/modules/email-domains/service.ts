@@ -21,6 +21,7 @@ import type { EmailDomainDisablePreview, WebmailStatus } from '@insula/api-contr
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { removeAutoCreatedEd25519Signatures } from '../email-dkim/suppress-ed25519.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ── Stalwart JMAP helper ──────────────────────────────────────────────────────
@@ -169,6 +170,24 @@ export async function enableEmailForDomain(
           .update(emailDomains)
           .set({ stalwartDomainId })
           .where(eq(emailDomains.id, id));
+
+        // RSA-only DKIM policy: Stalwart auto-creates an Ed25519
+        // signature alongside the RSA one on every domain principal;
+        // Gmail/M365 can't verify it (RFC 8463 unsupported) and Gmail
+        // reports dkim=fail in DMARC aggregates. Destroy it. Soft-fail:
+        // a domain that keeps it merely dual-signs (delivery unaffected).
+        try {
+          await removeAutoCreatedEd25519Signatures({
+            accountId: domainAccountId,
+            stalwartDomainId,
+            baseUrl: process.env.STALWART_MGMT_URL,
+          });
+        } catch (err) {
+          log.warn(
+            { err, domainName: domain.domainName, stalwartDomainId },
+            'ed25519 DKIM suppression failed — domain will dual-sign until retried',
+          );
+        }
       }
     } catch (err) {
       throw new ApiError(

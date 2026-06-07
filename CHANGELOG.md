@@ -15,6 +15,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.6.5] - 2026-06-07
 
 ### Fixed
+- **DKIM rotation actually works now + tenant domains are RSA-only.**
+  Three fixes on top of the earlier RSA-keygen change: (1) the rotation
+  route read the nonexistent `ENCRYPTION_KEY` env var (correct:
+  `PLATFORM_ENCRYPTION_KEY`) and 500'd unconditionally; (2) rotation
+  POSTed its Stalwart create to `/api/store/import`, which does not exist
+  on v0.16.5 — it now uses JMAP `x:DkimSignature/set` (the wire
+  stalwart-cli uses); (3) Stalwart auto-creates an Ed25519 signature next
+  to the RSA one on every new domain principal — Gmail/M365 can't verify
+  RFC 8463 signatures and Gmail reports dkim=fail in tenant DMARC
+  aggregates — the enable flow now destroys the auto-created Ed25519 row
+  (soft-fail; RSA-only policy, new `email-dkim/suppress-ed25519.ts`).
+
+### Fixed
 - **DKIM rotation now generates RSA-2048 keys** (was Ed25519). The rotation
   path was triply broken: Gmail/Microsoft 365 don't support RFC 8463
   ed25519-sha256 (Gmail reports dkim=fail instead of ignoring it), the
