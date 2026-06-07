@@ -80,10 +80,11 @@ per-message sha256 verification) established the facts this decision rests on.
 1. **The platform stays on Stalwart's Default (RocksDB) blob store.** No
    per-size tuning is required (`blobSize` default stands).
 2. **The blob-store switch surface is fenced**: the admin-panel card and the
-   three `/admin/mail/blob-store*` routes are removed. The backend module
-   (`backend/src/modules/mail-admin/blob-store.ts`) and api-contracts schemas
-   are retained with STALE banners for reference; unit tests keep them
-   compiling.
+   three `/admin/mail/blob-store*` routes are removed. The backend module and
+   api-contracts schemas were initially retained with STALE banners, then
+   fully deleted in the 2026-06-07 remnant cleanup — this ADR and
+   STALWART_BLOB_STORE_MIGRATION.md carry the findings; code is in git
+   history (PR #192 and the follow-up).
 3. Staying is **not lock-in**: byte-lossless migration to FileSystem/S3 was
    proven and documented. Triggers to revisit: blob volume materially beyond
    ~20 GiB per node with measured RocksDB degradation, or stateless-HA
@@ -98,8 +99,14 @@ per-message sha256 verification) established the facts this decision rests on.
 - Stalwart does **not** enable RocksDB BlobDB garbage collection: a `.blob`
   file is reclaimed only when no surviving key references it, so
   long-retention mail interleaved with deleted mail accrues space
-  amplification. Monitor mail-PVC growth (existing storage cards);
-  candidate upstream contribution if observed in practice.
+  amplification. **Empirically confirmed 2026-06-06/07**: expunging 40k
+  messages (8.7GB of blobs) on an idle cluster freed zero bytes over
+  11.5 hours — the blob store stayed byte-identical and the WAL static
+  (Stalwart's purge had not even deleted the blob keys). Stalwart also
+  never triggers manual compaction (v0.16.5 source). Operator procedure:
+  [MAIL_STORE_SPACE_RECLAIM.md](../02-operations/MAIL_STORE_SPACE_RECLAIM.md).
+  Upstream contribution (enable blob GC on the blobs CF) proposed —
+  see the PR/forum links in the runbook era.
 - The 30-min restic copy of the live RocksDB dir remains the accepted
   crash-consistency compromise (unchanged by this ADR; see ADR-042 for the
   deferred logical-export path).

@@ -39,12 +39,12 @@ describe('buildCanonicalLabels', () => {
   });
 
   it('always sets managed-by to platform-api', () => {
-    const labels = buildCanonicalLabels({ role: 'mail-blob-store', owner: 'mail' });
+    const labels = buildCanonicalLabels({ role: 'tenant-storage', owner: 'mail' });
     expect(labels[CANONICAL_LABEL_KEYS.managedBy]).toBe('platform-api');
   });
 
   it('uses the bare-prefix label form (single-label DNS-1123 subdomain)', () => {
-    const labels = buildCanonicalLabels({ role: 'mail-blob-store', owner: 'mail' });
+    const labels = buildCanonicalLabels({ role: 'tenant-storage', owner: 'mail' });
     for (const key of Object.keys(labels)) {
       expect(key.startsWith('platform/')).toBe(true);
       // Bare prefix: NO dot before the slash — single-label DNS-1123 subdomain.

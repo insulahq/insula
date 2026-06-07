@@ -705,7 +705,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // + jobs/:name routes were inoperative as shipped (BlobStore updates only
   // apply on Stalwart restart; S3 cli field shapes were schema-invalid; the
   // CIFS Deployment patch is stripped by Flux drift correction within 1m).
-  // The implementation is retained STALE in ./blob-store.ts for reference.
+  // The implementation was fully deleted on 2026-06-07 (remnant cleanup) —
+  // findings + validated migration mechanics live in ADR-046 and
+  // docs/06-features/STALWART_BLOB_STORE_MIGRATION.md; code in git history.
 
   app.get('/admin/mail/queue', async () => {
     try {

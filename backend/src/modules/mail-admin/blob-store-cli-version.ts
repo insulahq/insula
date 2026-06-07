@@ -1,6 +1,6 @@
 /**
  * stalwart-cli version + sha256 pin shared by every Job that runs the
- * cli inside the cluster (throttle-override, blob-store-update, future).
+ * cli inside the cluster (throttle-override Job/CronJob, future).
  *
  * Bumping these is a coordinated change: also update the matching pins
  * in k8s/overlays/development/stalwart-throttle-override-job.yaml and
