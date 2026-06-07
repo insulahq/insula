@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **DKIM rotation now generates RSA-2048 keys** (was Ed25519). The rotation
+  path was triply broken: Gmail/Microsoft 365 don't support RFC 8463
+  ed25519-sha256 (Gmail reports dkim=fail instead of ignoring it), the
+  rotated key's TXT record was published with `k=rsa` + SPKI encoding
+  (invalid for Ed25519 even at verifiers that support it), and retiring the
+  old RSA key per our own 14-day guidance left domains signing Ed25519-only
+  — no verifiable DKIM at the largest providers. Rotation now uses the same
+  RSA-2048 generator as initial provisioning, making the published DNS
+  record correct and every rotated key Gmail-verifiable.
+
 ### Removed
 - **Stalwart blob-store switch UI + routes fenced (ADR-046)** — the platform
   stays on Stalwart's Default (RocksDB) blob store. The admin-panel

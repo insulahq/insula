@@ -8,9 +8,19 @@
  * compromise, etc.).
  *
  * Rotation flow:
- *   1. Generate a new Ed25519 key pair (matches Stalwart's preferred
- *      algorithm — keys are tiny, signatures are short, broadly
- *      supported).
+ *   1. Generate a new RSA-2048 key pair — the SAME algorithm initial
+ *      provisioning uses (email-domains/dkim.ts). Rotation previously
+ *      generated Ed25519 keys; that was triply broken: (a) Gmail and
+ *      Microsoft 365 do not support RFC 8463 ed25519-sha256 (Gmail
+ *      reports dkim=fail instead of ignoring it — see
+ *      https://support.stalw.art/t/562), (b) the published TXT used
+ *      formatDkimDnsValue's `k=rsa` tag + SPKI encoding, invalid for
+ *      Ed25519 (RFC 8463 wants the raw 32-byte key), and (c) once the
+ *      operator retired the old RSA key per our own 14-day guidance,
+ *      the domain signed Ed25519-ONLY — no verifiable DKIM at the
+ *      largest providers, DMARC left to SPF alone. Ed25519 may return
+ *      later as an ADDITIVE second signature once the big verifiers
+ *      support it (with proper `k=ed25519` raw-key DNS formatting).
  *   2. Pick a new selector name `default-<yyyymmddHHmm>` so we never
  *      reuse selectors and key history is auditable from DNS.
  *   3. Create the new DkimSignature in Stalwart's config store via
@@ -39,8 +49,8 @@ import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { emailDomains, dnsRecords, domains } from '../../db/schema.js';
 import { proxyStalwartRequest } from '../mail-admin/service.js';
+import { generateDkimKeyPair, formatDkimDnsValue } from '../email-domains/dkim.js';
 import { syncRecordToProviders } from '../email-domains/dns-provisioning.js';
-import { formatDkimDnsValue } from '../email-domains/dkim.js';
 
 export interface RotateDkimResult {
   readonly newSelector: string;
@@ -64,20 +74,10 @@ export class DkimRotationError extends Error {
   }
 }
 
-/**
- * Generate a fresh Ed25519 key pair in PEM format.
- *
- * Ed25519 is what Stalwart's bootstrap uses (DkimSignature @type =
- * Dkim1Ed25519Sha256). Keys are 32 bytes; the public key in DNS is
- * a single ~64-char base64 string vs RSA-2048's >300 chars.
- */
-export function generateDkimKeyPairEd25519(): { privateKey: string; publicKey: string } {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
-    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    publicKeyEncoding: { type: 'spki', format: 'pem' },
-  });
-  return { privateKey, publicKey };
-}
+// Key generation lives in email-domains/dkim.ts (RSA-2048) — rotation
+// and initial provisioning MUST stay on the same algorithm so the
+// `k=rsa` DNS formatting in formatDkimDnsValue applies to both and a
+// post-rotation domain remains verifiable at Gmail/M365 (see header).
 
 export function newDkimSelector(nowMs: number = Date.now()): string {
   const d = new Date(nowMs);
@@ -113,7 +113,7 @@ async function postDkimCreatePlan(
     object: 'DkimSignature',
     value: {
       [signatureId]: {
-        '@type': 'Dkim1Ed25519Sha256',
+        '@type': 'Dkim1RsaSha256',
         domainId,
         selector,
         canonicalization: 'relaxed/relaxed',
@@ -205,7 +205,7 @@ export async function rotateDkimKey(
     );
   }
 
-  const { privateKey, publicKey } = generateDkimKeyPairEd25519();
+  const { privateKey, publicKey } = generateDkimKeyPair();
   const selector = newDkimSelector(deps.nowMs);
   const signatureId = `dkim-${selector}`;
 

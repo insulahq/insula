@@ -3,19 +3,21 @@
  *
  * Full E2E coverage (Stalwart API call + DNS provider push) lives
  * in the integration harness — the helpers here are the parts that
- * matter for correctness in isolation: selector format, Ed25519
+ * matter for correctness in isolation: selector format, RSA
  * key shape.
  */
 
+import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import {
-  generateDkimKeyPairEd25519,
   newDkimSelector,
 } from './rotate.js';
 
-describe('email-dkim/rotate: generateDkimKeyPairEd25519', () => {
-  it('returns PEM-encoded Ed25519 key pair', () => {
-    const { privateKey, publicKey } = generateDkimKeyPairEd25519();
+import { generateDkimKeyPair } from '../email-domains/dkim.js';
+
+describe('email-dkim/rotate: key generation (shared RSA generator)', () => {
+  it('returns PEM-encoded RSA key pair', () => {
+    const { privateKey, publicKey } = generateDkimKeyPair();
     expect(privateKey).toMatch(/^-----BEGIN PRIVATE KEY-----/);
     expect(privateKey).toMatch(/-----END PRIVATE KEY-----\s*$/);
     expect(publicKey).toMatch(/^-----BEGIN PUBLIC KEY-----/);
@@ -23,19 +25,18 @@ describe('email-dkim/rotate: generateDkimKeyPairEd25519', () => {
   });
 
   it('two consecutive calls produce different keys', () => {
-    const a = generateDkimKeyPairEd25519();
-    const b = generateDkimKeyPairEd25519();
+    const a = generateDkimKeyPair();
+    const b = generateDkimKeyPair();
     expect(a.privateKey).not.toEqual(b.privateKey);
     expect(a.publicKey).not.toEqual(b.publicKey);
   });
 
-  it('Ed25519 public key PEM is short (~80 chars not RSA-2048\'s ~400)', () => {
-    const { publicKey } = generateDkimKeyPairEd25519();
-    // Strip header/footer/whitespace
-    const body = publicKey.replace(/-----[A-Z ]+-----/g, '').replace(/\s/g, '');
-    // Ed25519 SPKI is ~60 base64 chars (vs RSA-2048's ~400+)
-    expect(body.length).toBeLessThan(80);
-    expect(body.length).toBeGreaterThan(40);
+  it('generates an RSA-2048 key (matches the k=rsa DNS tag + Dkim1RsaSha256 type)', () => {
+    const { publicKey } = generateDkimKeyPair();
+
+    const key = crypto.createPublicKey(publicKey);
+    expect(key.asymmetricKeyType).toBe('rsa');
+    expect(key.asymmetricKeyDetails?.modulusLength).toBe(2048);
   });
 });
 
