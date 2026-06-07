@@ -24,6 +24,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   record correct and every rotated key Gmail-verifiable.
 
 ### Removed
+- **Stalwart blob-store remnants fully deleted** (follow-up to the ADR-046
+  fence): `mail-admin/blob-store.ts` + tests, api-contracts
+  `mail-blob-store` schemas, and the orphaned `mail-blob-store` PvcRole.
+  Findings live in ADR-046 + STALWART_BLOB_STORE_MIGRATION.md; code in git
+  history.
+
+### Added
+- **Operator runbook `docs/02-operations/MAIL_STORE_SPACE_RECLAIM.md`** —
+  reclaiming disk after bulk mail deletion (measured: zero reclaim after
+  11.5h idle; purge→flush→compaction→blob-unref chain; offline `ldb
+  compact` procedure; upstream blob-GC contribution note).
+
+### Removed
 - **Stalwart blob-store switch UI + routes fenced (ADR-046)** — the platform
   stays on Stalwart's Default (RocksDB) blob store. The admin-panel
   "Blob store" card (Email → Operations → Storage) and the
