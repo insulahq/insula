@@ -2,8 +2,8 @@
 
 This doc is the single authoritative reference for the Phase-4
 **Tenant Backup** stack (per-tenant off-site bundles + Plesk-style
-restore cart). It supersedes the legacy [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md)
-and [BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md](BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md)
+restore cart). It supersedes the legacy [BACKUP_STRATEGY.md](../history/02-operations/BACKUP_STRATEGY.md)
+and [BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md](../history/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md)
 which describe the deprecated SSHFS architecture.
 
 > **Tenant Backup** ≠ **System Backup**. System Backup (cluster

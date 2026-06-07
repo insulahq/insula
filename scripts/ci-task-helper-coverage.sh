@@ -76,7 +76,7 @@ for spec in "${SURFACE_FILE_MARKERS[@]}"; do
   if ! grep -qF "$marker" "$full"; then
     echo "❌ ci-task-helper-coverage: $file is missing the Task Tracker hook ('$marker' not found)."
     echo "   Long-running surfaces must register via backend/src/modules/tasks/service.ts"
-    echo "   so the top-bar chip lights up. See docs/04-deployment/TASK_TRACKER.md"
+    echo "   so the top-bar chip lights up. See the Tasks page in the admin panel"
     echo "   (Phase 1B) for the wiring pattern."
     FAIL=1
   fi

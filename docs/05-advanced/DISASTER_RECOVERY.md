@@ -3,7 +3,7 @@
 > **Related HA/DR documentation:**
 > - [../02-operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md](../02-operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md) — Cluster maintenance procedures
 > - [../02-operations/HA_MIGRATION_RUNBOOK.md](../02-operations/HA_MIGRATION_RUNBOOK.md) — HA migration runbook
-> - [../02-operations/BACKUP_STRATEGY.md](../02-operations/BACKUP_STRATEGY.md) — Backup strategy (required for DR)
+> - [../02-operations/BACKUP_STRATEGY.md](../history/02-operations/BACKUP_STRATEGY.md) — Backup strategy (required for DR)
 > - [../04-deployment/INCIDENT_RESPONSE_RUNBOOK.md](../04-deployment/INCIDENT_RESPONSE_RUNBOOK.md) — Incident response procedures
 
 ## Overview

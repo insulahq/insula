@@ -9,7 +9,7 @@ the admin panel under **Settings → Cluster Networking** — no
 per-node SSH, no firewall flags after bootstrap.
 
 > **Migrating from the pre-Phase-1 three-mode firewall?** See
-> [CLUSTER_NETWORK_MIGRATION.md](./CLUSTER_NETWORK_MIGRATION.md).
+> [CLUSTER_NETWORK_MIGRATION.md](../history/04-deployment/CLUSTER_NETWORK_MIGRATION.md).
 > The legacy `cidr` / `set` / `single` modes are retained at the end
 > of this page as historical reference.
 

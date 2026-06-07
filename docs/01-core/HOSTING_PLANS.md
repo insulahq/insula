@@ -85,7 +85,7 @@ These are the **starting templates with recommended pricing** for premium positi
 
 > **Note on cron jobs:** Cron jobs are **unlimited on all plans**. Resource limits per job execution (CPU, memory, timeout) are configurable per-customer. See `CUSTOMER_CRON_JOBS.md`.
 
-> **Note on AI Website Editor:** Available on all plans. Produces static HTML/CSS + vanilla JavaScript websites with contact-form-to-email. No frameworks, databases, or server-side applications in customer mode. Each plan has a default AI model; admins can override the model and token budget per customer, or disable the feature entirely per customer. Token budgets reset monthly. Admins can grant one-time top-ups. Admins editing customer sites via the Admin Panel have no restrictions and no token budget. See `../06-features/AI_WEBSITE_EDITOR.md`.
+> **Note on AI Website Editor:** Available on all plans. Produces static HTML/CSS + vanilla JavaScript websites with contact-form-to-email. No frameworks, databases, or server-side applications in customer mode. Each plan has a default AI model; admins can override the model and token budget per customer, or disable the feature entirely per customer. Token budgets reset monthly. Admins can grant one-time top-ups. Admins editing customer sites via the Admin Panel have no restrictions and no token budget. See `../history/06-features/AI_WEBSITE_EDITOR.md`.
 
 ### Pricing Rationale
 
@@ -237,7 +237,7 @@ Since all clients now have dedicated pods, switching capabilities are uniform:
 > For example, Starter clients could be limited to PHP runtimes only, while Business/Premium
 > clients have access to the full catalog.
 
-**Related Document:** See [`WEB_SERVER_PHP_VERSION_SWITCHING.md`](./WEB_SERVER_PHP_VERSION_SWITCHING.md) for complete switching specifications.
+**Related Document:** See [`WEB_SERVER_PHP_VERSION_SWITCHING.md`](../history/01-core/WEB_SERVER_PHP_VERSION_SWITCHING.md) for complete switching specifications.
 
 ## Related Documentation
 

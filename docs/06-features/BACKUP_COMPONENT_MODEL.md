@@ -3,8 +3,8 @@
 **Status:** Specification · 2026-04-20
 **Supersedes:** Implicit ad-hoc structure in `storage_snapshots` tarballs.
 **Relates to:**
-- `docs/02-operations/BACKUP_STRATEGY.md` — three-tier strategy
-- `docs/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture mechanics
+- `docs/history/02-operations/BACKUP_STRATEGY.md` — three-tier strategy
+- `docs/history/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture mechanics
 - `docs/06-features/RESTORE_SPECIFICATION.md` — restore API + granularity
 - `docs/07-reference/ADR-028-backup-architecture.md` — decision record
 
@@ -362,10 +362,10 @@ for S3 and SSH, and filesystem permissions for hostpath).
 
 ## Related docs
 
-- `docs/02-operations/BACKUP_STRATEGY.md` — policy and tiered strategy
-- `docs/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture pipelines
+- `docs/history/02-operations/BACKUP_STRATEGY.md` — policy and tiered strategy
+- `docs/history/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture pipelines
 - `docs/06-features/RESTORE_SPECIFICATION.md` — restore API + UI
 - `docs/02-operations/BACKUP_EXPORT_MIGRATION_GUIDE.md` — off-platform migration
-- `docs/02-operations/TENANT_PANEL_FEATURES.md` § Backups — customer UI
-- `docs/02-operations/ADMIN_PANEL_REQUIREMENTS.md` § SD.2 — operator UI
+- `docs/history/02-operations/TENANT_PANEL_FEATURES.md` § Backups — customer UI
+- `docs/history/02-operations/ADMIN_PANEL_REQUIREMENTS.md` § SD.2 — operator UI
 - `docs/07-reference/ADR-028-backup-architecture.md` — decision record

@@ -55,7 +55,7 @@
 
 ## Milestone: Backup Architecture Simplification (Path D-final)
 
-**Driving RFC**: [`BACKUP_ARCHITECTURE_RFC.md`](./BACKUP_ARCHITECTURE_RFC.md) — locked design.
+**Driving RFC**: [`BACKUP_ARCHITECTURE_RFC.md`](../history/04-deployment/BACKUP_ARCHITECTURE_RFC.md) — locked design.
 **Related ADRs**: ADR-042 (Stalwart logical export, deferred), ADR-043 (rclone-serve-s3 shim, **ACCEPTED-EXTENDED 2026-05-20** as universal backup mediator).
 **Estimate**: ~75 hours (~9-10 working days) including R1-R14 baseline.
 **Critical path**: R-X0 → R-X1 → R-X2 → R-X3 → R-X4 → R-X6 → R-X7 → R-X11 → R-X12 (~36 h — delivers functional postgres + etcd + tenant + mail backups on any target type with a working DR drill).

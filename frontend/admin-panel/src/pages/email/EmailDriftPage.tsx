@@ -112,7 +112,7 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
           <button
             type="button"
             disabled
-            title="Stalwart snapshot-restore wizard is not built yet. To preserve DKIM + mailbox messages, restore Stalwart from a snapshot manually using scripts/mail-stack-consolidate.sh — see docs/02-operations/MAIL_STACK_CONSOLIDATION.md."
+            title="Stalwart snapshot-restore wizard is not built yet. To preserve DKIM + mailbox messages, restore Stalwart from a snapshot manually using scripts/mail-stack-consolidate.sh — see docs/history/02-operations/MAIL_STACK_CONSOLIDATION.md."
             className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-2.5 py-1 text-xs font-medium text-gray-400 cursor-not-allowed"
             data-testid={`drift-restore-snapshot-${item.id}`}
           >

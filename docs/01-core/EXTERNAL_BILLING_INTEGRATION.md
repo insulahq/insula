@@ -741,10 +741,10 @@ CREATE TABLE gateway_configs (
 
 ## Related Documents
 
-- [`./BILLING_MODEL_CHANGES.md`](./BILLING_MODEL_CHANGES.md) — Summary of billing model changes
+- [`./BILLING_MODEL_CHANGES.md`](../history/01-core/BILLING_MODEL_CHANGES.md) — Summary of billing model changes
 - [`../04-deployment/SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md`](../04-deployment/SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md) — Admin alerts for expiring subscriptions
-- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel subscription management UI
-- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Tenant panel renewal flow
+- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../history/02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel subscription management UI
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../history/02-operations/TENANT_PANEL_FEATURES.md) — Tenant panel renewal flow
 
 ---
 

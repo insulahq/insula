@@ -4,7 +4,7 @@
 **Owner:** Operations & Support Team
 
 > **Bundle format:** [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) (authoritative)
-> **Policy:** [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md)
+> **Policy:** [BACKUP_STRATEGY.md](../history/02-operations/BACKUP_STRATEGY.md)
 > **ADR:** [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md)
 
 ## Overview

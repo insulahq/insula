@@ -2,7 +2,7 @@
 # scripts/backup-target-key-rotate.sh
 #
 # Rotate the platform-wide BACKUP_TARGET_KEY. See
-# docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13b.
+# docs/history/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13b.
 #
 # THIS IS A DESTRUCTIVE OPERATION:
 #   - Every existing remote backup becomes unreadable AFTER rotation

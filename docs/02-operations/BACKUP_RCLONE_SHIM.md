@@ -263,7 +263,7 @@ see ADR-043 postscript.) One platform-wide `BACKUP_TARGET_KEY` Secret
 drives every derived credential (rclone `crypt`, restic password, the
 shim’s own S3 access/secret) via HKDF.
 
-See [`docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md`](../04-deployment/BACKUP_ARCHITECTURE_RFC.md)
+See [`docs/history/04-deployment/BACKUP_ARCHITECTURE_RFC.md`](../history/04-deployment/BACKUP_ARCHITECTURE_RFC.md)
 for the full architecture (RFC §13a/§13b).
 
 ---

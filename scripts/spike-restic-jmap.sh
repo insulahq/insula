@@ -12,7 +12,7 @@
 #   - Object-level restore via --include extracts a single file byte-identical.
 #   - Wall-clock and storage-size numbers vs ADR-036 budget.
 #
-# Captures real numbers into docs/02-operations/TENANT_BACKUP_V2_ROADMAP.md.
+# Captures real numbers into docs/history/02-operations/TENANT_BACKUP_V2_ROADMAP.md.
 #
 # Usage:
 #   ./scripts/spike-restic-jmap.sh
@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034  # ROOT/ROADMAP held for the doc-update path
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC2034
-ROADMAP="$ROOT/docs/02-operations/TENANT_BACKUP_V2_ROADMAP.md"
+ROADMAP="$ROOT/docs/history/02-operations/TENANT_BACKUP_V2_ROADMAP.md"
 
 RESTIC="${SPIKE_RESTIC:-/tmp/restic}"
 if ! [ -x "$RESTIC" ]; then RESTIC="$(command -v restic 2>/dev/null || true)"; fi
@@ -331,4 +331,4 @@ echo
 
 echo "✓ Phase 0a (restic) PASS"
 echo
-echo "Append the numbers above to docs/02-operations/TENANT_BACKUP_V2_ROADMAP.md."
+echo "Append the numbers above to docs/history/02-operations/TENANT_BACKUP_V2_ROADMAP.md."

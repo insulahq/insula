@@ -2907,10 +2907,10 @@ PATCH /api/v1/tenants/client_001/subscription
 - [`FRONTEND_DEPLOYMENT_ARCHITECTURE.md`](./FRONTEND_DEPLOYMENT_ARCHITECTURE.md) — Frontend deployment, path-based routing, IP access, CORS setup
 - [`FRONTEND_INGRESS_CONFIGURATIONS.md`](./FRONTEND_INGRESS_CONFIGURATIONS.md) — Kubernetes Ingress configs for frontend + API integration
 - [`./DEPLOYMENT_PROCESS.md`](./DEPLOYMENT_PROCESS.md) — Client onboarding workflow that uses this API
-- [`../02-operations/TENANT_PANEL_FEATURES.md`](../02-operations/TENANT_PANEL_FEATURES.md) — Frontend endpoints powered by this API
-- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin dashboard using this API
+- [`../02-operations/TENANT_PANEL_FEATURES.md`](../history/02-operations/TENANT_PANEL_FEATURES.md) — Frontend endpoints powered by this API
+- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../history/02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin dashboard using this API
 - [`../03-security/SECURITY_ARCHITECTURE.md`](../03-security/SECURITY_ARCHITECTURE.md) — Token validation, OIDC integration
-- [`../02-operations/BACKUP_STRATEGY.md`](../02-operations/BACKUP_STRATEGY.md) — Backup endpoints implementation
+- [`../02-operations/BACKUP_STRATEGY.md`](../history/02-operations/BACKUP_STRATEGY.md) — Backup endpoints implementation
 
 ---
 
@@ -2918,7 +2918,7 @@ PATCH /api/v1/tenants/client_001/subscription
 
 Operator-only endpoints for managing the platform mail server. All routes
 under `/api/v1/admin/mail/...` require `super_admin`. Deeper background
-in `docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md`.
+in `docs/history/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md`.
 
 ### Mail PVC Storage
 

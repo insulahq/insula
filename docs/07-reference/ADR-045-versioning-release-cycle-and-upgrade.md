@@ -9,10 +9,10 @@ valid SemVer and stays in lockstep with `package.json`; version ordering must
 use semver-aware comparison, never raw string sort. Operator-approved; mirrored
 in the holistic plan §15 and `CONTRIBUTING.md`.
 
-**Amends:** `docs/04-deployment/CLUSTER_UPGRADE_ROADMAP.md` (carries forward 17
+**Amends:** `docs/history/04-deployment/CLUSTER_UPGRADE_ROADMAP.md` (carries forward 17
 of its 20 locked decisions; amends 3 — see §6).
 
-**Implemented by:** `docs/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md`
+**Implemented by:** `docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md`
 (workstreams W0–W17, 20 PRs). This ADR is the decision record; that plan is the
 implementation roadmap. W0 = "this ADR is merged before any implementation PR."
 
@@ -212,7 +212,7 @@ install.
 ## Implementation map
 
 Full workstream breakdown, gating graph, PR order, risk register, and success
-criteria live in `docs/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md`.
+criteria live in `docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md`.
 Summary:
 
 - **First independently-valuable artefact:** the version spine (PR 5) — closes
@@ -229,8 +229,8 @@ CI guards introduced along the way: `scripts/preflight-image-org.sh`,
 
 ## References
 
-- `docs/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md` — the implementing roadmap
-- `docs/04-deployment/CLUSTER_UPGRADE_ROADMAP.md` — amended by this ADR (§6)
+- `docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md` — the implementing roadmap
+- `docs/history/04-deployment/CLUSTER_UPGRADE_ROADMAP.md` — amended by this ADR (§6)
 - `docs/04-deployment/CICD_PIPELINE_REQUIREMENTS.md` — to be rewritten (W7) to match the pull model
 - `docs/04-deployment/DR_BUNDLE_ROADMAP.md` — primitives reused by `platform-ops dr`
 - calver.org — versioning scheme rationale (Decision 6)
