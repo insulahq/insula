@@ -41,6 +41,17 @@ const DENY_LIST = new Set<string>([
 /** A real sysctl value is a short scalar / space-separated tuple. */
 export const MAX_SYSCTL_VALUE_LEN = 1024;
 
+// A real sysctl value is digits/letters/spaces and a few separators. Reject
+// control chars (newline, NUL, …) and directive/shell metacharacters (=, |, %,
+// …) so a crafted value can never corrupt the /proc write or smuggle a second
+// directive into the persisted sysctl.d line. Same injection-safe discipline as
+// the ulimits-line and module-name validators in this converger.
+const SYSCTL_VALUE_RE = /^[A-Za-z0-9 \t._:,/+-]*$/;
+
+export function sysctlValueValid(value: string): boolean {
+  return value.length <= MAX_SYSCTL_VALUE_LEN && SYSCTL_VALUE_RE.test(value);
+}
+
 export function sysctlAllowed(key: string): boolean {
   if (DENY_LIST.has(key)) return false;
   return ALLOWED_PREFIXES.some((p) => key.startsWith(p));
@@ -83,12 +94,24 @@ export function convergeSysctls(
     return { ok: true, mode, desiredSource: 'absent', items: [], appliedCount: 0 };
   }
   const items: SysctlItem[] = [];
+  // Allow-listed keys whose desired value is currently LIVE in /proc (state
+  // 'applied' or 'ok') — the set we persist to the reboot drop-in. Never
+  // persist 'write-failed' / 'not-allowed' / 'unreadable': a drop-in line the
+  // kernel can't honour would error `sysctl --system` at boot.
+  const live: SysctlSpec[] = [];
   let appliedCount = 0;
   let ok = true;
   for (const spec of specs) {
     const want = normalizeSysctl(spec.value);
     if (!sysctlAllowed(spec.key)) {
       items.push({ key: spec.key, desired: want, actual: null, state: 'not-allowed' });
+      continue;
+    }
+    // Refuse a malformed value up front (control/metacharacters) — never attempt
+    // the /proc write and never let it reach the persisted drop-in. writeSysctl +
+    // renderSysctlDropIn re-check the same, so this is the first of three gates.
+    if (!sysctlValueValid(want)) {
+      items.push({ key: spec.key, desired: want, actual: null, state: 'not-allowed', error: 'invalid value charset' });
       continue;
     }
     const actual = deps.readSysctl(spec.key);
@@ -98,6 +121,7 @@ export function convergeSysctls(
     }
     if (normalizeSysctl(actual) === want) {
       items.push({ key: spec.key, desired: want, actual, state: 'ok' });
+      live.push({ key: spec.key, value: want });
       continue;
     }
     if (!enforcing) {
@@ -114,7 +138,30 @@ export function convergeSysctls(
     }
     const after = deps.readSysctl(spec.key);
     items.push({ key: spec.key, desired: want, actual: after ?? actual, state: 'applied' });
+    live.push({ key: spec.key, value: want });
     appliedCount++;
   }
+  // Persist only when enforcing (never dry-run/observe — no mutation). Closes
+  // the reboot-durability gap: writeSysctl touches /proc (RAM) only, so without
+  // a drop-in the values are lost on reboot until the next enforce tick.
+  if (enforcing) deps.persistSysctls(live);
   return { ok, mode, desiredSource: 'configmap', items, appliedCount };
+}
+
+/**
+ * Render the managed /etc/sysctl.d drop-in for a set of live, allow-listed
+ * sysctls. PURE + re-validates each key against the allow-list (defence in
+ * depth — a deny-listed or out-of-namespace key can never reach the persisted
+ * drop-in even if a caller passes one). Stable order = input order.
+ */
+export function renderSysctlDropIn(specs: readonly SysctlSpec[]): string {
+  const header =
+    '# Managed by platform-ops host-config (ADR-045 W10) — sysctls applied at boot.\n'
+    + '# Generated from host-config-desired when mode: enforce. Edit the\n'
+    + '# host-config-desired ConfigMap, not this file.\n';
+  const lines = specs
+    .map((s) => ({ key: s.key, value: normalizeSysctl(s.value) }))
+    .filter((s) => sysctlAllowed(s.key) && sysctlValueValid(s.value))
+    .map((s) => `${s.key} = ${s.value}`);
+  return lines.length === 0 ? header : `${header}${lines.join('\n')}\n`;
 }

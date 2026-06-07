@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import {
   convergeSysctls,
   normalizeSysctl,
+  renderSysctlDropIn,
   sysctlAllowed,
+  sysctlValueValid,
   sysctlKeyToRelPath,
   MAX_SYSCTL_VALUE_LEN,
 } from './sysctls.js';
@@ -61,6 +63,10 @@ const PROC_SYS = '/proc/sys';
 // next pass (the file header says so).
 const ULIMITS_DROP_IN = '/etc/security/limits.d/90-platform.conf';
 const MODULES_LOAD_DROP_IN = '/etc/modules-load.d/90-platform.conf';
+// Lexically BELOW bootstrap.sh's 99-*.conf so an explicit bootstrap value (or
+// operator 99-file) still wins on `sysctl --system`; this is the platform's
+// enforce baseline.
+const SYSCTL_DROP_IN = '/etc/sysctl.d/90-platform.conf';
 const MODPROBE_BIN = '/usr/sbin/modprobe';
 const MODPROBE_TIMEOUT_MS = 30_000;
 
@@ -117,9 +123,31 @@ function readSysctl(key: string): string | null {
 function writeSysctl(key: string, value: string): void {
   if (!sysctlAllowed(key)) throw new Error(`refusing to write non-allow-listed sysctl ${key}`);
   if (value.length > MAX_SYSCTL_VALUE_LEN) throw new Error(`refusing oversize sysctl value (${value.length} bytes) for ${key}`);
+  if (!sysctlValueValid(value)) throw new Error(`refusing sysctl value with control/metacharacters for ${key}`);
   const full = procSysPath(key);
   if (!full) throw new Error(`refusing unsafe sysctl path for ${key}`);
   writeFileSync(full, value + '\n');
+}
+
+// Persist the live, allow-listed sysctls to /etc/sysctl.d/90-platform.conf so
+// they survive a reboot (writeSysctl touches /proc only). renderSysctlDropIn
+// re-validates every key (allow-list) AND value (charset) before it reaches the
+// file — the same second-gate discipline as writeSysctl. Fixed path (no
+// key-derived path), root-owned 0644. Dirty-checked: a no-op enforce pass (the
+// common daily-timer case) does not rewrite the file or churn its mtime.
+//
+// NOTE: only called when host-config-desired is PRESENT + enforcing. When the
+// CM is absent (deleted / cluster unreachable) convergeSysctls returns early
+// and this is NOT called — we deliberately do NOT clear the drop-in, because
+// "absent" can mean a transient API outage and we must not drop tuning under
+// one. (A genuinely deleted CM is self-healed by the backend reconcile.)
+function persistSysctls(specs: readonly SysctlSpec[]): void {
+  const content = renderSysctlDropIn(specs);
+  try {
+    if (readFileSync(SYSCTL_DROP_IN, 'utf8') === content) return; // unchanged — skip the write
+  } catch { /* absent — fall through to write */ }
+  mkdirSync(join(SYSCTL_DROP_IN, '..'), { recursive: true });
+  writeFileSync(SYSCTL_DROP_IN, content, { mode: 0o644 });
 }
 
 async function readDesired(env: NodeJS.ProcessEnv): Promise<{ sysctls: SysctlSpec[]; mode: string } | null> {
@@ -145,6 +173,7 @@ export function realHostConfigDeps(env: NodeJS.ProcessEnv): HostConfigDeps {
     readDesired: () => readDesired(env),
     readSysctl,
     writeSysctl,
+    persistSysctls,
   };
 }
 
