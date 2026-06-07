@@ -39,7 +39,7 @@ module is worker re-pinning — unrelated.
 
 - Spec material: [history/07-reference/MIGRATION_PLAN.md](../history/07-reference/MIGRATION_PLAN.md)
   (per-client checklist, Plesk/cPanel/Virtualmin extraction details, rollback plan),
-  cron extraction details in the migration sections of [CUSTOMER_CRON_JOBS.md](../06-features/CUSTOMER_CRON_JOBS.md).
+  cron extraction details in the migration sections of [CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
 - Building blocks already shipped: `mail-imapsync` (mailbox import), tenant
   bundles restore cart (import path), DNS zone import.
 - Acceptance: one real Plesk subscription migrated end-to-end onto a test

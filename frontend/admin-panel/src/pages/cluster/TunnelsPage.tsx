@@ -488,7 +488,7 @@ function HelpCard() {
         <li>
           See{' '}
           <code className="text-gray-700 dark:text-gray-300">
-            docs/04-deployment/PRIVATE_WORKER.md
+            docs/operations/PRIVATE_WORKER.md
           </code>{' '}
           for the full per-worker cert lifecycle and renewal model.
         </li>

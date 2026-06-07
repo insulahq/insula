@@ -42,7 +42,7 @@ FROM node:22-alpine
 # Bump procedure for the next major: bump CNPG cluster imageName
 # first so all servers reach the new floor, then bump this pin.
 # Same shape as 16→17→18 over April-May 2026.
-# restic is used by modules/tenant-bundles (ADR-036, Phase 1+) — spawned
+# restic is used by modules/tenant-bundles (ADR-047, Phase 1+) — spawned
 # as a subprocess from restic-driver.ts to write per-tenant restic repos
 # to S3/SFTP. The wire stream from a tenant capture Job to
 # /api/v1/internal/bundles/.../restic-stream is piped straight into

@@ -10,7 +10,7 @@
  * golden-file unit tests without k8s / DB mocks.
  *
  * References:
- *   - docs/06-features/EMAIL_SERVICES.md (decision D10 — relay-by-default)
+ *   - docs/features/EMAIL_SERVICES.md (decision D10 — relay-by-default)
  *   - Stalwart docs on queue outbound routing:
  *     https://stalw.art/docs/configuration/queue/outbound/
  */

@@ -263,7 +263,7 @@ export async function runBundle(
         // resolveTenantPvc / component-registry.ts.
         const pvcName = `${namespace}-storage`;
 
-        // Phase 1 piece #6 (ADR-036): pre-capture DB dump hook. Walks
+        // Phase 1 piece #6 (ADR-047): pre-capture DB dump hook. Walks
         // every database deployment for the tenant and dispatches
         // mysqldump/pg_dump INSIDE the live tenant DB pod via the
         // existing SQL Manager primitive. Dumps land at /exports/...
@@ -455,7 +455,7 @@ export async function runBundle(
           addresses: [...mailboxesResult.addresses],
         };
         // Persist Email/changes state AFTER the restic snapshot is
-        // acked (ADR-036 — at-least-once: dedup makes re-pull harmless).
+        // acked (ADR-047 — at-least-once: dedup makes re-pull harmless).
         // Best-effort: a row-write failure here doesn't fail the
         // bundle (snapshot is already on the off-site target).
         if (mailboxesResult.newStates.length > 0) {

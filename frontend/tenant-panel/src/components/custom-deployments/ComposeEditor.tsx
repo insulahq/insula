@@ -55,7 +55,7 @@ interface Props {
   readonly existingDeployment?: CustomDeploymentRow;
 }
 
-const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/03-features/CUSTOM_CONTAINERS_USER_GUIDE.md
+const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUSTOM_CONTAINERS_USER_GUIDE.md
 #
 # All declared ports become cluster-internal ClusterIP Services.
 # To expose a port externally, add an Ingress Route in the Routes tab after deploying.

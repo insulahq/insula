@@ -34,7 +34,7 @@ resources:
   # cluster-network — CRDs (ClusterTrustedRange, ClusterPendingPeer)
   # that drive the always-on set-mode firewall. Must apply BEFORE
   # firewall-reconciler so the reconciler's informers can resolve
-  # the kinds at startup. See docs/04-deployment/CLUSTER_NETWORK.md.
+  # the kinds at startup. See docs/operations/CLUSTER_NETWORK.md.
   - cluster-network/
   # firewall-reconciler — single DaemonSet running TWO reconcile
   # goroutines against the host's nft state via libnftnl netlink:
@@ -47,8 +47,8 @@ resources:
   # bootstrap.sh declares all six nft sets on every node; this
   # DaemonSet is the only writer at runtime. Replaces the prior
   # peer-firewall-reconciler + worker-firewall-reconciler split.
-  # See docs/04-deployment/CLUSTER_NETWORK.md +
-  # docs/04-deployment/CLUSTER_NETWORK.md.
+  # See docs/operations/CLUSTER_NETWORK.md +
+  # docs/operations/CLUSTER_NETWORK.md.
   - firewall-reconciler/
   # security-probe — read-only host posture probe. Writes one
   # ConfigMap per node (security-probe-<node>) into platform-system
@@ -91,7 +91,7 @@ resources:
   # Per-tenant tunnel-{slug} Ingresses + ExternalName Services + frps
   # Deployments are materialised at runtime by the backend reconciler
   # in backend/src/modules/private-workers/. See
-  # docs/04-deployment/PRIVATE_WORKER.md for the full design.
+  # docs/operations/PRIVATE_WORKER.md for the full design.
   - private-worker-tunnel/
   # Stakater Reloader — watches annotated Secrets/ConfigMaps and rolls
   # StatefulSets/Deployments on change. Replaces the brittle cert-reload

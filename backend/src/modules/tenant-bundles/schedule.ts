@@ -95,7 +95,7 @@ export async function runOneScheduledBundle(app: FastifyInstance, tenantId: stri
       platformVersion,
       secretsKeyHex,
       platformApiUrl,
-      // Phase 1.5+ (ADR-036): scheduled runs tag with region id
+      // Phase 1.5+ (ADR-047): scheduled runs tag with region id
       // and persist tenant_restic_repo_state.
       platformBaseDomain: (app.config as Record<string, unknown>).PLATFORM_BASE_DOMAIN as string | undefined
         ?? (app.config as Record<string, unknown>).INGRESS_BASE_DOMAIN as string | undefined,

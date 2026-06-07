@@ -1,5 +1,5 @@
 /**
- * Restic driver — Phase 1 of tenant-backup-v2 (ADR-036).
+ * Restic driver — Phase 1 of tenant-backup-v2 (ADR-047).
  *
  * Runs restic CLI on the platform-api side as a subprocess. The tenant
  * Job pipes its captured payload (a tar stream of the PVC contents,
@@ -187,7 +187,7 @@ function hkdfHex(secretHex: string, info: string): string {
     throw new Error('HKDF: key must be 32 bytes (64 hex chars)');
   }
   const secret = Buffer.from(secretHex, 'hex');
-  // Salt is empty buffer per ADR-036 spec; matches Phase 0 spike.
+  // Salt is empty buffer per ADR-047 spec; matches Phase 0 spike.
   const out = hkdfSync('sha256', secret, Buffer.alloc(0), Buffer.from(info), 32);
   return Buffer.from(out).toString('hex');
 }

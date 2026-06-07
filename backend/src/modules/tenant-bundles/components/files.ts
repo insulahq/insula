@@ -1,5 +1,5 @@
 /**
- * `files` component capture (Phase 1 tenant-backup-v2 / ADR-036).
+ * `files` component capture (Phase 1 tenant-backup-v2 / ADR-047).
  *
  * Pipeline (single tenant-namespace Job):
  *

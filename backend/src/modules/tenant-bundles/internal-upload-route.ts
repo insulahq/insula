@@ -150,7 +150,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     return success({ bundleId, component, artifactName, sizeBytes: ref.sizeBytes });
   });
 
-  // ─── Restic streaming endpoint (Phase 1, ADR-036) ─────────────────────
+  // ─── Restic streaming endpoint (Phase 1, ADR-047) ─────────────────────
   //
   // The tenant Job tars the captured tree (PVC contents + pre-dumped DB
   // SQL files for files-component, or the JMAP-built Maildir tree for
@@ -252,7 +252,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     const password = deriveResticPassword(secretsKeyHex, job.tenantId);
 
     // Snapshot tags carry the full metadata Region B needs to identify
-    // and restore this snapshot from outside (ADR-036 multi-region).
+    // and restore this snapshot from outside (ADR-047 multi-region).
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, job.tenantId)).limit(1);
     if (!tenant) throw new ApiError('NOT_FOUND', 'Bundle tenant missing', 404);
     const [settings] = await app.db.select().from(tenantBackupV2Settings).limit(1);
@@ -314,7 +314,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       });
     }
 
-    // Phase 1 piece #12 — cluster-wide concurrency gate (ADR-036
+    // Phase 1 piece #12 — cluster-wide concurrency gate (ADR-047
     // Locked decisions #5). Caps simultaneous restic captures across
     // all platform-api replicas to `globalMaxInFlight` (default 4).
     // 0 = disabled. The gate sits BEFORE the per-pod semaphore inside

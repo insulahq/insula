@@ -25,7 +25,7 @@ data:
   # nodes via nsenter into host PID 1). Default OFF in production
   # since the feature is a break-glass tool. Flip to "true" here when
   # the deployment is single-replica platform-api OR HA stickiness is
-  # configured. See docs/02-operations/NODE_TERMINAL.md.
+  # configured. See docs/operations/NODE_TERMINAL.md.
   node-terminal-enabled: "false"
   # Allowlist for publicWssOrigin — host portion of cors-origins.
   # Belt-and-braces against X-Forwarded-Host spoofing. Populated even

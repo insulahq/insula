@@ -1,5 +1,5 @@
 /**
- * `mailboxes` component capture (Phase 2 rewrite, 2026-05-11, ADR-036).
+ * `mailboxes` component capture (Phase 2 rewrite, 2026-05-11, ADR-047).
  *
  * Replaces the mbsync-based capture path with a JMAP-driven flow. Per
  * tenant tenant:

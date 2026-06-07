@@ -51,7 +51,7 @@ npm run db:seed      # seed baseline data
 ## Conventions
 
 - API prefix `/api/v1/`; envelope `{ data, pagination, error }`; error codes in
-  `SCREAMING_SNAKE_CASE`. See `docs/04-deployment/API_ERROR_HANDLING.md`.
+  `SCREAMING_SNAKE_CASE`. See `docs/architecture/API_ERROR_HANDLING.md`.
 - Auth: JWT Bearer (`sub`, `role`, `exp`, `iat`).
 - Pagination: cursor-based, `limit` ≤ 100 (`MAX_PAGE_LIMIT` from api-contracts).
 - Target 80%+ coverage on new code; prefer TDD.

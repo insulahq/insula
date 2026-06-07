@@ -4,7 +4,7 @@
  * backend cannot list the actual pending scripts. It surfaces the one thing it
  * CAN read from the cluster: the `host-migrations-desired` ConfigMap mode, i.e.
  * whether host-migrations would RUN during an upgrade. Operators see the full
- * picture in the runbook (docs/02-operations/…) the UI links to.
+ * picture in the runbook (docs/operations/…) the UI links to.
  */
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { HostMigrationsPreviewResponse } from '@insula/api-contracts';

@@ -7,7 +7,7 @@
 # taint so those pods still schedule on servers that refuse tenant
 # workloads (`--host-tenant-workloads=false`).
 #
-# Apply order (CRITICAL — see docs/07-reference/NODE_ROLE_TAXONOMY.md):
+# Apply order (CRITICAL — see docs/architecture/NODE_ROLE_TAXONOMY.md):
 # the staging / production node MUST already carry
 # `insula.host/node-role=server` before this component is
 # included in the overlay's kustomization. Otherwise the scheduler

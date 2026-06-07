@@ -888,7 +888,7 @@ parse_args() {
       --dry-run)         DRY_RUN=true; shift ;;
       --skip-vpn)        shift ;; # Deprecated — bootstrap no longer installs VPN tools; sysadmin responsibility
       --netbird-management-url|--netbird-setup-key)
-                         warn "Deprecated flag '$1' ignored — bring up NetBird/Tailscale BEFORE running bootstrap. See docs/04-deployment/CLUSTER_NETWORK.md."
+                         warn "Deprecated flag '$1' ignored — bring up NetBird/Tailscale BEFORE running bootstrap. See docs/operations/CLUSTER_NETWORK.md."
                          shift 2 ;;
       --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
       --skip-cnpg)       SKIP_CNPG=true; shift ;;
@@ -1667,7 +1667,7 @@ configure_firewall() {
   #     ClusterTrustedRange CRDs; bootstrap also seeds from --allow-source.
   #   tenant_ports_{tcp,udp} — runtime-managed by worker-firewall-
   #     reconciler from Pod hostPort + platform.io/firewall-{tcp,udp}-
-  #     ports annotations. See docs/04-deployment/CLUSTER_NETWORK.md.
+  #     ports annotations. See docs/operations/CLUSTER_NETWORK.md.
   local set_decls="  set tenant_ports_tcp {
     type inet_service
     flags interval
@@ -2546,7 +2546,7 @@ install_k3s() {
     if [[ "$NODE_ROLE" == "server" ]] \
         && [[ -f /var/lib/rancher/k3s/server/db/state.db ]] \
         && [[ ! -d /var/lib/rancher/k3s/server/db/etcd ]]; then
-      error "Upgrade blocked: existing cluster uses the sqlite datastore but this script now installs with --cluster-init (embedded etcd). Back up data, run k3s-uninstall.sh, then re-run this script on the empty node. See docs/02-operations/DISASTER_RECOVERY.md for the supported path."
+      error "Upgrade blocked: existing cluster uses the sqlite datastore but this script now installs with --cluster-init (embedded etcd). Back up data, run k3s-uninstall.sh, then re-run this script on the empty node. See docs/operations/DISASTER_RECOVERY.md for the supported path."
     fi
   fi
 
@@ -4863,7 +4863,7 @@ RCEOF
     log "NOTE: Roundcube PG database + role must be created via"
     log "      create_roundcube_db() (run after platform CNPG cluster is Ready)."
     log "      Stalwart master user must be provisioned via JMAP (run after"
-    log "      Stalwart pod is Ready); see docs/02-operations/STALWART_DEPLOYMENT.md."
+    log "      Stalwart pod is Ready); see docs/operations/STALWART_DEPLOYMENT.md."
   fi
 
   # ADR-039 Phase 8 — Bulwark webmail secrets.
@@ -5041,7 +5041,7 @@ create_platform_configmap() {
     `# production so operators have a break-glass shell from day 1;` \
     `# production overlay flips to OFF by default — flip back here` \
     `# (or via the System Settings UI) once an HA-stickiness path is` \
-    `# in place. See docs/02-operations/NODE_TERMINAL.md.` \
+    `# in place. See docs/operations/NODE_TERMINAL.md.` \
     --from-literal=node-terminal-enabled="$([[ "$PLATFORM_ENV" == "production" ]] && echo false || echo true)" \
     `# Allowlist for publicWssOrigin — host portion of cors-origins.` \
     `# Belt-and-braces against X-Forwarded-Host spoofing.` \
@@ -5134,7 +5134,7 @@ generate_operator_recipient() {
     log "Operator age key generated."
     log "  private key:  ${key_path}        (mode 0600 — copy offline + delete)"
     log "  recipient:    ${recipient_path}  (mode 0644 — safe to share)"
-    log "  See docs/04-deployment/SECRETS_LIFECYCLE.md for retrieval steps."
+    log "  See docs/operations/SECRETS_LIFECYCLE.md for retrieval steps."
   fi
 
   # ConfigMap is intentionally simple — a single `recipient` key the
@@ -5342,7 +5342,7 @@ bundle_bootstrap_secrets() {
   log "Bootstrap secrets bundle written:"
   log "  ${out}  (${count} item(s), age-encrypted to operator recipient)"
   log "  Retrieve via: make secrets-fetch HOST=root@<this-server>"
-  log "  See docs/04-deployment/SECRETS_LIFECYCLE.md"
+  log "  See docs/operations/SECRETS_LIFECYCLE.md"
 }
 
 # Block until every admission webhook used by the platform overlay has
@@ -6017,7 +6017,7 @@ spec:
               # is LE rejecting the contact email's TLD. Operator must
               # set STALWART_CONTACT_EMAIL to a real deliverable address
               # and re-run bootstrap. See:
-              # docs/02-operations/STALWART_DEPLOYMENT.md (LE contact email).
+              # docs/operations/STALWART_DEPLOYMENT.md (LE contact email).
               echo "ERROR: x:AcmeProvider/set was rejected by Stalwart/LE:" >&2
               echo "  contact email tried: \${ACME_CONTACT_EMAIL}" >&2
               echo "  response: \${ACME_FAIL}" >&2
@@ -6559,7 +6559,7 @@ apply_platform_manifests() {
   #   • Flux: built-in postBuild.substituteFrom on every reconcile,
   #     reading from the same platform-cluster-config ConfigMap.
   # No on-disk sed; no Flux/bootstrap tug-of-war. See
-  # docs/04-deployment/CLUSTER_NETWORK.md (operator section).
+  # docs/operations/CLUSTER_NETWORK.md (operator section).
   if [[ ! -f "${overlay_dir}/kustomization.yaml" ]]; then
     error "Overlay ${overlay_env} not found at ${overlay_dir}/kustomization.yaml — \
 expected k8s/overlays/${overlay_env}/ to exist (dev | development | production)."
@@ -7478,7 +7478,7 @@ main() {
     # Tier-1 secrets bundle for offline retrieval. Runs after
     # generate_platform_secrets + generate_operator_recipient + bootstrap_stalwart_v016
     # so all bundled material (including stalwart-admin-creds) exists.
-    # See docs/04-deployment/SECRETS_LIFECYCLE.md.
+    # See docs/operations/SECRETS_LIFECYCLE.md.
     bundle_bootstrap_secrets
 
     # Phase 4: Verify

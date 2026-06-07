@@ -2943,7 +2943,7 @@ export type NewUserPasskey = typeof userPasskeys.$inferInsert;
 // Per-session row. Survives platform-api replica restarts, lets any
 // replica re-attach to a still-running privileged Pod via fresh
 // `exec.exec()`. Replaces the previous per-replica in-memory Map
-// (which silently broke under HA — see docs/02-operations/
+// (which silently broke under HA — see docs/operations/
 // NODE_TERMINAL.md "HA replica mismatch" section).
 export const nodeTerminalSessions = pgTable('node_terminal_sessions', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -3140,9 +3140,9 @@ export type NewBackupJob = typeof backupJobs.$inferInsert;
 export type BackupComponent = typeof backupComponents.$inferSelect;
 export type NewBackupComponent = typeof backupComponents.$inferInsert;
 
-// ─── Tenant Backup v2 (ADR-036, migration 0093) ─────────────────────────
+// ─── Tenant Backup v2 (ADR-047, migration 0093) ─────────────────────────
 // Per-tenant restic repository state + per-mailbox JMAP state + global
-// settings. See docs/07-reference/ADR-036-tenant-backup-restic-jmap.md.
+// settings. See docs/architecture/adr/ADR-048-tenant-backup-restic-jmap.md.
 
 export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
   tenantId: varchar('tenant_id', { length: 36 })
@@ -3279,7 +3279,7 @@ export type NewExternalBackupRepo = typeof externalBackupRepos.$inferInsert;
 // Per-tenant tunnel agents. A home box runs the private-worker-agent docker
 // container which dials in over WSS to tunnels.${DOMAIN}/c/{slug}/. A frps pod
 // in the tenant namespace terminates the tunnel and exposes a Service that
-// the existing ingressRoutes target. See docs/04-deployment/PRIVATE_WORKER.md.
+// the existing ingressRoutes target. See docs/operations/PRIVATE_WORKER.md.
 // (Enums for this feature are declared near the top of the file alongside
 // the other pgEnum declarations because ingressRoutes.targetType references
 // ingressTargetTypeEnum and pgEnum forward-references aren't supported.)

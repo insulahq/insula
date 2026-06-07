@@ -102,7 +102,7 @@ export default function SystemBackupsPage() {
  * Page-level "Backup Now" button — triggers a CNPG Backup CR for
  * platform/system-db. Defaults are hardcoded because that's the only
  * system cluster on the platform (mail-db was removed in Phase 0a;
- * see docs/02-operations/PG_MAJOR_UPGRADE.md). A future multi-cluster
+ * see docs/operations/PG_MAJOR_UPGRADE.md). A future multi-cluster
  * setup would expose a cluster picker here.
  *
  * UX:

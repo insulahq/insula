@@ -43,7 +43,7 @@ resources:
 # insula.host/node-role=server. Operators MUST have
 # relabeled every control-plane node before this overlay reconciles
 # or the scheduler evicts every platform pod. See
-# docs/07-reference/NODE_ROLE_TAXONOMY.md.
+# docs/architecture/NODE_ROLE_TAXONOMY.md.
 components:
   - ../../components/system-node-affinity
   # Admin-only UIs (Stalwart web-admin, Longhorn, future) MUST be

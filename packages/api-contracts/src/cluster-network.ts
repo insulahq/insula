@@ -8,7 +8,7 @@
  *
  * The CRDs are defined in k8s/base/cluster-network/. The peer-firewall-
  * reconciler DaemonSet converges them into nft sets on every node.
- * See docs/04-deployment/CLUSTER_NETWORK.md for the operator workflow.
+ * See docs/operations/CLUSTER_NETWORK.md for the operator workflow.
  */
 
 import { z } from 'zod';

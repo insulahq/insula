@@ -197,7 +197,7 @@ export default function NodeHealthPanel() {
 
       <div className="text-xs text-gray-500 dark:text-gray-400">
         Reconciler runs every 5 min. Notifications fire on severity transitions and re-fire every 24 h while a node remains warning/critical. Recovery actions audit-log every run; see{' '}
-        <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] dark:bg-gray-800">docs/02-operations/NODE_HEALTH_MONITORING.md</code> for the action catalogue.
+        <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] dark:bg-gray-800">docs/operations/NODE_HEALTH_MONITORING.md</code> for the action catalogue.
       </div>
 
       {recoveryNode && (

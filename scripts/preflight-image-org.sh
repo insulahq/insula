@@ -79,7 +79,7 @@ target_prefix="ghcr.io/${owner}"
 # third-party ghcr images (cloudnative-pg, bulwarkmail, stakater, …) are never
 # touched.
 #
-# NOT covered (documented in docs/04-deployment/FORK-AND-DEPLOY.md): Flux
+# NOT covered (documented in docs/development/FORK-AND-DEPLOY.md): Flux
 # ImageRepository/ImagePolicy CRs, and backend image defaults baked into the
 # compiled image (override via the *_IMAGE envs). A future PR consolidates these
 # behind a single IMAGE_PREFIX.

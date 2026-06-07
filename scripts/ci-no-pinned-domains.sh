@@ -85,7 +85,7 @@ if [ $FOUND -ne 0 ]; then
   echo "All overlay manifests must use \${DOMAIN} placeholders. The real"
   echo "apex is supplied at apply time by Flux postBuild.substituteFrom"
   echo "from the platform-cluster-config ConfigMap (created by"
-  echo "bootstrap.sh --domain <apex>). See docs/04-deployment/CLUSTER_NETWORK.md."
+  echo "bootstrap.sh --domain <apex>). See docs/operations/CLUSTER_NETWORK.md."
   exit 1
 fi
 

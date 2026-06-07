@@ -159,7 +159,7 @@ Effort: ~4 hours.
       how to run tests (`backend/`, `frontend/*/`, `packages/api-contracts/`
       each have their own commands), branch + PR conventions, where to find
       ADRs.
-- [ ] **`docs/04-deployment/FORK-AND-DEPLOY.md`** (new): explicit "fork →
+- [ ] **`docs/development/FORK-AND-DEPLOY.md`** (new): explicit "fork →
       deploy to my own cluster" runbook. Covers the image-org preflight,
       GHCR package permissions on the fork, DNS A-records, `bootstrap.sh
       --domain my.example.com --acme-email me@example.com`. Acceptance

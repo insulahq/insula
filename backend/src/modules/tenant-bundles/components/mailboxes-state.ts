@@ -1,5 +1,5 @@
 /**
- * tenant_jmap_state persistence (Phase 2 of tenant-backup-v2 / ADR-036).
+ * tenant_jmap_state persistence (Phase 2 of tenant-backup-v2 / ADR-047).
  *
  * Called by the orchestrator AFTER the restic snapshot for the
  * mailboxes component has been acknowledged. The orchestrator computes
