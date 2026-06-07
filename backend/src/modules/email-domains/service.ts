@@ -21,7 +21,10 @@ import type { EmailDomainDisablePreview, WebmailStatus } from '@insula/api-contr
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { removeAutoCreatedEd25519Signatures, removeAllDkimSignaturesForDomain } from '../email-dkim/suppress-ed25519.js';
+import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
+import { normalizeDomainDkim } from '../email-dkim/normalize.js';
+import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
+import { redactPemBlocks } from '../email-dkim/signatures.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ── Stalwart JMAP helper ──────────────────────────────────────────────────────
@@ -171,21 +174,46 @@ export async function enableEmailForDomain(
           .set({ stalwartDomainId })
           .where(eq(emailDomains.id, id));
 
-        // RSA-only DKIM policy: Stalwart auto-creates an Ed25519
-        // signature alongside the RSA one on every domain principal;
-        // Gmail/M365 can't verify it (RFC 8463 unsupported) and Gmail
-        // reports dkim=fail in DMARC aggregates. Destroy it. Soft-fail:
-        // a domain that keeps it merely dual-signs (delivery unaffected).
+        // A/B DKIM policy: replace Stalwart's auto-created signature
+        // pair (v1-rsa-<date> RSA + v1-ed25519-<date> Ed25519 — Gmail
+        // and M365 can't verify the latter, RFC 8463 unsupported) with
+        // a single platform-generated RSA-2048 signature under the
+        // fixed selector 'dkim-1'. Soft-fail: a domain that keeps the
+        // auto pair still signs and delivers; the first rotation
+        // converges it onto the A/B pair.
         try {
-          await removeAutoCreatedEd25519Signatures({
+          const { activeSelector, createdPublicKey } = await normalizeDomainDkim({
             accountId: domainAccountId,
             stalwartDomainId,
             baseUrl: process.env.STALWART_MGMT_URL,
+            currentDbSelector: existing?.dkimActiveSelector ?? null,
           });
+          await db
+            .update(emailDomains)
+            .set({ dkimActiveSelector: activeSelector })
+            .where(eq(emailDomains.id, id));
+          // Publish the dkim-1 TXT inline so mail sent in the first
+          // minutes after enable verifies — the dns-sync reconciler
+          // (5-min cycle) would otherwise be the first to publish it.
+          if (createdPublicKey) {
+            await upsertDkimTxtRecord(db, {
+              domainId,
+              domainName: domain.domainName,
+              selector: activeSelector,
+              publicKey: createdPublicKey,
+              encryptionKey,
+            });
+          }
         } catch (err) {
+          // Scrub PEM blocks + drop error payloads (a raw JmapError
+          // carries the full JMAP response body in .details).
           log.warn(
-            { err, domainName: domain.domainName, stalwartDomainId },
-            'ed25519 DKIM suppression failed — domain will dual-sign until retried',
+            {
+              err: redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 300),
+              domainName: domain.domainName,
+              stalwartDomainId,
+            },
+            'DKIM A/B normalization failed — domain keeps Stalwart auto-created signatures until rotated',
           );
         }
       }

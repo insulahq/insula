@@ -1424,6 +1424,12 @@ export const emailDomains = pgTable('email_domains', {
   // Stalwart 0.16: domain principal ID from Stalwart's JMAP store.
   // Null until provisioned via JMAP or backfilled by principals-sync.
   stalwartDomainId: text('stalwart_domain_id'),
+  // A/B DKIM scheme (migration 0051): which of the two fixed selectors
+  // ('dkim-1' / 'dkim-2') currently signs new mail. Rotation flips it;
+  // enable-time normalization sets 'dkim-1'. Null = legacy domain still
+  // on a Stalwart auto-created selector — the first rotation converges
+  // it. See backend/src/modules/email-dkim/selectors.ts.
+  dkimActiveSelector: varchar('dkim_active_selector', { length: 63 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

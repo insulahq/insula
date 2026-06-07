@@ -22,6 +22,9 @@ import type { Database } from '../../db/index.js';
 import { mailDriftItems, emailDomains, mailboxes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { MailDriftItem, MailDriftKind } from '@insula/api-contracts';
+import { mailLogger } from '../../shared/mail-logger.js';
+
+const log = mailLogger().child({ module: 'mail-drift' });
 
 /** Default page size for the operator list view. */
 const LIST_LIMIT = 100;
@@ -211,15 +214,56 @@ export async function recreateDriftItemEmpty(
       .update(emailDomains)
       .set({ stalwartDomainId: newStalwartId })
       .where(eq(emailDomains.id, edRow.id));
+    // A/B DKIM policy: the recreate gave the domain a fresh Stalwart
+    // auto pair (v1-rsa-<date> + unverifiable v1-ed25519-<date>).
+    // Converge it onto the fixed dkim-1 selector like the enable flow
+    // does (dynamic imports match this file's stalwart-jmap pattern).
+    // Soft-fail — the auto pair still signs; rotation converges.
+    try {
+      const { normalizeDomainDkim } = await import('../email-dkim/normalize.js');
+      const { activeSelector, createdPublicKey } = await normalizeDomainDkim({
+        accountId,
+        stalwartDomainId: newStalwartId,
+        baseUrl,
+        currentDbSelector: null,
+      });
+      await db
+        .update(emailDomains)
+        .set({ dkimActiveSelector: activeSelector })
+        .where(eq(emailDomains.id, edRow.id));
+      // Publish the dkim-1 TXT inline (platform-managed DNS) instead
+      // of waiting for the next dns-sync cycle.
+      if (createdPublicKey) {
+        const { upsertDkimTxtRecord } = await import('../email-dkim/dns-publish.js');
+        await upsertDkimTxtRecord(db, {
+          domainId: edRow.domainId,
+          domainName: item.expectedName,
+          selector: activeSelector,
+          publicKey: createdPublicKey,
+          encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64),
+        });
+      }
+    } catch (err) {
+      // Scrub PEM blocks + drop error payloads (a raw JmapError
+      // carries the full JMAP response body in .details).
+      const { redactPemBlocks } = await import('../email-dkim/signatures.js');
+      log.warn(
+        {
+          err: redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 300),
+          domain: item.expectedName,
+          stalwartDomainId: newStalwartId,
+        },
+        'DKIM A/B normalization after drift repair failed — domain keeps Stalwart auto-created signatures until rotated',
+      );
+    }
     followUp =
-      `Stalwart Domain '${item.expectedName}' was recreated EMPTY. ` +
-      `Stalwart generated NEW DKIM keys for this Domain — the previous ` +
-      `keys are unrecoverable. The tenant's DNS at their registrar still ` +
-      `lists the OLD DKIM TXT records, so any mail signed with the new ` +
-      `keys WILL fail DMARC at receivers. REPUBLISH the DKIM TXT records ` +
-      `(visible in Admin UI → Email → Domain → DKIM tab) before the ` +
-      `tenant relies on outbound mail. The mail-DNS provisioner will ` +
-      `surface the new records automatically on its next reconcile tick.`;
+      `Stalwart Domain '${item.expectedName}' was recreated EMPTY with ` +
+      `NEW DKIM keys — the previous keys are unrecoverable. The tenant's ` +
+      `DNS at their registrar still lists the OLD DKIM TXT values, so ` +
+      `mail signed with the new keys WILL fail DMARC at receivers until ` +
+      `the dkim-1/dkim-2 TXT records are republished (visible in Admin ` +
+      `UI → Email → Domain → DKIM tab). Platform-managed DNS updates ` +
+      `automatically on the next dns-sync reconcile tick.`;
   } else {
     // mailbox kind
     const [mbRow] = await db

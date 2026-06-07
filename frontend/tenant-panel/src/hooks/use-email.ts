@@ -291,12 +291,15 @@ export interface DkimKey {
 interface DkimKeysResponse { readonly data: readonly DkimKey[] }
 
 export interface DkimRotateResult {
+  /** 'dkim-1' | 'dkim-2' — selectors alternate on each rotation (A/B scheme). */
   readonly newSelector: string;
+  /** Stays published + signing for in-flight mail; nothing to retire. Null on legacy domains. */
+  readonly previousSelector: string | null;
   readonly newPublicKey: string;
   readonly txtRecordName: string;
   readonly txtRecordValue: string;
-  readonly recommendedRetireOldAt: string;
   readonly stalwartDkimSignatureId: string;
+  readonly destroyedSelectors: readonly string[];
 }
 
 interface DkimRotateResponse { readonly data: DkimRotateResult }
