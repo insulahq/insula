@@ -1,0 +1,7 @@
+# Pinned builder for the Insula manual. Material 9.7.x is the final feature
+# line (maintenance mode); migration target is Zensical post-alpha — see
+# docs/roadmap/USER_MANUAL_WEBSITE.md.
+mkdocs-material==9.7.0
+Pygments==2.20.0
+mkdocs==1.6.1
+pymdown-extensions==10.21.3

@@ -27,11 +27,14 @@ report() { echo "BROKEN: $1 -> $2"; fail=1; }
 # ---------------------------------------------------------------------------
 while IFS= read -r -d '' file && IFS= read -r match; do
   [ -z "$match" ] && continue
+  # one boundary char may precede "docs/" (prevents matching the substring in
+  # "documentation/docs/…") — strip it before checking
+  case "$match" in docs/*) ;; *) match="${match#?}" ;; esac
   path="${match%%[\`\)\"\' ]*}"             # strip trailing punctuation
   [ -e "$path" ] || report "$file" "$path"
 done < <(git ls-files -z \
     | grep -zvE '^docs/history/|package-lock\.json|\.(png|jpg|svg|ico|woff2?)$' \
-    | xargs -0 -r grep -oE --with-filename --null 'docs/[A-Za-z0-9_.+/-]+\.(md|jsonl|ya?ml)' 2>/dev/null \
+    | xargs -0 -r grep -oE --with-filename --null '(^|[^A-Za-z0-9_.+/-])docs/[A-Za-z0-9_.+/-]+\.(md|jsonl|ya?ml)' 2>/dev/null \
     || true)
 
 # ---------------------------------------------------------------------------

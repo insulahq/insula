@@ -1,0 +1,130 @@
+# Insula user manual — built with Material for MkDocs (pinned; final feature
+# line, see docs/roadmap/USER_MANUAL_WEBSITE.md). Authoring contract: keep
+# config + extensions within the Zensical-compatible subset so the builder
+# can be swapped post-alpha (https://zensical.org/compatibility/).
+site_name: Insula
+site_description: >-
+  Insula is an open-source Kubernetes web-hosting platform — a modern Plesk
+  replacement with tenant isolation, integrated mail, backups, and one-command
+  installs on your own servers.
+site_url: https://insulahq.github.io/insula/
+repo_url: https://github.com/insulahq/insula
+repo_name: insulahq/insula
+edit_uri: edit/main/documentation/docs/
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font: false # system fonts — no Google Fonts request
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      # resolves from repo root AND from documentation/ — nothing above repo root
+      base_path: ["documentation/docs", "docs"]
+      check_paths: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Concepts:
+      - concepts/index.md
+      - Tenants & plans: concepts/tenants-and-plans.md
+      - Workloads & catalogs: concepts/workloads-and-catalogs.md
+      - Domains, routing & TLS: concepts/domains-routing-tls.md
+      - Email: concepts/email.md
+      - Storage & backups: concepts/storage-and-backups.md
+      - Security model: concepts/security-model.md
+  - Getting started:
+      - getting-started/index.md
+      - Requirements: getting-started/requirements.md
+      - Install a single node: getting-started/install.md
+      - Grow to multiple nodes: getting-started/multi-node.md
+      - Your first tenant: getting-started/first-tenant.md
+  - Operator guide:
+      - operator/index.md
+      - Nodes & cluster: operator/nodes-and-cluster.md
+      - High availability: operator/high-availability.md
+      - Updates & releases: operator/updates-and-releases.md
+      - Backup targets: operator/backup-targets.md
+      - System backups & DR: operator/system-backups-dr.md
+      - Tenant backups: operator/tenant-backups.md
+      - Mail operations: operator/mail-operations.md
+      - Security hardening: operator/security-hardening.md
+      - Web defense (WAF & bans): operator/web-defense.md
+      - Monitoring & health: operator/monitoring.md
+      - Troubleshooting: operator/troubleshooting.md
+  - Admin guide:
+      - admin/index.md
+      - Tenants: admin/tenants.md
+      - Plans & subscriptions: admin/plans-and-subscriptions.md
+      - Domains & DNS: admin/domains-and-dns.md
+      - Email: admin/email.md
+      - Catalogs & applications: admin/catalogs-and-applications.md
+      - Backups & restore: admin/backups-and-restore.md
+      - Nodes & storage: admin/nodes-and-storage.md
+      - Security: admin/security.md
+      - Platform settings: admin/platform-settings.md
+  - Tenant guide:
+      - tenant/index.md
+      - Domains & websites: tenant/domains-and-websites.md
+      - Deployments & applications: tenant/deployments-and-applications.md
+      - Databases: tenant/databases.md
+      - Email: tenant/email.md
+      - Files & SFTP: tenant/files-and-sftp.md
+      - Backups & restore: tenant/backups-and-restore.md
+      - Cron jobs: tenant/cron-jobs.md
+      - Protected directories: tenant/protected-directories.md
+      - Account & security: tenant/account-and-security.md
+  - Reference:
+      - reference/index.md
+      - API conventions: reference/api.md
+      - platform-ops CLI: reference/cli.md
+      - Error codes: reference/error-codes.md
+      - Supported operating systems: reference/supported-os.md
+      - Glossary: reference/glossary.md
+  - FAQ: faq.md
+  - Changelog: changelog.md

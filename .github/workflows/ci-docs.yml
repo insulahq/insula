@@ -10,6 +10,19 @@ on:
     branches: [main]
 
 jobs:
+  manual-impact:
+    name: Manual freshness (report-only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: ./scripts/ci-manual-impact-check.sh
+        # Flip to enforcing (~2 weeks after introduction):
+        # env:
+        #   DOCS_MANUAL_IMPACT_ENFORCE: '1'
+
   docs-link-check:
     name: Docs link integrity
     runs-on: ubuntu-latest
