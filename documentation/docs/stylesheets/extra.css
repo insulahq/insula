@@ -1,0 +1,11 @@
+/* Brand overrides for the Insula docs site. */
+
+/* Charcoal top bar — keeps teal as the primary for links/accents while the
+   header + attached tabs strip read as one neutral unit, letting the teal
+   logo stand out. Applies in both light and dark schemes. */
+.md-header {
+  background-color: #373737;
+}
+.md-tabs {
+  background-color: #373737;
+}
