@@ -1,0 +1,19 @@
+name: Docs CI
+
+# No path filter on purpose: references to docs/ paths can rot from any
+# file class (code comments, scripts, manifests, markdown). The guard is
+# a sub-second grep sweep — cheap enough to run on every PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  docs-link-check:
+    name: Docs link integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify every referenced docs/ path exists
+        run: ./scripts/ci-docs-link-check.sh
