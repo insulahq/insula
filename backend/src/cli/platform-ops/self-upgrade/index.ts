@@ -25,7 +25,16 @@ const DEFAULT_BIN = '/usr/local/bin/platform-ops';
 const DEFAULT_PUBKEY = '/etc/platform/cosign.pub';
 const GITHUB_API = 'https://api.github.com';
 // Release assets must come from GitHub (SSRF guard on the download URL).
-const ASSET_HOST_ALLOWLIST = ['github.com', 'objects.githubusercontent.com'];
+// github.com 302s a release-asset download to a pre-signed CDN URL; GitHub
+// migrated that CDN from objects.githubusercontent.com to
+// release-assets.githubusercontent.com (2025), so allow both — anything else is
+// refused. (Without release-assets.* the redirect hop is rejected and EVERY
+// self-upgrade download fails.)
+const ASSET_HOST_ALLOWLIST = [
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+];
 const RELEASE_FETCH_TIMEOUT_MS = 15_000;
 // The binary download is large; give it a generous timeout + a hard size cap so
 // a hostile/oversize asset can't exhaust memory.
@@ -68,7 +77,7 @@ function currentVersion(buildVersion: string): string {
   return 'unknown';
 }
 
-function isAllowedHost(rawUrl: string): boolean {
+export function isAllowedHost(rawUrl: string): boolean {
   let u: URL;
   try { u = new URL(rawUrl); } catch { return false; }
   if (u.protocol !== 'https:') return false;
