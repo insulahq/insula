@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.7] - 2026-06-07
+
 ### Changed
 - **DKIM selectors are now a fixed alternating pair — `dkim-1` / `dkim-2`**
   ([ADR-047](docs/architecture/adr/ADR-047-dkim-ab-selectors.md), the Microsoft 365
