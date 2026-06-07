@@ -14,7 +14,7 @@ import (
 // hermetic.
 //
 // CIS findings here are the Phase 1 hand-picked subset (≤10 rules).
-// See docs/04-deployment/SECURITY_HARDENING_ROADMAP.md for the full
+// See docs/history/04-deployment/SECURITY_HARDENING_ROADMAP.md for the full
 // list and why each was chosen.
 func collectHardening(hostRoot string, ssh sshConfigView, ssh22Public bool) Hardening {
 	h := Hardening{

@@ -8,7 +8,7 @@
  *
  * This is intentionally a minimal seam, NOT an event bus. We do not
  * support per-channel retry, queuing, or pluggable third-party
- * channels yet — those are roadmap items (see PHASE_1_ROADMAP.md
+ * channels yet — those are roadmap items (see docs/roadmap/ROADMAP.md R8
  * "Notification system phases 2-6"). Today's channels are an
  * always-on InAppChannel + an opt-in EmailChannel.
  *

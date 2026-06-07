@@ -156,7 +156,7 @@ elif ! echo "$VERSION_LINE" | grep -q '= 1;'; then
   echo "   $VERSION_LINE" >&2
   echo "   Version bumps require an explicit migration plan + reader-side handling." >&2
   echo "   If you're intentionally bumping, update this CI guard alongside the" >&2
-  echo "   bump (and add a migration note to docs/04-deployment/DR_BUNDLE_ROADMAP.md)." >&2
+  echo "   bump (and add a migration note to docs/history/04-deployment/DR_BUNDLE_ROADMAP.md)." >&2
   FAIL=1
 fi
 

@@ -2,9 +2,9 @@
 
 > **Related email documentation:**
 > - [EMAIL_ENHANCEMENTS_SPECIFICATION.md](../history/06-features/EMAIL_ENHANCEMENTS_SPECIFICATION.md) — DKIM, autodiscover, SRV records, sendmail
-> - [EMAIL_SENDING_LIMITS_AND_MONITORING.md](EMAIL_SENDING_LIMITS_AND_MONITORING.md) — Rate limiting, delivery monitoring
-> - [EMAIL_DELIVERABILITY.md](EMAIL_DELIVERABILITY.md) — IP pools, PTR, warm-up, reputation
-> - [WEBMAIL_ACCESS_SPECIFICATION.md](WEBMAIL_ACCESS_SPECIFICATION.md) — Roundcube multi-domain access
+> - [EMAIL_SENDING_LIMITS_AND_MONITORING.md](../history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md) — Rate limiting, delivery monitoring
+> - [EMAIL_DELIVERABILITY.md](../history/06-features/EMAIL_DELIVERABILITY.md) — IP pools, PTR, warm-up, reputation
+> - [WEBMAIL_ACCESS_SPECIFICATION.md](../history/06-features/WEBMAIL_ACCESS_SPECIFICATION.md) — Roundcube multi-domain access
 > - [MAILBOX_IMPORT_EXPORT_SPECIFICATION.md](MAILBOX_IMPORT_EXPORT_SPECIFICATION.md) — Mailbox migration
 
 ## Overview
@@ -209,7 +209,7 @@ Clients can manage their email accounts and app passwords through the control pa
 | OIDC token validation | Short-lived tokens; validated against Dex on every Roundcube session |
 | Transport encryption | IMAP: TLS/STARTTLS; SMTP: STARTTLS; Webmail: HTTPS (TLS at ingress) |
 | At-rest encryption (passwords) | App password plaintext encrypted via Vault transit; hashes stored with argon2/bcrypt |
-| Sending limits | Per-account hourly/daily sending limits enforced by Postfix + tracked by platform (see **EMAIL_SENDING_LIMITS_AND_MONITORING.md** for details) |
+| Sending limits | Static per-account throttles enforced by Stalwart; rolling per-tenant quotas are an open follow-up (see `docs/roadmap/ROADMAP.md` R6) |
 
 ## Email Per-Plan Allowances
 

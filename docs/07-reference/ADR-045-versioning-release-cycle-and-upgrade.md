@@ -232,5 +232,5 @@ CI guards introduced along the way: `scripts/preflight-image-org.sh`,
 - `docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md` — the implementing roadmap
 - `docs/history/04-deployment/CLUSTER_UPGRADE_ROADMAP.md` — amended by this ADR (§6)
 - `docs/04-deployment/CICD_PIPELINE_REQUIREMENTS.md` — to be rewritten (W7) to match the pull model
-- `docs/04-deployment/DR_BUNDLE_ROADMAP.md` — primitives reused by `platform-ops dr`
+- `docs/history/04-deployment/DR_BUNDLE_ROADMAP.md` — primitives reused by `platform-ops dr`
 - calver.org — versioning scheme rationale (Decision 6)

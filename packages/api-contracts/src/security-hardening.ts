@@ -13,7 +13,7 @@
  * mesh provider switch) surface as guided runbooks driven by the
  * `bootstrap.sh --ssh-via-mesh` flag and verified via probe poll.
  *
- * See docs/04-deployment/SECURITY_HARDENING_ROADMAP.md.
+ * See docs/history/04-deployment/SECURITY_HARDENING_ROADMAP.md.
  */
 
 import { z } from 'zod';

@@ -190,4 +190,4 @@ Every event can be **individually enabled/disabled** per recipient in the admin 
 - **INFRASTRUCTURE_SIZING.md**: Resource monitoring and capacity planning
 - **SECURITY_ARCHITECTURE.md**: Security event monitoring and logging
 - **EMAIL_SERVICES.md**: Email system monitoring and metrics
-- **EMAIL_SENDING_LIMITS_AND_MONITORING.md**: Email rate limiting, quota enforcement, mailqueue health, IP reputation tracking
+- **../history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md** (frozen spec): Email rate limiting, quota enforcement, mailqueue health, IP reputation tracking
