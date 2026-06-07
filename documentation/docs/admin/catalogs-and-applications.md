@@ -2,18 +2,19 @@
 verified: 2026.6.7
 ---
 
-# Catalogs & applications
+# The catalog & applications
 
-Tenants deploy software in three ways: from the **workload catalog**
-(composable building blocks — a PHP runtime, a Node.js runtime, a
-database), from the **application catalog** (self-contained managed stacks
-like WordPress or Nextcloud), or by bringing **their own container** image
-or compose file. As the admin you decide *which catalogs exist* (by adding
-the repositories that feed them), curate what's featured, and oversee what
-tenants have actually installed.
+Tenants deploy software from a single **catalog** — one library whose entries
+range from bare runtimes (a PHP or Node.js environment) through databases and
+services to complete self-contained applications (WordPress, Nextcloud) — or by
+bringing **their own container** image or compose file. As the admin you decide
+*which catalogs exist* (the repositories that feed the catalog), curate what's
+featured, and oversee what tenants have actually installed.
 
-Nothing is pre-loaded: a fresh platform has an empty catalog until you add
-a catalog repository.
+A default **Official Catalog** (`insulahq/application-catalog`) is registered and
+active out of the box, so tenants can deploy from day one. You can remove it and
+add your own catalog repositories at any time — see the **Repositories** tab
+below. (Concept overview: [The catalog](../concepts/catalog.md).)
 
 ## The Applications page
 
@@ -54,9 +55,11 @@ tenant's deployments, use that tenant's **Deployments** tab instead.
 When a catalog repository syncs a new version of an entry, deployments
 running the old version appear here so you can roll them forward.
 
-## Repositories tab — adding a catalog
+## Repositories tab — managing catalogs
 
-This is where you wire up a catalog. Click **Add Repository** and provide:
+This is where you manage the catalog repositories. The **Official Catalog**
+is listed here by default; remove it if you don't want its entries. To add
+your own, click **Add Repository** and provide:
 
 - **Name** — a label.
 - **URL** — the Git repository that contains the catalog manifests.
@@ -66,14 +69,9 @@ This is where you wire up a catalog. Click **Add Repository** and provide:
 Once added, the repository **syncs** its manifests into the catalog. Each
 repository row shows a status (active / syncing / error), the last sync
 time, and a **sync** button to pull again on demand. Errors surface inline
-on the row.
-
-??? info "Workloads vs applications"
-    A workload catalog supplies *composable* pieces — a generic runtime
-    plus a shared database. An application catalog supplies *self-contained*
-    stacks that bundle their own database. The type filter on the Catalog
-    tab lets you see each kind. Both are populated the same way: add the
-    repository here and sync it.
+on the row. Entries from all repositories merge into one catalog; the
+**type** filter on the Catalog tab separates runtimes, databases/services,
+and full applications.
 
 ## Custom deployments (bring-your-own container)
 
