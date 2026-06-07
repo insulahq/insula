@@ -70,11 +70,23 @@ else
   fail "host-config/sysctls.ts is missing"
 fi
 if [[ -f "$INDEX_TS" ]]; then
-  # writeSysctl must re-check BOTH the allow-list AND path containment before writing.
-  awk '/function writeSysctl/{f=1} f&&/sysctlAllowed\(key\)/{a=1} f&&/procSysPath\(key\)/{p=1} f&&/^}/{exit} END{exit !(a&&p)}' "$INDEX_TS" \
-    || fail "writeSysctl must re-check BOTH sysctlAllowed(key) AND procSysPath(key) before writing"
+  # writeSysctl must re-check the allow-list, value charset, AND path containment before writing.
+  awk '/function writeSysctl/{f=1} f&&/sysctlAllowed\(key\)/{a=1} f&&/sysctlValueValid\(value\)/{v=1} f&&/procSysPath\(key\)/{p=1} f&&/^}/{exit} END{exit !(a&&v&&p)}' "$INDEX_TS" \
+    || fail "writeSysctl must re-check sysctlAllowed(key) AND sysctlValueValid(value) AND procSysPath(key) before writing"
 else
   fail "host-config/index.ts is missing"
+fi
+
+# (3b) reboot-persistence drop-in must re-validate the allow-list before a key
+# can reach /etc/sysctl.d (a persisted line is applied as root at every boot).
+if [[ -f "$SYSCTLS_TS" ]]; then
+  awk '/function renderSysctlDropIn/{f=1} f&&/sysctlAllowed/{a=1} f&&/^}/{exit} END{exit !a}' "$SYSCTLS_TS" \
+    || fail "renderSysctlDropIn must re-validate sysctlAllowed() before persisting a key to /etc/sysctl.d"
+fi
+if [[ -f "$INDEX_TS" ]]; then
+  # The persisted drop-in path must be a fixed platform-owned file, never key-derived.
+  grep -q "SYSCTL_DROP_IN = '/etc/sysctl.d/" "$INDEX_TS" \
+    || fail "persistSysctls must write a fixed /etc/sysctl.d drop-in path (SYSCTL_DROP_IN), never a key-derived path"
 fi
 
 # (4) package convergence: additive-only + injection-safe

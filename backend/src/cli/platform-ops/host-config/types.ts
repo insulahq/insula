@@ -55,6 +55,13 @@ export interface HostConfigDeps {
   readonly readSysctl: (key: string) => string | null;
   /** Write a sysctl (re-validates allow-list + deny-list + containment); throws on refusal. */
   readonly writeSysctl: (key: string, value: string) => void;
+  /**
+   * Persist the given live, allow-listed sysctls to the managed /etc/sysctl.d
+   * drop-in so they survive a reboot — a /proc write alone is RAM-only and the
+   * kernel resets it at boot. Re-validates each key against the allow-list
+   * before rendering; called only when enforcing.
+   */
+  readonly persistSysctls: (specs: readonly SysctlSpec[]) => void;
 }
 
 // ── Package convergence (W10b) ───────────────────────────────────────────────
