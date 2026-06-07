@@ -41,10 +41,47 @@ import {
   isAbSelector,
   type DkimAbSelector,
 } from './selectors.js';
-import { createRsaDkimSignature, RSA_SIGNATURE_TYPE } from './signatures.js';
+import {
+  createRsaDkimSignature,
+  RSA_SIGNATURE_TYPE,
+  ED25519_SIGNATURE_TYPE,
+} from './signatures.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'email-dkim-normalize' });
+
+// Stalwart generates the auto signature pair ASYNCHRONOUSLY after the
+// domain principal create returns — Ed25519 keygen is effectively
+// instant but RSA-2048 keygen takes longer, so a listing taken right
+// after the create can show only the Ed25519 row (observed live on
+// testing 2026-06-07: the auto v1-rsa row landed AFTER normalization
+// had already swept and created dkim-1). Callers that just created
+// the principal pass expectAutoPair=true and we poll until both auto
+// rows are visible before planning the sweep.
+const AUTO_PAIR_POLL_ATTEMPTS = 6;
+const AUTO_PAIR_POLL_DELAY_MS = 500;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * True when the domain's NON-A/B rows include both halves of the
+ * Stalwart auto-created pair (one RSA + one Ed25519). Pure — exported
+ * for unit tests.
+ */
+export function hasCompleteAutoPair(
+  rows: readonly StalwartDkimSignatureRow[],
+  stalwartDomainId: string,
+): boolean {
+  const nonAb = rows.filter(
+    (r) =>
+      r.domainId === stalwartDomainId &&
+      !(isAbSelector(r.selector) && r['@type'] === RSA_SIGNATURE_TYPE),
+  );
+  return (
+    nonAb.some((r) => r['@type'] === RSA_SIGNATURE_TYPE) &&
+    nonAb.some((r) => r['@type'] === ED25519_SIGNATURE_TYPE)
+  );
+}
 
 export interface NormalizePlan {
   /** Selector to create a fresh RSA key under; null = A/B signature already present. */
@@ -122,10 +159,29 @@ export async function normalizeDomainDkim(params: {
   stalwartDomainId: string;
   baseUrl?: string;
   currentDbSelector?: string | null;
+  /**
+   * True when the caller JUST created the domain principal — Stalwart's
+   * auto pair may not be fully materialized yet (see the race note at
+   * the top of this file), so we poll for it before planning the sweep.
+   */
+  expectAutoPair?: boolean;
 }): Promise<NormalizeResult> {
   const { accountId, stalwartDomainId, baseUrl } = params;
 
-  const rows = await dkimSignatureGet({ accountId, baseUrl });
+  let rows = await dkimSignatureGet({ accountId, baseUrl });
+  if (params.expectAutoPair && !hasCompleteAutoPair(rows, stalwartDomainId)) {
+    for (let i = 0; i < AUTO_PAIR_POLL_ATTEMPTS; i++) {
+      await sleep(AUTO_PAIR_POLL_DELAY_MS);
+      rows = await dkimSignatureGet({ accountId, baseUrl });
+      if (hasCompleteAutoPair(rows, stalwartDomainId)) break;
+    }
+    if (!hasCompleteAutoPair(rows, stalwartDomainId)) {
+      log.warn(
+        { stalwartDomainId },
+        'Stalwart auto signature pair did not fully appear within the poll window — sweeping what exists; the rotation straggler sweep converges any late arrival',
+      );
+    }
+  }
   const plan = planDkimNormalization(rows, stalwartDomainId, params.currentDbSelector ?? null);
 
   let createdSignatureId: string | null = null;

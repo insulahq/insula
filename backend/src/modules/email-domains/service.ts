@@ -161,6 +161,11 @@ export async function enableEmailForDomain(
         domainName: domain.domainName,
         baseUrl: process.env.STALWART_MGMT_URL,
       });
+      // Track whether WE create the principal in this request — a
+      // fresh create means Stalwart's auto signature pair may still be
+      // materializing when normalization lists signatures (the RSA
+      // half lags the Ed25519 half), so normalize must poll for it.
+      const createdPrincipal = !existingJmap?.id;
       const stalwartDomainId = existingJmap?.id
         ?? (await jmapCreateDomain({
           accountId: domainAccountId,
@@ -187,6 +192,7 @@ export async function enableEmailForDomain(
             stalwartDomainId,
             baseUrl: process.env.STALWART_MGMT_URL,
             currentDbSelector: existing?.dkimActiveSelector ?? null,
+            expectAutoPair: createdPrincipal,
           });
           await db
             .update(emailDomains)
